@@ -2637,13 +2637,18 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
     {
         profile.config_contents = complete_relay_profile_config(profile)?;
     }
+    // PureApi 模式下 `complete_relay_profile_config` 会移除 config.toml 里的
+    // `experimental_bearer_token`，auth.json 是 key 唯一的落点。
+    // 这里过去还要求 auth_contents 为空，于是「非空但不含 OPENAI_API_KEY」的 auth.json
+    // （例如退出 ChatGPT 登录后残留的 tokens/last_refresh）会把写入挡掉，
+    // key 两边都没有，Codex CLI 只能回退到 OPENAI_API_KEY 环境变量，上游返回 401（issue #1965）。
     if profile.relay_mode == crate::settings::RelayMode::PureApi
-        && profile.auth_contents.trim().is_empty()
         && !source_api_key.trim().is_empty()
     {
-        profile.auth_contents = serde_json::to_string_pretty(&json!({
-            "OPENAI_API_KEY": source_api_key.trim()
-        }))?;
+        profile.auth_contents =
+            set_openai_api_key_in_auth_contents(&profile.auth_contents, &source_api_key)
+                // auth.json 本身已损坏时保不住原内容，但 key 必须有落点，直接重建。
+                .or_else(|_| set_openai_api_key_in_auth_contents("", &source_api_key))?;
     }
     if profile.relay_mode == crate::settings::RelayMode::Official {
         profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;

@@ -635,6 +635,16 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     } else {
         None
     };
+    if let Err(message) = ensure_provider_sync_is_idle_before_stop() {
+        return failed(
+            &message,
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port,
+                "syncActiveRelay": request.sync_active_relay
+            }),
+        );
+    }
     codex_plus_core::watcher::stop_launcher_processes_and_wait();
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
     let home = codex_plus_core::relay_config::default_codex_home_dir();
@@ -5437,6 +5447,64 @@ fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     }
 }
 
+/// provider sync 正在进行时，最多等它这么久再考虑放弃重启。
+const PROVIDER_SYNC_WAIT_TIMEOUT_MS: u64 = 30_000;
+const PROVIDER_SYNC_WAIT_INTERVAL_MS: u64 = 200;
+
+/// 等待正在执行的 provider sync 结束。
+///
+/// launcher 在同步期间持有 `~/.codex/tmp/provider-sync.lock`，而这一步之后调用方会
+/// `TerminateProcess` 强杀 launcher。被强杀的进程来不及 `release_lock()`，会留下残留锁，
+/// 使后续启动全部跳过同步，用户侧表现为历史会话消失或「修复 0 个会话」（issue #1901）。
+/// 因此这里先等同步自然结束；等不到就拒绝本次重启，而不是把它打断。
+fn wait_for_idle_provider_sync(
+    inspect: impl Fn() -> codex_plus_data::ProviderSyncLockState,
+    sleep: impl Fn(u64),
+    timeout_ms: u64,
+) -> Result<(), codex_plus_data::ProviderSyncLockState> {
+    use codex_plus_data::ProviderSyncLockState;
+
+    let mut waited_ms = 0;
+    loop {
+        // Stale 锁的持有者已经退出，下一次 acquire_lock 会自动回收它，不必等。
+        match inspect() {
+            ProviderSyncLockState::Free | ProviderSyncLockState::Stale { .. } => return Ok(()),
+            state => {
+                if waited_ms >= timeout_ms {
+                    return Err(state);
+                }
+            }
+        }
+        sleep(PROVIDER_SYNC_WAIT_INTERVAL_MS);
+        waited_ms += PROVIDER_SYNC_WAIT_INTERVAL_MS;
+    }
+}
+
+/// 在强杀 launcher 前放行或拦截本次重启，并把判定结果写进诊断日志。
+fn ensure_provider_sync_is_idle_before_stop() -> Result<(), String> {
+    let outcome = wait_for_idle_provider_sync(
+        || codex_plus_data::inspect_provider_sync_lock(None),
+        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
+        PROVIDER_SYNC_WAIT_TIMEOUT_MS,
+    );
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(state) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.restart_blocked_by_provider_sync",
+                json!({
+                    "state": state,
+                    "waited_ms": PROVIDER_SYNC_WAIT_TIMEOUT_MS,
+                }),
+            );
+            Err(format!(
+                "历史会话同步正在进行中（已等待 {} 秒）。为避免中断同步导致会话丢失，本次重启未执行；请等待同步完成后重试。",
+                PROVIDER_SYNC_WAIT_TIMEOUT_MS / 1000
+            ))
+        }
+    }
+}
+
 fn default_debug_port() -> u16 {
     9229
 }
@@ -5608,6 +5676,86 @@ mod tests {
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload["syncStatus"], "synced");
+    }
+
+    #[test]
+    fn restart_does_not_wait_when_no_provider_sync_is_running() {
+        let slept = std::cell::Cell::new(0);
+
+        let outcome = wait_for_idle_provider_sync(
+            || codex_plus_data::ProviderSyncLockState::Free,
+            |ms| slept.set(slept.get() + ms),
+            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
+        );
+
+        assert!(outcome.is_ok());
+        assert_eq!(slept.get(), 0);
+    }
+
+    #[test]
+    fn restart_does_not_wait_on_a_lock_whose_owner_already_exited() {
+        let slept = std::cell::Cell::new(0);
+
+        let outcome = wait_for_idle_provider_sync(
+            || codex_plus_data::ProviderSyncLockState::Stale { pid: Some(4321) },
+            |ms| slept.set(slept.get() + ms),
+            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
+        );
+
+        assert!(outcome.is_ok());
+        assert_eq!(slept.get(), 0);
+    }
+
+    #[test]
+    fn restart_proceeds_once_an_in_flight_provider_sync_releases_the_lock() {
+        let polls = std::cell::Cell::new(0);
+
+        let outcome = wait_for_idle_provider_sync(
+            || {
+                polls.set(polls.get() + 1);
+                if polls.get() < 3 {
+                    codex_plus_data::ProviderSyncLockState::Held {
+                        pid: 4321,
+                        started_at: 1234,
+                    }
+                } else {
+                    codex_plus_data::ProviderSyncLockState::Free
+                }
+            },
+            |_| {},
+            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
+        );
+
+        assert!(outcome.is_ok());
+        assert_eq!(polls.get(), 3);
+    }
+
+    /// issue #1901：同步一直不结束时宁可拒绝重启，也不能强杀持锁的 launcher。
+    #[test]
+    fn restart_is_refused_while_a_provider_sync_keeps_holding_the_lock() {
+        let held = codex_plus_data::ProviderSyncLockState::Held {
+            pid: 4321,
+            started_at: 1234,
+        };
+
+        let outcome =
+            wait_for_idle_provider_sync(|| held.clone(), |_| {}, PROVIDER_SYNC_WAIT_TIMEOUT_MS);
+
+        assert_eq!(outcome, Err(held));
+    }
+
+    #[test]
+    fn restart_is_refused_while_the_lock_owner_cannot_be_determined() {
+        let outcome = wait_for_idle_provider_sync(
+            || codex_plus_data::ProviderSyncLockState::Indeterminate,
+            |_| {},
+            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
+        );
+
+        assert_eq!(
+            outcome,
+            Err(codex_plus_data::ProviderSyncLockState::Indeterminate)
+        );
     }
 
     #[test]
