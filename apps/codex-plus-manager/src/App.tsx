@@ -21,6 +21,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bell,
+  Bot,
   CheckCircle2,
   ChevronDown,
   Camera,
@@ -383,6 +384,53 @@ type SettingsResult = CommandResult<{
   settings_path: string;
   user_scripts: UserScriptInventory;
 }>;
+
+type GrokApiBackend = "responses" | "chat_completions" | "messages";
+
+type GrokModelConfig = {
+  alias: string;
+  model: string;
+  name: string;
+  baseUrl: string;
+  apiBackend: GrokApiBackend;
+  contextWindow: number | null;
+  apiKeyConfigured: boolean;
+};
+
+type GrokConfigResult = CommandResult<{
+  grokHome: string;
+  configPath: string;
+  configExists: boolean;
+  cliPath: string | null;
+  cliInstalled: boolean;
+  revision: string;
+  defaultModel: string;
+  modelsBaseUrl: string;
+  models: GrokModelConfig[];
+}>;
+
+type GrokModelInput = {
+  sourceAlias: string;
+  alias: string;
+  model: string;
+  name: string;
+  baseUrl: string;
+  apiBackend: GrokApiBackend;
+  contextWindow: number | null;
+  apiKeyUpdate: string;
+  removeApiKey: boolean;
+};
+
+type SaveGrokConfigRequest = {
+  revision: string;
+  defaultModel: string;
+  modelsBaseUrl: string;
+  models: GrokModelInput[];
+};
+
+type SaveGrokConfigResult = GrokConfigResult & {
+  backupPath: string | null;
+};
 
 type WeixinConnectStatusResult = CommandResult<{
   state: string;
@@ -836,12 +884,13 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
+  { id: "grok", label: t("Grok 配置"), icon: Bot },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
   { id: "context", label: t("工具与插件"), icon: Network },
   { id: "weixin", label: t("微信连接"), icon: ScanLine },
@@ -859,7 +908,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
   {
     label: t("工作区"),
-    routes: ["overview", "relay", "sessions", "context"],
+    routes: ["overview", "relay", "grok", "sessions", "context"],
   },
   {
     label: t("扩展"),
@@ -996,6 +1045,7 @@ export function App() {
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [relayEnvironment, setRelayEnvironment] = useState<RelayEnvironmentResult | null>(null);
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
+  const [grokConfig, setGrokConfig] = useState<GrokConfigResult | null>(null);
   const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [sessionShareUrl, setSessionShareUrl] = useState("");
@@ -1201,6 +1251,29 @@ export function App() {
       if (!silent) showResultNotice(t("配置文件"), result, { silentSuccess: true });
     }
     return result;
+  };
+
+  const refreshGrokConfig = async (silent = false) => {
+    const result = await run(() => call<GrokConfigResult>("load_grok_config"));
+    if (!result) return null;
+    if (isSuccessStatus(result.status)) {
+      setGrokConfig(result);
+      if (!silent) showResultNotice(t("Grok 配置"), result, { silentSuccess: true });
+    } else {
+      showResultNotice(t("Grok 配置"), result);
+    }
+    return result;
+  };
+
+  const saveGrokConfig = async (request: SaveGrokConfigRequest) => {
+    const result = await run(() => call<SaveGrokConfigResult>("save_grok_config", { request }));
+    if (!result) return null;
+    showResultNotice(t("Grok 配置"), result);
+    if (isSuccessStatus(result.status)) {
+      setGrokConfig(result);
+      return result;
+    }
+    return null;
   };
 
   const refreshEnvConflicts = async (silent = false) => {
@@ -1892,6 +1965,7 @@ export function App() {
       await refreshCcsProviders(true);
     }
     if (next === "relayEnvironment") await refreshRelayEnvironment(true);
+    if (next === "grok") await refreshGrokConfig(true);
     if (next === "sessions") {
       await refreshSettings(true);
       await refreshLocalSessions(true);
@@ -3234,6 +3308,13 @@ export function App() {
           {route === "relayEnvironment" ? (
             <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
           ) : null}
+          {route === "grok" ? (
+            <GrokConfigScreen
+              config={grokConfig}
+              onRefresh={() => refreshGrokConfig(false)}
+              onSave={saveGrokConfig}
+            />
+          ) : null}
           {route === "sessions" ? (
             <SessionsScreen
               settings={settings}
@@ -4071,6 +4152,378 @@ function OverviewScreen({
         </CardContent>
       </Panel>
     </>
+  );
+}
+
+type GrokModelDraft = GrokModelInput & {
+  clientId: string;
+  apiKeyConfigured: boolean;
+  contextWindowText: string;
+};
+
+type GrokConfigDraft = {
+  revision: string;
+  defaultModel: string;
+  modelsBaseUrl: string;
+  models: GrokModelDraft[];
+};
+
+let grokDraftSequence = 0;
+
+function nextGrokDraftId() {
+  grokDraftSequence += 1;
+  return `grok-model-${Date.now()}-${grokDraftSequence}`;
+}
+
+function grokDraftFromConfig(config: GrokConfigResult): GrokConfigDraft {
+  return {
+    revision: config.revision,
+    defaultModel: config.defaultModel,
+    modelsBaseUrl: config.modelsBaseUrl,
+    models: config.models.map((model) => ({
+      clientId: nextGrokDraftId(),
+      sourceAlias: model.alias,
+      alias: model.alias,
+      model: model.model,
+      name: model.name,
+      baseUrl: model.baseUrl,
+      apiBackend: model.apiBackend,
+      contextWindow: model.contextWindow,
+      contextWindowText: model.contextWindow?.toString() ?? "",
+      apiKeyConfigured: model.apiKeyConfigured,
+      apiKeyUpdate: "",
+      removeApiKey: false,
+    })),
+  };
+}
+
+function grokRequestFromDraft(draft: GrokConfigDraft): SaveGrokConfigRequest {
+  return {
+    revision: draft.revision,
+    defaultModel: draft.defaultModel.trim(),
+    modelsBaseUrl: draft.modelsBaseUrl.trim(),
+    models: draft.models.map((model) => ({
+      sourceAlias: model.sourceAlias,
+      alias: model.alias.trim(),
+      model: model.model.trim(),
+      name: model.name.trim(),
+      baseUrl: model.baseUrl.trim(),
+      apiBackend: model.apiBackend,
+      contextWindow: model.contextWindowText.trim() ? Number.parseInt(model.contextWindowText, 10) : null,
+      apiKeyUpdate: model.apiKeyUpdate.trim(),
+      removeApiKey: model.removeApiKey,
+    })),
+  };
+}
+
+function grokDraftValidation(draft: GrokConfigDraft) {
+  const aliases = draft.models.map((model) => model.alias.trim());
+  if (aliases.some((alias) => !alias)) return t("模型别名不能为空。");
+  if (new Set(aliases).size !== aliases.length) return t("模型别名不能重复。");
+  for (const model of draft.models) {
+    const value = model.contextWindowText.trim();
+    if (value && (!/^\d+$/.test(value) || Number(value) <= 0 || !Number.isSafeInteger(Number(value)))) {
+      return tf("模型「{0}」的上下文窗口必须是大于 0 的整数。", [model.alias || t("未命名")]);
+    }
+  }
+  return "";
+}
+
+function GrokConfigScreen({
+  config,
+  onRefresh,
+  onSave,
+}: {
+  config: GrokConfigResult | null;
+  onRefresh: () => Promise<GrokConfigResult | null>;
+  onSave: (request: SaveGrokConfigRequest) => Promise<SaveGrokConfigResult | null>;
+}) {
+  const [draft, setDraft] = useState<GrokConfigDraft | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!config) return;
+    const next = grokDraftFromConfig(config);
+    setDraft(next);
+    setSelectedId((current) => next.models.some((model) => model.clientId === current) ? current : next.models[0]?.clientId ?? "");
+  }, [config]);
+
+  const savedRequest = useMemo(
+    () => config ? grokRequestFromDraft(grokDraftFromConfig(config)) : null,
+    [config],
+  );
+  const currentRequest = useMemo(() => draft ? grokRequestFromDraft(draft) : null, [draft]);
+  const dirty = Boolean(savedRequest && currentRequest && JSON.stringify(savedRequest) !== JSON.stringify(currentRequest));
+  const validationError = draft ? grokDraftValidation(draft) : "";
+  const selected = draft?.models.find((model) => model.clientId === selectedId) ?? null;
+
+  const updateSelected = (patch: Partial<GrokModelDraft>) => {
+    if (!draft || !selected) return;
+    setDraft((current) => {
+      if (!current) return current;
+      const nextDefault = patch.alias !== undefined && current.defaultModel === selected.alias
+        ? patch.alias
+        : current.defaultModel;
+      return {
+        ...current,
+        defaultModel: nextDefault,
+        models: current.models.map((model) => model.clientId === selected.clientId ? { ...model, ...patch } : model),
+      };
+    });
+  };
+
+  const addModel = () => {
+    if (!draft) return;
+    const aliases = new Set(draft.models.map((model) => model.alias));
+    let index = draft.models.length + 1;
+    while (aliases.has(`grok-model-${index}`)) index += 1;
+    const model: GrokModelDraft = {
+      clientId: nextGrokDraftId(),
+      sourceAlias: "",
+      alias: `grok-model-${index}`,
+      model: "",
+      name: "",
+      baseUrl: "",
+      apiBackend: "responses",
+      contextWindow: null,
+      contextWindowText: "",
+      apiKeyConfigured: false,
+      apiKeyUpdate: "",
+      removeApiKey: false,
+    };
+    setDraft({
+      ...draft,
+      defaultModel: draft.defaultModel || model.alias,
+      models: [...draft.models, model],
+    });
+    setSelectedId(model.clientId);
+  };
+
+  const deleteSelected = () => {
+    if (!draft || !selected) return;
+    if (!window.confirm(tf("删除 Grok 模型「{0}」？", [selected.alias || t("未命名")]))) return;
+    const remaining = draft.models.filter((model) => model.clientId !== selected.clientId);
+    setDraft({
+      ...draft,
+      defaultModel: draft.defaultModel === selected.alias ? remaining[0]?.alias ?? "" : draft.defaultModel,
+      models: remaining,
+    });
+    setSelectedId(remaining[0]?.clientId ?? "");
+  };
+
+  const discard = () => {
+    if (!config) return;
+    const next = grokDraftFromConfig(config);
+    setDraft(next);
+    setSelectedId(next.models[0]?.clientId ?? "");
+  };
+
+  const saveDraft = async () => {
+    if (!draft || validationError) return;
+    setSaving(true);
+    try {
+      await onSave(grokRequestFromDraft(draft));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!config || !draft) {
+    return (
+      <Panel>
+        <CardHead title={t("Grok 配置")} detail={t("正在读取本机 Grok 配置")} />
+        <CardContent>
+          <Button onClick={() => void onRefresh()} variant="outline">
+            <RefreshCw className="h-4 w-4" />
+            {t("重新读取")}
+          </Button>
+        </CardContent>
+      </Panel>
+    );
+  }
+
+  return (
+    <div className="grok-page">
+      <Panel className="grok-overview-panel">
+        <CardHead title={t("本机配置")} detail={config.configPath} />
+        <CardContent className="grok-overview-content">
+          <div className="grok-status-strip">
+            <div>
+              <span>Grok CLI</span>
+              <strong data-status={config.cliInstalled ? "ok" : "missing"}>
+                {config.cliInstalled ? t("已检测") : t("未检测")}
+              </strong>
+              <code>{config.cliPath || t("未找到可执行文件")}</code>
+            </div>
+            <div>
+              <span>config.toml</span>
+              <strong data-status={config.configExists ? "ok" : "missing"}>
+                {config.configExists ? t("已存在") : t("保存时创建")}
+              </strong>
+              <code>{config.grokHome}</code>
+            </div>
+          </div>
+          <div className="grok-global-fields">
+            <Label className="grok-form-row">
+              <span>{t("默认模型")}</span>
+              <Input
+                list="grok-model-aliases"
+                onChange={(event) => setDraft({ ...draft, defaultModel: event.currentTarget.value })}
+                placeholder="grok-build"
+                value={draft.defaultModel}
+              />
+            </Label>
+            <datalist id="grok-model-aliases">
+              {draft.models.map((model) => <option key={model.clientId} value={model.alias} />)}
+            </datalist>
+            <Label className="grok-form-row">
+              <span>{t("模型发现端点")}</span>
+              <Input
+                onChange={(event) => setDraft({ ...draft, modelsBaseUrl: event.currentTarget.value })}
+                placeholder="https://api.example.com/v1"
+                value={draft.modelsBaseUrl}
+              />
+            </Label>
+          </div>
+        </CardContent>
+      </Panel>
+
+      <div className="grok-manager-grid">
+        <Panel className="grok-model-list-panel">
+          <div className="grok-panel-title">
+            <div>
+              <strong>{t("模型配置")}</strong>
+              <span>{tf("{0} 个模型", [draft.models.length])}</span>
+            </div>
+            <Button onClick={addModel} size="sm">
+              <Plus className="h-4 w-4" />
+              {t("新增")}
+            </Button>
+          </div>
+          <div className="grok-model-list">
+            {draft.models.map((model) => (
+              <button
+                className={`grok-model-item ${model.clientId === selectedId ? "active" : ""}`}
+                key={model.clientId}
+                onClick={() => setSelectedId(model.clientId)}
+                type="button"
+              >
+                <span className="grok-model-mark"><Bot className="h-4 w-4" /></span>
+                <span className="grok-model-copy">
+                  <strong>{model.alias || t("未命名")}</strong>
+                  <small>{model.name || model.model || t("未填写模型")}</small>
+                </span>
+                {draft.defaultModel === model.alias ? <UiBadge>{t("默认")}</UiBadge> : null}
+              </button>
+            ))}
+            {!draft.models.length ? <div className="empty">{t("暂无 Grok 模型配置")}</div> : null}
+          </div>
+        </Panel>
+
+        <Panel className="grok-editor-panel">
+          {selected ? (
+            <>
+              <div className="grok-panel-title grok-editor-title">
+                <div>
+                  <strong>{selected.alias || t("未命名模型")}</strong>
+                  <span>{selected.sourceAlias ? t("本机模型配置") : t("新模型配置")}</span>
+                </div>
+                <Button onClick={deleteSelected} size="icon" title={t("删除模型")} variant="outline">
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="grok-editor-fields">
+                <Label className="grok-form-row">
+                  <span>{t("模型别名")}</span>
+                  <Input value={selected.alias} onChange={(event) => updateSelected({ alias: event.currentTarget.value })} />
+                </Label>
+                <Label className="grok-form-row">
+                  <span>{t("显示名称")}</span>
+                  <Input value={selected.name} onChange={(event) => updateSelected({ name: event.currentTarget.value })} />
+                </Label>
+                <Label className="grok-form-row">
+                  <span>{t("实际模型 ID")}</span>
+                  <Input placeholder={selected.alias} value={selected.model} onChange={(event) => updateSelected({ model: event.currentTarget.value })} />
+                </Label>
+                <Label className="grok-form-row">
+                  <span>Base URL</span>
+                  <Input placeholder={draft.modelsBaseUrl || "https://api.example.com/v1"} value={selected.baseUrl} onChange={(event) => updateSelected({ baseUrl: event.currentTarget.value })} />
+                </Label>
+                <div className="grok-form-row">
+                  <span>{t("API 协议")}</span>
+                  <div className="grok-protocol-options">
+                    {([
+                      ["responses", "Responses"],
+                      ["chat_completions", "Chat Completions"],
+                      ["messages", "Messages"],
+                    ] as Array<[GrokApiBackend, string]>).map(([value, label]) => (
+                      <button
+                        className={selected.apiBackend === value ? "active" : ""}
+                        key={value}
+                        onClick={() => updateSelected({ apiBackend: value })}
+                        type="button"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Label className="grok-form-row">
+                  <span>{t("上下文窗口")}</span>
+                  <Input
+                    inputMode="numeric"
+                    placeholder={t("留空使用 Grok 默认值")}
+                    value={selected.contextWindowText}
+                    onChange={(event) => updateSelected({ contextWindowText: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                  />
+                </Label>
+                <div className="grok-form-row">
+                  <span>API Key</span>
+                  <div className="grok-key-control">
+                    <Input
+                      autoComplete="off"
+                      disabled={selected.removeApiKey}
+                      onChange={(event) => updateSelected({ apiKeyUpdate: event.currentTarget.value, removeApiKey: false })}
+                      placeholder={selected.apiKeyConfigured ? t("已配置；留空保持不变") : t("输入 API Key")}
+                      type="password"
+                      value={selected.apiKeyUpdate}
+                    />
+                    <Button
+                      disabled={!selected.apiKeyConfigured && !selected.apiKeyUpdate}
+                      onClick={() => updateSelected({ removeApiKey: !selected.removeApiKey, apiKeyUpdate: "" })}
+                      size="sm"
+                      variant="outline"
+                    >
+                      {selected.removeApiKey ? <RotateCcw className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
+                      {selected.removeApiKey ? t("撤销移除") : t("移除 Key")}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="grok-empty-editor">
+              <Bot className="h-5 w-5" />
+              <span>{t("选择或新增一个 Grok 模型")}</span>
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      {dirty ? (
+        <div className="settings-save-bar grok-save-bar">
+          <span className={validationError ? "is-error" : ""}>{validationError || t("Grok 配置有未保存修改")}</span>
+          <Toolbar>
+            <Button disabled={saving} onClick={discard} variant="secondary">{t("放弃修改")}</Button>
+            <Button disabled={saving || Boolean(validationError)} onClick={() => void saveDraft()}>
+              <Save className="h-4 w-4" />
+              {saving ? t("保存中") : t("保存配置")}
+            </Button>
+          </Toolbar>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -8654,6 +9107,7 @@ function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    grok: t("管理 Grok CLI 的模型与 API 端点"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP、Skills、Plugins"),

@@ -6730,7 +6730,290 @@ select {
   font-size: 12px;
 }
 
+.grok-page {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 1240px);
+  margin-inline: auto;
+}
+
+.grok-overview-content {
+  display: grid;
+  gap: 16px;
+}
+
+.grok-status-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--border));
+}
+
+.grok-status-strip > div {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+  background: hsl(var(--card));
+}
+
+.grok-status-strip span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.grok-status-strip strong {
+  color: hsl(var(--foreground));
+  font-size: 12px;
+}
+
+.grok-status-strip strong[data-status="ok"] {
+  color: hsl(var(--status-success));
+}
+
+.grok-status-strip strong[data-status="missing"] {
+  color: hsl(var(--muted-foreground));
+}
+
+.grok-status-strip code {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grok-global-fields,
+.grok-editor-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.grok-form-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  min-height: 38px;
+  margin: 0;
+}
+
+.grok-form-row > span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.grok-form-row input,
+.grok-form-row .grok-protocol-options,
+.grok-key-control > input {
+  min-width: 0;
+  height: 38px;
+}
+
+.grok-manager-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.grok-model-list-panel,
+.grok-editor-panel {
+  overflow: hidden;
+}
+
+.grok-panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.grok-panel-title > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.grok-panel-title strong {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grok-panel-title span {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.grok-model-list {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.grok-model-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 6px 8px;
+  color: hsl(var(--foreground));
+  text-align: left;
+  transition: background var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
+}
+
+.grok-model-item:hover {
+  border-color: hsl(var(--border));
+  background: hsl(var(--muted) / 0.5);
+}
+
+.grok-model-item.active {
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.1);
+}
+
+.grok-model-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+}
+
+.grok-model-item.active .grok-model-mark {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.grok-model-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.grok-model-copy strong,
+.grok-model-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grok-model-copy strong {
+  font-size: 12px;
+}
+
+.grok-model-copy small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.grok-editor-fields {
+  padding: 14px;
+}
+
+.grok-protocol-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--muted) / 0.35);
+}
+
+.grok-protocol-options button {
+  min-width: 0;
+  border: 0;
+  border-right: 1px solid hsl(var(--border));
+  background: transparent;
+  padding: 0 10px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.grok-protocol-options button:last-child {
+  border-right: 0;
+}
+
+.grok-protocol-options button.active {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.grok-key-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.grok-key-control .btn {
+  height: 38px;
+}
+
+.grok-empty-editor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 220px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.grok-save-bar {
+  z-index: 6;
+}
+
+.grok-save-bar .toolbar {
+  margin: 0;
+}
+
+.grok-save-bar .is-error {
+  color: hsl(var(--status-error));
+}
+
+@media (max-width: 900px) {
+  .grok-status-strip,
+  .grok-manager-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 760px) {
+  .grok-form-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .grok-key-control {
+    grid-template-columns: 1fr;
+  }
+
   .settings-save-bar {
     align-items: center;
   }

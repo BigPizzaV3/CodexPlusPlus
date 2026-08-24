@@ -487,6 +487,49 @@ pub struct StartupPayload {
 }
 
 #[tauri::command]
+pub fn load_grok_config() -> CommandResult<codex_plus_core::grok_config::GrokConfigPayload> {
+    match codex_plus_core::grok_config::load_grok_config() {
+        Ok(payload) => ok("Grok 配置已加载。", payload),
+        Err(error) => failed(
+            &format!("读取 Grok 配置失败：{error}"),
+            empty_grok_config_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn save_grok_config(
+    request: codex_plus_core::grok_config::SaveGrokConfigRequest,
+) -> CommandResult<codex_plus_core::grok_config::SaveGrokConfigResult> {
+    let backup_root = codex_plus_core::paths::default_app_state_dir().join("backups");
+    match codex_plus_core::grok_config::save_grok_config(&request, &backup_root) {
+        Ok(payload) => ok("Grok 配置已保存。", payload),
+        Err(error) => failed(
+            &format!("保存 Grok 配置失败：{error}"),
+            codex_plus_core::grok_config::SaveGrokConfigResult {
+                config: empty_grok_config_payload(),
+                backup_path: None,
+            },
+        ),
+    }
+}
+
+fn empty_grok_config_payload() -> codex_plus_core::grok_config::GrokConfigPayload {
+    let home = codex_plus_core::grok_config::default_grok_home_dir();
+    codex_plus_core::grok_config::GrokConfigPayload {
+        grok_home: home.to_string_lossy().to_string(),
+        config_path: home.join("config.toml").to_string_lossy().to_string(),
+        config_exists: false,
+        cli_path: None,
+        cli_installed: false,
+        revision: String::new(),
+        default_model: String::new(),
+        models_base_url: String::new(),
+        models: Vec::new(),
+    }
+}
+
+#[tauri::command]
 pub fn backend_version() -> CommandResult<VersionPayload> {
     ok(
         "后端版本已读取。",
