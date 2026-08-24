@@ -1207,13 +1207,15 @@ body {
   animation-delay: 120ms;
 }
 
+/* 不设 overflow：这里原本是为了裹住 relay-section-enter 的展开动画，
+   但下面 .relay-api-fields 已经统一 animation: none，只剩下把
+   「Codex 会话身份」的下拉菜单裁掉这一个副作用 */
 .relay-advanced-fields,
 .relay-api-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px 16px;
   animation: relay-section-enter 240ms var(--motion-ease) both;
-  overflow: hidden;
 }
 
 .relay-api-fields {
