@@ -1220,10 +1220,11 @@ body {
   grid-column: 1 / -1;
 }
 
-/* 已在 .relay-advanced-block 里，不再需要跨列 */
+/* 已在 .relay-advanced-block 里，不再需要跨列。左右内边距由自己负责：
+   外层盒子的 padding 已经移到 trigger 上，好让收起态整块可点 */
 .relay-advanced-fields {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding-top: 14px;
+  padding: 2px 14px 14px;
 }
 
 .relay-advanced-fields > .field,
@@ -1293,6 +1294,24 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* 文案 / 编辑链接 / 开关三列。开关得是 input 的直接同级才吃得到
+   .switch-row > input:checked ~ .toggle-switch-visual，所以不另包一层。
+   .toggle-switch-visual 自带 grid-column: 2，这里把两者的列位显式对调，
+   否则开关会抢到中间、链接被挤到最右。 */
+.relay-switch-row.relay-field-common-config {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+}
+
+.relay-field-common-config > .relay-link-button {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.relay-field-common-config > .toggle-switch-visual {
+  grid-column: 3;
 }
 
 /* 只有开关本体、没有描边的一行内控件；描边由外层 .relay-switch-row 提供 */
@@ -1604,27 +1623,39 @@ body {
   border: 1px solid hsl(var(--border) / 0.8);
   border-radius: var(--radius-lg);
   background: hsl(var(--surface-raised) / 0.45);
-  padding: 12px 14px;
+  transition:
+    border-color var(--motion-normal) var(--motion-ease),
+    background-color var(--motion-normal) var(--motion-ease);
 }
 
+/* 和上面的开关行一样：悬浮变亮，不是压暗 */
+.relay-advanced-block:hover {
+  border-color: hsl(var(--border));
+  background: hsl(var(--surface-raised));
+}
+
+/* 内边距挂在 button 上而不是外层盒子：收起时整块描边区域都是可点区域 */
 .relay-advanced-trigger {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
   width: 100%;
   border: 0;
+  border-radius: inherit;
   background: none;
-  padding: 0;
+  padding: 12px 14px;
   color: hsl(var(--foreground));
   font-size: 13px;
   font-weight: 600;
   text-align: left;
   cursor: pointer;
-  transition: opacity var(--motion-fast) var(--motion-ease);
 }
 
-.relay-advanced-trigger:hover {
-  opacity: 0.7;
+.relay-advanced-trigger-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .relay-advanced-chevron {
@@ -1637,9 +1668,11 @@ body {
 }
 
 .relay-advanced-hint {
-  margin: 6px 0 0 22px;
+  display: block;
+  margin: 0 0 0 22px;
   color: hsl(var(--muted-foreground));
   font-size: 11.5px;
+  font-weight: 400;
   line-height: 1.5;
 }
 

@@ -7234,6 +7234,9 @@ function RelayProfileDetail({
   );
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
+  // 通用配置弹窗的开关放在这一层：.relay-profile-editor 有 will-change，
+  // 会给 position:fixed 造包含块，弹窗渲染在卡片里就会被裁进卡片。
+  const [commonConfigOpen, setCommonConfigOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
@@ -7347,6 +7350,7 @@ function RelayProfileDetail({
           profile={draft}
           form={form}
           isNew={isNew}
+          onEditCommonConfig={() => setCommonConfigOpen(true)}
           onProfileChange={setDraft}
           actions={actions}
           modelWindowRows={modelWindowRows}
@@ -7358,10 +7362,7 @@ function RelayProfileDetail({
           profile={draft}
           form={form}
           isActive={isActive}
-          profileId={profile.id}
-          onFormChange={onFormChange}
           onProfileChange={setDraft}
-          actions={actions}
         />
         )}
       </div>
@@ -7394,6 +7395,17 @@ function RelayProfileDetail({
           onClose={() => {
             if (!doctorRunning) setDoctorOpen(false);
           }}
+        />
+      ) : null}
+      {commonConfigOpen ? (
+        <RelayCommonConfigModal
+          actions={actions}
+          form={form}
+          onClose={() => setCommonConfigOpen(false)}
+          onFormChange={onFormChange}
+          onProfileChange={setDraft}
+          profile={draft}
+          profileId={profile.id}
         />
       ) : null}
     </div>
@@ -7571,6 +7583,7 @@ function RelayProfileEditor({
   profile,
   form,
   isNew = false,
+  onEditCommonConfig,
   onProfileChange,
   actions,
   modelWindowRows,
@@ -7579,12 +7592,14 @@ function RelayProfileEditor({
   profile: RelayProfile;
   form: BackendSettings;
   isNew?: boolean;
+  onEditCommonConfig: () => void;
   onProfileChange: (value: RelayProfile) => void;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const useCommonConfig = profile.useCommonConfig !== false;
   // VLM/Strip 对 Chat Completions 与 Responses 协议均可用(注入块类型已按协议适配)。
   const vlmUnsupportedProtocol = false;
   if (isAggregateRelayProfile(profile)) {
@@ -7700,6 +7715,36 @@ function RelayProfileEditor({
           </span>
           <ToggleVisual />
         </label>
+        {/* 整行是 label，点盒子任意处都能切开关；里面的「编辑通用配置」按钮自己
+            preventDefault，否则会连带触发 label 的开关。ToggleVisual 必须是
+            input 的直接同级，:checked ~ 才选得到。 */}
+        <label className="switch-row compact relay-switch-row relay-field-common-config">
+          <input
+            checked={useCommonConfig}
+            onChange={(event) => updateDraft({ useCommonConfig: event.currentTarget.checked })}
+            type="checkbox"
+          />
+          <span className="relay-switch-copy">
+            <strong>{t("应用通用配置")}</strong>
+            <small>
+              {useCommonConfig
+                ? t("切换到此供应商时，会把通用配置合并进 config.toml。")
+                : t("此供应商只写入自己的 config.toml，不合并通用配置。")}
+            </small>
+          </span>
+          <button
+            className="relay-link-button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onEditCommonConfig();
+            }}
+            type="button"
+          >
+            {t("编辑通用配置")}
+          </button>
+          <ToggleVisual />
+        </label>
         {profile.relayMode === "official" ? (
           <label className="switch-row compact relay-switch-row relay-field-official-usage-alert">
             <input
@@ -7714,47 +7759,6 @@ function RelayProfileEditor({
             <ToggleVisual />
           </label>
         ) : null}
-        <div className="relay-advanced-block">
-          <button
-            aria-expanded={showAdvanced}
-            className="relay-advanced-trigger"
-            onClick={() => setShowAdvanced((current) => !current)}
-            type="button"
-          >
-            <ChevronDown className={`relay-advanced-chevron h-4 w-4${showAdvanced ? " is-open" : ""}`} />
-            <Settings className="h-4 w-4" />
-            {t("更多选项")}
-          </button>
-          {showAdvanced ? (
-            <div className="relay-advanced-fields">
-              <Field className="relay-field-test-model" label={t("测试模型")}>
-                <Input
-                  value={profile.testModel}
-                  onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
-                  placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
-                />
-              </Field>
-              <Field className="relay-field-context-window" label={t("上下文大小")}>
-                <Input
-                  inputMode="numeric"
-                  value={profile.contextWindow}
-                  onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                  placeholder={t("留空不改写，例如 200000")}
-                />
-              </Field>
-              <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
-                <Input
-                  inputMode="numeric"
-                  value={profile.autoCompactLimit}
-                  onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                  placeholder={t("留空不改写，例如 160000")}
-                />
-              </Field>
-            </div>
-          ) : (
-            <p className="relay-advanced-hint">{t("包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。")}</p>
-          )}
-        </div>
         {profile.relayMode === "official" ? (
           <label className="switch-row compact relay-switch-row relay-field-official-key">
             <input
@@ -8074,6 +8078,52 @@ function RelayProfileEditor({
             />
           </Field>
         ) : null}
+        {/* 收起时整个盒子就是这个 button（提示文案也在里面），所以点哪儿都能展开；
+            展开后 button 只剩标题行，下面的输入框才不会被裹进按钮里。 */}
+        <div className="relay-advanced-block">
+          <button
+            aria-expanded={showAdvanced}
+            className="relay-advanced-trigger"
+            onClick={() => setShowAdvanced((current) => !current)}
+            type="button"
+          >
+            <span className="relay-advanced-trigger-head">
+              <ChevronDown className={`relay-advanced-chevron h-4 w-4${showAdvanced ? " is-open" : ""}`} />
+              <Settings className="h-4 w-4" />
+              {t("更多选项")}
+            </span>
+            {showAdvanced ? null : (
+              <span className="relay-advanced-hint">{t("包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。")}</span>
+            )}
+          </button>
+          {showAdvanced ? (
+            <div className="relay-advanced-fields">
+              <Field className="relay-field-test-model" label={t("测试模型")}>
+                <Input
+                  value={profile.testModel}
+                  onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
+                  placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
+                />
+              </Field>
+              <Field className="relay-field-context-window" label={t("上下文大小")}>
+                <Input
+                  inputMode="numeric"
+                  value={profile.contextWindow}
+                  onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                  placeholder={t("留空不改写，例如 200000")}
+                />
+              </Field>
+              <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
+                <Input
+                  inputMode="numeric"
+                  value={profile.autoCompactLimit}
+                  onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                  placeholder={t("留空不改写，例如 160000")}
+                />
+              </Field>
+            </div>
+          ) : null}
+        </div>
       </div>
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
@@ -8495,61 +8545,19 @@ function RelayFileEditors({
   profile,
   form,
   isActive,
-  profileId,
-  onFormChange,
   onProfileChange,
-  actions,
 }: {
   contextProfile: RelayProfile;
   profile: RelayProfile;
   form: BackendSettings;
   isActive: boolean;
-  profileId: string;
-  onFormChange: (value: BackendSettings) => void;
   onProfileChange: (value: RelayProfile) => void;
-  actions: Actions;
 }) {
-  const [commonConfigOpen, setCommonConfigOpen] = useState(false);
+  // 「应用通用配置」开关在上面的 RelayProfileEditor 里；这里只读它来决定预览剥离什么
   const useCommonConfig = profile.useCommonConfig !== false;
   const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
   const entries = contextEntriesForProfile(form, contextProfile);
   return (
-    <>
-      {/* 开关旁边挂着「编辑通用配置」链接，所以整行用 div：链接套在 label 里点了会误触开关 */}
-      <div className="relay-switch-row relay-field-common-config">
-        <div className="relay-switch-copy">
-          <strong>{t("应用通用配置")}</strong>
-          <small>
-            {useCommonConfig
-              ? t("切换到此供应商时，会把通用配置合并进 config.toml。")
-              : t("此供应商只写入自己的 config.toml，不合并通用配置。")}
-          </small>
-        </div>
-        <div className="relay-switch-actions">
-          <button className="relay-link-button" onClick={() => setCommonConfigOpen(true)} type="button">
-            {t("编辑通用配置")}
-          </button>
-          <label className="relay-bare-switch" title={t("应用通用配置")}>
-            <input
-              checked={useCommonConfig}
-              onChange={(event) => onProfileChange({ ...profile, useCommonConfig: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <ToggleVisual />
-          </label>
-        </div>
-      </div>
-      {commonConfigOpen ? (
-        <RelayCommonConfigModal
-          actions={actions}
-          form={form}
-          onClose={() => setCommonConfigOpen(false)}
-          onFormChange={onFormChange}
-          onProfileChange={onProfileChange}
-          profile={profile}
-          profileId={profileId}
-        />
-      ) : null}
       <div className="relay-file-grid">
       <div className="relay-file-panel">
         <div className="relay-file-head">
@@ -8599,7 +8607,6 @@ function RelayFileEditors({
         />
       </div>
       </div>
-    </>
   );
 }
 
