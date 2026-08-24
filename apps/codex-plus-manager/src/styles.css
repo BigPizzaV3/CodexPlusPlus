@@ -2304,9 +2304,21 @@ body {
   cursor: pointer;
 }
 
+/* app-select-option と同じ方式：hover は彩度のある brand-accent、選択中は文字色で示す。
+   --accent は dark 20% / light 94% と明度が真逆なので、薄い alpha を掛けると
+   ライトテーマで背景に溶けて見えなくなる。 */
 .default-model-option:hover,
+.default-model-option:focus-visible {
+  background: hsl(var(--brand-accent) / 0.16);
+  outline: none;
+}
+
+/* ダークだと brand-accent の文字色は本文比 3.5:1 程度（ファイル全体の既存慣習に合わせた値）。
+   色だけに頼らないよう太字と淡い背景も併せて出す。 */
 .default-model-option[aria-selected="true"] {
-  background: hsl(var(--accent) / 0.12);
+  background: hsl(var(--brand-accent) / 0.1);
+  color: hsl(var(--brand-accent));
+  font-weight: 600;
 }
 
 .default-model-empty {
