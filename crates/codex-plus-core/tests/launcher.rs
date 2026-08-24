@@ -1153,6 +1153,136 @@ async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enha
     assert!(!events.iter().any(|event| event.starts_with("inject:")));
 }
 
+fn official_mix_responses_settings() -> BackendSettings {
+    BackendSettings {
+        enhancements_enabled: false,
+        relay_profiles_enabled: true,
+        active_relay_id: "official-mix".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "official-mix".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            protocol: RelayProtocol::Responses,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+/// issue #1933：管理器「重启」先强杀旧 launcher 再拉新的，旧 helper 交还 57321 要一小会儿。
+/// 该端口写死在 config.toml 的 base_url 里换不了，所以必须等前任让位，
+/// 而不是像过去那样一次 bind 失败就中止整个启动。
+#[tokio::test]
+async fn fixed_protocol_proxy_port_waits_for_the_previous_helper_to_release_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone())
+        .with_settings(official_mix_responses_settings())
+        .with_helper_bind_conflicts(3);
+
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+
+    let events = events.lock().unwrap().clone();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.as_str() == "start-helper-busy:57321")
+            .count(),
+        3
+    );
+    assert!(events.contains(&"start-helper:57321".to_string()));
+    assert!(events.contains(&"launch:9229".to_string()));
+}
+
+/// 等不到就得给出能照着做的说明，而不是裸的 bind 失败。
+#[tokio::test]
+async fn a_permanently_busy_protocol_proxy_port_reports_what_the_user_should_do() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone())
+        .with_settings(official_mix_responses_settings())
+        .with_helper_bind_conflicts(u32::MAX);
+
+    let error = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("57321"), "unexpected message: {message}");
+    assert!(
+        message.contains("base_url"),
+        "unexpected message: {message}"
+    );
+    // 端口没起来就不该继续把 Codex 拉起来，否则它会连到没人监听的地址。
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("launch:"))
+    );
+}
+
+/// 普通 helper 端口在上面已经挑过空闲的了，占用说明是别的问题，不该白等六秒。
+#[tokio::test]
+async fn a_busy_floating_helper_port_fails_immediately_without_waiting() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_helper_bind_conflicts(u32::MAX);
+
+    let error = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("failed to bind helper runtime"));
+    assert_eq!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.starts_with("start-helper-busy:"))
+            .count(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn pending_remote_control_recovery_runs_without_an_official_mix_profile() {
     let temp = tempfile::tempdir().unwrap();
@@ -1755,6 +1885,8 @@ struct FakeHooks {
     provider_sync_unsupported: bool,
     plugin_marketplace_error: Option<String>,
     has_pending_remote_control_session_recoveries: bool,
+    /// 还需要让 `start_helper` 报几次「端口被占用」，用来模拟旧 helper 尚未交还监听。
+    remaining_helper_bind_conflicts: Arc<Mutex<u32>>,
 }
 
 impl FakeHooks {
@@ -1772,7 +1904,13 @@ impl FakeHooks {
             provider_sync_unsupported: false,
             plugin_marketplace_error: None,
             has_pending_remote_control_session_recoveries: false,
+            remaining_helper_bind_conflicts: Arc::new(Mutex::new(0)),
         }
+    }
+
+    fn with_helper_bind_conflicts(self, conflicts: u32) -> Self {
+        *self.remaining_helper_bind_conflicts.lock().unwrap() = conflicts;
+        self
     }
 
     fn with_settings(mut self, settings: BackendSettings) -> Self {
@@ -1879,6 +2017,22 @@ impl LaunchHooks for FakeHooks {
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
+        {
+            let mut remaining = self.remaining_helper_bind_conflicts.lock().unwrap();
+            if *remaining > 0 {
+                *remaining -= 1;
+                self.event(format!("start-helper-busy:{helper_port}"));
+                // 与真实 `start_helper` 一样把 io::Error 包在 context 下面，
+                // 这样重试逻辑对错误链的判定也一并被测到。
+                return Err(anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "address already in use",
+                ))
+                .context(format!(
+                    "failed to bind helper runtime on 127.0.0.1:{helper_port}"
+                )));
+            }
+        }
         self.event(format!("start-helper:{helper_port}"));
         Ok(())
     }

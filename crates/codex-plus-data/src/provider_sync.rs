@@ -13,11 +13,92 @@ const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
 const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
 
+/// `create_lock` 先建目录再写 `owner.json`，两步之间被强杀会留下没有 owner 的锁目录。
+/// 该窗口只有几毫秒，因此超过这个时长仍缺 owner 的锁一定是中断残留，可以安全回收；
+/// 反过来说，宽限期内的无主锁必须保留，否则会把正在建锁的同伴进程挤掉。
+const LOCK_INTERRUPTED_GRACE_SECS: u64 = 60;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderSyncLockOwner {
     pid: u32,
     started_at: u64,
+}
+
+/// provider sync 锁的可观测状态。管理器在强杀 launcher 前用它判断
+/// 「现在是不是有人正在同步」，避免把同步中的进程打断（issue #1901）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum ProviderSyncLockState {
+    /// 没有锁，可以安全重启。
+    Free,
+    /// 锁被一个仍在运行的进程持有，同步很可能正在进行中。
+    Held { pid: u32, started_at: u64 },
+    /// 锁存在但持有者已经退出（或 owner 信息缺失且已过宽限期），
+    /// 下一次 `acquire_lock` 会自动回收它。
+    Stale { pid: Option<u32> },
+    /// 锁存在、owner 信息不可读，但仍在宽限期内——无法判断是否有人正在建锁。
+    Indeterminate,
+}
+
+/// 读取 provider sync 锁的当前状态，不获取也不修改它。
+pub fn inspect_provider_sync_lock(codex_home: Option<&Path>) -> ProviderSyncLockState {
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_codex_home_dir);
+    inspect_lock(&home.join("tmp/provider-sync.lock"))
+}
+
+fn inspect_lock(path: &Path) -> ProviderSyncLockState {
+    if !path.exists() {
+        return ProviderSyncLockState::Free;
+    }
+    classify_lock(
+        read_lock_owner(path).as_ref(),
+        lock_dir_age_secs(path),
+        codex_plus_core::watcher::process_id_is_running,
+    )
+}
+
+/// 根据 owner 信息和锁目录年龄判定锁的状态。与文件系统解耦，便于穷举测试。
+fn classify_lock(
+    owner: Option<&ProviderSyncLockOwner>,
+    age_secs: Option<u64>,
+    process_alive: impl Fn(u32) -> Option<bool>,
+) -> ProviderSyncLockState {
+    let Some(owner) = owner else {
+        // owner.json 缺失或损坏。持有者只在建锁的几毫秒内处于这个状态，
+        // 所以超过宽限期就说明它是被强杀留下的残骸。
+        return if age_secs.is_some_and(|age| age >= LOCK_INTERRUPTED_GRACE_SECS) {
+            ProviderSyncLockState::Stale { pid: None }
+        } else {
+            ProviderSyncLockState::Indeterminate
+        };
+    };
+    match process_alive(owner.pid) {
+        Some(false) => ProviderSyncLockState::Stale {
+            pid: Some(owner.pid),
+        },
+        // `None` 表示进程枚举失败，无法证明持有者已死；按「仍在持有」保守处理。
+        _ => ProviderSyncLockState::Held {
+            pid: owner.pid,
+            started_at: owner.started_at,
+        },
+    }
+}
+
+fn read_lock_owner(path: &Path) -> Option<ProviderSyncLockOwner> {
+    serde_json::from_slice::<ProviderSyncLockOwner>(&fs::read(path.join("owner.json")).ok()?).ok()
+}
+
+fn lock_dir_age_secs(path: &Path) -> Option<u64> {
+    let created = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()?;
+    SystemTime::now()
+        .duration_since(created)
+        .ok()
+        .map(|elapsed| elapsed.as_secs())
 }
 
 fn default_codex_home_dir() -> PathBuf {
@@ -1092,6 +1173,7 @@ fn acquire_lock(path: &Path) -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let Some((owner, isolated_path)) = isolate_stale_lock(path) else {
+                log_lock_busy(path);
                 return Err(error);
             };
             match create_lock(path) {
@@ -1100,8 +1182,10 @@ fn acquire_lock(path: &Path) -> std::io::Result<()> {
                     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                         "provider_sync.stale_lock_recovered",
                         json!({
-                            "owner_pid": owner.pid,
-                            "owner_started_at": owner.started_at,
+                            "owner_pid": owner.as_ref().map(|owner| owner.pid),
+                            "owner_started_at": owner.as_ref().map(|owner| owner.started_at),
+                            // owner 缺失说明持有者是在建锁中途被强杀的（issue #1901）
+                            "interrupted": owner.is_none(),
                             "quarantine_cleanup_failed": quarantine_cleanup_failed,
                         }),
                     );
@@ -1117,6 +1201,19 @@ fn acquire_lock(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// 锁没能拿到时留下现场，用于区分「另一个同步真的在跑」和「残留锁把同步永久卡死」。
+fn log_lock_busy(path: &Path) {
+    let state = inspect_lock(path);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "provider_sync.lock_busy",
+        json!({
+            "lock_dir": path.to_string_lossy(),
+            "state": state,
+            "age_secs": lock_dir_age_secs(path),
+        }),
+    );
+}
+
 fn create_lock(path: &Path) -> std::io::Result<()> {
     fs::create_dir(path)?;
     let write_result = fs::write(
@@ -1130,18 +1227,25 @@ fn create_lock(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn isolate_stale_lock(path: &Path) -> Option<(ProviderSyncLockOwner, PathBuf)> {
-    let owner = serde_json::from_slice::<ProviderSyncLockOwner>(
-        &fs::read(path.join("owner.json")).ok()?,
-    )
-    .ok()?;
-    if codex_plus_core::watcher::process_id_is_running(owner.pid) != Some(false) {
-        return None;
-    }
+/// 把一把可以证明已经失效的锁挪到隔离路径，让调用方重新建锁。
+///
+/// 两种可回收的形态：
+/// - owner.json 可读且持有进程已退出（正常的崩溃残留）；
+/// - owner.json 缺失/损坏，且锁目录存在时间已超过 [`LOCK_INTERRUPTED_GRACE_SECS`]
+///   ——持有者在 `create_lock` 中途被强杀，不会再有人来补写 owner（issue #1901）。
+///
+/// 其余情况一律保留锁：宁可跳过一次同步，也不能抢走仍在写入的进程的锁。
+fn isolate_stale_lock(path: &Path) -> Option<(Option<ProviderSyncLockOwner>, PathBuf)> {
+    let owner = match inspect_lock(path) {
+        ProviderSyncLockState::Stale { .. } => read_lock_owner(path),
+        _ => return None,
+    };
     let file_name = path.file_name()?.to_string_lossy();
+    let owner_tag = owner
+        .as_ref()
+        .map_or_else(|| "interrupted".to_string(), |owner| owner.pid.to_string());
     let isolated_path = path.with_file_name(format!(
-        "{file_name}.stale-{}-{}",
-        owner.pid,
+        "{file_name}.stale-{owner_tag}-{}",
         uuid::Uuid::new_v4()
     ));
     fs::rename(path, &isolated_path).ok()?;
@@ -3218,13 +3322,27 @@ fn source_structured_marks_non_root_agent(source: &str) -> bool {
 
 fn source_value_marks_non_root_agent(source: &Value) -> bool {
     match source {
-        Value::Object(object) => {
-            object.contains_key("sub_agent")
-                || object.contains_key("subagent")
-                || object.contains_key("internal")
-        }
+        // 只看 key 在不在会把 `{"internal": false}`、`{"sub_agent": null}` 这种
+        // 明确表示「不是子代理」的记录判成子代理，而这个判定的下游是 DELETE，
+        // 误判等于真实会话被删。所以要求 value 本身也表示「是」。
+        Value::Object(object) => ["sub_agent", "subagent", "internal"]
+            .iter()
+            .any(|key| object.get(*key).is_some_and(value_asserts_non_root_agent)),
         Value::String(value) => source_text_marks_non_root_agent(value),
         _ => false,
+    }
+}
+
+/// 判断标记字段的取值是否真的在声明「这是子代理线程」。
+/// 空对象/空数组同样按「没声明」处理，避免占位字段引发误删。
+fn value_asserts_non_root_agent(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Object(object) => !object.is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Number(_) => true,
     }
 }
 
@@ -3684,4 +3802,110 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod non_root_agent_tests {
+    use super::*;
+
+    fn marks_non_root(source: &str) -> bool {
+        source_structured_marks_non_root_agent(source)
+    }
+
+    #[test]
+    fn structured_subagent_markers_still_identify_child_threads() {
+        assert!(marks_non_root(r#"{"subagent":{"thread_spawn":{"depth":1}}}"#));
+        assert!(marks_non_root(r#"{"sub_agent":{"other":"review"}}"#));
+        assert!(marks_non_root(r#"{"internal":true}"#));
+    }
+
+    /// 这些取值明确表示「不是子代理」。判定的下游是 DELETE，
+    /// 按 key 存在就算数会把真实会话删掉（issue #1948）。
+    #[test]
+    fn markers_that_explicitly_deny_being_a_subagent_do_not_count() {
+        assert!(!marks_non_root(r#"{"internal":false}"#));
+        assert!(!marks_non_root(r#"{"sub_agent":null}"#));
+        assert!(!marks_non_root(r#"{"subagent":false}"#));
+    }
+
+    /// 占位字段（空对象/空串）同样不构成声明。
+    #[test]
+    fn empty_placeholder_markers_do_not_count() {
+        assert!(!marks_non_root(r#"{"subagent":{}}"#));
+        assert!(!marks_non_root(r#"{"sub_agent":[]}"#));
+        assert!(!marks_non_root(r#"{"internal":"  "}"#));
+    }
+
+    #[test]
+    fn unrelated_or_malformed_sources_are_left_alone() {
+        assert!(!marks_non_root(r#"{"origin":"subagent"}"#));
+        assert!(!marks_non_root(r#"{"sub_agent":"#));
+        assert!(!marks_non_root("cli"));
+    }
+}
+
+#[cfg(test)]
+mod lock_state_tests {
+    use super::*;
+
+    fn owner(pid: u32) -> ProviderSyncLockOwner {
+        ProviderSyncLockOwner {
+            pid,
+            started_at: 1234,
+        }
+    }
+
+    #[test]
+    fn live_owner_counts_as_held() {
+        let state = classify_lock(Some(&owner(42)), Some(0), |_| Some(true));
+
+        assert_eq!(
+            state,
+            ProviderSyncLockState::Held {
+                pid: 42,
+                started_at: 1234
+            }
+        );
+    }
+
+    #[test]
+    fn dead_owner_counts_as_stale() {
+        let state = classify_lock(Some(&owner(42)), Some(0), |_| Some(false));
+
+        assert_eq!(state, ProviderSyncLockState::Stale { pid: Some(42) });
+    }
+
+    #[test]
+    fn unknown_liveness_is_treated_as_held_rather_than_stolen() {
+        let state = classify_lock(Some(&owner(42)), Some(9_999), |_| None);
+
+        assert_eq!(
+            state,
+            ProviderSyncLockState::Held {
+                pid: 42,
+                started_at: 1234
+            }
+        );
+    }
+
+    #[test]
+    fn aged_lock_without_owner_is_recoverable_interrupted_leftover() {
+        let state = classify_lock(None, Some(LOCK_INTERRUPTED_GRACE_SECS), |_| Some(true));
+
+        assert_eq!(state, ProviderSyncLockState::Stale { pid: None });
+    }
+
+    #[test]
+    fn fresh_lock_without_owner_is_left_alone_for_the_process_still_creating_it() {
+        let state = classify_lock(None, Some(LOCK_INTERRUPTED_GRACE_SECS - 1), |_| Some(true));
+
+        assert_eq!(state, ProviderSyncLockState::Indeterminate);
+    }
+
+    #[test]
+    fn unreadable_lock_age_is_left_alone() {
+        let state = classify_lock(None, None, |_| Some(true));
+
+        assert_eq!(state, ProviderSyncLockState::Indeterminate);
+    }
 }

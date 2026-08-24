@@ -4764,3 +4764,88 @@ experimental_bearer_token = "sk-new"
     );
     assert!(!windows.contains_key("deepseek-v4-pro"));
 }
+
+/// issue #1965：PureApi 会把 config.toml 里的 `experimental_bearer_token` 移除，
+/// 只留 auth.json 一个落点。旧实现要求 auth.json 为空才回填，于是退出 ChatGPT 登录后
+/// 残留的 `{"last_refresh": ...}` 会把回填挡掉，key 两边都没有，
+/// Codex CLI 只能读 OPENAI_API_KEY 环境变量，上游返回 401。
+#[test]
+fn pure_api_backfills_api_key_into_a_non_empty_auth_json_without_openai_api_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = RelayProfile {
+        id: "deepseek".to_string(),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        base_url: "https://api.deepseek.com".to_string(),
+        upstream_base_url: "https://api.deepseek.com".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        config_contents: r#"model = "deepseek-chat"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://api.deepseek.com"
+experimental_bearer_token = "sk-test-redacted"
+"#
+        .to_string(),
+        auth_contents: r#"{"last_refresh":"2026-08-01T00:00:00Z"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    // config.toml 依旧不带 token，key 必须出现在 auth.json 里。
+    assert!(
+        !profile
+            .config_contents
+            .contains("experimental_bearer_token")
+    );
+    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    assert_eq!(
+        auth.get("OPENAI_API_KEY")
+            .and_then(serde_json::Value::as_str),
+        Some("sk-test-redacted")
+    );
+    // 回填不应吃掉 auth.json 里其他字段。
+    assert_eq!(
+        auth.get("last_refresh").and_then(serde_json::Value::as_str),
+        Some("2026-08-01T00:00:00Z")
+    );
+    assert_eq!(relay_profile_api_key(&profile), "sk-test-redacted");
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+    let live_auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        live_auth
+            .get("OPENAI_API_KEY")
+            .and_then(serde_json::Value::as_str),
+        Some("sk-test-redacted")
+    );
+}
+
+/// auth.json 已经不是合法 JSON 时也不能把 key 丢掉，否则同样退化成 401。
+#[test]
+fn pure_api_rebuilds_a_corrupt_auth_json_rather_than_dropping_the_api_key() {
+    let mut profile = RelayProfile {
+        id: "deepseek".to_string(),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        base_url: "https://api.deepseek.com".to_string(),
+        upstream_base_url: "https://api.deepseek.com".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        auth_contents: "not json at all".to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    assert_eq!(
+        auth.get("OPENAI_API_KEY")
+            .and_then(serde_json::Value::as_str),
+        Some("sk-test-redacted")
+    );
+}
