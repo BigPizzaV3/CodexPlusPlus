@@ -5269,6 +5269,8 @@ fn apply_model_metadata_overrides_catalog_and_protects_managed_fields() {
         model: "model-a".to_string(),
         model_list: "model-a".to_string(),
         context_window: "200000".to_string(),
+        model_windows: serde_json::json!({"model-a": "1M"}).to_string(),
+        model_auto_compact: serde_json::json!({"model-a": "70%"}).to_string(),
         model_metadata: serde_json::json!({
             "model-a": {
                 "display_name": "Imported model",
@@ -5318,9 +5320,9 @@ experimental_bearer_token = "sk-new"
     assert_eq!(model["description"], "Imported description");
     assert_eq!(model["supports_search_tool"], true);
     assert_eq!(model["vendor_extension"]["source"], "models.json");
-    assert_eq!(model["context_window"], 200_000);
+    assert_eq!(model["context_window"], 1_000_000);
     assert_eq!(model["max_context_window"], 1_000_000);
-    assert_eq!(model["auto_compact_token_limit"], serde_json::Value::Null);
+    assert_eq!(model["auto_compact_token_limit"], 700_000);
     assert_eq!(model["effective_context_window_percent"], 4);
     assert_eq!(model["priority"], 5);
     assert_eq!(model["visibility"], "hidden");
