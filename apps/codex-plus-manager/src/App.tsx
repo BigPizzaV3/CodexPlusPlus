@@ -7260,7 +7260,7 @@ function RelayProfileEditor({
             </Field>
           </div>
         ) : null}
-        {showApiFields ? (
+        {true ? ( // FIX: always show model list for 1M window config (was gated by showApiFields)
           <section className="relay-config-section relay-field-model-list">
             <div className="relay-config-section-head">
               <div>
