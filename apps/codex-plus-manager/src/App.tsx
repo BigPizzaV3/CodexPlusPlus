@@ -7682,69 +7682,6 @@ function RelayProfileEditor({
             ]}
           />
         </Field>
-        <DefaultModelField
-          knownModels={modelWindowRows.map((row) => row.model)}
-          onChange={(model) => updateDraft({ model })}
-          onFetchModels={async () => {
-            const serializedRows = serializeModelWindowRows(modelWindowRows);
-            return actions.fetchRelayProfileModels({
-              ...profile,
-              modelList: serializedRows.modelList,
-              modelWindows: serializedRows.modelWindows,
-            });
-          }}
-          value={profile.model}
-        />
-        <label className="switch-row compact relay-switch-row relay-field-goals">
-          <input
-            checked={goalsFeatureState.enabled}
-            onChange={(event) =>
-              updateDraft({
-                configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
-              })
-            }
-            type="checkbox"
-          />
-          <span>
-            <strong>{t("启用目标功能")}</strong>
-            <small>
-              {goalsFeatureState.inherited
-                ? t("当前继承公共配置；修改后将为该供应商保存独立设置。")
-                : t("为该供应商单独开启 Codex 目标功能。")}
-            </small>
-          </span>
-          <ToggleVisual />
-        </label>
-        {/* 整行是 label，点盒子任意处都能切开关；里面的「编辑通用配置」按钮自己
-            preventDefault，否则会连带触发 label 的开关。ToggleVisual 必须是
-            input 的直接同级，:checked ~ 才选得到。 */}
-        <label className="switch-row compact relay-switch-row relay-field-common-config">
-          <input
-            checked={useCommonConfig}
-            onChange={(event) => updateDraft({ useCommonConfig: event.currentTarget.checked })}
-            type="checkbox"
-          />
-          <span className="relay-switch-copy">
-            <strong>{t("应用通用配置")}</strong>
-            <small>
-              {useCommonConfig
-                ? t("切换到此供应商时，会把通用配置合并进 config.toml。")
-                : t("此供应商只写入自己的 config.toml，不合并通用配置。")}
-            </small>
-          </span>
-          <button
-            className="relay-link-button"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onEditCommonConfig();
-            }}
-            type="button"
-          >
-            {t("编辑通用配置")}
-          </button>
-          <ToggleVisual />
-        </label>
         {profile.relayMode === "official" ? (
           <label className="switch-row compact relay-switch-row relay-field-official-usage-alert">
             <input
@@ -7829,50 +7766,21 @@ function RelayProfileEditor({
                     : t("官方登录未混入 API 时不写入会话 provider")}
               </p>
             </Field>
-            {/* 开关旁边还挂着一个按钮，所以整行用 div：button 套在 label 里点了会误触开关 */}
-            <div className="relay-switch-row relay-field-sub2api">
-              <div className="relay-switch-copy">
-                <strong>{t("尝试从sub2api获取倍率显示")}</strong>
-                <small>
-                  {profile.sub2apiEnabled
-                    ? profile.sub2apiMultiplier.trim()
-                      ? tf("当前缓存倍率：{0}x", [profile.sub2apiMultiplier.trim()])
-                      : t("保存前可先尝试从 /v1/sub2api/billing 获取上游倍率。")
-                    : t("非 Sub2API 供应商不会请求或显示倍率。")}
-                </small>
-              </div>
-              <div className="relay-switch-actions">
-                <Button
-                  disabled={!canFetchSub2ApiRate}
-                  onClick={() => void fetchSub2ApiRate()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <Download className="h-4 w-4" />
-                  {t("获取倍率")}
-                </Button>
-                <label className="relay-bare-switch" title={t("尝试从sub2api获取倍率显示")}>
-                  <input
-                    checked={profile.sub2apiEnabled}
-                    onChange={(event) => {
-                      const checked = event.currentTarget.checked;
-                      updateDraft({
-                        sub2apiEnabled: checked,
-                        sub2apiMultiplier: checked ? profile.sub2apiMultiplier || "" : "",
-                      });
-                      if (checked && sub2apiBaseUrl && profile.apiKey.trim()) {
-                        void fetchSub2ApiRate();
-                      }
-                    }}
-                    type="checkbox"
-                  />
-                  <ToggleVisual />
-                </label>
-              </div>
-            </div>
           </div>
         ) : null}
+        <DefaultModelField
+          knownModels={modelWindowRows.map((row) => row.model)}
+          onChange={(model) => updateDraft({ model })}
+          onFetchModels={async () => {
+            const serializedRows = serializeModelWindowRows(modelWindowRows);
+            return actions.fetchRelayProfileModels({
+              ...profile,
+              modelList: serializedRows.modelList,
+              modelWindows: serializedRows.modelWindows,
+            });
+          }}
+          value={profile.model}
+        />
         {showApiFields ? (
           <section className="relay-config-section relay-field-model-list">
             <div className="relay-config-section-head">
@@ -7969,6 +7877,70 @@ function RelayProfileEditor({
               ))}
             </div>
           </section>
+        ) : null}
+        <label className="switch-row compact relay-switch-row relay-field-goals">
+          <input
+            checked={goalsFeatureState.enabled}
+            onChange={(event) =>
+              updateDraft({
+                configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
+              })
+            }
+            type="checkbox"
+          />
+          <span>
+            <strong>{t("启用目标功能")}</strong>
+            <small>
+              {goalsFeatureState.inherited
+                ? t("当前继承公共配置；修改后将为该供应商保存独立设置。")
+                : t("为该供应商单独开启 Codex 目标功能。")}
+            </small>
+          </span>
+          <ToggleVisual />
+        </label>
+        {/* 开关旁边还挂着一个按钮，所以整行用 div：button 套在 label 里点了会误触开关 */}
+        {showApiFields ? (
+          <div className="relay-switch-row relay-field-sub2api">
+            <div className="relay-switch-copy">
+              <strong>{t("尝试从sub2api获取倍率显示")}</strong>
+              <small>
+                {profile.sub2apiEnabled
+                  ? profile.sub2apiMultiplier.trim()
+                    ? tf("当前缓存倍率：{0}x", [profile.sub2apiMultiplier.trim()])
+                    : t("保存前可先尝试从 /v1/sub2api/billing 获取上游倍率。")
+                  : t("非 Sub2API 供应商不会请求或显示倍率。")}
+              </small>
+            </div>
+            <div className="relay-switch-actions">
+              <Button
+                disabled={!canFetchSub2ApiRate}
+                onClick={() => void fetchSub2ApiRate()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <Download className="h-4 w-4" />
+                {t("获取倍率")}
+              </Button>
+              <label className="relay-bare-switch" title={t("尝试从sub2api获取倍率显示")}>
+                <input
+                  checked={profile.sub2apiEnabled}
+                  onChange={(event) => {
+                    const checked = event.currentTarget.checked;
+                    updateDraft({
+                      sub2apiEnabled: checked,
+                      sub2apiMultiplier: checked ? profile.sub2apiMultiplier || "" : "",
+                    });
+                    if (checked && sub2apiBaseUrl && profile.apiKey.trim()) {
+                      void fetchSub2ApiRate();
+                    }
+                  }}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </div>
+          </div>
         ) : null}
         {showApiFields ? (
           <section className="relay-config-section relay-field-model-routes">
@@ -8124,6 +8096,36 @@ function RelayProfileEditor({
             </div>
           ) : null}
         </div>
+        {/* 整行是 label，点盒子任意处都能切开关；里面的「编辑通用配置」按钮自己
+            preventDefault，否则会连带触发 label 的开关。ToggleVisual 必须是
+            input 的直接同级，:checked ~ 才选得到。 */}
+        <label className="switch-row compact relay-switch-row relay-field-common-config">
+          <input
+            checked={useCommonConfig}
+            onChange={(event) => updateDraft({ useCommonConfig: event.currentTarget.checked })}
+            type="checkbox"
+          />
+          <span className="relay-switch-copy">
+            <strong>{t("应用通用配置")}</strong>
+            <small>
+              {useCommonConfig
+                ? t("切换到此供应商时，会把通用配置合并进 config.toml。")
+                : t("此供应商只写入自己的 config.toml，不合并通用配置。")}
+            </small>
+          </span>
+          <button
+            className="relay-link-button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onEditCommonConfig();
+            }}
+            type="button"
+          >
+            {t("编辑通用配置")}
+          </button>
+          <ToggleVisual />
+        </label>
       </div>
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
