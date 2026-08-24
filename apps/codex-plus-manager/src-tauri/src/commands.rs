@@ -5986,7 +5986,7 @@ mod tests {
     }
 
     #[test]
-    fn active_official_sync_clears_custom_provider() {
+    fn active_official_sync_clears_custom_provider_selection() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(
             temp.path().join("config.toml"),
@@ -6012,9 +6012,13 @@ mod tests {
         sync_active_relay_to_home(&settings, temp.path()).unwrap();
 
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        let parsed = config.parse::<toml_edit::DocumentMut>().unwrap();
         let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
-        assert!(!config.contains("model_provider"));
-        assert!(!config.contains("model_providers.custom"));
+        assert!(parsed.get("model_provider").is_none());
+        assert_eq!(
+            parsed["model_providers"]["custom"]["base_url"].as_str(),
+            Some("https://old.example/v1")
+        );
         assert!(!auth.contains("OPENAI_API_KEY"));
         assert!(auth.contains("auth_mode"));
     }
