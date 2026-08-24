@@ -80,6 +80,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { tokenizeCode, type CodeLanguage } from "./code-highlight";
+import { filterModelGroups } from "./model-groups";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import {
@@ -6853,6 +6855,8 @@ function SettingsScreen({
                 min={1}
                 max={100}
                 type="range"
+                // WebKit 没有 ::-moz-range-progress，已填充部分靠这个变量画渐变
+                style={{ "--range-progress": `${form.codexAppImageOverlayOpacity}%` } as CSSProperties}
                 value={form.codexAppImageOverlayOpacity}
                 onChange={(event) =>
                   onFormChange({
@@ -7327,62 +7331,62 @@ function RelayProfileDetail({
     : relayProfileEditorStatus(draft, form, isNew);
   return (
     <div className="relay-detail-page" key={profile.id}>
-      <div className="relay-detail-sticky">
-        <div className="relay-editor-heading">
-          <Button aria-label={t("返回列表")} onClick={onBack} size="icon" title={t("返回列表")} type="button" variant="ghost">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div className="relay-editor-heading-copy">
-            <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
-            <span>{detailStatus}</span>
-          </div>
+      {/* 标题栏 / 滚动区 / 底部操作栏三段式：保存按钮常驻可见，不随表单滚走 */}
+      <div className="relay-detail-header">
+        <Button aria-label={t("返回列表")} onClick={onBack} size="icon" title={t("返回列表")} type="button" variant="outline">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <div className="relay-editor-heading-copy">
+          <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
+          <span>{detailStatus}</span>
         </div>
-        <div className="relay-editor-actions">
-          {showDoctor ? (
-            <Button disabled={doctorRunning} onClick={() => void runProviderDoctor()} type="button" variant="secondary">
-              <Stethoscope className="h-4 w-4" />
-              {doctorRunning ? t("诊断中") : t("诊断供应商")}
-            </Button>
-          ) : null}
-          {aggregateProfile ? (
-            <UiBadge variant="secondary">{t("聚合")}</UiBadge>
-          ) : isNew ? null : (
-            <Button
-              disabled={!form.relayProfilesEnabled || actions.relaySwitching}
-              onClick={switchDraft}
-              title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
-              variant={draft.id === form.activeRelayId ? "secondary" : "default"}
-            >
-              {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
-            </Button>
-          )}
-          <Button disabled={!!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")} type="button">
-            <Save className="h-4 w-4" />
-            {t("保存")}
-          </Button>
-        </div>
+        {aggregateProfile ? <UiBadge variant="secondary">{t("聚合")}</UiBadge> : null}
       </div>
-      <RelayProfileEditor
-        profile={draft}
-        form={form}
-        isNew={isNew}
-        onProfileChange={setDraft}
-        actions={actions}
-        modelWindowRows={modelWindowRows}
-        setModelWindowRows={setModelWindowRows}
-      />
-      {isAggregateRelayProfile(draft) ? null : (
-      <RelayFileEditors
-        contextProfile={profile}
-        profile={draft}
-        form={form}
-        isActive={isActive}
-        profileId={profile.id}
-        onFormChange={onFormChange}
-        onProfileChange={setDraft}
-        actions={actions}
-      />
-      )}
+      <div className="relay-detail-body">
+        <RelayProfileEditor
+          profile={draft}
+          form={form}
+          isNew={isNew}
+          onProfileChange={setDraft}
+          actions={actions}
+          modelWindowRows={modelWindowRows}
+          setModelWindowRows={setModelWindowRows}
+        />
+        {isAggregateRelayProfile(draft) ? null : (
+        <RelayFileEditors
+          contextProfile={profile}
+          profile={draft}
+          form={form}
+          isActive={isActive}
+          profileId={profile.id}
+          onFormChange={onFormChange}
+          onProfileChange={setDraft}
+          actions={actions}
+        />
+        )}
+      </div>
+      <div className="relay-detail-footer">
+        {showDoctor ? (
+          <Button disabled={doctorRunning} onClick={() => void runProviderDoctor()} type="button" variant="outline">
+            <Stethoscope className="h-4 w-4" />
+            {doctorRunning ? t("诊断中") : t("诊断供应商")}
+          </Button>
+        ) : null}
+        {aggregateProfile || isNew ? null : (
+          <Button
+            disabled={!form.relayProfilesEnabled || actions.relaySwitching}
+            onClick={switchDraft}
+            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
+            variant={draft.id === form.activeRelayId ? "secondary" : "default"}
+          >
+            {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
+          </Button>
+        )}
+        <Button disabled={!!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")} type="button">
+          <Save className="h-4 w-4" />
+          {t("保存")}
+        </Button>
+      </div>
       {doctorOpen ? (
         <ProviderDoctorModal
           result={doctorResult}
@@ -7422,6 +7426,144 @@ function ContextScreen({
         />
       </CardContent>
     </Panel>
+  );
+}
+
+/**
+ * 「默认模型」字段：可直接输入，也可从上游拉一份模型列表后在下拉里挑。
+ *
+ * 容器故意用 div 而不是 Field 的 label：label 里点按钮会把焦点抢给输入框，
+ * 下拉里的搜索框就拿不到焦点了。
+ */
+function DefaultModelField({
+  value,
+  knownModels,
+  onChange,
+  onFetchModels,
+}: {
+  value: string;
+  knownModels: string[];
+  onChange: (value: string) => void;
+  onFetchModels: () => Promise<string[] | null>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<string[]>([]);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const models = useMemo(
+    () => [...knownModels, ...fetchedModels],
+    [fetchedModels, knownModels],
+  );
+  const groups = useMemo(() => filterModelGroups(models, query), [models, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) searchRef.current?.focus();
+    else setQuery("");
+  }, [open]);
+
+  const fetchModels = async () => {
+    setFetching(true);
+    try {
+      const fetched = await onFetchModels();
+      if (fetched?.length) {
+        setFetchedModels(fetched);
+        setOpen(true);
+      }
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  return (
+    <div className="field relay-field-config-model" ref={rootRef}>
+      <span>{t("默认模型")}</span>
+      <div className="default-model-control">
+        <Input
+          onChange={(event) => onChange(event.currentTarget.value)}
+          placeholder={t("例如 deepseek-v4-pro")}
+          value={value}
+        />
+        <Button
+          disabled={fetching}
+          onClick={() => void fetchModels()}
+          size="icon"
+          title={t("从上游获取")}
+          type="button"
+          variant="outline"
+        >
+          <Download className="h-4 w-4" />
+        </Button>
+        <Button
+          aria-expanded={open}
+          className={open ? "is-open" : ""}
+          onClick={() => setOpen((previous) => !previous)}
+          size="icon"
+          title={t("选择模型")}
+          type="button"
+          variant="outline"
+        >
+          <ChevronDown className="h-4 w-4" />
+        </Button>
+        {open ? (
+          <div className="default-model-menu">
+            <div className="default-model-search">
+              <Search className="h-4 w-4" />
+              <input
+                aria-label={t("搜索模型…")}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setOpen(false);
+                }}
+                placeholder={t("搜索模型…")}
+                ref={searchRef}
+                value={query}
+              />
+            </div>
+            <div className="default-model-options" role="listbox">
+              {groups.length ? groups.map((group) => (
+                <div className="default-model-group" key={group.label}>
+                  <div className="default-model-group-label">{group.label}</div>
+                  {group.models.map((model) => (
+                    <button
+                      aria-selected={model === value}
+                      className="default-model-option"
+                      key={model}
+                      onClick={() => {
+                        onChange(model);
+                        setOpen(false);
+                      }}
+                      role="option"
+                      type="button"
+                    >
+                      {model}
+                    </button>
+                  ))}
+                </div>
+              )) : (
+                <div className="default-model-empty">
+                  {models.length ? t("没有匹配的模型。") : t("还没有模型列表，先点左边的按钮从上游获取。")}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <p className="field-hint">
+        {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
+      </p>
+    </div>
   );
 }
 
@@ -7525,98 +7667,107 @@ function RelayProfileEditor({
             ]}
           />
         </Field>
-        <Field className="relay-field-config-model" label={t("配置模型")}>
-          <Input
-            value={profile.model}
-            onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder={t("例如 deepseek-v4-pro")}
+        <DefaultModelField
+          knownModels={modelWindowRows.map((row) => row.model)}
+          onChange={(model) => updateDraft({ model })}
+          onFetchModels={async () => {
+            const serializedRows = serializeModelWindowRows(modelWindowRows);
+            return actions.fetchRelayProfileModels({
+              ...profile,
+              modelList: serializedRows.modelList,
+              modelWindows: serializedRows.modelWindows,
+            });
+          }}
+          value={profile.model}
+        />
+        <label className="switch-row compact relay-switch-row relay-field-goals">
+          <input
+            checked={goalsFeatureState.enabled}
+            onChange={(event) =>
+              updateDraft({
+                configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
+              })
+            }
+            type="checkbox"
           />
-          <p className="field-hint">
-            {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
-          </p>
-        </Field>
-        <Field className="relay-field-goals" label={t("Codex 目标")}>
-          <label className="inline-check">
+          <span>
+            <strong>{t("启用目标功能")}</strong>
+            <small>
+              {goalsFeatureState.inherited
+                ? t("当前继承公共配置；修改后将为该供应商保存独立设置。")
+                : t("为该供应商单独开启 Codex 目标功能。")}
+            </small>
+          </span>
+          <ToggleVisual />
+        </label>
+        {profile.relayMode === "official" ? (
+          <label className="switch-row compact relay-switch-row relay-field-official-usage-alert">
             <input
-              checked={goalsFeatureState.enabled}
-              onChange={(event) =>
-                updateDraft({
-                  configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
-                })
-              }
+              checked={profile.hideOfficialUsageAlert}
+              onChange={(event) => updateDraft({ hideOfficialUsageAlert: event.currentTarget.checked })}
               type="checkbox"
             />
-            <span>{t("启用目标功能")}</span>
+            <span>
+              <strong>{t("关闭官方低额度提示")}</strong>
+              <small>{t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}</small>
+            </span>
+            <ToggleVisual />
           </label>
-          {goalsFeatureState.inherited ? (
-            <p className="field-hint">{t("当前继承公共配置；修改后将为该供应商保存独立设置。")}</p>
-          ) : null}
-        </Field>
-        {profile.relayMode === "official" ? (
-          <Field className="relay-field-official-usage-alert" label={t("官方登录")}>
-            <label className="inline-check">
-              <input
-                checked={profile.hideOfficialUsageAlert}
-                onChange={(event) => updateDraft({ hideOfficialUsageAlert: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>{t("关闭官方低额度提示")}</span>
-            </label>
-            <p className="field-hint">
-              {t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}
-            </p>
-          </Field>
         ) : null}
-        <div className="relay-advanced-toggle">
-          <Button
+        <div className="relay-advanced-block">
+          <button
             aria-expanded={showAdvanced}
+            className="relay-advanced-trigger"
             onClick={() => setShowAdvanced((current) => !current)}
-            size="sm"
             type="button"
-            variant="secondary"
           >
+            <ChevronDown className={`relay-advanced-chevron h-4 w-4${showAdvanced ? " is-open" : ""}`} />
             <Settings className="h-4 w-4" />
             {t("更多选项")}
-          </Button>
+          </button>
+          {showAdvanced ? (
+            <div className="relay-advanced-fields">
+              <Field className="relay-field-test-model" label={t("测试模型")}>
+                <Input
+                  value={profile.testModel}
+                  onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
+                  placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
+                />
+              </Field>
+              <Field className="relay-field-context-window" label={t("上下文大小")}>
+                <Input
+                  inputMode="numeric"
+                  value={profile.contextWindow}
+                  onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                  placeholder={t("留空不改写，例如 200000")}
+                />
+              </Field>
+              <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
+                <Input
+                  inputMode="numeric"
+                  value={profile.autoCompactLimit}
+                  onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                  placeholder={t("留空不改写，例如 160000")}
+                />
+              </Field>
+            </div>
+          ) : (
+            <p className="relay-advanced-hint">{t("包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。")}</p>
+          )}
         </div>
-        {showAdvanced ? (
-          <div className="relay-advanced-fields">
-            <Field className="relay-field-test-model" label={t("测试模型")}>
-              <Input
-                value={profile.testModel}
-                onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
-                placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
-              />
-            </Field>
-            <Field className="relay-field-context-window" label={t("上下文大小")}>
-              <Input
-                inputMode="numeric"
-                value={profile.contextWindow}
-                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 200000")}
-              />
-            </Field>
-            <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
-              <Input
-                inputMode="numeric"
-                value={profile.autoCompactLimit}
-                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 160000")}
-              />
-            </Field>
-          </div>
-        ) : null}
         {profile.relayMode === "official" ? (
-          <Field className="relay-field-official-key" label="API Key">
-            <label className="inline-check">
-              <input
-                checked={profile.officialMixApiKey}
-                onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>{t("混入 API KEY")}</span>
-            </label>
-          </Field>
+          <label className="switch-row compact relay-switch-row relay-field-official-key">
+            <input
+              checked={profile.officialMixApiKey}
+              onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("混入 API KEY")}</strong>
+              <small>{t("官方登录之外再挂一份 API Key，用于额度耗尽时兜底。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
         ) : null}
         {showApiFields ? (
           <div className="relay-api-fields">
@@ -7674,9 +7825,30 @@ function RelayProfileEditor({
                     : t("官方登录未混入 API 时不写入会话 provider")}
               </p>
             </Field>
-            <Field className="relay-field-sub2api" label="Sub2API">
-              <div className="sub2api-field">
-                <label className="inline-check">
+            {/* 开关旁边还挂着一个按钮，所以整行用 div：button 套在 label 里点了会误触开关 */}
+            <div className="relay-switch-row relay-field-sub2api">
+              <div className="relay-switch-copy">
+                <strong>{t("尝试从sub2api获取倍率显示")}</strong>
+                <small>
+                  {profile.sub2apiEnabled
+                    ? profile.sub2apiMultiplier.trim()
+                      ? tf("当前缓存倍率：{0}x", [profile.sub2apiMultiplier.trim()])
+                      : t("保存前可先尝试从 /v1/sub2api/billing 获取上游倍率。")
+                    : t("非 Sub2API 供应商不会请求或显示倍率。")}
+                </small>
+              </div>
+              <div className="relay-switch-actions">
+                <Button
+                  disabled={!canFetchSub2ApiRate}
+                  onClick={() => void fetchSub2ApiRate()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <Download className="h-4 w-4" />
+                  {t("获取倍率")}
+                </Button>
+                <label className="relay-bare-switch" title={t("尝试从sub2api获取倍率显示")}>
                   <input
                     checked={profile.sub2apiEnabled}
                     onChange={(event) => {
@@ -7691,27 +7863,10 @@ function RelayProfileEditor({
                     }}
                     type="checkbox"
                   />
-                  <span>{t("尝试从sub2api获取倍率显示")}</span>
+                  <ToggleVisual />
                 </label>
-                <Button
-                  disabled={!canFetchSub2ApiRate}
-                  onClick={() => void fetchSub2ApiRate()}
-                  size="sm"
-                  type="button"
-                  variant="secondary"
-                >
-                  <Download className="h-4 w-4" />
-                  {t("获取倍率")}
-                </Button>
               </div>
-              <p className="field-hint">
-                {profile.sub2apiEnabled
-                  ? profile.sub2apiMultiplier.trim()
-                    ? tf("当前缓存倍率：{0}x", [profile.sub2apiMultiplier.trim()])
-                    : t("保存前可先尝试从 /v1/sub2api/billing 获取上游倍率。")
-                  : t("非 Sub2API 供应商不会请求或显示倍率。")}
-              </p>
-            </Field>
+            </div>
           </div>
         ) : null}
         {showApiFields ? (
@@ -8258,14 +8413,24 @@ function ContextEntryEditor({
   );
 }
 
-function SyncedTextarea({
+/**
+ * 带语法着色和行号的编辑器：透明 textarea 叠在着色后的 <pre> 上。
+ * 两层共用同一套字体与内边距，所以字形位置天然对齐；不换行，横向溢出交给外层滚动。
+ */
+function SyncedCodeEditor({
   value,
   onValueChange,
+  language,
   className,
+  readOnly,
+  ariaLabel,
 }: {
   value: string;
   onValueChange: (value: string) => void;
+  language: CodeLanguage;
   className?: string;
+  readOnly?: boolean;
+  ariaLabel?: string;
 }) {
   const [localValue, setLocalValue] = useState(value);
   const isFocusedRef = useRef(false);
@@ -8278,24 +8443,50 @@ function SyncedTextarea({
     }
   }, [value]);
 
+  const lines = useMemo(() => tokenizeCode(localValue, language), [localValue, language]);
+
   return (
-    <Textarea
-      className={className}
-      value={localValue}
-      onBlur={() => {
-        isFocusedRef.current = false;
-        setLocalValue(latestExternalValueRef.current);
-      }}
-      onChange={(event) => {
-        const next = event.currentTarget.value;
-        setLocalValue(next);
-        onValueChange(next);
-      }}
-      onFocus={() => {
-        isFocusedRef.current = true;
-      }}
-      spellCheck={false}
-    />
+    <div className={`code-editor${className ? ` ${className}` : ""}`}>
+      <div aria-hidden="true" className="code-editor-gutter">
+        {lines.map((_line, index) => (
+          <span key={index}>{index + 1}</span>
+        ))}
+      </div>
+      <div className="code-editor-scroll">
+        <pre aria-hidden="true" className="code-editor-highlight">
+          {lines.map((line, index) => (
+            <span className="code-editor-line" key={index}>
+              {line.map((token, tokenIndex) => (
+                <span className={`tok-${token.kind}`} key={tokenIndex}>{token.text}</span>
+              ))}
+              {"\n"}
+            </span>
+          ))}
+        </pre>
+        <textarea
+          aria-label={ariaLabel}
+          autoCapitalize="off"
+          autoCorrect="off"
+          className="code-editor-input"
+          onBlur={() => {
+            isFocusedRef.current = false;
+            setLocalValue(latestExternalValueRef.current);
+          }}
+          onChange={(event) => {
+            const next = event.currentTarget.value;
+            setLocalValue(next);
+            onValueChange(next);
+          }}
+          onFocus={() => {
+            isFocusedRef.current = true;
+          }}
+          readOnly={readOnly}
+          spellCheck={false}
+          value={localValue}
+          wrap="off"
+        />
+      </div>
+    </div>
   );
 }
 
@@ -8318,10 +8509,48 @@ function RelayFileEditors({
   onProfileChange: (value: RelayProfile) => void;
   actions: Actions;
 }) {
+  const [commonConfigOpen, setCommonConfigOpen] = useState(false);
+  const useCommonConfig = profile.useCommonConfig !== false;
   const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
   const entries = contextEntriesForProfile(form, contextProfile);
   return (
-    <div className="relay-file-grid">
+    <>
+      {/* 开关旁边挂着「编辑通用配置」链接，所以整行用 div：链接套在 label 里点了会误触开关 */}
+      <div className="relay-switch-row relay-field-common-config">
+        <div className="relay-switch-copy">
+          <strong>{t("应用通用配置")}</strong>
+          <small>
+            {useCommonConfig
+              ? t("切换到此供应商时，会把通用配置合并进 config.toml。")
+              : t("此供应商只写入自己的 config.toml，不合并通用配置。")}
+          </small>
+        </div>
+        <div className="relay-switch-actions">
+          <button className="relay-link-button" onClick={() => setCommonConfigOpen(true)} type="button">
+            {t("编辑通用配置")}
+          </button>
+          <label className="relay-bare-switch" title={t("应用通用配置")}>
+            <input
+              checked={useCommonConfig}
+              onChange={(event) => onProfileChange({ ...profile, useCommonConfig: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <ToggleVisual />
+          </label>
+        </div>
+      </div>
+      {commonConfigOpen ? (
+        <RelayCommonConfigModal
+          actions={actions}
+          form={form}
+          onClose={() => setCommonConfigOpen(false)}
+          onFormChange={onFormChange}
+          onProfileChange={onProfileChange}
+          profile={profile}
+          profileId={profileId}
+        />
+      ) : null}
+      <div className="relay-file-grid">
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
@@ -8329,13 +8558,18 @@ function RelayFileEditors({
             <span>{isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}</span>
           </div>
         </div>
-        <SyncedTextarea
+        <SyncedCodeEditor
+          ariaLabel="config.toml"
           className="relay-file-textarea"
+          language="toml"
           value={configPreview}
           onValueChange={(value) => {
+            // 预览里合并了什么就剥掉什么：关掉开关时通用配置没进来，只剥上下文部分
             const withoutCommon = stripCommonConfigTextFallback(
               value,
-              relayCombinedCommonConfig(form),
+              useCommonConfig
+                ? relayCombinedCommonConfig(form)
+                : form.relayContextConfigContents || "",
             );
             const configContents = stripContextEntriesFromConfig(withoutCommon, entries);
             onProfileChange(deriveRelayProfileFromFiles({
@@ -8348,9 +8582,64 @@ function RelayFileEditors({
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
-            <strong>{t("通用配置文件")}</strong>
-            <span>{t("只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。")}</span>
+            <strong>auth.json</strong>
+            <span>{isActive
+              ? profile.relayMode === "pureApi"
+                ? t("当前使用中：保留此供应商的 auth 存档，避免 Codex 登录密钥覆盖供应商密钥")
+                : t("当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档")
+              : t("切换到此供应商时会写入 ~/.codex/auth.json")}</span>
           </div>
+        </div>
+        <SyncedCodeEditor
+          ariaLabel="auth.json"
+          className="relay-file-textarea"
+          language="json"
+          value={profile.authContents}
+          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }))}
+        />
+      </div>
+      </div>
+    </>
+  );
+}
+
+function RelayCommonConfigModal({
+  profile,
+  profileId,
+  form,
+  onClose,
+  onFormChange,
+  onProfileChange,
+  actions,
+}: {
+  profile: RelayProfile;
+  profileId: string;
+  form: BackendSettings;
+  onClose: () => void;
+  onFormChange: (value: BackendSettings) => void;
+  onProfileChange: (value: RelayProfile) => void;
+  actions: Actions;
+}) {
+  return (
+    <div aria-modal="true" className="modal-backdrop" role="dialog">
+      <div className="modal-card relay-common-config">
+        <div className="modal-head">
+          <div>
+            <h2>{t("通用配置文件")}</h2>
+            <p className="modal-message">
+              {t("只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。")}
+            </p>
+          </div>
+          <button aria-label={t("关闭窗口")} className="toast-close" onClick={onClose} type="button">×</button>
+        </div>
+        <SyncedCodeEditor
+          ariaLabel={t("通用配置文件")}
+          className="relay-file-textarea"
+          language="toml"
+          value={form.relayCommonConfigContents}
+          onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
+        />
+        <Toolbar>
           <Button
             onClick={async () => {
               const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
@@ -8381,29 +8670,8 @@ function RelayFileEditors({
             <Download className="h-4 w-4" />
             {t("提取当前供应商配置")}
           </Button>
-        </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={form.relayCommonConfigContents}
-          onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
-        />
-      </div>
-      <div className="relay-file-panel">
-        <div className="relay-file-head">
-          <div>
-            <strong>auth.json</strong>
-            <span>{isActive
-              ? profile.relayMode === "pureApi"
-                ? t("当前使用中：保留此供应商的 auth 存档，避免 Codex 登录密钥覆盖供应商密钥")
-                : t("当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档")
-              : t("切换到此供应商时会写入 ~/.codex/auth.json")}</span>
-          </div>
-        </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={profile.authContents}
-          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }))}
-        />
+          <Button onClick={onClose} size="sm" type="button" variant="secondary">{t("关闭窗口")}</Button>
+        </Toolbar>
       </div>
     </div>
   );
@@ -9359,7 +9627,9 @@ function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSet
   const entries = contextEntriesForProfile(settings, contextProfile);
   const isolatedConfig = stripContextEntriesFromConfig(profile.configContents, entries);
   const configWithLimits = applyContextLimitPreview(isolatedConfig, profile);
-  const profileAndCommon = mergeFeaturesTableForPreview(configWithLimits, settings.relayCommonConfigContents || "");
+  // 与后端 relay_config.rs 保持一致：关掉「应用通用配置」的供应商不合并通用配置
+  const commonConfig = profile.useCommonConfig !== false ? settings.relayCommonConfigContents || "" : "";
+  const profileAndCommon = mergeFeaturesTableForPreview(configWithLimits, commonConfig);
   return joinTomlSectionsRootFirst([profileAndCommon, selectedContextConfigToml(entries)]);
 }
 
