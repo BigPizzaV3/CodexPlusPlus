@@ -97,6 +97,7 @@ import {
   type ModelWindowRow,
 } from "./model-windows";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { resolveProviderName } from "./provider-name";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import { resolveLaunchStatus } from "./launch-status";
 import {
@@ -10488,7 +10489,8 @@ function ensureCodexProviderDefaults(
 ): string {
   let next = contents;
   const section = `model_providers.${provider}`;
-  next = setTomlSectionStringKey(next, section, "name", provider);
+  // name 只是展示用标签，允许与表名不同；用户改过就沿用，别覆盖回表名。
+  next = setTomlSectionStringKey(next, section, "name", resolveProviderName(next, provider));
   next = setTomlSectionStringKey(next, section, "wire_api", "responses");
   return options.requiresOpenAiAuth === false ? next : setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
 }
