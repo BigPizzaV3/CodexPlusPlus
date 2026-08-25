@@ -85,6 +85,7 @@ import { tokenizeCode, type CodeLanguage } from "./code-highlight";
 import { filterModelGroups } from "./model-groups";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
+import { MCP_PRESETS, mcpPresetById } from "./mcp-presets";
 import {
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
@@ -8896,6 +8897,15 @@ function ContextEntryEditor({
   const [tomlBody, setTomlBody] = useState(entry?.tomlBody ?? "");
   const canSave = id.trim().length > 0;
 
+  // 选中预设就把 id 和 TOML 一起填好；用户随后仍可自由改。已有条目不给选，
+  // 免得一次误触把手写的配置盖掉。
+  const applyPreset = (presetId: string) => {
+    const preset = mcpPresetById(presetId);
+    if (!preset) return;
+    setId(preset.id);
+    setTomlBody(preset.tomlBody({ windows: isWindowsPlatform }));
+  };
+
   return (
     <div className="context-editor">
       <div className="context-editor-fields">
@@ -8907,6 +8917,18 @@ function ContextEntryEditor({
             options={contextKindOptions.map((option) => ({ value: option.kind, label: option.label }))}
           />
         </Field>
+        {!entry && draftKind === "mcp" ? (
+          <Field label={t("从预设填充")}>
+            <AppSelect
+              value=""
+              onChange={applyPreset}
+              options={[
+                { value: "", label: t("不使用预设") },
+                ...MCP_PRESETS.map((preset) => ({ value: preset.id, label: preset.name })),
+              ]}
+            />
+          </Field>
+        ) : null}
         <Field label="ID">
           <Input
             disabled={!!entry}
@@ -8916,6 +8938,9 @@ function ContextEntryEditor({
           />
         </Field>
       </div>
+      {!entry && draftKind === "mcp" && mcpPresetById(id) ? (
+        <div className="relay-context-summary">{mcpPresetById(id)?.description}</div>
+      ) : null}
       <Field label={t("TOML 配置体")}>
         <Textarea
           className="context-editor-textarea"

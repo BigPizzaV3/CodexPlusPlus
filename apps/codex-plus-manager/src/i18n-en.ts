@@ -1011,6 +1011,10 @@ export const EN_PLAIN: Record<string, string> = {
   "恢复": "Restore",
   "删除此备份": "Delete this backup",
   "还没有备份。": "No backups yet.",
+
+  // MCP 预设
+  "从预设填充": "Fill from preset",
+  "不使用预设": "No preset",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
