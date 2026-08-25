@@ -4344,6 +4344,147 @@ pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<Conte
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpFormPayload {
+    pub form: codex_plus_core::mcp_config::McpServerForm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTomlPayload {
+    pub toml_body: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportRequest {
+    pub settings: BackendSettings,
+    pub json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportPreviewPayload {
+    pub entries: Vec<codex_plus_core::mcp_config::McpJsonEntry>,
+    pub warnings: Vec<String>,
+}
+
+/// 把 TOML 表体拆成表单字段。纯转换，不碰 settings——
+/// 打开编辑器时解析一次即可，不必每次按键都往返后端。
+#[tauri::command]
+pub fn parse_mcp_entry(toml_body: String) -> CommandResult<McpFormPayload> {
+    match codex_plus_core::mcp_config::parse_mcp_toml_body(&toml_body) {
+        Ok(form) => ok("已解析 MCP 配置。", McpFormPayload { form }),
+        Err(error) => failed(
+            &format!("解析 MCP 配置失败：{error}"),
+            McpFormPayload {
+                form: Default::default(),
+            },
+        ),
+    }
+}
+
+/// 表单字段拼回 TOML 表体。同样是纯转换。
+#[tauri::command]
+pub fn build_mcp_entry(
+    form: codex_plus_core::mcp_config::McpServerForm,
+) -> CommandResult<McpTomlPayload> {
+    match codex_plus_core::mcp_config::build_mcp_toml_body(&form) {
+        Ok(toml_body) => ok("已生成 MCP 配置。", McpTomlPayload { toml_body }),
+        Err(error) => failed(
+            &format!("生成 MCP 配置失败：{error}"),
+            McpTomlPayload {
+                toml_body: String::new(),
+            },
+        ),
+    }
+}
+
+/// 只解析不写入，让用户先看清会导入哪几条、有哪些字段被改写。
+#[tauri::command]
+pub fn preview_mcp_servers_json(json: String) -> CommandResult<McpImportPreviewPayload> {
+    match codex_plus_core::mcp_config::parse_mcp_servers_json(&json) {
+        Ok(import) => {
+            let message = if import.warnings.is_empty() {
+                format!("解析出 {} 个 MCP 服务器。", import.entries.len())
+            } else {
+                format!(
+                    "解析出 {} 个 MCP 服务器，{} 处需要注意。",
+                    import.entries.len(),
+                    import.warnings.len()
+                )
+            };
+            ok(
+                &message,
+                McpImportPreviewPayload {
+                    entries: import.entries,
+                    warnings: import.warnings,
+                },
+            )
+        }
+        Err(error) => failed(
+            &format!("解析 JSON 失败：{error}"),
+            McpImportPreviewPayload {
+                entries: Vec::new(),
+                warnings: Vec::new(),
+            },
+        ),
+    }
+}
+
+/// 批量写入。一次性更新 settings，避免 N 条 MCP 就往返 N 次。
+#[tauri::command]
+pub fn import_mcp_servers_json(request: McpImportRequest) -> CommandResult<ContextEntriesPayload> {
+    let mut settings = request.settings;
+    let import = match codex_plus_core::mcp_config::parse_mcp_servers_json(&request.json) {
+        Ok(import) => import,
+        Err(error) => {
+            return failed(
+                &format!("解析 JSON 失败：{error}"),
+                ContextEntriesPayload {
+                    settings,
+                    entries: empty_context_entries(),
+                },
+            );
+        }
+    };
+
+    let total = import.entries.len();
+    let mut common = settings.relay_context_config_contents.clone();
+    for entry in &import.entries {
+        match codex_plus_core::relay_config::upsert_context_entry_in_common_config(
+            &common,
+            "mcp",
+            &entry.id,
+            &entry.toml_body,
+        ) {
+            Ok(updated) => common = updated,
+            Err(error) => {
+                return failed(
+                    &format!("导入 {} 失败：{error}", entry.id),
+                    ContextEntriesPayload {
+                        settings,
+                        entries: empty_context_entries(),
+                    },
+                );
+            }
+        }
+    }
+
+    settings.relay_context_config_contents = common;
+    let mut result = list_context_entries(ContextSettingsRequest { settings });
+    result.message = if import.warnings.is_empty() {
+        format!("已导入 {total} 个 MCP 服务器。")
+    } else {
+        format!(
+            "已导入 {total} 个 MCP 服务器：{}",
+            import.warnings.join("；")
+        )
+    };
+    result
+}
+
 #[tauri::command]
 pub fn sync_live_context_entries(
     request: ContextSettingsRequest,
