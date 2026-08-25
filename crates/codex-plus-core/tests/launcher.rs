@@ -1570,8 +1570,6 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             config_contents: String::new(),
             auth_contents: String::new(),
             use_common_config: true,
-            context_selection: codex_plus_core::settings::RelayContextSelection::default(),
-            context_selection_initialized: false,
             context_window: String::new(),
             auto_compact_limit: String::new(),
             model_insert_mode: codex_plus_core::settings::RelayModelInsertMode::default(),

@@ -26,8 +26,6 @@ const _profileTypeCheck: RelayProfile = {
   configContents: "",
   authContents: "",
   useCommonConfig: true,
-  contextSelection: { mcpServers: [], skills: [], plugins: [] },
-  contextSelectionInitialized: true,
   contextWindow: "",
   autoCompactLimit: "",
   modelList: "",

@@ -7,15 +7,13 @@ use codex_plus_core::relay_config::{
     chatgpt_auth_status_from_home, cleanup_unsupported_approval_policies_in_home,
     clear_relay_config_to_home, clear_relay_config_to_home_with_auth,
     delete_context_entry_from_common_config, extract_common_config_from_config,
-    filter_common_config_for_selection, list_context_entries_from_common_config,
-    normalize_relay_profile_for_storage, relay_config_status_from_home, relay_profile_api_key,
+    list_context_entries_from_common_config, normalize_relay_profile_for_storage,
+    prepare_common_config_for_apply, relay_config_status_from_home, relay_profile_api_key,
     sanitize_common_config_contents, set_codex_goals_feature_in_home,
     strip_common_config_from_config, sync_live_config_context_entries,
     upsert_context_entry_in_common_config,
 };
-use codex_plus_core::settings::{
-    RelayContextSelection, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
-};
+use codex_plus_core::settings::{RelayMode, RelayModelRoute, RelayProfile, RelayProtocol};
 
 fn write_remote_plugin_marketplace_snapshot(home: &std::path::Path) {
     let root = home.join(".tmp").join("plugins-remote");
@@ -1265,8 +1263,8 @@ enabled = true
 }
 
 #[test]
-fn global_common_config_filters_context_by_supplier_selection() {
-    let filtered = filter_common_config_for_selection(
+fn global_common_config_drops_only_disabled_context_entries() {
+    let filtered = prepare_common_config_for_apply(
         r#"disable_response_storage = true
 
 [features]
@@ -1274,6 +1272,7 @@ goals = true
 
 [mcp_servers.context7]
 command = "npx"
+enabled = false
 
 [mcp_servers.memory]
 command = "memory"
@@ -1284,11 +1283,6 @@ enabled = true
 [plugins.local]
 path = "plugin.js"
 "#,
-        &RelayContextSelection {
-            mcp_servers: vec!["memory".to_string()],
-            skills: vec![],
-            plugins: vec!["local".to_string()],
-        },
     )
     .unwrap();
 
@@ -1297,7 +1291,7 @@ path = "plugin.js"
     assert!(filtered.contains("goals = true"));
     assert!(!filtered.contains("[mcp_servers.context7]"));
     assert!(filtered.contains("[mcp_servers.memory]"));
-    assert!(!filtered.contains("[skills.writer]"));
+    assert!(filtered.contains("[skills.writer]"));
     assert!(filtered.contains("[plugins.local]"));
 }
 
@@ -1496,13 +1490,8 @@ path = "plugin.js"
 }
 
 #[test]
-fn apply_relay_files_with_context_selection_writes_only_selected_global_context() {
+fn apply_relay_files_with_context_writes_all_enabled_global_context() {
     let temp = tempfile::tempdir().unwrap();
-    let selection = RelayContextSelection {
-        mcp_servers: vec!["memory".to_string()],
-        skills: vec![],
-        plugins: vec!["local".to_string()],
-    };
 
     codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
         temp.path(),
@@ -1527,7 +1516,6 @@ enabled = true
 [plugins.local]
 path = "plugin.js"
 "#,
-        &selection,
         "200000",
         "160000",
     )
@@ -1535,8 +1523,8 @@ path = "plugin.js"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains("[mcp_servers.memory]"));
-    assert!(!config.contains("[mcp_servers.context7]"));
-    assert!(!config.contains("[skills.writer]"));
+    assert!(config.contains("[mcp_servers.context7]"));
+    assert!(config.contains("[skills.writer]"));
     assert!(config.contains("[plugins.local]"));
     assert!(config.contains("model_context_window = 200000"));
     assert!(config.contains("model_auto_compact_token_limit = 160000"));
@@ -1545,11 +1533,6 @@ path = "plugin.js"
 #[test]
 fn apply_relay_files_with_context_skips_disabled_global_context() {
     let temp = tempfile::tempdir().unwrap();
-    let selection = RelayContextSelection {
-        mcp_servers: vec!["enabled_one".to_string()],
-        skills: vec!["disabled_skill".to_string()],
-        plugins: vec!["disabled_one".to_string(), "enabled_two".to_string()],
-    };
 
     codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
         temp.path(),
@@ -1574,7 +1557,6 @@ enabled = false
 [plugins.enabled_two]
 enabled = true
 "#,
-        &selection,
         "",
         "",
     )
@@ -1858,11 +1840,6 @@ experimental_bearer_token = "sk-new"
 "#
         .to_string(),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
-        context_selection: RelayContextSelection {
-            mcp_servers: vec!["context7".to_string()],
-            skills: vec![],
-            plugins: vec![],
-        },
         ..RelayProfile::default()
     };
 
@@ -1934,14 +1911,12 @@ last_updated = "2026-05-25T11:52:46Z"
 #[test]
 fn apply_relay_files_with_context_rejects_invalid_context_token_values() {
     let temp = tempfile::tempdir().unwrap();
-    let selection = RelayContextSelection::default();
 
     let error = codex_plus_core::relay_config::apply_relay_files_to_home_with_context(
         temp.path(),
         r#"model_provider = "custom""#,
         r#"{"OPENAI_API_KEY":"sk-new"}"#,
         "",
-        &selection,
         "abc",
         "",
     )
@@ -3370,9 +3345,13 @@ command = "managed-command"
     assert!(config.contains("role-specific-plugins"));
 }
 
+/// 回归：切换供应商不得清空 live config 里的 MCP。
+///
+/// 旧版每个供应商带一份 `contextSelection`，从 cc-switch 导入的供应商会带着
+/// 「空选择 + 已初始化」落库，于是切换时把 `[mcp_servers.*]` 整张表过滤成空表，
+/// codex 直接读不到任何 MCP。现在条目启停只看条目自身的 `enabled`。
 #[test]
-fn apply_relay_profile_to_home_with_switch_rules_does_not_preserve_unselected_managed_context_entries()
- {
+fn apply_relay_profile_to_home_with_switch_rules_keeps_managed_and_manual_context_entries() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
@@ -3389,8 +3368,6 @@ command = "old-managed"
     let profile = RelayProfile {
         id: "relay-a".to_string(),
         relay_mode: RelayMode::PureApi,
-        context_selection_initialized: true,
-        context_selection: RelayContextSelection::default(),
         config_contents: r#"model = "gpt-5.5"
 model_provider = "custom"
 
@@ -3406,44 +3383,24 @@ base_url = "https://relay.example/v1"
     };
     let common = r#"[mcp_servers.managed]
 command = "managed-command"
+
+[mcp_servers.turned_off]
+command = "off"
+enabled = false
 "#;
 
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, common).unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    // live 里手工加的条目不归我们管，必须原样留着
     assert!(config.contains("[mcp_servers.manual]"));
-    assert!(!config.contains("[mcp_servers.managed]"));
-}
-
-#[test]
-fn filter_common_config_for_selection_writes_only_selected_context_entries() {
-    let common = r#"model_reasoning_effort = "high"
-
-[mcp_servers.keep]
-command = "keep"
-
-[mcp_servers.skip]
-command = "skip"
-
-[skills.writer]
-enabled = true
-
-[plugins.browser]
-enabled = true
-"#;
-    let selection = RelayContextSelection {
-        mcp_servers: vec!["keep".to_string()],
-        skills: Vec::new(),
-        plugins: vec!["browser".to_string()],
-    };
-
-    let filtered = filter_common_config_for_selection(common, &selection).unwrap();
-
-    assert!(filtered.contains("model_reasoning_effort"));
-    assert!(filtered.contains("[mcp_servers.keep]"));
-    assert!(!filtered.contains("[mcp_servers.skip]"));
-    assert!(!filtered.contains("[skills.writer]"));
-    assert!(filtered.contains("[plugins.browser]"));
+    assert!(config.contains("manual-command"));
+    // 通用配置里启用的条目要覆盖 live 里的旧值
+    assert!(config.contains("[mcp_servers.managed]"));
+    assert!(config.contains("managed-command"));
+    assert!(!config.contains("old-managed"));
+    // 只有显式关掉的条目才不写入
+    assert!(!config.contains("[mcp_servers.turned_off]"));
 }
 
 #[test]

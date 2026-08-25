@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol, RelaySessionProvider};
+use crate::settings::{RelayProfile, RelayProtocol, RelaySessionProvider};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -405,11 +405,10 @@ pub fn apply_relay_files_to_home_with_context(
     config_contents: &str,
     auth_contents: &str,
     common_config_contents: &str,
-    selection: &RelayContextSelection,
     context_window: &str,
     auto_compact_limit: &str,
 ) -> anyhow::Result<RelayApplyResult> {
-    let selected_common = filter_common_config_for_selection(common_config_contents, selection)?;
+    let selected_common = prepare_common_config_for_apply(common_config_contents)?;
     let config_with_common = merge_common_config_into_config(config_contents, &selected_common)?;
     let config_with_common =
         preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
@@ -424,7 +423,7 @@ pub fn apply_relay_profile_files_to_home_with_context(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_profile(common_config_contents, profile)?
+        prepare_common_config_for_apply(common_config_contents)?
     } else {
         String::new()
     };
@@ -448,7 +447,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_profile(common_config_contents, profile)?
+        prepare_common_config_for_apply(common_config_contents)?
     } else {
         String::new()
     };
@@ -478,7 +477,7 @@ pub fn apply_relay_profile_config_to_home_with_context(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_selection(common_config_contents, &profile.context_selection)?
+        prepare_common_config_for_apply(common_config_contents)?
     } else {
         String::new()
     };
@@ -981,29 +980,16 @@ pub fn delete_context_entry_from_common_config(
     Ok(normalize_optional_toml(doc))
 }
 
-pub fn filter_common_config_for_selection(
-    common_config: &str,
-    selection: &RelayContextSelection,
-) -> anyhow::Result<String> {
+/// 剥掉通用配置里供应商各自持有的键，再丢掉标记为 `enabled = false` 的上下文条目，
+/// 得到本次切换真正要合并进 config.toml 的那份通用配置。
+///
+/// 条目启停以条目自身的 `enabled` 为唯一依据——旧版还存在一份「按供应商勾选」的
+/// selection，两套机制重叠，空的 selection 会把 live config 里的 MCP 全清空，已移除。
+pub fn prepare_common_config_for_apply(common_config: &str) -> anyhow::Result<String> {
     let sanitized_common = sanitize_common_config_contents(common_config);
     let mut filtered = parse_toml_document(&sanitized_common)?;
-    filter_context_tables_for_selection(filtered.as_table_mut(), selection);
     remove_disabled_context_tables(filtered.as_table_mut());
     Ok(normalize_optional_toml(filtered))
-}
-
-fn filter_common_config_for_profile(
-    common_config: &str,
-    profile: &RelayProfile,
-) -> anyhow::Result<String> {
-    if profile.context_selection_initialized {
-        filter_common_config_for_selection(common_config, &profile.context_selection)
-    } else {
-        let sanitized_common = sanitize_common_config_contents(common_config);
-        let mut filtered = parse_toml_document(&sanitized_common)?;
-        remove_disabled_context_tables(filtered.as_table_mut());
-        Ok(normalize_optional_toml(filtered))
-    }
 }
 
 pub fn sync_live_config_context_entries(
@@ -1043,40 +1029,6 @@ fn preserve_unmanaged_live_context_entries(
         managed_doc.as_table(),
     );
     Ok(normalize_optional_toml(target_doc))
-}
-
-fn filter_context_tables_for_selection(
-    table: &mut toml_edit::Table,
-    selection: &RelayContextSelection,
-) {
-    filter_context_table_for_ids(table, "mcp_servers", &selection.mcp_servers);
-    filter_context_table_for_ids(table, "skills", &selection.skills);
-    filter_context_table_for_ids(table, "plugins", &selection.plugins);
-}
-
-fn filter_context_table_for_ids(
-    table: &mut toml_edit::Table,
-    table_name: &str,
-    selected_ids: &[String],
-) {
-    let Some(item) = table.get_mut(table_name) else {
-        return;
-    };
-    let Some(context_table) = item.as_table_mut() else {
-        return;
-    };
-    let selected = selected_ids
-        .iter()
-        .map(|id| id.trim())
-        .filter(|id| !id.is_empty())
-        .collect::<HashSet<_>>();
-    let remove_ids = context_table
-        .iter()
-        .filter_map(|(id, _)| (!selected.contains(id)).then_some(id.to_string()))
-        .collect::<Vec<_>>();
-    for id in remove_ids {
-        context_table.remove(&id);
-    }
 }
 
 fn merge_managed_context_tables(target: &mut toml_edit::Table, managed: &toml_edit::Table) {

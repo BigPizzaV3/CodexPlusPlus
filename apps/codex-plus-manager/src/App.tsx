@@ -292,8 +292,6 @@ export type RelayProfile = {
   configContents: string;
   authContents: string;
   useCommonConfig: boolean;
-  contextSelection: RelayContextSelection;
-  contextSelectionInitialized: boolean;
   contextWindow: string;
   autoCompactLimit: string;
   modelList: string;
@@ -330,12 +328,6 @@ type AggregateRelayProfile = {
   members: AggregateRelayMember[];
 };
 
-type RelayContextSelection = {
-  mcpServers: string[];
-  skills: string[];
-  plugins: string[];
-};
-
 type ContextKind = "mcp" | "skill" | "plugin";
 
 type CodexContextEntry = {
@@ -358,12 +350,6 @@ type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 type RelaySessionProvider = "custom" | "openai";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
-
-const emptyContextSelection = (): RelayContextSelection => ({
-  mcpServers: [],
-  skills: [],
-  plugins: [],
-});
 
 type UserScriptInventory = {
   enabled?: boolean;
@@ -1001,8 +987,6 @@ const defaultSettings: BackendSettings = {
       configContents: "",
       authContents: "",
       useCommonConfig: true,
-      contextSelection: emptyContextSelection(),
-      contextSelectionInitialized: true,
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
@@ -7358,7 +7342,6 @@ function RelayProfileDetail({
         />
         {isAggregateRelayProfile(draft) ? null : (
         <RelayFileEditors
-          contextProfile={profile}
           profile={draft}
           form={form}
           isActive={isActive}
@@ -8543,13 +8526,11 @@ function SyncedCodeEditor({
 }
 
 function RelayFileEditors({
-  contextProfile,
   profile,
   form,
   isActive,
   onProfileChange,
 }: {
-  contextProfile: RelayProfile;
   profile: RelayProfile;
   form: BackendSettings;
   isActive: boolean;
@@ -8557,8 +8538,8 @@ function RelayFileEditors({
 }) {
   // 「应用通用配置」开关在上面的 RelayProfileEditor 里；这里只读它来决定预览剥离什么
   const useCommonConfig = profile.useCommonConfig !== false;
-  const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
-  const entries = contextEntriesForProfile(form, contextProfile);
+  const configPreview = effectiveRelayConfigPreview(profile, form);
+  const entries = contextEntriesFromSettings(form);
   return (
       <div className="relay-file-grid">
       <div className="relay-file-panel">
@@ -9453,10 +9434,6 @@ function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry):
   return live ? { ...entry, enabled: live.enabled } : { ...entry, enabled: false };
 }
 
-function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfile): CodexContextEntries {
-  return filterContextEntriesBySelection(contextEntriesFromSettings(settings), profile.contextSelection);
-}
-
 function contextEntriesFromConfig(configContents: string): CodexContextEntries {
   return {
     mcpServers: parseContextEntries(configContents, "mcp", "mcp_servers"),
@@ -9619,21 +9596,8 @@ function contextEntriesByKind(entries: CodexContextEntries, kind: ContextKind): 
   return dedupeContextEntryList(entries.plugins);
 }
 
-function filterContextEntriesBySelection(entries: CodexContextEntries, selection: RelayContextSelection): CodexContextEntries {
-  const selected = {
-    mcp: new Set(selection.mcpServers.map((id) => id.trim()).filter(Boolean)),
-    skill: new Set(selection.skills.map((id) => id.trim()).filter(Boolean)),
-    plugin: new Set(selection.plugins.map((id) => id.trim()).filter(Boolean)),
-  };
-  return {
-    mcpServers: entries.mcpServers.filter((entry) => selected.mcp.has(entry.id)),
-    skills: entries.skills.filter((entry) => selected.skill.has(entry.id)),
-    plugins: entries.plugins.filter((entry) => selected.plugin.has(entry.id)),
-  };
-}
-
-function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings, contextProfile = profile): string {
-  const entries = contextEntriesForProfile(settings, contextProfile);
+function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings): string {
+  const entries = contextEntriesFromSettings(settings);
   const isolatedConfig = stripContextEntriesFromConfig(profile.configContents, entries);
   const configWithLimits = applyContextLimitPreview(isolatedConfig, profile);
   // 与后端 relay_config.rs 保持一致：关掉「应用通用配置」的供应商不合并通用配置
@@ -9943,45 +9907,6 @@ function tomlKey(key: string): string {
   return /^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`;
 }
 
-function contextSelectionIds(selection: RelayContextSelection, kind: ContextKind): string[] {
-  if (kind === "mcp") return selection.mcpServers;
-  if (kind === "skill") return selection.skills;
-  return selection.plugins;
-}
-
-function setContextSelectionId(selection: RelayContextSelection, kind: ContextKind, id: string, checked: boolean): RelayContextSelection {
-  const next = {
-    mcpServers: [...selection.mcpServers],
-    skills: [...selection.skills],
-    plugins: [...selection.plugins],
-  };
-  const list = contextSelectionIds(next, kind);
-  const normalizedId = id.trim();
-  const exists = list.includes(normalizedId);
-  if (checked && normalizedId && !exists) list.push(normalizedId);
-  if (!checked && exists) list.splice(list.indexOf(normalizedId), 1);
-  return next;
-}
-
-function removeContextSelectionFromSettings(settings: BackendSettings, kind: ContextKind, id: string): BackendSettings {
-  return {
-    ...settings,
-    relayProfiles: settings.relayProfiles.map((profile) => ({
-      ...profile,
-      contextSelection: setContextSelectionId(profile.contextSelection, kind, id, false),
-    })),
-  };
-}
-
-function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {
-  const entries = contextEntriesFromSettings(settings);
-  return {
-    mcpServers: entries.mcpServers.map((entry) => entry.id),
-    skills: entries.skills.map((entry) => entry.id),
-    plugins: entries.plugins.map((entry) => entry.id),
-  };
-}
-
 function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
   if (isNew) return t("新建供应商需要先保存到列表");
   if (!form.relayProfilesEnabled) return t("供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件");
@@ -10061,15 +9986,10 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     settings.relayContextConfigContents || "",
     splitCommon.context,
   ]);
-  const defaultContextSelection = contextSelectionForAllEntries({
-    ...settings,
-    relayCommonConfigContents,
-    relayContextConfigContents,
-  });
   const profiles =
     settings.relayProfiles?.length
       ? settings.relayProfiles.map((profile) =>
-          normalizeRelayProfile(hydrateAggregateRelayProfile(profile, backendAggregates.get(profile.id)), defaultContextSelection),
+          normalizeRelayProfile(hydrateAggregateRelayProfile(profile, backendAggregates.get(profile.id))),
         )
       : [
           {
@@ -10088,8 +10008,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             configContents: "",
             authContents: "",
             useCommonConfig: true,
-            contextSelection: defaultContextSelection,
-            contextSelectionInitialized: true,
             contextWindow: "",
             autoCompactLimit: "",
             modelList: "",
@@ -10154,7 +10072,7 @@ function inputToCodexExtraArgs(value: string) {
   return value === "" ? [] : value.split(/\r?\n/);
 }
 
-function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = emptyContextSelection()): RelayProfile {
+function normalizeRelayProfile(profile: RelayProfile): RelayProfile {
   const legacyMixedApi = profile.relayMode === "mixedApi";
   if (profile.relayMode === "aggregate" || profile.aggregate) {
     return normalizeAggregateRelayProfile(
@@ -10173,10 +10091,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         configContents: "",
         authContents: "",
         useCommonConfig: profile.useCommonConfig !== false,
-        contextSelection: profile.contextSelectionInitialized
-          ? normalizeContextSelection(profile.contextSelection)
-          : normalizeContextSelection(undefined, defaultContextSelection),
-        contextSelectionInitialized: true,
         contextWindow: "",
         autoCompactLimit: "",
         modelList: "",
@@ -10205,10 +10119,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
     authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
     useCommonConfig: profile.useCommonConfig !== false,
-    contextSelection: profile.contextSelectionInitialized
-      ? normalizeContextSelection(profile.contextSelection)
-      : normalizeContextSelection(undefined, defaultContextSelection),
-    contextSelectionInitialized: true,
     contextWindow: profile.contextWindow || "",
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
@@ -10275,24 +10185,6 @@ function relaySessionProviderFromConfig(contents: string): RelaySessionProvider 
 function relaySessionProvider(profile: Pick<RelayProfile, "configContents" | "sessionProvider">): RelaySessionProvider {
   const fromConfig = relaySessionProviderFromConfig(profile.configContents);
   return fromConfig === "openai" || profile.sessionProvider === "openai" ? "openai" : "custom";
-}
-
-function normalizeContextSelection(
-  selection?: Partial<RelayContextSelection>,
-  fallback: RelayContextSelection = emptyContextSelection(),
-): RelayContextSelection {
-  if (!selection) {
-    return {
-      mcpServers: [...fallback.mcpServers],
-      skills: [...fallback.skills],
-      plugins: [...fallback.plugins],
-    };
-  }
-  return {
-    mcpServers: Array.isArray(selection?.mcpServers) ? selection.mcpServers.map(String) : [],
-    skills: Array.isArray(selection?.skills) ? selection.skills.map(String) : [],
-    plugins: Array.isArray(selection?.plugins) ? selection.plugins.map(String) : [],
-  };
 }
 
 function relayModeLabel(mode: RelayMode): string {
@@ -10982,7 +10874,6 @@ function updateRelayProfile(settings: BackendSettings, id: string, patch: Partia
 
 function createRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `relay-${Date.now().toString(36)}`;
-  const contextSelection = contextSelectionForAllEntries(settings);
   const next = {
     id,
     name: tf("供应商 {0}", [settings.relayProfiles.length + 1]),
@@ -10999,8 +10890,6 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     configContents: "",
     authContents: "",
     useCommonConfig: true,
-    contextSelection,
-    contextSelectionInitialized: true,
     contextWindow: "",
     autoCompactLimit: "",
     modelList: "",
@@ -11019,7 +10908,6 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
 
 function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `aggregate-${Date.now().toString(36)}`;
-  const contextSelection = contextSelectionForAllEntries(settings);
   const candidates = aggregateMemberCandidates(settings, id);
   return normalizeAggregateRelayProfile(
     {
@@ -11038,8 +10926,6 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       configContents: "",
       authContents: "",
       useCommonConfig: true,
-      contextSelection,
-      contextSelectionInitialized: true,
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
