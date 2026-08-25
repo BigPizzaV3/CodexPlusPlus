@@ -4286,14 +4286,14 @@ pub fn list_context_entries(
         &request.settings.relay_context_config_contents,
     ) {
         Ok(entries) => ok(
-            "工具与插件列表已读取。",
+            "MCP&插件列表已读取。",
             ContextEntriesPayload {
                 settings: request.settings,
                 entries,
             },
         ),
         Err(error) => failed(
-            &format!("读取工具与插件列表失败：{error}"),
+            &format!("读取MCP&插件列表失败：{error}"),
             ContextEntriesPayload {
                 settings: request.settings,
                 entries: empty_context_entries(),
@@ -4309,11 +4309,11 @@ pub fn read_live_context_entries() -> CommandResult<LiveContextEntriesPayload> {
     let config = read_optional_text_file(&config_path).unwrap_or_default();
     match codex_plus_core::relay_config::list_context_entries_from_common_config(&config) {
         Ok(entries) => ok(
-            "live 工具与插件已读取。",
+            "live MCP&插件已读取。",
             LiveContextEntriesPayload { entries },
         ),
         Err(error) => failed(
-            &format!("读取 live 工具与插件失败：{error}"),
+            &format!("读取 live MCP&插件失败：{error}"),
             LiveContextEntriesPayload {
                 entries: empty_context_entries(),
             },
@@ -4335,7 +4335,7 @@ pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<Conte
             list_context_entries(ContextSettingsRequest { settings })
         }
         Err(error) => failed(
-            &format!("保存工具与插件失败：{error}"),
+            &format!("保存MCP&插件失败：{error}"),
             ContextEntriesPayload {
                 settings,
                 entries: empty_context_entries(),
@@ -4509,7 +4509,7 @@ pub fn sync_live_context_entries(
         Ok(config) => config,
         Err(error) => {
             return failed(
-                &format!("同步 live 工具与插件失败：{error}"),
+                &format!("同步 live MCP&插件失败：{error}"),
                 LiveContextEntriesPayload {
                     entries: empty_context_entries(),
                 },
@@ -4536,11 +4536,11 @@ pub fn sync_live_context_entries(
     }
     match codex_plus_core::relay_config::list_context_entries_from_common_config(&updated_config) {
         Ok(entries) => ok(
-            "live 工具与插件已同步。",
+            "live MCP&插件已同步。",
             LiveContextEntriesPayload { entries },
         ),
         Err(error) => failed(
-            &format!("读取同步后的 live 工具与插件失败：{error}"),
+            &format!("读取同步后的 live MCP&插件失败：{error}"),
             LiveContextEntriesPayload {
                 entries: empty_context_entries(),
             },
@@ -4561,7 +4561,7 @@ pub fn delete_context_entry(request: ContextDeleteRequest) -> CommandResult<Cont
             list_context_entries(ContextSettingsRequest { settings })
         }
         Err(error) => failed(
-            &format!("删除工具与插件失败：{error}"),
+            &format!("删除MCP&插件失败：{error}"),
             ContextEntriesPayload {
                 settings,
                 entries: empty_context_entries(),

@@ -248,12 +248,10 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     let styles = std::fs::read_to_string(&styles).expect("read manager styles.css");
 
     assert!(app_tsx.contains("作为全局配置独立管理"));
+    assert!(app_tsx.contains("label: t(\"MCP&插件\")") || app_tsx.contains("label: \"MCP&插件\""));
     assert!(
-        app_tsx.contains("label: t(\"工具与插件\")") || app_tsx.contains("label: \"工具与插件\"")
-    );
-    assert!(
-        app_tsx.contains("title={t(\"Codex 工具与插件\")}")
-            || app_tsx.contains("title=\"Codex 工具与插件\"")
+        app_tsx.contains("title={t(\"Codex MCP&插件\")}")
+            || app_tsx.contains("title=\"Codex MCP&插件\"")
     );
     assert!(!app_tsx.contains("label: \"上下文配置\""));
     assert!(!app_tsx.contains("title=\"上下文配置\""));
@@ -270,7 +268,8 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(app_tsx.contains("refreshLiveContextEntries"));
     assert!(app_tsx.contains("syncLiveContextEntries(next, true)"));
     assert!(app_tsx.contains("const syncContextEntries = async (next: BackendSettings) =>"));
-    assert_eq!(app_tsx.matches("await syncContextEntries(next)").count(), 3);
+    // 保存 / 启停 / 删除 / JSON 导入，四条写入路径都要把改动同步进 live 配置
+    assert_eq!(app_tsx.matches("await syncContextEntries(next)").count(), 4);
     assert!(app_tsx.contains("if (!(await syncContextEntries(next))) return;"));
     assert!(app_tsx.contains("function contextEntriesWithLiveEntries"));
     assert!(app_tsx.contains("liveByKind"));

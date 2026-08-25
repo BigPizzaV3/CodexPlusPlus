@@ -968,7 +968,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
   { id: "grok", label: t("Grok 配置"), icon: Bot },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
-  { id: "context", label: t("工具与插件"), icon: Network },
+  { id: "context", label: t("MCP&插件"), icon: Network },
   { id: "weixin", label: t("微信连接"), icon: ScanLine },
   { id: "enhance", label: t("Codex增强"), icon: Hammer },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
@@ -2054,7 +2054,7 @@ export function App() {
     const result = await run(() => call<LiveContextEntriesResult>("read_live_context_entries"));
     if (result) {
       setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result, { silentSuccess: true });
     }
     return result;
   };
@@ -2063,7 +2063,7 @@ export function App() {
     const result = await run(() => call<LiveContextEntriesResult>("sync_live_context_entries", { request: { settings: next } }));
     if (result) {
       setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result, { silentSuccess: true });
     }
     return result;
   };
@@ -2777,7 +2777,7 @@ export function App() {
       normalized = normalizeSettings(saveResult.settings);
     }
     setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
+    if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
     return normalized;
   };
 
@@ -2838,7 +2838,7 @@ export function App() {
       normalized = normalizeSettings(saveResult.settings);
     }
     setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
+    if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
     return normalized;
   };
 
@@ -7998,7 +7998,7 @@ function ContextScreen({
 }) {
   return (
     <Panel fill>
-      <CardHead title={t("Codex 工具与插件")} detail={t("独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。")} />
+      <CardHead title={t("Codex MCP&插件")} detail={t("独立管理 Codex 的 MCP 服务器与插件；切换任意供应商都会带上。")} />
       <CardContent>
         <RelayContextManager
           form={normalizeSettings(form)}
@@ -8913,8 +8913,8 @@ function RelayContextManager({
     <div className="relay-context-panel">
       <div className="relay-context-head">
         <div>
-          <strong>{t("Codex 工具与插件")}</strong>
-          <span>{t("MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。")}</span>
+          <strong>{t("Codex MCP&插件")}</strong>
+          <span>{t("MCP 与插件作为全局配置独立管理，切换任意供应商都会合并。")}</span>
         </div>
         <div className="relay-context-head-actions">
           {activeKind === "mcp" ? (
@@ -9635,7 +9635,7 @@ function RelayCommonConfigModal({
           <div>
             <h2>{t("通用配置文件")}</h2>
             <p className="modal-message">
-              {t("只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。")}
+              {t("只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。")}
             </p>
           </div>
           <button aria-label={t("关闭窗口")} className="toast-close" onClick={onClose} type="button">×</button>
@@ -10387,7 +10387,7 @@ function routeSubtitle(route: Route) {
     grok: t("管理 Grok CLI 的模型与 API 端点"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
-    context: t("独立管理 MCP、Skills、Plugins"),
+    context: t("独立管理 MCP 服务器与插件"),
     skills: t("从 GitHub 仓库安装 Skill 到 Codex"),
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("会话删除、导出和脚本能力"),
