@@ -963,16 +963,26 @@ fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
 }
 
 /// 链接可能是软链也可能是复制出来的实体目录，两种都要能删干净。
+/// 停用一个 skill：删掉 `$CODEX_HOME/skills/<id>`。
+///
+/// 这里有两个必须分清的情况：
+///
+/// - **软链**（正常路径）。绝不能用 `remove_dir_all`——那会顺着链接把 SSOT 源目录里的
+///   真实文件递归删掉，停用变毁数据。Unix 上软链用 `remove_file` 删；Windows 上
+///   目录软链只能用 `remove_dir`，用 `remove_file` 会报 Access denied (os error 5)。
+/// - **实体目录**（Windows 上建软链失败、回退成复制时）。这时才该 `remove_dir_all`。
 fn remove_link(link: &Path) -> anyhow::Result<()> {
     match std::fs::symlink_metadata(link) {
         Ok(metadata) => {
-            if metadata.file_type().is_symlink() || metadata.is_file() {
-                std::fs::remove_file(link)
-                    .with_context(|| format!("移除 {} 失败", link.display()))?;
-            } else {
+            let file_type = metadata.file_type();
+            let result = if file_type.is_symlink() {
+                remove_symlink(link, &file_type)
+            } else if file_type.is_dir() {
                 std::fs::remove_dir_all(link)
-                    .with_context(|| format!("移除 {} 失败", link.display()))?;
-            }
+            } else {
+                std::fs::remove_file(link)
+            };
+            result.with_context(|| format!("移除 {} 失败", link.display()))?;
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -980,6 +990,21 @@ fn remove_link(link: &Path) -> anyhow::Result<()> {
             Err(anyhow::Error::from(error).context(format!("读取 {} 状态失败", link.display())))
         }
     }
+}
+
+#[cfg(windows)]
+fn remove_symlink(link: &Path, file_type: &std::fs::FileType) -> std::io::Result<()> {
+    use std::os::windows::fs::FileTypeExt;
+    if file_type.is_symlink_dir() {
+        std::fs::remove_dir(link)
+    } else {
+        std::fs::remove_file(link)
+    }
+}
+
+#[cfg(not(windows))]
+fn remove_symlink(link: &Path, _file_type: &std::fs::FileType) -> std::io::Result<()> {
+    std::fs::remove_file(link)
 }
 
 fn is_linked(link: &Path) -> bool {
@@ -1202,11 +1227,55 @@ mod tests {
         manager.set_enabled("alpha", false).unwrap();
         assert!(!manager.linked_dir().join("alpha").exists());
         assert!(manager.source_dir().join("alpha").is_dir());
+        // 停用只能删链接：如果误用 remove_dir_all 顺着软链删下去，
+        // SSOT 里的真实文件会一起没掉，停用就成了毁数据。
+        assert!(
+            manager
+                .source_dir()
+                .join("alpha")
+                .join("SKILL.md")
+                .is_file()
+        );
 
         manager.set_enabled("alpha", true).unwrap();
         assert!(
             manager
                 .linked_dir()
+                .join("alpha")
+                .join("SKILL.md")
+                .is_file()
+        );
+    }
+
+    /// 停用 → 重新启用 → 再停用，反复切换不该残留或报错。
+    /// Windows 上目录软链必须用 remove_dir 删，用 remove_file 会 Access denied。
+    #[test]
+    fn toggling_enabled_repeatedly_is_stable() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        manager
+            .install_from_zip(
+                &sample_skill("alpha", "alpha", "hash-1"),
+                &repo_zip(&[("kit-main/alpha/SKILL.md", "---\nname: alpha\n---\n")]),
+            )
+            .unwrap();
+
+        for _ in 0..3 {
+            manager.set_enabled("alpha", false).unwrap();
+            assert!(!manager.linked_dir().join("alpha").exists());
+            manager.set_enabled("alpha", true).unwrap();
+            assert!(
+                manager
+                    .linked_dir()
+                    .join("alpha")
+                    .join("SKILL.md")
+                    .is_file()
+            );
+        }
+        // 源目录自始至终完好
+        assert!(
+            manager
+                .source_dir()
                 .join("alpha")
                 .join("SKILL.md")
                 .is_file()
