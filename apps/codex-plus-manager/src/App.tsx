@@ -10445,8 +10445,18 @@ function mergeLiveContextEntries(entries: CodexContextEntry[], liveEntries: Map<
   return merged;
 }
 
+/**
+ * 合并 live 配置里的实际状态。
+ *
+ * live 里有这个条目就用它的实际启停状态；**没有则保留条目自身的配置意图**。
+ *
+ * 不能在缺失时强制 false：供应商关掉「应用通用配置」、条目刚新增还没同步、
+ * 或正处于切换过程中时，live 里都不会有它，那会让面板上所有 MCP 显示成已停用
+ * ——用户看到的就是「编辑一下供应商配置，MCP 就自己关了」（#1928）。
+ * 后端 context_entry_enabled 的默认同样是「没有 enabled 键即启用」，两边要一致。
+ */
 function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry): CodexContextEntry {
-  return live ? { ...entry, enabled: live.enabled } : { ...entry, enabled: false };
+  return live ? { ...entry, enabled: live.enabled } : entry;
 }
 
 function contextEntriesFromConfig(configContents: string): CodexContextEntries {

@@ -275,6 +275,10 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(app_tsx.contains("liveByKind"));
     assert!(app_tsx.contains("mergeLiveContextEntries"));
     assert!(app_tsx.contains("withLiveEntryState"));
+    // live 里没有该条目时必须保留它自身的启停意图，不能强制 false——否则供应商
+    // 关掉「应用通用配置」或条目刚新增时，面板会把所有 MCP 显示成已停用（#1928）。
+    // 后端 context_entry_enabled 的默认同样是「没有 enabled 键即启用」。
+    assert!(!app_tsx.contains("live.enabled } : { ...entry, enabled: false }"));
     assert!(app_tsx.contains("contextEnabledSwitch"));
     assert!(!app_tsx.contains("entry.enabled ? \"已启用\" : \"已禁用\""));
     assert!(!app_tsx.contains("空配置体"));
