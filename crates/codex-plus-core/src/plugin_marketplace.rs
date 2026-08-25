@@ -873,19 +873,21 @@ mod tests {
         let home = temp.path();
         write_marketplace(home);
         write_remote_marketplace(home);
+        let plugins_source = home.join(".tmp").join("plugins").display().to_string();
+        let extended_plugins_source = windows_extended_path(&home.join(".tmp").join("plugins"));
         std::fs::write(
             home.join("config.toml"),
             format!(
                 r#"[marketplaces.openai-curated]
 source_type = "local"
-source = "{}"
+source = {}
 
 [marketplaces.openai-api-curated]
 source_type = "local"
-source = '{}'
+source = {}
 "#,
-                home.join(".tmp").join("plugins").display(),
-                format!(r"\\?\{}", home.join(".tmp").join("plugins").display())
+                toml_edit::value(plugins_source),
+                toml_edit::value(extended_plugins_source),
             ),
         )
         .unwrap();
