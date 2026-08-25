@@ -56,6 +56,70 @@ fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     fs::write(path, format!("{first}\n{event}\n")).unwrap();
 }
 
+fn write_catalog_rollout(path: &Path) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "").unwrap();
+}
+
+fn catalog_eligibility_thread_snapshot(path: &Path) -> Vec<serde_json::Value> {
+    let db = Connection::open(path).unwrap();
+    db.prepare(
+        "SELECT id, model_provider, archived, has_user_event, cwd, title, rollout_path, source,
+                created_at_ms, updated_at_ms, thread_source, git_branch, agent_role
+         FROM threads ORDER BY id",
+    )
+    .unwrap()
+    .query_map([], |row| {
+        Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "model_provider": row.get::<_, String>(1)?,
+            "archived": row.get::<_, i64>(2)?,
+            "has_user_event": row.get::<_, i64>(3)?,
+            "cwd": row.get::<_, String>(4)?,
+            "title": row.get::<_, String>(5)?,
+            "rollout_path": row.get::<_, String>(6)?,
+            "source": row.get::<_, String>(7)?,
+            "created_at_ms": row.get::<_, i64>(8)?,
+            "updated_at_ms": row.get::<_, i64>(9)?,
+            "thread_source": row.get::<_, Option<String>>(10)?,
+            "git_branch": row.get::<_, Option<String>>(11)?,
+            "agent_role": row.get::<_, String>(12)?,
+        }))
+    })
+    .unwrap()
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .unwrap()
+}
+
+fn rollout_files_snapshot(path: &Path) -> Vec<(String, Vec<u8>, SystemTime)> {
+    let mut snapshot = fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            (
+                entry.file_name().to_string_lossy().to_string(),
+                fs::read(&path).unwrap(),
+                fs::metadata(path).unwrap().modified().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+    snapshot
+}
+
+fn catalog_rows_snapshot(path: &Path) -> Vec<(String, String)> {
+    let db = Connection::open(path).unwrap();
+    db.prepare(
+        "SELECT host_id, thread_id FROM local_thread_catalog ORDER BY host_id, thread_id",
+    )
+    .unwrap()
+    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+    .unwrap()
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .unwrap()
+}
+
 fn write_subagent_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let first = json!({
@@ -822,12 +886,14 @@ fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
         [],
     )
     .unwrap();
+    let rollout_path = home.join("sessions/rollout-thread-1.jsonl");
+    write_catalog_rollout(&rollout_path);
     db.execute(
         "INSERT INTO threads VALUES (
             'thread-1', 'old-provider', 0, 1, 'C:/workspace', 'Thread One',
-            'C:/rollout.jsonl', 'cli', 100000, 200000, 'user', 'main'
+            ?1, 'cli', 100000, 200000, 'user', 'main'
         )",
-        [],
+        [rollout_path.to_string_lossy().to_string()],
     )
     .unwrap();
     drop(db);
@@ -864,7 +930,7 @@ fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
     assert_eq!(row.2, 200.0);
     assert_eq!(row.3, "C:/workspace");
     assert_eq!(row.4, "cli");
-    assert_eq!(row.5, "C:/rollout.jsonl");
+    assert_eq!(row.5, rollout_path.to_string_lossy());
     assert_eq!(row.6, "apigather");
     assert_eq!(row.7, "main");
     assert_eq!(row.8, "user");
@@ -1012,6 +1078,7 @@ fn provider_sync_catalogs_user_threads_but_skips_subagents() {
         [],
     )
     .unwrap();
+    let rollout_dir = home.join("sessions/catalog-eligibility");
     for (id, source, thread_source, updated_at) in [
         ("user-one", "vscode", "user", 200000_i64),
         (
@@ -1034,22 +1101,32 @@ fn provider_sync_catalogs_user_threads_but_skips_subagents() {
             215000_i64,
         ),
     ] {
+        let rollout_path = rollout_dir.join(format!("{id}.jsonl"));
+        write_catalog_rollout(&rollout_path);
         db.execute(
             "INSERT INTO threads VALUES (
                 ?1, 'apigather', 0, 1, 'C:/workspace', 'Same title',
                 ?2, ?3, 100000, ?4, ?5, 'main'
             )",
-            rusqlite::params![id, format!("C:/{id}.jsonl"), source, updated_at, thread_source],
+            rusqlite::params![
+                id,
+                rollout_path.to_string_lossy().to_string(),
+                source,
+                updated_at,
+                thread_source
+            ],
         )
         .unwrap();
     }
+    let null_source_rollout = rollout_dir.join("null-source-child.jsonl");
+    write_catalog_rollout(&null_source_rollout);
     db.execute(
         "INSERT INTO threads VALUES (
             'null-source-child', 'apigather', 0, 1, 'C:/workspace', 'Same title',
-            'C:/null-source-child.jsonl', '{\"sub_agent\":{\"other\":\"guardian\"}}',
+            ?1, '{\"sub_agent\":{\"other\":\"guardian\"}}',
             100000, 217000, NULL, 'main'
         )",
-        [],
+        [null_source_rollout.to_string_lossy().to_string()],
     )
     .unwrap();
     drop(db);
@@ -1082,12 +1159,19 @@ fn provider_sync_catalogs_user_threads_but_skips_subagents() {
         ("internal-child", "internal_memory_consolidation", 237000_i64),
         ("edge-child", "cli", 240000_i64),
     ] {
+        let rollout_path = rollout_dir.join(format!("{id}.jsonl"));
+        write_catalog_rollout(&rollout_path);
         db.execute(
             "INSERT INTO threads VALUES (
                 ?1, 'apigather', 0, 1, 'C:/workspace', 'Same title',
                 ?2, ?3, 100000, ?4, 'main'
             )",
-            rusqlite::params![id, format!("C:/{id}.jsonl"), source, updated_at],
+            rusqlite::params![
+                id,
+                rollout_path.to_string_lossy().to_string(),
+                source,
+                updated_at
+            ],
         )
         .unwrap();
     }
@@ -1164,13 +1248,20 @@ fn provider_sync_prunes_existing_local_subagent_catalog_rows() {
         [],
     )
     .unwrap();
+    let rollout_dir = home.join("sessions/catalog-pruning");
     for (id, thread_source) in [("root", "user"), ("child", "subagent")] {
+        let rollout_path = rollout_dir.join(format!("{id}.jsonl"));
+        write_catalog_rollout(&rollout_path);
         db.execute(
             "INSERT INTO threads VALUES (
                 ?1, 'apigather', 0, 1, 'C:/workspace', ?1,
                 ?2, 'vscode', 100000, 200000, ?3, 'main'
             )",
-            rusqlite::params![id, format!("C:/{id}.jsonl"), thread_source],
+            rusqlite::params![
+                id,
+                rollout_path.to_string_lossy().to_string(),
+                thread_source
+            ],
         )
         .unwrap();
     }
@@ -1315,6 +1406,212 @@ fn provider_sync_prunes_existing_local_subagent_catalog_rows() {
     assert_eq!(second.sqlite_catalog_rows_removed, 0);
     assert_eq!(second.sqlite_rows_updated, 0);
     assert!(second.backup_dir.is_none());
+}
+
+#[test]
+fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+
+    let rollout_dir = home.join("sessions");
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT, agent_role TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    for (id, archived, has_user_event, source, thread_source, agent_role, updated_at) in [
+        ("active", 0, 1, "vscode", "user", "", 300000_i64),
+        ("archived", 1, 1, "vscode", "user", "", 310000_i64),
+        ("no-user-event", 0, 0, "vscode", "user", "", 320000_i64),
+        ("role-owned", 0, 1, "vscode", "user", "reviewer", 330000_i64),
+        ("exec", 0, 1, "exec", "user", "", 340000_i64),
+        ("subagent", 0, 1, "subagent", "subagent", "", 350000_i64),
+        (
+            "guardian",
+            0,
+            1,
+            r#"{"subagent":{"other":"guardian"}}"#,
+            "user",
+            "",
+            355000_i64,
+        ),
+    ] {
+        let rollout_path = rollout_dir.join(format!("{id}.jsonl"));
+        write_catalog_rollout(&rollout_path);
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'apigather', ?2, ?3, 'C:/workspace', ?1, ?4, ?5,
+                100000, ?6, ?7, 'main', ?8
+            )",
+            rusqlite::params![
+                id,
+                archived,
+                has_user_event,
+                rollout_path.to_string_lossy().to_string(),
+                source,
+                updated_at,
+                thread_source,
+                agent_role
+            ],
+        )
+        .unwrap();
+    }
+    let archived_rollout = rollout_dir.join("archived.jsonl");
+    fs::write(&archived_rollout, "archived rollout sentinel\n").unwrap();
+
+    let relative_rollout = Path::new("sessions").join("relative-rollout.jsonl");
+    write_catalog_rollout(&home.join(&relative_rollout));
+    db.execute(
+        "INSERT INTO threads VALUES (
+            'relative-rollout', 'apigather', 0, 1, 'C:/workspace', 'relative-rollout',
+            ?1, 'vscode', 100000, 357000, 'user', 'main', ''
+        )",
+        [relative_rollout.to_string_lossy().to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES (
+            'empty-rollout', 'apigather', 0, 1, 'C:/workspace', 'empty-rollout',
+            '', 'vscode', 100000, 358000, 'user', 'main', ''
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES (
+            'missing-rollout', 'apigather', 0, 1, 'C:/workspace', 'missing-rollout',
+            'sessions/missing-rollout.jsonl', 'vscode', 100000, 360000, 'user', 'main', ''
+        )",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let threads_before = catalog_eligibility_thread_snapshot(&state_db);
+
+    // An equally recent active copy must not override the archived canonical state.
+    let stale_rollout = rollout_dir.join("archived-stale.jsonl");
+    write_catalog_rollout(&stale_rollout);
+    let stale_db = sqlite_dir.join("state_5.sqlite");
+    let db = Connection::open(&stale_db).unwrap();
+    db.execute(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT, agent_role TEXT
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES (
+            'archived', 'apigather', 0, 1, 'C:/workspace', 'archived', ?1,
+            'vscode', 100000, 310000, 'user', 'main', ''
+        )",
+        [stale_rollout.to_string_lossy().to_string()],
+    )
+    .unwrap();
+    drop(db);
+
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(
+        &catalog_db,
+        &[
+            ("active", "apigather"),
+            ("archived", "apigather"),
+            ("no-user-event", "apigather"),
+            ("role-owned", "apigather"),
+            ("exec", "apigather"),
+            ("subagent", "apigather"),
+            ("guardian", "apigather"),
+            ("relative-rollout", "apigather"),
+            ("empty-rollout", "apigather"),
+            ("missing-rollout", "apigather"),
+            ("orphan", "apigather"),
+        ],
+    );
+    let db = Connection::open(&catalog_db).unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_hosts VALUES ('remote', 'remote')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog (
+            host_id, thread_id, display_title, source_created_at, source_updated_at, cwd,
+            source_kind, source_detail, model_provider, git_branch, observation_sequence,
+            missing_candidate, thread_source
+        ) VALUES (
+            'remote', 'archived', 'archived', 100, 100, 'C:/workspace', 'cli', '',
+            'apigather', NULL, 1, 0, 'user'
+        )",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let rollout_files_before = rollout_files_snapshot(&rollout_dir);
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.sqlite_catalog_rows_inserted, 0);
+    assert_eq!(result.sqlite_catalog_rows_removed, 7);
+    assert_eq!(
+        catalog_rows_snapshot(&catalog_db),
+        vec![
+            ("local".to_string(), "active".to_string()),
+            ("local".to_string(), "empty-rollout".to_string()),
+            ("local".to_string(), "orphan".to_string()),
+            ("local".to_string(), "relative-rollout".to_string()),
+            ("remote".to_string(), "archived".to_string()),
+        ]
+    );
+    assert_eq!(
+        catalog_eligibility_thread_snapshot(&state_db),
+        threads_before
+    );
+    assert_eq!(rollout_files_snapshot(&rollout_dir), rollout_files_before);
+
+    let stale = Connection::open(&stale_db).unwrap();
+    let stale_archived_state = stale
+        .query_row(
+            "SELECT archived, updated_at_ms FROM threads WHERE id = 'archived'",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stale_archived_state, (0, 310000));
+    drop(stale);
+
+    let second = run_provider_sync(Some(&home));
+    assert_eq!(second.status, ProviderSyncStatus::Synced);
+    assert_eq!(second.sqlite_catalog_rows_inserted, 0);
+    assert_eq!(second.sqlite_catalog_rows_removed, 0);
+    assert_eq!(second.sqlite_rows_updated, 0);
+    assert!(second.backup_dir.is_none());
+    assert_eq!(
+        catalog_eligibility_thread_snapshot(&state_db),
+        threads_before
+    );
+    assert_eq!(rollout_files_snapshot(&rollout_dir), rollout_files_before);
+    assert_eq!(
+        catalog_rows_snapshot(&catalog_db),
+        vec![
+            ("local".to_string(), "active".to_string()),
+            ("local".to_string(), "empty-rollout".to_string()),
+            ("local".to_string(), "orphan".to_string()),
+            ("local".to_string(), "relative-rollout".to_string()),
+            ("remote".to_string(), "archived".to_string()),
+        ]
+    );
 }
 
 #[test]

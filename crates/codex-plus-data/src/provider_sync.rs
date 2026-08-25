@@ -274,6 +274,12 @@ struct CatalogRepairThread {
     thread_source: Option<String>,
 }
 
+#[derive(Debug)]
+struct CatalogRepairObservedThread {
+    thread: CatalogRepairThread,
+    eligible: bool,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct CatalogRepairCounts {
     inserted_rows: usize,
@@ -295,12 +301,14 @@ impl CatalogRepairCounts {
 struct CatalogRepairPlan {
     threads: HashMap<String, CatalogRepairThread>,
     non_root_thread_ids: HashSet<String>,
+    ineligible_thread_ids: HashSet<String>,
     catalog_non_root_thread_ids: HashMap<PathBuf, HashSet<String>>,
 }
 
 impl CatalogRepairPlan {
     fn has_cleanup_candidates(&self) -> bool {
         !self.non_root_thread_ids.is_empty()
+            || !self.ineligible_thread_ids.is_empty()
             || self
                 .catalog_non_root_thread_ids
                 .values()
@@ -309,6 +317,7 @@ impl CatalogRepairPlan {
 
     fn cleanup_thread_ids_for_path(&self, path: &Path) -> HashSet<String> {
         let mut thread_ids = self.non_root_thread_ids.clone();
+        thread_ids.extend(self.ineligible_thread_ids.iter().cloned());
         if let Some(catalog_thread_ids) = self.catalog_non_root_thread_ids.get(path) {
             thread_ids.extend(catalog_thread_ids.iter().cloned());
         }
@@ -439,6 +448,7 @@ pub fn run_remote_control_session_catalog_recovery_for_thread_with_target(
     }
     let thread_ids = HashSet::from([thread_id.to_string()]);
     let recovery = run_remote_control_catalog_recovery_for_threads(
+        &home,
         &provider_sync_db_paths(&home),
         target_provider,
         &thread_ids,
@@ -559,6 +569,7 @@ pub fn run_remote_control_session_finalization_for_thread_with_target(
         }
         let thread_ids = HashSet::from([thread_id.to_string()]);
         let catalog_repairs = repair_missing_local_thread_catalog_rows_for_threads(
+            &home,
             &sqlite_paths,
             target_provider,
             &thread_ids,
@@ -598,6 +609,7 @@ pub fn run_remote_control_session_finalization_for_thread_with_target(
 }
 
 fn run_remote_control_catalog_recovery_for_threads(
+    home: &Path,
     sqlite_paths: &[PathBuf],
     target_provider: &str,
     requested_thread_ids: &HashSet<String>,
@@ -619,6 +631,7 @@ fn run_remote_control_catalog_recovery_for_threads(
     }
 
     let catalog_repairs = repair_missing_local_thread_catalog_rows_for_threads(
+        home,
         sqlite_paths,
         target_provider,
         &thread_ids,
@@ -759,7 +772,7 @@ pub fn run_provider_sync_with_target(
             &subagent_thread_ids,
         )?;
         let catalog_repair_count =
-            count_local_thread_catalog_repairs(&sqlite_paths, &target_provider)?;
+            count_local_thread_catalog_repairs(&home, &sqlite_paths, &target_provider)?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
         if rewrite_changes.is_empty()
@@ -794,7 +807,7 @@ pub fn run_provider_sync_with_target(
             )?;
             let mut sqlite_updates = sqlite_updates;
             let catalog_repairs =
-                repair_missing_local_thread_catalog_rows(&sqlite_paths, &target_provider)?;
+                repair_missing_local_thread_catalog_rows(&home, &sqlite_paths, &target_provider)?;
             sqlite_updates.catalog_insert_rows = catalog_repairs.inserted_rows;
             sqlite_updates.catalog_remove_rows = catalog_repairs.removed_rows;
             let updated_workspace_roots =
@@ -2958,10 +2971,11 @@ fn apply_remote_control_catalog_updates(
 }
 
 fn count_local_thread_catalog_repairs(
+    home: &Path,
     paths: &[PathBuf],
     target_provider: &str,
 ) -> anyhow::Result<usize> {
-    let plan = collect_catalog_repair_plan(paths, target_provider, None)?;
+    let plan = collect_catalog_repair_plan(home, paths, target_provider, None)?;
     if plan.threads.is_empty() && !plan.has_cleanup_candidates() {
         return Ok(0);
     }
@@ -2993,18 +3007,21 @@ fn count_local_thread_catalog_repairs(
 }
 
 fn repair_missing_local_thread_catalog_rows(
+    home: &Path,
     paths: &[PathBuf],
     target_provider: &str,
 ) -> anyhow::Result<CatalogRepairCounts> {
-    repair_missing_local_thread_catalog_rows_filtered(paths, target_provider, None, true)
+    repair_missing_local_thread_catalog_rows_filtered(home, paths, target_provider, None, true)
 }
 
 fn repair_missing_local_thread_catalog_rows_for_threads(
+    home: &Path,
     paths: &[PathBuf],
     target_provider: &str,
     thread_ids: &HashSet<String>,
 ) -> anyhow::Result<CatalogRepairCounts> {
     repair_missing_local_thread_catalog_rows_filtered(
+        home,
         paths,
         target_provider,
         Some(thread_ids),
@@ -3013,12 +3030,13 @@ fn repair_missing_local_thread_catalog_rows_for_threads(
 }
 
 fn repair_missing_local_thread_catalog_rows_filtered(
+    home: &Path,
     paths: &[PathBuf],
     target_provider: &str,
     thread_ids: Option<&HashSet<String>>,
     update_full_sync_state: bool,
 ) -> anyhow::Result<CatalogRepairCounts> {
-    let plan = collect_catalog_repair_plan(paths, target_provider, thread_ids)?;
+    let plan = collect_catalog_repair_plan(home, paths, target_provider, thread_ids)?;
     if plan.threads.is_empty()
         && (!update_full_sync_state || !plan.has_cleanup_candidates())
     {
@@ -3105,6 +3123,7 @@ fn repair_missing_local_thread_catalog_rows_filtered(
 }
 
 fn collect_catalog_repair_plan(
+    home: &Path,
     paths: &[PathBuf],
     target_provider: &str,
     thread_ids: Option<&HashSet<String>>,
@@ -3112,7 +3131,7 @@ fn collect_catalog_repair_plan(
     let spawned_child_ids = collect_spawned_child_thread_ids(paths)?;
     let mut catalog_non_root_thread_ids =
         collect_catalog_marked_non_root_thread_ids(paths, &spawned_child_ids)?;
-    let mut threads = HashMap::new();
+    let mut observed_threads = HashMap::new();
     for path in paths {
         if !path.exists() {
             continue;
@@ -3134,53 +3153,95 @@ fn collect_catalog_repair_plan(
         let source_detail = text_expr(&columns, "rollout_path", "''");
         let git_branch = text_expr(&columns, "git_branch", "NULL");
         let thread_source = text_expr(&columns, "thread_source", "NULL");
+        let archived = text_expr(&columns, "archived", "0");
+        let has_user_event = text_expr(&columns, "has_user_event", "1");
+        let agent_role = text_expr(&columns, "agent_role", "''");
         let subagent_filter = subagent_filter(&db, "threads.id")?;
         let sql = format!(
-            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
+            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_event}, {agent_role} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
         );
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
-            Ok(CatalogRepairThread {
-                id: row.get(0)?,
-                display_title: row.get::<_, String>(1).unwrap_or_default(),
-                source_created_at: row.get::<_, f64>(2).unwrap_or_default(),
-                source_updated_at: row.get::<_, f64>(3).unwrap_or_default(),
-                cwd: row.get::<_, String>(4).unwrap_or_default(),
-                source_kind: row
-                    .get::<_, String>(5)
-                    .unwrap_or_else(|_| "cli".to_string()),
-                source_detail: row.get::<_, String>(6).unwrap_or_default(),
-                model_provider: target_provider.to_string(),
-                git_branch: row.get::<_, Option<String>>(7).unwrap_or(None),
-                thread_source: row.get::<_, Option<String>>(8).unwrap_or(None),
-            })
+            Ok((
+                CatalogRepairThread {
+                    id: row.get(0)?,
+                    display_title: row.get::<_, String>(1).unwrap_or_default(),
+                    source_created_at: row.get::<_, f64>(2).unwrap_or_default(),
+                    source_updated_at: row.get::<_, f64>(3).unwrap_or_default(),
+                    cwd: row.get::<_, String>(4).unwrap_or_default(),
+                    source_kind: row
+                        .get::<_, String>(5)
+                        .unwrap_or_else(|_| "cli".to_string()),
+                    source_detail: row.get::<_, String>(6).unwrap_or_default(),
+                    model_provider: target_provider.to_string(),
+                    git_branch: row.get::<_, Option<String>>(7).unwrap_or(None),
+                    thread_source: row.get::<_, Option<String>>(8).unwrap_or(None),
+                },
+                row.get::<_, i64>(9).unwrap_or_default(),
+                row.get::<_, i64>(10).unwrap_or(1),
+                row.get::<_, String>(11).unwrap_or_default(),
+            ))
         })?;
         for item in rows {
-            let thread = item?;
-            let replace = threads
+            let (thread, archived, has_user_event, agent_role) = item?;
+            let marked_non_user = columns.contains("thread_source")
+                && thread.thread_source.as_deref().is_some_and(|value| {
+                    let value = value.trim();
+                    !value.is_empty() && !value.eq_ignore_ascii_case("user")
+                });
+            let non_root = is_catalog_non_root_agent(&thread, &spawned_child_ids);
+            let source_is_exec = thread.source_kind.trim().eq_ignore_ascii_case("exec");
+            let rollout_exists = catalog_rollout_path_exists(home, &thread.source_detail);
+            let eligible = archived == 0
+                && has_user_event == 1
+                && agent_role.trim().is_empty()
+                && !marked_non_user
+                && !source_is_exec
+                && !non_root
+                && rollout_exists;
+            let replace = observed_threads
                 .get(&thread.id)
-                .map(|current: &CatalogRepairThread| {
-                    thread.source_updated_at > current.source_updated_at
+                .map(|current: &CatalogRepairObservedThread| {
+                    // Copies can share a timestamp; an ineligible observation wins the tie so
+                    // an archived or agent-owned thread cannot be resurrected by a stale copy.
+                    thread.source_updated_at > current.thread.source_updated_at
+                        || (thread.source_updated_at == current.thread.source_updated_at
+                            && !eligible
+                            && current.eligible)
                 })
                 .unwrap_or(true);
             if replace {
-                threads.insert(thread.id.clone(), thread);
+                observed_threads.insert(
+                    thread.id.clone(),
+                    CatalogRepairObservedThread { thread, eligible },
+                );
             }
         }
     }
     if let Some(thread_ids) = thread_ids {
-        threads.retain(|thread_id, _| thread_ids.contains(thread_id));
+        observed_threads.retain(|thread_id, _| thread_ids.contains(thread_id));
     }
-    let explicit_user_thread_ids = threads
+    let explicit_user_thread_ids = observed_threads
         .values()
-        .filter(|thread| thread_source_is_user(thread.thread_source.as_deref()))
-        .map(|thread| thread.id.clone())
+        .filter(|observed| thread_source_is_user(observed.thread.thread_source.as_deref()))
+        .map(|observed| observed.thread.id.clone())
         .collect::<HashSet<_>>();
-    let non_root_thread_ids = threads
+    let non_root_thread_ids = observed_threads
         .values()
-        .filter(|thread| is_catalog_non_root_agent(thread, &spawned_child_ids))
-        .map(|thread| thread.id.clone())
+        .filter(|observed| is_catalog_non_root_agent(&observed.thread, &spawned_child_ids))
+        .map(|observed| observed.thread.id.clone())
         .collect::<HashSet<_>>();
+    let ineligible_thread_ids = observed_threads
+        .values()
+        .filter(|observed| !observed.eligible)
+        .map(|observed| observed.thread.id.clone())
+        .collect::<HashSet<_>>();
+    let threads = observed_threads
+        .into_iter()
+        .filter_map(|(thread_id, observed)| {
+            observed.eligible.then_some((thread_id, observed.thread))
+        })
+        .collect::<HashMap<_, _>>();
     // Catalog-only evidence stays path-scoped so one stale database cannot remove another's row.
     for catalog_thread_ids in catalog_non_root_thread_ids.values_mut() {
         catalog_thread_ids.retain(|thread_id| {
@@ -3191,12 +3252,25 @@ fn collect_catalog_repair_plan(
         });
     }
     catalog_non_root_thread_ids.retain(|_, thread_ids| !thread_ids.is_empty());
-    threads.retain(|thread_id, _| !non_root_thread_ids.contains(thread_id));
     Ok(CatalogRepairPlan {
         threads,
         non_root_thread_ids,
+        ineligible_thread_ids,
         catalog_non_root_thread_ids,
     })
+}
+
+fn catalog_rollout_path_exists(home: &Path, rollout_path: &str) -> bool {
+    let rollout_path = rollout_path.trim();
+    if rollout_path.is_empty() {
+        return true;
+    }
+    let rollout_path = Path::new(rollout_path);
+    if rollout_path.is_absolute() {
+        rollout_path.is_file()
+    } else {
+        home.join(rollout_path).is_file()
+    }
 }
 
 fn collect_spawned_child_thread_ids(paths: &[PathBuf]) -> anyhow::Result<HashSet<String>> {
