@@ -885,7 +885,7 @@ mod tests {
         write_marketplace(home);
         write_remote_marketplace(home);
         let plugins_source = home.join(".tmp").join("plugins").display().to_string();
-        let extended_plugins_source = windows_extended_path(&home.join(".tmp").join("plugins"));
+        let extended_plugins_source = expected_marketplace_path(&home.join(".tmp").join("plugins"));
         std::fs::write(
             home.join("config.toml"),
             format!(
