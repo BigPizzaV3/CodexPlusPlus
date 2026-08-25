@@ -81,7 +81,9 @@ model_provider = "chatgpt"
     .unwrap();
 
     let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
-    assert!(config.contains("[marketplaces.openai-curated-remote]"));
+    // 注册用的是非保留名：openai-* 会被 codex 静默忽略（#1974 / #1968）
+    assert!(config.contains("[marketplaces.codex-plus-curated]"));
+    assert!(!config.contains("[marketplaces.openai-curated-remote]"));
     assert!(config.contains(r#"source_type = "local""#));
     assert!(config.contains(".tmp\\plugins-remote") || config.contains(".tmp/plugins-remote"));
 }

@@ -6,22 +6,36 @@ use toml_edit::{DocumentMut, Item, Table};
 
 const OPENAI_CURATED_MARKETPLACE: &str = "openai-curated";
 const OPENAI_API_CURATED_MARKETPLACE: &str = "openai-api-curated";
-const OPENAI_CURATED_REMOTE_MARKETPLACE: &str = "openai-curated-remote";
+/// 内置插件包在 zip 里自带的名字。这是 codex 的保留名，注册在它下面会被静默忽略，
+/// 所以落盘时会被改写成 `CODEX_PLUS_MARKETPLACE`；这里只用于识别和清理历史遗留配置。
+const LEGACY_REMOTE_MARKETPLACE: &str = "openai-curated-remote";
+/// 内置插件包实际注册用的 marketplace 名。
+///
+/// **不能用 `openai-*` 开头的名字。** codex 把这些当保留名，注册在它们下面的本地
+/// marketplace 会被完全忽略——`codex plugin marketplace list` 直接不列出，用户在
+/// 插件市场里就看不到、装不了任何插件（issue #1974 / #1968）。
+///
+/// 实测（同一目录、同一份 marketplace.json，只改 name）：
+///
+/// | name | 结果 |
+/// |---|---|
+/// | `openai-curated` / `openai-curated-remote` | 被忽略 |
+/// | `openai-bundled` / `openai-bundled-alpha` | 被忽略 |
+/// | `openai-primary-runtime` / `openai-api-curated` | 被忽略 |
+/// | `codex-plus-curated` | 可用 |
+const CODEX_PLUS_MARKETPLACE: &str = "codex-plus-curated";
 const ROLE_SPECIFIC_PLUGINS_MARKETPLACE: &str = "role-specific-plugins";
 const OPENAI_PLUGINS_ZIP_URL: &str =
     "https://codeload.github.com/openai/plugins/zip/refs/heads/main";
 const OPENAI_PLUGINS_DOWNLOAD_LIMIT_BYTES: usize = 128 * 1024 * 1024;
-const OPENAI_CURATED_REMOTE_MARKETPLACE_ZIP: &[u8] =
+const CODEX_PLUS_MARKETPLACE_ZIP: &[u8] =
     include_bytes!("../../../assets/plugin-marketplaces/openai-curated-remote.zip");
 
 pub fn ensure_openai_curated_marketplace_config(home: &Path) -> anyhow::Result<bool> {
     let mut changed = cleanup_managed_reserved_marketplace_configs(home)?;
     if let Some(remote_marketplace_root) = local_openai_curated_remote_marketplace_root(home)? {
-        changed |= ensure_marketplace_configs(
-            home,
-            &[OPENAI_CURATED_REMOTE_MARKETPLACE],
-            &remote_marketplace_root,
-        )?;
+        changed |=
+            ensure_marketplace_configs(home, &[CODEX_PLUS_MARKETPLACE], &remote_marketplace_root)?;
     }
     Ok(changed)
 }
@@ -30,11 +44,11 @@ pub fn ensure_openai_curated_remote_marketplace_config(home: &Path) -> anyhow::R
     let Some(marketplace_root) = local_openai_curated_remote_marketplace_root(home)? else {
         return Ok(false);
     };
-    ensure_marketplace_configs(
-        home,
-        &[OPENAI_CURATED_REMOTE_MARKETPLACE],
-        &marketplace_root,
-    )
+    // 老用户的目录早就解压好了，不会再走安装分支，但里面的 marketplace.json 还是
+    // 旧的保留名。config 注册的是新名，两边对不上 codex 一样不认，所以这里无条件
+    // 规范化一次。
+    rewrite_marketplace_name(&marketplace_root)?;
+    ensure_marketplace_configs(home, &[CODEX_PLUS_MARKETPLACE], &marketplace_root)
 }
 
 pub fn ensure_role_specific_plugins_marketplace_config(home: &Path) -> anyhow::Result<bool> {
@@ -59,7 +73,7 @@ pub fn ensure_openai_curated_remote_marketplace_available(
 ) -> anyhow::Result<MarketplaceEnsureResult> {
     let mut initialized = false;
     if local_openai_curated_remote_marketplace_root(home)?.is_none() {
-        install_openai_curated_remote_marketplace_zip(home, OPENAI_CURATED_REMOTE_MARKETPLACE_ZIP)?;
+        install_openai_curated_remote_marketplace_zip(home, CODEX_PLUS_MARKETPLACE_ZIP)?;
         initialized = true;
     }
     let configured = ensure_openai_curated_remote_marketplace_config(home)?;
@@ -76,11 +90,7 @@ pub fn preserve_openai_curated_remote_marketplace_config(
     let Some(marketplace_root) = local_openai_curated_remote_marketplace_root(home)? else {
         return Ok(config_text.to_string());
     };
-    merge_marketplace_configs_into_text(
-        config_text,
-        &[OPENAI_CURATED_REMOTE_MARKETPLACE],
-        &marketplace_root,
-    )
+    merge_marketplace_configs_into_text(config_text, &[CODEX_PLUS_MARKETPLACE], &marketplace_root)
 }
 
 pub fn openai_curated_marketplace_status(home: &Path) -> MarketplaceStatus {
@@ -92,11 +102,7 @@ pub fn openai_curated_marketplace_status(home: &Path) -> MarketplaceStatus {
         && remote_marketplace_root
             .as_deref()
             .map(|remote_root| {
-                marketplace_config_points_to_root(
-                    home,
-                    OPENAI_CURATED_REMOTE_MARKETPLACE,
-                    remote_root,
-                )
+                marketplace_config_points_to_root(home, CODEX_PLUS_MARKETPLACE, remote_root)
             })
             .unwrap_or(true);
     MarketplaceStatus {
@@ -111,9 +117,7 @@ pub fn openai_curated_remote_marketplace_status(home: &Path) -> MarketplaceStatu
         .flatten();
     let config_registered = marketplace_root
         .as_deref()
-        .map(|root| {
-            marketplace_config_points_to_root(home, OPENAI_CURATED_REMOTE_MARKETPLACE, root)
-        })
+        .map(|root| marketplace_config_points_to_root(home, CODEX_PLUS_MARKETPLACE, root))
         .unwrap_or(false);
     MarketplaceStatus {
         marketplace_root,
@@ -264,8 +268,8 @@ fn local_openai_curated_remote_marketplace_root(home: &Path) -> anyhow::Result<O
         .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
     let marketplace: serde_json::Value = serde_json::from_str(&text)
         .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
-    if marketplace.get("name").and_then(serde_json::Value::as_str)
-        != Some(OPENAI_CURATED_REMOTE_MARKETPLACE)
+    // 新旧名都认：zip 里自带的是旧名，已解压的历史目录也还是旧名。
+    if !is_codex_plus_marketplace_name(marketplace.get("name").and_then(serde_json::Value::as_str))
     {
         return Ok(None);
     }
@@ -336,6 +340,39 @@ fn install_openai_plugins_zip(home: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     result
 }
 
+/// 内置插件包的 marketplace.json 认新旧两种 name：zip 里自带旧名，
+/// 历史版本解压出来的目录也是旧名。
+fn is_codex_plus_marketplace_name(name: Option<&str>) -> bool {
+    matches!(
+        name,
+        Some(CODEX_PLUS_MARKETPLACE) | Some(LEGACY_REMOTE_MARKETPLACE)
+    )
+}
+
+/// 把解压出来的 marketplace.json 的 name 改写成非保留名。
+///
+/// zip 里自带的是 `openai-curated-remote`——codex 的保留名，注册在它下面会被
+/// 静默忽略。改名后 codex 才会真正加载这些插件（#1974 / #1968）。
+fn rewrite_marketplace_name(root: &Path) -> anyhow::Result<()> {
+    let path = root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut marketplace: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if marketplace.get("name").and_then(serde_json::Value::as_str) == Some(CODEX_PLUS_MARKETPLACE) {
+        return Ok(());
+    }
+    marketplace["name"] = serde_json::Value::String(CODEX_PLUS_MARKETPLACE.to_string());
+    let encoded = serde_json::to_string_pretty(&marketplace)
+        .with_context(|| format!("failed to encode {}", path.display()))?;
+    std::fs::write(&path, encoded)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
 fn install_openai_curated_remote_marketplace_zip(home: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let destination = home.join(".tmp").join("plugins-remote");
     let staging_parent = home.join(".tmp");
@@ -356,6 +393,7 @@ fn install_openai_curated_remote_marketplace_zip(home: &Path, bytes: &[u8]) -> a
         .with_context(|| format!("failed to create {}", staging.display()))?;
 
     let result = extract_zip_exact(bytes, &staging)
+        .and_then(|_| rewrite_marketplace_name(&staging))
         .and_then(|_| validate_openai_curated_remote_marketplace_root(&staging))
         .and_then(|_| {
             replace_directory_with_backup_name(
@@ -520,8 +558,8 @@ fn local_openai_curated_remote_marketplace_root_from_root(
         .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
     let marketplace: serde_json::Value = serde_json::from_str(&text)
         .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
-    if marketplace.get("name").and_then(serde_json::Value::as_str)
-        != Some(OPENAI_CURATED_REMOTE_MARKETPLACE)
+    // 新旧名都认：zip 里自带的是旧名，已解压的历史目录也还是旧名。
+    if !is_codex_plus_marketplace_name(marketplace.get("name").and_then(serde_json::Value::as_str))
     {
         return Ok(None);
     }
@@ -629,14 +667,22 @@ pub fn cleanup_managed_reserved_marketplace_configs(home: &Path) -> anyhow::Resu
     };
     let mut doc = parse_toml_document(&existing)?;
     let managed_root = home.join(".tmp").join("plugins");
+    let remote_root = home.join(".tmp").join("plugins-remote");
+    // 全是 codex 的保留名，注册在它们下面会被静默忽略。只清我们自己写进去的
+    // （source 指向我们托管的目录），用户手工加的同名条目不动。
+    let managed_entries = [
+        (OPENAI_CURATED_MARKETPLACE, managed_root.as_path()),
+        (OPENAI_API_CURATED_MARKETPLACE, managed_root.as_path()),
+        (LEGACY_REMOTE_MARKETPLACE, remote_root.as_path()),
+    ];
     let mut changed = false;
     let mut remove_marketplaces_table = false;
     if let Some(marketplaces) = doc.get_mut("marketplaces").and_then(Item::as_table_mut) {
-        for marketplace_name in [OPENAI_CURATED_MARKETPLACE, OPENAI_API_CURATED_MARKETPLACE] {
+        for (marketplace_name, root) in managed_entries {
             let managed = marketplaces
                 .get(marketplace_name)
                 .and_then(Item::as_table)
-                .is_some_and(|table| marketplace_table_points_to_root(table, &managed_root));
+                .is_some_and(|table| marketplace_table_points_to_root(table, root));
             if managed {
                 marketplaces.remove(marketplace_name);
                 changed = true;
@@ -911,11 +957,11 @@ source = {}
         assert!(parsed["marketplaces"].get("openai-curated").is_none());
         assert!(parsed["marketplaces"].get("openai-api-curated").is_none());
         assert_eq!(
-            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            parsed["marketplaces"]["codex-plus-curated"]["source_type"].as_str(),
             Some("local")
         );
         assert_eq!(
-            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            parsed["marketplaces"]["codex-plus-curated"]["source"].as_str(),
             Some(expected_marketplace_path(&home.join(".tmp").join("plugins-remote")).as_str())
         );
     }
@@ -1058,7 +1104,7 @@ source = '\\?\{}'
         let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
         let parsed = config.parse::<DocumentMut>().unwrap();
         assert_eq!(
-            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            parsed["marketplaces"]["codex-plus-curated"]["source"].as_str(),
             Some(remote_root.to_string_lossy().as_ref())
         );
         assert_eq!(
@@ -1129,11 +1175,11 @@ source = '\\?\{}'
                 .is_none()
         );
         assert_eq!(
-            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            parsed["marketplaces"]["codex-plus-curated"]["source_type"].as_str(),
             Some("local")
         );
         assert_eq!(
-            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            parsed["marketplaces"]["codex-plus-curated"]["source"].as_str(),
             Some(expected_marketplace_path(&home.join(".tmp").join("plugins-remote")).as_str())
         );
     }
@@ -1164,13 +1210,65 @@ source = '\\?\{}'
         let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
         let parsed = config.parse::<DocumentMut>().unwrap();
         assert_eq!(
-            parsed["marketplaces"]["openai-curated-remote"]["source_type"].as_str(),
+            parsed["marketplaces"]["codex-plus-curated"]["source_type"].as_str(),
             Some("local")
         );
         assert_eq!(
-            parsed["marketplaces"]["openai-curated-remote"]["source"].as_str(),
+            parsed["marketplaces"]["codex-plus-curated"]["source"].as_str(),
             Some(expected_marketplace_path(&home.join(".tmp").join("plugins-remote")).as_str())
         );
+    }
+
+    /// codex 会静默忽略注册在保留名下的本地 marketplace——`codex plugin marketplace
+    /// list` 直接不列出，用户在插件市场里看不到也装不了任何插件（#1974 / #1968）。
+    ///
+    /// 实测确认被忽略的名字：openai-curated、openai-curated-remote、openai-bundled、
+    /// openai-bundled-alpha、openai-primary-runtime、openai-api-curated。
+    /// 所以我们注册用的名字绝不能落在这个集合里。
+    #[test]
+    fn codex_plus_marketplace_name_is_not_a_codex_reserved_name() {
+        const CODEX_RESERVED: [&str; 6] = [
+            "openai-curated",
+            "openai-curated-remote",
+            "openai-bundled",
+            "openai-bundled-alpha",
+            "openai-primary-runtime",
+            "openai-api-curated",
+        ];
+        assert!(
+            !CODEX_RESERVED.contains(&CODEX_PLUS_MARKETPLACE),
+            "{CODEX_PLUS_MARKETPLACE} 是 codex 的保留名，注册后会被静默忽略"
+        );
+        // codex 保留的是整个 openai-* 前缀，别再踩进去
+        assert!(
+            !CODEX_PLUS_MARKETPLACE.starts_with("openai-"),
+            "不要用 openai- 前缀的 marketplace 名"
+        );
+        // 旧名当年就是踩了这个坑，保留它只为清理历史配置
+        assert!(CODEX_RESERVED.contains(&LEGACY_REMOTE_MARKETPLACE));
+    }
+
+    /// 内置 zip 里自带的是保留名，解压后必须被改写，否则 codex 加载不到。
+    #[test]
+    fn extracted_marketplace_name_is_rewritten_off_the_reserved_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let dir = root.join(".agents").join("plugins");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("marketplace.json"),
+            r#"{"name":"openai-curated-remote","plugins":[{"name":"a","path":"./plugins/a"}]}"#,
+        )
+        .unwrap();
+
+        rewrite_marketplace_name(root).unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("marketplace.json")).unwrap())
+                .unwrap();
+        assert_eq!(parsed["name"].as_str(), Some(CODEX_PLUS_MARKETPLACE));
+        // 插件清单不能在改名过程中丢掉
+        assert_eq!(parsed["plugins"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]
