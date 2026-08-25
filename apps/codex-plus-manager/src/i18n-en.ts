@@ -1020,6 +1020,10 @@ export const EN_PLAIN: Record<string, string> = {
   "MCP 配置": "MCP configuration",
   "MCP 导入": "MCP import",
   "MCP 配置 JSON": "MCP configuration JSON",
+  "导入 MCP JSON": "Import MCP JSON",
+  "按字段填写即可；表单没覆盖的高级配置会原样保留。":
+    "Fill in the fields below. Advanced settings the form does not cover are preserved as-is.",
+  "只填写表头下面的内容。": "Enter only the contents below the table header.",
   "导入 JSON": "Import JSON",
   "支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。":
     "Accepts an mcpServers / servers wrapper, or a single server object pasted on its own.",
@@ -1124,6 +1128,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "透明度 {0}%": "Opacity {0}%",
   "，跳过 {0} 个占用文件": ", skipped {0} locked file(s)",
   "将导入 {0} 个：{1}": "Will import {0}: {1}",
+  "新增{0}": "Add {0}",
 
   // Skills 面板
   "全部更新（{0}）": "Update all ({0})",

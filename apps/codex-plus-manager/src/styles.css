@@ -2131,6 +2131,24 @@ body {
   gap: 10px;
 }
 
+/* MCP 表单和 JSON 导入的模态。
+ *
+ * 默认 modal-card 是 560px，装不下两列的表单字段；表单展开后也可能超出屏幕，
+ * 所以放宽并让正文区自己滚动，头部（标题 + 关闭）保持可见。 */
+.modal-card.context-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+}
+
+.modal-card.context-modal .context-editor {
+  overflow-y: auto;
+  /* 内联形态才需要顶部分隔线，模态里头部已经分隔过了 */
+  border-top: 0;
+  padding-top: 0;
+}
+
 .context-editor-textarea {
   min-height: 160px;
   font-family: Consolas, "SFMono-Regular", monospace;

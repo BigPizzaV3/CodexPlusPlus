@@ -8918,12 +8918,26 @@ function RelayContextManager({
         </div>
         <div className="relay-context-head-actions">
           {activeKind === "mcp" ? (
-            <Button onClick={() => setImportOpen((open) => !open)} size="sm" variant="secondary">
+            <Button
+              onClick={() => {
+                setEditor(null);
+                setImportOpen(true);
+              }}
+              size="sm"
+              variant="secondary"
+            >
               <Download className="h-4 w-4" />
               {t("导入 JSON")}
             </Button>
           ) : null}
-          <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
+          <Button
+            onClick={() => {
+              setImportOpen(false);
+              setEditor({ kind: activeKind });
+            }}
+            size="sm"
+            variant="secondary"
+          >
             <Plus className="h-4 w-4" />
             {t("新增")}{label}
           </Button>
@@ -8964,7 +8978,15 @@ function RelayContextManager({
                     <span className="context-switch-thumb" />
                   </span>
                 </button>
-                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title={t("编辑扩展项")} variant="ghost">
+                <Button
+                  onClick={() => {
+                    setImportOpen(false);
+                    setEditor({ kind: entry.kind, entry });
+                  }}
+                  size="icon"
+                  title={t("编辑扩展项")}
+                  variant="ghost"
+                >
                   <Edit3 className="h-4 w-4" />
                 </Button>
                 <Button
@@ -9024,7 +9046,17 @@ function McpJsonImporter({
   };
 
   return (
-    <div className="context-editor">
+    <div aria-modal="true" className="modal-backdrop" role="dialog">
+      <div className="modal-card context-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("导入 MCP JSON")}</h2>
+            <p className="modal-message">
+              {t("支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。")}
+            </p>
+          </div>
+          <button aria-label={t("关闭窗口")} className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
       <Field label={t("MCP 配置 JSON")}>
         <Textarea
           className="context-editor-textarea"
@@ -9038,9 +9070,6 @@ function McpJsonImporter({
           spellCheck={false}
         />
       </Field>
-      <div className="relay-context-summary">
-        {t("支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。")}
-      </div>
       {preview ? (
         <div className="relay-context-summary">
           <div>{tf("将导入 {0} 个：{1}", [preview.entries.length, preview.entries.map((item) => item.id).join("、")])}</div>
@@ -9059,6 +9088,7 @@ function McpJsonImporter({
         </Button>
         <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
       </Toolbar>
+      </div>
     </div>
   );
 }
@@ -9154,8 +9184,23 @@ function ContextEntryEditor({
     onSave(draftKind, id.trim(), built);
   };
 
+  const title = entry ? t("编辑扩展项") : tf("新增{0}", [contextKindLabel(draftKind)]);
+
   return (
-    <div className="context-editor">
+    <div aria-modal="true" className="modal-backdrop" role="dialog">
+      <div className="modal-card context-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{title}</h2>
+            <p className="modal-message">
+              {useForm
+                ? t("按字段填写即可；表单没覆盖的高级配置会原样保留。")
+                : t("只填写表头下面的内容。")}
+            </p>
+          </div>
+          <button aria-label={t("关闭窗口")} className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+      <div className="context-editor">
       <div className="context-editor-fields">
         <Field label={t("类型")}>
           <AppSelect
@@ -9219,6 +9264,8 @@ function ContextEntryEditor({
         </Button>
         <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
       </Toolbar>
+      </div>
+      </div>
     </div>
   );
 }
