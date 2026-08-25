@@ -3283,12 +3283,29 @@
     return codexRemoteSessionProviderNormalizationEnabled();
   }
 
+  function codexRelayConfigModelProvider(configContents) {
+    const text = String(configContents || "");
+    const match = /(?:^|\n)\s*model_provider\s*=\s*["']([^"'\n]+)["']/m.exec(text);
+    return match ? String(match[1]).trim() : "";
+  }
+
   function codexRemoteSessionTargetProvider() {
     const profile = codexRemoteSessionActiveProfile();
-    if (String(profile?.relayMode || "") === "pureApi") return "custom";
-    return String(
+    const relayMode = String(profile?.relayMode || "");
+    // Resolve the provider the active relay actually writes into config.toml
+    // (e.g. a relay profile that uses `model_provider = "deepseek"` with a
+    // matching [model_providers.deepseek] block) instead of assuming every
+    // pureApi relay is literally the "custom" provider. Fall back to "custom"
+    // only when the profile carries no provider and none is configured, so
+    // existing pureApi relays that genuinely use `[model_providers.custom]`
+    // keep working.
+    const resolved =
       codexPlusBackendSettings.activeRelayCodexProvider
-      || codexModelCatalog?.codex_model_provider
+      || codexRelayConfigModelProvider(profile?.configContents || "");
+    if (resolved) return String(resolved).trim();
+    if (relayMode === "pureApi") return "custom";
+    return String(
+      codexModelCatalog?.codex_model_provider
       || codexModelCatalog?.codexModelProvider
       || codexModelCatalog?.model_provider
       || codexModelCatalog?.modelProvider

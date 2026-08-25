@@ -602,3 +602,76 @@ describe("renderer injection plugin marketplace patch", () => {
     assert.deepEqual(harness.diagnostics(), ["plugin_marketplace_request_patch_installed"]);
   });
 });
+
+describe("relay pureApi provider resolution", () => {
+  function providerRuntime(
+    renderer: string,
+    backendSettings: Record<string, unknown>,
+    catalog: Record<string, unknown>,
+    profile: Record<string, unknown>,
+  ) {
+    const start = renderer.indexOf("function codexRelayConfigModelProvider(");
+    const codeStart = renderer.indexOf("function codexRemoteSessionTargetProvider(");
+    const end = renderer.indexOf("\n  function codexRemoteSessionProviderRequestMethod", codeStart);
+    assert.ok(start >= 0 && codeStart >= 0 && end > codeStart);
+    const source = renderer.slice(start, end);
+    const create = new Function(
+      "codexPlusBackendSettings",
+      "codexModelCatalog",
+      "codexRemoteSessionActiveProfile",
+      `${source}\nreturn { codexRelayConfigModelProvider, codexRemoteSessionTargetProvider };`,
+    ) as (
+      backend: Record<string, unknown>,
+      cat: Record<string, unknown>,
+      activeProfile: () => Record<string, unknown>,
+    ) => {
+      codexRelayConfigModelProvider: (configContents: string) => string;
+      codexRemoteSessionTargetProvider: () => string;
+    };
+    return create(backendSettings, catalog, () => profile);
+  }
+
+  it("resolves the real model_provider from a pureApi relay profile instead of hardcoding custom", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = providerRuntime(
+      renderer,
+      {},
+      { codex_model_provider: "deepseek" },
+      { relayMode: "pureApi", configContents: 'model = "deepseek-v4-flash-vision-exp"\nmodel_provider = "deepseek"' },
+    );
+
+    assert.equal(runtime.codexRelayConfigModelProvider('model_provider = "deepseek"'), "deepseek");
+    assert.equal(runtime.codexRemoteSessionTargetProvider(), "deepseek");
+  });
+
+  it("still returns custom for pureApi relays that genuinely declare the custom provider", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = providerRuntime(
+      renderer,
+      {},
+      { codex_model_provider: "custom" },
+      { relayMode: "pureApi", configContents: 'model_provider = "custom"\n[model_providers.custom]' },
+    );
+
+    assert.equal(runtime.codexRemoteSessionTargetProvider(), "custom");
+  });
+
+  it("falls back to custom when a pureApi relay declares no provider", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = providerRuntime(renderer, {}, { codex_model_provider: "" }, { relayMode: "pureApi", configContents: "" });
+
+    assert.equal(runtime.codexRemoteSessionTargetProvider(), "custom");
+  });
+
+  it("prefers activeRelayCodexProvider when configured", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = providerRuntime(
+      renderer,
+      { activeRelayCodexProvider: "deepseek" },
+      { codex_model_provider: "" },
+      { relayMode: "pureApi", configContents: "" },
+    );
+
+    assert.equal(runtime.codexRemoteSessionTargetProvider(), "deepseek");
+  });
+});
