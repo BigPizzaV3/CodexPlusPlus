@@ -867,7 +867,23 @@ fn sync_active_relay_to_home(
     )
 }
 
-fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
+fn spawn_codex_plus_launch(
+    mut request: LaunchRequest,
+    accepted_message: &str,
+) -> CommandResult<Value> {
+    // launcher 收到显式 --app-path 时不会回退自动探测（避免静默启动错误目录），
+    // 所以这里先把明显无效的路径摘掉，让它走探测而不是永久失败（#1972）。
+    let requested_app_path = request.app_path.trim().to_string();
+    if !requested_app_path.is_empty()
+        && codex_plus_core::app_paths::normalize_codex_app_path(Path::new(&requested_app_path))
+            .is_none()
+    {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "manager.launch_app_path_rejected",
+            json!({ "app_path": requested_app_path }),
+        );
+        request.app_path = String::new();
+    }
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
     let launch_started_at_ms = current_timestamp_ms();
@@ -2606,12 +2622,25 @@ fn local_session_adapter(db_path: &Path) -> codex_plus_data::SQLiteStorageAdapte
     )
 }
 
-fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
-    if let Some(path) =
-        codex_plus_core::app_paths::normalize_codex_app_path(Path::new(&settings.codex_app_path))
-    {
-        settings.codex_app_path = path.to_string_lossy().to_string();
+/// 归一化「Codex 应用路径」。**无效路径一律丢弃，不落库。**
+///
+/// 之前的写法是 normalize 成功才覆盖、失败就原样保留，于是误选的路径会被存进
+/// settings.json。而 launcher 拿到显式 --app-path 且无效时不回退自动探测，
+/// 结果就是启动永久失败、只能手改配置文件才能恢复（#1972：用户误选了 Codex++
+/// 自己的 codex-plus-plus.exe，因为文件选择器只按 exe 扩展名过滤）。
+///
+/// 清空之后 resolve_codex_app_dir_with_saved 会走自动探测，至少还能起来。
+fn normalized_codex_app_path_for_save(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return String::new();
     }
+    codex_plus_core::app_paths::normalize_codex_app_path(Path::new(raw))
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
+    settings.codex_app_path = normalized_codex_app_path_for_save(&settings.codex_app_path);
     settings.relay_common_config_contents =
         codex_plus_core::relay_config::sanitize_common_config_contents(
             &settings.relay_common_config_contents,
@@ -7100,6 +7129,47 @@ enabled = true
         assert_eq!(
             prepare_relay_file_contents("config", config, &chat_completions).unwrap(),
             config
+        );
+    }
+
+    #[test]
+    /// #1972：用户误把 Codex++ 自己的 exe 选成了「Codex 应用路径」——文件选择器
+    /// 只按 exe 扩展名过滤，拦不住。以前无效路径会原样存进 settings.json，而
+    /// launcher 拿到显式无效 --app-path 又不回退自动探测，于是启动永久失败，
+    /// 只能手改配置文件才能恢复。
+    #[test]
+    fn normalize_settings_before_save_drops_an_invalid_codex_app_path() {
+        let codex_plus_own_exe = if cfg!(windows) {
+            r"D:\Codex++\codex-plus-plus.exe"
+        } else {
+            "/Applications/Codex++/codex-plus-plus"
+        };
+        let settings = BackendSettings {
+            codex_app_path: codex_plus_own_exe.to_string(),
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_before_save(settings);
+
+        // 清空而不是留着：留着就会被当成显式 --app-path 传下去，永久失败
+        assert!(
+            normalized.codex_app_path.is_empty(),
+            "指向 Codex++ 自身的路径不该落库，实际是 {}",
+            normalized.codex_app_path
+        );
+    }
+
+    #[test]
+    fn normalize_settings_before_save_keeps_an_empty_codex_app_path_empty() {
+        let settings = BackendSettings {
+            codex_app_path: "   ".to_string(),
+            ..BackendSettings::default()
+        };
+
+        assert!(
+            normalize_settings_before_save(settings)
+                .codex_app_path
+                .is_empty()
         );
     }
 
