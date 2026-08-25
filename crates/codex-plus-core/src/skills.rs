@@ -768,9 +768,14 @@ pub fn extract_skill_subtree(
         let Some(relative) = crate::plugin_marketplace::zip_entry_relative_path(file.name()) else {
             continue;
         };
-        let Some(relative) = relative.to_str() else {
-            continue;
-        };
+        // zip 内部的分隔符恒为 '/'，但上面拿回来的是 PathBuf，在 Windows 上
+        // to_str() 会渲染成 '\'，跟用 '/' 拼出来的 prefix 永远匹配不上——结果就是
+        // 一个文件都解不出来，报「没有 SKILL.md」。这里统一拼回 '/' 再比。
+        let relative = relative
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect::<Vec<_>>()
+            .join("/");
         let Some(inner) = relative.strip_prefix(prefix.as_str()) else {
             continue;
         };
