@@ -663,13 +663,43 @@ describe("relay pureApi provider resolution", () => {
     assert.equal(runtime.codexRemoteSessionTargetProvider(), "custom");
   });
 
-  it("prefers activeRelayCodexProvider when configured", async () => {
+  // activeRelayCodexProvider 是全局缓存，切换供应商后可能还留着上一个的值。
+  // pureApi 时优先信 profile 自己的 configContents；profile 没声明就回到
+  // "custom"，不采信这个缓存——cdp_bridge.rs 的 refreshedPureApiResumeProvider
+  // 正是钉这个：陈旧缓存是 stale_custom_provider 时必须仍解析成 custom。
+  it("ignores a possibly stale activeRelayCodexProvider for pureApi relays", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = providerRuntime(
+      renderer,
+      { activeRelayCodexProvider: "stale_custom_provider" },
+      { codex_model_provider: "" },
+      { relayMode: "pureApi", configContents: "" },
+    );
+
+    assert.equal(runtime.codexRemoteSessionTargetProvider(), "custom");
+  });
+
+  // 非 pureApi 才拿 activeRelayCodexProvider 兜底。
+  it("still falls back to activeRelayCodexProvider outside pureApi", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const runtime = providerRuntime(
       renderer,
       { activeRelayCodexProvider: "deepseek" },
       { codex_model_provider: "" },
-      { relayMode: "pureApi", configContents: "" },
+      { relayMode: "mixedApi", configContents: "" },
+    );
+
+    assert.equal(runtime.codexRemoteSessionTargetProvider(), "deepseek");
+  });
+
+  // profile 自己声明了供应方时，优先级高于全局缓存。
+  it("prefers the profile's own configContents over the cached provider", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = providerRuntime(
+      renderer,
+      { activeRelayCodexProvider: "stale_custom_provider" },
+      { codex_model_provider: "" },
+      { relayMode: "pureApi", configContents: 'model_provider = "deepseek"' },
     );
 
     assert.equal(runtime.codexRemoteSessionTargetProvider(), "deepseek");

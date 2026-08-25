@@ -3292,20 +3292,21 @@
   function codexRemoteSessionTargetProvider() {
     const profile = codexRemoteSessionActiveProfile();
     const relayMode = String(profile?.relayMode || "");
-    // Resolve the provider the active relay actually writes into config.toml
-    // (e.g. a relay profile that uses `model_provider = "deepseek"` with a
-    // matching [model_providers.deepseek] block) instead of assuming every
-    // pureApi relay is literally the "custom" provider. Fall back to "custom"
-    // only when the profile carries no provider and none is configured, so
-    // existing pureApi relays that genuinely use `[model_providers.custom]`
-    // keep working.
-    const resolved =
-      codexPlusBackendSettings.activeRelayCodexProvider
-      || codexRelayConfigModelProvider(profile?.configContents || "");
-    if (resolved) return String(resolved).trim();
+    // 解析中继实际写进 config.toml 的 model_provider（比如
+    // `model_provider = "deepseek"` 配 [model_providers.deepseek]），而不是
+    // 假定每个 pureApi 中继都叫 "custom"——那会让恢复会话报
+    // "Model provider `custom` not found"。
+    //
+    // 顺序上先看 profile.configContents 再看 activeRelayCodexProvider：后者是
+    // 全局缓存，切换供应商后可能还是上一个的值；profile 是当前这次调用现取的，
+    // 更可信。反过来会让 pureApi 恢复会话拿到陈旧 provider。
+    const fromConfig = codexRelayConfigModelProvider(profile?.configContents || "");
+    if (fromConfig) return fromConfig;
+    // pureApi 且 profile 自己没声明供应方时回到 "custom"，不去读可能陈旧的全局缓存。
     if (relayMode === "pureApi") return "custom";
     return String(
-      codexModelCatalog?.codex_model_provider
+      codexPlusBackendSettings.activeRelayCodexProvider
+      || codexModelCatalog?.codex_model_provider
       || codexModelCatalog?.codexModelProvider
       || codexModelCatalog?.model_provider
       || codexModelCatalog?.modelProvider
