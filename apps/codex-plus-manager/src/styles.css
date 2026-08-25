@@ -3921,6 +3921,81 @@ input[type="range"]:disabled {
   gap: 12px;
 }
 
+/* Skills 卡片。
+ *
+ * 不复用 .script-market-card：那个卡片是 display:grid 且行高 auto，被同行最高的
+ * 卡片拉伸时多余高度会分摊进每一行，描述框跟着变高，line-clamp 只渲染 3 行但盒子
+ * 更高，overflow:hidden 下面就会露出第 4 行的一小截。这里用 align-content:
+ * space-between，多余空间只落在行与行之间，各行保持自然高度。 */
+.skill-card {
+  display: grid;
+  align-content: space-between;
+  gap: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--card));
+  padding: 14px;
+  transition:
+    border-color var(--motion-normal) var(--motion-ease),
+    box-shadow var(--motion-normal) var(--motion-ease),
+    transform var(--motion-normal) var(--motion-ease);
+}
+
+.skill-card:hover {
+  border-color: hsl(var(--primary) / 0.36);
+  box-shadow: 0 12px 26px hsl(var(--foreground) / 0.08);
+  transform: translateY(-1px);
+}
+
+.skill-card-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.skill-card-title strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+/* 仓库标识可能很长（ComposioHQ/awesome-claude-skills@master），
+ * 让它单行省略，避免换行把卡片撑出参差不齐的高度。 */
+.skill-card-source {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-card-description {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.skill-card-tags,
+.skill-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.skill-card-tag {
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .script-market-toolbar {
   display: flex;
   align-items: center;

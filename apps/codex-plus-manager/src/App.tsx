@@ -6361,25 +6361,33 @@ function SkillsScreen({ skills, actions }: { skills: SkillsResult | null; action
 
 function SkillCard({ entry, actions }: { entry: SkillEntry; actions: Actions }) {
   const busy = actions.skillBusyId === entry.id;
+  const tags = [
+    entry.bundled ? t("内置") : null,
+    entry.installed && !entry.bundled ? (entry.enabled ? t("已启用") : t("已停用")) : null,
+    entry.updateAvailable ? t("有新版本") : null,
+  ].filter((tag): tag is string => tag !== null);
   return (
-    <div className="script-market-card" data-view="grid">
-      <div className="script-market-title">
-        <div>
-          <strong>{entry.name || entry.id}</strong>
-          <span>{entry.repoKey || (entry.bundled ? t("Codex 内置") : t("本地"))}</span>
+    <div className="skill-card">
+      <div className="skill-card-title">
+        <strong>{entry.name || entry.id}</strong>
+        <span className="skill-card-source" title={entry.repoKey}>
+          {entry.repoKey || (entry.bundled ? t("Codex 内置") : t("本地"))}
+        </span>
+      </div>
+      {/* 卡片里只放得下 3 行，完整描述挂在 title 上供悬停查看 */}
+      <p className="skill-card-description" title={entry.description}>
+        {entry.description || t("暂无描述。")}
+      </p>
+      {tags.length ? (
+        <div className="skill-card-tags">
+          {tags.map((tag) => (
+            <span className="skill-card-tag" key={tag}>{tag}</span>
+          ))}
         </div>
-      </div>
-      <p className="script-market-description">{entry.description || t("暂无描述。")}</p>
-      <div className="script-market-tags">
-        {entry.bundled ? <span className="script-market-tag">{t("内置")}</span> : null}
-        {entry.installed && !entry.bundled ? (
-          <span className="script-market-tag">{entry.enabled ? t("已启用") : t("已停用")}</span>
-        ) : null}
-        {entry.updateAvailable ? <span className="script-market-tag">{t("有新版本")}</span> : null}
-      </div>
-      <div className="script-market-actions">
+      ) : null}
+      <div className="skill-card-actions">
         {entry.bundled ? (
-          <span className="script-market-tag">{t("Codex 自带，随版本更新")}</span>
+          <span className="skill-card-tag">{t("Codex 自带，随版本更新")}</span>
         ) : entry.installed ? (
           <>
             <Button
