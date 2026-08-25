@@ -1015,6 +1015,33 @@ export const EN_PLAIN: Record<string, string> = {
   // MCP 预设
   "从预设填充": "Fill from preset",
   "不使用预设": "No preset",
+
+  // MCP 表单与 JSON 导入
+  "MCP 配置": "MCP configuration",
+  "MCP 导入": "MCP import",
+  "MCP 配置 JSON": "MCP configuration JSON",
+  "导入 JSON": "Import JSON",
+  "支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。":
+    "Accepts an mcpServers / servers wrapper, or a single server object pasted on its own.",
+  "传输方式": "Transport",
+  "本地命令 (stdio)": "Local command (stdio)",
+  "远程 HTTP": "Remote HTTP",
+  "命令": "Command",
+  "参数": "Arguments",
+  "添加参数": "Add argument",
+  "例如 -y": "e.g. -y",
+  "添加环境变量": "Add variable",
+  "留空则用默认目录": "Leave empty for the default directory",
+  "请求头": "Headers",
+  "添加请求头": "Add header",
+  "Bearer Token": "Bearer token",
+  "留空则不写入": "Leave empty to omit",
+  "启动超时（秒）": "Startup timeout (seconds)",
+  "留空则用 codex 默认值": "Leave empty to use the codex default",
+  "删除这一项": "Remove this entry",
+  "高级：直接编辑 TOML": "Advanced: edit TOML directly",
+  "此条目还有表单未覆盖的高级配置，保存时会原样保留。展开下方高级区可查看。":
+    "This entry has advanced settings the form does not cover. They are preserved on save — expand the advanced section below to view them.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -1096,6 +1123,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "选择会话 {0}": "Select session {0}",
   "透明度 {0}%": "Opacity {0}%",
   "，跳过 {0} 个占用文件": ", skipped {0} locked file(s)",
+  "将导入 {0} 个：{1}": "Will import {0}: {1}",
 
   // Skills 面板
   "全部更新（{0}）": "Update all ({0})",

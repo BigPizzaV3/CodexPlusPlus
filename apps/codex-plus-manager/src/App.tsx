@@ -348,6 +348,46 @@ type CodexContextEntries = {
   plugins: CodexContextEntry[];
 };
 
+type McpTransport = "stdio" | "http";
+type McpKeyValue = { key: string; value: string };
+
+/** 与 Rust 侧 mcp_config::McpServerForm 一一对应。 */
+type McpServerForm = {
+  transport: McpTransport;
+  command: string;
+  args: string[];
+  env: McpKeyValue[];
+  cwd: string;
+  url: string;
+  httpHeaders: McpKeyValue[];
+  bearerToken: string;
+  startupTimeoutSec: string;
+  enabled: boolean;
+  /** 表单不认识的键（oauth、scopes 之类），原样带着，保存时合并回去。 */
+  extraToml: string;
+};
+
+const emptyMcpForm = (): McpServerForm => ({
+  transport: "stdio",
+  command: "",
+  args: [],
+  env: [],
+  cwd: "",
+  url: "",
+  httpHeaders: [],
+  bearerToken: "",
+  startupTimeoutSec: "",
+  enabled: true,
+  extraToml: "",
+});
+
+type McpFormResult = CommandResult<{ form: McpServerForm }>;
+type McpTomlResult = CommandResult<{ tomlBody: string }>;
+type McpImportPreviewResult = CommandResult<{
+  entries: Array<{ id: string; tomlBody: string }>;
+  warnings: string[];
+}>;
+
 type RelayProtocol = "responses" | "chatCompletions";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 type RelaySessionProvider = "custom" | "openai";
@@ -2741,8 +2781,51 @@ export function App() {
     return normalized;
   };
 
-  const deleteContextEntry = async (next: BackendSettings, kind: ContextKind, id: string) => {
+  // MCP 的 TOML ↔ 表单转换放在 Rust 侧：前端没有 TOML 解析器，正则切段拼不出
+  // 「保住表单不认识的高级字段」这件事。两个都是纯转换，不碰 settings。
+  const parseMcpEntry = async (tomlBody: string): Promise<McpServerForm | null> => {
+    const result = await run(() => call<McpFormResult>("parse_mcp_entry", { tomlBody }));
+    if (!result) return null;
+    if (!isSuccessStatus(result.status)) {
+      showResultNotice(t("MCP 配置"), result);
+      return null;
+    }
+    return result.form;
+  };
+
+  const buildMcpEntry = async (form: McpServerForm): Promise<string | null> => {
+    const result = await run(() => call<McpTomlResult>("build_mcp_entry", { form }));
+    if (!result) return null;
+    if (!isSuccessStatus(result.status)) {
+      showResultNotice(t("MCP 配置"), result);
+      return null;
+    }
+    return result.tomlBody;
+  };
+
+  const previewMcpServersJson = async (json: string) => {
+    const result = await run(() => call<McpImportPreviewResult>("preview_mcp_servers_json", { json }));
+    if (result && !isSuccessStatus(result.status)) showResultNotice(t("MCP 导入"), result);
+    return result;
+  };
+
+  const importMcpServersJson = async (next: BackendSettings, json: string) => {
     const result = await run(() =>
+      call<ContextEntriesResult>("import_mcp_servers_json", { request: { settings: next, json } }),
+    );
+    if (!result) return null;
+    let normalized = normalizeSettings(result.settings);
+    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (saveResult) {
+      setSettings(saveResult);
+      normalized = normalizeSettings(saveResult.settings);
+    }
+    setSettingsForm(normalized);
+    showResultNotice(t("MCP 导入"), result);
+    return isSuccessStatus(result.status) ? normalized : null;
+  };
+
+  const deleteContextEntry = async (next: BackendSettings, kind: ContextKind, id: string) => {    const result = await run(() =>
       call<ContextEntriesResult>("delete_context_entry", {
         request: { settings: next, kind, id },
       }),
@@ -3297,6 +3380,10 @@ export function App() {
       saveRelayFile,
       upsertContextEntry,
       deleteContextEntry,
+      parseMcpEntry,
+      buildMcpEntry,
+      previewMcpServersJson,
+      importMcpServersJson,
       extractRelayCommonConfig,
       testRelayProfile,
       diagnoseRelayProfile,
@@ -3716,6 +3803,10 @@ type Actions = {
     tomlBody: string,
   ) => Promise<BackendSettings | null>;
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
+  parseMcpEntry: (tomlBody: string) => Promise<McpServerForm | null>;
+  buildMcpEntry: (form: McpServerForm) => Promise<string | null>;
+  previewMcpServersJson: (json: string) => Promise<McpImportPreviewResult | null>;
+  importMcpServersJson: (settings: BackendSettings, json: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
@@ -8776,6 +8867,7 @@ function RelayContextManager({
   const entries = contextEntriesWithLiveEntries(form, liveEntries);
   const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
   const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const visibleEntries = contextEntriesByKind(entries, activeKind);
   const label = contextKindLabel(activeKind);
 
@@ -8809,6 +8901,14 @@ function RelayContextManager({
     await syncContextEntries(next);
   };
 
+  const importJson = async (json: string) => {
+    const next = await actions.importMcpServersJson(form, json);
+    if (!next) return;
+    onFormChange(next);
+    if (!(await syncContextEntries(next))) return;
+    setImportOpen(false);
+  };
+
   return (
     <div className="relay-context-panel">
       <div className="relay-context-head">
@@ -8817,6 +8917,12 @@ function RelayContextManager({
           <span>{t("MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。")}</span>
         </div>
         <div className="relay-context-head-actions">
+          {activeKind === "mcp" ? (
+            <Button onClick={() => setImportOpen((open) => !open)} size="sm" variant="secondary">
+              <Download className="h-4 w-4" />
+              {t("导入 JSON")}
+            </Button>
+          ) : null}
           <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
             <Plus className="h-4 w-4" />
             {t("新增")}{label}
@@ -8877,8 +8983,12 @@ function RelayContextManager({
           <div className="empty">{t("暂无")}{label}{t("，可以从通用配置文件或这里新增。")}</div>
         )}
       </div>
+      {importOpen ? (
+        <McpJsonImporter actions={actions} onCancel={() => setImportOpen(false)} onImport={importJson} />
+      ) : null}
       {editor ? (
         <ContextEntryEditor
+          actions={actions}
           entry={editor.entry}
           kind={editor.kind}
           onCancel={() => setEditor(null)}
@@ -8889,29 +8999,159 @@ function RelayContextManager({
   );
 }
 
+/**
+ * MCP JSON 导入。
+ *
+ * 社区文档里的 MCP 配置基本都是 Claude 风格的 `{"mcpServers":{…}}`，手工翻译成
+ * TOML 容易出错——尤其 headers 在 codex 里叫 http_headers，写错了不报错但认证
+ * 失效。这里先预览再写入，字段改写都列出来给用户看。
+ */
+function McpJsonImporter({
+  actions,
+  onCancel,
+  onImport,
+}: {
+  actions: Actions;
+  onCancel: () => void;
+  onImport: (json: string) => void;
+}) {
+  const [json, setJson] = useState("");
+  const [preview, setPreview] = useState<McpImportPreviewResult | null>(null);
+
+  const runPreview = async () => {
+    const result = await actions.previewMcpServersJson(json);
+    setPreview(result && isSuccessStatus(result.status) ? result : null);
+  };
+
+  return (
+    <div className="context-editor">
+      <Field label={t("MCP 配置 JSON")}>
+        <Textarea
+          className="context-editor-textarea"
+          value={json}
+          onChange={(event) => {
+            setJson(event.currentTarget.value);
+            // 内容变了，旧预览就作废，免得用户对着过期结果点导入
+            setPreview(null);
+          }}
+          placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'}
+          spellCheck={false}
+        />
+      </Field>
+      <div className="relay-context-summary">
+        {t("支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。")}
+      </div>
+      {preview ? (
+        <div className="relay-context-summary">
+          <div>{tf("将导入 {0} 个：{1}", [preview.entries.length, preview.entries.map((item) => item.id).join("、")])}</div>
+          {preview.warnings.map((warning) => (
+            <div key={warning}>⚠ {warning}</div>
+          ))}
+        </div>
+      ) : null}
+      <Toolbar>
+        <Button disabled={!json.trim()} onClick={() => void runPreview()} size="sm" variant="secondary">
+          {t("预览")}
+        </Button>
+        <Button disabled={!preview} onClick={() => onImport(json)} size="sm">
+          <Download className="h-4 w-4" />
+          {t("确认导入")}
+        </Button>
+        <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
+      </Toolbar>
+    </div>
+  );
+}
+
+/**
+ * MCP / 插件条目编辑器。
+ *
+ * MCP 走结构化表单：codex 的字段名有坑（headers 其实叫 http_headers，type 根本
+ * 不读），让用户手写 TOML 很容易踩。表单不认识的高级键（oauth、scopes 等）由
+ * Rust 侧收进 extraToml 原样带着，不会因为在表单里点一下就丢掉。
+ *
+ * 插件仍是裸 TOML：[plugins."x@y"] 实际只有 enabled 一个键，没必要做表单。
+ */
 function ContextEntryEditor({
   kind,
   entry,
   onCancel,
   onSave,
+  actions,
 }: {
   kind: ContextKind;
   entry?: CodexContextEntry;
   onCancel: () => void;
   onSave: (kind: ContextKind, id: string, tomlBody: string) => void;
+  actions: Actions;
 }) {
   const [draftKind, setDraftKind] = useState<ContextKind>(entry?.kind ?? kind);
   const [id, setId] = useState(entry?.id ?? "");
   const [tomlBody, setTomlBody] = useState(entry?.tomlBody ?? "");
+  const [form, setForm] = useState<McpServerForm>(emptyMcpForm());
+  const [rawMode, setRawMode] = useState(false);
+  const [formReady, setFormReady] = useState(false);
   const canSave = id.trim().length > 0;
+  const useForm = draftKind === "mcp";
 
-  // 选中预设就把 id 和 TOML 一起填好；用户随后仍可自由改。已有条目不给选，
+  // 打开已有 MCP 条目时把 TOML 拆进表单。解析失败（手写坏了）就退回裸 TOML，
+  // 总比把用户的内容丢掉强。
+  useEffect(() => {
+    let cancelled = false;
+    const initial = entry?.tomlBody ?? "";
+    if (!useForm || !initial.trim()) {
+      setFormReady(true);
+      return;
+    }
+    setFormReady(false);
+    void actions.parseMcpEntry(initial).then((parsed) => {
+      if (cancelled) return;
+      if (parsed) setForm(parsed);
+      else setRawMode(true);
+      setFormReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [entry, useForm, actions]);
+
+  const updateForm = (patch: Partial<McpServerForm>) => setForm((current) => ({ ...current, ...patch }));
+
+  // 选中预设就把 id 和配置一起填好；用户随后仍可自由改。已有条目不给选，
   // 免得一次误触把手写的配置盖掉。
-  const applyPreset = (presetId: string) => {
+  const applyPreset = async (presetId: string) => {
     const preset = mcpPresetById(presetId);
     if (!preset) return;
+    const body = preset.tomlBody({ windows: isWindowsPlatform });
     setId(preset.id);
-    setTomlBody(preset.tomlBody({ windows: isWindowsPlatform }));
+    setTomlBody(body);
+    const parsed = await actions.parseMcpEntry(body);
+    if (parsed) setForm(parsed);
+  };
+
+  // 展开高级区：表单 → TOML；收起：TOML → 表单。以当前所处模式为准保存。
+  const toggleRawMode = async () => {
+    if (!rawMode) {
+      const built = await actions.buildMcpEntry(form);
+      if (built === null) return;
+      setTomlBody(built);
+      setRawMode(true);
+      return;
+    }
+    const parsed = await actions.parseMcpEntry(tomlBody);
+    if (!parsed) return;
+    setForm(parsed);
+    setRawMode(false);
+  };
+
+  const save = async () => {
+    if (!useForm || rawMode) {
+      onSave(draftKind, id.trim(), tomlBody);
+      return;
+    }
+    const built = await actions.buildMcpEntry(form);
+    if (built === null) return;
+    onSave(draftKind, id.trim(), built);
   };
 
   return (
@@ -8925,11 +9165,11 @@ function ContextEntryEditor({
             options={contextKindOptions.map((option) => ({ value: option.kind, label: option.label }))}
           />
         </Field>
-        {!entry && draftKind === "mcp" ? (
+        {!entry && useForm ? (
           <Field label={t("从预设填充")}>
             <AppSelect
               value=""
-              onChange={applyPreset}
+              onChange={(value) => void applyPreset(value)}
               options={[
                 { value: "", label: t("不使用预设") },
                 ...MCP_PRESETS.map((preset) => ({ value: preset.id, label: preset.name })),
@@ -8946,26 +9186,236 @@ function ContextEntryEditor({
           />
         </Field>
       </div>
-      {!entry && draftKind === "mcp" && mcpPresetById(id) ? (
+      {!entry && useForm && mcpPresetById(id) ? (
         <div className="relay-context-summary">{mcpPresetById(id)?.description}</div>
       ) : null}
-      <Field label={t("TOML 配置体")}>
-        <Textarea
-          className="context-editor-textarea"
-          value={tomlBody}
-          onChange={(event) => setTomlBody(event.currentTarget.value)}
-          placeholder={t("只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]")}
-          spellCheck={false}
-        />
-      </Field>
+
+      {useForm && !rawMode && formReady ? (
+        <McpServerFormFields form={form} onChange={updateForm} />
+      ) : null}
+
+      {useForm ? (
+        <button className="context-advanced-toggle" onClick={() => void toggleRawMode()} type="button">
+          {rawMode ? "▾" : "▸"} {t("高级：直接编辑 TOML")}
+        </button>
+      ) : null}
+
+      {!useForm || rawMode ? (
+        <Field label={t("TOML 配置体")}>
+          <Textarea
+            className="context-editor-textarea"
+            value={tomlBody}
+            onChange={(event) => setTomlBody(event.currentTarget.value)}
+            placeholder={t("只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]")}
+            spellCheck={false}
+          />
+        </Field>
+      ) : null}
+
       <Toolbar>
-        <Button disabled={!canSave} onClick={() => onSave(draftKind, id.trim(), tomlBody)} size="sm">
+        <Button disabled={!canSave} onClick={() => void save()} size="sm">
           <Save className="h-4 w-4" />
           {t("保存扩展项")}
         </Button>
         <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
       </Toolbar>
     </div>
+  );
+}
+
+/** stdio 和 HTTP 两套字段，按传输方式切换显示。 */
+function McpServerFormFields({
+  form,
+  onChange,
+}: {
+  form: McpServerForm;
+  onChange: (patch: Partial<McpServerForm>) => void;
+}) {
+  return (
+    <>
+      <Field label={t("传输方式")}>
+        <div className="script-market-view-toggle" role="group" aria-label={t("传输方式")}>
+          {([
+            { value: "stdio" as const, label: t("本地命令 (stdio)") },
+            { value: "http" as const, label: t("远程 HTTP") },
+          ]).map((option) => (
+            <Button
+              aria-pressed={form.transport === option.value}
+              key={option.value}
+              onClick={() => onChange({ transport: option.value })}
+              size="sm"
+              variant={form.transport === option.value ? "secondary" : "ghost"}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+      </Field>
+
+      {form.transport === "stdio" ? (
+        <>
+          <Field label={t("命令")}>
+            <Input
+              value={form.command}
+              onChange={(event) => onChange({ command: event.currentTarget.value })}
+              placeholder={isWindowsPlatform ? "cmd" : "npx"}
+            />
+          </Field>
+          <McpStringListField
+            label={t("参数")}
+            values={form.args}
+            onChange={(args) => onChange({ args })}
+            addLabel={t("添加参数")}
+            placeholder={t("例如 -y")}
+          />
+          <McpPairListField
+            label={t("环境变量")}
+            pairs={form.env}
+            onChange={(env) => onChange({ env })}
+            addLabel={t("添加环境变量")}
+          />
+          <Field label={t("工作目录")}>
+            <Input
+              value={form.cwd}
+              onChange={(event) => onChange({ cwd: event.currentTarget.value })}
+              placeholder={t("留空则用默认目录")}
+            />
+          </Field>
+        </>
+      ) : (
+        <>
+          <Field label="URL">
+            <Input
+              value={form.url}
+              onChange={(event) => onChange({ url: event.currentTarget.value })}
+              placeholder="https://example.com/mcp"
+            />
+          </Field>
+          <McpPairListField
+            label={t("请求头")}
+            pairs={form.httpHeaders}
+            onChange={(httpHeaders) => onChange({ httpHeaders })}
+            addLabel={t("添加请求头")}
+          />
+          <Field label={t("Bearer Token")}>
+            <Input
+              value={form.bearerToken}
+              onChange={(event) => onChange({ bearerToken: event.currentTarget.value })}
+              placeholder={t("留空则不写入")}
+            />
+          </Field>
+        </>
+      )}
+
+      <Field label={t("启动超时（秒）")}>
+        <Input
+          value={form.startupTimeoutSec}
+          onChange={(event) => onChange({ startupTimeoutSec: event.currentTarget.value })}
+          placeholder={t("留空则用 codex 默认值")}
+        />
+      </Field>
+      {form.extraToml.trim() ? (
+        <div className="relay-context-summary">
+          {t("此条目还有表单未覆盖的高级配置，保存时会原样保留。展开下方高级区可查看。")}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function McpStringListField({
+  label,
+  values,
+  onChange,
+  addLabel,
+  placeholder,
+}: {
+  label: string;
+  values: string[];
+  onChange: (values: string[]) => void;
+  addLabel: string;
+  placeholder?: string;
+}) {
+  return (
+    <Field label={label}>
+      <div className="mcp-list-field">
+        {values.map((value, index) => (
+          <div className="mcp-list-row" key={index}>
+            <Input
+              value={value}
+              onChange={(event) => {
+                const next = [...values];
+                next[index] = event.currentTarget.value;
+                onChange(next);
+              }}
+              placeholder={placeholder}
+            />
+            <Button
+              onClick={() => onChange(values.filter((_, position) => position !== index))}
+              size="icon"
+              title={t("删除这一项")}
+              variant="ghost"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+        <Button onClick={() => onChange([...values, ""])} size="sm" variant="secondary">
+          <Plus className="h-4 w-4" />
+          {addLabel}
+        </Button>
+      </div>
+    </Field>
+  );
+}
+
+function McpPairListField({
+  label,
+  pairs,
+  onChange,
+  addLabel,
+}: {
+  label: string;
+  pairs: McpKeyValue[];
+  onChange: (pairs: McpKeyValue[]) => void;
+  addLabel: string;
+}) {
+  const update = (index: number, patch: Partial<McpKeyValue>) => {
+    const next = [...pairs];
+    next[index] = { ...next[index], ...patch };
+    onChange(next);
+  };
+  return (
+    <Field label={label}>
+      <div className="mcp-list-field">
+        {pairs.map((pair, index) => (
+          <div className="mcp-list-row mcp-pair-row" key={index}>
+            <Input
+              value={pair.key}
+              onChange={(event) => update(index, { key: event.currentTarget.value })}
+              placeholder="KEY"
+            />
+            <Input
+              value={pair.value}
+              onChange={(event) => update(index, { value: event.currentTarget.value })}
+              placeholder="VALUE"
+            />
+            <Button
+              onClick={() => onChange(pairs.filter((_, position) => position !== index))}
+              size="icon"
+              title={t("删除这一项")}
+              variant="ghost"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+        <Button onClick={() => onChange([...pairs, { key: "", value: "" }])} size="sm" variant="secondary">
+          <Plus className="h-4 w-4" />
+          {addLabel}
+        </Button>
+      </div>
+    </Field>
   );
 }
 

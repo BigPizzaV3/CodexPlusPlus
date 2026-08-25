@@ -2138,6 +2138,39 @@ body {
   line-height: 1.45;
 }
 
+/* MCP 表单里的 args / env / headers：一行一项，末尾一个删除按钮。 */
+.mcp-list-field {
+  display: grid;
+  gap: 6px;
+}
+
+.mcp-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 键值对多一列：键窄一些，值占剩下的空间。 */
+.mcp-pair-row {
+  grid-template-columns: minmax(0, 0.5fr) minmax(0, 1fr) auto;
+}
+
+/* 「高级：直接编辑 TOML」的展开开关。做成纯文字，别和表单里的实体按钮抢注意力。 */
+.context-advanced-toggle {
+  justify-self: start;
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.context-advanced-toggle:hover {
+  color: hsl(var(--foreground));
+}
+
 /* 一行一个：两列并排时每个预览都很窄，config.toml 的长行几乎全靠横向滚动 */
 .relay-file-grid {
   display: grid;
