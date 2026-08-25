@@ -968,6 +968,49 @@ export const EN_PLAIN: Record<string, string> = {
   "模型别名不能为空。": "Model alias cannot be empty.",
   "模型别名不能重复。": "Model aliases must be unique.",
   "管理 Grok CLI 的模型与 API 端点": "Manage Grok CLI models and API endpoints",
+
+  // Skills 面板
+  "Skills": "Skills",
+  "Skills 技能": "Skills",
+  "Skills 仓库源": "Skill repositories",
+  "从 GitHub 仓库安装 Skill 到 Codex": "Install skills from GitHub repositories into Codex",
+  "从 GitHub 仓库安装 Skill 到 Codex。启用后软链到 ~/.codex/skills/，下次对话即可用。":
+    "Install skills from GitHub repositories into Codex. Enabling one symlinks it into ~/.codex/skills/, available from your next conversation.",
+  "可安装": "Available",
+  "有新版本": "Update available",
+  "仓库源": "Repositories",
+  "仓库管理": "Manage repositories",
+  "技能列表": "Skills",
+  "搜索 Skill": "Search skills",
+  "搜索名称、描述或仓库": "Search by name, description, or repository",
+  "按安装状态筛选": "Filter by install state",
+  "全部": "All",
+  "没有匹配的 Skill。": "No skills match your search.",
+  "还没有拉到 Skill，点「刷新列表」试试。": "No skills loaded yet — try \"Refresh list\".",
+  "Codex 内置": "Bundled with Codex",
+  "本地": "Local",
+  "已启用": "Enabled",
+  "已停用": "Disabled",
+  "Codex 自带，随版本更新": "Ships with Codex, updated with it",
+  "停用": "Disable",
+  "卸载": "Uninstall",
+  "安装中": "Installing",
+  "Skill 目录须直接包含 SKILL.md。子目录留空表示仓库根下就是各个 Skill。":
+    "A skill directory must contain SKILL.md directly. Leave the subdirectory empty when skills sit at the repository root.",
+  "刷新时跳过此仓库": "Skip this repository when refreshing",
+  "刷新时包含此仓库": "Include this repository when refreshing",
+  "删除仓库源": "Delete repository",
+  "例如 openai": "e.g. openai",
+  "例如 skills": "e.g. skills",
+  "子目录": "Subdirectory",
+  "例如 skills/.curated，留空表示仓库根": "e.g. skills/.curated — leave empty for the repository root",
+  "添加仓库源": "Add repository",
+  "卸载备份": "Uninstall backups",
+  "卸载 Skill 前会把源目录整体挪到备份目录。备份只累积不自动清理，需要时手动删。":
+    "Uninstalling moves the source directory into the backup folder. Backups accumulate and are never pruned automatically — delete them yourself when you no longer need them.",
+  "恢复": "Restore",
+  "删除此备份": "Delete this backup",
+  "还没有备份。": "No backups yet.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -1049,6 +1092,19 @@ export const EN_TEMPLATE: Record<string, string> = {
   "选择会话 {0}": "Select session {0}",
   "透明度 {0}%": "Opacity {0}%",
   "，跳过 {0} 个占用文件": ", skipped {0} locked file(s)",
+
+  // Skills 面板
+  "全部更新（{0}）": "Update all ({0})",
+  "备份（{0}）": "Backups ({0})",
+  "当前显示 {0} / {1}": "Showing {0} of {1}",
+  "源目录 {0}；启用后软链到 {1}": "Source directory {0}; enabled skills are symlinked into {1}",
+  "以下仓库拉取失败，显示的是上次的结果：{0}":
+    "These repositories failed to load, so the previous results are shown: {0}",
+  "卸载 Skill「{0}」？源目录会先备份，可以再恢复回来。":
+    "Uninstall the skill \"{0}\"? The source directory is backed up first and can be restored.",
+  "删除备份「{0}」？此操作不可撤销。": "Delete the backup \"{0}\"? This cannot be undone.",
+  "删除仓库源「{0}」？已装的 Skill 不受影响，只是不再更新。":
+    "Delete the repository \"{0}\"? Installed skills are unaffected — they just stop receiving updates.",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated

@@ -482,6 +482,18 @@ pub struct ScriptMarketPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillsPayload {
+    pub skills: Vec<codex_plus_core::skills::SkillEntry>,
+    pub repos: Vec<codex_plus_core::skills::SkillRepo>,
+    pub backups: Vec<codex_plus_core::skills::SkillBackup>,
+    /// 单个仓库拉取失败不该让整块面板空掉，把错误单独带回前端提示。
+    pub repo_errors: Vec<String>,
+    pub skills_dir: String,
+    pub codex_skills_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartupPayload {
     pub show_update: bool,
 }
@@ -686,12 +698,8 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         },
         Err(error) => {
             let message = format!("重启 Codex++ 失败：{error}");
-            let _ = save_requested_launch_status(
-                &request,
-                "failed",
-                &message,
-                launch_started_at_ms,
-            );
+            let _ =
+                save_requested_launch_status(&request, "failed", &message, launch_started_at_ms);
             failed(
                 &message,
                 json!({
@@ -897,12 +905,8 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
         },
         Err(error) => {
             let message = format!("启动静默入口失败：{error}");
-            let _ = save_requested_launch_status(
-                &request,
-                "failed",
-                &message,
-                launch_started_at_ms,
-            );
+            let _ =
+                save_requested_launch_status(&request, "failed", &message, launch_started_at_ms);
             failed(
                 &message,
                 json!({
@@ -978,15 +982,11 @@ pub async fn weixin_connect_qr_start(
     base_url: String,
     route_tag: String,
 ) -> CommandResult<WeixinQrPayload> {
-    match codex_plus_core::connect::weixin::WeixinClient::fetch_qr_code(
-        &base_url,
-        &route_tag,
-    )
-    .await
+    match codex_plus_core::connect::weixin::WeixinClient::fetch_qr_code(&base_url, &route_tag).await
     {
         Ok(qr) => {
-            let qr_svg = codex_plus_core::connect::weixin::render_qr_svg(&qr.qr_content)
-                .unwrap_or_default();
+            let qr_svg =
+                codex_plus_core::connect::weixin::render_qr_svg(&qr.qr_content).unwrap_or_default();
             let session = WeixinQrSession {
                 base_url: if base_url.trim().is_empty() {
                     codex_plus_core::connect::DEFAULT_WEIXIN_BASE_URL.to_string()
@@ -1032,7 +1032,10 @@ pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
         })
     });
     let Some(session) = session else {
-        return failed("当前没有待确认的微信二维码。", empty_weixin_qr_payload("missing"));
+        return failed(
+            "当前没有待确认的微信二维码。",
+            empty_weixin_qr_payload("missing"),
+        );
     };
 
     let result = codex_plus_core::connect::weixin::WeixinClient::poll_qr_status(
@@ -1077,7 +1080,8 @@ pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
         settings.weixin_connect_token = qr_status.bot_token;
         settings.weixin_connect_account_id = qr_status.ilink_bot_id.clone();
         if !qr_status.baseurl.trim().is_empty() {
-            settings.weixin_connect_base_url = qr_status.baseurl.trim().trim_end_matches('/').to_string();
+            settings.weixin_connect_base_url =
+                qr_status.baseurl.trim().trim_end_matches('/').to_string();
         } else {
             settings.weixin_connect_base_url = session.base_url.clone();
         }
@@ -1147,11 +1151,17 @@ pub fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::WeixinC
     }
     settings.weixin_connect_enabled = true;
     if let Err(error) = store.save(&settings) {
-        return failed(&format!("保存微信连接设置失败：{error}"), current_weixin_status());
+        return failed(
+            &format!("保存微信连接设置失败：{error}"),
+            current_weixin_status(),
+        );
     }
     match spawn_weixin_connect(settings) {
         Ok(status) => ok("微信连接正在启动。", status),
-        Err(error) => failed(&format!("启动微信连接失败：{error}"), current_weixin_status()),
+        Err(error) => failed(
+            &format!("启动微信连接失败：{error}"),
+            current_weixin_status(),
+        ),
     }
 }
 
@@ -1258,12 +1268,9 @@ fn spawn_weixin_connect(
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = codex_plus_core::connect::run_weixin_connect(
-            config,
-            stop,
-            Arc::clone(&task_status),
-        )
-        .await
+        if let Err(error) =
+            codex_plus_core::connect::run_weixin_connect(config, stop, Arc::clone(&task_status))
+                .await
             && let Ok(mut current) = task_status.lock()
         {
             current.state = "error".to_string();
@@ -2400,10 +2407,7 @@ pub fn import_local_session(path: String) -> CommandResult<SessionImportPayload>
 #[tauri::command]
 pub fn load_pending_session_share() -> CommandResult<PendingSessionSharePayload> {
     match codex_plus_core::session_share::load_pending_session_share() {
-        Ok(url) => ok(
-            "已读取待导入会话链接。",
-            PendingSessionSharePayload { url },
-        ),
+        Ok(url) => ok("已读取待导入会话链接。", PendingSessionSharePayload { url }),
         Err(error) => failed(
             &format!("读取待导入会话链接失败：{error}"),
             PendingSessionSharePayload { url: None },
@@ -3055,9 +3059,7 @@ fn is_success_sync_status(status: &codex_plus_data::ProviderSyncStatus) -> bool 
     matches!(status, codex_plus_data::ProviderSyncStatus::Synced)
 }
 
-fn provider_sync_command_result(
-    sync: codex_plus_data::ProviderSyncResult,
-) -> CommandResult<Value> {
+fn provider_sync_command_result(sync: codex_plus_data::ProviderSyncResult) -> CommandResult<Value> {
     let succeeded = is_success_sync_status(&sync.status);
     let success_message = format!(
         "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。{}",
@@ -3268,6 +3270,287 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
             &format!("脚本删除失败：{error}"),
             fallback_settings_payload(),
         ),
+    }
+}
+
+/// 拉取所有启用仓库的 skill 清单，合并本地安装/启用状态后返回。
+///
+/// 单个仓库失败（限流、网络、仓库删了）不影响其它仓库，错误单独收集回前端。
+#[tauri::command]
+pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let repos = manager.list_repos();
+    let mut remote = Vec::new();
+    let mut repo_errors = Vec::new();
+
+    for repo in repos.iter().filter(|repo| repo.enabled) {
+        let cached = cached_repo_skills(&repo.key());
+        match codex_plus_core::skills::fetch_repo_skills(repo, &cached).await {
+            Ok(skills) => {
+                store_repo_skills(&repo.key(), &skills);
+                remote.extend(skills);
+            }
+            Err(error) => {
+                repo_errors.push(format!("{}/{}：{error}", repo.owner, repo.name));
+                // 拉不动就先用上一次的结果撑着，别让已知的 skill 从列表里消失
+                remote.extend(cached.into_values());
+            }
+        }
+    }
+
+    let message = if repo_errors.is_empty() {
+        "Skills 列表已刷新。".to_string()
+    } else {
+        format!("Skills 列表已刷新，{} 个仓库拉取失败。", repo_errors.len())
+    };
+    let payload = skills_payload(&manager, &remote, repo_errors);
+    if payload.repo_errors.is_empty() {
+        ok(&message, payload)
+    } else {
+        failed(&message, payload)
+    }
+}
+
+/// 只读本地状态，不联网。切到 Skills 页时先用它把已装的列出来。
+#[tauri::command]
+pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let remote = all_cached_repo_skills();
+    ok(
+        "已加载本地 Skills。",
+        skills_payload(&manager, &remote, Vec::new()),
+    )
+}
+
+#[tauri::command]
+pub async fn install_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
+    install_or_update_skill(&repo_key, &id, "Skill 已安装。", "安装 Skill 失败").await
+}
+
+#[tauri::command]
+pub async fn update_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
+    install_or_update_skill(&repo_key, &id, "Skill 已更新。", "更新 Skill 失败").await
+}
+
+async fn install_or_update_skill(
+    repo_key: &str,
+    id: &str,
+    success_message: &str,
+    failure_prefix: &str,
+) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let Some(repo) = codex_plus_core::skills::parse_repo_key(repo_key) else {
+        return failed(
+            &format!("{failure_prefix}：仓库标识无法解析（{repo_key}）。"),
+            current_skills_payload(&manager),
+        );
+    };
+
+    // 装之前重新拉一次树，拿到当前的 repo_path 和哈希，避免用陈旧缓存装错版本。
+    let cached = cached_repo_skills(repo_key);
+    let skills = match codex_plus_core::skills::fetch_repo_skills(&repo, &cached).await {
+        Ok(skills) => {
+            store_repo_skills(repo_key, &skills);
+            skills
+        }
+        Err(error) => {
+            return failed(
+                &format!("{failure_prefix}：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    let Some(skill) = skills.iter().find(|skill| skill.id == id) else {
+        return failed(
+            &format!("{failure_prefix}：仓库里没有找到 {id}。"),
+            current_skills_payload(&manager),
+        );
+    };
+
+    let zip = match codex_plus_core::skills::download_repo_zip(&repo).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return failed(
+                &format!("{failure_prefix}：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    match manager.install_from_zip(skill, &zip) {
+        Ok(_) => ok(success_message, current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("{failure_prefix}：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn set_skill_enabled(id: String, enabled: bool) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.set_enabled(id.trim(), enabled) {
+        Ok(()) => ok(
+            if enabled {
+                "Skill 已启用，下次对话生效。"
+            } else {
+                "Skill 已停用。"
+            },
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(
+            &format!("Skill 启停失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn uninstall_skill(id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.uninstall(id.trim()) {
+        Ok(_) => ok(
+            "Skill 已卸载，源目录已备份，可随时恢复。",
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(
+            &format!("卸载 Skill 失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn restore_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.restore_backup(backup_id.trim()) {
+        Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("从备份恢复失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.delete_backup(backup_id.trim()) {
+        Ok(_) => ok("备份已删除。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("删除备份失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn upsert_skill_repo(repo: codex_plus_core::skills::SkillRepo) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.upsert_repo(repo) {
+        Ok(_) => ok("仓库源已保存。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("保存仓库源失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_skill_repo(key: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.delete_repo(key.trim()) {
+        Ok(_) => {
+            forget_repo_skills(key.trim());
+            ok("仓库源已删除。", current_skills_payload(&manager))
+        }
+        Err(error) => failed(
+            &format!("删除仓库源失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+fn skills_payload(
+    manager: &codex_plus_core::skills::SkillsManager,
+    remote: &[codex_plus_core::skills::RemoteSkill],
+    repo_errors: Vec<String>,
+) -> SkillsPayload {
+    SkillsPayload {
+        skills: manager.merge_entries(remote),
+        repos: manager.list_repos(),
+        backups: manager.list_backups(),
+        repo_errors,
+        skills_dir: manager.source_dir().to_string_lossy().to_string(),
+        codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),
+    }
+}
+
+fn current_skills_payload(manager: &codex_plus_core::skills::SkillsManager) -> SkillsPayload {
+    skills_payload(manager, &all_cached_repo_skills(), Vec::new())
+}
+
+fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
+    codex_plus_core::skills::SkillsManager::new(
+        codex_plus_core::paths::default_skills_source_dir(),
+        codex_plus_core::paths::default_skill_backups_dir(),
+        codex_plus_core::paths::default_skills_state_path(),
+        codex_plus_core::codex_home::default_codex_home_dir(),
+    )
+}
+
+/// 上一次成功拉取的远端清单，按仓库 key 存。
+///
+/// 两个用途：拉取时传给 `fetch_repo_skills` 跳过没变的 SKILL.md 请求；
+/// 以及在只读命令里还原出完整视图，不必每次都联网。进程内缓存，重启即失效。
+type RepoSkillCache = std::collections::HashMap<
+    String,
+    std::collections::BTreeMap<String, codex_plus_core::skills::RemoteSkill>,
+>;
+
+fn repo_skill_cache() -> &'static std::sync::Mutex<RepoSkillCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<RepoSkillCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(RepoSkillCache::new()))
+}
+
+fn cached_repo_skills(
+    repo_key: &str,
+) -> std::collections::BTreeMap<String, codex_plus_core::skills::RemoteSkill> {
+    repo_skill_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(repo_key).cloned())
+        .unwrap_or_default()
+}
+
+fn all_cached_repo_skills() -> Vec<codex_plus_core::skills::RemoteSkill> {
+    repo_skill_cache()
+        .lock()
+        .ok()
+        .map(|cache| {
+            cache
+                .values()
+                .flat_map(|skills| skills.values().cloned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn store_repo_skills(repo_key: &str, skills: &[codex_plus_core::skills::RemoteSkill]) {
+    if let Ok(mut cache) = repo_skill_cache().lock() {
+        cache.insert(
+            repo_key.to_string(),
+            skills
+                .iter()
+                .map(|skill| (skill.id.clone(), skill.clone()))
+                .collect(),
+        );
+    }
+}
+
+fn forget_repo_skills(repo_key: &str) {
+    if let Ok(mut cache) = repo_skill_cache().lock() {
+        cache.remove(repo_key);
     }
 }
 
@@ -5046,7 +5329,6 @@ fn relay_switch_mutex() -> &'static Mutex<()> {
 fn empty_context_entries() -> codex_plus_core::relay_config::CodexContextEntries {
     codex_plus_core::relay_config::CodexContextEntries {
         mcp_servers: Vec::new(),
-        skills: Vec::new(),
         plugins: Vec::new(),
     }
 }

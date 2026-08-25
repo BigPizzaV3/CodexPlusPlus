@@ -442,7 +442,7 @@ fn safe_zip_path(name: &str) -> anyhow::Result<PathBuf> {
     Ok(relative)
 }
 
-fn zip_entry_relative_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn zip_entry_relative_path(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     let mut components = path.components();
     match components.next()? {

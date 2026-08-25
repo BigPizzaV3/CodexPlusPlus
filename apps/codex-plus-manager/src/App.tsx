@@ -21,6 +21,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bell,
+  BookOpen,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -328,7 +329,9 @@ type AggregateRelayProfile = {
   members: AggregateRelayMember[];
 };
 
-type ContextKind = "mcp" | "skill" | "plugin";
+/// codex 的 config.toml 上下文表。skill 不在这里——它是 `$CODEX_HOME/skills/`
+/// 下的目录约定，`[skills.<id>]` codex 根本不读，由 Skills 面板单独管。
+type ContextKind = "mcp" | "plugin";
 
 type CodexContextEntry = {
   id: string;
@@ -341,7 +344,6 @@ type CodexContextEntry = {
 
 type CodexContextEntries = {
   mcpServers: CodexContextEntry[];
-  skills: CodexContextEntry[];
   plugins: CodexContextEntry[];
 };
 
@@ -806,6 +808,50 @@ type ScriptMarketResult = CommandResult<{
   user_scripts: UserScriptInventory;
 }>;
 
+type SkillRepo = {
+  owner: string;
+  name: string;
+  branch: string;
+  subdir: string;
+  enabled: boolean;
+};
+
+type SkillEntry = {
+  id: string;
+  name: string;
+  description: string;
+  repoKey: string;
+  repoPath: string;
+  installed: boolean;
+  enabled: boolean;
+  bundled: boolean;
+  contentHash: string;
+  remoteHash: string;
+  updateAvailable: boolean;
+};
+
+type SkillBackup = {
+  id: string;
+  skillId: string;
+  name: string;
+  backedUpAt: string;
+};
+
+type SkillsResult = CommandResult<{
+  skills: SkillEntry[];
+  repos: SkillRepo[];
+  backups: SkillBackup[];
+  repoErrors: string[];
+  skillsDir: string;
+  codexSkillsDir: string;
+}>;
+
+/** 仓库源的稳定标识，必须和 Rust 侧 `SkillRepo::key()` 生成的一致。 */
+function skillRepoKey(repo: SkillRepo): string {
+  const base = `${repo.owner}/${repo.name}@${repo.branch}`;
+  return repo.subdir ? `${base}:${repo.subdir}` : base;
+}
+
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
@@ -873,7 +919,7 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
@@ -886,6 +932,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "enhance", label: t("Codex增强"), icon: Hammer },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
   { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink },
+  { id: "skills", label: t("Skills 技能"), icon: BookOpen },
   { id: "userScripts", label: t("脚本市场"), icon: FileCode2 },
   { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
   { id: "maintenance", label: t("安装维护"), icon: Wrench },
@@ -901,7 +948,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("扩展"),
-    routes: ["weixin", "enhance", "dreamSkin", "zedRemote", "userScripts"],
+    routes: ["skills", "weixin", "enhance", "dreamSkin", "zedRemote", "userScripts"],
   },
   {
     label: t("系统"),
@@ -1061,6 +1108,8 @@ export function App() {
   });
   const [ads, setAds] = useState<AdsResult | null>(null);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
+  const [skills, setSkills] = useState<SkillsResult | null>(null);
+  const [skillBusyId, setSkillBusyId] = useState<string | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
     debugPort: "9229",
@@ -1223,6 +1272,81 @@ export function App() {
     }
   };
 
+  // Skills：本地状态随手可读，远端清单要联网，所以进页面先读本地再后台刷新。
+  const listInstalledSkills = async () => {
+    const result = await run(() => call<SkillsResult>("list_installed_skills"));
+    if (result) setSkills(result);
+  };
+
+  const refreshSkillCatalog = async (silent = false) => {
+    const result = await run(() => call<SkillsResult>("refresh_skill_catalog"));
+    if (result) {
+      setSkills(result);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showResultNotice(t("Skills"), result, { silentSuccess: true });
+      }
+    }
+  };
+
+  /// 安装/更新/启停都会返回完整的新状态，直接整块替换即可。
+  const runSkillAction = async (
+    busyId: string,
+    command: string,
+    args: Record<string, unknown>,
+    notice = t("Skills"),
+  ) => {
+    setSkillBusyId(busyId);
+    try {
+      const result = await run(() => call<SkillsResult>(command, args));
+      if (result) {
+        setSkills(result);
+        showResultNotice(notice, result);
+      }
+    } finally {
+      setSkillBusyId(null);
+    }
+  };
+
+  const installSkill = (repoKey: string, id: string) =>
+    runSkillAction(id, "install_skill", { repoKey, id });
+
+  const updateSkill = (repoKey: string, id: string) =>
+    runSkillAction(id, "update_skill", { repoKey, id });
+
+  const setSkillEnabled = (id: string, enabled: boolean) =>
+    runSkillAction(id, "set_skill_enabled", { id, enabled });
+
+  const uninstallSkill = async (id: string) => {
+    if (!window.confirm(tf("卸载 Skill「{0}」？源目录会先备份，可以再恢复回来。", [id]))) return;
+    await runSkillAction(id, "uninstall_skill", { id });
+  };
+
+  const restoreSkillBackup = (backupId: string) =>
+    runSkillAction(backupId, "restore_skill_backup", { backupId });
+
+  const deleteSkillBackup = async (backupId: string) => {
+    if (!window.confirm(tf("删除备份「{0}」？此操作不可撤销。", [backupId]))) return;
+    await runSkillAction(backupId, "delete_skill_backup", { backupId });
+  };
+
+  const upsertSkillRepo = async (repo: SkillRepo) => {
+    const result = await run(() => call<SkillsResult>("upsert_skill_repo", { repo }));
+    if (result) {
+      setSkills(result);
+      showResultNotice(t("Skills 仓库源"), result);
+    }
+    return result;
+  };
+
+  const deleteSkillRepo = async (key: string) => {
+    if (!window.confirm(tf("删除仓库源「{0}」？已装的 Skill 不受影响，只是不再更新。", [key]))) return;
+    const result = await run(() => call<SkillsResult>("delete_skill_repo", { key }));
+    if (result) {
+      setSkills(result);
+      showResultNotice(t("Skills 仓库源"), result);
+    }
+  };
+
   const refreshRelay = async (silent = false) => {
     const result = await run(() => call<RelayResult>("relay_status"));
     if (result) {
@@ -1230,7 +1354,6 @@ export function App() {
       if (!silent) showResultNotice(t("登录状态"), result, { silentSuccess: true });
     }
   };
-
   const refreshRelayFiles = async (silent = false) => {
     const result = await run(() => call<RelayFilesResult>("read_relay_files"));
     if (result) {
@@ -1966,6 +2089,11 @@ export function App() {
       await refreshSettings(true);
       await refreshRelayFiles(true);
       await refreshLiveContextEntries(true);
+    }
+    if (next === "skills") {
+      // 先把本地已装的列出来，远端清单要联网，慢一步再补上
+      await listInstalledSkills();
+      await refreshSkillCatalog(true);
     }
     if (next === "weixin") {
       await refreshSettings(true);
@@ -3140,6 +3268,17 @@ export function App() {
       installMarketScript,
       setUserScriptEnabled,
       deleteUserScript,
+      listInstalledSkills,
+      refreshSkillCatalog,
+      installSkill,
+      updateSkill,
+      setSkillEnabled,
+      uninstallSkill,
+      restoreSkillBackup,
+      deleteSkillBackup,
+      upsertSkillRepo,
+      deleteSkillRepo,
+      skillBusyId,
       refreshLocalSessions,
       importLocalSession,
       importSessionUrl,
@@ -3323,6 +3462,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
+          {route === "skills" ? <SkillsScreen skills={skills} actions={actions} /> : null}
           {route === "weixin" ? (
             <WeixinConnectScreen
               form={settingsForm}
@@ -3541,6 +3681,18 @@ type Actions = {
   installMarketScript: (id: string) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
+  listInstalledSkills: () => Promise<void>;
+  refreshSkillCatalog: (silent?: boolean) => Promise<void>;
+  installSkill: (repoKey: string, id: string) => Promise<void>;
+  updateSkill: (repoKey: string, id: string) => Promise<void>;
+  setSkillEnabled: (id: string, enabled: boolean) => Promise<void>;
+  uninstallSkill: (id: string) => Promise<void>;
+  restoreSkillBackup: (backupId: string) => Promise<void>;
+  deleteSkillBackup: (backupId: string) => Promise<void>;
+  upsertSkillRepo: (repo: SkillRepo) => Promise<SkillsResult | null>;
+  deleteSkillRepo: (key: string) => Promise<void>;
+  /// 正在执行安装/更新/卸载的那个 id，用来禁用对应卡片的按钮。
+  skillBusyId: string | null;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
   importLocalSession: () => Promise<void>;
   importSessionUrl: (url?: string) => Promise<void>;
@@ -6061,6 +6213,342 @@ function ZedRemoteProjectSection({
         ) : (
           <div className="empty">{t("暂无项目。")}</div>
         )}
+      </CardContent>
+    </Panel>
+  );
+}
+
+type SkillFilter = "all" | "installed" | "available";
+
+/**
+ * Skills 面板。
+ *
+ * codex 的 skill 是文件系统约定（`$CODEX_HOME/skills/<id>/SKILL.md`），不是配置项，
+ * 所以这里管的是目录：从 GitHub 仓库源装到我们的 SSOT，再软链进 codex home。
+ */
+function SkillsScreen({ skills, actions }: { skills: SkillsResult | null; actions: Actions }) {
+  const entries = skills?.skills ?? [];
+  const repos = skills?.repos ?? [];
+  const backups = skills?.backups ?? [];
+  const repoErrors = skills?.repoErrors ?? [];
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<SkillFilter>("all");
+  const [reposOpen, setReposOpen] = useState(false);
+  const [backupsOpen, setBackupsOpen] = useState(false);
+
+  const visible = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    return entries.filter((entry) => {
+      if (filter === "installed" && !entry.installed) return false;
+      if (filter === "available" && entry.installed) return false;
+      if (!query) return true;
+      return [entry.id, entry.name, entry.description, entry.repoKey]
+        .filter(Boolean)
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(query);
+    });
+  }, [entries, filter, search]);
+
+  const installedCount = entries.filter((entry) => entry.installed).length;
+  const updatable = entries.filter((entry) => entry.updateAvailable);
+
+  const updateAll = async () => {
+    for (const entry of updatable) {
+      await actions.updateSkill(entry.repoKey, entry.id);
+    }
+  };
+
+  return (
+    <>
+      <Panel>
+        <CardHead
+          title={t("Skills 技能")}
+          detail={t("从 GitHub 仓库安装 Skill 到 Codex。启用后软链到 ~/.codex/skills/，下次对话即可用。")}
+        />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label={t("可安装")} value={tf("{0} 个", [entries.length])} />
+            <Metric label={t("已安装")} value={tf("{0} 个", [installedCount])} />
+            <Metric label={t("有新版本")} value={tf("{0} 个", [updatable.length])} />
+            <Metric label={t("仓库源")} value={tf("{0} 个", [repos.filter((repo) => repo.enabled).length])} />
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshSkillCatalog()}>
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新列表")}
+            </Button>
+            {updatable.length ? (
+              <Button onClick={() => void updateAll()} variant="secondary">
+                <CircleArrowUp className="h-4 w-4" />
+                {tf("全部更新（{0}）", [updatable.length])}
+              </Button>
+            ) : null}
+            <Button onClick={() => setReposOpen((open) => !open)} variant="secondary">
+              <Github className="h-4 w-4" />
+              {t("仓库管理")}
+            </Button>
+            <Button onClick={() => setBackupsOpen((open) => !open)} variant="secondary">
+              <Download className="h-4 w-4" />
+              {tf("备份（{0}）", [backups.length])}
+            </Button>
+          </Toolbar>
+          {skills ? (
+            <div className="relay-context-summary">
+              {tf("源目录 {0}；启用后软链到 {1}", [skills.skillsDir, skills.codexSkillsDir])}
+            </div>
+          ) : null}
+          {repoErrors.length ? (
+            <div className="relay-context-summary">
+              {tf("以下仓库拉取失败，显示的是上次的结果：{0}", [repoErrors.join("；")])}
+            </div>
+          ) : null}
+        </CardContent>
+      </Panel>
+      {reposOpen ? <SkillRepoManager repos={repos} actions={actions} /> : null}
+      {backupsOpen ? <SkillBackupManager backups={backups} actions={actions} /> : null}
+      <Panel>
+        <CardHead
+          title={t("技能列表")}
+          detail={tf("当前显示 {0} / {1}", [visible.length, entries.length])}
+        />
+        <CardContent>
+          <div className="script-market-toolbar">
+            <div className="script-market-search">
+              <Search className="h-4 w-4" />
+              <Input
+                aria-label={t("搜索 Skill")}
+                onChange={(event) => setSearch(event.currentTarget.value)}
+                placeholder={t("搜索名称、描述或仓库")}
+                value={search}
+              />
+            </div>
+            <div className="script-market-view-toggle" role="group" aria-label={t("按安装状态筛选")}>
+              {([
+                { value: "all" as const, label: t("全部") },
+                { value: "installed" as const, label: t("已安装") },
+                { value: "available" as const, label: t("未安装") },
+              ]).map((option) => (
+                <Button
+                  aria-pressed={filter === option.value}
+                  key={option.value}
+                  onClick={() => setFilter(option.value)}
+                  size="sm"
+                  variant={filter === option.value ? "secondary" : "ghost"}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          {visible.length ? (
+            <div className="script-market-grid">
+              {visible.map((entry) => (
+                <SkillCard actions={actions} entry={entry} key={entry.id} />
+              ))}
+            </div>
+          ) : (
+            <div className="empty">
+              {entries.length ? t("没有匹配的 Skill。") : t("还没有拉到 Skill，点「刷新列表」试试。")}
+            </div>
+          )}
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function SkillCard({ entry, actions }: { entry: SkillEntry; actions: Actions }) {
+  const busy = actions.skillBusyId === entry.id;
+  return (
+    <div className="script-market-card" data-view="grid">
+      <div className="script-market-title">
+        <div>
+          <strong>{entry.name || entry.id}</strong>
+          <span>{entry.repoKey || (entry.bundled ? t("Codex 内置") : t("本地"))}</span>
+        </div>
+      </div>
+      <p className="script-market-description">{entry.description || t("暂无描述。")}</p>
+      <div className="script-market-tags">
+        {entry.bundled ? <span className="script-market-tag">{t("内置")}</span> : null}
+        {entry.installed && !entry.bundled ? (
+          <span className="script-market-tag">{entry.enabled ? t("已启用") : t("已停用")}</span>
+        ) : null}
+        {entry.updateAvailable ? <span className="script-market-tag">{t("有新版本")}</span> : null}
+      </div>
+      <div className="script-market-actions">
+        {entry.bundled ? (
+          <span className="script-market-tag">{t("Codex 自带，随版本更新")}</span>
+        ) : entry.installed ? (
+          <>
+            <Button
+              disabled={busy}
+              onClick={() => void actions.setSkillEnabled(entry.id, !entry.enabled)}
+              size="sm"
+              variant="secondary"
+            >
+              {entry.enabled ? t("停用") : t("启用")}
+            </Button>
+            {entry.updateAvailable ? (
+              <Button disabled={busy} onClick={() => void actions.updateSkill(entry.repoKey, entry.id)} size="sm">
+                <CircleArrowUp className="h-4 w-4" />
+                {t("更新")}
+              </Button>
+            ) : null}
+            <Button disabled={busy} onClick={() => void actions.uninstallSkill(entry.id)} size="sm" variant="ghost">
+              <Trash2 className="h-4 w-4" />
+              {t("卸载")}
+            </Button>
+          </>
+        ) : (
+          <Button disabled={busy || !entry.repoKey} onClick={() => void actions.installSkill(entry.repoKey, entry.id)} size="sm">
+            <Download className="h-4 w-4" />
+            {busy ? t("安装中") : t("安装")}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SkillRepoManager({ repos, actions }: { repos: SkillRepo[]; actions: Actions }) {
+  const [draft, setDraft] = useState<SkillRepo>({
+    owner: "",
+    name: "",
+    branch: "main",
+    subdir: "",
+    enabled: true,
+  });
+  const canAdd = draft.owner.trim().length > 0 && draft.name.trim().length > 0;
+
+  const addRepo = async () => {
+    const result = await actions.upsertSkillRepo(draft);
+    if (result && isSuccessStatus(result.status)) {
+      setDraft({ owner: "", name: "", branch: "main", subdir: "", enabled: true });
+    }
+  };
+
+  return (
+    <Panel>
+      <CardHead
+        title={t("仓库源")}
+        detail={t("Skill 目录须直接包含 SKILL.md。子目录留空表示仓库根下就是各个 Skill。")}
+      />
+      <CardContent>
+        <div className="relay-context-list">
+          {repos.map((repo) => {
+            const key = skillRepoKey(repo);
+            return (
+              <div className="relay-context-row" key={key}>
+                <strong className="context-title">{key}</strong>
+                <div className="relay-context-actions">
+                  <button
+                    aria-checked={repo.enabled}
+                    aria-label={`skillRepoEnabledSwitch-${key}`}
+                    className={`context-enabled-switch ${repo.enabled ? "active" : ""}`}
+                    onClick={() => void actions.upsertSkillRepo({ ...repo, enabled: !repo.enabled })}
+                    role="switch"
+                    title={repo.enabled ? t("刷新时跳过此仓库") : t("刷新时包含此仓库")}
+                    type="button"
+                  >
+                    <span className="context-switch-track" aria-hidden="true">
+                      <span className="context-switch-thumb" />
+                    </span>
+                  </button>
+                  <Button
+                    className="relay-context-delete"
+                    onClick={() => void actions.deleteSkillRepo(key)}
+                    size="icon"
+                    title={t("删除仓库源")}
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="context-editor-fields">
+          <Field label="Owner">
+            <Input
+              onChange={(event) => setDraft({ ...draft, owner: event.currentTarget.value.trim() })}
+              placeholder={t("例如 openai")}
+              value={draft.owner}
+            />
+          </Field>
+          <Field label="Name">
+            <Input
+              onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value.trim() })}
+              placeholder={t("例如 skills")}
+              value={draft.name}
+            />
+          </Field>
+          <Field label="Branch">
+            <Input
+              onChange={(event) => setDraft({ ...draft, branch: event.currentTarget.value.trim() })}
+              placeholder="main"
+              value={draft.branch}
+            />
+          </Field>
+          <Field label={t("子目录")}>
+            <Input
+              onChange={(event) => setDraft({ ...draft, subdir: event.currentTarget.value.trim() })}
+              placeholder={t("例如 skills/.curated，留空表示仓库根")}
+              value={draft.subdir}
+            />
+          </Field>
+        </div>
+        <Toolbar>
+          <Button disabled={!canAdd} onClick={() => void addRepo()} size="sm">
+            <Plus className="h-4 w-4" />
+            {t("添加仓库源")}
+          </Button>
+        </Toolbar>
+      </CardContent>
+    </Panel>
+  );
+}
+
+function SkillBackupManager({ backups, actions }: { backups: SkillBackup[]; actions: Actions }) {
+  return (
+    <Panel>
+      <CardHead
+        title={t("卸载备份")}
+        detail={t("卸载 Skill 前会把源目录整体挪到备份目录。备份只累积不自动清理，需要时手动删。")}
+      />
+      <CardContent>
+        <div className="relay-context-list">
+          {backups.length ? (
+            backups.map((backup) => (
+              <div className="relay-context-row" key={backup.id}>
+                <strong className="context-title">{backup.name || backup.skillId}</strong>
+                <div className="relay-context-actions">
+                  <Button
+                    disabled={actions.skillBusyId === backup.id}
+                    onClick={() => void actions.restoreSkillBackup(backup.id)}
+                    size="sm"
+                    variant="secondary"
+                  >
+                    {t("恢复")}
+                  </Button>
+                  <Button
+                    className="relay-context-delete"
+                    disabled={actions.skillBusyId === backup.id}
+                    onClick={() => void actions.deleteSkillBackup(backup.id)}
+                    size="icon"
+                    title={t("删除此备份")}
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty">{t("还没有备份。")}</div>
+          )}
+        </div>
       </CardContent>
     </Panel>
   );
@@ -9370,6 +9858,7 @@ function routeSubtitle(route: Route) {
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP、Skills、Plugins"),
+    skills: t("从 GitHub 仓库安装 Skill 到 Codex"),
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("会话删除、导出和脚本能力"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
@@ -9385,7 +9874,6 @@ function routeSubtitle(route: Route) {
 
 const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [
   { kind: "mcp", label: "MCP", tableName: "mcp_servers" },
-  { kind: "skill", label: "Skills", tableName: "skills" },
   { kind: "plugin", label: t("插件"), tableName: "plugins" },
 ];
 
@@ -9397,7 +9885,6 @@ function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntr
   const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
   return {
     mcpServers: parseContextEntries(commonConfig, "mcp", "mcp_servers"),
-    skills: parseContextEntries(commonConfig, "skill", "skills"),
     plugins: parseContextEntries(commonConfig, "plugin", "plugins"),
   };
 }
@@ -9407,12 +9894,10 @@ function contextEntriesWithLiveEntries(settings: BackendSettings, liveEntries: C
   if (!liveEntries) return commonEntries;
   const liveByKind: Record<ContextKind, Map<string, CodexContextEntry>> = {
     mcp: new Map(liveEntries.mcpServers.map((entry) => [entry.id, entry])),
-    skill: new Map(liveEntries.skills.map((entry) => [entry.id, entry])),
     plugin: new Map(liveEntries.plugins.map((entry) => [entry.id, entry])),
   };
   return {
     mcpServers: mergeLiveContextEntries(commonEntries.mcpServers, liveByKind.mcp),
-    skills: mergeLiveContextEntries(commonEntries.skills, liveByKind.skill),
     plugins: mergeLiveContextEntries(commonEntries.plugins, liveByKind.plugin),
   };
 }
@@ -9437,7 +9922,6 @@ function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry):
 function contextEntriesFromConfig(configContents: string): CodexContextEntries {
   return {
     mcpServers: parseContextEntries(configContents, "mcp", "mcp_servers"),
-    skills: parseContextEntries(configContents, "skill", "skills"),
     plugins: parseContextEntries(configContents, "plugin", "plugins"),
   };
 }
@@ -9445,7 +9929,6 @@ function contextEntriesFromConfig(configContents: string): CodexContextEntries {
 function mergeContextEntries(primary: CodexContextEntries, secondary: CodexContextEntries): CodexContextEntries {
   return {
     mcpServers: mergeContextEntryList(primary.mcpServers, secondary.mcpServers),
-    skills: mergeContextEntryList(primary.skills, secondary.skills),
     plugins: mergeContextEntryList(primary.plugins, secondary.plugins),
   };
 }
@@ -9592,7 +10075,6 @@ function unquoteTomlKey(key: string) {
 
 function contextEntriesByKind(entries: CodexContextEntries, kind: ContextKind): CodexContextEntry[] {
   if (kind === "mcp") return dedupeContextEntryList(entries.mcpServers);
-  if (kind === "skill") return dedupeContextEntryList(entries.skills);
   return dedupeContextEntryList(entries.plugins);
 }
 
@@ -9714,7 +10196,6 @@ function splitContextConfigText(configContents: string): { common: string; conte
 function stripContextEntriesFromConfig(configContents: string, entries: CodexContextEntries): string {
   const knownIds: Record<ContextKind, Set<string>> = {
     mcp: new Set(entries.mcpServers.map((entry) => entry.id)),
-    skill: new Set(entries.skills.map((entry) => entry.id)),
     plugin: new Set(entries.plugins.map((entry) => entry.id)),
   };
   const lines = configContents.split(/\r?\n/);

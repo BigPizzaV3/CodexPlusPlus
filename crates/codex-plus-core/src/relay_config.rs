@@ -9,6 +9,13 @@ use toml_edit::{DocumentMut, Item, Table, TableLike};
 use crate::settings::{RelayProfile, RelayProtocol, RelaySessionProvider};
 
 const RELAY_PROVIDER: &str = "custom";
+/// 我们代管的 config.toml 上下文表。
+///
+/// 这里没有 `skills`：codex 的 `skills` 配置键是一个三字段结构体
+/// （bundled / include_instructions / max_context_tokens），`[skills.<id>]` 会被
+/// serde 当未知字段丢掉。skill 靠 `$CODEX_HOME/skills/<id>/SKILL.md` 目录发现，
+/// 由 crate::skills 管理。
+const CONTEXT_TABLE_NAMES: [&str; 2] = ["mcp_servers", "plugins"];
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
 const CC_SWITCH_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
@@ -91,7 +98,6 @@ pub struct CodexContextEntry {
 #[serde(rename_all = "camelCase")]
 pub struct CodexContextEntries {
     pub mcp_servers: Vec<CodexContextEntry>,
-    pub skills: Vec<CodexContextEntry>,
     pub plugins: Vec<CodexContextEntry>,
 }
 
@@ -934,7 +940,6 @@ pub fn list_context_entries_from_common_config(
     let doc = parse_toml_document(&normalized)?;
     Ok(CodexContextEntries {
         mcp_servers: list_context_entries_for_table(&doc, "mcp_servers"),
-        skills: list_context_entries_for_table(&doc, "skills"),
         plugins: list_context_entries_for_table(&doc, "plugins"),
     })
 }
@@ -980,13 +985,15 @@ pub fn delete_context_entry_from_common_config(
     Ok(normalize_optional_toml(doc))
 }
 
-/// 剥掉通用配置里供应商各自持有的键，再丢掉标记为 `enabled = false` 的上下文条目，
-/// 得到本次切换真正要合并进 config.toml 的那份通用配置。
+/// 剥掉通用配置里供应商各自持有的键，丢掉历史遗留的 `[skills.<id>]` 死表，
+/// 再丢掉标记为 `enabled = false` 的上下文条目，得到本次切换真正要合并进
+/// config.toml 的那份通用配置。
 ///
 /// 条目启停以条目自身的 `enabled` 为唯一依据——旧版还存在一份「按供应商勾选」的
 /// selection，两套机制重叠，空的 selection 会把 live config 里的 MCP 全清空，已移除。
 pub fn prepare_common_config_for_apply(common_config: &str) -> anyhow::Result<String> {
-    let sanitized_common = sanitize_common_config_contents(common_config);
+    let sanitized_common =
+        strip_legacy_skill_tables(&sanitize_common_config_contents(common_config));
     let mut filtered = parse_toml_document(&sanitized_common)?;
     remove_disabled_context_tables(filtered.as_table_mut());
     Ok(normalize_optional_toml(filtered))
@@ -1032,7 +1039,7 @@ fn preserve_unmanaged_live_context_entries(
 }
 
 fn merge_managed_context_tables(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
-    for table_name in ["mcp_servers", "skills", "plugins"] {
+    for table_name in CONTEXT_TABLE_NAMES {
         merge_managed_context_table(target, managed, table_name);
     }
 }
@@ -1061,7 +1068,7 @@ fn merge_managed_context_table(
 }
 
 fn remove_managed_context_entries(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
-    for table_name in ["mcp_servers", "skills", "plugins"] {
+    for table_name in CONTEXT_TABLE_NAMES {
         remove_managed_context_entry_table(target, managed, table_name);
     }
 }
@@ -1090,7 +1097,7 @@ fn preserve_unmanaged_context_tables(
     live: &toml_edit::Table,
     managed: &toml_edit::Table,
 ) {
-    for table_name in ["mcp_servers", "skills", "plugins"] {
+    for table_name in CONTEXT_TABLE_NAMES {
         preserve_unmanaged_context_table(target, live, managed, table_name);
     }
 }
@@ -1131,7 +1138,7 @@ fn preserve_unmanaged_context_table(
 }
 
 fn remove_disabled_context_tables(table: &mut toml_edit::Table) {
-    for table_name in ["mcp_servers", "skills", "plugins"] {
+    for table_name in CONTEXT_TABLE_NAMES {
         let Some(item) = table.get_mut(table_name) else {
             continue;
         };
@@ -1364,6 +1371,41 @@ fn normalize_text_toml(contents: String) -> String {
     } else {
         ensure_trailing_newline(trimmed.to_string())
     }
+}
+
+/// 丢掉历史遗留的 `[skills.<id>]` 表。
+///
+/// 这些条目是早期把 skill 当 config.toml 注册表管留下来的，codex 从来没读过它们
+/// （`skills` 是个三字段结构体，`[skills.<id>]` 会被当未知字段丢掉）。skill 现在由
+/// `$CODEX_HOME/skills/` 目录管，这里顺手把死数据从用户配置里清掉。
+///
+/// 注意只删 `[skills.<id>]` 子表，`[skills]` 本身是合法配置（bundled /
+/// include_instructions / max_context_tokens），得留着。
+pub fn strip_legacy_skill_tables(contents: &str) -> String {
+    let Ok(mut doc) = parse_toml_document(contents) else {
+        return contents.to_string();
+    };
+    let Some(skills) = doc.as_table_mut().get_mut("skills") else {
+        return contents.to_string();
+    };
+    let Some(table) = skills.as_table_like_mut() else {
+        return contents.to_string();
+    };
+    let legacy_ids: Vec<String> = table
+        .iter()
+        .filter(|(_, item)| item.is_table_like())
+        .map(|(id, _)| id.to_string())
+        .collect();
+    if legacy_ids.is_empty() {
+        return contents.to_string();
+    }
+    for id in legacy_ids {
+        table.remove(&id);
+    }
+    if table.is_empty() {
+        doc.as_table_mut().remove("skills");
+    }
+    normalize_optional_toml(doc)
 }
 
 pub fn normalize_config_text(contents: &str) -> String {
@@ -2122,7 +2164,6 @@ fn table_body_to_string(table: &Table) -> String {
 fn context_table_name(kind: &str) -> anyhow::Result<&'static str> {
     match kind {
         "mcp" | "mcpServer" | "mcpServers" => Ok("mcp_servers"),
-        "skill" | "skills" => Ok("skills"),
         "plugin" | "plugins" => Ok("plugins"),
         other => anyhow::bail!("未知上下文类型：{other}"),
     }
@@ -2131,7 +2172,6 @@ fn context_table_name(kind: &str) -> anyhow::Result<&'static str> {
 fn context_kind_name(table: &str) -> &'static str {
     match table {
         "mcp_servers" => "mcp",
-        "skills" => "skill",
         "plugins" => "plugin",
         _ => "unknown",
     }

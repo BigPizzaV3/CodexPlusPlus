@@ -1107,9 +1107,6 @@ fn lists_codex_context_entries_from_common_config() {
 command = "npx"
 args = ["-y", "@upstash/context7-mcp"]
 
-[skills.writer]
-enabled = true
-
 [plugins.local]
 path = "plugin.js"
 "#,
@@ -1118,8 +1115,29 @@ path = "plugin.js"
 
     assert_eq!(entries.mcp_servers[0].id, "context7");
     assert_eq!(entries.mcp_servers[0].summary, r#"command = "npx""#);
-    assert_eq!(entries.skills[0].id, "writer");
     assert_eq!(entries.plugins[0].id, "local");
+}
+
+/// `[skills.<id>]` 是早期把 skill 当 config.toml 注册表管留下的死数据，
+/// codex 从来没读过。它不该再出现在上下文条目里。
+#[test]
+fn legacy_skill_tables_are_dropped_from_context_entries() {
+    let cleaned = codex_plus_core::relay_config::strip_legacy_skill_tables(
+        r#"[skills]
+include_instructions = true
+
+[skills.writer]
+enabled = true
+
+[mcp_servers.context7]
+command = "npx"
+"#,
+    );
+
+    assert!(!cleaned.contains("[skills.writer]"));
+    // `[skills]` 本身是合法配置（bundled / include_instructions / max_context_tokens）
+    assert!(cleaned.contains("include_instructions = true"));
+    assert!(cleaned.contains("[mcp_servers.context7]"));
 }
 
 #[test]
@@ -1291,7 +1309,8 @@ path = "plugin.js"
     assert!(filtered.contains("goals = true"));
     assert!(!filtered.contains("[mcp_servers.context7]"));
     assert!(filtered.contains("[mcp_servers.memory]"));
-    assert!(filtered.contains("[skills.writer]"));
+    // 遗留的 [skills.<id>] 是死数据，codex 不读，顺手清掉
+    assert!(!filtered.contains("[skills.writer]"));
     assert!(filtered.contains("[plugins.local]"));
 }
 
@@ -1524,7 +1543,7 @@ path = "plugin.js"
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains("[mcp_servers.memory]"));
     assert!(config.contains("[mcp_servers.context7]"));
-    assert!(config.contains("[skills.writer]"));
+    assert!(!config.contains("[skills.writer]"));
     assert!(config.contains("[plugins.local]"));
     assert!(config.contains("model_context_window = 200000"));
     assert!(config.contains("model_auto_compact_token_limit = 160000"));

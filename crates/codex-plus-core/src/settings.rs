@@ -1542,7 +1542,9 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         extracted_context.as_str(),
     ]);
     settings.relay_common_config_contents = crate::relay_config::normalize_config_text(&common);
-    settings.relay_context_config_contents = crate::relay_config::normalize_config_text(&context);
+    settings.relay_context_config_contents = crate::relay_config::strip_legacy_skill_tables(
+        &crate::relay_config::normalize_config_text(&context),
+    );
     for profile in &mut settings.relay_profiles {
         let _ = crate::relay_config::normalize_relay_profile_for_storage(profile);
     }
@@ -2657,7 +2659,10 @@ experimental_bearer_token = "sk-existing""#
             .unwrap();
 
         assert!(updated.weixin_connect_enabled);
-        assert_eq!(updated.weixin_connect_base_url, "https://ilink.example.test");
+        assert_eq!(
+            updated.weixin_connect_base_url,
+            "https://ilink.example.test"
+        );
         assert_eq!(updated.weixin_connect_token, "token");
         assert_eq!(updated.weixin_connect_account_id, "bot-1");
         assert_eq!(updated.weixin_connect_allow_from, "user@im.wechat");
