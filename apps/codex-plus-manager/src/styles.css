@@ -4228,6 +4228,15 @@ input[type="range"]:disabled {
   padding: 12px;
 }
 
+/* 卡片被同行最高的那张拉伸时，多余高度默认会分摊进每一行；描述框跟着变高，
+ * 但 line-clamp 只渲染 3 行，overflow:hidden 下面就露出第 4 行的一小截。
+ * 实测触发条件是行内出现空容器（标签为空时溢出 2.8px），当前 .script-market-tags
+ * 总会渲染 v{version} 所以碰不到，这里是防御性收口。
+ * 顺带把多余空间集中到行间，操作按钮在同一行的卡片间底部对齐。 */
+.script-market-card[data-view="grid"] {
+  align-content: space-between;
+}
+
 .script-market-card:hover {
   border-color: hsl(var(--primary) / 0.36);
   box-shadow: 0 12px 26px hsl(var(--foreground) / 0.08);
