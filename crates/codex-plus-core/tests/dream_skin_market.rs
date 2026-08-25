@@ -55,7 +55,7 @@ async fn installs_verified_market_theme_into_local_library() {
     config.name = "Market Demo".to_string();
     config.style_preset = "cyber-neon".to_string();
     let config = serde_json::to_vec(&config).unwrap();
-    let image = b"\x89PNG\r\n\x1a\nmarket-image";
+    let image = include_bytes!("../../../assets/inject/dream-skin-default.png");
     mount_theme(&server, &config, image).await;
 
     let installed = install_market_theme_from_base(
@@ -79,10 +79,16 @@ async fn installs_verified_market_theme_into_local_library() {
             .join("dream-skin/themes/market-demo/theme.json")
             .is_file()
     );
+    let image_file = if cfg!(target_os = "macos") {
+        "image.jpg"
+    } else {
+        "image.png"
+    };
     assert!(
         state
             .path()
-            .join("dream-skin/themes/market-demo/image.png")
+            .join("dream-skin/themes/market-demo")
+            .join(image_file)
             .is_file()
     );
     let records =

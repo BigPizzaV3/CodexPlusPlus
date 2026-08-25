@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 
 use crate::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
@@ -82,9 +84,15 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self) -> anyhow::Result<Value>;
+    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+        self.open_manager().await
+    }
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
+    async fn create_share(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::share::create_share(payload).await
+    }
     async fn zed_remote_status(&self) -> anyhow::Result<Value>;
     async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value>;
     async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value>;
@@ -108,13 +116,15 @@ pub trait BridgeDataService: Send + Sync {
         &self,
         title: String,
     ) -> anyhow::Result<Option<SessionRef>>;
-    async fn move_thread_workspace(
-        &self,
-        session: SessionRef,
-        target_cwd: String,
-    ) -> anyhow::Result<Value>;
-    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value>;
-    async fn thread_sort_keys(&self, sessions: Vec<SessionRef>) -> anyhow::Result<Value>;
+    async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
+        anyhow::bail!("Remote Control session recovery is unavailable")
+    }
+    async fn export_session_file(&self, _session: SessionRef) -> anyhow::Result<Value> {
+        anyhow::bail!("Session file export is unavailable")
+    }
+    async fn import_session_file(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("Session file import is unavailable")
+    }
 }
 
 pub async fn handle_bridge_request(
@@ -173,10 +183,16 @@ pub async fn handle_bridge_request(
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
-        "/backend/status" => ctx.runtime.backend_status().await,
+        "/manager/open-transient" => ctx.runtime.open_transient_manager().await,
+        "/backend/status" => backend_status_value(
+            ctx.runtime.backend_status().await,
+            ctx.settings.get_settings().await,
+        ),
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
+        "/llm-proxy" => llm_proxy_value(payload.clone()).await,
         "/ads" => ctx.runtime.ads().await,
+        "/share/create" => ctx.runtime.create_share(payload.clone()).await,
         "/zed-remote/status" => ctx.runtime.zed_remote_status().await,
         "/zed-remote/resolve-host" => ctx.runtime.resolve_zed_remote_host(payload.clone()).await,
         "/zed-remote/fallback-request" => {
@@ -238,26 +254,20 @@ pub async fn handle_bridge_request(
                 .to_string();
             archived_thread_value(ctx.data.find_archived_thread_by_title(title).await)
         }
-        "/move-thread-workspace" => {
-            let target_cwd = payload
-                .get("target_cwd")
+        "/remote-control-session/recover" => {
+            let thread_id = payload
+                .get("thread_id")
+                .or_else(|| payload.get("threadId"))
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            ctx.data
-                .move_thread_workspace(session_from_payload(&payload), target_cwd)
-                .await
+            ctx.data.recover_remote_control_session(thread_id).await
         }
-        "/thread-sort-key" => {
-            ctx.data
-                .thread_sort_key(session_from_payload(&payload))
-                .await
-        }
-        "/thread-sort-keys" => {
-            ctx.data
-                .thread_sort_keys(sessions_from_payload(&payload))
-                .await
-        }
+        "/session/export" => ctx
+            .data
+            .export_session_file(session_from_payload(&payload))
+            .await,
+        "/session/import" => ctx.data.import_session_file(payload.clone()).await,
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.unknown_path",
@@ -460,6 +470,15 @@ impl BridgeRuntimeService for CoreRuntimeService {
         }))
     }
 
+    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+        let target =
+            crate::install::spawn_companion(crate::install::MANAGER_BINARY, ["--transient"])?;
+        Ok(json!({
+            "status": "ok",
+            "path": target
+        }))
+    }
+
     async fn backend_status(&self) -> anyhow::Result<Value> {
         let _ = self.status_store.load_latest();
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -580,43 +599,28 @@ impl BridgeDataService for UnavailableDataService {
     ) -> anyhow::Result<Option<SessionRef>> {
         Ok(None)
     }
-
-    async fn move_thread_workspace(
-        &self,
-        session: SessionRef,
-        _target_cwd: String,
-    ) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "failed",
-            "session_id": session.session_id,
-            "message": "Move workspace service is not wired in core launcher hooks"
-        }))
-    }
-
-    async fn thread_sort_key(&self, session: SessionRef) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "failed",
-            "session_id": session.session_id,
-            "message": "Thread sort service is not wired in core launcher hooks"
-        }))
-    }
-
-    async fn thread_sort_keys(&self, _sessions: Vec<SessionRef>) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "failed",
-            "message": "Thread sort service is not wired in core launcher hooks",
-            "sort_keys": []
-        }))
-    }
 }
 
 fn settings_payload_value(
     settings: BackendSettings,
     codex_app_version: String,
 ) -> anyhow::Result<Value> {
+    let active_relay_session_provider = settings.active_relay_session_provider();
+    let active_relay_codex_provider = crate::model_catalog::codex_model_provider_for_relay_profile(
+        &crate::relay_config::default_codex_home_dir(),
+        &settings.active_relay_profile(),
+    );
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("codexAppStepwiseApiKey");
+        object.insert(
+            "activeRelaySessionProvider".to_string(),
+            Value::String(active_relay_session_provider.as_str().to_string()),
+        );
+        object.insert(
+            "activeRelayCodexProvider".to_string(),
+            Value::String(active_relay_codex_provider),
+        );
         object.insert(
             "codexAppVersion".to_string(),
             Value::String(codex_app_version),
@@ -632,6 +636,20 @@ async fn settings_value(
     let settings = result?;
     let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
     settings_payload_value(settings, codex_app_version)
+}
+
+fn backend_status_value(
+    status: anyhow::Result<Value>,
+    settings: anyhow::Result<BackendSettings>,
+) -> anyhow::Result<Value> {
+    let mut status = status?;
+    if let Some(object) = status.as_object_mut() {
+        let hide = settings
+            .map(|settings| crate::assets::hide_official_usage_alert_config(&settings))
+            .unwrap_or(false);
+        object.insert("hideOfficialUsageAlert".to_string(), Value::Bool(hide));
+    }
+    Ok(status)
 }
 
 fn result_value<T>(result: anyhow::Result<T>) -> anyhow::Result<Value>
@@ -666,6 +684,173 @@ async fn stepwise_test_value(
 ) -> anyhow::Result<Value> {
     let settings = crate::stepwise::settings_with_payload(result?, &payload);
     crate::stepwise::test_connection(&settings).await
+}
+
+async fn llm_proxy_value(payload: Value) -> anyhow::Result<Value> {
+    let url = validate_llm_proxy_url(
+        payload
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )?;
+    let method = payload
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("POST");
+    if !method.eq_ignore_ascii_case("POST") {
+        anyhow::bail!("LLM Bridge 仅支持 POST 请求");
+    }
+
+    let timeout_ms = payload
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(60_000)
+        .clamp(1_000, 60_000);
+    let body = payload
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if body.len() > 1_048_576 {
+        anyhow::bail!("LLM Bridge 请求体过大");
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client
+        .post(url)
+        .headers(llm_proxy_headers(&payload)?)
+        .body(body)
+        .send()
+        .await?;
+    let http_status = response.status().as_u16();
+    let ok = response.status().is_success();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    if let Some(length) = response.content_length() {
+        if length > 4 * 1024 * 1024 {
+            anyhow::bail!("LLM Bridge 响应体过大");
+        }
+    }
+    let bytes = response.bytes().await?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        anyhow::bail!("LLM Bridge 响应体过大");
+    }
+    let body_text = String::from_utf8_lossy(&bytes).to_string();
+    let body_json = if content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("application/json"))
+    {
+        serde_json::from_slice::<Value>(&bytes).ok()
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "status": "ok",
+        "http_status": http_status,
+        "ok": ok,
+        "body_text": body_text,
+        "body_json": body_json,
+    }))
+}
+
+fn validate_llm_proxy_url(raw: &str) -> anyhow::Result<reqwest::Url> {
+    let url = reqwest::Url::parse(raw.trim()).map_err(|_| anyhow::anyhow!("Base URL 格式无效"))?;
+    if url.scheme() != "https" {
+        anyhow::bail!("Base URL 必须使用 HTTPS");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("Base URL 不得包含用户名或密码");
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("Base URL 缺少主机名"))?;
+    if is_blocked_llm_proxy_host(host) {
+        anyhow::bail!("Base URL 不得指向本机或私有网络");
+    }
+    Ok(url)
+}
+
+fn is_blocked_llm_proxy_host(host: &str) -> bool {
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_lowercase();
+    if host.is_empty()
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+    {
+        return true;
+    }
+    if let Ok(ip) = std::net::IpAddr::from_str(&host) {
+        return match ip {
+            std::net::IpAddr::V4(ip) => {
+                ip.is_loopback()
+                    || ip.is_private()
+                    || ip.is_link_local()
+                    || ip.is_multicast()
+                    || ip.is_broadcast()
+                    || ip.is_documentation()
+                    || ip.octets()[0] == 0
+                    || ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])
+            }
+            std::net::IpAddr::V6(ip) => {
+                ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || (ip.segments()[0] & 0xfe00) == 0xfc00
+                    || (ip.segments()[0] & 0xffc0) == 0xfe80
+            }
+        };
+    }
+    false
+}
+
+fn llm_proxy_headers(payload: &Value) -> anyhow::Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    let Some(raw_headers) = payload.get("headers").and_then(Value::as_object) else {
+        return Ok(headers);
+    };
+    for (name, value) in raw_headers {
+        if !is_allowed_llm_proxy_header(name) {
+            continue;
+        }
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+        let header_name = HeaderName::from_bytes(name.as_bytes())?;
+        let header_value = HeaderValue::from_str(value)?;
+        headers.insert(header_name, header_value);
+    }
+    Ok(headers)
+}
+
+fn is_allowed_llm_proxy_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "accept"
+            | "api-key"
+            | "anthropic-beta"
+            | "anthropic-version"
+            | "authorization"
+            | "content-type"
+            | "openai-organization"
+            | "openai-project"
+            | "x-api-key"
+    )
 }
 
 fn diagnostic_log_value(payload: Value) -> anyhow::Result<Value> {
@@ -730,31 +915,6 @@ fn session_from_payload(payload: &Value) -> SessionRef {
             .unwrap_or_default()
             .to_string(),
     }
-}
-
-fn sessions_from_payload(payload: &Value) -> Vec<SessionRef> {
-    payload
-        .get("sessions")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_object())
-                .map(|item| SessionRef {
-                    session_id: item
-                        .get("session_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    title: item
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 pub fn devtools_url(debug_port: u16, target_id: &str) -> String {

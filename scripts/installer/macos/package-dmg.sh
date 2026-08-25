@@ -41,6 +41,7 @@ create_app() {
   local bundle_id="$4"
   local lsui_element="${5:-false}"
   local app_dir="$STAGE/$app_name.app"
+  local url_types=""
 
   if [ ! -x "$binary_path" ]; then
     echo "error: binary not found or not executable: $binary_path" >&2
@@ -53,6 +54,20 @@ create_app() {
   cp "$ICON_ICNS" "$app_dir/Contents/Resources/$ICON_NAME"
   chmod +x "$app_dir/Contents/MacOS/$executable_name"
   printf 'APPL????' > "$app_dir/Contents/PkgInfo"
+  if [ "$executable_name" = "CodexPlusPlusManager" ]; then
+    url_types='  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Codex++ Links</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>codexplusplus</string>
+        <string>dreamskin</string>
+      </array>
+    </dict>
+  </array>'
+  fi
   cat > "$app_dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -78,6 +93,7 @@ create_app() {
   <string>$executable_name</string>
   <key>CFBundleIconFile</key>
   <string>$ICON_NAME</string>
+$url_types
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>
@@ -129,5 +145,32 @@ verify_app "$STAGE/Codex++ 管理工具.app"
 
 ln -s /Applications "$STAGE/Applications"
 
-hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+DMG_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-plus-plus-dmg.XXXXXX")"
+DMG_WORK_PATH="$DMG_WORK_DIR/$(basename "$DMG")"
+DMG_CREATED=false
+
+cleanup_dmg_work_dir() {
+  rm -f "$DMG_WORK_PATH"
+  rmdir "$DMG_WORK_DIR" 2>/dev/null || true
+}
+
+trap cleanup_dmg_work_dir EXIT
+
+for attempt in 1 2 3; do
+  if hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG_WORK_PATH"; then
+    mv "$DMG_WORK_PATH" "$DMG"
+    DMG_CREATED=true
+    break
+  fi
+
+  if [ "$attempt" -lt 3 ]; then
+    sleep "$((attempt * 2))"
+  fi
+done
+
+if [ "$DMG_CREATED" != true ]; then
+  echo "error: failed to create DMG after 3 attempts" >&2
+  exit 1
+fi
+
 echo "$DMG"

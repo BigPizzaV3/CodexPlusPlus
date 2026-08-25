@@ -1,6 +1,5 @@
 use codex_plus_core::codex_app_state::{
-    capture_app_state_snapshot, prepare_projectless_main_window,
-    sync_app_state_after_provider_switch,
+    capture_app_state_snapshot, sync_app_state_after_provider_switch,
 };
 use serde_json::{Value, json};
 
@@ -233,78 +232,4 @@ fn app_state_sync_normalizes_current_state_and_writes_backup_before_change() {
         backup["electron-saved-workspace-roots"],
         json!(["C:/work/app", "C:\\work\\app\\"])
     );
-}
-
-#[test]
-fn projectless_main_window_preparation_keeps_saved_projects_and_clears_active_root() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path();
-    std::fs::write(
-        home.join("config.toml"),
-        r#"[desktop]
-hotkey-window-projectless-default-enabled = true
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        home.join(".codex-global-state.json"),
-        json!({
-            "electron-saved-workspace-roots": ["C:/work/app"],
-            "active-workspace-roots": ["C:/work/app"],
-            "electron-persisted-atom-state": {
-                "electron:onboarding-projectless-completed": false
-            }
-        })
-        .to_string(),
-    )
-    .unwrap();
-
-    let result = prepare_projectless_main_window(home).unwrap();
-    let state: Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".codex-global-state.json")).unwrap(),
-    )
-    .unwrap();
-
-    assert!(result.changed);
-    assert!(result.backup_path.as_deref().unwrap().is_dir());
-    assert_eq!(
-        state["electron-saved-workspace-roots"],
-        json!(["C:/work/app"])
-    );
-    assert_eq!(state["active-workspace-roots"], json!([]));
-    assert_eq!(
-        state["electron-persisted-atom-state"]["electron:onboarding-projectless-completed"],
-        true
-    );
-    assert_eq!(
-        state["electron-persisted-atom-state"]["electron:onboarding-workspace-autolaunch-applied"],
-        true
-    );
-}
-
-#[test]
-fn projectless_main_window_preparation_respects_disabled_preference() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path();
-    std::fs::write(
-        home.join("config.toml"),
-        r#"[desktop]
-hotkey-window-projectless-default-enabled = false
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        home.join(".codex-global-state.json"),
-        json!({"active-workspace-roots": ["C:/work/app"]}).to_string(),
-    )
-    .unwrap();
-
-    let result = prepare_projectless_main_window(home).unwrap();
-    let state: Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".codex-global-state.json")).unwrap(),
-    )
-    .unwrap();
-
-    assert!(!result.changed);
-    assert_eq!(state["active-workspace-roots"], json!(["C:/work/app"]));
 }

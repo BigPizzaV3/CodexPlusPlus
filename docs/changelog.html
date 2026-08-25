@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#15171c">
+    <meta name="description" content="Codex++ 更新日志，查看每个版本的功能、改进与修复。">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Codex++ 更新日志">
+    <meta property="og:description" content="查看 Codex++ 每个版本的功能、改进与修复。">
+    <meta property="og:url" content="https://codexpp.cc/changelog.html">
+    <title>Codex++ 更新日志</title>
+    <link rel="icon" type="image/png" href="images/codex-plus-plus.png">
+    <script>
+      document.documentElement.classList.add("js");
+      try {
+        const savedLanguage = localStorage.getItem("codex-plus-language");
+        const initialLanguage = savedLanguage || (navigator.language.startsWith("zh") ? "zh" : "en");
+        document.documentElement.lang = initialLanguage === "zh" ? "zh-CN" : "en";
+        document.documentElement.dataset.language = initialLanguage;
+      } catch {
+        document.documentElement.dataset.language = "zh";
+      }
+    </script>
+    <link rel="stylesheet" href="site.css?v=20260823-2">
+    <script src="site.js" defer></script>
+    <script src="changelog.js" defer></script>
+  </head>
+  <body class="changelog-page">
+    <a class="skip-link" href="#main"><span class="lang lang-zh">跳到主要内容</span><span class="lang lang-en">Skip to main content</span></a>
+
+    <header class="site-header" data-header>
+      <div class="nav-shell">
+        <a class="brand" href="index.html" aria-label="Codex++ 首页">
+          <img src="images/codex-plus-plus.png" alt="" width="34" height="34">
+          <span>Codex++</span>
+        </a>
+        <button class="menu-button" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-nav" data-menu-button>
+          <span></span><span></span><span></span>
+        </button>
+        <nav class="site-nav" id="site-nav" aria-label="主导航" data-nav>
+          <a href="index.html#capabilities">能力</a>
+          <a href="index.html#showcase">界面</a>
+          <a href="index.html#downloads">下载</a>
+          <a href="changelog.html" aria-current="page">更新日志</a>
+          <a href="index.html#faq">常见问题</a>
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+          <div class="language-switch" role="group" aria-label="语言选择">
+            <button type="button" data-language="zh" aria-pressed="true">中</button>
+            <button type="button" data-language="en" aria-pressed="false">EN</button>
+          </div>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main" class="changelog-main">
+      <div class="section-shell">
+        <section class="changelog-intro" aria-labelledby="changelog-title">
+          <div>
+            <p class="eyebrow"><span class="lang lang-zh">更新日志</span><span class="lang lang-en">Changelog</span></p>
+            <h1 id="changelog-title"><span class="lang lang-zh">Codex++ 的每次进化</span><span class="lang lang-en">Every Codex++ evolution</span></h1>
+          </div>
+          <p class="changelog-intro-copy">
+            <span class="lang lang-zh">记录每个版本带来的新能力、体验改进与稳定性修复。保持透明，也方便你找到值得升级的理由。</span>
+            <span class="lang lang-en">A concise record of new capabilities, experience improvements, and stability fixes in every release.</span>
+          </p>
+        </section>
+
+        <div class="changelog-layout">
+          <aside class="changelog-sidebar">
+            <p class="changelog-sidebar-label"><span class="lang lang-zh">版本</span><span class="lang lang-en">Versions</span></p>
+            <nav aria-label="版本列表" data-release-nav>
+              <a class="is-current" href="#v1-2-52"><strong>v1.2.52</strong><span>2026.08.23</span></a>
+              <a href="#v1-2-51"><strong>v1.2.51</strong><span>2026.08.23</span></a>
+              <a href="#recent"><strong><span class="lang lang-zh">近期版本</span><span class="lang lang-en">Recent releases</span></strong><span>v1.2.50 ↓</span></a>
+            </nav>
+            <a class="changelog-github-link" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noreferrer">
+              <span class="lang lang-zh">在 GitHub 查看全部</span><span class="lang lang-en">View all on GitHub</span> <span aria-hidden="true">↗</span>
+            </a>
+          </aside>
+
+          <p class="changelog-load-status" data-release-status>
+            <span class="lang lang-zh">正在同步 GitHub Releases…</span><span class="lang lang-en">Syncing GitHub Releases…</span>
+          </p>
+
+          <div class="changelog-entries" data-release-list>
+            <article class="changelog-entry" id="v1-2-52">
+              <header class="changelog-entry-header">
+                <div>
+                  <p class="changelog-version">v1.2.52 <span class="changelog-badge"><span class="lang lang-zh">最新</span><span class="lang lang-en">Latest</span></span></p>
+                  <p class="changelog-date">2026.08.23</p>
+                </div>
+                <a class="changelog-entry-link" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.2.52" target="_blank" rel="noreferrer" aria-label="v1.2.52 GitHub Release">↗</a>
+              </header>
+              <p class="changelog-summary"><span class="lang lang-zh">让 Codex++ 管理器与注入体验更稳定、更贴近 Codex 原生界面。</span><span class="lang lang-en">A stability-focused release that makes the manager and injected experience feel closer to native Codex.</span></p>
+              <section class="changelog-section">
+                <h2><span class="lang lang-zh">重点内容</span><span class="lang lang-en">Highlights</span></h2>
+                <ul class="changelog-list">
+                  <li><span class="lang lang-zh">修复管理页面浅色模式下的主题变量与背景显示问题。</span><span class="lang lang-en">Fixed theme variables and background rendering in the manager's light mode.</span></li>
+                  <li><span class="lang lang-zh">注入页面跟随 Codex 原生主题，减少深浅色切换时的割裂感。</span><span class="lang lang-en">Injected views now follow Codex's native theme for a smoother light/dark transition.</span></li>
+                  <li><span class="lang lang-zh">同步桌面运行时、启动器与管理器版本，降低升级后的入口不一致。</span><span class="lang lang-en">Synchronized the desktop runtime, launcher, and manager versions to keep upgrades consistent.</span></li>
+                </ul>
+              </section>
+              <section class="changelog-section changelog-overview">
+                <h2><span class="lang lang-zh">概览</span><span class="lang lang-en">Overview</span></h2>
+                <div class="changelog-metrics">
+                  <div><strong>01</strong><span class="lang lang-zh">主题一致性</span><span class="lang lang-en">Theme consistency</span></div>
+                  <div><strong>02</strong><span class="lang lang-zh">运行时同步</span><span class="lang lang-en">Runtime sync</span></div>
+                  <div><strong>03</strong><span class="lang lang-zh">启动体验</span><span class="lang lang-en">Launch experience</span></div>
+                </div>
+              </section>
+            </article>
+
+            <article class="changelog-entry" id="v1-2-51">
+              <header class="changelog-entry-header">
+                <div>
+                  <p class="changelog-version">v1.2.51</p>
+                  <p class="changelog-date">2026.08.23</p>
+                </div>
+                <a class="changelog-entry-link" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.2.51" target="_blank" rel="noreferrer" aria-label="v1.2.51 GitHub Release">↗</a>
+              </header>
+              <p class="changelog-summary"><span class="lang lang-zh">围绕会话分享、桌面运行时和管理器入口完成一轮功能补齐。</span><span class="lang lang-en">A feature-complete update centered on session sharing, the desktop runtime, and manager entry points.</span></p>
+              <section class="changelog-section">
+                <h2><span class="lang lang-zh">新功能</span><span class="lang lang-en">New</span></h2>
+                <ul class="changelog-list">
+                  <li><span class="lang lang-zh">支持加密会话分享，分享数据在离开设备前完成保护。</span><span class="lang lang-en">Added encrypted session sharing, protecting data before it leaves the device.</span></li>
+                  <li><span class="lang lang-zh">管理工具支持通过链接导入会话，并提供重启提示完成加载。</span><span class="lang lang-en">The manager can import sessions from a link and guides you through the restart needed to load them.</span></li>
+                  <li><span class="lang lang-zh">改进 Codex++ 管理入口与桌面版 CLI 的发现和启动流程。</span><span class="lang lang-en">Improved discovery and startup for the Codex++ manager entry and the desktop CLI.</span></li>
+                </ul>
+              </section>
+              <section class="changelog-section">
+                <h2><span class="lang lang-zh">改进与修复</span><span class="lang lang-en">Improvements and fixes</span></h2>
+                <ul class="changelog-list">
+                  <li><span class="lang lang-zh">优化分享按钮的注入位置与原生菜单的视觉对齐。</span><span class="lang lang-en">Aligned the injected share action with the native toolbar and menu styling.</span></li>
+                  <li><span class="lang lang-zh">减少会话导入、启动和供应商切换时的边界错误。</span><span class="lang lang-en">Reduced edge-case failures during session import, launch, and provider switching.</span></li>
+                </ul>
+              </section>
+            </article>
+
+            <article class="changelog-entry changelog-entry-compact" id="recent">
+              <header class="changelog-entry-header">
+                <div>
+                  <p class="changelog-version"><span class="lang lang-zh">近期版本</span><span class="lang lang-en">Recent releases</span></p>
+                  <p class="changelog-date">v1.2.50 及更早</p>
+                </div>
+                <a class="changelog-entry-link" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noreferrer" aria-label="Codex++ 历史 Releases">↗</a>
+              </header>
+              <p class="changelog-summary"><span class="lang lang-zh">从配置管理到脚本生态，Codex++ 的基础能力在这些版本中逐步成型。</span><span class="lang lang-en">These releases established Codex++'s foundation, from configuration management to its script ecosystem.</span></p>
+              <ul class="changelog-list changelog-list-columns">
+                <li><span class="lang lang-zh">多供应商、纯 API 与协议切换</span><span class="lang lang-en">Multi-provider, API-only, and protocol switching</span></li>
+                <li><span class="lang lang-zh">模型白名单与按模型上下文配置</span><span class="lang lang-en">Model allowlists and per-model context settings</span></li>
+                <li><span class="lang lang-zh">脚本市场搜索、列表与板块布局</span><span class="lang lang-en">Script marketplace search and list/grid layouts</span></li>
+                <li><span class="lang lang-zh">插件、Skill、MCP 与 DreamSkin 主题管理</span><span class="lang lang-en">Plugin, skill, MCP, and DreamSkin theme management</span></li>
+                <li><span class="lang lang-zh">服务模式、诊断工具与跨平台安装包</span><span class="lang lang-en">Service modes, diagnostics, and cross-platform installers</span></li>
+                <li><span class="lang lang-zh">会话整理、Markdown 导出与项目工作目录</span><span class="lang lang-en">Session organization, Markdown export, and project workspaces</span></li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-shell">
+        <div>
+          <a class="brand footer-brand" href="index.html"><img src="images/codex-plus-plus.png" alt="" width="30" height="30"><span>Codex++</span></a>
+          <p><span class="lang lang-zh">社区维护的 Codex 桌面增强与管理工具。</span><span class="lang lang-en">A community-maintained desktop enhancement and management tool for Codex.</span></p>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noreferrer">Releases</a>
+          <a href="changelog.html" aria-current="page"><span class="lang lang-zh">更新日志</span><span class="lang lang-en">Changelog</span></a>
+          <a href="https://github.com/BigPizzaV3/CodexPlusPlus/issues" target="_blank" rel="noreferrer">Issues</a>
+        </div>
+      </div>
+      <div class="footer-bottom"><span>© <span data-year>2026</span> Codex++ Contributors</span><span>AGPL-3.0-only</span></div>
+    </footer>
+  </body>
+</html>

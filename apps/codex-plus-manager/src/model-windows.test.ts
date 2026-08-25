@@ -21,6 +21,7 @@ const _profileTypeCheck: RelayProfile = {
   protocol: "responses",
   relayMode: "official",
   officialMixApiKey: false,
+  hideOfficialUsageAlert: false,
   testModel: "",
   configContents: "",
   authContents: "",
@@ -36,6 +37,8 @@ const _profileTypeCheck: RelayProfile = {
   vlmModel: "",
   vlmBaseUrl: "",
   userAgent: "",
+  sub2apiEnabled: false,
+  sub2apiMultiplier: "",
 };
 
 void _profileTypeCheck;

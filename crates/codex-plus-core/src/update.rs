@@ -1,11 +1,14 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub const DEFAULT_REPOSITORY: &str = "BigPizzaV3/CodexPlusPlus";
 pub const DEFAULT_LATEST_JSON_URL: &str =
     "https://github.com/BigPizzaV3/CodexPlusPlus/releases/latest/download/latest.json";
+const UPDATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseAsset {
@@ -167,8 +170,7 @@ pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> 
 }
 
 pub async fn fetch_latest_release(latest_json_url: &str) -> anyhow::Result<Release> {
-    let client =
-        crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))?;
+    let client = update_http_client()?;
     let payload = client
         .get(latest_json_url)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -201,21 +203,111 @@ pub async fn perform_update(
         .asset_url
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("没有可下载的 Release asset"))?;
-    let bytes =
-        crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))?
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
-    let installer_path = download_asset_to(release, &bytes, download_dir)?;
-    launch_installer(&installer_path)?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.perform.start",
+        json!({
+            "version": release.version,
+            "assetName": release.asset_name,
+            "assetUrl": url,
+            "downloadTimeoutSeconds": UPDATE_DOWNLOAD_TIMEOUT.as_secs()
+        }),
+    );
+    let response = match update_http_client()?.get(url).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.download.failed",
+                json!({ "version": release.version, "assetName": release.asset_name, "error": error.to_string() }),
+            );
+            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
+        }
+    };
+    let response = match response.error_for_status() {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.download.bad_status",
+                json!({ "version": release.version, "assetName": release.asset_name, "error": error.to_string() }),
+            );
+            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
+        }
+    };
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.download.body_failed",
+                json!({ "version": release.version, "assetName": release.asset_name, "error": error.to_string() }),
+            );
+            return Err(anyhow::anyhow!("读取安装包失败：{error}"));
+        }
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.download.completed",
+        json!({
+            "version": release.version,
+            "assetName": release.asset_name,
+            "bytes": bytes.len()
+        }),
+    );
+    let installer_path = match download_asset_to(release, &bytes, download_dir) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.write.failed",
+                json!({
+                    "version": release.version,
+                    "assetName": release.asset_name,
+                    "downloadDir": download_dir.to_string_lossy(),
+                    "bytes": bytes.len(),
+                    "error": error.to_string()
+                }),
+            );
+            return Err(error);
+        }
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.write.completed",
+        json!({
+            "version": release.version,
+            "assetName": release.asset_name,
+            "installerPath": installer_path.to_string_lossy(),
+            "bytes": bytes.len()
+        }),
+    );
+    if let Err(error) = launch_installer(&installer_path) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "update.launch.failed",
+            json!({
+                "version": release.version,
+                "assetName": release.asset_name,
+                "installerPath": installer_path.to_string_lossy(),
+                "error": error.to_string()
+            }),
+        );
+        return Err(error);
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.launch.completed",
+        json!({
+            "version": release.version,
+            "assetName": release.asset_name,
+            "installerPath": installer_path.to_string_lossy()
+        }),
+    );
     Ok(UpdateInstall {
         release: release.clone(),
         installer_path,
         launched: true,
     })
+}
+
+fn update_http_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent(format!("Codex++/{}", crate::version::VERSION))
+        .connect_timeout(UPDATE_CONNECT_TIMEOUT)
+        .timeout(UPDATE_DOWNLOAD_TIMEOUT)
+        .build()?)
 }
 
 pub fn download_asset_to(

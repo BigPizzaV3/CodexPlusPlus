@@ -253,16 +253,30 @@ pub fn pick_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
 }
 
 pub fn pick_injectable_codex_page_target(targets: &[CdpTarget]) -> anyhow::Result<CdpTarget> {
-    for target in targets
-        .iter()
-        .filter(|target| is_injectable_page_target(target))
-    {
-        if is_primary_codex_page_target(target) {
+    let priorities: [fn(&CdpTarget) -> bool; 4] = [
+        is_exact_codex_app_main_target,
+        is_primary_codex_app_target,
+        is_chatgpt_desktop_page_target,
+        is_supported_codex_page_target,
+    ];
+    for matches_priority in priorities {
+        if let Some(target) = targets
+            .iter()
+            .find(|target| is_injectable_page_target(target) && matches_priority(target))
+        {
             return Ok(target.clone());
         }
     }
-
     bail!("No injectable Codex page target found")
+}
+
+fn is_codex_app_page_target(target: &CdpTarget) -> bool {
+    let Ok(url) = reqwest::Url::parse(target.url.trim()) else {
+        return false;
+    };
+    url.scheme().eq_ignore_ascii_case("app")
+        && url.host_str() == Some("-")
+        && url.path().eq_ignore_ascii_case("/index.html")
 }
 
 pub fn is_injectable_page_target(target: &CdpTarget) -> bool {
@@ -287,6 +301,23 @@ pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
         && !is_quick_chat_page_target(target)
 }
 
+fn is_exact_codex_app_main_target(target: &CdpTarget) -> bool {
+    target.url.trim().eq_ignore_ascii_case("app://-/index.html")
+}
+
+fn is_primary_codex_app_target(target: &CdpTarget) -> bool {
+    is_codex_app_page_target(target) && is_primary_codex_page_target(target)
+}
+
+fn is_chatgpt_desktop_page_target(target: &CdpTarget) -> bool {
+    is_primary_codex_page_target(target) && is_chatgpt_desktop_page(&target.title, &target.url)
+}
+
+fn is_supported_codex_page_target(target: &CdpTarget) -> bool {
+    is_primary_codex_page_target(target)
+        && (is_codex_app_page_target(target) || is_chatgpt_desktop_page(&target.title, &target.url))
+}
+
 pub fn is_avatar_overlay_page_target(target: &CdpTarget) -> bool {
     initial_route(target).is_some_and(|route| route.eq_ignore_ascii_case("/avatar-overlay"))
 }
@@ -305,10 +336,7 @@ fn initial_route(target: &CdpTarget) -> Option<String> {
         return None;
     }
     let url = reqwest::Url::parse(target.url.trim()).ok()?;
-    if !url.scheme().eq_ignore_ascii_case("app")
-        || url.host_str() != Some("-")
-        || !url.path().eq_ignore_ascii_case("/index.html")
-    {
+    if !is_codex_app_page_target(target) {
         return None;
     }
     url.query_pairs()

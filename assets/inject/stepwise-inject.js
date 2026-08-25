@@ -62,6 +62,10 @@
     return !state.destroyed && window[API_KEY]?.instanceId === INSTANCE_ID;
   }
 
+  function stepwiseEnabled() {
+    return state.settings?.enabled === true;
+  }
+
   function normalizeText(value) {
     return String(value || "")
       .replace(/\u00a0/g, " ")
@@ -914,7 +918,7 @@
   }
 
   function installFloat() {
-    if (!isCurrentInstance()) return;
+    if (!isCurrentInstance() || !stepwiseEnabled()) return;
     document.querySelectorAll?.(`[${ROOT_ATTR}="true"]`).forEach((node) => {
       if (node !== state.root) node.remove();
     });
@@ -1192,7 +1196,7 @@
   async function openManager() {
     state.settingsStatus = "正在打开 Codex++ Manager...";
     renderFloat();
-    const payload = await bridgeCall("/manager/open", {});
+    const payload = await bridgeCall("/manager/open-transient", {});
     if (!isCurrentInstance()) return;
     state.settingsStatus = payload?.status === "ok" ? "已打开 Manager" : payload?.message || "打开失败";
     renderFloat();
@@ -1757,6 +1761,7 @@
   }
 
   function requestBridgeStepwise(key, userText, assistantText) {
+    if (!stepwiseEnabled()) return;
     if (!key || state.bridgePendingHash === key || state.bridgeCache.has(key)) return;
 
     state.bridgePendingHash = key;
@@ -2029,6 +2034,10 @@
 
   function scan() {
     if (!isCurrentInstance()) return;
+    if (!stepwiseEnabled()) {
+      stopRuntime();
+      return;
+    }
     state.timer = 0;
     state.scans += 1;
     installStyle();
@@ -2106,12 +2115,16 @@
 
   function scheduleScan(delay = SCAN_DELAY_MS) {
     if (!isCurrentInstance()) return;
+    if (!stepwiseEnabled()) {
+      stopRuntime();
+      return;
+    }
     if (state.timer) window.clearTimeout(state.timer);
     state.timer = window.setTimeout(scan, delay);
   }
 
   function installObserver() {
-    if (!isCurrentInstance()) return false;
+    if (!isCurrentInstance() || !stepwiseEnabled()) return false;
     const root = document.body || document.documentElement;
     if (!root) return false;
 
@@ -2147,13 +2160,17 @@
   }
 
   function activateRuntime() {
+    if (!stepwiseEnabled()) {
+      stopRuntime();
+      return;
+    }
     installStyle();
     installFloat();
     if (!state.observer && !installObserver()) {
       document.addEventListener(
         "DOMContentLoaded",
         () => {
-          if (!isCurrentInstance()) return;
+          if (!isCurrentInstance() || !stepwiseEnabled()) return;
           installObserver();
           installFloat();
           void ensureSettings();

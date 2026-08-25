@@ -279,12 +279,26 @@
     const root = document.documentElement;
     root?.classList.remove(...ROOT_CLASSES);
     for (const property of ROOT_PROPERTIES) root?.style.removeProperty(property);
-    document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
+    document.querySelectorAll('main[data-codex-plus-dream-surface="true"]').forEach((node) => {
+      node.classList.remove("main-surface");
+      node.removeAttribute("data-codex-plus-dream-surface");
+    });
+    document.querySelectorAll(".dream-home").forEach((node) => { node.classList.remove("dream-home"); node.removeAttribute("data-dream-home-layout"); });
     document.querySelectorAll(".dream-task").forEach((node) => node.classList.remove("dream-task"));
     document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
     document.querySelectorAll(`.${HOME_UTILITY_CLASS}`).forEach((node) => node.classList.remove(HOME_UTILITY_CLASS));
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
+  };
+
+  const ensureShellMain = () => {
+    const classic = document.querySelector("main.main-surface");
+    if (classic) return classic;
+    const modern = document.querySelector('main[class*="MainContentSurface"], main[class*="_MainContentSurface_"]');
+    if (!modern) return null;
+    modern.classList.add("main-surface");
+    modern.setAttribute("data-codex-plus-dream-surface", "true");
+    return modern;
   };
 
   const applyProfile = (root) => {
@@ -326,7 +340,7 @@
     const root = document.documentElement;
     if (!root || !document.body) return;
 
-    const shellMain = document.querySelector("main.main-surface");
+    const shellMain = ensureShellMain();
     const shellSidebar = document.querySelector("aside.app-shell-left-panel");
     if (!shellMain || !shellSidebar) {
       clearSkinDom();
@@ -347,17 +361,40 @@
       style.dataset.dreamVersion = "3";
     }
 
-    const home = document.querySelector('[role="main"]:has([data-testid="home-icon"])');
+    const homeCandidate = document.querySelector('[role="main"]:has([data-testid="home-icon"])');
+    const homeHasClassicChrome = !!(
+      homeCandidate
+      && homeCandidate.querySelector('[data-feature="game-source"]')
+      && (
+        homeCandidate.querySelector('.group\\/home-suggestions')
+        || homeCandidate.querySelector('[class*="home-suggestions"]')
+        || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+      )
+    );
+    const home = homeHasClassicChrome ? homeCandidate : null;
     for (const candidate of document.querySelectorAll('[role="main"]')) {
-      candidate.classList.toggle("dream-home", candidate === home);
-      candidate.classList.toggle("dream-task", candidate !== home);
+      const isStructuredHome = candidate === home;
+      const isSoftHome = candidate === homeCandidate && !home;
+      candidate.classList.toggle("dream-home", isStructuredHome || isSoftHome);
+      candidate.classList.toggle("dream-task", !(isStructuredHome || isSoftHome));
+      if (isStructuredHome) {
+        const hero = candidate.querySelector(":scope > div > div > div");
+        const structured = !!(
+          hero
+          && candidate.querySelector('[data-feature="game-source"]')
+          && hero.querySelector('[data-feature="game-source"], [data-testid="home-icon"]')
+        );
+        candidate.setAttribute("data-dream-home-layout", structured ? "structured" : "soft");
+      } else {
+        candidate.setAttribute("data-dream-home-layout", "soft");
+      }
     }
     const utilityBars = new Set(home ? home.querySelectorAll('[class*="_homeUtilityBar_"]') : []);
     for (const candidate of document.querySelectorAll(`.${HOME_UTILITY_CLASS}`)) {
       if (!utilityBars.has(candidate)) candidate.classList.remove(HOME_UTILITY_CLASS);
     }
     for (const candidate of utilityBars) candidate.classList.add(HOME_UTILITY_CLASS);
-    shellMain.classList.toggle("dream-home-shell", Boolean(home));
+    shellMain.classList.toggle("dream-home-shell", Boolean(homeCandidate));
 
     let chrome = document.getElementById(CHROME_ID);
     if (!chrome || chrome.parentElement !== document.body) {
@@ -403,7 +440,7 @@
   });
   const timer = setInterval(ensure, 5000);
   window[STATE_KEY] = {
-    ensure, cleanup, observer, timer, scheduler, artUrl, profile, config, installToken, version: "1.2.0",
+    ensure, cleanup, observer, timer, scheduler, artUrl, profile, config, installToken, version: "1.2.1-newchat-fix",
   };
   ensure();
   analyzeArt().then((result) => {
@@ -413,5 +450,5 @@
     state.profile = result;
     ensure();
   });
-  return { installed: true, version: "1.2.0", adaptive: true };
+  return { installed: true, version: "1.2.1-newchat-fix", adaptive: true };
 })(__DREAM_CSS_JSON__, __DREAM_ART_JSON__, __DREAM_THEME_JSON__)

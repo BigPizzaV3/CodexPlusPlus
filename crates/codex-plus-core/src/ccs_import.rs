@@ -88,6 +88,7 @@ pub fn relay_profile_from_ccs(
         protocol: provider.protocol,
         relay_mode: RelayMode::PureApi,
         official_mix_api_key: false,
+        hide_official_usage_alert: false,
         test_model: String::new(),
         config_contents: provider.config_contents.clone(),
         auth_contents: provider.auth_contents.clone(),
@@ -104,6 +105,9 @@ pub fn relay_profile_from_ccs(
         vlm_model: String::new(),
         vlm_base_url: String::new(),
         user_agent: String::new(),
+        sub2api_enabled: false,
+        sub2api_multiplier: String::new(),
+        model_routes: Vec::new(),
     }
 }
 

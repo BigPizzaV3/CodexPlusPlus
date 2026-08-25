@@ -80,6 +80,9 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
             .info_plist
             .contains("<string>Codex++ 管理工具</string>")
     );
+    assert!(manager.info_plist.contains("<string>dreamskin</string>"));
+    assert!(manager.info_plist.contains("<string>codexplusplus</string>"));
+    assert!(!silent.info_plist.contains("<string>dreamskin</string>"));
     assert_eq!(
         silent.binary_target_name.as_deref(),
         Some("codex-plus-plus")
@@ -174,6 +177,25 @@ fn macos_companion_launch_keeps_bare_binary_development_mode() {
     assert_eq!(
         macos_companion_bundle_identifier_from_exe(manager_exe, SILENT_BINARY),
         None
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_companion_path_falls_back_to_workspace_release_launcher() {
+    let root = tempfile::tempdir().unwrap();
+    let bundle_exe = root.path().join(
+        "target/release/bundle/macos/Codex++ Manager.app/Contents/MacOS/codex-plus-plus-manager",
+    );
+    let release_launcher = root.path().join("target/release/codex-plus-plus");
+    std::fs::create_dir_all(bundle_exe.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(release_launcher.parent().unwrap()).unwrap();
+    std::fs::write(&bundle_exe, b"manager").unwrap();
+    std::fs::write(&release_launcher, b"launcher").unwrap();
+
+    assert_eq!(
+        companion_binary_path_from_exe(&bundle_exe, SILENT_BINARY),
+        release_launcher
     );
 }
 

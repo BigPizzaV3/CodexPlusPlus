@@ -2,6 +2,7 @@ use codex_plus_core::dream_skin_runtime::{
     DreamSkinRuntimeStatus, DreamSkinState, apply_dream_skin_live, macos_arch_name,
     parse_renderer_verification, windows_app_path_matches_registered_root,
 };
+use std::path::Path;
 
 #[test]
 fn maps_rust_apple_silicon_arch_to_lipo_name() {
@@ -116,6 +117,54 @@ fn verification_accepts_target_project_live_contract() {
 
     assert_eq!(result.state, DreamSkinState::Pass);
     assert!(result.pass);
+}
+
+#[test]
+fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
+    for relative_path in [
+        "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
+        "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
+        "assets/inject/upstream/cidala-tiger/windows/renderer-inject.js",
+        "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
+        "assets/inject/upstream/snow-skin/renderer-inject.js",
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative_path);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"));
+        assert!(
+            source.contains("homeHasClassicChrome"),
+            "missing home gate in {relative_path}"
+        );
+        assert!(
+            source.contains("data-dream-home-layout"),
+            "missing layout marker in {relative_path}"
+        );
+    }
+
+    for relative_path in [
+        "assets/inject/upstream/dream-skin/windows/dream-skin.css",
+        "assets/inject/upstream/dream-skin/macos/dream-skin.css",
+        "assets/inject/upstream/cidala-tiger/windows/dream-skin.css",
+        "assets/inject/upstream/cidala-tiger/macos/dream-skin.css",
+        "assets/inject/upstream/snow-skin/dream-skin.css",
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative_path);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"));
+        assert!(
+            source.contains("data-dream-home-layout=\"soft\"")
+                || (source.contains("data-dream-home-layout=\"structured\"")
+                    && source.contains(":not([data-dream-home-layout=\"structured\"])")
+                    )
+                || source.contains("data-dream-home-layout=\\\"soft\\\"")
+                || source.contains("data-dream-home-layout=\\\"structured\\\""),
+            "missing soft layout CSS in {relative_path}"
+        );
+    }
 }
 
 #[test]

@@ -148,6 +148,8 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     if let Some(input) = body.get("input") {
         append_responses_input(input, &mut messages);
     }
+    enforce_tool_call_pairing(&mut messages);
+    ensure_tool_call_reasoning_content(&mut messages);
     normalize_chat_messages(&mut messages);
     let messages = collapse_system_messages_to_head(messages);
     result["messages"] = json!(messages);
@@ -295,6 +297,14 @@ pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
     AudioTranscriptions,
+}
+
+#[derive(Debug, Clone)]
+struct ModelRouteSelection {
+    relay: crate::settings::RelayProfile,
+    source_relay_id: String,
+    source_model: String,
+    upstream_model: String,
 }
 
 impl UpstreamProxyResponse {
@@ -544,19 +554,40 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     original_user_agent: Option<&str>,
     request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let request_json: Value = serde_json::from_str(body)?;
+    let mut request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let source_model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let model_route = select_model_route(&settings, &source_model)?;
+    if let Some(route) = &model_route
+        && route.upstream_model != source_model
+    {
+        request_json["model"] = Value::String(route.upstream_model.clone());
+    }
     let context = RotationContext {
         conversation_id: conversation_id_from_responses_request(&request_json),
     };
-    let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
-    let mut relays = vec![relay.clone()];
-    relays.extend(crate::relay_rotation::fallback_relays_after(
-        &settings, &relay.id,
-    )?);
+    let (relay, relays) = if let Some(route) = &model_route {
+        (route.relay.clone(), vec![route.relay.clone()])
+    } else {
+        let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
+        let mut relays = vec![relay.clone()];
+        relays.extend(crate::relay_rotation::fallback_relays_after(
+            &settings, &relay.id,
+        )?);
+        (relay, relays)
+    };
+    debug_assert_eq!(
+        relays.first().map(|item| item.id.as_str()),
+        Some(relay.id.as_str())
+    );
     let relay_count = relays.len();
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
@@ -574,7 +605,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 "stream": is_stream,
                 "attempt": attempt + 1,
                 "candidateCount": relay_count,
-                "headerTimeoutSeconds": header_timeout.as_secs()
+                "headerTimeoutSeconds": header_timeout.as_secs(),
+                "modelRoute": model_route.as_ref().map(|route| json!({
+                    "sourceRelayId": route.source_relay_id,
+                    "sourceModel": route.source_model,
+                    "targetRelayId": route.relay.id,
+                    "upstreamModel": route.upstream_model
+                }))
             }),
         );
         let upstream = match send_upstream_request_for_responses(
@@ -676,6 +713,52 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         );
     }
     anyhow::bail!("未找到可用的聚合供应商成员")
+}
+
+fn select_model_route(
+    settings: &crate::settings::BackendSettings,
+    model: &str,
+) -> anyhow::Result<Option<ModelRouteSelection>> {
+    if model.is_empty() || settings.active_aggregate_relay_profile().is_some() {
+        return Ok(None);
+    }
+
+    let source = settings.active_relay_profile();
+    let Some(route) = source
+        .model_routes
+        .iter()
+        .find(|route| route.model.trim() == model)
+    else {
+        return Ok(None);
+    };
+    let target_relay_id = route.target_relay_id.trim();
+    if target_relay_id == source.id {
+        anyhow::bail!("模型路由不能指向当前供应商自身：{model}");
+    }
+    let target = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == target_relay_id)
+        .cloned()
+        .with_context(|| format!("模型路由目标供应商不存在：{target_relay_id}"))?;
+    if target.relay_mode == crate::settings::RelayMode::Aggregate {
+        anyhow::bail!("模型路由目标不能是聚合供应商：{}", target.name);
+    }
+    if target.protocol != RelayProtocol::Responses {
+        anyhow::bail!("模型路由目标必须使用 Responses API：{}", target.name);
+    }
+
+    let upstream_model = if route.target_model.trim().is_empty() {
+        model.to_string()
+    } else {
+        route.target_model.trim().to_string()
+    };
+    Ok(Some(ModelRouteSelection {
+        relay: target,
+        source_relay_id: source.id,
+        source_model: model.to_string(),
+        upstream_model,
+    }))
 }
 
 pub async fn open_models_proxy_request(
@@ -879,6 +962,7 @@ async fn upstream_request_parts(
                                 &relay.model_windows,
                                 &relay.context_window,
                                 &model,
+                                relay.protocol == crate::settings::RelayProtocol::Responses,
                             )
                             .await;
                         }
@@ -2154,14 +2238,14 @@ fn append_responses_item(
         }
         _ => {
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
-            if item.get("role").is_some() || item.get("content").is_some() {
+            if let Some(content) = item.get("content") {
                 let role = responses_role_to_chat_role(item.get("role").and_then(Value::as_str));
+                if content.is_null() && role != "assistant" {
+                    return;
+                }
                 let mut message = json!({
                     "role": role,
-                    "content": responses_content_to_chat_content(
-                        role,
-                        item.get("content").unwrap_or(&Value::Null)
-                        )
+                    "content": responses_content_to_chat_content(role, content)
                 });
                 if role == "assistant" {
                     if !pending_reasoning.is_empty() && pending_tool_calls.is_empty() {
@@ -2186,6 +2270,142 @@ fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
             response_output_text(output)
         )
     })
+}
+
+/// Chat Completions 上游（DeepSeek thinking 模式尤其严格）要求带 `tool_calls` 的
+/// assistant 消息后面必须紧跟每个 `tool_call_id` 对应的 `tool` 消息。中断/回滚过的
+/// 一轮会话可能留下没有 output 的 `function_call`，直接转发会被上游 400
+/// （insufficient tool messages following tool_calls message）。
+///
+/// 这里把没有配对 output 的 tool_call 从消息里摘掉，降级成文本保留在历史中，
+/// 避免丢失「模型曾试图调用某工具」这一信息。
+fn enforce_tool_call_pairing(messages: &mut [Value]) {
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].get("role").and_then(Value::as_str) != Some("assistant") {
+            index += 1;
+            continue;
+        }
+        let Some(tool_calls) = messages[index].get("tool_calls").and_then(Value::as_array) else {
+            index += 1;
+            continue;
+        };
+        if tool_calls.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        // 收集紧跟其后的 tool 消息所应答的 id
+        let mut answered = BTreeSet::new();
+        let mut followers = 0;
+        for message in messages[index + 1..]
+            .iter()
+            .take_while(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        {
+            followers += 1;
+            if let Some(id) = message.get("tool_call_id").and_then(Value::as_str) {
+                answered.insert(id.to_string());
+            }
+        }
+
+        // 位于历史尾部的 tool_call 是「刚发起、output 还没回来」的正常形态，
+        // 上游本就期待它；只有序列越过了它却没应答才是非法的。
+        if index + 1 + followers >= messages.len() {
+            index += 1;
+            continue;
+        }
+
+        let (kept, orphaned): (Vec<Value>, Vec<Value>) =
+            tool_calls.iter().cloned().partition(|tool_call| {
+                tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| answered.contains(id))
+            });
+        if orphaned.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        let notes = orphaned
+            .iter()
+            .map(|tool_call| {
+                let name = tool_call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let id = tool_call.get("id").and_then(Value::as_str).unwrap_or("");
+                format!("Abandoned function call ({id}): {name}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if kept.is_empty() {
+            if let Some(message) = messages[index].as_object_mut() {
+                message.remove("tool_calls");
+            }
+        } else {
+            messages[index]["tool_calls"] = json!(kept);
+        }
+        append_text_to_assistant_message(&mut messages[index], &notes);
+        index += 1;
+    }
+}
+
+fn append_text_to_assistant_message(message: &mut Value, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let existing = match message.get("content") {
+        Some(Value::String(content)) => content.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    message["content"] = if existing.trim().is_empty() {
+        json!(text)
+    } else {
+        json!(format!("{existing}\n{text}"))
+    };
+}
+
+/// DeepSeek thinking 模式要求带 `tool_calls` 的 assistant 消息回传 `reasoning_content`，
+/// 否则报 400（The `reasoning_content` in the thinking mode must be passed back to the API）。
+/// 历史里没有 reasoning 项时（例如上游没回传 summary，或被裁剪掉了）补一个占位说明，
+/// 只补 content 和 reasoning_content 同时为空的情况，不覆盖真实 reasoning。
+fn ensure_tool_call_reasoning_content(messages: &mut [Value]) {
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let has_tool_calls = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|tool_calls| !tool_calls.is_empty());
+        if !has_tool_calls {
+            continue;
+        }
+        let has_content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .is_some_and(|content| !content.trim().is_empty());
+        let has_reasoning = message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|reasoning| !reasoning.trim().is_empty());
+        if has_content || has_reasoning {
+            continue;
+        }
+        message["reasoning_content"] = json!("Calling the requested tool.");
+    }
 }
 
 fn normalize_chat_messages(messages: &mut [Value]) {
@@ -3411,7 +3631,14 @@ fn extract_reasoning_summary_text(value: &Value) -> Option<String> {
 }
 
 fn default_responses_usage() -> Value {
-    json!({ "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 })
+    // Codex 把 output_tokens_details.reasoning_tokens 当必填解析,
+    // 兜底 usage 也必须带齐该结构。
+    json!({
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "output_tokens_details": { "reasoning_tokens": 0 }
+    })
 }
 
 fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
@@ -3515,7 +3742,19 @@ fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         result["input_tokens_details"] = json!({ "cached_tokens": cached_tokens });
     }
     if let Some(details) = usage.get("completion_tokens_details") {
-        result["output_tokens_details"] = details.clone();
+        // Codex parses output_tokens_details.reasoning_tokens as a required field;
+        // upstreams (e.g. Kimi) omit the key when a response had no reasoning,
+        // which makes the Responses client fail with "missing field
+        // `reasoning_tokens`" and abort the whole turn. Default it to 0.
+        let mut details = details.clone();
+        if details.is_object() && details.get("reasoning_tokens").is_none() {
+            details["reasoning_tokens"] = json!(0);
+        }
+        result["output_tokens_details"] = details;
+    } else {
+        // 上游连 completion_tokens_details 都没给时同样补全, 避免
+        // Codex 解析 response.completed 时缺字段断流。
+        result["output_tokens_details"] = json!({ "reasoning_tokens": 0 });
     }
     if let Some(cache_read) = usage.get("cache_read_input_tokens") {
         result["cache_read_input_tokens"] = cache_read.clone();
@@ -4035,6 +4274,13 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
         {
             result["reasoning_effort"] = json!(mapped);
         }
+        // Kimi For Coding (K3 / K2.7 Code): 官方接受 reasoning_effort 三档
+        // low/high/max (默认 high), 且服务端会把 medium→high、xhigh→max。
+        // 仅限 for-coding 模型 ID, 避免给 glm/mimo/kimi-k2 等其它
+        // Thinking 方言上游误发该字段。
+        ChatReasoningStyle::Thinking if is_kimi_coding_model(model) => {
+            result["reasoning_effort"] = json!(mapped);
+        }
         _ => {}
     }
 }
@@ -4063,6 +4309,7 @@ fn infer_chat_reasoning_style(model: &str) -> ChatReasoningStyle {
     }
     if model.contains("kimi")
         || model.contains("moonshot")
+        || model.starts_with("k3")
         || model.contains("glm")
         || model.contains("zhipu")
         || model.contains("z.ai")
@@ -4105,6 +4352,14 @@ fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<
             "minimal" => Some("minimal"),
             _ => None,
         },
+        // Kimi For Coding 官方映射: minimal/low→low, medium/high→high,
+        // xhigh/max→max。注意不能直接透传 "minimal", 服务端不认会 400。
+        ChatReasoningStyle::Thinking => match effort.as_str() {
+            "minimal" | "low" => Some("low"),
+            "medium" | "high" => Some("high"),
+            "xhigh" | "max" => Some("max"),
+            _ => None,
+        },
         _ => match effort.as_str() {
             "minimal" => Some("minimal"),
             "low" => Some("low"),
@@ -4115,6 +4370,14 @@ fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<
             _ => None,
         },
     }
+}
+
+/// Kimi For Coding 专属模型 ID(k3 / k3-256k / kimi-for-coding[-highspeed])。
+/// 只有这些上游接受 `reasoning_effort` 三档; kimi-k2-thinking 等旧模型
+/// 仍只发 thinking 开关。
+fn is_kimi_coding_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("k3") || model.contains("for-coding")
 }
 
 fn supports_reasoning_effort(model: &str) -> bool {

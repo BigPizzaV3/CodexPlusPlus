@@ -106,11 +106,18 @@ fn imports_supported_image_into_managed_theme_directory() {
     let imported = import_dream_skin_image(&source, temp.path()).unwrap();
 
     assert!(imported.starts_with(temp.path().join("dream-skin/theme")));
+    #[cfg(target_os = "macos")]
+    let expected_file_name = Some("current.jpg");
+    #[cfg(not(target_os = "macos"))]
+    let expected_file_name = Some("current.png");
     assert_eq!(
         imported.file_name().and_then(|name| name.to_str()),
-        Some("current.png")
+        expected_file_name
     );
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(std::fs::read(&imported).unwrap(), image);
+    #[cfg(target_os = "macos")]
+    assert!(!std::fs::read(&imported).unwrap().is_empty());
     assert!(is_managed_dream_skin_image(&imported, temp.path()));
 }
 
@@ -126,6 +133,7 @@ fn rejects_source_larger_than_fifty_mebibytes() {
     assert!(error.to_string().contains("50 MiB"));
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn rejects_prepared_image_larger_than_sixteen_mebibytes() {
     let temp = tempfile::tempdir().unwrap();

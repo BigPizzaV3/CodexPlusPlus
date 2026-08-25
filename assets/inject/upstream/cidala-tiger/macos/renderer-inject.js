@@ -653,14 +653,28 @@
     shell ||= root.getAttribute(SHELL_ATTR) || resolvedShell();
     const shellMain = document.querySelector("main.main-surface") || document.querySelector("main");
     const homeIndicator = document.querySelector('[data-testid="home-icon"]');
-    const home = homeIndicator?.closest('[role="main"]') ||
+    const homeCandidate = homeIndicator?.closest('[role="main"]') ||
       [...document.querySelectorAll('[role="main"]')].find((candidate) =>
         candidate.querySelector('[data-feature="game-source"]') &&
         candidate.querySelector('.group\\\\/home-suggestions')) || null;
+    const homeHasClassicChrome = !!(
+      homeCandidate
+      && homeCandidate.querySelector('[data-feature="game-source"]')
+      && (
+        homeCandidate.querySelector('.group\\\\/home-suggestions')
+        || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+      )
+    );
+    const home = homeHasClassicChrome ? homeCandidate : null;
     for (const candidate of document.querySelectorAll('[role="main"].dream-skin-home')) {
       if (candidate !== home) candidate.classList.remove("dream-skin-home");
     }
     if (home) home.classList.add("dream-skin-home");
+    for (const candidate of document.querySelectorAll('[role="main"]')) {
+      if (candidate === home) candidate.setAttribute("data-dream-home-layout", "structured");
+      else if (candidate === homeCandidate) candidate.setAttribute("data-dream-home-layout", "soft");
+      else candidate.removeAttribute("data-dream-home-layout");
+    }
     const homeUtilityBars = new Set(home
       ? home.querySelectorAll('[class*="_homeUtilityBar_"]')
       : []);

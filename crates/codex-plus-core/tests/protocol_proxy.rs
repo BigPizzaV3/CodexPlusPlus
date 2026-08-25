@@ -13,7 +13,7 @@ use codex_plus_core::protocol_proxy::{
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    RelayMode, RelayProfile,
+    RelayMode, RelayModelRoute, RelayProfile, RelayProtocol, RelaySessionProvider,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -193,6 +193,7 @@ async fn responses_compact_request_keeps_compact_path_upstream() {
             api_key: "sk-compact".to_string(),
             relay_mode: RelayMode::Official,
             official_mix_api_key: true,
+            hide_official_usage_alert: false,
             ..RelayProfile::default()
         }],
         ..BackendSettings::default()
@@ -254,6 +255,47 @@ fn responses_request_applies_ccswitch_reasoning_dialects() {
 }
 
 #[test]
+fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
+    // 官方映射 (kimi.com/code/docs): K3 接受 reasoning_effort low/high/max,
+    // Codex 档位 minimal/low→low, medium/high→high, xhigh/max→max。
+    for (effort, expected) in [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+    ] {
+        let converted = responses_to_chat_completions(json!({
+            "model": "k3-256k",
+            "reasoning": { "effort": effort },
+            "input": "hi"
+        }))
+        .unwrap();
+        assert_eq!(converted["thinking"]["type"], "enabled", "{effort}");
+        assert_eq!(converted["reasoning_effort"], expected, "{effort}");
+    }
+
+    let k2_coding = responses_to_chat_completions(json!({
+        "model": "kimi-for-coding",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(k2_coding["reasoning_effort"], "max");
+
+    // effort none → thinking disabled (官方: K3 关思考会被路由到 K2.6, 保持现状)
+    let off = responses_to_chat_completions(json!({
+        "model": "k3-256k",
+        "reasoning": { "effort": "none" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(off["thinking"]["type"], "disabled");
+    assert!(off.get("reasoning_effort").is_none());
+}
+
+#[test]
 fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
     let converted = responses_to_chat_completions(json!({
         "model": "deepseek-chat",
@@ -286,6 +328,44 @@ fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
         !serde_json::to_string(&converted)
             .unwrap()
             .contains("\"developer\"")
+    );
+}
+
+#[test]
+fn responses_request_skips_additional_tools_without_content() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-chat",
+        "instructions": "You are helpful.",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    { "type": "custom", "name": "exec", "description": "Run a command" }
+                ]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"],
+        json!([
+            { "role": "system", "content": "You are helpful." },
+            { "role": "user", "content": "hello" }
+        ])
+    );
+    assert!(
+        converted["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| !message["content"].is_null())
     );
 }
 
@@ -387,6 +467,188 @@ fn responses_request_preserves_reasoning_content_for_thinking_followup() {
     );
     assert_eq!(converted["messages"][1]["tool_calls"][0]["id"], "call_1");
     assert_eq!(converted["messages"][2]["role"], "tool");
+}
+
+// #1860 错误 1：孤立的 function_call（后面没有 function_call_output）不能变成
+// assistant.tool_calls，否则 DeepSeek 报 "must be followed by tool messages"。
+#[test]
+fn responses_request_drops_orphaned_function_call_without_output() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "max_output_tokens": 8,
+        "input": [
+            { "role": "user", "content": "ping" },
+            { "role": "assistant", "content": [{ "type": "output_text", "text": "ok" }] },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            },
+            { "role": "user", "content": "ping" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    for (index, message) in messages.iter().enumerate() {
+        let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        // 每个 tool_call 后面都必须紧跟对应的 tool 消息
+        for (offset, tool_call) in tool_calls.iter().enumerate() {
+            let id = tool_call["id"].as_str().unwrap();
+            let follower = messages.get(index + 1 + offset);
+            assert_eq!(
+                follower
+                    .and_then(|m| m.get("role"))
+                    .and_then(|r| r.as_str()),
+                Some("tool"),
+                "tool_call {id} 后面没有 tool 消息：{converted:#}"
+            );
+            assert_eq!(
+                follower
+                    .and_then(|m| m.get("tool_call_id"))
+                    .and_then(|r| r.as_str()),
+                Some(id),
+                "tool_call {id} 没有匹配的 tool_call_id：{converted:#}"
+            );
+        }
+    }
+}
+
+// #1860 错误 2：thinking 模式下带 tool_calls 的 assistant 消息必须回传 reasoning_content。
+#[test]
+fn responses_request_attaches_reasoning_content_to_tool_call_message() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "max_output_tokens": 8,
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            },
+            { "type": "function_call_output", "call_id": "call_t1", "output": "hi" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_call_message = messages
+        .iter()
+        .find(|m| m.get("tool_calls").is_some())
+        .unwrap_or_else(|| panic!("没有 tool_calls 消息：{converted:#}"));
+    let has_content = tool_call_message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| !c.is_empty());
+    let has_reasoning = tool_call_message
+        .get("reasoning_content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| !c.is_empty());
+    assert!(
+        has_content || has_reasoning,
+        "带 tool_calls 且 content 为空的 assistant 消息必须有 reasoning_content：{converted:#}"
+    );
+}
+
+// 历史尾部的 tool_call 是「output 还没回来」的正常形态，必须保留。
+#[test]
+fn responses_request_keeps_trailing_unanswered_tool_call() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_tail",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let last = converted["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["tool_calls"][0]["id"], "call_tail");
+}
+
+// 部分应答：只摘掉没被应答的那个，已应答的保留。
+#[test]
+fn responses_request_strips_only_unanswered_parallel_tool_calls() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_ok",
+                "name": "answered_tool",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_lost",
+                "name": "abandoned_tool",
+                "arguments": "{}"
+            },
+            { "type": "function_call_output", "call_id": "call_ok", "output": "done" },
+            { "role": "user", "content": "continue" }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .unwrap();
+    let calls = assistant["tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1, "只应保留被应答的 tool_call：{converted:#}");
+    assert_eq!(calls[0]["id"], "call_ok");
+    // 被摘掉的调用降级成文本保留，不静默丢失
+    let content = assistant["content"].as_str().unwrap();
+    assert!(
+        content.contains("call_lost") && content.contains("abandoned_tool"),
+        "被摘掉的调用应降级为文本：{content}"
+    );
+}
+
+// 已有真实 reasoning 时不能被占位文本覆盖。
+#[test]
+fn responses_request_keeps_real_reasoning_content_over_placeholder() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "reasoning",
+                "summary": [{ "type": "summary_text", "text": "Need to run echo." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{}"
+            },
+            { "type": "function_call_output", "call_id": "call_t1", "output": "hi" }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .unwrap();
+    assert_eq!(assistant["reasoning_content"], "Need to run echo.");
 }
 
 #[test]
@@ -924,6 +1186,74 @@ fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
         converted["usage"]["output_tokens_details"]["reasoning_tokens"],
         2
     );
+}
+
+#[test]
+fn chat_completion_response_defaults_missing_reasoning_tokens_to_zero() {
+    // Kimi 等上游在一次响应无 reasoning 时会省略 completion_tokens_details
+    // 里的 reasoning_tokens; Codex 将该字段当必填解析, 缺省会报
+    // "missing field `reasoning_tokens`" 并把整轮判为断流。
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_no_reasoning",
+        "created": 123,
+        "model": "k3-256k",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": { "role": "assistant", "content": "done" }
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "completion_tokens_details": {}
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        converted["usage"]["output_tokens_details"]["reasoning_tokens"],
+        0
+    );
+}
+
+#[test]
+fn chat_sse_defaults_missing_reasoning_tokens_to_zero() {
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_kimi","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10,"completion_tokens_details":{}}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"reasoning_tokens\":0"));
+}
+
+#[test]
+fn chat_sse_without_usage_details_still_emits_reasoning_tokens() {
+    // 上游连 completion_tokens_details 都没有时也要补上, Codex 才能解析。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_plain","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"output_tokens_details\":{\"reasoning_tokens\":0}"));
+}
+
+#[test]
+fn chat_sse_without_any_usage_still_emits_reasoning_tokens() {
+    // 上游全程未发 usage chunk → default usage 兜底同样带齐结构。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_nousg","created":123,"model":"k3-256k","choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"));
+    assert!(sse.contains("\"reasoning_tokens\":0"));
 }
 
 #[test]
@@ -1486,6 +1816,167 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
 }
 
 #[tokio::test]
+async fn model_route_uses_target_responses_provider_without_mutating_request() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "instructions": "Use the available tools when needed.",
+        "input": [{ "role": "user", "content": "inspect the workspace" }],
+        "stream": false,
+        "reasoning": { "effort": "high", "summary": "auto" },
+        "service_tier": "priority",
+        "truncation": "disabled",
+        "parallel_tool_calls": true,
+        "tool_choice": "auto",
+        "tools": [{
+            "type": "function",
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }
+        }],
+        "metadata": { "route_test": true }
+    });
+    let settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (headers, upstream_body) = target_server.await.unwrap();
+
+    assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-target")
+    );
+    assert_eq!(upstream_body, request);
+}
+
+#[tokio::test]
+async fn model_route_can_rewrite_only_the_target_model_name() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hello",
+        "stream": false,
+        "tools": [{ "type": "function", "name": "lookup", "parameters": { "type": "object" } }],
+        "truncation": "disabled"
+    });
+    let settings = model_route_settings(
+        "gpt-5.6-luna",
+        "provider-luna-v2",
+        format!("http://{target_addr}/v1"),
+    );
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, upstream_body) = target_server.await.unwrap();
+
+    let mut expected = request;
+    expected["model"] = json!("provider-luna-v2");
+    assert_eq!(upstream_body, expected);
+}
+
+#[tokio::test]
+async fn model_route_preserves_responses_compact_endpoint() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": [{ "role": "user", "content": "compact this conversation" }],
+        "stream": false
+    });
+    let settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+
+    let result = open_responses_proxy_request_with_settings_for_path(
+        &request.to_string(),
+        settings,
+        "/v1/responses/compact",
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (headers, upstream_body) = target_server.await.unwrap();
+
+    assert!(headers.starts_with("POST /v1/responses/compact HTTP/1.1"));
+    assert_eq!(upstream_body, request);
+}
+
+#[tokio::test]
+async fn model_route_uses_exact_match_and_keeps_other_models_on_source_provider() {
+    let source = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let source_addr = source.local_addr().unwrap();
+    let source_server = tokio::spawn(capture_json_request_once(source));
+    let request = json!({
+        "model": "gpt-5.6-luna-preview",
+        "input": "hello",
+        "stream": false,
+        "tools": [{ "type": "function", "name": "lookup", "parameters": { "type": "object" } }]
+    });
+    let mut settings =
+        model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
+    settings.relay_profiles[0].base_url = format!("http://{source_addr}/v1");
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (headers, upstream_body) = source_server.await.unwrap();
+
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-source")
+    );
+    assert_eq!(upstream_body, request);
+}
+
+#[tokio::test]
+async fn model_route_rejects_missing_or_non_responses_targets() {
+    let mut missing = model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
+    missing.relay_profiles.pop();
+    let error = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi"}"#,
+        missing,
+    )
+    .await
+    .err()
+    .expect("missing target should fail");
+    assert!(error.to_string().contains("模型路由目标供应商不存在"));
+
+    let mut chat = model_route_settings("gpt-5.6-luna", "", "http://127.0.0.1:9/v1".to_string());
+    chat.relay_profiles[1].protocol = RelayProtocol::ChatCompletions;
+    let error = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-luna","input":"hi"}"#,
+        chat,
+    )
+    .await
+    .err()
+    .expect("chat target should fail");
+    assert!(error.to_string().contains("必须使用 Responses API"));
+}
+
+#[tokio::test]
 async fn aggregate_stream_request_sends_sse_accept_header() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1544,6 +2035,82 @@ async fn respond_once(listener: tokio::net::TcpListener, response: &'static str)
     stream.write_all(response.as_bytes()).await.unwrap();
 }
 
+async fn capture_json_request_once(
+    listener: tokio::net::TcpListener,
+) -> (String, serde_json::Value) {
+    let (mut stream, _) = listener.accept().await.unwrap();
+    let mut buffer = Vec::new();
+    let mut chunk = [0; 4096];
+    let (header_end, content_length) = loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before headers completed");
+        buffer.extend_from_slice(&chunk[..read]);
+        let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&buffer[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        break (header_end + 4, content_length);
+    };
+    while buffer.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before body completed");
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    let headers = String::from_utf8_lossy(&buffer[..header_end - 4]).to_string();
+    let body = serde_json::from_slice(&buffer[header_end..header_end + content_length]).unwrap();
+    let response_body = r#"{"id":"resp_model_route","object":"response"}"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+        response_body.len(),
+        response_body
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+    (headers, body)
+}
+
+fn model_route_settings(
+    source_model: &str,
+    target_model: &str,
+    target_base_url: String,
+) -> BackendSettings {
+    BackendSettings {
+        active_relay_id: "source".to_string(),
+        relay_profiles: vec![
+            RelayProfile {
+                id: "source".to_string(),
+                name: "source".to_string(),
+                base_url: "http://127.0.0.1:9/v1".to_string(),
+                api_key: "sk-source".to_string(),
+                model_routes: vec![RelayModelRoute {
+                    model: source_model.to_string(),
+                    target_relay_id: "target".to_string(),
+                    target_model: target_model.to_string(),
+                }],
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: "target".to_string(),
+                name: "target".to_string(),
+                base_url: target_base_url,
+                api_key: "sk-target".to_string(),
+                protocol: RelayProtocol::Responses,
+                ..RelayProfile::default()
+            },
+        ],
+        ..BackendSettings::default()
+    }
+}
+
 fn aggregate_proxy_settings(
     id_suffix: &str,
     first_base_url: String,
@@ -1580,6 +2147,7 @@ fn aggregate_proxy_settings(
         aggregate_relay_profiles: vec![AggregateRelayProfile {
             id: aggregate_id,
             name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
             strategy: AggregateRelayStrategy::RequestRoundRobin,
             members: vec![
                 AggregateRelayMember {
