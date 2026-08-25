@@ -473,7 +473,7 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "9";
-  const codexAppServerModelRequestPatchVersion = "6";
+  const codexAppServerModelRequestPatchVersion = "7";
   const codexRemoteSessionRecoveryVersion = "5";
   const codexPluginMarketplaceUnlockVersion = "15";
   const codexThreadScrollMaxEntries = 120;
@@ -6853,11 +6853,61 @@
     return result;
   }
 
+  function codexPerModelContextEnabled() {
+    const profile = codexRemoteSessionActiveProfile();
+    if (!profile) return false;
+    return [profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata]
+      .some((value) => typeof value === "string" && value.trim() && value.trim() !== "{}");
+  }
+
+  function codexThreadModelRequestState(method, params, result) {
+    const requestMethod = String(method || "");
+    const threadId = String(
+      params?.threadId
+      || params?.conversationId
+      || result?.thread?.id
+      || result?.threadId
+      || ""
+    ).trim();
+    const model = String(params?.model || result?.thread?.model || "").trim();
+    return { requestMethod, threadId, model };
+  }
+
+  async function refreshCodexThreadModelBeforeTurn(client, originalSendRequest, method, params, options) {
+    if (String(method || "") !== "turn/start" || !codexPerModelContextEnabled()) return null;
+    const { threadId, model } = codexThreadModelRequestState(method, params);
+    if (!threadId || !model) return null;
+    const previousModel = client.__codexPlusThreadModels?.get(threadId) || "";
+    if (!previousModel || previousModel === model) return null;
+    let resumeParams = { threadId, model };
+    resumeParams = applyCodexRemoteSessionProviderOverride("thread/resume", resumeParams);
+    try {
+      await originalSendRequest("thread/resume", resumeParams, options);
+      client.__codexPlusThreadModels.set(threadId, model);
+      sendCodexPlusDiagnostic("thread_model_context_refreshed", {
+        threadId,
+        from: previousModel,
+        to: model,
+      });
+      return true;
+    } catch (error) {
+      sendCodexPlusDiagnostic("thread_model_context_refresh_failed", {
+        threadId,
+        from: previousModel,
+        to: model,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      return false;
+    }
+  }
+
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
@@ -6877,7 +6927,19 @@
       const nextParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
+        client,
+        originalSendRequest,
+        method,
+        nextParams,
+        options
+      );
       const result = await originalSendRequest(method, nextParams, options);
+      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
+      if (modelContextRefresh !== false && threadState.threadId && threadState.model
+          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
+        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
+      }
       if (!codexPlusModelUnlockEnabled()) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);

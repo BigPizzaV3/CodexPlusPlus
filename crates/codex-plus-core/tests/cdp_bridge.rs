@@ -2087,6 +2087,19 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["pureApiOtherProviderUnchanged"], true);
     assert_eq!(cases["pureApiRecoveryUnscheduled"], true);
     assert_eq!(cases["pureOfficialProviderUnchanged"], true);
+    assert_eq!(
+        cases["modelSwitchCallOrder"],
+        json!([
+            "thread/start:model-old",
+            "turn/start:model-old",
+            "thread/resume:model-new",
+            "turn/start:model-new",
+            "turn/start:"
+        ])
+    );
+    assert_eq!(cases["modelSwitchResumeProvider"], "sub2api");
+    assert_eq!(cases["failedModelSwitchResumeAttempts"], 2);
+    assert_eq!(cases["failedModelSwitchTurnAttempts"], 2);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -2698,6 +2711,73 @@ api.setBackendSettings({{
 }});
 const pureOfficialParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
 const pureOfficialProviderUnchanged = api.applyProviderOverride("thread/start", pureOfficialParams) === pureOfficialParams;
+api.setBackendSettings({{
+  relayProfilesEnabled: true,
+  activeRelayId: "per-model-context",
+  activeRelayCodexProvider: "sub2api",
+  relayProfiles: [{{
+    id: "per-model-context",
+    relayMode: "pureApi",
+    officialMixApiKey: true,
+    modelWindows: JSON.stringify({{ "model-old": "200000", "model-new": "1000000" }}),
+    modelAutoCompact: "{{}}",
+    modelMetadata: "{{}}",
+  }}],
+}});
+const modelSwitchCalls = [];
+const modelSwitchClient = {{
+  async sendRequest(method, params, options) {{
+    modelSwitchCalls.push({{ method, params, options }});
+    return {{ ok: true }};
+  }},
+}};
+api.patchAppServerClient(modelSwitchClient);
+await modelSwitchClient.sendRequest("thread/start", {{
+  threadId: "thread-model-context",
+  model: "model-old",
+}});
+await modelSwitchClient.sendRequest("turn/start", {{
+  threadId: "thread-model-context",
+  model: "model-old",
+  input: [],
+}});
+await modelSwitchClient.sendRequest("turn/start", {{
+  threadId: "thread-model-context",
+  model: "model-new",
+  input: [],
+}});
+await modelSwitchClient.sendRequest("turn/start", {{
+  threadId: "thread-model-context",
+  input: [],
+}});
+const modelSwitchCallOrder = modelSwitchCalls.map((call) => `${{call.method}}:${{call.params?.model || ""}}`);
+const modelSwitchResumeProvider = modelSwitchCalls.find((call) => call.method === "thread/resume")?.params?.modelProvider || "";
+
+const failedModelSwitchCalls = [];
+const failedModelSwitchClient = {{
+  async sendRequest(method, params) {{
+    failedModelSwitchCalls.push({{ method, params }});
+    if (method === "thread/resume") throw new Error("synthetic resume failure");
+    return {{ ok: true }};
+  }},
+}};
+api.patchAppServerClient(failedModelSwitchClient);
+await failedModelSwitchClient.sendRequest("thread/start", {{
+  threadId: "thread-model-context-failure",
+  model: "model-old",
+}});
+await failedModelSwitchClient.sendRequest("turn/start", {{
+  threadId: "thread-model-context-failure",
+  model: "model-new",
+  input: [],
+}});
+await failedModelSwitchClient.sendRequest("turn/start", {{
+  threadId: "thread-model-context-failure",
+  model: "model-new",
+  input: [],
+}});
+const failedModelSwitchResumeAttempts = failedModelSwitchCalls.filter((call) => call.method === "thread/resume").length;
+const failedModelSwitchTurnAttempts = failedModelSwitchCalls.filter((call) => call.method === "turn/start").length;
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
@@ -2769,6 +2849,10 @@ process.stdout.write(JSON.stringify({{
   pureApiOtherProviderUnchanged,
   pureApiRecoveryUnscheduled,
   pureOfficialProviderUnchanged,
+  modelSwitchCallOrder,
+  modelSwitchResumeProvider,
+  failedModelSwitchResumeAttempts,
+  failedModelSwitchTurnAttempts,
 }}));
 }}).catch((error) => {{
   console.error(error);
