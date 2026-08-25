@@ -1,5 +1,7 @@
-use std::path::PathBuf;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -8,6 +10,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdout, Command};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// app-server 起不来时保留多少行 stderr 用于报错。
+const STDERR_TAIL_LINES: usize = 8;
 const TURN_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
@@ -41,6 +45,52 @@ pub struct CodexAppServer {
     config: AppServerConfig,
 }
 
+fn collect_stderr_tail(sink: &Arc<Mutex<VecDeque<String>>>) -> String {
+    sink.lock()
+        .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("；"))
+        .unwrap_or_default()
+}
+
+/// 启动前先把「路径本身就不对」的情况挑出来。
+///
+/// 之前不管什么原因失败，用户只会看到一句「请检查 Codex CLI 路径」——填的是目录、
+/// 文件不存在、没有执行权限、甚至 app-server 协议不兼容，全都是这一句，
+/// 于是 #1879 下面积了十几条「到底该填什么路径」。
+///
+/// 裸命令名（codex）交给 PATH 解析，这里只校验看起来像路径的输入。
+fn validate_codex_executable(executable: &str) -> anyhow::Result<()> {
+    let looks_like_path = executable.contains('/')
+        || executable.contains('\\')
+        || Path::new(executable).is_absolute();
+    if !looks_like_path {
+        return Ok(());
+    }
+    let path = Path::new(executable);
+    if !path.exists() {
+        bail!(
+            "Codex CLI 路径不存在：{executable}\n请填 Codex CLI 可执行文件的完整路径。\
+             macOS 桌面版通常在 /Applications/ChatGPT.app/Contents/Resources/codex；\
+             npm 全局安装可用 `which codex` / `where codex` 查看。"
+        );
+    }
+    if path.is_dir() {
+        bail!(
+            "Codex CLI 路径指向的是目录而不是可执行文件：{executable}\n\
+             请去掉结尾的路径分隔符，或补上具体的可执行文件名。"
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path)
+            && metadata.permissions().mode() & 0o111 == 0
+        {
+            bail!("Codex CLI 没有执行权限：{executable}");
+        }
+    }
+    Ok(())
+}
+
 impl CodexAppServer {
     pub async fn start(config: AppServerConfig) -> anyhow::Result<Self> {
         let executable = if config.executable.trim().is_empty() {
@@ -48,6 +98,7 @@ impl CodexAppServer {
         } else {
             config.executable.trim()
         };
+        validate_codex_executable(executable)?;
         let mut command = Command::new(executable);
         command
             .arg("app-server")
@@ -56,11 +107,15 @@ impl CodexAppServer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = command.spawn().with_context(|| {
-            format!(
-                "无法启动 Codex app-server（{}），请检查 Codex CLI 路径",
-                executable
-            )
+        let mut child = command.spawn().map_err(|error| {
+            let hint = match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    "：找不到该文件；填 Codex CLI 可执行文件的完整路径，或确保 codex 在 PATH 里"
+                }
+                std::io::ErrorKind::PermissionDenied => "：没有执行权限",
+                _ => "",
+            };
+            anyhow::anyhow!("无法启动 Codex app-server（{executable}）{hint}（{error}）")
         })?;
         let stdin = child
             .stdin
@@ -70,10 +125,25 @@ impl CodexAppServer {
             .stdout
             .take()
             .context("无法连接 Codex app-server stdout")?;
+        // 别把 stderr 读了就扔——app-server 起不来时，真正的原因只在这里。
+        // 留最近几行，初始化失败时附到错误信息上。
+        let stderr_tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
         if let Some(stderr) = child.stderr.take() {
+            let sink = Arc::clone(&stderr_tail);
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
-                while matches!(lines.next_line().await, Ok(Some(_))) {}
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let line = line.trim().to_string();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(mut sink) = sink.lock() {
+                        if sink.len() == STDERR_TAIL_LINES {
+                            sink.pop_front();
+                        }
+                        sink.push_back(line);
+                    }
+                }
             });
         }
 
@@ -85,7 +155,14 @@ impl CodexAppServer {
             running: true,
             config,
         };
-        server.initialize().await?;
+        if let Err(error) = server.initialize().await {
+            let detail = collect_stderr_tail(&stderr_tail);
+            return Err(if detail.is_empty() {
+                error
+            } else {
+                error.context(format!("Codex app-server 输出：{detail}"))
+            });
+        }
         Ok(server)
     }
 
@@ -575,5 +652,60 @@ mod tests {
                 context_window: Some(1000000)
             })
         );
+    }
+
+    /// #1879：以前不管什么原因失败都只说「请检查 Codex CLI 路径」，
+    /// 用户填了目录、填了不存在的路径、权限不对，看到的都是同一句话。
+    #[test]
+    fn executable_validation_names_the_actual_problem() {
+        let temp = tempfile::tempdir().unwrap();
+
+        // 目录而不是可执行文件——issue 里多人贴的正是带尾斜杠的目录路径
+        let error = validate_codex_executable(&temp.path().display().to_string()).unwrap_err();
+        assert!(error.to_string().contains("目录"), "{error}");
+
+        // 路径不存在
+        let missing = temp.path().join("nope").join("codex");
+        let error = validate_codex_executable(&missing.display().to_string()).unwrap_err();
+        assert!(error.to_string().contains("不存在"), "{error}");
+
+        // 裸命令名交给 PATH 解析，不该在这里被拦下
+        assert!(validate_codex_executable("codex").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_validation_flags_a_file_without_exec_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex");
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let error = validate_codex_executable(&path.display().to_string()).unwrap_err();
+        assert!(error.to_string().contains("执行权限"), "{error}");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(validate_codex_executable(&path.display().to_string()).is_ok());
+    }
+
+    /// app-server 起不来时，真正的原因只在 stderr 里；以前被读了就扔。
+    #[test]
+    fn stderr_tail_is_kept_and_bounded() {
+        let sink = Arc::new(Mutex::new(VecDeque::<String>::new()));
+        {
+            let mut guard = sink.lock().unwrap();
+            for i in 0..(STDERR_TAIL_LINES + 4) {
+                if guard.len() == STDERR_TAIL_LINES {
+                    guard.pop_front();
+                }
+                guard.push_back(format!("line-{i}"));
+            }
+        }
+        let tail = collect_stderr_tail(&sink);
+        assert!(tail.contains(&format!("line-{}", STDERR_TAIL_LINES + 3)));
+        // 只留最近若干行，不能无限涨
+        assert!(!tail.contains("line-0"));
+        assert_eq!(tail.split('；').count(), STDERR_TAIL_LINES);
     }
 }
