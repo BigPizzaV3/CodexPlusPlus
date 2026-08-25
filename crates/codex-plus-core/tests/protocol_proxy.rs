@@ -1621,9 +1621,36 @@ data: [DONE]
         1
     );
     assert!(converted.contains("\"type\":\"custom_tool_call\""));
+    assert!(converted.contains("\"id\":\"ctc_call_custom\""));
+    assert!(converted.contains("\"item_id\":\"ctc_call_custom\""));
+    assert!(!converted.contains("\"id\":\"fc_call_custom\""));
+    assert!(!converted.contains("\"item_id\":\"fc_call_custom\""));
     assert!(converted.contains("\"name\":\"exec\""));
     assert!(converted.contains("\"input\":\"ls -la\""));
     assert!(converted.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_sse_waits_for_custom_tool_name_before_assigning_item_id() {
+    let converted = chat_sse_to_responses_sse_with_request(
+        r#"data: {"id":"chatcmpl_custom_split","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom_split","type":"function"}]}}]}
+
+data: {"id":"chatcmpl_custom_split","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"exec","arguments":"{\"input\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        &json!({
+            "model": "gpt-5.4",
+            "tools": [{ "type": "custom", "name": "exec" }]
+        }),
+    );
+
+    assert!(converted.contains("\"type\":\"custom_tool_call\""));
+    assert!(converted.contains("\"id\":\"ctc_call_custom_split\""));
+    assert!(converted.contains("\"item_id\":\"ctc_call_custom_split\""));
+    assert!(!converted.contains("fc_call_custom_split"));
+    assert!(converted.contains("\"input\":\"pwd\""));
 }
 
 #[test]
@@ -1890,6 +1917,44 @@ async fn model_route_can_rewrite_only_the_target_model_name() {
     let mut expected = request;
     expected["model"] = json!("provider-luna-v2");
     assert_eq!(upstream_body, expected);
+}
+
+#[tokio::test]
+async fn responses_proxy_normalizes_legacy_custom_tool_item_ids_only() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "id": "fc_legacy_custom_item",
+                "call_id": "call_legacy_custom",
+                "name": "exec",
+                "input": "pwd"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": "continue"
+            }
+        ],
+        "stream": false
+    });
+    let settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, upstream_body) = target_server.await.unwrap();
+
+    assert_eq!(upstream_body["input"][0]["id"], "ctc_legacy_custom_item");
+    assert_eq!(upstream_body["input"][0]["call_id"], "call_legacy_custom");
+    assert_eq!(upstream_body["input"][1]["type"], "message");
 }
 
 #[tokio::test]

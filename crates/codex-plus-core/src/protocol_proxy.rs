@@ -925,6 +925,9 @@ async fn upstream_request_parts(
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
     };
+    if relay.protocol == RelayProtocol::Responses {
+        normalize_responses_custom_tool_call_ids(&mut body);
+    }
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
     let model = body
@@ -1604,7 +1607,17 @@ impl ChatSseState {
                 state.arguments.push_str(&args_delta);
             }
 
-            if !state.added && (!state.call_id.is_empty() || !state.name.is_empty()) {
+            // Custom tool output items must use the `ctc_` ID namespace. Some
+            // Chat Completions providers send the call ID before the function
+            // name, so wait for the name when the request includes custom tools
+            // instead of emitting a provisional `function_call` with an `fc_`
+            // ID that cannot later be replayed as a `custom_tool_call`.
+            let waiting_for_custom_tool_name =
+                self.tool_context.has_custom_tools && state.name.is_empty();
+            if !state.added
+                && (!state.call_id.is_empty() || !state.name.is_empty())
+                && !waiting_for_custom_tool_name
+            {
                 should_add = true;
                 pending_arguments = state.arguments.clone();
             } else if state.added {
@@ -1624,7 +1637,7 @@ impl ChatSseState {
                 state.name = "unknown_tool".to_string();
             }
             state.output_index = Some(assigned);
-            state.item_id = format!("fc_{}", state.call_id);
+            state.item_id = tool_call_item_id(&state.call_id, &state.name, &self.tool_context);
             let added_item = tool_call_added_item(state, assigned, &self.tool_context);
             push_sse(output, "response.output_item.added", added_item);
             if !pending_arguments.is_empty() {
@@ -1807,7 +1820,7 @@ impl ChatSseState {
                     state.name = "unknown_tool".to_string();
                 }
                 state.output_index = Some(assigned);
-                state.item_id = format!("fc_{}", state.call_id);
+                state.item_id = tool_call_item_id(&state.call_id, &state.name, &self.tool_context);
                 let added_item = tool_call_added_item(state, assigned, &self.tool_context);
                 push_sse(output, "response.output_item.added", added_item);
             }
@@ -2046,6 +2059,38 @@ fn upstream_error_parts(
 
 fn truncate_error_preview(input: &str) -> String {
     input.chars().take(ERROR_BODY_PREVIEW_LIMIT).collect()
+}
+
+fn normalize_responses_custom_tool_call_ids(body: &mut Value) {
+    let Some(input) = body.get_mut("input") else {
+        return;
+    };
+    match input {
+        Value::Array(items) => {
+            for item in items {
+                normalize_custom_tool_call_item_id(item);
+            }
+        }
+        Value::Object(_) => normalize_custom_tool_call_item_id(input),
+        _ => {}
+    }
+}
+
+fn normalize_custom_tool_call_item_id(item: &mut Value) {
+    if item.get("type").and_then(Value::as_str) != Some("custom_tool_call") {
+        return;
+    }
+    let Some(id) = item.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    if id.starts_with("ctc_") {
+        return;
+    }
+    let suffix = id
+        .strip_prefix("fc_")
+        .or_else(|| id.strip_prefix("item_"))
+        .unwrap_or(id);
+    item["id"] = json!(format!("ctc_{suffix}"));
 }
 
 fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
@@ -3387,7 +3432,7 @@ fn tool_call_added_item(
             "type": "response.output_item.added",
             "output_index": output_index,
             "item": {
-                "id": format!("ctc_{}", state.call_id),
+                "id": tool_call_item_id(&state.call_id, &state.name, tool_context),
                 "type": "custom_tool_call",
                 "status": "in_progress",
                 "call_id": state.call_id,
@@ -3450,7 +3495,7 @@ fn push_tool_call_done_sse(
             "response.custom_tool_call_input.delta",
             json!({
                 "type": "response.custom_tool_call_input.delta",
-                "item_id": format!("ctc_{}", state.call_id),
+                "item_id": tool_call_item_id(&state.call_id, &state.name, tool_context),
                 "call_id": state.call_id,
                 "output_index": output_index,
                 "delta": reconstruct_custom_tool_call_input_with_context(
@@ -3486,7 +3531,7 @@ fn response_tool_call_item(
 ) -> Value {
     if tool_context.is_custom_tool_proxy(name) {
         return json!({
-            "id": format!("ctc_{call_id}"),
+            "id": tool_call_item_id(call_id, name, tool_context),
             "type": "custom_tool_call",
             "status": "completed",
             "call_id": call_id,
@@ -3507,6 +3552,15 @@ fn response_tool_call_item(
         item["namespace"] = json!(namespace);
     }
     item
+}
+
+fn tool_call_item_id(call_id: &str, name: &str, tool_context: &CodexToolContext) -> String {
+    let prefix = if tool_context.is_custom_tool_proxy(name) {
+        "ctc_"
+    } else {
+        "fc_"
+    };
+    format!("{prefix}{call_id}")
 }
 
 fn split_leading_think_block(text: &str) -> Option<(String, String)> {
