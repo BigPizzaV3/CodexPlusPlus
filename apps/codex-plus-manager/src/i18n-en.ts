@@ -607,7 +607,7 @@ export const EN_PLAIN: Record<string, string> = {
   "时间": "Time",
   "桌宠跟随真实鼠标": "Real-mouse pet look",
   "释放并注册内置缓存": "Extract and register embedded cache",
-  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。":
+  "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5 / gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna，其他模型按 Standard 发送。":
     "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5, other models are sent as Standard.",
   "普通推荐": "Regular recommendations",
   "多模态模型（支持图片输入的模型）请保持 send-as-is。": "Keep send-as-is for multimodal models that support image input.",
