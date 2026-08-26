@@ -872,13 +872,25 @@ pub async fn fetch_repo_skills(
     cached: &BTreeMap<String, RemoteSkill>,
 ) -> anyhow::Result<Vec<RemoteSkill>> {
     let client = github_client()?;
-    let tree = with_github_auth(client.get(repo_tree_url(repo)))
+    let response = with_github_auth(client.get(repo_tree_url(repo)))
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
-        .with_context(|| format!("请求 {}/{} 的文件树失败", repo.owner, repo.name))?
-        .error_for_status()
-        .with_context(|| format!("{}/{} 的文件树返回错误状态", repo.owner, repo.name))?
+        .with_context(|| format!("请求 {}/{} 的文件树失败", repo.owner, repo.name))?;
+    // 不要用 error_for_status() 一把带过：403 限流、404 仓库/分支不存在、401 令牌
+    // 无效，处理方式完全不同，但用户只会看到「返回错误状态」，没法自助也没法报障
+    // （#1989 里四个仓库全失败，看不出到底是限流还是网络）。
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!(
+            "{}/{} 的文件树请求失败：HTTP {}{}",
+            repo.owner,
+            repo.name,
+            status.as_u16(),
+            github_status_hint(status.as_u16())
+        );
+    }
+    let tree = response
         .json::<Value>()
         .await
         .context("解析 GitHub 文件树响应失败")?;
@@ -906,18 +918,40 @@ pub async fn fetch_repo_skills(
     Ok(skills)
 }
 
+/// 把 GitHub 的 HTTP 状态翻成可操作的提示。
+///
+/// 之前一律 error_for_status() 带过，用户只看到「返回错误状态」——403 限流、
+/// 404 不存在、401 令牌失效处理方式完全不同，既没法自助也没法准确报障（#1989）。
+fn github_status_hint(status: u16) -> &'static str {
+    match status {
+        401 => "：GITHUB_TOKEN / GH_TOKEN 无效或已过期",
+        // 未认证请求每小时只有 60 次，四个仓库一起刷很容易撞上
+        403 | 429 => {
+            "：GitHub API 限流。设置 GITHUB_TOKEN 环境变量可把配额从每小时 60 次提到 5000 次"
+        }
+        404 => "：仓库或分支不存在（私有仓库需要设置 GITHUB_TOKEN）",
+        _ => "",
+    }
+}
+
 pub async fn download_repo_zip(repo: &SkillRepo) -> anyhow::Result<Vec<u8>> {
     let client = github_client()?;
-    let bytes = with_github_auth(client.get(repo_zip_url(repo)))
+    let response = with_github_auth(client.get(repo_zip_url(repo)))
         .header(reqwest::header::ACCEPT, "application/zip")
         .send()
         .await
-        .with_context(|| format!("下载 {}/{} 失败", repo.owner, repo.name))?
-        .error_for_status()
-        .with_context(|| format!("下载 {}/{} 返回错误状态", repo.owner, repo.name))?
-        .bytes()
-        .await
-        .context("读取仓库压缩包内容失败")?;
+        .with_context(|| format!("下载 {}/{} 失败", repo.owner, repo.name))?;
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!(
+            "下载 {}/{} 失败：HTTP {}{}",
+            repo.owner,
+            repo.name,
+            status.as_u16(),
+            github_status_hint(status.as_u16())
+        );
+    }
+    let bytes = response.bytes().await.context("读取仓库压缩包内容失败")?;
     if bytes.len() > REPO_ZIP_DOWNLOAD_LIMIT_BYTES {
         anyhow::bail!("仓库压缩包太大：{} 字节", bytes.len());
     }
@@ -1387,6 +1421,20 @@ mod tests {
         let imagegen = entries.iter().find(|entry| entry.id == "imagegen").unwrap();
         assert!(imagegen.bundled);
         assert_eq!(imagegen.description, "内置");
+    }
+
+    /// #1989：四个仓库全部「文件树返回错误状态」，看不出是限流、网络还是仓库没了。
+    /// GitHub 未认证请求每小时只有 60 次，四个仓库一起刷很容易撞上 403，
+    /// 但错误信息把状态码吞掉了，用户既没法自助也没法准确报障。
+    #[test]
+    fn github_status_hints_are_actionable() {
+        assert!(github_status_hint(403).contains("限流"));
+        assert!(github_status_hint(403).contains("GITHUB_TOKEN"));
+        assert!(github_status_hint(429).contains("限流"));
+        assert!(github_status_hint(404).contains("不存在"));
+        assert!(github_status_hint(401).contains("过期"));
+        // 没有针对性提示的状态码不该硬凑一句，让原始状态码自己说话
+        assert!(github_status_hint(500).is_empty());
     }
 
     #[test]
