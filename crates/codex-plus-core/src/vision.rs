@@ -130,11 +130,36 @@ pub fn image_handling_mode(model: &str, model_vlm_json: &str) -> ImageHandling {
     ImageHandling::SendAsIs
 }
 
+/// 图片块所在的字段名。
+///
+/// Chat Completions（以及 Responses 的普通消息）落在 `content`；
+/// Responses 协议下 tool 输出是 `function_call_output.output[]`，没有 `content` 字段。
+/// 两边都要扫到，否则 strip / VLM 对 tool 返回的图片会整个空转。
+fn content_key(msg: &Value) -> Option<&'static str> {
+    if msg.get("content").is_some() {
+        Some("content")
+    } else if msg.get("output").is_some() {
+        Some("output")
+    } else {
+        None
+    }
+}
+
 /// 纯剥离模式：删除所有消息中的图片块，替换为 "[图片已省略]"。
 /// 不调 VLM，不入缓存，不注入描述。
 pub fn strip_images_only(messages: &mut [Value]) {
     for msg in messages.iter_mut() {
-        let Some(content) = msg.get_mut("content") else {
+        let Some(key) = content_key(msg) else {
+            continue;
+        };
+        // Responses 的 function_call_output.output[] 用 output_text，
+        // 普通 content 用 text。
+        let block_type = if key == "output" {
+            "output_text"
+        } else {
+            "text"
+        };
+        let Some(content) = msg.get_mut(key) else {
             continue;
         };
 
@@ -148,7 +173,7 @@ pub fn strip_images_only(messages: &mut [Value]) {
                         .map_or(false, |t| t == "image_url" || t == "input_image");
                     if is_image {
                         new_content
-                            .push(serde_json::json!({"type": "text", "text": "[图片已省略]"}));
+                            .push(serde_json::json!({"type": block_type, "text": "[图片已省略]"}));
                     } else {
                         new_content.push(part.clone());
                     }
@@ -156,7 +181,9 @@ pub fn strip_images_only(messages: &mut [Value]) {
                 *content = Value::Array(new_content);
             }
             Value::String(s) => {
-                // 字符串 content 场景不会有图片，跳过
+                // 字符串 content 到这里已经不该再含图片了：Chat Completions 侧的
+                // tool 输出由 protocol_proxy::tool_output_content 保留成结构化数组，
+                // 图片随后被 relocate_tool_output_images 搬进 user 消息。
                 let _ = s;
             }
             _ => {}
@@ -176,7 +203,7 @@ fn url_hash(url: &str) -> String {
 /// 收集单条消息中的全部图片 URL（不修改消息）。
 fn collect_urls(msg: &Value) -> Vec<String> {
     let mut urls = Vec::new();
-    let Some(content) = msg.get("content") else {
+    let Some(content) = content_key(msg).and_then(|key| msg.get(key)) else {
         return urls;
     };
     let Some(parts) = content.as_array() else {
@@ -198,9 +225,16 @@ fn collect_urls(msg: &Value) -> Vec<String> {
 }
 
 fn is_vlm_message_role(msg: &Value) -> bool {
-    matches!(
+    if matches!(
         msg.get("role").and_then(Value::as_str),
         Some("user") | Some("tool")
+    ) {
+        return true;
+    }
+    // Responses 协议的 tool 输出条目没有 role，只有 type。
+    matches!(
+        msg.get("type").and_then(Value::as_str),
+        Some("function_call_output") | Some("custom_tool_call_output")
     )
 }
 
@@ -241,7 +275,7 @@ fn collect_recent_image_messages(
 /// 删除所有消息中的全部 image 块。
 fn strip_all_images(messages: &mut [Value]) {
     for msg in messages.iter_mut() {
-        let Some(content) = msg.get_mut("content") else {
+        let Some(content) = content_key(msg).and_then(|key| msg.get_mut(key)) else {
             continue;
         };
         let Some(parts) = content.as_array_mut() else {
@@ -488,18 +522,26 @@ async fn background_analyze_and_cache(urls: &[String], config: &VlmConfig) {
 /// `responses` 为 true 时生成 Responses API 的 `input_text` 块,
 /// 否则生成 Chat Completions 的 `text` 块。
 fn inject_text_into_message(msg: &mut Value, text: &str, responses: bool) {
-    let block_type = if responses { "input_text" } else { "text" };
+    let Some(key) = content_key(msg) else {
+        return;
+    };
+    // Responses 的 function_call_output.output[] 只接受 output_text，
+    // 普通消息用 input_text；Chat Completions 一律 text。
+    let block_type = if !responses {
+        "text"
+    } else if key == "output" {
+        "output_text"
+    } else {
+        "input_text"
+    };
     let make_block = |t: &str| serde_json::json!({"type": block_type, "text": t});
-    match msg.get_mut("content") {
+    match msg.get_mut(key) {
         Some(Value::Array(parts)) => {
             parts.push(make_block(text));
         }
         Some(Value::String(existing)) => {
             let old = existing.clone();
-            *msg.get_mut("content").unwrap() = serde_json::json!([
-                make_block(&old),
-                make_block(text),
-            ]);
+            *msg.get_mut(key).unwrap() = serde_json::json!([make_block(&old), make_block(text),]);
         }
         _ => {}
     }
@@ -2133,5 +2175,108 @@ mod tests {
                 "{label} round: VLM description not injected: {text}"
             );
         }
+    }
+
+    // ── Responses 协议下的 tool 输出（issue #1996 的第二处缺口）──────
+    //
+    // Responses 协议不做消息转换，tool 输出保持 `function_call_output.output[]`
+    // 形状 —— 没有 `content` 字段，也没有 `role`。此前 strip / VLM 只扫 `content`
+    // 且只认 user/tool 角色，对这类条目整个空转：用户配了 strip 却毫无效果。
+
+    const PNG_URL: &str = "data:image/png;base64,iVBORw0KGgo=";
+
+    fn responses_tool_output_item() -> Value {
+        json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [{ "type": "input_image", "image_url": PNG_URL }]
+        })
+    }
+
+    #[test]
+    fn collect_urls_finds_images_in_responses_tool_output() {
+        assert_eq!(collect_urls(&responses_tool_output_item()), vec![PNG_URL]);
+    }
+
+    #[test]
+    fn responses_tool_output_counts_as_vlm_target() {
+        assert!(is_vlm_message_role(&responses_tool_output_item()));
+        assert!(is_vlm_message_role(&json!({
+            "type": "custom_tool_call_output",
+            "call_id": "call_1",
+            "output": []
+        })));
+        // 其它条目类型仍然不该被当成 VLM 目标。
+        assert!(!is_vlm_message_role(&json!({
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "shell"
+        })));
+    }
+
+    #[test]
+    fn strip_images_only_strips_responses_tool_output() {
+        let mut messages = vec![responses_tool_output_item()];
+        strip_images_only(&mut messages);
+
+        let parts = messages[0]["output"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"], "[图片已省略]");
+        // function_call_output.output[] 只接受 output_text，不是 text。
+        assert_eq!(parts[0]["type"], "output_text");
+        assert!(!serde_json::to_string(&messages).unwrap().contains("base64"));
+    }
+
+    #[test]
+    fn strip_images_only_still_uses_text_type_for_chat_content() {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [{ "type": "image_url", "image_url": { "url": PNG_URL } }]
+        })];
+        strip_images_only(&mut messages);
+
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "[图片已省略]");
+    }
+
+    #[test]
+    fn strip_all_images_removes_responses_tool_output_images() {
+        let mut messages = vec![json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [
+                { "type": "output_text", "text": "captured" },
+                { "type": "input_image", "image_url": PNG_URL }
+            ]
+        })];
+        strip_all_images(&mut messages);
+
+        let parts = messages[0]["output"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"], "captured");
+    }
+
+    #[test]
+    fn inject_text_uses_output_text_for_responses_tool_output() {
+        let mut item = responses_tool_output_item();
+        inject_text_into_message(&mut item, "描述", true);
+
+        let parts = item["output"].as_array().unwrap();
+        let injected = parts.last().unwrap();
+        assert_eq!(injected["type"], "output_text");
+        assert_eq!(injected["text"], "描述");
+    }
+
+    #[test]
+    fn inject_text_keeps_input_text_for_regular_responses_messages() {
+        let mut message = json!({
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "hi" }]
+        });
+        inject_text_into_message(&mut message, "描述", true);
+
+        let parts = message["content"].as_array().unwrap();
+        assert_eq!(parts.last().unwrap()["type"], "input_text");
     }
 }

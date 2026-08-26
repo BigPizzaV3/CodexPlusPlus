@@ -2486,3 +2486,281 @@ fn spawn_chat_server() -> ChatServer {
     });
     ChatServer { base_url, handle }
 }
+
+// ── tool 输出中的图片（issue #1996）────────────────────────────────────
+//
+// `view_image` 的结果以 `function_call_output.output[].input_image` 回来。这个数组
+// 曾被整体 JSON 序列化成 tool 消息的字符串 content，于是 base64 被当普通文本送进上游
+// tokenizer —— 一张 2MB 的 PNG 膨胀到约 200 万 token 并撑爆上下文窗口。
+
+const TEST_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
+
+/// 收集 JSON 里所有**不在** `image_url` 子树下的字符串，即会被上游当文本 tokenize 的部分。
+fn tokenizable_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "image_url" {
+                    continue;
+                }
+                tokenizable_strings(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                tokenizable_strings(item, out);
+            }
+        }
+        serde_json::Value::String(text) => out.push(text.clone()),
+        _ => {}
+    }
+}
+
+fn assert_no_base64_in_text(converted: &serde_json::Value) {
+    let mut strings = Vec::new();
+    tokenizable_strings(converted, &mut strings);
+    for text in strings {
+        assert!(
+            !text.contains("data:image/"),
+            "base64 图片泄漏进文本字段: {text}"
+        );
+    }
+}
+
+fn image_tool_call_input(output: serde_json::Value) -> serde_json::Value {
+    json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "look at this" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "view_image",
+                "arguments": "{\"path\":\"shot.png\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": output
+            }
+        ]
+    })
+}
+
+#[test]
+fn tool_output_image_becomes_image_url_part_not_text() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "input_image", "image_url": TEST_PNG_DATA_URL }
+    ])))
+    .unwrap();
+
+    // tool 消息降级成字符串占位符——多数上游不接受 tool 消息带 multi-part 图片。
+    let tool = &converted["messages"][2];
+    assert_eq!(tool["role"], "tool");
+    assert_eq!(tool["tool_call_id"], "call_1");
+    assert_eq!(tool["content"], "[image]");
+
+    // 图片改由紧随其后的 user 消息承载，且是结构化的 image_url。
+    let carrier = &converted["messages"][3];
+    assert_eq!(carrier["role"], "user");
+    assert_eq!(carrier["content"][1]["type"], "image_url");
+    assert_eq!(carrier["content"][1]["image_url"]["url"], TEST_PNG_DATA_URL);
+
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn tool_output_image_accepts_object_shaped_image_url() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "input_image", "image_url": { "url": TEST_PNG_DATA_URL, "detail": "high" } }
+    ])))
+    .unwrap();
+
+    let image = &converted["messages"][3]["content"][1];
+    assert_eq!(image["type"], "image_url");
+    assert_eq!(image["image_url"]["url"], TEST_PNG_DATA_URL);
+    assert_eq!(image["image_url"]["detail"], "high");
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn tool_output_mixed_text_and_image_keeps_both() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "output_text", "text": "screenshot captured" },
+        { "type": "input_image", "image_url": TEST_PNG_DATA_URL }
+    ])))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"][2]["content"],
+        "screenshot captured\n[image]"
+    );
+    assert_eq!(
+        converted["messages"][3]["content"][1]["image_url"]["url"],
+        TEST_PNG_DATA_URL
+    );
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn tool_output_without_image_keeps_previous_string_shape() {
+    // 回归护栏：无图路径必须与修复前逐字节一致。
+    let plain = responses_to_chat_completions(image_tool_call_input(json!("result"))).unwrap();
+    assert_eq!(plain["messages"][2]["content"], "result");
+    assert_eq!(plain["messages"].as_array().unwrap().len(), 3);
+
+    let structured = responses_to_chat_completions(image_tool_call_input(
+        json!([{ "type": "output_text", "text": "hi" }]),
+    ))
+    .unwrap();
+    assert_eq!(
+        structured["messages"][2]["content"],
+        "[{\"text\":\"hi\",\"type\":\"output_text\"}]"
+    );
+    assert_eq!(structured["messages"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn tool_output_images_do_not_break_tool_call_pairing() {
+    // 两个并行 tool call 各返回一张图。图片消息若插在两条 tool 消息之间，
+    // enforce_tool_call_pairing 的 take_while(role=="tool") 会漏掉第二条，
+    // 导致 call_2 被误判成 orphaned 而摘掉。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "compare these" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "view_image",
+                "arguments": "{\"path\":\"a.png\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "view_image",
+                "arguments": "{\"path\":\"b.png\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_2",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "well?" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+
+    // 两个 tool_call 都保住了，没有被当成 orphaned 摘掉。
+    let tool_calls = messages[1]["tool_calls"].as_array().unwrap();
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0]["id"], "call_1");
+    assert_eq!(tool_calls[1]["id"], "call_2");
+
+    // 两条 tool 消息紧邻，中间没有被图片消息割开。
+    assert_eq!(messages[2]["role"], "tool");
+    assert_eq!(messages[2]["tool_call_id"], "call_1");
+    assert_eq!(messages[3]["role"], "tool");
+    assert_eq!(messages[3]["tool_call_id"], "call_2");
+
+    // 两张图汇总到连续 tool 区之后的一条 user 消息里。
+    assert_eq!(messages[4]["role"], "user");
+    let parts = messages[4]["content"].as_array().unwrap();
+    let images = parts
+        .iter()
+        .filter(|part| part["type"] == "image_url")
+        .count();
+    assert_eq!(images, 2);
+
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn orphan_tool_output_image_stays_inline_in_user_message() {
+    // 没有配对 function_call 的 output 会降级成 user 消息；它本就是 user 角色，
+    // 图片可以直接内联，不必再搬一次。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "function_call_output",
+                "call_id": "call_orphan",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let message = &converted["messages"][0];
+    assert_eq!(message["role"], "user");
+    assert!(
+        message["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("call_orphan")
+    );
+    assert_eq!(message["content"][1]["type"], "image_url");
+    assert_eq!(message["content"][1]["image_url"]["url"], TEST_PNG_DATA_URL);
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn custom_tool_call_output_image_is_also_converted() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash-vision-exp",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_1",
+                "name": "snap",
+                "input": "{}"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_1",
+                "output": [{ "type": "input_image", "image_url": TEST_PNG_DATA_URL }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(converted["messages"][1]["role"], "tool");
+    assert_eq!(converted["messages"][1]["content"], "[image]");
+    assert_eq!(
+        converted["messages"][2]["content"][1]["image_url"]["url"],
+        TEST_PNG_DATA_URL
+    );
+    assert_no_base64_in_text(&converted);
+}
+
+#[test]
+fn empty_image_url_is_dropped_rather_than_forwarded() {
+    let converted = responses_to_chat_completions(image_tool_call_input(json!([
+        { "type": "input_image", "image_url": "" }
+    ])))
+    .unwrap();
+
+    // 空 url 不值得转发，也不该留下空的 image_url part。
+    let messages = converted["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[2]["role"], "tool");
+}

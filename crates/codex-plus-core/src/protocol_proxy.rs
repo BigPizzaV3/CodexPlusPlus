@@ -149,6 +149,9 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
         append_responses_input(input, &mut messages);
     }
     enforce_tool_call_pairing(&mut messages);
+    // 必须在 enforce_tool_call_pairing 之后：它依赖 tool 消息的连续性，
+    // 而这一步会往中间插入 user 消息。
+    relocate_tool_output_images(&mut messages);
     ensure_tool_call_reasoning_content(&mut messages);
     normalize_chat_messages(&mut messages);
     let messages = collapse_system_messages_to_head(messages);
@@ -973,6 +976,14 @@ async fn upstream_request_parts(
                 }
             }
         }
+    }
+
+    if guard_inline_image_data_urls(&mut body) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "inline_image_data_url_leak",
+            json!({ "model": model, "protocol": format!("{:?}", relay.protocol) }),
+        );
+        debug_assert!(false, "base64 图片泄漏进文本字段，检查协议转换路径");
     }
 
     let wire_api = match relay.protocol {
@@ -2179,7 +2190,7 @@ fn append_responses_item(
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": response_output_text(item.get("output").unwrap_or(&Value::Null))
+                "content": tool_output_content(item.get("output").unwrap_or(&Value::Null))
             }));
         }
         Some("custom_tool_call") => {
@@ -2225,7 +2236,7 @@ fn append_responses_item(
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": response_output_text(item.get("output").unwrap_or(&Value::Null))
+                "content": tool_output_content(item.get("output").unwrap_or(&Value::Null))
             }));
         }
         Some("tool_call") => {
@@ -2271,7 +2282,7 @@ fn append_responses_item(
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": response_output_text(output)
+                "content": tool_output_content(output)
             }));
         }
         Some("reasoning") => {
@@ -2308,6 +2319,15 @@ fn append_responses_item(
 }
 
 fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
+    // 这条已经是 user 消息，multi-part 图片可以直接内联，不必走 relocate。
+    if let Value::Array(parts) = tool_output_content(output) {
+        let mut content = vec![json!({
+            "type": "text",
+            "text": format!("Function call output ({call_id}):")
+        })];
+        content.extend(parts);
+        return json!({ "role": "user", "content": content });
+    }
     json!({
         "role": "user",
         "content": format!(
@@ -2396,6 +2416,80 @@ fn enforce_tool_call_pairing(messages: &mut [Value]) {
         append_text_to_assistant_message(&mut messages[index], &notes);
         index += 1;
     }
+}
+
+/// `role:"tool"` 消息在多数 Chat Completions 上游（DeepSeek 在内）只接受字符串 content，
+/// 塞 multi-part `image_url` 会被 400；而 `enforce_tool_call_pairing` 又要求 tool 消息
+/// 紧跟在 assistant(tool_calls) 之后**连续**排列 —— 把图片消息插在两条 tool 消息中间，
+/// 会让后面那条不再被计入 followers，对应的 tool_call 被误判成 orphaned 而摘掉。
+///
+/// 两个约束都要满足，所以这里的做法是：tool 消息本身降级成文本占位，图片一路收集到
+/// 连续 tool 区结束，再作为一条 user 消息整体插在其后。
+fn relocate_tool_output_images(messages: &mut Vec<Value>) {
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].get("role").and_then(Value::as_str) != Some("tool") {
+            index += 1;
+            continue;
+        }
+        let mut images = Vec::new();
+        let mut end = index;
+        while end < messages.len()
+            && messages[end].get("role").and_then(Value::as_str) == Some("tool")
+        {
+            take_images_from_tool_message(&mut messages[end], &mut images);
+            end += 1;
+        }
+        if !images.is_empty() {
+            let mut content = vec![json!({
+                "type": "text",
+                "text": "Images returned by the tool call(s) above:"
+            })];
+            content.append(&mut images);
+            messages.insert(end, json!({ "role": "user", "content": content }));
+            end += 1;
+        }
+        index = end;
+    }
+}
+
+/// 摘掉单条 tool 消息里的图片块，content 降级为纯文本。
+/// 没有文本时补占位符 —— 空字符串 content 会被部分上游拒绝。
+fn take_images_from_tool_message(message: &mut Value, images: &mut Vec<Value>) {
+    let Some(parts) = message.get("content").and_then(Value::as_array) else {
+        return;
+    };
+
+    let mut texts = Vec::new();
+    let mut found = Vec::new();
+    for part in parts {
+        if is_image_part(part) {
+            if let Some(image) = image_part_to_chat(part) {
+                found.push(image);
+            }
+            continue;
+        }
+        if let Some(text) = part.get("text").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            texts.push(text.to_string());
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+
+    let placeholder = if found.len() == 1 {
+        "[image]".to_string()
+    } else {
+        format!("[{} images]", found.len())
+    };
+    message["content"] = json!(if texts.is_empty() {
+        placeholder
+    } else {
+        format!("{}\n{placeholder}", texts.join("\n"))
+    });
+    images.append(&mut found);
 }
 
 fn append_text_to_assistant_message(message: &mut Value, text: &str) {
@@ -2606,6 +2700,37 @@ fn responses_reasoning_text(item: &Value) -> Option<String> {
     extract_reasoning_summary_text(item).or_else(|| extract_reasoning_field_text(item))
 }
 
+fn is_image_part(part: &Value) -> bool {
+    matches!(
+        part.get("type").and_then(Value::as_str),
+        Some("input_image") | Some("image_url")
+    )
+}
+
+/// 把 Responses 的 `input_image`（`image_url` 可能是裸字符串）与已经是 Chat 形态的
+/// `image_url` 统一成 Chat Completions 的 `{"type":"image_url","image_url":{"url":…}}`。
+///
+/// 返回 `None` 表示这不是图片块、或 url 为空不值得转发。
+fn image_part_to_chat(part: &Value) -> Option<Value> {
+    if !is_image_part(part) {
+        return None;
+    }
+    let raw = part.get("image_url")?;
+    let image_url = if raw.is_object() {
+        raw.clone()
+    } else {
+        json!({ "url": raw.as_str().unwrap_or_default() })
+    };
+    if image_url
+        .get("url")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return None;
+    }
+    Some(json!({ "type": "image_url", "image_url": image_url }))
+}
+
 fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
     if content.is_null() || content.is_string() {
         return content.clone();
@@ -2633,14 +2758,9 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
                     }
                 }
             }
-            "input_image" => {
-                if let Some(image_url) = part.get("image_url") {
-                    let image_url = if image_url.is_object() {
-                        image_url.clone()
-                    } else {
-                        json!({ "url": image_url.as_str().unwrap_or_default() })
-                    };
-                    chat_parts.push(json!({ "type": "image_url", "image_url": image_url }));
+            "input_image" | "image_url" => {
+                if let Some(image) = image_part_to_chat(part) {
+                    chat_parts.push(image);
                     has_non_text_part = true;
                 }
             }
@@ -3859,6 +3979,114 @@ fn response_output_text(value: &Value) -> String {
         Value::Null => String::new(),
         other => canonical_json_string(other),
     }
+}
+
+const IMAGE_DATA_URL_PREFIX: &str = "data:image/";
+
+/// 若 `text` 含 base64 图片 data URL，返回替换成占位符后的文本；否则 `None`。
+fn redact_image_data_urls(text: &str) -> Option<String> {
+    if !text.contains(IMAGE_DATA_URL_PREFIX) {
+        return None;
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(IMAGE_DATA_URL_PREFIX) {
+        out.push_str(&rest[..start]);
+        out.push_str("[image omitted]");
+        let tail = &rest[start..];
+        // data URL 由 base64 字母表加少量分隔符组成，遇到其它字符即结束。
+        let end = tail
+            .find(|c: char| {
+                !(c.is_ascii_alphanumeric()
+                    || matches!(c, '+' | '/' | '=' | ':' | ';' | ',' | '.' | '-' | '_'))
+            })
+            .unwrap_or(tail.len());
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// base64 图片一旦落进文本字段就是灾难：上游会把它当普通文本 tokenize，而 base64
+/// 高熵、几乎没有可复用的 BPE merge（约 1.36 字符/token），一张 2MB 的图能膨胀到
+/// 约 200 万 token 并直接撑爆上下文窗口。图片的唯一合法归宿是 `image_url` 子树。
+///
+/// 这是最后一道兜底：出站前扫一遍 body，把漏进文本字段的 data URL 换成占位符。
+/// 命中即说明某条协议转换路径有 bug，记诊断日志便于定位。
+fn guard_inline_image_data_urls(value: &mut Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut hit = false;
+            for (key, child) in map.iter_mut() {
+                // image_url 子树是图片的合法归宿，跳过。
+                if key == "image_url" {
+                    continue;
+                }
+                hit |= guard_inline_image_data_urls(child);
+            }
+            hit
+        }
+        Value::Array(items) => {
+            let mut hit = false;
+            for item in items {
+                hit |= guard_inline_image_data_urls(item);
+            }
+            hit
+        }
+        Value::String(text) => match redact_image_data_urls(text) {
+            Some(cleaned) => {
+                *text = cleaned;
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// tool 输出可能带图 —— `view_image` 的结果就是
+/// `function_call_output.output[] = [{"type":"input_image","image_url":"data:image/png;base64,…"}]`。
+///
+/// 直接走 `response_output_text` 会把整个数组 JSON 序列化成字符串，于是 base64 被当作
+/// 普通文本送进上游 tokenizer。base64 是 BPE 最不擅长的输入（高熵、无可复用 merge，
+/// 约 1.36 字符/token），一张 2MB 的 PNG 因此膨胀到约 200 万 token 并撑爆上下文窗口；
+/// 同一张图走 `image_url` 只需几百 token，因为供应商在 tokenize 之前就把 base64 解码回
+/// 像素、按尺寸切 patch 计数。
+///
+/// 所以这里在**有图时**保留结构化的 `image_url` part，交给
+/// `relocate_tool_output_images` 在满足 tool 配对约束的前提下搬到后续 user 消息。
+/// 无图时原样返回 `response_output_text` 的结果，保持既有行为不变。
+fn tool_output_content(output: &Value) -> Value {
+    let Some(parts) = output.as_array() else {
+        return json!(response_output_text(output));
+    };
+    if !parts.iter().any(is_image_part) {
+        return json!(response_output_text(output));
+    }
+
+    let mut chat_parts = Vec::new();
+    for part in parts {
+        if is_image_part(part) {
+            if let Some(image) = image_part_to_chat(part) {
+                chat_parts.push(image);
+            }
+            continue;
+        }
+        let text = match part.get("type").and_then(Value::as_str) {
+            Some("input_text") | Some("output_text") | Some("text") => part
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            // 非文本非图片的块（结构化工具结果等）保留原有的 JSON 表示，
+            // 免得静默丢信息。
+            _ => canonical_json_string(part),
+        };
+        if !text.is_empty() {
+            chat_parts.push(json!({ "type": "text", "text": text }));
+        }
+    }
+    Value::Array(chat_parts)
 }
 
 fn build_custom_tool_call_history(name: &str, input: &Value) -> (String, String) {
