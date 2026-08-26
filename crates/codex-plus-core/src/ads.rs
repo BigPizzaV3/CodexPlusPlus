@@ -11,8 +11,13 @@ const BAIKEWEI_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-ba
 const CUBENCE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-cubence.png");
 const DEEPKEY_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-deepkey.png");
 const ERGOU_API_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-ergou-api.png");
+const APIMART_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-apimart.png");
+const FENNO_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-fenno-ai.png");
+const QINIU_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-qiniu-ai.png");
 const BUILTIN_SPONSOR_EXPIRES_AT: &str = "2026-08-02T23:59:59+08:00";
 const DEEPKEY_SPONSOR_EXPIRES_AT: &str = "2026-08-25T23:59:59+08:00";
+const APIMART_SPONSOR_EXPIRES_AT: &str = "2026-09-27T23:59:59+08:00";
+const NEW_SPONSOR_EXPIRES_AT: &str = "2026-11-27T23:59:59+08:00";
 
 pub const DEFAULT_AD_LIST_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
@@ -75,6 +80,9 @@ fn known_remote_logo(id: &str) -> Option<(&'static str, &'static [u8])> {
         "runapi-openrouter-alternative" => Some(("image/png", RUNAPI_IMAGE)),
         "baikewei-ai" => Some(("image/jpeg", BAIKEWEI_AI_IMAGE)),
         "deepkey-api-key" => Some(("image/png", DEEPKEY_IMAGE)),
+        "apimart" => Some(("image/png", APIMART_IMAGE)),
+        "fenno-ai" => Some(("image/png", FENNO_AI_IMAGE)),
+        "qiniu-ai" => Some(("image/png", QINIU_AI_IMAGE)),
         _ => None,
     }
 }
@@ -129,6 +137,36 @@ fn append_builtin_sponsors(ads: &mut Vec<Value>) {
             "image/png",
             &["Claude / GPT / Gemini", "低延迟线路", "备用链路"],
             BUILTIN_SPONSOR_EXPIRES_AT,
+        ),
+        builtin_sponsor(
+            "apimart",
+            "API Mart",
+            "专注 AI 图片和视频生成的低价 API 平台，一套异步 API 覆盖图片与视频任务，支持大批量生成和按量付费。",
+            "https://go.apimart.ai/gh-codexplusplus",
+            APIMART_IMAGE,
+            "image/png",
+            &["图片 / 视频", "异步任务 API", "按量付费"],
+            APIMART_SPONSOR_EXPIRES_AT,
+        ),
+        builtin_sponsor(
+            "fenno-ai",
+            "FennoAI",
+            "稳定高效的 Codex API 中转服务，兼容 OpenAI 与 Anthropic 协议，支持企业级调用、公对公结算和开票。",
+            "https://api.fenno.ai/s/ZZM7",
+            FENNO_AI_IMAGE,
+            "image/png",
+            &["Codex 中转", "企业级调用", "公对公结算"],
+            NEW_SPONSOR_EXPIRES_AT,
+        ),
+        builtin_sponsor(
+            "qiniu-ai",
+            "七牛云",
+            "七牛云旗下企业级大模型 MaaS 平台，一站式调用全球 150 多个主流模型，覆盖文本、图像、音频、视频等全模态能力。",
+            "https://s.qiniu.com/7zUJri",
+            QINIU_AI_IMAGE,
+            "image/png",
+            &["150+ 主流模型", "全模态能力", "企业免费额度"],
+            NEW_SPONSOR_EXPIRES_AT,
         ),
     ];
     let mut cursor = insert_at;
