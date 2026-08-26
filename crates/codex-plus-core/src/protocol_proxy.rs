@@ -148,6 +148,8 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     if let Some(input) = body.get("input") {
         append_responses_input(input, &mut messages);
     }
+    enforce_tool_call_pairing(&mut messages);
+    ensure_tool_call_reasoning_content(&mut messages);
     normalize_chat_messages(&mut messages);
     let messages = collapse_system_messages_to_head(messages);
     result["messages"] = json!(messages);
@@ -923,6 +925,9 @@ async fn upstream_request_parts(
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
     };
+    if relay.protocol == RelayProtocol::Responses {
+        normalize_responses_custom_tool_call_ids(&mut body);
+    }
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
     let model = body
@@ -1602,7 +1607,17 @@ impl ChatSseState {
                 state.arguments.push_str(&args_delta);
             }
 
-            if !state.added && (!state.call_id.is_empty() || !state.name.is_empty()) {
+            // Custom tool output items must use the `ctc_` ID namespace. Some
+            // Chat Completions providers send the call ID before the function
+            // name, so wait for the name when the request includes custom tools
+            // instead of emitting a provisional `function_call` with an `fc_`
+            // ID that cannot later be replayed as a `custom_tool_call`.
+            let waiting_for_custom_tool_name =
+                self.tool_context.has_custom_tools && state.name.is_empty();
+            if !state.added
+                && (!state.call_id.is_empty() || !state.name.is_empty())
+                && !waiting_for_custom_tool_name
+            {
                 should_add = true;
                 pending_arguments = state.arguments.clone();
             } else if state.added {
@@ -1622,7 +1637,7 @@ impl ChatSseState {
                 state.name = "unknown_tool".to_string();
             }
             state.output_index = Some(assigned);
-            state.item_id = format!("fc_{}", state.call_id);
+            state.item_id = tool_call_item_id(&state.call_id, &state.name, &self.tool_context);
             let added_item = tool_call_added_item(state, assigned, &self.tool_context);
             push_sse(output, "response.output_item.added", added_item);
             if !pending_arguments.is_empty() {
@@ -1805,7 +1820,7 @@ impl ChatSseState {
                     state.name = "unknown_tool".to_string();
                 }
                 state.output_index = Some(assigned);
-                state.item_id = format!("fc_{}", state.call_id);
+                state.item_id = tool_call_item_id(&state.call_id, &state.name, &self.tool_context);
                 let added_item = tool_call_added_item(state, assigned, &self.tool_context);
                 push_sse(output, "response.output_item.added", added_item);
             }
@@ -2046,6 +2061,38 @@ fn truncate_error_preview(input: &str) -> String {
     input.chars().take(ERROR_BODY_PREVIEW_LIMIT).collect()
 }
 
+fn normalize_responses_custom_tool_call_ids(body: &mut Value) {
+    let Some(input) = body.get_mut("input") else {
+        return;
+    };
+    match input {
+        Value::Array(items) => {
+            for item in items {
+                normalize_custom_tool_call_item_id(item);
+            }
+        }
+        Value::Object(_) => normalize_custom_tool_call_item_id(input),
+        _ => {}
+    }
+}
+
+fn normalize_custom_tool_call_item_id(item: &mut Value) {
+    if item.get("type").and_then(Value::as_str) != Some("custom_tool_call") {
+        return;
+    }
+    let Some(id) = item.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    if id.starts_with("ctc_") {
+        return;
+    }
+    let suffix = id
+        .strip_prefix("fc_")
+        .or_else(|| id.strip_prefix("item_"))
+        .unwrap_or(id);
+    item["id"] = json!(format!("ctc_{suffix}"));
+}
+
 fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
     match input {
         Value::String(text) => messages.push(json!({ "role": "user", "content": text })),
@@ -2268,6 +2315,142 @@ fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
             response_output_text(output)
         )
     })
+}
+
+/// Chat Completions 上游（DeepSeek thinking 模式尤其严格）要求带 `tool_calls` 的
+/// assistant 消息后面必须紧跟每个 `tool_call_id` 对应的 `tool` 消息。中断/回滚过的
+/// 一轮会话可能留下没有 output 的 `function_call`，直接转发会被上游 400
+/// （insufficient tool messages following tool_calls message）。
+///
+/// 这里把没有配对 output 的 tool_call 从消息里摘掉，降级成文本保留在历史中，
+/// 避免丢失「模型曾试图调用某工具」这一信息。
+fn enforce_tool_call_pairing(messages: &mut [Value]) {
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].get("role").and_then(Value::as_str) != Some("assistant") {
+            index += 1;
+            continue;
+        }
+        let Some(tool_calls) = messages[index].get("tool_calls").and_then(Value::as_array) else {
+            index += 1;
+            continue;
+        };
+        if tool_calls.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        // 收集紧跟其后的 tool 消息所应答的 id
+        let mut answered = BTreeSet::new();
+        let mut followers = 0;
+        for message in messages[index + 1..]
+            .iter()
+            .take_while(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        {
+            followers += 1;
+            if let Some(id) = message.get("tool_call_id").and_then(Value::as_str) {
+                answered.insert(id.to_string());
+            }
+        }
+
+        // 位于历史尾部的 tool_call 是「刚发起、output 还没回来」的正常形态，
+        // 上游本就期待它；只有序列越过了它却没应答才是非法的。
+        if index + 1 + followers >= messages.len() {
+            index += 1;
+            continue;
+        }
+
+        let (kept, orphaned): (Vec<Value>, Vec<Value>) =
+            tool_calls.iter().cloned().partition(|tool_call| {
+                tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| answered.contains(id))
+            });
+        if orphaned.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        let notes = orphaned
+            .iter()
+            .map(|tool_call| {
+                let name = tool_call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let id = tool_call.get("id").and_then(Value::as_str).unwrap_or("");
+                format!("Abandoned function call ({id}): {name}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if kept.is_empty() {
+            if let Some(message) = messages[index].as_object_mut() {
+                message.remove("tool_calls");
+            }
+        } else {
+            messages[index]["tool_calls"] = json!(kept);
+        }
+        append_text_to_assistant_message(&mut messages[index], &notes);
+        index += 1;
+    }
+}
+
+fn append_text_to_assistant_message(message: &mut Value, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let existing = match message.get("content") {
+        Some(Value::String(content)) => content.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    message["content"] = if existing.trim().is_empty() {
+        json!(text)
+    } else {
+        json!(format!("{existing}\n{text}"))
+    };
+}
+
+/// DeepSeek thinking 模式要求带 `tool_calls` 的 assistant 消息回传 `reasoning_content`，
+/// 否则报 400（The `reasoning_content` in the thinking mode must be passed back to the API）。
+/// 历史里没有 reasoning 项时（例如上游没回传 summary，或被裁剪掉了）补一个占位说明，
+/// 只补 content 和 reasoning_content 同时为空的情况，不覆盖真实 reasoning。
+fn ensure_tool_call_reasoning_content(messages: &mut [Value]) {
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let has_tool_calls = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|tool_calls| !tool_calls.is_empty());
+        if !has_tool_calls {
+            continue;
+        }
+        let has_content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .is_some_and(|content| !content.trim().is_empty());
+        let has_reasoning = message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|reasoning| !reasoning.trim().is_empty());
+        if has_content || has_reasoning {
+            continue;
+        }
+        message["reasoning_content"] = json!("Calling the requested tool.");
+    }
 }
 
 fn normalize_chat_messages(messages: &mut [Value]) {
@@ -3249,7 +3432,7 @@ fn tool_call_added_item(
             "type": "response.output_item.added",
             "output_index": output_index,
             "item": {
-                "id": format!("ctc_{}", state.call_id),
+                "id": tool_call_item_id(&state.call_id, &state.name, tool_context),
                 "type": "custom_tool_call",
                 "status": "in_progress",
                 "call_id": state.call_id,
@@ -3312,7 +3495,7 @@ fn push_tool_call_done_sse(
             "response.custom_tool_call_input.delta",
             json!({
                 "type": "response.custom_tool_call_input.delta",
-                "item_id": format!("ctc_{}", state.call_id),
+                "item_id": tool_call_item_id(&state.call_id, &state.name, tool_context),
                 "call_id": state.call_id,
                 "output_index": output_index,
                 "delta": reconstruct_custom_tool_call_input_with_context(
@@ -3348,7 +3531,7 @@ fn response_tool_call_item(
 ) -> Value {
     if tool_context.is_custom_tool_proxy(name) {
         return json!({
-            "id": format!("ctc_{call_id}"),
+            "id": tool_call_item_id(call_id, name, tool_context),
             "type": "custom_tool_call",
             "status": "completed",
             "call_id": call_id,
@@ -3369,6 +3552,15 @@ fn response_tool_call_item(
         item["namespace"] = json!(namespace);
     }
     item
+}
+
+fn tool_call_item_id(call_id: &str, name: &str, tool_context: &CodexToolContext) -> String {
+    let prefix = if tool_context.is_custom_tool_proxy(name) {
+        "ctc_"
+    } else {
+        "fc_"
+    };
+    format!("{prefix}{call_id}")
 }
 
 fn split_leading_think_block(text: &str) -> Option<(String, String)> {

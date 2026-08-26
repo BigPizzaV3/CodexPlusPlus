@@ -75,7 +75,7 @@
       "shell_type": "shell_command",
       "visibility": "list",
       "minimal_client_version": "0.144.0",
-      "supported_in_api": false,
+      "supported_in_api": true,
       "priority": 2
     }
   ]
