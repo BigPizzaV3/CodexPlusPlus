@@ -45,7 +45,12 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
 const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
-const STEPWISE_SCRIPT: &str = include_str!("../../../assets/inject/stepwise-inject.js");
+const STEPWISE_SCRIPT: &str = concat!(
+    "(() => {\n",
+    include_str!("../../../assets/inject/floating-panel/core/index.js"),
+    include_str!("../../../assets/inject/floating-panel-inject.js"),
+    "\n})();\n",
+);
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
 const DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface";
 
