@@ -211,6 +211,7 @@ type BackendSettings = {
   providerSyncSavedProviders: string[];
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
+  ccsDbPath: string;
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
@@ -650,6 +651,8 @@ type CcsProviderImport = {
 
 type CcsProvidersResult = CommandResult<{
   dbPath: string;
+  configuredDbPath: string;
+  fallbackReason: string | null;
   providers: CcsProviderImport[];
 }>;
 
@@ -1005,6 +1008,7 @@ const defaultSettings: BackendSettings = {
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
+  ccsDbPath: "",
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
   codexAppPluginMarketplaceUnlock: true,
@@ -1477,6 +1481,29 @@ export function App() {
       showResultNotice(t("cc-switch 导入"), result);
       await refreshCcsProviders(true);
     }
+  };
+
+  const chooseCcsDbPath = async () => {
+    let selected: unknown;
+    try {
+      selected = await open({
+        directory: false,
+        multiple: false,
+        title: t("选择 cc-switch 数据库"),
+        filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
+      });
+    } catch (error) {
+      showNotice(t("cc-switch 数据库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+      return;
+    }
+    if (typeof selected !== "string" || !selected.trim()) return;
+    const saved = await saveSettingsValue({ ...settingsForm, ccsDbPath: selected.trim() }, true);
+    if (saved) await refreshCcsProviders(false);
+  };
+
+  const resetCcsDbPath = async () => {
+    const saved = await saveSettingsValue({ ...settingsForm, ccsDbPath: "" }, true);
+    if (saved) await refreshCcsProviders(false);
   };
 
   const refreshPendingProviderImport = async (silent = true) => {
@@ -3344,6 +3371,8 @@ export function App() {
       removeEnvConflicts,
       refreshCcsProviders,
       importCcsProviders,
+      chooseCcsDbPath,
+      resetCcsDbPath,
       refreshLiveContextEntries,
       syncLiveContextEntries,
       refreshAds,
@@ -3761,6 +3790,8 @@ type Actions = {
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
   importCcsProviders: () => Promise<void>;
+  chooseCcsDbPath: () => Promise<void>;
+  resetCcsDbPath: () => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;
@@ -4973,6 +5004,30 @@ function RelayScreen({
                     <span>{ccsProviderSummary(ccsProviders)}</span>
                   </button>
                   <button
+                    className="third-party-import-action"
+                    onClick={() => {
+                      setThirdPartyImportOpen(false);
+                      void actions.chooseCcsDbPath();
+                    }}
+                    type="button"
+                  >
+                    <FileCode2 className="h-4 w-4" />
+                    {t("选择 cc-switch 数据库")}
+                  </button>
+                  <button
+                    className="third-party-import-action"
+                    disabled={!normalized.ccsDbPath}
+                    onClick={() => {
+                      setThirdPartyImportOpen(false);
+                      void actions.resetCcsDbPath();
+                    }}
+                    type="button"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    {t("恢复默认数据库")}
+                  </button>
+                  <button
+                    className="third-party-import-action"
                     onClick={() => void actions.refreshCcsProviders()}
                     type="button"
                   >
@@ -11048,6 +11103,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    ccsDbPath: (settings.ccsDbPath || "").trim(),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
@@ -11186,7 +11242,8 @@ function ccsProviderSummary(result: CcsProvidersResult | null): string {
   if (!result) return t("读取 ~/.cc-switch/cc-switch.db");
   if (!isSuccessStatus(result.status)) return result.message || t("读取 cc-switch 供应商失败。");
   const count = result.providers.length;
-  return count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
+  const summary = count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
+  return result.fallbackReason ? `${summary}；${result.fallbackReason}` : summary;
 }
 
 function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
