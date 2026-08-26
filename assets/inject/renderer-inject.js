@@ -4611,7 +4611,10 @@
     if (name === "openai-curated") return "OpenAI插件2(Codex++)";
     if (name === "openai-primary-runtime") return "OpenAI插件3(Codex++)";
     if (name === "openai-api-curated") return "OpenAI插件4(Codex++)";
-    if (name === "openai-curated-remote") return "OpenAI插件5(Codex++)";
+    // 内置插件包的注册名。曾经叫 openai-curated-remote，但那是 codex 的保留名，
+    // 注册在它下面会被静默忽略，已改为 codex-plus-curated；旧名保留以兼容
+    // 尚未升级的配置。
+    if (name === "codex-plus-curated" || name === "openai-curated-remote") return "OpenAI插件5(Codex++)";
     return fallback;
   }
 
@@ -10399,10 +10402,41 @@
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
   }
 
+  /**
+   * 侧边栏入口的启动补扫。
+   *
+   * 注入永远早于 Codex 把左侧面板渲染出来：注入那一刻 readyState 已是 complete，
+   * 但 aside.app-shell-left-panel 还不存在（实测 anyNav: 0），所以首次 scan 里的
+   * installCodexPlusSidebarNavigation 必然走 `if (!navigation) return`。
+   *
+   * 之后全靠 MutationObserver 观察到侧边栏挂载再补一次，实测要 2.6~3.1 秒。
+   * 但那把入口的出现押在了单次 DOM 变更上——那次变更若被 shouldScheduleScan
+   * 过滤掉，就没有下一次触发，入口会一直缺失到用户手动操作产生新的变更为止。
+   *
+   * 这里加一个不依赖 DOM 事件的有界重试作为兜底：插上就停，超时就放弃，
+   * 不留常驻定时器，也不影响 observer 那条正常路径。
+   */
+  function scheduleSidebarNavStartupRetry() {
+    clearInterval(window.__codexPlusSidebarNavRetryTimer);
+    let attempts = 0;
+    window.__codexPlusSidebarNavRetryTimer = setInterval(() => {
+      attempts += 1;
+      if (document.getElementById(codexPlusSidebarNavId) || attempts > 20) {
+        clearInterval(window.__codexPlusSidebarNavRetryTimer);
+        window.__codexPlusSidebarNavRetryTimer = null;
+        return;
+      }
+      try {
+        installCodexPlusSidebarNavigation();
+      } catch {}
+    }, 300);
+  }
+
   void loadBackendSettingsForStartup();
   installUpstreamBranchDropdownAdapter();
   installUpstreamWorktreeNativeAdapter();
   scan();
+  scheduleSidebarNavStartupRetry();
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
