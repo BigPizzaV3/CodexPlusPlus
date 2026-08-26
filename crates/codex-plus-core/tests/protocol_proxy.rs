@@ -469,6 +469,188 @@ fn responses_request_preserves_reasoning_content_for_thinking_followup() {
     assert_eq!(converted["messages"][2]["role"], "tool");
 }
 
+// #1860 错误 1：孤立的 function_call（后面没有 function_call_output）不能变成
+// assistant.tool_calls，否则 DeepSeek 报 "must be followed by tool messages"。
+#[test]
+fn responses_request_drops_orphaned_function_call_without_output() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "max_output_tokens": 8,
+        "input": [
+            { "role": "user", "content": "ping" },
+            { "role": "assistant", "content": [{ "type": "output_text", "text": "ok" }] },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            },
+            { "role": "user", "content": "ping" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    for (index, message) in messages.iter().enumerate() {
+        let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        // 每个 tool_call 后面都必须紧跟对应的 tool 消息
+        for (offset, tool_call) in tool_calls.iter().enumerate() {
+            let id = tool_call["id"].as_str().unwrap();
+            let follower = messages.get(index + 1 + offset);
+            assert_eq!(
+                follower
+                    .and_then(|m| m.get("role"))
+                    .and_then(|r| r.as_str()),
+                Some("tool"),
+                "tool_call {id} 后面没有 tool 消息：{converted:#}"
+            );
+            assert_eq!(
+                follower
+                    .and_then(|m| m.get("tool_call_id"))
+                    .and_then(|r| r.as_str()),
+                Some(id),
+                "tool_call {id} 没有匹配的 tool_call_id：{converted:#}"
+            );
+        }
+    }
+}
+
+// #1860 错误 2：thinking 模式下带 tool_calls 的 assistant 消息必须回传 reasoning_content。
+#[test]
+fn responses_request_attaches_reasoning_content_to_tool_call_message() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "max_output_tokens": 8,
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            },
+            { "type": "function_call_output", "call_id": "call_t1", "output": "hi" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_call_message = messages
+        .iter()
+        .find(|m| m.get("tool_calls").is_some())
+        .unwrap_or_else(|| panic!("没有 tool_calls 消息：{converted:#}"));
+    let has_content = tool_call_message
+        .get("content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| !c.is_empty());
+    let has_reasoning = tool_call_message
+        .get("reasoning_content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| !c.is_empty());
+    assert!(
+        has_content || has_reasoning,
+        "带 tool_calls 且 content 为空的 assistant 消息必须有 reasoning_content：{converted:#}"
+    );
+}
+
+// 历史尾部的 tool_call 是「output 还没回来」的正常形态，必须保留。
+#[test]
+fn responses_request_keeps_trailing_unanswered_tool_call() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_tail",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"echo hi\"}"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let last = converted["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["tool_calls"][0]["id"], "call_tail");
+}
+
+// 部分应答：只摘掉没被应答的那个，已应答的保留。
+#[test]
+fn responses_request_strips_only_unanswered_parallel_tool_calls() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "function_call",
+                "call_id": "call_ok",
+                "name": "answered_tool",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_lost",
+                "name": "abandoned_tool",
+                "arguments": "{}"
+            },
+            { "type": "function_call_output", "call_id": "call_ok", "output": "done" },
+            { "role": "user", "content": "continue" }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .unwrap();
+    let calls = assistant["tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1, "只应保留被应答的 tool_call：{converted:#}");
+    assert_eq!(calls[0]["id"], "call_ok");
+    // 被摘掉的调用降级成文本保留，不静默丢失
+    let content = assistant["content"].as_str().unwrap();
+    assert!(
+        content.contains("call_lost") && content.contains("abandoned_tool"),
+        "被摘掉的调用应降级为文本：{content}"
+    );
+}
+
+// 已有真实 reasoning 时不能被占位文本覆盖。
+#[test]
+fn responses_request_keeps_real_reasoning_content_over_placeholder() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "role": "user", "content": "ping" },
+            {
+                "type": "reasoning",
+                "summary": [{ "type": "summary_text", "text": "Need to run echo." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_t1",
+                "name": "shell_command",
+                "arguments": "{}"
+            },
+            { "type": "function_call_output", "call_id": "call_t1", "output": "hi" }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .unwrap();
+    assert_eq!(assistant["reasoning_content"], "Need to run echo.");
+}
+
 #[test]
 fn responses_request_merges_reasoning_text_and_tool_calls_like_ccx() {
     let converted = responses_to_chat_completions(json!({
@@ -1439,9 +1621,36 @@ data: [DONE]
         1
     );
     assert!(converted.contains("\"type\":\"custom_tool_call\""));
+    assert!(converted.contains("\"id\":\"ctc_call_custom\""));
+    assert!(converted.contains("\"item_id\":\"ctc_call_custom\""));
+    assert!(!converted.contains("\"id\":\"fc_call_custom\""));
+    assert!(!converted.contains("\"item_id\":\"fc_call_custom\""));
     assert!(converted.contains("\"name\":\"exec\""));
     assert!(converted.contains("\"input\":\"ls -la\""));
     assert!(converted.contains("data: [DONE]"));
+}
+
+#[test]
+fn chat_sse_waits_for_custom_tool_name_before_assigning_item_id() {
+    let converted = chat_sse_to_responses_sse_with_request(
+        r#"data: {"id":"chatcmpl_custom_split","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom_split","type":"function"}]}}]}
+
+data: {"id":"chatcmpl_custom_split","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"exec","arguments":"{\"input\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        &json!({
+            "model": "gpt-5.4",
+            "tools": [{ "type": "custom", "name": "exec" }]
+        }),
+    );
+
+    assert!(converted.contains("\"type\":\"custom_tool_call\""));
+    assert!(converted.contains("\"id\":\"ctc_call_custom_split\""));
+    assert!(converted.contains("\"item_id\":\"ctc_call_custom_split\""));
+    assert!(!converted.contains("fc_call_custom_split"));
+    assert!(converted.contains("\"input\":\"pwd\""));
 }
 
 #[test]
@@ -1708,6 +1917,44 @@ async fn model_route_can_rewrite_only_the_target_model_name() {
     let mut expected = request;
     expected["model"] = json!("provider-luna-v2");
     assert_eq!(upstream_body, expected);
+}
+
+#[tokio::test]
+async fn responses_proxy_normalizes_legacy_custom_tool_item_ids_only() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "id": "fc_legacy_custom_item",
+                "call_id": "call_legacy_custom",
+                "name": "exec",
+                "input": "pwd"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": "continue"
+            }
+        ],
+        "stream": false
+    });
+    let settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, upstream_body) = target_server.await.unwrap();
+
+    assert_eq!(upstream_body["input"][0]["id"], "ctc_legacy_custom_item");
+    assert_eq!(upstream_body["input"][0]["call_id"], "call_legacy_custom");
+    assert_eq!(upstream_body["input"][1]["type"], "message");
 }
 
 #[tokio::test]

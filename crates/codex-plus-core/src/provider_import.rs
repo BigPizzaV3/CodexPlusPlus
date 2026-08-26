@@ -195,8 +195,6 @@ fn relay_profile_from_request(
         config_contents: request.config_contents.clone(),
         auth_contents: request.auth_contents.clone(),
         use_common_config: true,
-        context_selection: crate::settings::RelayContextSelection::default(),
-        context_selection_initialized: false,
         context_window: String::new(),
         auto_compact_limit: String::new(),
         model_insert_mode: Default::default(),

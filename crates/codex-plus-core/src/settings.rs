@@ -19,27 +19,6 @@ pub enum LaunchMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RelayContextSelection {
-    #[serde(default)]
-    pub mcp_servers: Vec<String>,
-    #[serde(default)]
-    pub skills: Vec<String>,
-    #[serde(default)]
-    pub plugins: Vec<String>,
-}
-
-impl Default for RelayContextSelection {
-    fn default() -> Self {
-        Self {
-            mcp_servers: Vec::new(),
-            skills: Vec::new(),
-            plugins: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
     pub id: String,
     pub name: String,
@@ -71,10 +50,6 @@ pub struct RelayProfile {
     pub auth_contents: String,
     #[serde(rename = "useCommonConfig", default = "default_true")]
     pub use_common_config: bool,
-    #[serde(rename = "contextSelection", default)]
-    pub context_selection: RelayContextSelection,
-    #[serde(rename = "contextSelectionInitialized", default)]
-    pub context_selection_initialized: bool,
     #[serde(rename = "contextWindow", default)]
     pub context_window: String,
     #[serde(rename = "autoCompactLimit", default)]
@@ -199,8 +174,6 @@ impl Default for RelayProfile {
             config_contents: String::new(),
             auth_contents: String::new(),
             use_common_config: true,
-            context_selection: RelayContextSelection::default(),
-            context_selection_initialized: false,
             context_window: String::new(),
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
@@ -660,8 +633,6 @@ impl BackendSettings {
                 config_contents: String::new(),
                 auth_contents: String::new(),
                 use_common_config: true,
-                context_selection: RelayContextSelection::default(),
-                context_selection_initialized: false,
                 context_window: String::new(),
                 auto_compact_limit: String::new(),
                 model_insert_mode: RelayModelInsertMode::Patch,
@@ -713,8 +684,6 @@ impl BackendSettings {
             config_contents: String::new(),
             auth_contents: String::new(),
             use_common_config: true,
-            context_selection: RelayContextSelection::default(),
-            context_selection_initialized: false,
             context_window: String::new(),
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
@@ -1573,7 +1542,9 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         extracted_context.as_str(),
     ]);
     settings.relay_common_config_contents = crate::relay_config::normalize_config_text(&common);
-    settings.relay_context_config_contents = crate::relay_config::normalize_config_text(&context);
+    settings.relay_context_config_contents = crate::relay_config::strip_legacy_skill_tables(
+        &crate::relay_config::normalize_config_text(&context),
+    );
     for profile in &mut settings.relay_profiles {
         let _ = crate::relay_config::normalize_relay_profile_for_storage(profile);
     }
@@ -1855,7 +1826,6 @@ mod tests {
         assert_eq!(invalid.codex_app_stepwise_protocol, "chat_completions");
     }
 
-
     #[test]
     fn settings_deserialize_ignores_removed_cli_wrapper_keys() {
         let settings: BackendSettings = serde_json::from_str(
@@ -1930,11 +1900,7 @@ mod tests {
     fn relay_profile_context_fields_default_to_empty() {
         let profile = RelayProfile::default();
 
-        assert!(profile.context_selection.mcp_servers.is_empty());
-        assert!(profile.context_selection.skills.is_empty());
-        assert!(profile.context_selection.plugins.is_empty());
         assert!(profile.use_common_config);
-        assert!(!profile.context_selection_initialized);
         assert!(profile.context_window.is_empty());
         assert!(profile.auto_compact_limit.is_empty());
         assert_eq!(profile.model_insert_mode, RelayModelInsertMode::Patch);
@@ -1968,6 +1934,9 @@ mod tests {
         assert_eq!(saved["modelRoutes"][0]["targetModel"], "provider-luna");
     }
 
+    /// 旧版按供应商勾选上下文条目的 `contextSelection` / `contextSelectionInitialized`
+    /// 已被上下文条目自身的 `enabled` 开关取代。历史 settings.json 里仍会带着这两个键，
+    /// 反序列化必须容忍它们，否则老用户一升级配置就读不出来。
     #[test]
     fn relay_profile_context_fields_deserialize_from_camel_case() {
         let profile: RelayProfile = serde_json::from_str(
@@ -1989,11 +1958,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(profile.context_selection.mcp_servers, vec!["context7"]);
-        assert_eq!(profile.context_selection.skills, vec!["writer"]);
-        assert_eq!(profile.context_selection.plugins, vec!["local"]);
         assert!(!profile.use_common_config);
-        assert!(profile.context_selection_initialized);
         assert_eq!(profile.context_window, "200000");
         assert_eq!(profile.auto_compact_limit, "160000");
         assert_eq!(profile.model_insert_mode, RelayModelInsertMode::Patch);
@@ -2404,7 +2369,6 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(saved["codexAppStepwiseProtocol"], "chat_completions");
     }
 
-
     #[test]
     fn settings_store_save_load_roundtrip_preserves_aggregate_relay_settings() {
         let dir = temp_dir();
@@ -2695,7 +2659,10 @@ experimental_bearer_token = "sk-existing""#
             .unwrap();
 
         assert!(updated.weixin_connect_enabled);
-        assert_eq!(updated.weixin_connect_base_url, "https://ilink.example.test");
+        assert_eq!(
+            updated.weixin_connect_base_url,
+            "https://ilink.example.test"
+        );
         assert_eq!(updated.weixin_connect_token, "token");
         assert_eq!(updated.weixin_connect_account_id, "bot-1");
         assert_eq!(updated.weixin_connect_allow_from, "user@im.wechat");
