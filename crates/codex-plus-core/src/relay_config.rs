@@ -1431,7 +1431,84 @@ pub fn normalize_config_text(contents: &str) -> String {
     normalize_duplicate_toml_text(contents)
 }
 
+/// 把可能含重复表头/重复根键的文本，折叠成一份合法、去重的 TOML。
+///
+/// 历史实现是逐行文本去重：按表头整行字符串匹配，撞见第二次出现的 `[header]`
+/// 就把该表体整段丢弃。这在语义上是错的——`[mcp_servers.node_repl]`（带正确的
+/// `.env` 子表）和其后一个裸的 `[mcp_servers]`（空表头，来自历史脚本/手改残留）
+/// 是两个不同的表头字符串，行级去重完全看不到它们其实是同一棵 TOML 树上的父子
+/// 关系；反过来，若两次出现的是同一个表头但各自只写了部分字段，行级去重会把后一
+/// 份连同它独有的字段整段丢弃，而不是把两份合并。真实故障（Codex `config.toml`
+/// 反复复现 `invalid transport`）就是这条路径把裸 env 变量和 `.env` 子表的残留
+/// 一起原样保留进了最终文件。
+///
+/// 改成按顶层表头切块 + 用已有的 `merge_toml_table_like` 做语义合并：每块单独
+/// 解析成 `DocumentMut`（块内容本身必须是合法 TOML），后出现的块合并进先出现的
+/// 同名表（标量后写覆盖前写，子表递归合并、不清空），根键重复时也是后写覆盖。
+/// 任何一块解析失败就说明输入本身已经坏到不是逐块可解析的程度，退回历史的逐行
+/// 丢弃策略，不让这次修复反而让原本能跑的输入报错。
 fn normalize_duplicate_toml_text(contents: &str) -> String {
+    match merge_duplicate_toml_blocks(contents) {
+        Some(merged) => normalize_optional_toml(merged),
+        None => normalize_duplicate_toml_text_line_fallback(contents),
+    }
+}
+
+/// 按不带前导空白的 `[table]` / `[[array_table]]` 行、以及根级重复键，切成若干
+/// 独立可解析的 TOML 片段，再逐块 parse 后语义合并。
+///
+/// 只按表头切块不够：`model = "a"\nmodel = "b"\n` 两行根键都落在同一个块里，
+/// 直接喂给 `DocumentMut::parse` 会因为 TOML 语法本身不允许根级重复键而整体
+/// 解析失败。所以还要在「当前块的根级部分已经出现过这个 key」时，先切出一个
+/// 新块，让后一次赋值单独成块参与合并（合并语义是后写覆盖前写）。
+fn merge_duplicate_toml_blocks(contents: &str) -> Option<DocumentMut> {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_in_root = true;
+    let mut current_root_keys: HashSet<String> = HashSet::new();
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let is_new_table_header = trimmed.starts_with('[') && trimmed.ends_with(']');
+
+        if is_new_table_header {
+            if !current.trim().is_empty() {
+                blocks.push(std::mem::take(&mut current));
+            }
+            current_in_root = false;
+            current_root_keys.clear();
+        } else if current_in_root && !trimmed.is_empty() && !trimmed.starts_with('#') {
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim().to_string();
+                if !key.is_empty() && !current_root_keys.insert(key) {
+                    // 同一个根键在当前块里再次出现：先把当前块切出去，
+                    // 让这一行作为新块的第一行，参与合并时以「后写」身份覆盖前值。
+                    if !current.trim().is_empty() {
+                        blocks.push(std::mem::take(&mut current));
+                    }
+                    current_root_keys.clear();
+                }
+            }
+        }
+
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.trim().is_empty() {
+        blocks.push(current);
+    }
+
+    let mut merged = DocumentMut::new();
+    for block in blocks {
+        let block_doc: DocumentMut = block.parse().ok()?;
+        merge_toml_table_like(merged.as_table_mut(), block_doc.as_table());
+    }
+    Some(merged)
+}
+
+/// 逐块合并失败时的保底路径：原历史实现，逐行文本去重（丢弃后出现的重复表头/
+/// 根键），保证至少不比修复前更差。
+fn normalize_duplicate_toml_text_line_fallback(contents: &str) -> String {
     let mut seen_root_keys = HashSet::new();
     let mut seen_headers = HashSet::new();
     let mut kept = Vec::new();
@@ -3089,6 +3166,64 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归真实故障：`[mcp_servers.node_repl]`（带正确的 `.env` 子表）之后又混入
+    /// 一个裸的空 `[mcp_servers]` 表头。行级去重会把两者当成互不相干的字符串，
+    /// 原样保留进输出——空表头在 TOML 语义上会与已有子表冲突，Codex 加载时报
+    /// `invalid transport`。语义合并后 `mcp_servers.node_repl` 的字段必须完整
+    /// 保留，且不能再出现裸的 `[mcp_servers]` 空表头。
+    #[test]
+    fn normalize_duplicate_toml_text_merges_child_table_with_later_empty_parent_header() {
+        let contents = "\
+[mcp_servers.node_repl]
+command = \"node\"
+
+[mcp_servers.node_repl.env]
+CODEX_HOME = \"/home/user/.codex\"
+
+[mcp_servers]
+";
+
+        let normalized = normalize_duplicate_toml_text(contents);
+        let doc = normalized.parse::<DocumentMut>().expect("must stay valid TOML");
+
+        assert_eq!(
+            doc["mcp_servers"]["node_repl"]["command"].as_str(),
+            Some("node")
+        );
+        assert_eq!(
+            doc["mcp_servers"]["node_repl"]["env"]["CODEX_HOME"].as_str(),
+            Some("/home/user/.codex")
+        );
+    }
+
+    /// 同一个表头出现两次、各自只写了部分字段：语义合并要拼成一份完整的表，
+    /// 而不是按旧的行级去重丢弃第二次出现的整段内容。
+    #[test]
+    fn normalize_duplicate_toml_text_merges_fields_from_repeated_same_header() {
+        let contents = "\
+[mcp_servers.node_repl]
+command = \"node\"
+
+[mcp_servers.node_repl]
+cwd = \"/tmp\"
+";
+
+        let normalized = normalize_duplicate_toml_text(contents);
+        let doc = normalized.parse::<DocumentMut>().expect("must stay valid TOML");
+
+        assert_eq!(doc["mcp_servers"]["node_repl"]["command"].as_str(), Some("node"));
+        assert_eq!(doc["mcp_servers"]["node_repl"]["cwd"].as_str(), Some("/tmp"));
+    }
+
+    /// 重复根键：后写覆盖前写，与 TOML 对同名键重复赋值时的直觉一致。
+    #[test]
+    fn normalize_duplicate_toml_text_later_root_key_wins() {
+        let contents = "model = \"a\"\nmodel = \"b\"\n";
+        let normalized = normalize_duplicate_toml_text(contents);
+        let doc = normalized.parse::<DocumentMut>().expect("must stay valid TOML");
+        assert_eq!(doc["model"].as_str(), Some("b"));
+    }
 
     #[test]
     fn merge_common_config_preserves_explicit_profile_goals_override() {
