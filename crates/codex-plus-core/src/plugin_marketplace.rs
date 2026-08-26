@@ -34,6 +34,10 @@ const CODEX_PLUS_MARKETPLACE_ZIP: &[u8] =
 pub fn ensure_openai_curated_marketplace_config(home: &Path) -> anyhow::Result<bool> {
     let mut changed = cleanup_managed_reserved_marketplace_configs(home)?;
     if let Some(remote_marketplace_root) = local_openai_curated_remote_marketplace_root(home)? {
+        // 必须和写 config 一起做：老用户目录早就解压好了、不会再走安装分支，
+        // 里面的 marketplace.json 还是旧的保留名。只改 config 不改磁盘，两边名字
+        // 对不上，codex 照样整个市场不认 —— 表现和改名前一样，插件一个都列不出来。
+        rewrite_marketplace_name(&remote_marketplace_root)?;
         changed |=
             ensure_marketplace_configs(home, &[CODEX_PLUS_MARKETPLACE], &remote_marketplace_root)?;
     }
@@ -1249,6 +1253,44 @@ source = '\\?\{}'
     }
 
     /// 内置 zip 里自带的是保留名，解压后必须被改写，否则 codex 加载不到。
+    /// 启动路径也必须改写磁盘上的 name，不能只写 config。
+    ///
+    /// 02a23e1 只在 repair_remote_plugin_marketplace（用户手动点「修复」才会调）
+    /// 里做了迁移，正常启动走的 ensure_openai_curated_marketplace_config 没做，
+    /// 于是老用户升级后 config 是新名、磁盘还是旧名，两边对不上 codex 整个市场
+    /// 不认——表现和改名前完全一样，插件一个都装不了（#1993）。
+    #[test]
+    fn startup_path_rewrites_a_legacy_marketplace_name_on_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_remote_marketplace(home);
+        // 还原成老用户的状态：磁盘上是旧的保留名
+        let manifest = home
+            .join(".tmp")
+            .join("plugins-remote")
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json");
+        let raw = std::fs::read_to_string(&manifest).unwrap();
+        assert!(
+            raw.contains(LEGACY_REMOTE_MARKETPLACE),
+            "前置条件：磁盘应为旧名"
+        );
+
+        ensure_openai_curated_marketplace_config(home).unwrap();
+
+        let rewritten: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            rewritten["name"].as_str(),
+            Some(CODEX_PLUS_MARKETPLACE),
+            "启动路径没有改写磁盘上的 marketplace 名"
+        );
+        // config 与磁盘必须一致，否则 codex 不认
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(config.contains(&format!("[marketplaces.{CODEX_PLUS_MARKETPLACE}]")));
+    }
+
     #[test]
     fn extracted_marketplace_name_is_rewritten_off_the_reserved_name() {
         let temp = tempfile::tempdir().unwrap();
