@@ -44,6 +44,29 @@ pub fn delete_local_from_paths(
         result.undo_token = Some(json!(backup_tokens).to_string());
         result.backup_path = None;
     }
+    // 纯 API 模式（model_provider = "custom"）下 threads 表是空的，上面每个库都查不到
+    // 记录，于是直接返回「Thread not found in local storage」而会话行仍留在列表里
+    // ——因为 UI 读的是 session_index.jsonl，那条记录没人清（#1998）。
+    //
+    // 数据库里没有不代表索引里没有，这里退一步清索引：真清掉了就算删除成功，
+    // 索引里也没有才是真的找不到。
+    if deleted_count == 0
+        && matches!(result.status, DeleteStatus::Failed)
+        && let Some(home) = codex_home
+    {
+        let thread_id = normalize_codex_thread_id(&session.session_id);
+        match crate::provider_sync::remove_session_index_entry(home, &thread_id) {
+            Ok(removed) if removed > 0 => {
+                result.status = DeleteStatus::LocalDeleted;
+                result.message = format!("已从 session_index.jsonl 清理 {removed} 条记录");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                result.message =
+                    format!("{}；session_index.jsonl 清理失败：{error}", result.message);
+            }
+        }
+    }
     result
 }
 

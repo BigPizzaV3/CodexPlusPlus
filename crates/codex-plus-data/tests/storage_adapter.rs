@@ -492,6 +492,78 @@ fn delete_codex_thread_sqlite_dir_layout_removes_session_index_entry_and_undo_re
     assert_eq!(thread_count(&db_path, "t1"), 1);
 }
 
+/// 纯 API 模式（model_provider = "custom"）下 threads 表是空的，删除会话时每个
+/// 数据库都查不到记录，于是报「Thread not found in local storage」而会话行仍留在
+/// 列表里——因为 UI 读的是 session_index.jsonl，那条记录没人清（#1998）。
+///
+/// 数据库里没有不代表索引里没有：能从索引清掉就算删除成功。
+#[test]
+fn delete_local_from_paths_falls_back_to_session_index_when_no_database_row_exists() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("codex-home");
+    fs::create_dir_all(&home).unwrap();
+    // 空库：模拟 API 密钥模式下 threads 表没有记录
+    let empty_db = tmp.path().join("empty.sqlite");
+    let unrelated_rollout = tmp.path().join("unrelated.jsonl");
+    fs::write(&unrelated_rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&empty_db, &unrelated_rollout);
+    // 但索引里有这条会话
+    fs::write(
+        home.join("session_index.jsonl"),
+        "{\"id\":\"api-only\",\"thread_name\":\"A\",\"updated_at\":\"2026-08-26T00:00:00Z\"}\n\
+{\"id\":\"keep\",\"thread_name\":\"B\",\"updated_at\":\"2026-08-26T00:00:00Z\"}\n",
+    )
+    .unwrap();
+
+    let result = delete_local_from_paths(
+        vec![empty_db.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        &session("api-only", "Codex Thread"),
+        Some(home.as_path()),
+    );
+
+    assert_eq!(
+        result.status,
+        DeleteStatus::LocalDeleted,
+        "{}",
+        result.message
+    );
+    let index_text = fs::read_to_string(home.join("session_index.jsonl")).unwrap();
+    assert!(!index_text.contains("api-only"), "目标会话应从索引移除");
+    assert!(index_text.contains("keep"), "其它会话不该被误删");
+}
+
+/// 数据库和索引里都没有，才是真的找不到——不能因为加了兜底就把所有失败都吞掉。
+#[test]
+fn delete_local_from_paths_still_fails_when_neither_database_nor_index_has_the_thread() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("codex-home");
+    fs::create_dir_all(&home).unwrap();
+    let empty_db = tmp.path().join("empty.sqlite");
+    let unrelated_rollout = tmp.path().join("unrelated.jsonl");
+    fs::write(&unrelated_rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&empty_db, &unrelated_rollout);
+    fs::write(
+        home.join("session_index.jsonl"),
+        "{\"id\":\"other\",\"thread_name\":\"C\",\"updated_at\":\"2026-08-26T00:00:00Z\"}\n",
+    )
+    .unwrap();
+
+    let result = delete_local_from_paths(
+        vec![empty_db],
+        BackupStore::new(tmp.path().join("backups")),
+        &session("missing", "Codex Thread"),
+        Some(home.as_path()),
+    );
+
+    assert_eq!(result.status, DeleteStatus::Failed);
+    assert!(
+        fs::read_to_string(home.join("session_index.jsonl"))
+            .unwrap()
+            .contains("other")
+    );
+}
+
 #[test]
 fn delete_local_from_paths_removes_duplicate_threads_from_all_databases() {
     let tmp = tempdir().unwrap();
