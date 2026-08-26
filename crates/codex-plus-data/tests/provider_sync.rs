@@ -2651,7 +2651,7 @@ fn provider_sync_recovers_lock_owned_by_dead_process() {
             .unwrap()
             .contains("provider_sync.stale_lock_recovered")
     );
-    assert!(fs::read_dir(home.join("tmp")).unwrap().next().is_none());
+    assert!(home.join("tmp/provider-sync.lifecycle.lock").is_file());
 }
 
 #[test]

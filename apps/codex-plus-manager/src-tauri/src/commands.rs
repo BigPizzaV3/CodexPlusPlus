@@ -629,8 +629,40 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    let Ok(_guard) = relay_switch_mutex().lock() else {
+pub async fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    let error_payload = request.clone();
+    match tauri::async_runtime::spawn_blocking(move || restart_codex_plus_blocking(request)).await {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("重启 Codex++ 后台任务失败：{error}"),
+            json!({
+                "debugPort": error_payload.debug_port,
+                "helperPort": error_payload.helper_port,
+                "syncActiveRelay": error_payload.sync_active_relay
+            }),
+        ),
+    }
+}
+
+fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
+    let _restart_guard = match try_acquire_restart_guard() {
+        Ok(guard) => guard,
+        Err(message) => return failed(message, json!({})),
+    };
+    let provider_sync_guard = match ensure_provider_sync_is_idle_before_stop() {
+        Ok(guard) => guard,
+        Err(message) => {
+            return failed(
+                &message,
+                json!({
+                    "debugPort": request.debug_port,
+                    "helperPort": request.helper_port,
+                    "syncActiveRelay": request.sync_active_relay
+                }),
+            );
+        }
+    };
+    let Ok(_relay_guard) = relay_switch_mutex().lock() else {
         return failed("供应商切换锁已损坏，请重启管理器后再试。", json!({}));
     };
     let settings = if request.sync_active_relay {
@@ -649,16 +681,6 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     } else {
         None
     };
-    if let Err(message) = ensure_provider_sync_is_idle_before_stop() {
-        return failed(
-            &message,
-            json!({
-                "debugPort": request.debug_port,
-                "helperPort": request.helper_port,
-                "syncActiveRelay": request.sync_active_relay
-            }),
-        );
-    }
     codex_plus_core::watcher::stop_launcher_processes_and_wait();
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
     let home = codex_plus_core::relay_config::default_codex_home_dir();
@@ -687,7 +709,19 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), spawn_silent_launcher) {
+    let spawn_after_guard_release = move |request: &LaunchRequest| {
+        spawn_after_provider_sync_guard_release(
+            provider_sync_guard,
+            request,
+            spawn_silent_launcher,
+        )
+    };
+    match restart_codex_plus_after_stop(
+        &request,
+        &home,
+        settings.as_ref(),
+        spawn_after_guard_release,
+    ) {
         Ok(()) => CommandResult {
             status: "accepted".to_string(),
             message: "Codex 已请求重启，启动任务正在后台运行。".to_string(),
@@ -746,6 +780,20 @@ where
         return Err(error);
     }
     Ok(())
+}
+
+fn spawn_after_provider_sync_guard_release<F>(
+    guard: codex_plus_data::ProviderSyncLifecycleGuard,
+    request: &LaunchRequest,
+    spawn: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(&LaunchRequest) -> anyhow::Result<()>,
+{
+    guard
+        .release()
+        .map_err(|error| anyhow::anyhow!("释放历史会话同步保护锁失败，未启动 Codex++：{error}"))?;
+    spawn(request)
 }
 
 #[derive(Debug)]
@@ -5507,6 +5555,23 @@ fn relay_switch_mutex() -> &'static Mutex<()> {
     RELAY_SWITCH_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn restart_mutex() -> &'static Mutex<()> {
+    static RESTART_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    RESTART_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn try_acquire_restart_guard() -> Result<std::sync::MutexGuard<'static, ()>, &'static str> {
+    match restart_mutex().try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            Err("已有 Codex++ 重启任务正在进行，请稍后再试。")
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            Err("重启任务锁已损坏，请重启管理器后再试。")
+        }
+    }
+}
+
 fn empty_context_entries() -> codex_plus_core::relay_config::CodexContextEntries {
     codex_plus_core::relay_config::CodexContextEntries {
         mcp_servers: Vec::new(),
@@ -5914,29 +5979,44 @@ fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
 const PROVIDER_SYNC_WAIT_TIMEOUT_MS: u64 = 30_000;
 const PROVIDER_SYNC_WAIT_INTERVAL_MS: u64 = 200;
 
-/// 等待正在执行的 provider sync 结束。
+#[derive(Debug)]
+enum ProviderSyncWaitFailure {
+    Busy(codex_plus_data::ProviderSyncLockState),
+    Acquire(std::io::Error),
+}
+
+/// 等待并原子取得 provider-sync 生命周期 guard。
 ///
-/// launcher 在同步期间持有 `~/.codex/tmp/provider-sync.lock`，而这一步之后调用方会
-/// `TerminateProcess` 强杀 launcher。被强杀的进程来不及 `release_lock()`，会留下残留锁，
-/// 使后续启动全部跳过同步，用户侧表现为历史会话消失或「修复 0 个会话」（issue #1901）。
-/// 因此这里先等同步自然结束；等不到就拒绝本次重启，而不是把它打断。
-fn wait_for_idle_provider_sync(
+/// guard 同时持有 OS 文件锁与兼容旧版本的目录锁。取得后，旧/新 launcher 都不能在
+/// 最终检查和停止进程之间启动新的 provider sync，关闭先检查后强杀的竞态（issue #1901）。
+/// 等不到就拒绝本次重启，而不是把同步中的 launcher 打断。
+fn wait_for_idle_provider_sync<T>(
+    try_acquire: impl Fn() -> std::io::Result<T>,
     inspect: impl Fn() -> codex_plus_data::ProviderSyncLockState,
     sleep: impl Fn(u64),
     timeout_ms: u64,
-) -> Result<(), codex_plus_data::ProviderSyncLockState> {
+) -> Result<T, ProviderSyncWaitFailure> {
     use codex_plus_data::ProviderSyncLockState;
 
     let mut waited_ms = 0;
     loop {
-        // Stale 锁的持有者已经退出，下一次 acquire_lock 会自动回收它，不必等。
-        match inspect() {
-            ProviderSyncLockState::Free | ProviderSyncLockState::Stale { .. } => return Ok(()),
-            state => {
+        match try_acquire() {
+            Ok(guard) => return Ok(guard),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
                 if waited_ms >= timeout_ms {
-                    return Err(state);
+                    let state = match inspect() {
+                        ProviderSyncLockState::Free => ProviderSyncLockState::Indeterminate,
+                        state => state,
+                    };
+                    return Err(ProviderSyncWaitFailure::Busy(state));
                 }
             }
+            Err(error) => return Err(ProviderSyncWaitFailure::Acquire(error)),
         }
         sleep(PROVIDER_SYNC_WAIT_INTERVAL_MS);
         waited_ms += PROVIDER_SYNC_WAIT_INTERVAL_MS;
@@ -5944,15 +6024,19 @@ fn wait_for_idle_provider_sync(
 }
 
 /// 在强杀 launcher 前放行或拦截本次重启，并把判定结果写进诊断日志。
-fn ensure_provider_sync_is_idle_before_stop() -> Result<(), String> {
+fn ensure_provider_sync_is_idle_before_stop() -> Result<
+    codex_plus_data::ProviderSyncLifecycleGuard,
+    String,
+> {
     let outcome = wait_for_idle_provider_sync(
+        || codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None),
         || codex_plus_data::inspect_provider_sync_lock(None),
         |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
         PROVIDER_SYNC_WAIT_TIMEOUT_MS,
     );
     match outcome {
-        Ok(()) => Ok(()),
-        Err(state) => {
+        Ok(guard) => Ok(guard),
+        Err(ProviderSyncWaitFailure::Busy(state)) => {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "manager.restart_blocked_by_provider_sync",
                 json!({
@@ -5964,6 +6048,13 @@ fn ensure_provider_sync_is_idle_before_stop() -> Result<(), String> {
                 "历史会话同步正在进行中（已等待 {} 秒）。为避免中断同步导致会话丢失，本次重启未执行；请等待同步完成后重试。",
                 PROVIDER_SYNC_WAIT_TIMEOUT_MS / 1000
             ))
+        }
+        Err(ProviderSyncWaitFailure::Acquire(error)) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.restart_provider_sync_guard_failed",
+                json!({ "message": error.to_string() }),
+            );
+            Err(format!("无法取得历史会话同步保护锁，未执行重启：{error}"))
         }
     }
 }
@@ -6146,6 +6237,7 @@ mod tests {
         let slept = std::cell::Cell::new(0);
 
         let outcome = wait_for_idle_provider_sync(
+            || Ok(()),
             || codex_plus_data::ProviderSyncLockState::Free,
             |ms| slept.set(slept.get() + ms),
             PROVIDER_SYNC_WAIT_TIMEOUT_MS,
@@ -6156,10 +6248,22 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_restart_is_rejected_by_single_flight_guard() {
+        let first = try_acquire_restart_guard().unwrap();
+
+        let second = try_acquire_restart_guard();
+
+        assert!(matches!(second, Err(message) if message.contains("正在进行")));
+        drop(first);
+        assert!(try_acquire_restart_guard().is_ok());
+    }
+
+    #[test]
     fn restart_does_not_wait_on_a_lock_whose_owner_already_exited() {
         let slept = std::cell::Cell::new(0);
 
         let outcome = wait_for_idle_provider_sync(
+            || Ok(()),
             || codex_plus_data::ProviderSyncLockState::Stale { pid: Some(4321) },
             |ms| slept.set(slept.get() + ms),
             PROVIDER_SYNC_WAIT_TIMEOUT_MS,
@@ -6177,13 +6281,14 @@ mod tests {
             || {
                 polls.set(polls.get() + 1);
                 if polls.get() < 3 {
-                    codex_plus_data::ProviderSyncLockState::Held {
-                        pid: 4321,
-                        started_at: 1234,
-                    }
+                    Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
                 } else {
-                    codex_plus_data::ProviderSyncLockState::Free
+                    Ok(())
                 }
+            },
+            || codex_plus_data::ProviderSyncLockState::Held {
+                pid: 4321,
+                started_at: 1234,
             },
             |_| {},
             PROVIDER_SYNC_WAIT_TIMEOUT_MS,
@@ -6201,24 +6306,106 @@ mod tests {
             started_at: 1234,
         };
 
-        let outcome =
-            wait_for_idle_provider_sync(|| held.clone(), |_| {}, PROVIDER_SYNC_WAIT_TIMEOUT_MS);
+        let outcome = wait_for_idle_provider_sync(
+            || Err::<(), _>(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+            || held.clone(),
+            |_| {},
+            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
+        );
 
-        assert_eq!(outcome, Err(held));
+        assert!(matches!(
+            outcome,
+            Err(ProviderSyncWaitFailure::Busy(state)) if state == held
+        ));
     }
 
     #[test]
     fn restart_is_refused_while_the_lock_owner_cannot_be_determined() {
         let outcome = wait_for_idle_provider_sync(
+            || Err::<(), _>(std::io::Error::from(std::io::ErrorKind::AlreadyExists)),
             || codex_plus_data::ProviderSyncLockState::Indeterminate,
             |_| {},
             PROVIDER_SYNC_WAIT_TIMEOUT_MS,
         );
 
-        assert_eq!(
+        assert!(matches!(
             outcome,
-            Err(codex_plus_data::ProviderSyncLockState::Indeterminate)
+            Err(ProviderSyncWaitFailure::Busy(
+                codex_plus_data::ProviderSyncLockState::Indeterminate
+            ))
+        ));
+    }
+
+    #[test]
+    fn restart_reports_non_contention_guard_errors_without_waiting() {
+        let slept = std::cell::Cell::new(0);
+        let outcome = wait_for_idle_provider_sync(
+            || Err::<(), _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            || codex_plus_data::ProviderSyncLockState::Free,
+            |ms| slept.set(slept.get() + ms),
+            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
         );
+
+        assert!(matches!(
+            outcome,
+            Err(ProviderSyncWaitFailure::Acquire(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(slept.get(), 0);
+    }
+
+    #[test]
+    fn restart_releases_provider_guard_before_spawning() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path()))
+            .unwrap();
+        let spawned = std::cell::Cell::new(false);
+
+        spawn_after_provider_sync_guard_release(guard, &launch_request(false), |_| {
+            assert_eq!(
+                codex_plus_data::inspect_provider_sync_lock(Some(temp.path())),
+                codex_plus_data::ProviderSyncLockState::Free
+            );
+            let replacement =
+                codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path()))?;
+            replacement.release()?;
+            spawned.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(spawned.get());
+    }
+
+    #[test]
+    fn restart_does_not_spawn_when_provider_guard_release_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path()))
+            .unwrap();
+        std::fs::write(
+            temp.path().join("tmp/provider-sync.lock/owner.json"),
+            json!({
+                "pid": std::process::id(),
+                "startedAt": 1,
+                "lockId": "replacement-owner",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let spawned = std::cell::Cell::new(false);
+
+        let error = spawn_after_provider_sync_guard_release(
+            guard,
+            &launch_request(false),
+            |_| {
+                spawned.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(!spawned.get());
+        assert!(error.to_string().contains("未启动 Codex++"));
     }
 
     #[test]

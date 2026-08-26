@@ -10,6 +10,7 @@ anyhow.workspace = true
 base64.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 codex-plus-core = { path = "../codex-plus-core" }
+fs2.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
