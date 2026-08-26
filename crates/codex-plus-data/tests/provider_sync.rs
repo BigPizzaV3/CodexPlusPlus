@@ -6,16 +6,74 @@ use codex_plus_data::{
     run_remote_control_session_catalog_recovery_for_thread_with_target,
     run_remote_control_session_finalization_for_thread_with_target,
 };
+use fs2::FileExt;
 use rusqlite::Connection;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 static CODEX_HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(windows)]
+fn current_process_peak_working_set_bytes() -> Option<u64> {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct ProcessMemoryCounters {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn K32GetProcessMemoryInfo(
+            process: *mut c_void,
+            counters: *mut ProcessMemoryCounters,
+            size: u32,
+        ) -> i32;
+    }
+
+    let mut counters = ProcessMemoryCounters {
+        cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+        page_fault_count: 0,
+        peak_working_set_size: 0,
+        working_set_size: 0,
+        quota_peak_paged_pool_usage: 0,
+        quota_paged_pool_usage: 0,
+        quota_peak_non_paged_pool_usage: 0,
+        quota_non_paged_pool_usage: 0,
+        pagefile_usage: 0,
+        peak_pagefile_usage: 0,
+    };
+    let success = unsafe {
+        K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters,
+            std::mem::size_of::<ProcessMemoryCounters>() as u32,
+        )
+    };
+    (success != 0).then_some(counters.peak_working_set_size as u64)
+}
+
+#[cfg(not(windows))]
+fn current_process_peak_working_set_bytes() -> Option<u64> {
+    None
+}
 
 struct CodexHomeEnvGuard {
     previous: Option<OsString>,
@@ -54,6 +112,37 @@ fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     });
     let event = json!({"type": "event_msg", "payload": {"type": "user_message"}});
     fs::write(path, format!("{first}\n{event}\n")).unwrap();
+}
+
+fn write_large_rollout(path: &Path, provider: &str, thread_id: &str, payload_bytes: usize) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = fs::File::create(path).unwrap();
+    let mut writer = BufWriter::new(file);
+    writeln!(
+        writer,
+        "{}",
+        json!({
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "model_provider": provider,
+                "cwd": "C:/workspace"
+            }
+        })
+    )
+    .unwrap();
+    writer
+        .write_all(b"{\"type\":\"event_msg\",\"payload\":{\"blob\":\"PAYLOAD_SENTINEL_")
+        .unwrap();
+    let chunk = vec![b'A'; 64 * 1024];
+    let mut remaining = payload_bytes;
+    while remaining > 0 {
+        let write = remaining.min(chunk.len());
+        writer.write_all(&chunk[..write]).unwrap();
+        remaining -= write;
+    }
+    writer.write_all(b"\"}}\n").unwrap();
+    writer.flush().unwrap();
 }
 
 fn write_catalog_rollout(path: &Path) {
@@ -2721,6 +2810,594 @@ fn provider_sync_preserves_rollout_mtime() {
         drift < Duration::from_secs(2),
         "mtime drifted by {drift:?}, expected < 2s"
     );
+}
+
+#[test]
+fn provider_sync_streams_large_payloads_without_copying_them_into_the_journal() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    for index in 0..6 {
+        write_large_rollout(
+            &home.join(format!("sessions/rollout-large-{index}.jsonl")),
+            "openai",
+            &format!("large-{index}"),
+            2 * 1024 * 1024,
+        );
+    }
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(
+        result.status,
+        ProviderSyncStatus::Synced,
+        "{}",
+        result.message
+    );
+    assert_eq!(result.changed_session_files, 6);
+    let backup_dir = result.backup_dir.unwrap();
+    let transaction = fs::read(backup_dir.join("session-transaction.json")).unwrap();
+    let session_meta = fs::read(backup_dir.join("session-meta-backup.json")).unwrap();
+    assert!(transaction.len() < 64 * 1024);
+    assert!(session_meta.len() < 64 * 1024);
+    assert!(
+        !transaction
+            .windows(16)
+            .any(|window| window == b"PAYLOAD_SENTINEL")
+    );
+    assert!(
+        !session_meta
+            .windows(16)
+            .any(|window| window == b"PAYLOAD_SENTINEL")
+    );
+    let session_meta_manifest: serde_json::Value = serde_json::from_slice(&session_meta).unwrap();
+    let entries = session_meta_manifest.as_array().unwrap();
+    assert_eq!(entries.len(), 6);
+    for entry in entries {
+        let relative = entry["sessionMetaBackup"].as_str().unwrap();
+        assert!(relative.ends_with(".jsonl"));
+        let backup = fs::read(backup_dir.join(relative)).unwrap();
+        assert!(backup.len() < 64 * 1024);
+        assert!(
+            !backup
+                .windows(16)
+                .any(|window| window == b"PAYLOAD_SENTINEL")
+        );
+    }
+}
+
+#[test]
+fn provider_sync_manifest_indexes_only_rollouts_that_enter_the_transaction() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let locked_rollout = home.join("sessions/rollout-a-locked.jsonl");
+    let applied_rollout = home.join("sessions/rollout-b-applied.jsonl");
+    write_rollout(&locked_rollout, "openai", "locked", "C:/locked");
+    write_rollout(&applied_rollout, "openai", "applied", "C:/applied");
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&locked_rollout)
+        .unwrap();
+    locked.lock_exclusive().unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    locked.unlock().unwrap();
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{}", result.message);
+    assert_eq!(result.changed_session_files, 1);
+    assert_eq!(result.skipped_locked_rollout_files, vec![locked_rollout]);
+    let backup_dir = result.backup_dir.unwrap();
+    let transaction: serde_json::Value = serde_json::from_slice(
+        &fs::read(backup_dir.join("session-transaction.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(transaction["entries"].as_array().unwrap().len(), 1);
+    assert!(transaction["entries"][0]["relativePath"]
+        .as_str()
+        .unwrap()
+        .ends_with("rollout-b-applied.jsonl"));
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(backup_dir.join("session-meta-backup.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest.as_array().unwrap().len(), 1);
+    assert!(manifest[0]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("rollout-b-applied.jsonl"));
+    assert_eq!(manifest[0]["sessionMetaBackup"], "session-meta/0.jsonl");
+}
+
+#[test]
+#[ignore = "synthetic provider-sync throughput and peak-memory benchmark"]
+fn provider_sync_bounded_memory_benchmark() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let file_count = 48_usize;
+    let payload_bytes = 4 * 1024 * 1024;
+    for index in 0..file_count {
+        write_large_rollout(
+            &home.join(format!("sessions/rollout-benchmark-{index}.jsonl")),
+            "openai",
+            &format!("benchmark-{index}"),
+            payload_bytes,
+        );
+    }
+
+    let started = Instant::now();
+    let result = run_provider_sync(Some(&home));
+    let peak_working_set = current_process_peak_working_set_bytes();
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{}", result.message);
+    assert_eq!(result.changed_session_files, file_count);
+    eprintln!(
+        "provider-sync streamed {} files / {} MiB in {:?}; peak working set: {:?} MiB",
+        file_count,
+        file_count * payload_bytes / (1024 * 1024),
+        started.elapsed(),
+        peak_working_set.map(|bytes| bytes / (1024 * 1024))
+    );
+    if let Some(peak_working_set) = peak_working_set {
+        assert!(peak_working_set < 256 * 1024 * 1024);
+    }
+}
+
+#[test]
+fn provider_sync_recovers_an_interrupted_rollout_transaction_before_resuming() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-interrupted.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let first_backup = first.backup_dir.unwrap();
+    let transaction_path = first_backup.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("rollouts_applied");
+    let orphan_stage = rollout.parent().unwrap().join(format!(
+        ".rollout-interrupted.jsonl.provider-sync-{}-99.tmp",
+        transaction["transactionId"].as_str().unwrap()
+    ));
+    fs::write(&orphan_stage, b"orphaned stage").unwrap();
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(
+        second.status,
+        ProviderSyncStatus::Synced,
+        "{}",
+        second.message
+    );
+    assert_eq!(second.changed_session_files, 1);
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "rolled_back");
+    assert!(!orphan_stage.exists());
+    let first_line: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
+}
+
+#[test]
+fn provider_sync_restores_downstream_backup_when_crash_precedes_commit_decision() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-downstream.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let state_db = home.join("state_5.sqlite");
+    create_state_db(&state_db);
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let backed_up_provider: String = Connection::open(backup_dir.join("db/state_5.sqlite"))
+        .unwrap()
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(backed_up_provider, "old-provider");
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("downstream_started");
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+    let recovery = run_remote_control_session_catalog_recovery_for_thread_with_target(
+        Some(&home),
+        "thread-1",
+        "custom",
+    );
+    assert_eq!(recovery.status, ProviderSyncStatus::Synced, "{}", recovery.message);
+    let restored_provider: String = Connection::open(&state_db)
+        .unwrap()
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored_provider, "old-provider");
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "rolled_back");
+    let first_line: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout).unwrap().lines().next().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "openai");
+}
+
+#[test]
+fn provider_sync_rejects_a_tampered_downstream_backup_manifest() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-tampered-backup.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    create_state_db(&home.join("state_5.sqlite"));
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("downstream_started");
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+    let metadata_path = backup_dir.join("metadata.json");
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+    metadata["dbFiles"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("config.toml"));
+    fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
+
+    let recovery = run_remote_control_session_catalog_recovery_for_thread_with_target(
+        Some(&home),
+        "thread-1",
+        "custom",
+    );
+
+    assert_eq!(recovery.status, ProviderSyncStatus::Skipped);
+    assert!(recovery.message.contains("unexpected path"));
+    let transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(transaction["status"], "in_progress");
+    let first_line: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout).unwrap().lines().next().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
+}
+
+#[test]
+fn provider_sync_preflights_all_downstream_backup_hashes_before_live_mutation() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    fs::write(
+        home.join(".codex-global-state.json"),
+        serde_json::to_vec(&json!({"modelProviderId": "openai"})).unwrap(),
+    )
+    .unwrap();
+    let rollout = home.join("sessions/rollout-tampered-backup-bytes.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let state_db = home.join("state_5.sqlite");
+    create_state_db(&state_db);
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let live_db_before = fs::read(&state_db).unwrap();
+    let global_state = home.join(".codex-global-state.json");
+    let live_global_before = fs::read(&global_state).unwrap();
+    let live_wal = home.join("state_5.sqlite-wal");
+    fs::write(&live_wal, b"live-wal-must-survive-preflight").unwrap();
+
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("downstream_started");
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+    let backup_db = backup_dir.join("db/state_5.sqlite");
+    let mut tampered = fs::read(&backup_db).unwrap();
+    tampered.extend_from_slice(b"tampered");
+    fs::write(&backup_db, tampered).unwrap();
+
+    let recovery = run_remote_control_session_catalog_recovery_for_thread_with_target(
+        Some(&home),
+        "thread-1",
+        "custom",
+    );
+
+    assert_eq!(recovery.status, ProviderSyncStatus::Skipped);
+    assert!(recovery.message.contains("hash or size mismatch"));
+    assert_eq!(fs::read(&state_db).unwrap(), live_db_before);
+    assert_eq!(fs::read(&global_state).unwrap(), live_global_before);
+    assert_eq!(
+        fs::read(&live_wal).unwrap(),
+        b"live-wal-must-survive-preflight"
+    );
+    let transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(transaction["status"], "in_progress");
+}
+
+#[test]
+fn provider_sync_finishes_commit_decision_without_rolling_back() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-commit-decided.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("commit_decided");
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{}", second.message);
+    assert_eq!(second.changed_session_files, 0);
+    assert!(second.backup_dir.is_none());
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "committed");
+    let first_line: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout).unwrap().lines().next().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
+}
+
+#[test]
+fn provider_sync_recovers_a_displaced_original_left_by_atomic_replacement() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-displaced.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let original = fs::read(&rollout).unwrap();
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("rollouts_applied");
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+    let displaced = rollout.parent().unwrap().join(format!(
+        ".rollout-displaced.jsonl.provider-sync-displaced-{}-0.tmp",
+        transaction["transactionId"].as_str().unwrap()
+    ));
+    fs::write(&displaced, original).unwrap();
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{}", second.message);
+    assert_eq!(second.changed_session_files, 1);
+    assert!(!displaced.exists());
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "rolled_back");
+    let first_line: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout).unwrap().lines().next().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
+}
+
+#[test]
+fn provider_sync_accepts_recorded_external_restore_after_a_second_crash() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-external-restore.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let original = fs::read(&rollout).unwrap();
+    let mut external = original.clone();
+    external.extend_from_slice(
+        format!(
+            "{}\n",
+            json!({"type": "event_msg", "payload": {"external_restore": true}})
+        )
+        .as_bytes(),
+    );
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("rollouts_applied");
+    transaction["entries"][0]["externalSha256"] =
+        json!(format!("{:x}", Sha256::digest(&external)));
+    transaction["entries"][0]["externalSize"] = json!(external.len());
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+    fs::write(&rollout, &external).unwrap();
+    let displaced = rollout.parent().unwrap().join(format!(
+        ".rollout-external-restore.jsonl.provider-sync-displaced-{}-0.tmp",
+        transaction["transactionId"].as_str().unwrap()
+    ));
+    fs::write(&displaced, original).unwrap();
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{}", second.message);
+    assert_eq!(second.changed_session_files, 1);
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "rolled_back");
+    assert!(!displaced.exists());
+    let current = fs::read_to_string(&rollout).unwrap();
+    assert!(current.contains("\"external_restore\":true"));
+    let first_line: serde_json::Value =
+        serde_json::from_str(current.lines().next().unwrap()).unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
+}
+
+#[test]
+fn provider_sync_restores_a_recorded_external_displaced_file_after_a_second_crash() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-external-displaced.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let mut external = fs::read(&rollout).unwrap();
+    external.extend_from_slice(
+        format!(
+            "{}\n",
+            json!({"type": "event_msg", "payload": {"external_displaced": true}})
+        )
+        .as_bytes(),
+    );
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("rollouts_applied");
+    transaction["entries"][0]["externalSha256"] =
+        json!(format!("{:x}", Sha256::digest(&external)));
+    transaction["entries"][0]["externalSize"] = json!(external.len());
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+    let displaced = rollout.parent().unwrap().join(format!(
+        ".rollout-external-displaced.jsonl.provider-sync-displaced-{}-0.tmp",
+        transaction["transactionId"].as_str().unwrap()
+    ));
+    fs::write(&displaced, &external).unwrap();
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{}", second.message);
+    assert_eq!(second.changed_session_files, 1);
+    assert!(!displaced.exists());
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    assert_eq!(recovered["status"], "rolled_back");
+    let current = fs::read_to_string(&rollout).unwrap();
+    assert!(current.contains("\"external_displaced\":true"));
+    let first_line: serde_json::Value =
+        serde_json::from_str(current.lines().next().unwrap()).unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
+}
+
+#[test]
+fn provider_sync_refuses_to_recover_over_externally_changed_rollout() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-conflict.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+
+    let first = run_provider_sync(Some(&home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced);
+    let backup_dir = first.backup_dir.unwrap();
+    let transaction_path = backup_dir.join("session-transaction.json");
+    let mut transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(&transaction_path).unwrap()).unwrap();
+    transaction["status"] = json!("in_progress");
+    transaction["phase"] = json!("rollouts_applied");
+    fs::write(
+        &transaction_path,
+        serde_json::to_vec_pretty(&transaction).unwrap(),
+    )
+    .unwrap();
+    let mut file = fs::OpenOptions::new().append(true).open(&rollout).unwrap();
+    writeln!(
+        file,
+        "{}",
+        json!({"type": "event_msg", "payload": {"external": true}})
+    )
+    .unwrap();
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(second.status, ProviderSyncStatus::Skipped);
+    assert!(second.message.contains("refusing rollback"));
+    let current = fs::read_to_string(&rollout).unwrap();
+    assert!(current.contains("\"external\":true"));
+    let first_line: serde_json::Value =
+        serde_json::from_str(current.lines().next().unwrap()).unwrap();
+    assert_eq!(first_line["payload"]["model_provider"], "custom");
 }
 
 #[test]

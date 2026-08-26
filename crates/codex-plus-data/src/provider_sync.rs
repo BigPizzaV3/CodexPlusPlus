@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +13,11 @@ const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
 const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
+const SESSION_TRANSACTION_FILE: &str = "session-transaction.json";
+const SESSION_TRANSACTION_NAMESPACE: &str = "provider-sync-rollout-transaction";
+const SESSION_TRANSACTION_IN_PROGRESS: &str = "in_progress";
+const SESSION_TRANSACTION_COMMITTED: &str = "committed";
+const SESSION_TRANSACTION_ROLLED_BACK: &str = "rolled_back";
 
 /// `create_lock` 先建目录再写 `owner.json`，两步之间被强杀会留下没有 owner 的锁目录。
 /// 该窗口只有几毫秒，因此超过这个时长仍缺 owner 的锁一定是中断残留，可以安全回收；
@@ -308,25 +313,34 @@ pub struct ProviderSyncTargetList {
 #[derive(Debug, Clone)]
 struct SessionChange {
     path: PathBuf,
-    original_text: String,
-    next_text: String,
-    original_session_meta_lines: Vec<String>,
+    original_sha256: String,
+    original_size: u64,
     thread_id: Option<String>,
     cwd: Option<String>,
     has_user_event: bool,
     rewrite_needed: bool,
     original_mtime: Option<SystemTime>,
+    rewrite_mode: SessionRewriteMode,
+}
+
+#[derive(Debug, Clone)]
+enum SessionRewriteMode {
+    AllProviders,
+    SourceProvider { source_provider: String },
 }
 
 #[derive(Debug, Default)]
 struct RolloutRewrite {
-    next_text: String,
     rewrite_needed: bool,
     thread_id: Option<String>,
     cwd: Option<String>,
-    providers: Vec<String>,
-    original_session_meta_lines: Vec<String>,
+    providers: HashSet<String>,
     session_meta_count: usize,
+    has_user_event: bool,
+    has_encrypted_content: bool,
+    marks_non_root_agent: bool,
+    original_sha256: String,
+    original_size: u64,
 }
 
 #[derive(Debug, Default)]
@@ -345,8 +359,92 @@ struct ProviderSyncThreadKinds {
 
 #[derive(Debug, Default)]
 struct AppliedSessionChanges {
-    changes: Vec<SessionChange>,
+    changed_files: usize,
     skipped_locked_rollout_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTransactionEntry {
+    relative_path: String,
+    original_sha256: String,
+    next_sha256: String,
+    original_size: u64,
+    next_size: u64,
+    session_meta_backup_sha256: String,
+    original_mtime_secs: Option<u64>,
+    original_mtime_nanos: Option<u32>,
+    #[serde(default)]
+    external_sha256: Option<String>,
+    #[serde(default)]
+    external_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionTransactionMode {
+    Full,
+    Remote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionTransactionPhase {
+    RolloutsApplying,
+    RolloutsApplied,
+    DownstreamStarted,
+    CommitDecided,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTransactionRootEvidence {
+    canonical_path: String,
+    identity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSyncBackupFileEvidence {
+    size: u64,
+    sha256: String,
+}
+
+struct PreparedProviderSyncBackupFile {
+    file: File,
+    modified: Option<SystemTime>,
+    evidence: ProviderSyncBackupFileEvidence,
+}
+
+struct PreparedProviderSyncBackupSet {
+    files: HashMap<String, PreparedProviderSyncBackupFile>,
+    snapshot_dir: PathBuf,
+}
+
+impl Drop for PreparedProviderSyncBackupSet {
+    fn drop(&mut self) {
+        self.files.clear();
+        let _ = fs::remove_dir_all(&self.snapshot_dir);
+    }
+}
+
+struct ProviderSyncDirectoryEvidence {
+    canonical_path: PathBuf,
+    identity: String,
+    guard: File,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTransactionManifest {
+    version: u32,
+    namespace: String,
+    status: String,
+    transaction_id: String,
+    mode: SessionTransactionMode,
+    phase: SessionTransactionPhase,
+    rollout_roots: HashMap<String, SessionTransactionRootEvidence>,
+    entries: Vec<SessionTransactionEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +615,7 @@ pub fn run_remote_control_session_catalog_recovery_for_thread_with_target(
     thread_id: &str,
     target_provider: &str,
 ) -> ProviderSyncResult {
+    let require_stopped_app = codex_home.is_none();
     let thread_id = thread_id.trim();
     if thread_id.is_empty() || thread_id.len() > 128 {
         return result(
@@ -556,6 +655,30 @@ pub fn run_remote_control_session_catalog_recovery_for_thread_with_target(
             );
         }
     };
+    if require_stopped_app {
+        let running_processes =
+            codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+        if !running_processes.is_empty() {
+            return result(
+                ProviderSyncStatus::Skipped,
+                "Remote Control session catalog recovery requires Codex App / ChatGPT to be stopped",
+                target_provider,
+                None,
+                0,
+                0,
+            );
+        }
+    }
+    if let Err(error) = recover_interrupted_session_transactions(&home) {
+        return result(
+            ProviderSyncStatus::Skipped,
+            format!("Remote Control session catalog recovery skipped: {error}"),
+            target_provider,
+            None,
+            0,
+            0,
+        );
+    }
     let thread_ids = HashSet::from([thread_id.to_string()]);
     let recovery = run_remote_control_catalog_recovery_for_threads(
         &home,
@@ -580,6 +703,7 @@ pub fn run_remote_control_session_finalization_for_thread_with_target(
     thread_id: &str,
     target_provider: &str,
 ) -> ProviderSyncResult {
+    let require_stopped_app = codex_home.is_none();
     let thread_id = thread_id.trim();
     let target_provider = target_provider.trim();
     if thread_id.is_empty()
@@ -613,7 +737,22 @@ pub fn run_remote_control_session_finalization_for_thread_with_target(
             );
         }
     };
+    if require_stopped_app {
+        let running_processes =
+            codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+        if !running_processes.is_empty() {
+            return result(
+                ProviderSyncStatus::Skipped,
+                "Remote Control session finalization requires Codex App / ChatGPT to be stopped",
+                target_provider,
+                None,
+                0,
+                0,
+            );
+        }
+    }
     let recovery = (|| -> anyhow::Result<ProviderSyncResult> {
+        recover_interrupted_session_transactions(&home)?;
         let sqlite_paths = provider_sync_db_paths(&home);
         let rollout_path = match remote_control_rollout_for_thread(
             &home,
@@ -665,20 +804,29 @@ pub fn run_remote_control_session_finalization_for_thread_with_target(
             .filter(|change| change.rewrite_needed)
             .cloned()
             .collect::<Vec<_>>();
-        let backup_dir = create_backup(&home, target_provider, &rewrite_changes)?;
-        let applied = apply_session_changes(&rewrite_changes)?;
+        let backup_dir = create_backup(
+            &home,
+            target_provider,
+            SessionTransactionMode::Remote,
+            &rewrite_changes,
+        )?;
+        let applied = apply_session_changes(&home, &backup_dir, target_provider, &rewrite_changes)?;
+        set_session_transaction_phase(&backup_dir, SessionTransactionPhase::RolloutsApplied)?;
         if !rollout_file_matches_provider(&rollout_path, thread_id, target_provider)? {
+            rollback_session_transaction(&home, &backup_dir)?;
             let mut deferred = result(
                 ProviderSyncStatus::Skipped,
                 "Remote Control session finalization deferred for a changed or locked rollout",
                 target_provider,
                 Some(backup_dir),
-                applied.changes.len(),
+                applied.changed_files,
                 0,
             );
             deferred.skipped_locked_rollout_files = applied.skipped_locked_rollout_files;
             return Ok(deferred);
         }
+        set_session_transaction_phase(&backup_dir, SessionTransactionPhase::CommitDecided)?;
+        commit_session_transaction(&backup_dir)?;
         let thread_ids = HashSet::from([thread_id.to_string()]);
         let catalog_repairs = repair_missing_local_thread_catalog_rows_for_threads(
             &home,
@@ -699,7 +847,7 @@ pub fn run_remote_control_session_finalization_for_thread_with_target(
             "Remote Control session finalization complete",
             target_provider,
             Some(backup_dir),
-            applied.changes.len(),
+            applied.changed_files,
             sqlite_updates.total(),
         );
         synced.sqlite_provider_rows_updated = sqlite_updates.provider_rows;
@@ -830,7 +978,22 @@ pub fn run_provider_sync_with_target(
             );
         }
     };
+    if require_stopped_app {
+        let running_processes =
+            codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+        if !running_processes.is_empty() {
+            return result(
+                ProviderSyncStatus::Skipped,
+                "Codex App / ChatGPT started before provider-sync recovery",
+                &target_provider,
+                None,
+                0,
+                0,
+            );
+        }
+    }
     let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
+        recover_interrupted_session_transactions(&home)?;
         let sqlite_paths = provider_sync_db_paths(&home);
         let thread_kinds = sqlite_provider_sync_thread_kinds(&sqlite_paths)?;
         let repair_audit = match audit_provider_sync_state(&home, &sqlite_paths) {
@@ -909,8 +1072,25 @@ pub fn run_provider_sync_with_target(
                 provider_sync_message_with_audit(&synced.message, &synced.repair_audit);
             return Ok(synced);
         }
-        let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
-        let applied = apply_session_changes(&rewrite_changes)?;
+        if require_stopped_app {
+            let running_processes =
+                codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+            if !running_processes.is_empty() {
+                anyhow::bail!(
+                    "Codex App / ChatGPT started while provider sync was scanning rollouts"
+                );
+            }
+        }
+        let backup_dir = create_backup(
+            &home,
+            &target_provider,
+            SessionTransactionMode::Full,
+            &rewrite_changes,
+        )?;
+        let applied =
+            apply_session_changes(&home, &backup_dir, &target_provider, &rewrite_changes)?;
+        set_session_transaction_phase(&backup_dir, SessionTransactionPhase::RolloutsApplied)?;
+        set_session_transaction_phase(&backup_dir, SessionTransactionPhase::DownstreamStarted)?;
         let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
             let sqlite_updates = apply_sqlite_update_for_paths(
                 &sqlite_paths,
@@ -926,22 +1106,31 @@ pub fn run_provider_sync_with_target(
             sqlite_updates.catalog_remove_rows = catalog_repairs.removed_rows;
             let updated_workspace_roots =
                 apply_global_state_update(&home.join(".codex-global-state.json"))?;
-            prune_backups(&home)?;
             Ok((sqlite_updates, updated_workspace_roots))
         })();
         let (sqlite_updates, updated_workspace_roots) = match apply_result {
             Ok(counts) => counts,
             Err(err) => {
-                let _ = restore_session_changes(&applied.changes);
+                restore_provider_sync_downstream_backup(&home, &backup_dir).map_err(
+                    |restore_error| {
+                        anyhow::anyhow!(
+                            "provider-sync downstream update failed ({err}); backup restore also failed: {restore_error}"
+                        )
+                    },
+                )?;
+                rollback_session_transaction(&home, &backup_dir)?;
                 return Err(err);
             }
         };
+        set_session_transaction_phase(&backup_dir, SessionTransactionPhase::CommitDecided)?;
+        commit_session_transaction(&backup_dir)?;
+        prune_backups(&home)?;
         let mut synced = result(
             ProviderSyncStatus::Synced,
             "Provider sync complete",
             &target_provider,
             Some(backup_dir),
-            applied.changes.len(),
+            applied.changed_files,
             sqlite_updates.total(),
         );
         synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
@@ -1461,15 +1650,18 @@ fn collect_session_changes(
 ) -> anyhow::Result<SessionChanges> {
     let mut collected = SessionChanges::default();
     for path in rollout_files(home)? {
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let rewrite = match scan_rollout_session_meta_providers(
+            &path,
+            target_provider,
+            &SessionRewriteMode::AllProviders,
+        ) {
+            Ok(rewrite) => rewrite,
             Err(error) if is_locked_io_error(&error) => {
                 collected.skipped_locked_rollout_files.push(path);
                 continue;
             }
             Err(error) => return Err(error.into()),
         };
-        let rewrite = rewrite_rollout_session_meta_providers(&text, target_provider)?;
         if rewrite.session_meta_count == 0 {
             continue;
         }
@@ -1477,7 +1669,7 @@ fn collect_session_changes(
             .thread_id
             .as_ref()
             .is_some_and(|thread_id| explicit_user_thread_ids.contains(thread_id));
-        if rollout_session_meta_marks_non_root_agent(&text) {
+        if rewrite.marks_non_root_agent {
             if let Some(thread_id) = &rewrite.thread_id {
                 collected.subagent_thread_ids.insert(thread_id.clone());
             }
@@ -1491,8 +1683,7 @@ fn collect_session_changes(
         {
             continue;
         }
-        let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
-        if text.contains("encrypted_content") {
+        if rewrite.has_encrypted_content {
             for provider in &rewrite.providers {
                 *collected
                     .encrypted_content_counts
@@ -1503,30 +1694,17 @@ fn collect_session_changes(
         let original_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
         collected.changes.push(SessionChange {
             path,
-            original_text: text,
-            next_text: rewrite.next_text,
-            original_session_meta_lines: rewrite.original_session_meta_lines,
+            original_sha256: rewrite.original_sha256,
+            original_size: rewrite.original_size,
             thread_id: rewrite.thread_id,
             cwd: rewrite.cwd,
-            has_user_event,
+            has_user_event: rewrite.has_user_event,
             rewrite_needed: rewrite.rewrite_needed,
             original_mtime,
+            rewrite_mode: SessionRewriteMode::AllProviders,
         });
     }
     Ok(collected)
-}
-
-fn rollout_session_meta_marks_non_root_agent(text: &str) -> bool {
-    text.lines().any(|line| {
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            return false;
-        };
-        record.get("type").and_then(Value::as_str) == Some("session_meta")
-            && record
-                .get("payload")
-                .and_then(|payload| payload.get("source"))
-                .is_some_and(source_value_marks_non_root_agent)
-    })
 }
 
 fn remote_control_rollout_for_thread(
@@ -1641,12 +1819,18 @@ fn resolve_active_rollout_path(home: &Path, value: &str) -> Option<PathBuf> {
 fn rollout_provider_state_for_path(
     path: &Path,
 ) -> anyhow::Result<Option<(String, HashSet<String>)>> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
+    let rewrite = match scan_rollout_session_meta_providers(
+        path,
+        DEFAULT_PROVIDER,
+        &SessionRewriteMode::AllProviders,
+    ) {
+        Ok(rewrite) => rewrite,
         Err(error) if is_locked_io_error(&error) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    Ok(rollout_thread_provider_state(&text))
+    Ok(rewrite
+        .thread_id
+        .map(|thread_id| (thread_id, rewrite.providers.into_iter().collect())))
 }
 
 fn collect_session_change_for_path(
@@ -1656,8 +1840,11 @@ fn collect_session_change_for_path(
     thread_id: &str,
 ) -> anyhow::Result<SessionChanges> {
     let mut collected = SessionChanges::default();
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
+    let rewrite_mode = SessionRewriteMode::SourceProvider {
+        source_provider: source_provider.to_string(),
+    };
+    let rewrite = match scan_rollout_session_meta_providers(path, target_provider, &rewrite_mode) {
+        Ok(rewrite) => rewrite,
         Err(error) if is_locked_io_error(&error) => {
             collected
                 .skipped_locked_rollout_files
@@ -1666,17 +1853,10 @@ fn collect_session_change_for_path(
         }
         Err(error) => return Err(error.into()),
     };
-    let rewrite = rewrite_rollout_session_meta_providers_for_threads(
-        &text,
-        target_provider,
-        source_provider,
-        &HashSet::from([thread_id.to_string()]),
-    )?;
     if rewrite.session_meta_count == 0 || rewrite.thread_id.as_deref() != Some(thread_id) {
         return Ok(collected);
     }
-    let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
-    if text.contains("encrypted_content") {
+    if rewrite.has_encrypted_content {
         for provider in &rewrite.providers {
             *collected
                 .encrypted_content_counts
@@ -1689,14 +1869,14 @@ fn collect_session_change_for_path(
         .ok();
     collected.changes.push(SessionChange {
         path: path.to_path_buf(),
-        original_text: text,
-        next_text: rewrite.next_text,
-        original_session_meta_lines: rewrite.original_session_meta_lines,
+        original_sha256: rewrite.original_sha256,
+        original_size: rewrite.original_size,
         thread_id: rewrite.thread_id,
         cwd: rewrite.cwd,
-        has_user_event,
+        has_user_event: rewrite.has_user_event,
         rewrite_needed: rewrite.rewrite_needed,
         original_mtime,
+        rewrite_mode,
     });
     Ok(collected)
 }
@@ -1714,139 +1894,105 @@ fn rollout_file_matches_provider(
         && providers.iter().all(|provider| provider == target_provider))
 }
 
-fn rewrite_rollout_session_meta_providers(
-    text: &str,
+fn scan_rollout_session_meta_providers(
+    path: &Path,
     target_provider: &str,
-) -> anyhow::Result<RolloutRewrite> {
+    rewrite_mode: &SessionRewriteMode,
+) -> std::io::Result<RolloutRewrite> {
     let mut rewrite = RolloutRewrite::default();
-    for segment in text.split_inclusive('\n') {
-        let (line, line_ending) = split_line_ending(segment);
-        let mut next_line = line.to_string();
-        if !line.trim().is_empty() {
-            if let Ok(mut record) = serde_json::from_str::<Value>(line) {
-                if record.get("type").and_then(Value::as_str) == Some("session_meta") {
-                    let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut)
-                    else {
-                        rewrite.next_text.push_str(&next_line);
-                        rewrite.next_text.push_str(line_ending);
-                        continue;
-                    };
-                    rewrite.session_meta_count += 1;
-                    rewrite.original_session_meta_lines.push(line.to_string());
-                    if rewrite.thread_id.is_none() {
-                        rewrite.thread_id = payload
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(ToString::to_string);
-                    }
-                    if rewrite.cwd.is_none() {
-                        rewrite.cwd = payload
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .and_then(to_desktop_workspace_path);
-                    }
-                    let provider = payload
-                        .get("model_provider")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(missing)")
-                        .to_string();
-                    rewrite.providers.push(provider);
-                    if payload.get("model_provider").and_then(Value::as_str)
-                        != Some(target_provider)
-                    {
-                        payload.insert("model_provider".to_string(), json!(target_provider));
-                        next_line = serde_json::to_string(&record)?;
-                        rewrite.rewrite_needed = true;
-                    }
-                }
-            }
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut hasher = Sha256::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
         }
-        rewrite.next_text.push_str(&next_line);
-        rewrite.next_text.push_str(line_ending);
+        rewrite.original_size += read as u64;
+        hasher.update(&line);
+        rewrite.has_user_event |=
+            contains_bytes(&line, b"\"user_message\"") || contains_bytes(&line, b"\"user_input\"");
+        rewrite.has_encrypted_content |= contains_bytes(&line, b"encrypted_content");
+        let (line_bytes, _) = split_line_ending_bytes(&line);
+        let line_text = std::str::from_utf8(line_bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if !contains_bytes(line_bytes, b"\"session_meta\"") {
+            continue;
+        }
+        let Ok(mut record) = serde_json::from_str::<Value>(line_text) else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        rewrite.marks_non_root_agent |= record
+            .get("payload")
+            .and_then(|payload| payload.get("source"))
+            .is_some_and(source_value_marks_non_root_agent);
+        let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        rewrite.session_meta_count += 1;
+        if rewrite.thread_id.is_none() {
+            rewrite.thread_id = payload
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+        }
+        if rewrite.cwd.is_none() {
+            rewrite.cwd = payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .and_then(to_desktop_workspace_path);
+        }
+        let provider = payload
+            .get("model_provider")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        rewrite
+            .providers
+            .insert(provider.clone().unwrap_or_else(|| "(missing)".to_string()));
+        rewrite.rewrite_needed |= match rewrite_mode {
+            SessionRewriteMode::AllProviders => provider.as_deref() != Some(target_provider),
+            SessionRewriteMode::SourceProvider { source_provider } => provider
+                .as_deref()
+                .is_none_or(|provider| provider == source_provider),
+        };
     }
+    rewrite.original_sha256 = format!("{:x}", hasher.finalize());
     Ok(rewrite)
 }
 
-fn rewrite_rollout_session_meta_providers_for_threads(
-    text: &str,
-    target_provider: &str,
-    source_provider: &str,
-    thread_ids: &HashSet<String>,
-) -> anyhow::Result<RolloutRewrite> {
-    let rollout_thread_id = text.lines().find_map(|line| {
-        let record = serde_json::from_str::<Value>(line).ok()?;
-        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
-            return None;
-        }
-        record
-            .get("payload")?
-            .get("id")?
-            .as_str()
-            .map(ToString::to_string)
-    });
-    if rollout_thread_id
-        .as_ref()
-        .is_none_or(|thread_id| !thread_ids.contains(thread_id))
-    {
-        return Ok(RolloutRewrite {
-            next_text: text.to_string(),
-            ..RolloutRewrite::default()
-        });
-    }
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
 
-    let mut rewrite = RolloutRewrite {
-        thread_id: rollout_thread_id,
-        ..RolloutRewrite::default()
-    };
-    for segment in text.split_inclusive('\n') {
-        let (line, line_ending) = split_line_ending(segment);
-        let mut next_line = line.to_string();
-        if !line.trim().is_empty() {
-            if let Ok(mut record) = serde_json::from_str::<Value>(line) {
-                if record.get("type").and_then(Value::as_str) == Some("session_meta") {
-                    let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut)
-                    else {
-                        rewrite.next_text.push_str(&next_line);
-                        rewrite.next_text.push_str(line_ending);
-                        continue;
-                    };
-                    rewrite.session_meta_count += 1;
-                    rewrite.original_session_meta_lines.push(line.to_string());
-                    if rewrite.cwd.is_none() {
-                        rewrite.cwd = payload
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .and_then(to_desktop_workspace_path);
-                    }
-                    let provider = payload
-                        .get("model_provider")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string);
-                    rewrite
-                        .providers
-                        .push(provider.clone().unwrap_or_else(|| "(missing)".to_string()));
-                    if provider
-                        .as_deref()
-                        .is_none_or(|provider| provider == source_provider)
-                    {
-                        payload.insert("model_provider".to_string(), json!(target_provider));
-                        next_line = serde_json::to_string(&record)?;
-                        rewrite.rewrite_needed = true;
-                    }
-                }
-            }
-        }
-        rewrite.next_text.push_str(&next_line);
-        rewrite.next_text.push_str(line_ending);
+fn split_line_ending_bytes(line: &[u8]) -> (&[u8], &[u8]) {
+    if line.ends_with(b"\r\n") {
+        (&line[..line.len() - 2], &line[line.len() - 2..])
+    } else if line.ends_with(b"\n") {
+        (&line[..line.len() - 1], &line[line.len() - 1..])
+    } else {
+        (line, &[])
     }
-    Ok(rewrite)
 }
 
 fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
+    let canonical_home = fs::canonicalize(home)?;
     for dirname in SESSION_DIRS {
         let root = home.join(dirname);
         if root.exists() {
+            ensure_not_reparse_or_symlink(&root)?;
+            let canonical_root = fs::canonicalize(&root)?;
+            if !canonical_root.starts_with(&canonical_home) {
+                anyhow::bail!("provider-sync rollout root resolves outside Codex home");
+            }
             collect_rollout_files(&root, &mut files)?;
         }
     }
@@ -1867,28 +2013,17 @@ fn collect_live_thread_ids(
         {
             ids.insert(id);
         }
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let rewrite = match scan_rollout_session_meta_providers(
+            &path,
+            DEFAULT_PROVIDER,
+            &SessionRewriteMode::AllProviders,
+        ) {
+            Ok(rewrite) => rewrite,
             Err(error) if is_locked_io_error(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        for segment in text.split_inclusive('\n') {
-            let (line, _) = split_line_ending(segment);
-            let Ok(record) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
-                continue;
-            }
-            if let Some(id) = record
-                .get("payload")
-                .and_then(Value::as_object)
-                .and_then(|payload| payload.get("id"))
-                .and_then(Value::as_str)
-                .filter(|id| !id.trim().is_empty())
-            {
-                ids.insert(id.to_string());
-            }
+        if let Some(id) = rewrite.thread_id.filter(|id| !id.trim().is_empty()) {
+            ids.insert(id);
         }
     }
     for path in sqlite_paths {
@@ -2204,10 +2339,7 @@ pub fn session_index_lines_for_thread(
 ///
 /// Best-effort: returns `Ok(0)` without writing when the file is missing or
 /// changed since it was read, so a delete flow never clobbers fresh entries.
-pub fn remove_session_index_entry(
-    codex_home: &Path,
-    thread_id: &str,
-) -> anyhow::Result<usize> {
+pub fn remove_session_index_entry(codex_home: &Path, thread_id: &str) -> anyhow::Result<usize> {
     let path = codex_home.join("session_index.jsonl");
     if !path.exists() {
         return Ok(0);
@@ -2237,10 +2369,7 @@ pub fn remove_session_index_entry(
 /// Lines whose `id` already exists are skipped. Returns the number of
 /// appended lines. Best-effort: returns `Ok(0)` without writing when the
 /// file changed since it was read.
-pub fn restore_session_index_entries(
-    codex_home: &Path,
-    lines: &[String],
-) -> anyhow::Result<usize> {
+pub fn restore_session_index_entries(codex_home: &Path, lines: &[String]) -> anyhow::Result<usize> {
     if lines.is_empty() {
         return Ok(0);
     }
@@ -2318,29 +2447,18 @@ fn cleanup_apply_error(
 fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
     let mut ids = HashSet::new();
     for path in rollout_files(home)? {
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let rewrite = match scan_rollout_session_meta_providers(
+            &path,
+            DEFAULT_PROVIDER,
+            &SessionRewriteMode::AllProviders,
+        ) {
+            Ok(rewrite) => rewrite,
             Err(error) if is_locked_io_error(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        for segment in text.split_inclusive('\n') {
-            let (line, _) = split_line_ending(segment);
-            let Ok(record) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
-                continue;
-            }
-            let Some(provider) = record
-                .get("payload")
-                .and_then(Value::as_object)
-                .and_then(|payload| payload.get("model_provider"))
-                .and_then(Value::as_str)
-            else {
-                continue;
-            };
-            if is_valid_provider_id_for_discovery(provider) {
-                ids.insert(provider.to_string());
+        for provider in rewrite.providers {
+            if is_valid_provider_id_for_discovery(&provider) {
+                ids.insert(provider);
             }
         }
     }
@@ -2349,13 +2467,17 @@ fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
 
 fn collect_rollout_files(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     for entry in fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() {
+        let entry = entry?;
+        let path = entry.path();
+        ensure_not_reparse_or_symlink(&path)?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
             collect_rollout_files(&path, files)?;
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+        } else if file_type.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
         {
             files.push(path);
         }
@@ -2417,6 +2539,7 @@ fn build_encrypted_content_warning(
 fn create_backup(
     home: &Path,
     target_provider: &str,
+    mode: SessionTransactionMode,
     changes: &[SessionChange],
 ) -> anyhow::Result<PathBuf> {
     let backup_root = home.join("backups_state/provider-sync");
@@ -2427,6 +2550,8 @@ fn create_backup(
         backup_dir = backup_root.join(format!("{}-{suffix}", timestamp_name()));
     }
     fs::create_dir_all(&backup_dir)?;
+    let mut global_state_files = Vec::new();
+    let mut backup_files = HashMap::new();
     for name in [
         "config.toml",
         ".codex-global-state.json",
@@ -2434,7 +2559,16 @@ fn create_backup(
     ] {
         let source = home.join(name);
         if source.exists() {
-            fs::copy(&source, backup_dir.join(name))?;
+            let target = backup_dir.join(name);
+            fs::copy(&source, &target)?;
+            if name != "config.toml" {
+                global_state_files.push(name);
+                let (sha256, size) = file_sha256_and_size(&target)?;
+                backup_files.insert(
+                    name.to_string(),
+                    ProviderSyncBackupFileEvidence { size, sha256 },
+                );
+            }
         }
     }
     let db_dir = backup_dir.join("db");
@@ -2444,27 +2578,30 @@ fn create_backup(
             if !source.exists() {
                 continue;
             }
-            let relative = codex_plus_core::codex_sqlite::relative_to_codex_home(home, &source);
+            let relative = source.strip_prefix(home).map_err(|_| {
+                anyhow::anyhow!(
+                    "provider-sync database is outside Codex home: {}",
+                    source.display()
+                )
+            })?;
+            validated_backup_relative_path(relative)?;
             let target = db_dir.join(&relative);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
             fs::copy(&source, &target)?;
-            db_files.push(relative.to_string_lossy().replace('\\', "/"));
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let (sha256, size) = file_sha256_and_size(&target)?;
+            backup_files.insert(
+                format!("db/{relative}"),
+                ProviderSyncBackupFileEvidence { size, sha256 },
+            );
+            db_files.push(relative);
         }
     }
-    let manifest = changes
-        .iter()
-        .map(|change| {
-            json!({
-                "path": change.path.to_string_lossy(),
-                "originalSessionMetaLines": change.original_session_meta_lines,
-            })
-        })
-        .collect::<Vec<_>>();
     fs::write(
         backup_dir.join("session-meta-backup.json"),
-        serde_json::to_string_pretty(&manifest)?,
+        serde_json::to_string_pretty(&Vec::<Value>::new())?,
     )?;
     fs::write(
         backup_dir.join("metadata.json"),
@@ -2475,9 +2612,24 @@ fn create_backup(
             "targetProvider": target_provider,
             "createdAt": chrono::Utc::now().to_rfc3339(),
             "dbFiles": db_files,
+            "globalStateFiles": global_state_files,
+            "backupFiles": backup_files,
             "changedSessionFiles": changes.len(),
             "managedBy": "Codex++ provider sync"
         }))?,
+    )?;
+    write_session_transaction(
+        &backup_dir,
+        &SessionTransactionManifest {
+            version: 1,
+            namespace: SESSION_TRANSACTION_NAMESPACE.to_string(),
+            status: SESSION_TRANSACTION_IN_PROGRESS.to_string(),
+            transaction_id: uuid::Uuid::new_v4().simple().to_string(),
+            mode,
+            phase: SessionTransactionPhase::RolloutsApplying,
+            rollout_roots: session_transaction_rollout_roots(home)?,
+            entries: Vec::new(),
+        },
     )?;
     Ok(backup_dir)
 }
@@ -2512,75 +2664,1564 @@ fn create_session_index_cleanup_backup(
     Ok(backup_dir)
 }
 
-fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSessionChanges> {
-    let mut applied = AppliedSessionChanges::default();
-    for change in changes {
-        match replace_session_text_if_unchanged(
-            &change.path,
-            &change.original_text,
-            &change.next_text,
-        ) {
-            Ok(true) => {}
-            Ok(false) => {
+fn apply_session_changes(
+    home: &Path,
+    backup_dir: &Path,
+    target_provider: &str,
+    changes: &[SessionChange],
+) -> anyhow::Result<AppliedSessionChanges> {
+    let apply_result = (|| -> anyhow::Result<AppliedSessionChanges> {
+        let mut applied = AppliedSessionChanges::default();
+        let mut transaction = read_session_transaction(backup_dir)?;
+        for change in changes {
+            let entry_index = transaction.entries.len();
+            let relative_path = rollout_relative_path(home, &change.path)?;
+            let target_path = validated_rollout_transaction_path(
+                home,
+                &relative_path,
+                &transaction.rollout_roots,
+            )?;
+            let staged_file_name = format!(
+                ".{}.provider-sync-{}-{}.tmp",
+                target_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("rollout"),
+                transaction.transaction_id,
+                entry_index
+            );
+            let staged_path = target_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("rollout has no parent: {}", target_path.display()))?
+                .join(&staged_file_name);
+            let session_meta_backup_path =
+                backup_dir.join(format!("session-meta/{entry_index}.jsonl"));
+            let mut source = match open_session_file_for_update(&target_path) {
+                Ok(source) => source,
+                Err(error) if is_locked_io_error(&error) => {
+                    applied
+                        .skipped_locked_rollout_files
+                        .push(change.path.clone());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if source.try_lock().is_err() {
                 applied
                     .skipped_locked_rollout_files
                     .push(change.path.clone());
                 continue;
             }
-            Err(error) if is_locked_io_error(&error) => {
+            let staged = match stage_next_session_file(
+                &mut source,
+                &staged_path,
+                &session_meta_backup_path,
+                target_provider,
+                &change.rewrite_mode,
+            ) {
+                Ok(staged) => staged,
+                Err(error) => {
+                    let _ = fs::remove_file(&staged_path);
+                    let _ = fs::remove_file(&session_meta_backup_path);
+                    return Err(error.into());
+                }
+            };
+            if staged.original_sha256 != change.original_sha256
+                || staged.original_size != change.original_size
+            {
+                drop(source);
+                let _ = fs::remove_file(&staged_path);
+                let _ = fs::remove_file(&session_meta_backup_path);
                 applied
                     .skipped_locked_rollout_files
                     .push(change.path.clone());
                 continue;
             }
-            Err(error) => return Err(error.into()),
+            let (original_mtime_secs, original_mtime_nanos) =
+                system_time_parts(change.original_mtime);
+            transaction.entries.push(SessionTransactionEntry {
+                relative_path: relative_path.clone(),
+                original_sha256: staged.original_sha256,
+                next_sha256: staged.next_sha256.clone(),
+                original_size: staged.original_size,
+                next_size: staged.next_size,
+                session_meta_backup_sha256: staged.session_meta_backup_sha256,
+                original_mtime_secs,
+                original_mtime_nanos,
+                external_sha256: None,
+                external_size: None,
+            });
+            if let Err(error) = write_session_transaction(backup_dir, &transaction) {
+                transaction.entries.pop();
+                drop(source);
+                let _ = fs::remove_file(&staged_path);
+                let _ = fs::remove_file(&session_meta_backup_path);
+                let _ = rollback_session_transaction(home, backup_dir);
+                return Err(error);
+            }
+            if let Err(error) = write_session_meta_backup_manifest(backup_dir, &transaction) {
+                drop(source);
+                let _ = fs::remove_file(&staged_path);
+                let _ = rollback_session_transaction(home, backup_dir);
+                return Err(error);
+            }
+            drop(source);
+            let replacement_target = validated_rollout_transaction_path(
+                home,
+                &relative_path,
+                &transaction.rollout_roots,
+            )?;
+            if replacement_target != target_path {
+                anyhow::bail!("provider-sync rollout path changed before replacement");
+            }
+            let displaced_path =
+                transaction_displaced_path(&target_path, &transaction.transaction_id, entry_index)?;
+            if let Err(error) = codex_plus_core::settings::atomic_replace_file_with_backup(
+                &staged_path,
+                &target_path,
+                &displaced_path,
+            ) {
+                let _ = fs::remove_file(&staged_path);
+                if is_locked_io_error_from_anyhow(&error) {
+                    transaction.entries.pop();
+                    write_session_transaction(backup_dir, &transaction)?;
+                    write_session_meta_backup_manifest(backup_dir, &transaction)?;
+                    let _ = fs::remove_file(&session_meta_backup_path);
+                    applied
+                        .skipped_locked_rollout_files
+                        .push(change.path.clone());
+                    continue;
+                }
+                let _ = rollback_session_transaction(home, backup_dir);
+                return Err(error);
+            }
+            let (displaced_sha256, displaced_size) = file_sha256_and_size(&displaced_path)?;
+            if displaced_sha256 != change.original_sha256 || displaced_size != change.original_size
+            {
+                let entry = transaction
+                    .entries
+                    .last_mut()
+                    .ok_or_else(|| anyhow::anyhow!("provider-sync transaction entry missing"))?;
+                entry.external_sha256 = Some(displaced_sha256);
+                entry.external_size = Some(displaced_size);
+                write_session_transaction(backup_dir, &transaction)?;
+                restore_displaced_session_file(
+                    &target_path,
+                    &displaced_path,
+                    &transaction.transaction_id,
+                    entry_index,
+                )?;
+                anyhow::bail!(
+                    "rollout changed between provider-sync staging and replacement: {}",
+                    target_path.display()
+                );
+            }
+            restore_file_mtime(&target_path, change.original_mtime);
+            let (persisted_sha256, persisted_size) = file_sha256_and_size(&target_path)?;
+            if persisted_sha256 != staged.next_sha256 || persisted_size != staged.next_size {
+                let _ = rollback_session_transaction(home, backup_dir);
+                anyhow::bail!(
+                    "rollout changed while provider metadata was being replaced: {}",
+                    target_path.display()
+                );
+            }
+            fs::remove_file(displaced_path)?;
+            applied.changed_files += 1;
         }
-        restore_file_mtime(&change.path, change.original_mtime);
-        applied.changes.push(change.clone());
+        Ok(applied)
+    })();
+    if apply_result.is_err() {
+        let _ = rollback_session_transaction(home, backup_dir);
     }
-    Ok(applied)
+    apply_result
 }
 
-fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
-    for change in changes {
-        if replace_session_text_if_unchanged(
-            &change.path,
-            &change.next_text,
-            &change.original_text,
-        )? {
-            restore_file_mtime(&change.path, change.original_mtime);
+#[derive(Debug)]
+struct StagedSessionFile {
+    original_sha256: String,
+    next_sha256: String,
+    original_size: u64,
+    next_size: u64,
+    session_meta_backup_sha256: String,
+}
+
+fn stage_next_session_file(
+    source: &mut File,
+    staged_path: &Path,
+    session_meta_backup_path: &Path,
+    target_provider: &str,
+    rewrite_mode: &SessionRewriteMode,
+) -> std::io::Result<StagedSessionFile> {
+    let staged_file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(staged_path)?;
+    if let Some(parent) = session_meta_backup_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let session_meta_backup_file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(session_meta_backup_path)?;
+    let mut reader = BufReader::new(source);
+    let mut writer = BufWriter::new(staged_file);
+    let mut session_meta_writer = BufWriter::new(session_meta_backup_file);
+    let mut line = Vec::new();
+    let mut original_hasher = Sha256::new();
+    let mut next_hasher = Sha256::new();
+    let mut session_meta_hasher = Sha256::new();
+    let mut original_size = 0_u64;
+    let mut next_size = 0_u64;
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        original_size += read as u64;
+        original_hasher.update(&line);
+        let (line_bytes, line_ending) = split_line_ending_bytes(&line);
+        let line_text = std::str::from_utf8(line_bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if session_meta_line_has_payload_object(line_text) {
+            let backup_line = serde_json::to_vec(line_text)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            session_meta_writer.write_all(&backup_line)?;
+            session_meta_writer.write_all(b"\n")?;
+            session_meta_hasher.update(&backup_line);
+            session_meta_hasher.update(b"\n");
+        }
+        if let Some(next_line) =
+            rewritten_session_meta_line(line_text, target_provider, rewrite_mode)?
+        {
+            writer.write_all(&next_line)?;
+            writer.write_all(line_ending)?;
+            next_hasher.update(&next_line);
+            next_hasher.update(line_ending);
+            next_size += (next_line.len() + line_ending.len()) as u64;
+        } else {
+            writer.write_all(&line)?;
+            next_hasher.update(&line);
+            next_size += line.len() as u64;
+        }
+    }
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    session_meta_writer.flush()?;
+    session_meta_writer.get_ref().sync_all()?;
+    Ok(StagedSessionFile {
+        original_sha256: format!("{:x}", original_hasher.finalize()),
+        next_sha256: format!("{:x}", next_hasher.finalize()),
+        original_size,
+        next_size,
+        session_meta_backup_sha256: format!("{:x}", session_meta_hasher.finalize()),
+    })
+}
+
+fn write_session_meta_backup_manifest(
+    backup_dir: &Path,
+    transaction: &SessionTransactionManifest,
+) -> anyhow::Result<()> {
+    let manifest = transaction
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            json!({
+                "path": entry.relative_path,
+                "originalSha256": entry.original_sha256,
+                "originalSize": entry.original_size,
+                "sessionMetaBackup": format!("session-meta/{index}.jsonl"),
+            })
+        })
+        .collect::<Vec<_>>();
+    codex_plus_core::settings::atomic_write(
+        &backup_dir.join("session-meta-backup.json"),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )
+}
+
+fn session_meta_line_has_payload_object(line: &str) -> bool {
+    line.contains("\"session_meta\"")
+        && serde_json::from_str::<Value>(line).is_ok_and(|record| {
+            record.get("type").and_then(Value::as_str) == Some("session_meta")
+                && record.get("payload").and_then(Value::as_object).is_some()
+        })
+}
+
+fn rewritten_session_meta_line(
+    line: &str,
+    target_provider: &str,
+    rewrite_mode: &SessionRewriteMode,
+) -> std::io::Result<Option<Vec<u8>>> {
+    if !line.contains("\"session_meta\"") {
+        return Ok(None);
+    }
+    let Ok(mut record) = serde_json::from_str::<Value>(line) else {
+        return Ok(None);
+    };
+    if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return Ok(None);
+    }
+    let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut) else {
+        return Ok(None);
+    };
+    let provider = payload.get("model_provider").and_then(Value::as_str);
+    let rewrite = match rewrite_mode {
+        SessionRewriteMode::AllProviders => provider != Some(target_provider),
+        SessionRewriteMode::SourceProvider { source_provider } => {
+            provider.is_none_or(|provider| provider == source_provider)
+        }
+    };
+    if !rewrite {
+        return Ok(None);
+    }
+    payload.insert("model_provider".to_string(), json!(target_provider));
+    serde_json::to_vec(&record)
+        .map(Some)
+        .map_err(std::io::Error::other)
+}
+
+fn transaction_displaced_path(
+    path: &Path,
+    transaction_id: &str,
+    entry_index: usize,
+) -> anyhow::Result<PathBuf> {
+    Ok(path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rollout has no parent: {}", path.display()))?
+        .join(format!(
+            ".{}.provider-sync-displaced-{}-{}.tmp",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("rollout"),
+            transaction_id,
+            entry_index
+        )))
+}
+
+fn restore_displaced_session_file(
+    path: &Path,
+    displaced_path: &Path,
+    transaction_id: &str,
+    entry_index: usize,
+) -> anyhow::Result<()> {
+    if !path.exists() {
+        return codex_plus_core::settings::atomic_replace_file(displaced_path, path);
+    }
+    let rejected_path = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rollout has no parent: {}", path.display()))?
+        .join(format!(
+            ".{}.provider-sync-rejected-{}-{}.tmp",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("rollout"),
+            transaction_id,
+            entry_index
+        ));
+    codex_plus_core::settings::atomic_replace_file_with_backup(
+        displaced_path,
+        path,
+        &rejected_path,
+    )?;
+    fs::remove_file(rejected_path)?;
+    Ok(())
+}
+
+fn rollback_session_transaction(home: &Path, backup_dir: &Path) -> anyhow::Result<()> {
+    let mut transaction = read_session_transaction(backup_dir)?;
+    if transaction.status == SESSION_TRANSACTION_COMMITTED
+        || transaction.status == SESSION_TRANSACTION_ROLLED_BACK
+    {
+        return Ok(());
+    }
+    if transaction.status != SESSION_TRANSACTION_IN_PROGRESS {
+        anyhow::bail!("unknown provider-sync rollout transaction status");
+    }
+    for entry_index in (0..transaction.entries.len()).rev() {
+        let entry = transaction.entries[entry_index].clone();
+        let path = validated_rollout_transaction_path(
+            home,
+            &entry.relative_path,
+            &transaction.rollout_roots,
+        )?;
+        let displaced_path =
+            transaction_displaced_path(&path, &transaction.transaction_id, entry_index)?;
+        if let (Some(external_sha256), Some(external_size)) =
+            (entry.external_sha256.as_deref(), entry.external_size)
+        {
+            if path.exists() {
+                let (current_sha256, current_size) = file_sha256_and_size(&path)?;
+                if current_sha256 == external_sha256 && current_size == external_size {
+                    if displaced_path.exists() {
+                        let (displaced_sha256, displaced_size) =
+                            file_sha256_and_size(&displaced_path)?;
+                        let displaced_is_original = displaced_sha256 == entry.original_sha256
+                            && displaced_size == entry.original_size;
+                        let displaced_is_external =
+                            displaced_sha256 == external_sha256 && displaced_size == external_size;
+                        if !displaced_is_original && !displaced_is_external {
+                            anyhow::bail!(
+                                "provider-sync displaced file changed after external restore: {}",
+                                displaced_path.display()
+                            );
+                        }
+                        fs::remove_file(&displaced_path)?;
+                    }
+                    continue;
+                }
+                if current_sha256 != entry.next_sha256 || current_size != entry.next_size {
+                    anyhow::bail!(
+                        "rollout changed after external restore decision: {}",
+                        path.display()
+                    );
+                }
+            }
+            if displaced_path.exists() {
+                let (displaced_sha256, displaced_size) = file_sha256_and_size(&displaced_path)?;
+                if displaced_sha256 != external_sha256 || displaced_size != external_size {
+                    anyhow::bail!(
+                        "provider-sync displaced external version changed: {}",
+                        displaced_path.display()
+                    );
+                }
+                restore_displaced_session_file(
+                    &path,
+                    &displaced_path,
+                    &transaction.transaction_id,
+                    entry_index,
+                )?;
+                continue;
+            }
+            anyhow::bail!(
+                "provider-sync external version is missing after restore decision: {}",
+                path.display()
+            );
+        }
+        if displaced_path.exists() {
+            let (displaced_sha256, displaced_size) = file_sha256_and_size(&displaced_path)?;
+            if !path.exists() {
+                restore_displaced_session_file(
+                    &path,
+                    &displaced_path,
+                    &transaction.transaction_id,
+                    entry_index,
+                )?;
+                if displaced_sha256 == entry.original_sha256
+                    && displaced_size == entry.original_size
+                {
+                    restore_file_mtime_parts(
+                        &path,
+                        entry.original_mtime_secs,
+                        entry.original_mtime_nanos,
+                    );
+                }
+                continue;
+            }
+            let (current_sha256, current_size) = file_sha256_and_size(&path)?;
+            if displaced_sha256 == entry.original_sha256 && displaced_size == entry.original_size {
+                if current_sha256 == entry.original_sha256 && current_size == entry.original_size {
+                    fs::remove_file(&displaced_path)?;
+                    continue;
+                }
+                if current_sha256 != entry.next_sha256 || current_size != entry.next_size {
+                    transaction.entries[entry_index].external_sha256 = Some(current_sha256);
+                    transaction.entries[entry_index].external_size = Some(current_size);
+                    write_session_transaction(backup_dir, &transaction)?;
+                    fs::remove_file(&displaced_path)?;
+                    continue;
+                }
+                restore_displaced_session_file(
+                    &path,
+                    &displaced_path,
+                    &transaction.transaction_id,
+                    entry_index,
+                )?;
+                restore_file_mtime_parts(
+                    &path,
+                    entry.original_mtime_secs,
+                    entry.original_mtime_nanos,
+                );
+                continue;
+            }
+            if current_sha256 != entry.next_sha256 || current_size != entry.next_size {
+                anyhow::bail!(
+                    "rollout and displaced file both changed; refusing recovery: {}",
+                    path.display()
+                );
+            }
+            transaction.entries[entry_index].external_sha256 = Some(displaced_sha256);
+            transaction.entries[entry_index].external_size = Some(displaced_size);
+            write_session_transaction(backup_dir, &transaction)?;
+            restore_displaced_session_file(
+                &path,
+                &displaced_path,
+                &transaction.transaction_id,
+                entry_index,
+            )?;
+            continue;
+        }
+        let (current_sha256, current_size) = file_sha256_and_size(&path)?;
+        if current_sha256 == entry.original_sha256 && current_size == entry.original_size {
+            continue;
+        }
+        if current_sha256 != entry.next_sha256 || current_size != entry.next_size {
+            anyhow::bail!(
+                "rollout changed after provider-sync replacement; refusing rollback: {}",
+                path.display()
+            );
+        }
+        let restore_name = format!(
+            ".{}.provider-sync-restore-{}.tmp",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("rollout"),
+            transaction.transaction_id
+        );
+        let restore_path = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("rollout has no parent: {}", path.display()))?
+            .join(restore_name);
+        let restored = match stage_original_session_file(
+            &path,
+            &restore_path,
+            backup_dir,
+            entry_index,
+            &entry,
+        ) {
+            Ok(restored) => restored,
+            Err(error) => {
+                let _ = fs::remove_file(&restore_path);
+                return Err(error);
+            }
+        };
+        if restored.0 != entry.original_sha256 || restored.1 != entry.original_size {
+            let _ = fs::remove_file(&restore_path);
+            anyhow::bail!("provider-sync rollback hash mismatch: {}", path.display());
+        }
+        codex_plus_core::settings::atomic_replace_file(&restore_path, &path)?;
+        restore_file_mtime_parts(&path, entry.original_mtime_secs, entry.original_mtime_nanos);
+    }
+    cleanup_transaction_staged_files(home, &transaction.transaction_id)?;
+    transaction.status = SESSION_TRANSACTION_ROLLED_BACK.to_string();
+    write_session_transaction(backup_dir, &transaction)
+}
+
+fn stage_original_session_file(
+    path: &Path,
+    staged_path: &Path,
+    backup_dir: &Path,
+    entry_index: usize,
+    entry: &SessionTransactionEntry,
+) -> anyhow::Result<(String, u64)> {
+    let mut source = open_session_file_for_update(path)?;
+    source.try_lock()?;
+    let staged_file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(staged_path)?;
+    let mut reader = BufReader::new(&mut source);
+    let mut writer = BufWriter::new(staged_file);
+    let canonical_backup_dir = fs::canonicalize(backup_dir)?;
+    let session_meta_backup_path = backup_dir.join(format!("session-meta/{entry_index}.jsonl"));
+    let canonical_session_meta_backup_path = fs::canonicalize(&session_meta_backup_path)?;
+    if !canonical_session_meta_backup_path.starts_with(&canonical_backup_dir) {
+        anyhow::bail!("provider-sync session-meta backup resolves outside its backup directory");
+    }
+    if !fs::symlink_metadata(&session_meta_backup_path)?
+        .file_type()
+        .is_file()
+    {
+        anyhow::bail!("provider-sync session-meta backup is not a regular file");
+    }
+    let mut session_meta_reader = BufReader::new(File::open(&session_meta_backup_path)?);
+    let mut line = Vec::new();
+    let mut session_meta_line = Vec::new();
+    let mut hasher = Sha256::new();
+    let mut session_meta_hasher = Sha256::new();
+    let mut size = 0_u64;
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        let (line_bytes, line_ending) = split_line_ending_bytes(&line);
+        let line_text = std::str::from_utf8(line_bytes)?;
+        let is_session_meta = if line_text.contains("\"session_meta\"") {
+            serde_json::from_str::<Value>(line_text).is_ok_and(|record| {
+                record.get("type").and_then(Value::as_str) == Some("session_meta")
+                    && record.get("payload").and_then(Value::as_object).is_some()
+            })
+        } else {
+            false
+        };
+        if is_session_meta {
+            session_meta_line.clear();
+            if session_meta_reader.read_until(b'\n', &mut session_meta_line)? == 0 {
+                anyhow::bail!("provider-sync rollback metadata is incomplete");
+            }
+            session_meta_hasher.update(&session_meta_line);
+            let backup_line = session_meta_line
+                .strip_suffix(b"\n")
+                .unwrap_or(&session_meta_line);
+            let original_line: String = serde_json::from_slice(backup_line)?;
+            writer.write_all(original_line.as_bytes())?;
+            writer.write_all(line_ending)?;
+            hasher.update(original_line.as_bytes());
+            hasher.update(line_ending);
+            size += (original_line.len() + line_ending.len()) as u64;
+        } else {
+            writer.write_all(&line)?;
+            hasher.update(&line);
+            size += line.len() as u64;
+        }
+    }
+    session_meta_line.clear();
+    if session_meta_reader.read_until(b'\n', &mut session_meta_line)? != 0 {
+        anyhow::bail!("provider-sync rollback metadata count mismatch");
+    }
+    let session_meta_backup_sha256 = format!("{:x}", session_meta_hasher.finalize());
+    if session_meta_backup_sha256 != entry.session_meta_backup_sha256 {
+        anyhow::bail!("provider-sync session-meta backup hash mismatch");
+    }
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    Ok((format!("{:x}", hasher.finalize()), size))
+}
+
+fn commit_session_transaction(backup_dir: &Path) -> anyhow::Result<()> {
+    let mut transaction = read_session_transaction(backup_dir)?;
+    if transaction.phase != SessionTransactionPhase::CommitDecided {
+        anyhow::bail!("provider-sync rollout transaction has no commit decision");
+    }
+    transaction.status = SESSION_TRANSACTION_COMMITTED.to_string();
+    write_session_transaction(backup_dir, &transaction)
+}
+
+fn set_session_transaction_phase(
+    backup_dir: &Path,
+    phase: SessionTransactionPhase,
+) -> anyhow::Result<()> {
+    let mut transaction = read_session_transaction(backup_dir)?;
+    if transaction.status != SESSION_TRANSACTION_IN_PROGRESS {
+        anyhow::bail!("provider-sync rollout transaction is no longer active");
+    }
+    let valid = matches!(
+        (transaction.phase, phase),
+        (
+            SessionTransactionPhase::RolloutsApplying,
+            SessionTransactionPhase::RolloutsApplied
+        ) | (
+            SessionTransactionPhase::RolloutsApplied,
+            SessionTransactionPhase::DownstreamStarted
+        ) | (
+            SessionTransactionPhase::RolloutsApplied,
+            SessionTransactionPhase::CommitDecided
+        ) | (
+            SessionTransactionPhase::DownstreamStarted,
+            SessionTransactionPhase::CommitDecided
+        )
+    );
+    if !valid {
+        anyhow::bail!("invalid provider-sync rollout transaction phase transition");
+    }
+    transaction.phase = phase;
+    write_session_transaction(backup_dir, &transaction)
+}
+
+fn recover_interrupted_session_transactions(home: &Path) -> anyhow::Result<()> {
+    let backup_root = home.join("backups_state/provider-sync");
+    let entries = match fs::read_dir(&backup_root) {
+        Ok(entries) => entries,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut backup_dirs = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && entry.path().join(SESSION_TRANSACTION_FILE).is_file() {
+            backup_dirs.push(entry.path());
+        }
+    }
+    backup_dirs.sort();
+    for backup_dir in backup_dirs {
+        let transaction = read_session_transaction(&backup_dir)?;
+        if transaction.status != SESSION_TRANSACTION_IN_PROGRESS {
+            continue;
+        }
+        match (transaction.mode, transaction.phase) {
+            (_, SessionTransactionPhase::CommitDecided) => {
+                commit_session_transaction(&backup_dir)?;
+            }
+            (SessionTransactionMode::Full, SessionTransactionPhase::DownstreamStarted) => {
+                restore_provider_sync_downstream_backup(home, &backup_dir)?;
+                rollback_session_transaction(home, &backup_dir)?;
+            }
+            _ => rollback_session_transaction(home, &backup_dir)?,
         }
     }
     Ok(())
 }
 
-fn replace_session_text_if_unchanged(
+fn restore_provider_sync_downstream_backup(home: &Path, backup_dir: &Path) -> anyhow::Result<()> {
+    let transaction = read_session_transaction(backup_dir)?;
+    if transaction.mode != SessionTransactionMode::Full {
+        anyhow::bail!("remote provider-sync transactions do not own downstream state");
+    }
+    let metadata: Value = serde_json::from_slice(&fs::read(backup_dir.join("metadata.json"))?)?;
+    let db_files = metadata
+        .get("dbFiles")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("provider-sync backup is missing dbFiles"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("provider-sync backup has an invalid dbFiles entry"))
+                .and_then(|value| validated_backup_relative_path(Path::new(value)))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let allowed_db_files = provider_sync_db_paths(home)
+        .into_iter()
+        .flat_map(|db_path| codex_plus_core::codex_sqlite::codex_sqlite_sidecar_paths(&db_path))
+        .map(|path| {
+            let relative = path.strip_prefix(home).map_err(|_| {
+                anyhow::anyhow!(
+                    "provider-sync database is outside Codex home: {}",
+                    path.display()
+                )
+            })?;
+            Ok(validated_backup_relative_path(relative)?
+                .to_string_lossy()
+                .replace('\\', "/"))
+        })
+        .collect::<anyhow::Result<HashSet<_>>>()?;
+    let db_file_set = db_files
+        .iter()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect::<HashSet<_>>();
+    if !db_file_set.is_subset(&allowed_db_files) {
+        anyhow::bail!("provider-sync backup dbFiles contains an unexpected path");
+    }
+    let actual_backup_db_files = collect_backup_relative_files(&backup_dir.join("db"))?;
+    if db_file_set != actual_backup_db_files {
+        anyhow::bail!("provider-sync backup dbFiles does not match the backup directory");
+    }
+
+    let global_state_files = metadata
+        .get("globalStateFiles")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("provider-sync backup is missing globalStateFiles"))?
+        .iter()
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                anyhow::anyhow!("provider-sync backup has an invalid globalStateFiles entry")
+            })
+        })
+        .collect::<anyhow::Result<HashSet<_>>>()?;
+    let allowed_global_state_files =
+        HashSet::from([".codex-global-state.json", ".codex-global-state.json.bak"]);
+    if !global_state_files.is_subset(&allowed_global_state_files) {
+        anyhow::bail!("provider-sync backup globalStateFiles contains an unexpected path");
+    }
+    let actual_global_state_files = allowed_global_state_files
+        .iter()
+        .copied()
+        .filter(|name| {
+            fs::symlink_metadata(backup_dir.join(name))
+                .is_ok_and(|metadata| metadata.file_type().is_file())
+        })
+        .collect::<HashSet<_>>();
+    if global_state_files != actual_global_state_files {
+        anyhow::bail!("provider-sync backup globalStateFiles does not match the backup directory");
+    }
+
+    let backup_files: HashMap<String, ProviderSyncBackupFileEvidence> = serde_json::from_value(
+        metadata
+            .get("backupFiles")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("provider-sync backup is missing backupFiles"))?,
+    )?;
+    let expected_backup_files = db_file_set
+        .iter()
+        .map(|relative| format!("db/{relative}"))
+        .chain(global_state_files.iter().map(|name| (*name).to_string()))
+        .collect::<HashSet<_>>();
+    let recorded_backup_files = backup_files.keys().cloned().collect::<HashSet<_>>();
+    if recorded_backup_files != expected_backup_files {
+        anyhow::bail!("provider-sync backupFiles does not match the recorded backup files");
+    }
+    let mut prepared_backup_files =
+        prepare_provider_sync_backup_files(backup_dir, &backup_files, &transaction.transaction_id)?;
+    let target_parents = prepare_provider_sync_target_parents(home, &db_files)?;
+
+    for db_path in provider_sync_db_paths(home) {
+        for (index, current) in codex_plus_core::codex_sqlite::codex_sqlite_sidecar_paths(&db_path)
+            .into_iter()
+            .enumerate()
+        {
+            let Ok(relative) = current.strip_prefix(home) else {
+                anyhow::bail!(
+                    "provider-sync database is outside Codex home: {}",
+                    current.display()
+                );
+            };
+            let relative = validated_backup_relative_path(relative)?;
+            let key = relative.to_string_lossy().replace('\\', "/");
+            if index > 0 && current.exists() && !db_file_set.contains(&key) {
+                let parent_evidence =
+                    validate_provider_sync_target_parent(home, &current, &target_parents)?;
+                ensure_not_reparse_or_symlink(&current)?;
+                remove_provider_sync_target_file(&current, parent_evidence)?;
+            }
+        }
+    }
+    for relative in db_files {
+        let key = format!("db/{}", relative.to_string_lossy().replace('\\', "/"));
+        let prepared = prepared_backup_files
+            .files
+            .get_mut(&key)
+            .ok_or_else(|| anyhow::anyhow!("provider-sync backup file evidence is missing"))?;
+        let target = home.join(&relative);
+        restore_file_from_provider_sync_backup(
+            home,
+            &target,
+            &transaction.transaction_id,
+            prepared,
+            &target_parents,
+        )?;
+    }
+    for name in [".codex-global-state.json", ".codex-global-state.json.bak"] {
+        let target = home.join(name);
+        if global_state_files.contains(name) {
+            let prepared = prepared_backup_files
+                .files
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("provider-sync backup file evidence is missing"))?;
+            restore_file_from_provider_sync_backup(
+                home,
+                &target,
+                &transaction.transaction_id,
+                prepared,
+                &target_parents,
+            )?;
+        } else if target.exists() {
+            let parent_evidence =
+                validate_provider_sync_target_parent(home, &target, &target_parents)?;
+            ensure_not_reparse_or_symlink(&target)?;
+            remove_provider_sync_target_file(&target, parent_evidence)?;
+        }
+    }
+    Ok(())
+}
+
+fn prepare_provider_sync_backup_files(
+    backup_dir: &Path,
+    backup_files: &HashMap<String, ProviderSyncBackupFileEvidence>,
+    transaction_id: &str,
+) -> anyhow::Result<PreparedProviderSyncBackupSet> {
+    let canonical_backup_dir = fs::canonicalize(backup_dir)?;
+    let snapshot_dir = std::env::temp_dir().join(format!(
+        "codex-plus-provider-sync-{transaction_id}-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    fs::create_dir(&snapshot_dir)?;
+    ensure_not_reparse_or_symlink(&snapshot_dir)?;
+    let mut prepared = PreparedProviderSyncBackupSet {
+        files: HashMap::new(),
+        snapshot_dir,
+    };
+    for (index, (relative, evidence)) in backup_files.iter().enumerate() {
+        if evidence.sha256.len() != 64
+            || !evidence.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("provider-sync backupFiles contains an invalid hash");
+        }
+        let relative_path = validated_backup_relative_path(Path::new(relative))?;
+        let source = backup_dir.join(relative_path);
+        ensure_not_reparse_or_symlink(&source)?;
+        if !fs::symlink_metadata(&source)?.file_type().is_file() {
+            anyhow::bail!("provider-sync backupFiles contains a non-file entry");
+        }
+        let canonical_source = fs::canonicalize(&source)?;
+        if !canonical_source.starts_with(&canonical_backup_dir) {
+            anyhow::bail!("provider-sync backup file resolves outside its backup directory");
+        }
+        let mut source_file = File::open(&source)?;
+        let modified = source_file.metadata()?.modified().ok();
+        let snapshot_path = prepared.snapshot_dir.join(format!("{index}.snapshot"));
+        let mut snapshot = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&snapshot_path)?;
+        let mut hasher = Sha256::new();
+        let mut size = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = source_file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            snapshot.write_all(&buffer[..read])?;
+            hasher.update(&buffer[..read]);
+            size += read as u64;
+        }
+        snapshot.sync_all()?;
+        let sha256 = format!("{:x}", hasher.finalize());
+        if sha256 != evidence.sha256 || size != evidence.size {
+            anyhow::bail!("provider-sync backup file hash or size mismatch");
+        }
+        snapshot.seek(SeekFrom::Start(0))?;
+        snapshot.lock_exclusive()?;
+        #[cfg(unix)]
+        fs::remove_file(&snapshot_path)?;
+        prepared.files.insert(
+            relative.clone(),
+            PreparedProviderSyncBackupFile {
+                file: snapshot,
+                modified,
+                evidence: evidence.clone(),
+            },
+        );
+    }
+    Ok(prepared)
+}
+
+fn file_handle_sha256_and_size(file: &mut File) -> std::io::Result<(String, u64)> {
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        size += read as u64;
+    }
+    Ok((format!("{:x}", hasher.finalize()), size))
+}
+
+fn prepare_provider_sync_target_parents(
+    home: &Path,
+    db_files: &[PathBuf],
+) -> anyhow::Result<HashMap<PathBuf, ProviderSyncDirectoryEvidence>> {
+    let mut parents = HashSet::from([home.to_path_buf()]);
+    for relative in db_files {
+        let target = home.join(relative);
+        let parent = target
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("backup restore target has no parent"))?;
+        parents.insert(parent.to_path_buf());
+    }
+    let canonical_home = fs::canonicalize(home)?;
+    let mut evidence = HashMap::new();
+    for parent in parents {
+        create_validated_directory_path(home, &parent)?;
+        let canonical_path = fs::canonicalize(&parent)?;
+        if !canonical_path.starts_with(&canonical_home) {
+            anyhow::bail!("provider-sync backup target resolves outside Codex home");
+        }
+        let guard = open_directory_mutation_guard(&parent)?;
+        let guarded_identity = codex_plus_core::settings::file_instance_identity(&guard)?;
+        if fs::canonicalize(&parent)? != canonical_path
+            || codex_plus_core::settings::directory_instance_identity(&parent)? != guarded_identity
+        {
+            anyhow::bail!("provider-sync backup target parent changed while being guarded");
+        }
+        evidence.insert(
+            parent.clone(),
+            ProviderSyncDirectoryEvidence {
+                canonical_path,
+                identity: guarded_identity,
+                guard,
+            },
+        );
+    }
+    Ok(evidence)
+}
+
+fn create_validated_directory_path(home: &Path, target: &Path) -> anyhow::Result<()> {
+    let relative = target
+        .strip_prefix(home)
+        .map_err(|_| anyhow::anyhow!("provider-sync target parent is outside Codex home"))?;
+    let mut current = home.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            anyhow::bail!("provider-sync target parent contains an invalid component");
+        };
+        current.push(name);
+        if current.exists() {
+            ensure_not_reparse_or_symlink(&current)?;
+        } else {
+            fs::create_dir(&current)?;
+            ensure_not_reparse_or_symlink(&current)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_provider_sync_target_parent<'a>(
+    home: &Path,
+    target: &Path,
+    target_parents: &'a HashMap<PathBuf, ProviderSyncDirectoryEvidence>,
+) -> anyhow::Result<&'a ProviderSyncDirectoryEvidence> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("backup restore target has no parent"))?;
+    let expected = target_parents
+        .get(parent)
+        .ok_or_else(|| anyhow::anyhow!("provider-sync backup target parent was not recorded"))?;
+    ensure_path_components_not_reparse(home, parent)?;
+    let canonical_parent = fs::canonicalize(parent)?;
+    if canonical_parent != expected.canonical_path
+        || codex_plus_core::settings::directory_instance_identity(parent)? != expected.identity
+    {
+        anyhow::bail!("provider-sync backup target parent changed during restore");
+    }
+    Ok(expected)
+}
+
+#[cfg(windows)]
+fn open_directory_mutation_guard(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_directory_mutation_guard(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+fn restore_file_from_provider_sync_backup(
+    home: &Path,
+    target: &Path,
+    transaction_id: &str,
+    prepared: &mut PreparedProviderSyncBackupFile,
+    target_parents: &HashMap<PathBuf, ProviderSyncDirectoryEvidence>,
+) -> anyhow::Result<()> {
+    let parent_evidence = validate_provider_sync_target_parent(home, target, target_parents)?;
+    if target.exists() {
+        ensure_not_reparse_or_symlink(target)?;
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("backup restore target has no parent"))?;
+    let temp = parent.join(format!(
+        ".{}.provider-sync-downstream-{}.tmp",
+        target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
+        transaction_id
+    ));
+    let restore_result = (|| -> anyhow::Result<()> {
+        if let Err(error) = remove_provider_sync_target_file(&temp, parent_evidence)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error.into());
+        }
+        let mut temp_file = create_provider_sync_target_file(&temp, parent_evidence)?;
+        prepared.file.seek(SeekFrom::Start(0))?;
+        std::io::copy(&mut prepared.file, &mut temp_file)?;
+        temp_file.sync_all()?;
+        temp_file.seek(SeekFrom::Start(0))?;
+        let (sha256, size) = file_handle_sha256_and_size(&mut temp_file)?;
+        if sha256 != prepared.evidence.sha256 || size != prepared.evidence.size {
+            anyhow::bail!("provider-sync backup changed during restore");
+        }
+        drop(temp_file);
+        let parent_evidence = validate_provider_sync_target_parent(home, target, target_parents)?;
+        if target.exists() {
+            ensure_not_reparse_or_symlink(target)?;
+        }
+        atomic_replace_provider_sync_target(&temp, target, parent_evidence)?;
+        restore_file_mtime(target, prepared.modified);
+        Ok(())
+    })();
+    if restore_result.is_err() {
+        let _ = remove_provider_sync_target_file(&temp, parent_evidence);
+    }
+    restore_result
+}
+
+#[cfg(unix)]
+fn create_provider_sync_target_file(
     path: &Path,
-    expected_text: &str,
-    next_text: &str,
-) -> std::io::Result<bool> {
-    let mut file = open_session_file_for_update(path)?;
-    file.try_lock()?;
-    let mut current_text = String::new();
-    file.read_to_string(&mut current_text)?;
-    if current_text != expected_text {
-        return Ok(false);
-    }
+    parent: &ProviderSyncDirectoryEvidence,
+) -> std::io::Result<File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
 
-    file.seek(SeekFrom::Start(0))?;
-    file.set_len(0)?;
-    file.write_all(next_text.as_bytes())?;
-    file.flush()?;
-
-    file.seek(SeekFrom::Start(0))?;
-    let mut persisted_text = String::new();
-    file.read_to_string(&mut persisted_text)?;
-    if persisted_text != next_text {
-        return Err(std::io::Error::other(
-            "rollout changed while provider metadata was being written",
-        ));
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing file name")
+    })?;
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file name"))?;
+    let fd = unsafe {
+        libc::openat(
+            parent.guard.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
     }
-    Ok(true)
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(not(unix))]
+fn create_provider_sync_target_file(
+    path: &Path,
+    parent: &ProviderSyncDirectoryEvidence,
+) -> std::io::Result<File> {
+    let _directory_guard = &parent.guard;
+    OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn remove_provider_sync_target_file(
+    path: &Path,
+    parent: &ProviderSyncDirectoryEvidence,
+) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing file name")
+    })?;
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file name"))?;
+    if unsafe { libc::unlinkat(parent.guard.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn remove_provider_sync_target_file(
+    path: &Path,
+    parent: &ProviderSyncDirectoryEvidence,
+) -> std::io::Result<()> {
+    let _directory_guard = &parent.guard;
+    fs::remove_file(path)
+}
+
+#[cfg(unix)]
+fn atomic_replace_provider_sync_target(
+    replacement: &Path,
+    target: &Path,
+    parent: &ProviderSyncDirectoryEvidence,
+) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let replacement = replacement.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing replacement name")
+    })?;
+    let target = target.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing target name")
+    })?;
+    let replacement = CString::new(replacement.as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid replacement name")
+    })?;
+    let target = CString::new(target.as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid target name")
+    })?;
+    if unsafe {
+        libc::renameat(
+            parent.guard.as_raw_fd(),
+            replacement.as_ptr(),
+            parent.guard.as_raw_fd(),
+            target.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn atomic_replace_provider_sync_target(
+    replacement: &Path,
+    target: &Path,
+    parent: &ProviderSyncDirectoryEvidence,
+) -> anyhow::Result<()> {
+    let _directory_guard = &parent.guard;
+    codex_plus_core::settings::atomic_replace_file(replacement, target)
+}
+
+fn validated_backup_relative_path(path: &Path) -> anyhow::Result<PathBuf> {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("invalid provider-sync backup path");
+    }
+    Ok(path.to_path_buf())
+}
+
+fn collect_backup_relative_files(root: &Path) -> anyhow::Result<HashSet<String>> {
+    if !root.exists() {
+        return Ok(HashSet::new());
+    }
+    let canonical_root = fs::canonicalize(root)?;
+    let mut files = HashSet::new();
+    collect_backup_relative_files_in(root, &canonical_root, &mut files)?;
+    Ok(files)
+}
+
+fn collect_backup_relative_files_in(
+    root: &Path,
+    canonical_root: &Path,
+    files: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_backup_relative_files_in(&path, canonical_root, files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            anyhow::bail!("provider-sync backup db directory contains a non-file entry");
+        }
+        let canonical_path = fs::canonicalize(&path)?;
+        let relative = canonical_path.strip_prefix(canonical_root).map_err(|_| {
+            anyhow::anyhow!("provider-sync backup db file resolves outside its directory")
+        })?;
+        files.insert(
+            validated_backup_relative_path(relative)?
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+    }
+    Ok(())
+}
+
+fn read_session_transaction(backup_dir: &Path) -> anyhow::Result<SessionTransactionManifest> {
+    let transaction: SessionTransactionManifest =
+        serde_json::from_slice(&fs::read(backup_dir.join(SESSION_TRANSACTION_FILE))?)?;
+    if transaction.version != 1 || transaction.namespace != SESSION_TRANSACTION_NAMESPACE {
+        anyhow::bail!("unsupported provider-sync rollout transaction manifest");
+    }
+    if transaction.transaction_id.len() != 32
+        || !transaction
+            .transaction_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        anyhow::bail!("invalid provider-sync rollout transaction id");
+    }
+    for (name, root) in &transaction.rollout_roots {
+        if !SESSION_DIRS.contains(&name.as_str())
+            || !Path::new(&root.canonical_path).is_absolute()
+            || root.identity.trim().is_empty()
+        {
+            anyhow::bail!("invalid provider-sync rollout root evidence");
+        }
+    }
+    for entry in &transaction.entries {
+        for hash in [
+            Some(entry.original_sha256.as_str()),
+            Some(entry.next_sha256.as_str()),
+            Some(entry.session_meta_backup_sha256.as_str()),
+            entry.external_sha256.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                anyhow::bail!("invalid provider-sync rollout transaction hash");
+            }
+        }
+        if entry.external_sha256.is_some() != entry.external_size.is_some() {
+            anyhow::bail!("incomplete provider-sync external restore decision");
+        }
+    }
+    Ok(transaction)
+}
+
+fn write_session_transaction(
+    backup_dir: &Path,
+    transaction: &SessionTransactionManifest,
+) -> anyhow::Result<()> {
+    codex_plus_core::settings::atomic_write(
+        &backup_dir.join(SESSION_TRANSACTION_FILE),
+        &serde_json::to_vec_pretty(transaction)?,
+    )
+}
+
+fn rollout_relative_path(home: &Path, path: &Path) -> anyhow::Result<String> {
+    let canonical_home = fs::canonicalize(home)?;
+    let relative = path
+        .strip_prefix(home)
+        .or_else(|_| path.strip_prefix(&canonical_home))
+        .map_err(|_| anyhow::anyhow!("rollout is outside Codex home: {}", path.display()))?;
+    validated_rollout_relative_path(&relative.to_string_lossy().replace('\\', "/"))?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn validated_rollout_relative_path(value: &str) -> anyhow::Result<PathBuf> {
+    let path = PathBuf::from(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("invalid provider-sync rollout transaction path");
+    }
+    let Some(first) = path.components().next() else {
+        anyhow::bail!("empty provider-sync rollout transaction path");
+    };
+    let std::path::Component::Normal(first) = first else {
+        anyhow::bail!("invalid provider-sync rollout transaction root");
+    };
+    if !SESSION_DIRS
+        .iter()
+        .any(|root| first == std::ffi::OsStr::new(root))
+    {
+        anyhow::bail!("provider-sync transaction path is outside rollout roots");
+    }
+    Ok(path)
+}
+
+fn session_transaction_rollout_roots(
+    home: &Path,
+) -> anyhow::Result<HashMap<String, SessionTransactionRootEvidence>> {
+    let canonical_home = fs::canonicalize(home)?;
+    let mut roots = HashMap::new();
+    for dirname in SESSION_DIRS {
+        let root = home.join(dirname);
+        if !root.exists() {
+            continue;
+        }
+        let canonical_root = fs::canonicalize(&root)?;
+        if !canonical_root.starts_with(&canonical_home) {
+            anyhow::bail!("provider-sync rollout root resolves outside Codex home");
+        }
+        roots.insert(
+            dirname.to_string(),
+            SessionTransactionRootEvidence {
+                canonical_path: canonical_root.to_string_lossy().to_string(),
+                identity: rollout_root_identity(&root)?,
+            },
+        );
+    }
+    Ok(roots)
+}
+
+fn rollout_root_identity(path: &Path) -> anyhow::Result<String> {
+    ensure_not_reparse_or_symlink(path)?;
+    codex_plus_core::settings::directory_instance_identity(path)
+}
+
+fn ensure_not_reparse_or_symlink(path: &Path) -> anyhow::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            anyhow::bail!(
+                "provider-sync path cannot be a reparse point: {}",
+                path.display()
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("provider-sync path cannot be a symlink: {}", path.display());
+    }
+    Ok(())
+}
+
+fn ensure_path_components_not_reparse(root: &Path, target: &Path) -> anyhow::Result<()> {
+    let relative = target
+        .strip_prefix(root)
+        .map_err(|_| anyhow::anyhow!("provider-sync path is outside its validated root"))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            anyhow::bail!("provider-sync path contains an invalid component");
+        };
+        current.push(name);
+        ensure_not_reparse_or_symlink(&current)?;
+    }
+    Ok(())
+}
+
+fn validated_rollout_transaction_path(
+    home: &Path,
+    value: &str,
+    rollout_roots: &HashMap<String, SessionTransactionRootEvidence>,
+) -> anyhow::Result<PathBuf> {
+    let relative = validated_rollout_relative_path(value)?;
+    let root_name = relative
+        .components()
+        .next()
+        .and_then(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_os_string()),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("provider-sync rollout path has no root"))?;
+    let root_name_text = root_name.to_string_lossy();
+    let expected_root = rollout_roots
+        .get(root_name_text.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("provider-sync rollout root was not recorded"))?;
+    let path = home.join(&relative);
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("provider-sync rollout path has no parent"))?;
+    let canonical_home = fs::canonicalize(home)?;
+    let root = home.join(&root_name);
+    let canonical_root = fs::canonicalize(&root)?;
+    if !canonical_root.starts_with(&canonical_home) {
+        anyhow::bail!("provider-sync rollout root resolves outside Codex home");
+    }
+    if canonical_root != PathBuf::from(&expected_root.canonical_path)
+        || rollout_root_identity(&root)? != expected_root.identity
+    {
+        anyhow::bail!("provider-sync rollout root identity changed after backup");
+    }
+    let canonical_parent = fs::canonicalize(parent)?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        anyhow::bail!("provider-sync rollout path resolves outside rollout roots");
+    }
+    ensure_path_components_not_reparse(&root, parent)?;
+    if path.exists() && !fs::canonicalize(&path)?.starts_with(&canonical_root) {
+        anyhow::bail!("provider-sync rollout path resolves outside Codex home");
+    }
+    if path.exists() {
+        ensure_path_components_not_reparse(&root, &path)?;
+    }
+    Ok(path)
+}
+
+fn cleanup_transaction_staged_files(home: &Path, transaction_id: &str) -> std::io::Result<()> {
+    for dirname in SESSION_DIRS {
+        cleanup_transaction_staged_files_in(&home.join(dirname), transaction_id)?;
+    }
+    Ok(())
+}
+
+fn cleanup_transaction_staged_files_in(root: &Path, transaction_id: &str) -> std::io::Result<()> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            cleanup_transaction_staged_files_in(&path, transaction_id)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let should_remove = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| provider_sync_temp_name_belongs(name, transaction_id));
+        if should_remove {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+fn provider_sync_temp_name_belongs(name: &str, transaction_id: &str) -> bool {
+    let Some(body) = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    for kind in ["", "displaced-", "rejected-"] {
+        let marker = format!(".provider-sync-{kind}{transaction_id}-");
+        if let Some((rollout_name, index)) = body.rsplit_once(&marker) {
+            return !rollout_name.is_empty()
+                && !index.is_empty()
+                && index.bytes().all(|byte| byte.is_ascii_digit());
+        }
+    }
+    let marker = format!(".provider-sync-restore-{transaction_id}");
+    body.strip_suffix(&marker)
+        .is_some_and(|rollout_name| !rollout_name.is_empty())
+}
+
+fn file_sha256_and_size(path: &Path) -> std::io::Result<(String, u64)> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        size += read as u64;
+    }
+    Ok((format!("{:x}", hasher.finalize()), size))
+}
+
+fn system_time_parts(time: Option<SystemTime>) -> (Option<u64>, Option<u32>) {
+    let Some(time) = time else {
+        return (None, None);
+    };
+    let Ok(duration) = time.duration_since(UNIX_EPOCH) else {
+        return (None, None);
+    };
+    (Some(duration.as_secs()), Some(duration.subsec_nanos()))
+}
+
+fn restore_file_mtime_parts(path: &Path, secs: Option<u64>, nanos: Option<u32>) {
+    let Some(secs) = secs else { return };
+    let time = UNIX_EPOCH + std::time::Duration::new(secs, nanos.unwrap_or_default());
+    restore_file_mtime(path, Some(time));
+}
+
+fn is_locked_io_error_from_anyhow(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .is_some_and(is_locked_io_error)
 }
 
 fn open_session_file_for_update(path: &Path) -> std::io::Result<File> {
@@ -2644,9 +4285,7 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
     Ok(sorted_provider_ids(ids))
 }
 
-fn sqlite_provider_sync_thread_kinds(
-    paths: &[PathBuf],
-) -> anyhow::Result<ProviderSyncThreadKinds> {
+fn sqlite_provider_sync_thread_kinds(paths: &[PathBuf]) -> anyhow::Result<ProviderSyncThreadKinds> {
     let mut kinds = ProviderSyncThreadKinds::default();
     for path in paths {
         if !path.exists() {
@@ -2809,38 +4448,6 @@ fn remote_control_catalog_recovery_thread_ids(
     Ok(known_thread_ids)
 }
 
-fn rollout_thread_provider_state(text: &str) -> Option<(String, HashSet<String>)> {
-    let mut thread_id = None;
-    let mut providers = HashSet::new();
-    for segment in text.split_inclusive('\n') {
-        let (line, _) = split_line_ending(segment);
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
-            continue;
-        }
-        let Some(payload) = record.get("payload").and_then(Value::as_object) else {
-            continue;
-        };
-        if thread_id.is_none() {
-            thread_id = payload
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.trim().is_empty())
-                .map(ToString::to_string);
-        }
-        providers.insert(
-            payload
-                .get("model_provider")
-                .and_then(Value::as_str)
-                .unwrap_or("(missing)")
-                .to_string(),
-        );
-    }
-    thread_id.map(|thread_id| (thread_id, providers))
-}
-
 fn provider_update_thread_ids(
     db: &Connection,
     table: &str,
@@ -2877,14 +4484,9 @@ fn count_sqlite_updates(
     let catalog_columns = table_columns(&db, "local_thread_catalog")?;
     let mut total = 0;
     if columns.contains("id") && columns.contains("model_provider") {
-        total += provider_update_thread_ids(
-            &db,
-            "threads",
-            "id",
-            target_provider,
-            excluded_thread_ids,
-        )?
-        .len();
+        total +=
+            provider_update_thread_ids(&db, "threads", "id", target_provider, excluded_thread_ids)?
+                .len();
     }
     if catalog_columns.contains("thread_id") && catalog_columns.contains("model_provider") {
         total += provider_update_thread_ids(
@@ -2962,13 +4564,9 @@ fn apply_sqlite_update(
     let tx = db.transaction()?;
     let mut counts = SqliteUpdateCounts::default();
     if columns.contains("id") && columns.contains("model_provider") {
-        for thread_id in provider_update_thread_ids(
-            &tx,
-            "threads",
-            "id",
-            target_provider,
-            excluded_thread_ids,
-        )? {
+        for thread_id in
+            provider_update_thread_ids(&tx, "threads", "id", target_provider, excluded_thread_ids)?
+        {
             counts.provider_rows += tx.execute(
                 "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND COALESCE(model_provider, '') <> ?1",
                 (target_provider, thread_id),
@@ -3217,9 +4815,7 @@ fn repair_missing_local_thread_catalog_rows_filtered(
     update_full_sync_state: bool,
 ) -> anyhow::Result<CatalogRepairCounts> {
     let plan = collect_catalog_repair_plan(home, paths, target_provider, thread_ids)?;
-    if plan.threads.is_empty()
-        && (!update_full_sync_state || !plan.has_cleanup_candidates())
-    {
+    if plan.threads.is_empty() && (!update_full_sync_state || !plan.has_cleanup_candidates()) {
         return Ok(CatalogRepairCounts::default());
     }
     let mut total = CatalogRepairCounts::default();
@@ -3519,8 +5115,7 @@ fn collect_catalog_marked_non_root_thread_ids(
             if thread_source_is_user(thread_source.as_deref()) {
                 continue;
             }
-            if source_marks_non_root_agent(&source_kind) || spawned_child_ids.contains(&thread_id)
-            {
+            if source_marks_non_root_agent(&source_kind) || spawned_child_ids.contains(&thread_id) {
                 thread_ids_by_path
                     .entry(path.clone())
                     .or_default()
@@ -3544,8 +5139,7 @@ fn is_catalog_non_root_agent(
     if thread_source_is_user(thread.thread_source.as_deref()) {
         return false;
     }
-    source_marks_non_root_agent(&thread.source_kind)
-        || spawned_child_ids.contains(&thread.id)
+    source_marks_non_root_agent(&thread.source_kind) || spawned_child_ids.contains(&thread.id)
 }
 
 fn thread_source_is_user(thread_source: Option<&str>) -> bool {
@@ -3556,8 +5150,7 @@ fn thread_source_is_user(thread_source: Option<&str>) -> bool {
 
 fn thread_source_marks_non_root(thread_source: Option<&str>) -> bool {
     thread_source.map(str::trim).is_some_and(|value| {
-        value.eq_ignore_ascii_case("subagent")
-            || value.eq_ignore_ascii_case("memory_consolidation")
+        value.eq_ignore_ascii_case("subagent") || value.eq_ignore_ascii_case("memory_consolidation")
     })
 }
 
@@ -4059,6 +5652,215 @@ fn now_secs() -> u64 {
 }
 
 #[cfg(test)]
+mod bounded_memory_tests {
+    use super::*;
+    use std::io::{BufWriter, Write};
+    use tempfile::tempdir;
+
+    #[test]
+    fn collection_retains_metadata_instead_of_rollout_payloads() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let chunk = vec![b'A'; 64 * 1024];
+        for index in 0..8 {
+            let path = home.join(format!("sessions/rollout-{index}.jsonl"));
+            let mut writer = BufWriter::new(File::create(path).unwrap());
+            writeln!(
+                writer,
+                "{}",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": format!("thread-{index}"),
+                        "model_provider": "openai",
+                        "cwd": "C:/workspace"
+                    }
+                })
+            )
+            .unwrap();
+            writer
+                .write_all(b"{\"type\":\"event_msg\",\"payload\":{\"blob\":\"")
+                .unwrap();
+            for _ in 0..16 {
+                writer.write_all(&chunk).unwrap();
+            }
+            writer.write_all(b"\"}}\n").unwrap();
+            writer.flush().unwrap();
+        }
+
+        let collected =
+            collect_session_changes(&home, "custom", &HashSet::new(), &HashSet::new()).unwrap();
+
+        assert_eq!(collected.changes.len(), 8);
+        let retained_bytes = collected
+            .changes
+            .iter()
+            .map(|change| {
+                change.original_sha256.len()
+                    + change.thread_id.as_ref().map_or(0, String::len)
+                    + change.cwd.as_ref().map_or(0, String::len)
+            })
+            .sum::<usize>();
+        assert!(
+            retained_bytes < 64 * 1024,
+            "retained {retained_bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn repeated_session_meta_providers_are_retained_once() {
+        let tmp = tempdir().unwrap();
+        let rollout = tmp.path().join("rollout-many-meta.jsonl");
+        let mut writer = BufWriter::new(File::create(&rollout).unwrap());
+        for index in 0..10_000 {
+            writeln!(
+                writer,
+                "{}",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": format!("thread-{index}"),
+                        "model_provider": "openai"
+                    }
+                })
+            )
+            .unwrap();
+        }
+        writer.flush().unwrap();
+
+        let rewrite = scan_rollout_session_meta_providers(
+            &rollout,
+            "custom",
+            &SessionRewriteMode::AllProviders,
+        )
+        .unwrap();
+
+        assert_eq!(rewrite.session_meta_count, 10_000);
+        assert_eq!(rewrite.providers, HashSet::from(["openai".to_string()]));
+    }
+
+    #[test]
+    fn prepared_backup_handle_keeps_the_verified_file_instance() {
+        let tmp = tempdir().unwrap();
+        let backup_dir = tmp.path().join("backup");
+        let source = backup_dir.join("db/state_5.sqlite");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"verified-backup").unwrap();
+        let (sha256, size) = file_sha256_and_size(&source).unwrap();
+        let evidence = HashMap::from([(
+            "db/state_5.sqlite".to_string(),
+            ProviderSyncBackupFileEvidence { size, sha256 },
+        )]);
+        let mut prepared = prepare_provider_sync_backup_files(
+            &backup_dir,
+            &evidence,
+            "0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+
+        fs::write(&source, b"replacement-path-content").unwrap();
+        let prepared = prepared.files.get_mut("db/state_5.sqlite").unwrap();
+        prepared.file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        prepared.file.read_to_end(&mut bytes).unwrap();
+
+        assert_eq!(bytes, b"verified-backup");
+        assert_eq!(fs::read(source).unwrap(), b"replacement-path-content");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollout_discovery_rejects_nested_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, home.join("sessions/link")).unwrap();
+
+        let error = rollout_files(&home).unwrap_err();
+
+        assert!(error.to_string().contains("symlink"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rollout_discovery_rejects_nested_junctions() {
+        use std::process::Command;
+
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let link = home.join("sessions/link");
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "New-Item -ItemType Junction -Path $env:CODEXPP_TEST_LINK -Target $env:CODEXPP_TEST_TARGET | Out-Null",
+            ])
+            .env("CODEXPP_TEST_LINK", &link)
+            .env("CODEXPP_TEST_TARGET", &outside)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "junction creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let error = rollout_files(&home).unwrap_err();
+
+        assert!(error.to_string().contains("reparse point"));
+        fs::remove_dir(link).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn downstream_directory_guard_blocks_parent_replacement() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let moved = tmp.path().join("moved-home");
+        fs::create_dir(&home).unwrap();
+        let guards = prepare_provider_sync_target_parents(&home, &[]).unwrap();
+
+        assert!(fs::rename(&home, &moved).is_err());
+        drop(guards);
+        fs::rename(&home, &moved).unwrap();
+    }
+
+    #[test]
+    fn orphan_cleanup_requires_an_exact_transaction_temp_name() {
+        let transaction_id = "0123456789abcdef0123456789abcdef";
+        assert!(provider_sync_temp_name_belongs(
+            ".rollout-a.jsonl.provider-sync-0123456789abcdef0123456789abcdef-4.tmp",
+            transaction_id
+        ));
+        assert!(provider_sync_temp_name_belongs(
+            ".rollout-a.jsonl.provider-sync-displaced-0123456789abcdef0123456789abcdef-4.tmp",
+            transaction_id
+        ));
+        assert!(provider_sync_temp_name_belongs(
+            ".rollout-a.jsonl.provider-sync-restore-0123456789abcdef0123456789abcdef.tmp",
+            transaction_id
+        ));
+        assert!(!provider_sync_temp_name_belongs(
+            ".user.provider-sync-note-0123456789abcdef0123456789abcdef.tmp",
+            transaction_id
+        ));
+        assert!(!provider_sync_temp_name_belongs(
+            ".rollout-a.jsonl.provider-sync-0123456789abcdef0123456789abcdef-x.tmp",
+            transaction_id
+        ));
+    }
+}
+
+#[cfg(test)]
 mod non_root_agent_tests {
     use super::*;
 
@@ -4068,7 +5870,9 @@ mod non_root_agent_tests {
 
     #[test]
     fn structured_subagent_markers_still_identify_child_threads() {
-        assert!(marks_non_root(r#"{"subagent":{"thread_spawn":{"depth":1}}}"#));
+        assert!(marks_non_root(
+            r#"{"subagent":{"thread_spawn":{"depth":1}}}"#
+        ));
         assert!(marks_non_root(r#"{"sub_agent":{"other":"review"}}"#));
         assert!(marks_non_root(r#"{"internal":true}"#));
     }

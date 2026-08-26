@@ -1685,7 +1685,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let temp_path = temp_path_for(path);
     fs::write(&temp_path, bytes)
         .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
-    if let Err(error) = replace_file(&temp_path, path) {
+    if let Err(error) = atomic_replace_file(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(error).with_context(|| {
             format!(
@@ -1699,13 +1699,13 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+pub fn atomic_replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
     fs::rename(source, target)?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+pub fn atomic_replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -1727,6 +1727,130 @@ fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
             PCWSTR(source.as_ptr()),
             PCWSTR(target.as_ptr()),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn atomic_replace_file_with_backup(
+    replacement: &Path,
+    target: &Path,
+    backup: &Path,
+) -> anyhow::Result<()> {
+    if backup.exists() {
+        anyhow::bail!(
+            "atomic replacement backup already exists: {}",
+            backup.display()
+        );
+    }
+    fs::rename(target, backup)?;
+    if let Err(error) = fs::hard_link(replacement, target) {
+        if !target.exists() {
+            let _ = fs::rename(backup, target);
+        }
+        return Err(error.into());
+    }
+    fs::remove_file(replacement)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn directory_instance_identity(path: &Path) -> anyhow::Result<String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(path)?;
+    file_instance_identity(&directory)
+}
+
+#[cfg(windows)]
+pub fn file_instance_identity(file: &fs::File) -> anyhow::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe {
+        GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut information)?;
+    }
+    Ok(format!(
+        "windows:{}:{:08x}{:08x}",
+        information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow
+    ))
+}
+
+#[cfg(unix)]
+pub fn directory_instance_identity(path: &Path) -> anyhow::Result<String> {
+    file_instance_identity(&fs::File::open(path)?)
+}
+
+#[cfg(unix)]
+pub fn file_instance_identity(file: &fs::File) -> anyhow::Result<String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = file.metadata()?;
+    Ok(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(any(windows, unix)))]
+pub fn directory_instance_identity(path: &Path) -> anyhow::Result<String> {
+    file_instance_identity(&fs::File::open(path)?)
+}
+
+#[cfg(not(any(windows, unix)))]
+pub fn file_instance_identity(file: &fs::File) -> anyhow::Result<String> {
+    let metadata = file.metadata()?;
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(format!(
+        "generic:{}:{}:{}",
+        metadata.len(),
+        modified.as_secs(),
+        modified.subsec_nanos()
+    ))
+}
+
+#[cfg(windows)]
+pub fn atomic_replace_file_with_backup(
+    replacement: &Path,
+    target: &Path,
+    backup: &Path,
+) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{REPLACE_FILE_FLAGS, ReplaceFileW};
+    use windows::core::PCWSTR;
+
+    let replacement = replacement
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let backup = backup
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        ReplaceFileW(
+            PCWSTR(target.as_ptr()),
+            PCWSTR(replacement.as_ptr()),
+            PCWSTR(backup.as_ptr()),
+            REPLACE_FILE_FLAGS(0),
+            None,
+            None,
         )?;
     }
     Ok(())
@@ -1770,6 +1894,34 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.join("settings.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_replace_file_with_backup_preserves_the_displaced_file() {
+        let dir = temp_dir();
+        let target = dir.join("target.json");
+        let replacement = dir.join("replacement.json");
+        let backup = dir.join("displaced.json");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::write(&replacement, b"new").unwrap();
+
+        atomic_replace_file_with_backup(&replacement, &target, &backup).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"old");
+        assert!(!replacement.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn directory_instance_identity_is_stable_for_the_same_directory() {
+        let dir = temp_dir();
+
+        let first = directory_instance_identity(&dir).unwrap();
+        let second = directory_instance_identity(&dir).unwrap();
+
+        assert_eq!(first, second);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
