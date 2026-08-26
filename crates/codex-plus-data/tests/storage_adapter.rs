@@ -492,6 +492,40 @@ fn delete_codex_thread_sqlite_dir_layout_removes_session_index_entry_and_undo_re
     assert_eq!(thread_count(&db_path, "t1"), 1);
 }
 
+/// 删除成功后必须一并清 session_index.jsonl，否则重启后 UI 从索引读，
+/// 会话又冒出来、再删再冒（#1979）。
+///
+/// 三种 schema 里原先只有 delete_codex_thread 清了索引，这条覆盖 generic
+/// sessions 那条路径。
+#[test]
+fn delete_local_clears_the_session_index_for_generic_sessions() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("codex-home");
+    fs::create_dir_all(&home).unwrap();
+    let db_path = tmp.path().join("generic.sqlite");
+    create_supported_db(&db_path);
+    fs::write(
+        home.join("session_index.jsonl"),
+        "{\"id\":\"s1\",\"thread_name\":\"A\",\"updated_at\":\"2026-08-26T00:00:00Z\"}\n\
+{\"id\":\"keep\",\"thread_name\":\"B\",\"updated_at\":\"2026-08-26T00:00:00Z\"}\n",
+    )
+    .unwrap();
+
+    let result = SQLiteStorageAdapter::new(db_path, BackupStore::new(tmp.path().join("backups")))
+        .with_codex_home(&home)
+        .delete_local(&session("s1", "Session"));
+
+    assert_eq!(
+        result.status,
+        DeleteStatus::LocalDeleted,
+        "{}",
+        result.message
+    );
+    let index_text = fs::read_to_string(home.join("session_index.jsonl")).unwrap();
+    assert!(!index_text.contains("\"s1\""), "删除后索引里不该还有该会话");
+    assert!(index_text.contains("keep"), "其它会话不该被误删");
+}
+
 /// 纯 API 模式（model_provider = "custom"）下 threads 表是空的，删除会话时每个
 /// 数据库都查不到记录，于是报「Thread not found in local storage」而会话行仍留在
 /// 列表里——因为 UI 读的是 session_index.jsonl，那条记录没人清（#1998）。

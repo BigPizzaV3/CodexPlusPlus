@@ -184,7 +184,27 @@ impl SQLiteStorageAdapter {
                 )),
             }
         })();
-        result.unwrap_or_else(|err| failed(&session.session_id, err.to_string()))
+        let mut result = result.unwrap_or_else(|err| failed(&session.session_id, err.to_string()));
+        // 删成功就一并清 session_index.jsonl。
+        //
+        // 放在这个统一出口而不是各个 delete_* 里：三种 schema 里原先只有
+        // delete_codex_thread 清了索引，另外两种删掉数据库行却把索引条目留着，
+        // 于是重启后 UI 从索引读，会话又冒出来，再删再冒（#1979）。放在出口
+        // 处理，将来加新 schema 也不会漏。
+        //
+        // delete_codex_thread 里那次调用保留：它需要把清理失败并进自己那条
+        // 「数据库已删但文件删除失败」的消息里；这里对已清理过的再调一次是幂等的
+        // （条目已不在，返回 0）。
+        if matches!(result.status, DeleteStatus::LocalDeleted)
+            && let Some(home) = self.codex_home.as_deref()
+        {
+            let thread_id = normalize_codex_thread_id(&session.session_id);
+            if let Err(error) = crate::provider_sync::remove_session_index_entry(home, &thread_id) {
+                result.message =
+                    format!("{}；session_index.jsonl 清理失败：{error}", result.message);
+            }
+        }
+        result
     }
 
     pub fn list_local_sessions(&self) -> anyhow::Result<Vec<LocalSession>> {
