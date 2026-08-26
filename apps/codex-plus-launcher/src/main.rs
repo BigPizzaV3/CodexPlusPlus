@@ -356,6 +356,10 @@ impl LaunchHooks for LauncherHooks {
         self.core.load_settings().await
     }
 
+    fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
+        self.core.cleanup_unsupported_config()
+    }
+
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
         let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
             .await

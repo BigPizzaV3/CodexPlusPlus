@@ -63,14 +63,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://aigocode.com/invite/CodexPlusPlus">
-        <img src="docs/images/sponsor-aigocode.png" alt="AIGoCode" height="80">
-      </a>
-    </td>
-    <td><a href="https://aigocode.com/invite/CodexPlusPlus"><strong>AIGoCode</strong></a><br>感谢 AIGoCode 赞助了本项目！AIGoCode 是一个集成了 Claude Code、Codex 以及 Gemini 最新模型的一站式平台，为你提供稳定、高效且高性价比的AI编程服务。本站提供灵活的订阅计划，支持多风险，国内直连，无需魔法，极速响应。AIGoCode 为 CodexPlusPlus 的用户提供了特别福利，通过<a href="https://aigocode.com/invite/CodexPlusPlus">此链接注册</a>的用户首次充值可以获得额外10%奖励额度！</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://apikey.fun/register?aff=CODEX">
         <img src="docs/images/sponsor-apikey-fun.png" alt="APIKEY.FUN" height="80">
       </a>
@@ -79,11 +71,11 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://cubence.com?source=codexplusplus">
-        <img src="docs/images/sponsor-cubence.png" alt="Cubence" height="80">
+      <a href="https://runapi.host/register?aff=AWJq">
+        <img src="docs/images/sponsor-runapi.png" alt="RunAPI" width="150">
       </a>
     </td>
-    <td><a href="https://cubence.com?source=codexplusplus"><strong>Cubence</strong></a><br>感谢 Cubence 对本项目的支持。Cubence 是一家致力为客户提供稳定、高效的 API 中转服务商。从 25 年 9 月运营至今，提供了 Claude Code、Codex、Gemini 等多种模型支持。Cubence 为本开源项目多用户提供了特别的专属优惠 <code>CODEXPLUSPLUS</code>，在首次购买时享受 8.8 折优惠！</td>
+    <td><a href="https://runapi.host/register?aff=AWJq"><strong>RunAPI</strong></a><br>RunAPI 是高效稳定的 API OpenRouter 平替平台，一个 API Key 即可访问 OpenAI、Claude、Gemini、DeepSeek、Grok 等 150+ 主流模型，低至 1 折，极其稳定，可以无缝兼容 Claude Code、OpenClaw 等工具。</td>
   </tr>
   <tr>
     <td align="center">
@@ -111,14 +103,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://sui-xiang.com/">
-        <img src="docs/images/sponsor-sui-xiang-ai-gateway.jpg" alt="随想AI网关" width="150">
-      </a>
-    </td>
-    <td><a href="https://sui-xiang.com/"><strong>随想AI网关</strong></a><br>感谢随想AI网关对本项目的赞助！随想AI网关是一家可靠高效的 API 中继服务提供商，提供 Claude、Codex、Gemini 等中继服务，注重隐私，承诺无数据倒卖、无模型掺水，并提供透明、快速的售后支持。新账户注册每日签到送 0.5 元测试额度，充值额度 1:1，无需订阅，按量付费。</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html">
         <img src="docs/images/sponsor-volcengine.png" alt="火山引擎" height="80">
       </a>
@@ -127,35 +111,11 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://ergouapi.com/r/gh-codexplusplus">
-        <img src="docs/images/sponsor-ergou-api.png" alt="二狗 API" height="80">
-      </a>
-    </td>
-    <td><a href="https://ergouapi.com/r/gh-codexplusplus"><strong>二狗 API</strong></a><br>二狗，稳如老狗的 AI API 中转站。全站 0.1x~0.2x 超低倍率，提供 Claude/GPT/Gemini 等多个国内外 100% 纯血大模型接口，顶级 IPLC 线路 + 住宅双 ISP 冗余，确保全国范围稳定低延迟访问。欢迎各位开发者、工作室注册使用。</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://aihub.top/register?aff=ZYD8UJV274HD">
-        <img src="docs/images/sponsor-aihub.jpg" alt="AIHub" height="80">
-      </a>
-    </td>
-    <td><a href="https://aihub.top/register?aff=ZYD8UJV274HD"><strong>AIHub</strong></a><br>AIHub 是一家面向个人开发者和企业团队的高可用 AI 模型 API 中转平台。支持 Codex / ClaudeCode，价格约为官方 1 折不到。我们不生产 Token，我们是 Token 搬运工！通过<a href="https://aihub.top/register?aff=ZYD8UJV274HD">此链接注册</a>并使用优惠码 <code>CODEXPLUSPLUS</code>，即可获得 3$ 测试额度。</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8">
         <img src="docs/images/sponsor-baikewei-ai.jpg" alt="百可为AI" height="80">
       </a>
     </td>
     <td><a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8"><strong>百可为AI</strong></a><br>百可为AI 是面向开发者、团队和 AI 工具用户的一站式大模型 API 服务平台，支持 Claude、OpenAI、Gemini、Codex 等主流模型能力接入。平台提供稳定中转、灵活计费、用量统计、余额管理和多场景 API 调用能力，适合 Claude Code、Codex、AI 生图、自动化脚本和各类智能应用长期使用。新用户注册可领取免费额度，开发者可快速接入、即开即用，让 AI 能力更稳定、更高效、更省心。</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">
-        <img src="docs/images/sponsor-sublyx.png" alt="Sublyx" width="220">
-      </a>
-    </td>
-    <td><a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6"><strong>Sublyx｜AI API Gateway</strong></a><br>感谢 Sublyx 赞助本项目！Sublyx 是面向开发者与团队的 AI API 聚合网关，一个 API Key 即可统一接入 OpenAI、Claude、Gemini 等主流模型服务，支持 OpenAI compatible 和 Anthropic Messages 等兼容接口，可用于 Codex、Claude Code、Cherry Studio、OpenAI SDK 等常见开发工具。平台提供统一控制台、用量管理、稳定线路与按需付费能力，适合个人开发、团队协作和 Agent 工作流。Codex++ 用户通过<a href="https://api.sublyx.org/register?aff=JMNUFYR8XAH6">此链接注册 Sublyx</a>并使用优惠码 <code>CDXPP</code>，可额外领取 $10 使用额度。</td>
   </tr>
   <tr>
     <td align="center">
