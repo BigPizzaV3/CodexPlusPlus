@@ -4,7 +4,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
@@ -631,7 +631,12 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub async fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     let error_payload = request.clone();
-    match tauri::async_runtime::spawn_blocking(move || restart_codex_plus_blocking(request)).await {
+    match tauri::async_runtime::spawn_blocking(move || {
+        let target_cdp_endpoint = codex_plus_core::cdp::endpoint_address(request.debug_port);
+        restart_codex_plus_blocking(request, target_cdp_endpoint)
+    })
+    .await
+    {
         Ok(result) => result,
         Err(error) => failed(
             &format!("重启 Codex++ 后台任务失败：{error}"),
@@ -644,11 +649,61 @@ pub async fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> 
     }
 }
 
-fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartDisposition {
+    LaunchOnly,
+    StopAndRestart,
+}
+
+fn restart_disposition(sync_active_relay: bool, target_cdp_reachable: bool) -> RestartDisposition {
+    if !sync_active_relay && !target_cdp_reachable {
+        RestartDisposition::LaunchOnly
+    } else {
+        RestartDisposition::StopAndRestart
+    }
+}
+
+fn restart_codex_plus_blocking(
+    request: LaunchRequest,
+    target_cdp_endpoint: Option<std::net::SocketAddr>,
+) -> CommandResult<Value> {
+    let restart_started = Instant::now();
     let _restart_guard = match try_acquire_restart_guard() {
         Ok(guard) => guard,
         Err(message) => return failed(message, json!({})),
     };
+    let target_cdp_reachable = target_cdp_endpoint.is_some();
+    let disposition = restart_disposition(request.sync_active_relay, target_cdp_reachable);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.restart_requested",
+        json!({
+            "debug_port": request.debug_port,
+            "helper_port": request.helper_port,
+            "app_path": request.app_path.trim(),
+            "sync_active_relay": request.sync_active_relay,
+            "target_cdp_reachable": target_cdp_reachable,
+            "target_cdp_endpoint": target_cdp_endpoint.map(|endpoint| endpoint.to_string()),
+            "disposition": match disposition {
+                RestartDisposition::LaunchOnly => "launch_only",
+                RestartDisposition::StopAndRestart => "stop_and_restart",
+            },
+        }),
+    );
+    if disposition == RestartDisposition::LaunchOnly {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "manager.restart_as_launch",
+            json!({
+                "debug_port": request.debug_port,
+                "elapsed_ms": restart_started.elapsed().as_millis(),
+            }),
+        );
+        return spawn_codex_plus_launch(
+            request,
+            "目标 Codex App CDP 不可达，已按启动方式在后台尝试唤起。",
+        );
+    }
+
+    let provider_guard_started = Instant::now();
     let provider_sync_guard = match ensure_provider_sync_is_idle_before_stop() {
         Ok(guard) => guard,
         Err(message) => {
@@ -662,6 +717,13 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
             );
         }
     };
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.restart_provider_guard_acquired",
+        json!({
+            "phase_elapsed_ms": provider_guard_started.elapsed().as_millis(),
+            "total_elapsed_ms": restart_started.elapsed().as_millis(),
+        }),
+    );
     let Ok(_relay_guard) = relay_switch_mutex().lock() else {
         return failed("供应商切换锁已损坏，请重启管理器后再试。", json!({}));
     };
@@ -681,18 +743,59 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     } else {
         None
     };
-    codex_plus_core::watcher::stop_launcher_processes_and_wait();
-    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    #[cfg(windows)]
+    let target_stop_plan = match codex_plus_core::watcher::prepare_windows_codex_stop_plan(
+        request.debug_port,
+        target_cdp_endpoint,
+    ) {
+        Ok(plan) => plan,
+        Err(message) => {
+            return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
+        }
+    };
+    if let Err(message) = codex_plus_core::watcher::stop_launcher_processes_and_wait() {
+        return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
+    }
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        "manager.restart_requested",
+        "manager.restart_launchers_stopped",
+        json!({ "total_elapsed_ms": restart_started.elapsed().as_millis() }),
+    );
+    #[cfg(windows)]
+    let targeted_stop_outcome =
+        match codex_plus_core::watcher::execute_windows_codex_stop_plan(target_stop_plan) {
+            Ok(outcome) => outcome,
+            Err(message) => {
+                return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
+            }
+        };
+    #[cfg(not(windows))]
+    let targeted_stop_outcome =
+        match codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
+            request.debug_port,
+        ) {
+            Ok(outcome) => outcome,
+            Err(message) => {
+                return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
+            }
+        };
+    #[cfg(windows)]
+    let targeted_stop_outcome = match targeted_stop_outcome {
+        codex_plus_core::watcher::TargetedStopOutcome::Stopped => "stopped",
+        codex_plus_core::watcher::TargetedStopOutcome::AlreadyAbsent => "already_absent",
+    };
+    #[cfg(not(windows))]
+    let targeted_stop_outcome = match targeted_stop_outcome {
+        codex_plus_core::watcher::TargetedStopOutcome::Stopped => "stopped",
+        codex_plus_core::watcher::TargetedStopOutcome::AlreadyAbsent => "already_absent",
+    };
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.restart_codex_stopped",
         json!({
-            "debug_port": request.debug_port,
-            "helper_port": request.helper_port,
-            "app_path": request.app_path.trim(),
-            "sync_active_relay": request.sync_active_relay
+            "total_elapsed_ms": restart_started.elapsed().as_millis(),
+            "outcome": targeted_stop_outcome,
         }),
     );
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
     let launch_started_at_ms = current_timestamp_ms();
     if let Err(error) = save_requested_launch_status(
         &request,
@@ -722,16 +825,22 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         settings.as_ref(),
         spawn_after_guard_release,
     ) {
-        Ok(()) => CommandResult {
-            status: "accepted".to_string(),
-            message: "Codex 已请求重启，启动任务正在后台运行。".to_string(),
-            payload: json!({
-                "debugPort": request.debug_port,
-                "helperPort": request.helper_port,
-                "syncActiveRelay": request.sync_active_relay,
-                "launchStartedAtMs": launch_started_at_ms
-            }),
-        },
+        Ok(()) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.restart_launcher_spawned",
+                json!({ "total_elapsed_ms": restart_started.elapsed().as_millis() }),
+            );
+            CommandResult {
+                status: "accepted".to_string(),
+                message: "Codex 已请求重启，启动任务正在后台运行。".to_string(),
+                payload: json!({
+                    "debugPort": request.debug_port,
+                    "helperPort": request.helper_port,
+                    "syncActiveRelay": request.sync_active_relay,
+                    "launchStartedAtMs": launch_started_at_ms
+                }),
+            }
+        }
         Err(error) => {
             let message = format!("重启 Codex++ 失败：{error}");
             let _ =
@@ -6230,6 +6339,88 @@ mod tests {
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload["syncStatus"], "synced");
+    }
+
+    #[test]
+    fn ordinary_restart_uses_launch_path_when_target_app_is_absent() {
+        assert_eq!(
+            restart_disposition(false, false),
+            RestartDisposition::LaunchOnly
+        );
+    }
+
+    #[test]
+    fn ordinary_restart_stops_and_restarts_when_target_app_is_running() {
+        assert_eq!(
+            restart_disposition(false, true),
+            RestartDisposition::StopAndRestart
+        );
+    }
+
+    #[test]
+    fn active_relay_restart_keeps_full_restart_when_target_app_is_absent() {
+        assert_eq!(
+            restart_disposition(true, false),
+            RestartDisposition::StopAndRestart
+        );
+    }
+
+    #[test]
+    fn restart_as_launch_decision_precedes_provider_sync_guard_wait() {
+        let source = include_str!("commands.rs");
+        let async_start = source
+            .find("pub async fn restart_codex_plus")
+            .expect("async restart command");
+        let start = source
+            .find("fn restart_codex_plus_blocking")
+            .expect("restart command");
+        let async_body = &source[async_start..start];
+        let end = source[start..]
+            .find("fn restart_codex_plus_after_stop")
+            .map(|offset| start + offset)
+            .expect("restart helper boundary");
+        let body = &source[start..end];
+        let launch_only = body
+            .find("if disposition == RestartDisposition::LaunchOnly")
+            .expect("restart-as-launch branch");
+        let provider_guard = body
+            .find("ensure_provider_sync_is_idle_before_stop")
+            .expect("provider sync guard wait");
+
+        assert!(async_body.contains("codex_plus_core::cdp::endpoint_address(request.debug_port)"));
+        assert!(!async_body.contains("watcher::cdp_listening"));
+        assert!(launch_only < provider_guard);
+        assert!(body[launch_only..provider_guard].contains("spawn_codex_plus_launch"));
+    }
+
+    #[test]
+    fn full_restart_prepares_and_revalidates_the_target_before_live_sync() {
+        let source = include_str!("commands.rs");
+        let start = source
+            .find("fn restart_codex_plus_blocking")
+            .expect("restart command");
+        let end = source[start..]
+            .find("fn restart_codex_plus_after_stop")
+            .map(|offset| start + offset)
+            .expect("restart helper boundary");
+        let body = &source[start..end];
+        let prepare = body
+            .find("prepare_windows_codex_stop_plan")
+            .expect("target identity capture");
+        let stop_launcher = body
+            .find("stop_launcher_processes_and_wait")
+            .expect("launcher stop");
+        let execute = body
+            .find("execute_windows_codex_stop_plan")
+            .expect("target identity recheck and stop");
+        let live_sync = body
+            .find("restart_codex_plus_after_stop")
+            .unwrap_or(body.len());
+
+        assert!(prepare < stop_launcher);
+        assert!(stop_launcher < execute);
+        assert!(execute < live_sync);
+        assert!(body[execute..live_sync].contains("return failed"));
     }
 
     #[test]

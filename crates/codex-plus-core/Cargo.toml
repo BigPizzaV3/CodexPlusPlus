@@ -31,6 +31,8 @@ zstd.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
   "Win32_Storage_EnhancedStorage",
   "Win32_Storage_FileSystem",
   "Win32_Storage_Packaging_Appx",

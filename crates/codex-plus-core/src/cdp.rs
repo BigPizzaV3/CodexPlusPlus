@@ -43,14 +43,19 @@ impl CdpBrowserIdentity {
     }
 }
 
-/// Returns whether the requested loopback port exposes a CDP target list.
-pub(crate) fn endpoint_available(debug_port: u16) -> bool {
+/// Returns whether the requested loopback port exposes the main Codex App CDP target.
+pub fn endpoint_available(debug_port: u16) -> bool {
+    endpoint_address(debug_port).is_some()
+}
+
+/// Returns the concrete loopback endpoint that exposes the main Codex App CDP target.
+pub fn endpoint_address(debug_port: u16) -> Option<SocketAddr> {
     [
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), debug_port),
         SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), debug_port),
     ]
     .into_iter()
-    .any(|address| probe_endpoint(address, debug_port))
+    .find(|address| probe_endpoint(*address, debug_port))
 }
 
 fn probe_endpoint(address: SocketAddr, debug_port: u16) -> bool {
@@ -379,14 +384,17 @@ mod endpoint_tests {
     }
 
     #[test]
-    fn endpoint_available_accepts_devtools_target_response() {
+    fn endpoint_address_returns_the_matching_loopback_family() {
         let (port, server) = serve_once(|port| {
             format!(
                 r#"[{{"id":"codex","type":"page","title":"Codex","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
             )
         });
 
-        assert!(endpoint_available(port));
+        assert_eq!(
+            endpoint_address(port),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        );
         server.join().unwrap();
     }
 

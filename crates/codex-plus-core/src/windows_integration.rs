@@ -3,9 +3,11 @@ use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
 use std::iter::once;
 #[cfg(windows)]
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::sync::OnceLock;
 
@@ -13,8 +15,16 @@ use std::sync::OnceLock;
 use anyhow::Context;
 #[cfg(windows)]
 use windows::Win32::Foundation::{
-    BOOL, CloseHandle, FILETIME, HANDLE, HWND, LPARAM, MAX_PATH, WPARAM,
+    BOOL, CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, HWND,
+    LPARAM, MAX_PATH, NO_ERROR, WPARAM,
 };
+#[cfg(windows)]
+use windows::Win32::NetworkManagement::IpHelper::{
+    GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
+    MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+};
+#[cfg(windows)]
+use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 #[cfg(windows)]
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -55,7 +65,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HICON, ICON_BIG, ICON_SMALL, SendMessageW, WM_SETICON,
 };
 #[cfg(windows)]
-use windows::core::{Interface, PCWSTR, PROPVARIANT, PWSTR};
+use windows::core::{HRESULT, Interface, PCWSTR, PROPVARIANT, PWSTR};
 
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -330,6 +340,171 @@ pub fn enumerate_processes() -> Vec<WindowsProcessInfo> {
 }
 
 #[cfg(windows)]
+pub fn tcp_listener_process_ids(address: SocketAddr) -> std::io::Result<Vec<u32>> {
+    let port = address.port();
+    let mut process_ids = match address.ip() {
+        IpAddr::V4(address) => tcp4_listener_process_ids(address, port),
+        IpAddr::V6(address) => tcp6_listener_process_ids(address, port),
+    }?;
+    process_ids.sort_unstable();
+    process_ids.dedup();
+    Ok(process_ids)
+}
+
+#[cfg(windows)]
+pub fn loopback_tcp_listener_process_ids(port: u16) -> std::io::Result<Vec<u32>> {
+    let mut process_ids = tcp4_listener_process_ids(Ipv4Addr::LOCALHOST, port)?;
+    process_ids.extend(tcp6_listener_process_ids(Ipv6Addr::LOCALHOST, port)?);
+    process_ids.sort_unstable();
+    process_ids.dedup();
+    Ok(process_ids)
+}
+
+#[cfg(windows)]
+fn tcp4_listener_process_ids(address: Ipv4Addr, port: u16) -> std::io::Result<Vec<u32>> {
+    let buffer = tcp_listener_table_buffer(AF_INET.0 as u32)?;
+    if buffer.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
+    let count = unsafe { (*table).dwNumEntries as usize };
+    validate_tcp_table_size(
+        buffer.len(),
+        count,
+        std::mem::size_of::<MIB_TCPROW_OWNER_PID>(),
+    )?;
+    let rows = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::addr_of!((*table).table).cast::<MIB_TCPROW_OWNER_PID>(),
+            count,
+        )
+    };
+    Ok(rows
+        .iter()
+        .filter(|row| {
+            network_port(row.dwLocalPort) == port && ipv4_listener_matches(row.dwLocalAddr, address)
+        })
+        .map(|row| row.dwOwningPid)
+        .collect())
+}
+
+#[cfg(windows)]
+fn tcp6_listener_process_ids(address: Ipv6Addr, port: u16) -> std::io::Result<Vec<u32>> {
+    let buffer = tcp_listener_table_buffer(AF_INET6.0 as u32)?;
+    if buffer.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table = buffer.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
+    let count = unsafe { (*table).dwNumEntries as usize };
+    validate_tcp_table_size(
+        buffer.len(),
+        count,
+        std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>(),
+    )?;
+    let rows = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::addr_of!((*table).table).cast::<MIB_TCP6ROW_OWNER_PID>(),
+            count,
+        )
+    };
+    Ok(rows
+        .iter()
+        .filter(|row| {
+            network_port(row.dwLocalPort) == port && ipv6_listener_matches(row.ucLocalAddr, address)
+        })
+        .map(|row| row.dwOwningPid)
+        .collect())
+}
+
+#[cfg(windows)]
+fn tcp_listener_table_buffer(address_family: u32) -> std::io::Result<Vec<u32>> {
+    let mut byte_len = 0u32;
+    let status = unsafe {
+        GetExtendedTcpTable(
+            None,
+            &mut byte_len,
+            false,
+            address_family,
+            TCP_TABLE_OWNER_PID_LISTENER,
+            0,
+        )
+    };
+    if status == NO_ERROR.0 && byte_len == 0 {
+        return Ok(Vec::new());
+    }
+    if status != ERROR_INSUFFICIENT_BUFFER.0 && status != NO_ERROR.0 {
+        return Err(std::io::Error::from_raw_os_error(status as i32));
+    }
+
+    for _ in 0..3 {
+        let word_len = (byte_len as usize).div_ceil(std::mem::size_of::<u32>());
+        let mut buffer = vec![0u32; word_len];
+        let status = unsafe {
+            GetExtendedTcpTable(
+                Some(buffer.as_mut_ptr().cast()),
+                &mut byte_len,
+                false,
+                address_family,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        if status == NO_ERROR.0 {
+            return Ok(buffer);
+        }
+        if status != ERROR_INSUFFICIENT_BUFFER.0 {
+            return Err(std::io::Error::from_raw_os_error(status as i32));
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        "TCP listener table kept changing while being read",
+    ))
+}
+
+#[cfg(windows)]
+fn validate_tcp_table_size(
+    buffer_words: usize,
+    entry_count: usize,
+    entry_size: usize,
+) -> std::io::Result<()> {
+    let required = std::mem::size_of::<u32>()
+        .checked_add(entry_count.checked_mul(entry_size).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "TCP table size overflow")
+        })?)
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "TCP table size overflow")
+        })?;
+    let available = buffer_words
+        .checked_mul(std::mem::size_of::<u32>())
+        .unwrap_or(usize::MAX);
+    if required > available {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "TCP listener table is truncated",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn network_port(value: u32) -> u16 {
+    u16::from_be(value as u16)
+}
+
+#[cfg(windows)]
+fn ipv4_listener_matches(value: u32, requested: Ipv4Addr) -> bool {
+    let local = Ipv4Addr::from(u32::from_be(value));
+    local.is_unspecified() || local == requested
+}
+
+#[cfg(windows)]
+fn ipv6_listener_matches(value: [u8; 16], requested: Ipv6Addr) -> bool {
+    let local = Ipv6Addr::from(value);
+    local.is_unspecified() || local == requested
+}
+
+#[cfg(windows)]
 pub fn terminate_process(process_id: u32) -> bool {
     let Ok(handle) = (unsafe {
         OpenProcess(
@@ -348,12 +523,54 @@ pub fn terminate_process(process_id: u32) -> bool {
 }
 
 #[cfg(windows)]
+pub fn terminate_process_if_identity_matches(
+    process_id: u32,
+    expected_birth_id: u64,
+    expected_path: &Path,
+) -> std::io::Result<bool> {
+    let handle = match unsafe {
+        OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            process_id,
+        )
+    } {
+        Ok(handle) => handle,
+        Err(error) if error.code() == HRESULT::from_win32(ERROR_INVALID_PARAMETER.0) => {
+            return Ok(false);
+        }
+        Err(error) => return Err(std::io::Error::other(error.to_string())),
+    };
+    if handle.is_invalid() {
+        return Ok(false);
+    }
+    let _guard = HandleGuard(handle);
+    let Some(birth_id) = process_birth_id_from_handle(handle) else {
+        return Ok(false);
+    };
+    let Some(path) = query_process_image_path_from_handle(handle) else {
+        return Ok(false);
+    };
+    if birth_id != expected_birth_id || !paths_equal_case_insensitive(&path, expected_path) {
+        return Ok(false);
+    }
+    unsafe { TerminateProcess(handle, 0) }
+        .map(|_| true)
+        .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+#[cfg(windows)]
 pub fn process_birth_id(process_id: u32) -> Option<u64> {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()? };
     if handle.is_invalid() {
         return None;
     }
     let _guard = HandleGuard(handle);
+    process_birth_id_from_handle(handle)
+}
+
+#[cfg(windows)]
+fn process_birth_id_from_handle(handle: HANDLE) -> Option<u64> {
     let mut creation_time = FILETIME::default();
     let mut exit_time = FILETIME::default();
     let mut kernel_time = FILETIME::default();
@@ -421,6 +638,11 @@ fn query_process_image_path(process_id: u32) -> Option<PathBuf> {
         return None;
     }
     let _guard = HandleGuard(handle);
+    query_process_image_path_from_handle(handle)
+}
+
+#[cfg(windows)]
+fn query_process_image_path_from_handle(handle: HANDLE) -> Option<PathBuf> {
     let mut buffer = vec![0u16; MAX_PATH as usize * 4];
     let mut len = buffer.len() as u32;
     unsafe {
@@ -433,6 +655,12 @@ fn query_process_image_path(process_id: u32) -> Option<PathBuf> {
         .ok()?;
     }
     Some(PathBuf::from(OsString::from_wide(&buffer[..len as usize])))
+}
+
+#[cfg(windows)]
+fn paths_equal_case_insensitive(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
 #[cfg(windows)]
@@ -702,6 +930,7 @@ impl Drop for RegistryKeyGuard {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn application_window_outranks_titled_ime_and_tool_windows() {
@@ -715,5 +944,45 @@ mod tests {
         assert!(app_score > ime_score);
         assert_eq!(ime_score, tool_score);
         assert_eq!(auxiliary_app_score, ProcessWindowScore::Fallback);
+    }
+
+    #[test]
+    fn network_port_decodes_the_ip_helper_byte_order() {
+        assert_eq!(network_port(u16::to_be(9229) as u32), 9229);
+    }
+
+    #[test]
+    fn tcp_listener_process_ids_finds_the_current_ipv4_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let process_ids = tcp_listener_process_ids(address).unwrap();
+
+        assert!(process_ids.contains(&std::process::id()));
+    }
+
+    #[test]
+    fn listener_address_matching_rejects_other_local_addresses() {
+        assert!(ipv4_listener_matches(
+            u32::from(Ipv4Addr::LOCALHOST).to_be(),
+            Ipv4Addr::LOCALHOST
+        ));
+        assert!(!ipv4_listener_matches(
+            u32::from(Ipv4Addr::new(127, 0, 0, 2)).to_be(),
+            Ipv4Addr::LOCALHOST
+        ));
+        assert!(ipv6_listener_matches(
+            Ipv6Addr::LOCALHOST.octets(),
+            Ipv6Addr::LOCALHOST
+        ));
+    }
+
+    #[test]
+    fn identity_checked_termination_treats_a_missing_process_as_gone() {
+        let result =
+            terminate_process_if_identity_matches(u32::MAX, 1, Path::new(r"C:\missing\Codex.exe"))
+                .unwrap();
+
+        assert!(!result);
     }
 }
