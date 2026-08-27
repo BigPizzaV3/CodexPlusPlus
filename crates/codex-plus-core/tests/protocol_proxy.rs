@@ -2136,6 +2136,80 @@ async fn aggregate_stream_request_sends_sse_accept_header() {
     fallback_server.abort();
 }
 
+#[tokio::test]
+async fn aggregate_proxy_rewrites_requested_model_to_selected_member_default_model() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let fallback = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let fallback_addr = fallback.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let request = String::from_utf8_lossy(&buffer);
+            let Some((headers, body)) = request.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if body.as_bytes().len() >= content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&buffer).to_string();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        request
+    });
+    let fallback_server = tokio::spawn(respond_once(
+        fallback,
+        "HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_2\",\"object\":\"response\"}",
+    ));
+    let mut settings = aggregate_proxy_settings(
+        "rewrite-model",
+        format!("http://{addr}/v1"),
+        format!("http://{fallback_addr}/v1"),
+    );
+    settings.relay_profiles[0].model = "deepseek-v4-pro".to_string();
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.4","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+    let (_, body) = request.split_once("\r\n\r\n").unwrap();
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert_eq!(body["model"], "deepseek-v4-pro");
+    fallback_server.abort();
+}
+
 async fn respond_once(listener: tokio::net::TcpListener, response: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let mut buffer = [0; 1024];
@@ -2279,6 +2353,7 @@ fn aggregate_proxy_settings(
                     weight: 1,
                 },
             ],
+            routes: Vec::new(),
         }],
         ..BackendSettings::default()
     }

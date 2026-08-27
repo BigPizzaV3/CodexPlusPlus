@@ -223,6 +223,7 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
                 relay_id: "api".to_string(),
                 weight: 1,
             }],
+            routes: Vec::new(),
         }],
         active_aggregate_relay_id: "agg".to_string(),
         ..BackendSettings::default()
