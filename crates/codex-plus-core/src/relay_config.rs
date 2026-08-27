@@ -3210,6 +3210,33 @@ mod tests {
             "catalog must carry the configured context window, not codex's default; got: {catalog}"
         );
     }
+
+    // #1594 (complement): with NO context window configured, a suffixless custom model that
+    // isn't bundled metadata (and isn't an official DeepSeek Responses model) keeps the old
+    // behavior — no catalog is generated. Guards the fix against widening catalog generation
+    // beyond the explicitly-configured-window case.
+    #[test]
+    fn no_catalog_for_suffixless_custom_model_without_context_window() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = "model_provider = \"custom\"\nmodel = \"qwen3-coder\"\n\n\
+            [model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\n\
+            base_url = \"http://127.0.0.1:57321/v1\"\n";
+        let profile = RelayProfile {
+            id: "noctx".to_string(),
+            model: "qwen3-coder".to_string(),
+            model_list: "qwen3-coder".to_string(), // no [window] suffix, not bundled, not deepseek-v4
+            // context_window intentionally left empty -> old behavior must be preserved.
+            ..RelayProfile::default()
+        };
+
+        let result = apply_model_catalog_to_config(temp.path(), &profile, config).unwrap();
+
+        assert!(
+            root_key_string(&result, "model_catalog_json").is_none(),
+            "no configured context window must not generate a catalog (old behavior preserved)"
+        );
+        assert!(!temp.path().join("model-catalogs").exists());
+    }
 }
 
 pub fn root_key_string(contents: &str, key: &str) -> Option<String> {
