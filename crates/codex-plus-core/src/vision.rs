@@ -334,6 +334,155 @@ const VLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 #[cfg(test)]
 const VLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// VLM 单条描述提示词：真实识图链路与「测试 VLM」共用（同源契约，spec §5.1）。
+const VLM_DESCRIBE_PROMPT: &str = "请描述图片内容。如包含文字，请精确提取图片中的文字。";
+
+/// 构造 VLM chat/completions 请求体。真实链路（call_vlm_batch）与测试入口
+/// （test_vlm_once）共用，保证测试请求与真实请求同源。
+fn build_vlm_request_body(urls: &[String], model: &str) -> Value {
+    let mut parts: Vec<Value> = urls
+        .iter()
+        .map(|u| serde_json::json!({"type": "image_url", "image_url": {"url": u}}))
+        .collect();
+    parts.push(serde_json::json!({
+        "type": "text",
+        "text": VLM_DESCRIBE_PROMPT
+    }));
+    serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": parts}],
+        "stream": false,
+    })
+}
+
+/// VLM chat/completions 端点：真实链路与「测试 VLM」共用（同源契约，spec §5.1）。
+fn vlm_endpoint(base_url: &str) -> String {
+    format!("{}/chat/completions", base_url.trim_end_matches('/'))
+}
+
+/// 原始报文展示截断上限（字符数）：防止 HTML 错误页/超大响应撑爆界面。
+const RAW_SNIPPET_LIMIT: usize = 4000;
+
+fn raw_snippet(text: &str) -> String {
+    if text.chars().count() <= RAW_SNIPPET_LIMIT {
+        text.to_string()
+    } else {
+        let head: String = text.chars().take(RAW_SNIPPET_LIMIT).collect();
+        format!("{head}\n…（已截断）")
+    }
+}
+
+/// 单次 VLM 测试调用的结构化结果（spec §4/§5）。
+/// raw_request/raw_response 供排障折叠区展示；raw_request 是展示副本，图片
+/// base64 截断为 64 字符前缀 + 占位符（真实请求体可含数 MB base64）；请求体不
+/// 含 API Key（Key 在请求头），因此 raw_* 永不泄露密钥（spec §5.4）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VlCallOutcome {
+    pub status: String,
+    pub http_code: Option<u16>,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+    pub text: Option<String>,
+    pub raw_request: Option<String>,
+    pub raw_response: Option<String>,
+}
+
+/// 「测试 VLM」单图调用：与真实识图链路共用提示词与请求体构造（spec §5.1）。
+/// 先读响应体再判 HTTP 码：非 2xx 一律 http_error，HTML 错误页不误判为
+/// json_error（spec §5.3）。status 口径：ok/http_error/timeout/send_error/
+/// json_error/no_text（client_error 由命令层产生）。
+pub async fn test_vlm_once(
+    config: &VlmConfig,
+    image_data_url: &str,
+    client: &reqwest::Client,
+) -> VlCallOutcome {
+    let _permit = vlm_semaphore()
+        .acquire()
+        .await
+        .expect("vlm semaphore closed");
+    let endpoint = vlm_endpoint(&config.base_url);
+    let body = build_vlm_request_body(&[image_data_url.to_string()], &config.model);
+    let mut display = body.clone();
+    // 展示副本：图片 base64 可达数 MB，占位替换避免拖垮 IPC/界面（与 spec §4 大小限制同因）
+    if let Some(parts) = display["messages"][0]["content"].as_array_mut() {
+        for part in parts.iter_mut() {
+            if part["type"] == "image_url" {
+                if let Some(url) = part["image_url"]["url"].as_str() {
+                    let head: String = url.chars().take(64).collect();
+                    part["image_url"]["url"] =
+                        serde_json::json!(format!("{head}…（图片 base64 已省略）"));
+                }
+            }
+        }
+    }
+    let raw_request = serde_json::to_string_pretty(&display).ok();
+    let started = std::time::Instant::now();
+    let response = match client
+        .post(&endpoint)
+        .bearer_auth(&config.api_key)
+        .json(&body)
+        .timeout(VLM_REQUEST_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let s = if e.is_timeout() {
+                "timeout"
+            } else {
+                "send_error"
+            };
+            return VlCallOutcome {
+                status: s.to_string(),
+                http_code: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                error: Some(e.to_string()),
+                text: None,
+                raw_request,
+                raw_response: None,
+            };
+        }
+    };
+    let http_code = response.status().as_u16();
+    let body_text = response.text().await.unwrap_or_default();
+    let raw_response = Some(raw_snippet(&body_text));
+    let finish = |status: &str, error: Option<String>, text: Option<String>| VlCallOutcome {
+        status: status.to_string(),
+        http_code: Some(http_code),
+        duration_ms: started.elapsed().as_millis() as u64,
+        error,
+        text,
+        raw_request: raw_request.clone(),
+        raw_response: raw_response.clone(),
+    };
+    if !(200..300).contains(&http_code) {
+        let snippet: String = body_text.chars().take(ERROR_BODY_TRUNCATE).collect();
+        return finish(
+            "http_error",
+            Some(format!("VLM API {http_code}: {snippet}")),
+            None,
+        );
+    }
+    let response_body: Value = match serde_json::from_str(&body_text) {
+        Ok(v) => v,
+        Err(e) => {
+            let snippet: String = body_text.chars().take(ERROR_BODY_TRUNCATE).collect();
+            return finish(
+                "json_error",
+                Some(format!("JSON parse failed: {e} | body: {snippet}")),
+                None,
+            );
+        }
+    };
+    match response_body["choices"][0]["message"]["content"]
+        .as_str()
+        .map(String::from)
+    {
+        Some(t) => finish("ok", None, Some(t)),
+        None => finish("no_text", Some("no content".to_string()), None),
+    }
+}
+
 /// 单 batch VLM 调用（含错误详情截断）。
 async fn call_vlm_batch(urls: &[String], config: &VlmConfig) -> Result<String, String> {
     let client = crate::http_client::vlm_http_client_with_timeout(
@@ -341,20 +490,8 @@ async fn call_vlm_batch(urls: &[String], config: &VlmConfig) -> Result<String, S
         VLM_REQUEST_TIMEOUT,
     )
     .map_err(|e| format!("client: {e}"))?;
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let mut parts: Vec<Value> = urls
-        .iter()
-        .map(|u| serde_json::json!({"type": "image_url", "image_url": {"url": u}}))
-        .collect();
-    parts.push(serde_json::json!({
-        "type": "text",
-        "text": "请描述图片内容。如包含文字，请精确提取图片中的文字。"
-    }));
-    let body = serde_json::json!({
-        "model": config.model,
-        "messages": [{"role": "user", "content": parts}],
-        "stream": false,
-    });
+    let url = vlm_endpoint(&config.base_url);
+    let body = build_vlm_request_body(urls, &config.model);
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", config.api_key))
@@ -974,6 +1111,28 @@ mod tests {
     #[test]
     fn handling_mode_defaults_to_send_as_is_for_empty_string() {
         assert_eq!(image_handling_mode("gpt-4", ""), ImageHandling::SendAsIs);
+    }
+
+    // ── build_vlm_request_body（测试 VLM 同源契约）─────────────────
+
+    #[test]
+    fn build_vlm_request_body_shape_and_prompt() {
+        let body =
+            build_vlm_request_body(&["data:image/png;base64,QUJD".to_string()], "qwen-vl-max");
+        assert_eq!(body["model"], "qwen-vl-max");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["messages"][0]["role"], "user");
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content.as_array().map(Vec::len), Some(2));
+        assert_eq!(content[0]["type"], "image_url");
+        assert_eq!(content[0]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(content[1]["type"], "text");
+        // 提示词必须与真实链路 call_vlm_batch 所用完全一致（同源，spec §5.1）
+        assert_eq!(
+            content[1]["text"],
+            "请描述图片内容。如包含文字，请精确提取图片中的文字。"
+        );
     }
 
     // ── strip_images_only ─────────────────────────────────────────
@@ -2175,6 +2334,231 @@ mod tests {
                 "{label} round: VLM description not injected: {text}"
             );
         }
+    }
+
+    // ── test_vlm_once（测试 VLM 命令核心）─────────────────────────
+
+    fn test_vlm_config(base_url: String) -> VlmConfig {
+        VlmConfig {
+            api_key: "sk-test".to_string(),
+            model: "vlm-mock".to_string(),
+            base_url,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_ok_returns_description_and_same_source_body() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "mock: a cat on a sofa"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "ok");
+        assert_eq!(outcome.http_code, Some(200));
+        assert_eq!(outcome.text.as_deref(), Some("mock: a cat on a sofa"));
+        assert!(outcome.error.is_none());
+        // 同源：测试请求体就是共享原语的产物（含真实链路同款提示词与图片块）
+        let raw = outcome.raw_request.as_deref().unwrap();
+        assert!(raw.contains("请描述图片内容"));
+        assert!(raw.contains("data:image/png;base64,QUJD"));
+        assert!(raw.contains("vlm-mock"));
+        // 展示副本：图片 base64 截断为前缀 + 占位符，真实 body 照常发送
+        assert!(raw.contains("图片 base64 已省略"));
+        // spec §5.4：raw_request 不得泄露 API Key
+        assert!(!raw.contains("sk-test"));
+        assert!(outcome.raw_response.as_deref().unwrap().contains("a cat"));
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_http_error_401() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("{\"error\":\"bad key\"}"))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "http_error");
+        assert_eq!(outcome.http_code, Some(401));
+        assert!(outcome.error.as_deref().unwrap().contains("401"));
+        assert!(outcome.text.is_none());
+        assert!(outcome.raw_response.as_deref().unwrap().contains("bad key"));
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_http_error_404() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("{\"error\":\"not found\"}"))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "http_error");
+        assert_eq!(outcome.http_code, Some(404));
+        assert!(outcome.error.as_deref().unwrap().contains("404"));
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_http_error_429() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429).set_body_string("{\"error\":\"rate limited\"}"),
+            )
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "http_error");
+        assert_eq!(outcome.http_code, Some(429));
+        assert!(outcome.error.as_deref().unwrap().contains("429"));
+    }
+
+    /// spec §5.3：非 2xx 的 HTML 错误页必须报 http_error，不得误判为 json_error。
+    #[tokio::test]
+    async fn test_vlm_once_html_error_page_reports_http_error() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(502)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string("<html><body>Bad Gateway</body></html>"),
+            )
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "http_error");
+        assert_eq!(outcome.http_code, Some(502));
+        assert!(outcome.raw_response.as_deref().unwrap().contains("<html>"));
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_json_error_on_200_non_json() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("plain text not json"))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "json_error");
+        assert_eq!(outcome.http_code, Some(200));
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("JSON parse failed")
+        );
+        assert!(
+            outcome
+                .raw_response
+                .as_deref()
+                .unwrap()
+                .contains("plain text not json")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_no_text_when_content_missing() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {}}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "no_text");
+        assert_eq!(outcome.http_code, Some(200));
+        assert!(outcome.error.as_deref().unwrap().contains("no content"));
+    }
+
+    /// cfg(test) 下 VLM_REQUEST_TIMEOUT=2s，mock 延迟 3s 触发超时路径。
+    #[tokio::test]
+    async fn test_vlm_once_timeout() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(3)))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "timeout");
+        assert!(outcome.http_code.is_none());
+    }
+
+    /// 连接错误（非超时）→ send_error。
+    /// 用端口 0：Windows 安全软件可能让「连接被拒」延迟 ~2s 才返回，恰好撞上
+    /// cfg(test) 的 2s 请求超时而被误判为 timeout；连接端口 0 则立即报
+    /// 传输层错误（WSAEADDRNOTAVAIL），确定性地走 send_error 路径。
+    #[tokio::test]
+    async fn test_vlm_once_send_error_on_connection_refused() {
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config("http://127.0.0.1:0".to_string()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "send_error");
+        assert!(outcome.http_code.is_none());
+        assert!(outcome.raw_request.is_some());
     }
 
     // ── Responses 协议下的 tool 输出（issue #1996 的第二处缺口）──────
