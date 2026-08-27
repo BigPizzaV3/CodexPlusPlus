@@ -302,9 +302,7 @@ pub fn ensure_active_protocol_proxy_config_in_home(
     settings: &BackendSettings,
 ) -> anyhow::Result<bool> {
     let profile = settings.active_relay_profile();
-    let transport_uses_proxy = settings.active_aggregate_relay_profile().is_some()
-        || profile.protocol == RelayProtocol::ChatCompletions
-        || profile.has_model_routes();
+    let transport_uses_proxy = settings.active_relay_transport_uses_protocol_proxy();
     let openai_identity_uses_proxy = settings.active_relay_session_provider()
         == RelaySessionProvider::Openai
         || (profile.relay_mode == crate::settings::RelayMode::Official
