@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayProfile, RelayProtocol, RelaySessionProvider};
+use crate::settings::{BackendSettings, RelayProfile, RelayProtocol, RelaySessionProvider};
 
 const RELAY_PROVIDER: &str = "custom";
 /// 我们代管的 config.toml 上下文表。
@@ -295,6 +295,79 @@ pub fn responses_proxy_configured_in_home(home: &Path) -> bool {
             )
             .as_str(),
         )
+}
+
+pub fn ensure_active_protocol_proxy_config_in_home(
+    home: &Path,
+    settings: &BackendSettings,
+) -> anyhow::Result<bool> {
+    let profile = settings.active_relay_profile();
+    let transport_uses_proxy = settings.active_aggregate_relay_profile().is_some()
+        || profile.protocol == RelayProtocol::ChatCompletions
+        || profile.has_model_routes();
+    let openai_identity_uses_proxy = settings.active_relay_session_provider()
+        == RelaySessionProvider::Openai
+        || (profile.relay_mode == crate::settings::RelayMode::Official
+            && profile.official_mix_api_key);
+    if !transport_uses_proxy && !openai_identity_uses_proxy {
+        return Ok(false);
+    }
+
+    let config_path = home.join("config.toml");
+    let existing = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("读取 {} 失败", config_path.display()))?;
+    let mut doc = parse_toml_document(&existing)?;
+    let managed = managed_openai_base_url();
+    let mut changed = false;
+
+    if transport_uses_proxy {
+        let session_provider_id = active_session_provider_id(&doc);
+        let transport_provider_id = if session_provider_id == "openai" {
+            RELAY_PROVIDER.to_string()
+        } else {
+            active_or_default_provider_id(&doc)
+        };
+        let provider = doc
+            .get_mut("model_providers")
+            .and_then(Item::as_table_mut)
+            .and_then(|providers| providers.get_mut(&transport_provider_id))
+            .and_then(Item::as_table_mut)
+            .ok_or_else(|| {
+                anyhow::anyhow!("活动协议代理需要现有 model_providers.{transport_provider_id} 配置")
+            })?;
+        let current = provider
+            .get("base_url")
+            .and_then(Item::as_str)
+            .map(str::trim);
+        if current != Some(managed.as_str()) {
+            provider["base_url"] = toml_edit::value(managed.as_str());
+            changed = true;
+        }
+    }
+
+    if openai_identity_uses_proxy {
+        let before = doc
+            .get(OPENAI_BASE_URL_KEY)
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .map(ToString::to_string);
+        update_remote_control_openai_base_url(&mut doc, true);
+        let after = doc
+            .get(OPENAI_BASE_URL_KEY)
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .map(ToString::to_string);
+        changed |= before != after;
+    }
+
+    if !changed {
+        return Ok(false);
+    }
+    crate::settings::atomic_write(
+        &config_path,
+        ensure_trailing_newline(doc.to_string()).as_bytes(),
+    )?;
+    Ok(true)
 }
 
 pub fn apply_relay_config_to_home(

@@ -171,6 +171,12 @@ pub trait LaunchHooks: Send + Sync {
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn ensure_active_protocol_proxy_config(
+        &self,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn ensure_plugin_marketplace_config(
         &self,
         _settings: &BackendSettings,
@@ -395,6 +401,7 @@ where
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
             || remote_control_provider_proxy_enabled(&settings);
         if protocol_proxy_enabled {
+            hooks.ensure_active_protocol_proxy_config(&settings).await?;
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
@@ -687,6 +694,15 @@ impl LaunchHooks for DefaultLaunchHooks {
             &profile,
             &common_config,
         )?;
+        Ok(())
+    }
+
+    async fn ensure_active_protocol_proxy_config(
+        &self,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        let home = crate::relay_config::default_codex_home_dir();
+        crate::relay_config::ensure_active_protocol_proxy_config_in_home(&home, settings)?;
         Ok(())
     }
 
