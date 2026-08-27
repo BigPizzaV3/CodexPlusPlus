@@ -11,9 +11,30 @@ DMG="$DIST/CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"
 ICON_SOURCE="$ROOT/apps/codex-plus-manager/src-tauri/icons/icon.png"
 ICON_NAME="codex-plus-plus.icns"
 ICON_ICNS="$DIST/$ICON_NAME"
+BACKGROUND_SOURCE="$ROOT/assets/installer/macos/dmg-background.svg"
+BACKGROUND_PATH="$STAGE/.background/background.png"
 
 rm -rf "$DIST"
 mkdir -p "$STAGE"
+
+prepare_background() {
+  mkdir -p "$(dirname "$BACKGROUND_PATH")"
+
+  if sips -s format png "$BACKGROUND_SOURCE" --out "$BACKGROUND_PATH" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Older macOS versions do not let sips decode SVG, so use Quick Look as a fallback.
+  local preview_dir="$DIST/background-preview"
+  local preview_path="$preview_dir/$(basename "$BACKGROUND_SOURCE").png"
+  mkdir -p "$preview_dir"
+  qlmanage -t -s 1200 -o "$preview_dir" "$BACKGROUND_SOURCE" >/dev/null 2>&1
+  if [ ! -f "$preview_path" ]; then
+    echo "error: failed to render DMG background: $BACKGROUND_SOURCE" >&2
+    return 1
+  fi
+  cp "$preview_path" "$BACKGROUND_PATH"
+}
 
 prepare_icon() {
   local iconset="$DIST/codex-plus-plus.iconset"
@@ -134,6 +155,7 @@ verify_app() {
 }
 
 prepare_icon
+prepare_background
 create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
 create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
 
@@ -148,17 +170,71 @@ ln -s /Applications "$STAGE/Applications"
 DMG_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-plus-plus-dmg.XXXXXX")"
 DMG_WORK_PATH="$DMG_WORK_DIR/$(basename "$DMG")"
 DMG_CREATED=false
+MOUNT_POINT=""
 
 cleanup_dmg_work_dir() {
+  if [ -n "$MOUNT_POINT" ]; then
+    hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+  fi
   rm -f "$DMG_WORK_PATH"
   rmdir "$DMG_WORK_DIR" 2>/dev/null || true
 }
 
 trap cleanup_dmg_work_dir EXIT
 
+hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDRW "$DMG_WORK_PATH"
+
+MOUNT_OUTPUT="$(hdiutil attach "$DMG_WORK_PATH" -readwrite -noverify -noautoopen -nobrowse)"
+MOUNT_POINT="$(printf '%s\n' "$MOUNT_OUTPUT" | awk 'match($0, /\/Volumes\//) {print substr($0, RSTART)}' | tail -1)"
+if [ -z "$MOUNT_POINT" ]; then
+  echo "error: failed to find mounted DMG volume" >&2
+  exit 1
+fi
+VOLUME_NAME="$(basename "$MOUNT_POINT")"
+
+if ! MOUNT_POINT="$MOUNT_POINT" VOLUME_NAME="$VOLUME_NAME" osascript <<'APPLESCRIPT'
+with timeout of 30 seconds
+  tell application "Finder"
+    set dmgDisk to disk (system attribute "VOLUME_NAME")
+    open dmgDisk
+    delay 1
+    set dmgWindow to container window of dmgDisk
+    set current view of dmgWindow to icon view
+    set toolbar visible of dmgWindow to false
+    set statusbar visible of dmgWindow to false
+    set bounds of dmgWindow to {100, 100, 1300, 850}
+
+    set viewOptions to icon view options of dmgWindow
+    set arrangement of viewOptions to not arranged
+    set icon size of viewOptions to 96
+    set text size of viewOptions to 14
+    set color of viewOptions to {65535, 65535, 65535}
+    set backgroundFile to (POSIX file ((system attribute "MOUNT_POINT") & "/.background/background.png")) as alias
+    set background picture of viewOptions to backgroundFile
+
+    tell dmgDisk
+      set position of item "Applications" to {1000, 390}
+      set position of item "Codex++.app" to {220, 390}
+      set position of item "Codex++ 管理工具.app" to {460, 390}
+    end tell
+
+    close dmgWindow
+    delay 1
+  end tell
+end timeout
+APPLESCRIPT
+then
+  echo "warning: unable to persist Finder DMG window layout; the background is still included" >&2
+fi
+
+if ! hdiutil detach "$MOUNT_POINT" >/dev/null; then
+  sleep 1
+  hdiutil detach "$MOUNT_POINT" -force >/dev/null
+fi
+MOUNT_POINT=""
+
 for attempt in 1 2 3; do
-  if hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG_WORK_PATH"; then
-    mv "$DMG_WORK_PATH" "$DMG"
+  if hdiutil convert "$DMG_WORK_PATH" -format UDZO -ov -o "$DMG"; then
     DMG_CREATED=true
     break
   fi
