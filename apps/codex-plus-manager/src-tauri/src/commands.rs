@@ -631,13 +631,7 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub async fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     let error_payload = request.clone();
-    match tauri::async_runtime::spawn_blocking(move || {
-        let target_cdp_endpoint = codex_plus_core::cdp::endpoint_address(request.debug_port);
-        let target_app_running = !codex_plus_core::watcher::find_codex_processes().is_empty();
-        restart_codex_plus_blocking(request, target_cdp_endpoint, target_app_running)
-    })
-    .await
-    {
+    match tauri::async_runtime::spawn_blocking(move || restart_codex_plus_blocking(request)).await {
         Ok(result) => result,
         Err(error) => failed(
             &format!("重启 Codex++ 后台任务失败：{error}"),
@@ -656,34 +650,22 @@ enum RestartDisposition {
     StopAndRestart,
 }
 
-fn restart_disposition(
-    sync_active_relay: bool,
-    target_cdp_reachable: bool,
-    target_app_running: bool,
-) -> RestartDisposition {
-    if !sync_active_relay && !target_cdp_reachable && !target_app_running {
+fn restart_disposition(sync_active_relay: bool, target_app_running: bool) -> RestartDisposition {
+    if !sync_active_relay && !target_app_running {
         RestartDisposition::LaunchOnly
     } else {
         RestartDisposition::StopAndRestart
     }
 }
 
-fn restart_codex_plus_blocking(
-    request: LaunchRequest,
-    target_cdp_endpoint: Option<std::net::SocketAddr>,
-    target_app_running: bool,
-) -> CommandResult<Value> {
+fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     let restart_started = Instant::now();
     let _restart_guard = match try_acquire_restart_guard() {
         Ok(guard) => guard,
         Err(message) => return failed(message, json!({})),
     };
-    let target_cdp_reachable = target_cdp_endpoint.is_some();
-    let disposition = restart_disposition(
-        request.sync_active_relay,
-        target_cdp_reachable,
-        target_app_running,
-    );
+    let target_app_running = !codex_plus_core::watcher::find_codex_processes().is_empty();
+    let disposition = restart_disposition(request.sync_active_relay, target_app_running);
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.restart_requested",
         json!({
@@ -692,8 +674,6 @@ fn restart_codex_plus_blocking(
             "app_path": request.app_path.trim(),
             "sync_active_relay": request.sync_active_relay,
             "target_app_running": target_app_running,
-            "target_cdp_reachable": target_cdp_reachable,
-            "target_cdp_endpoint": target_cdp_endpoint.map(|endpoint| endpoint.to_string()),
             "disposition": match disposition {
                 RestartDisposition::LaunchOnly => "launch_only",
                 RestartDisposition::StopAndRestart => "stop_and_restart",
@@ -754,16 +734,6 @@ fn restart_codex_plus_blocking(
     } else {
         None
     };
-    #[cfg(windows)]
-    let target_stop_plan = match codex_plus_core::watcher::prepare_windows_codex_stop_plan(
-        request.debug_port,
-        target_cdp_endpoint,
-    ) {
-        Ok(plan) => plan,
-        Err(message) => {
-            return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
-        }
-    };
     if let Err(message) = codex_plus_core::watcher::stop_launcher_processes_and_wait() {
         return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
     }
@@ -771,34 +741,16 @@ fn restart_codex_plus_blocking(
         "manager.restart_launchers_stopped",
         json!({ "total_elapsed_ms": restart_started.elapsed().as_millis() }),
     );
-    #[cfg(windows)]
     let targeted_stop_outcome =
-        match codex_plus_core::watcher::execute_windows_codex_stop_plan(target_stop_plan) {
+        match codex_plus_core::watcher::stop_codex_processes_for_restart_and_wait() {
             Ok(outcome) => outcome,
             Err(message) => {
                 return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
             }
         };
-    #[cfg(not(windows))]
-    let targeted_stop_outcome =
-        match codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
-            request.debug_port,
-            target_cdp_reachable,
-        ) {
-            Ok(outcome) => outcome,
-            Err(message) => {
-                return failed(&format!("重启 Codex++ 已安全中止：{message}"), json!({}));
-            }
-        };
-    #[cfg(windows)]
     let targeted_stop_outcome = match targeted_stop_outcome {
-        codex_plus_core::watcher::TargetedStopOutcome::Stopped => "stopped",
-        codex_plus_core::watcher::TargetedStopOutcome::AlreadyAbsent => "already_absent",
-    };
-    #[cfg(not(windows))]
-    let targeted_stop_outcome = match targeted_stop_outcome {
-        codex_plus_core::watcher::TargetedStopOutcome::Stopped => "stopped",
-        codex_plus_core::watcher::TargetedStopOutcome::AlreadyAbsent => "already_absent",
+        codex_plus_core::watcher::CodexStopOutcome::Stopped => "stopped",
+        codex_plus_core::watcher::CodexStopOutcome::AlreadyAbsent => "already_absent",
     };
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.restart_codex_stopped",
@@ -6090,79 +6042,27 @@ fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     }
 }
 
-/// provider sync 正在进行时，最多等它这么久再考虑放弃重启。
-const PROVIDER_SYNC_WAIT_TIMEOUT_MS: u64 = 30_000;
-const PROVIDER_SYNC_WAIT_INTERVAL_MS: u64 = 200;
-
-#[derive(Debug)]
-enum ProviderSyncWaitFailure {
-    Busy(codex_plus_data::ProviderSyncLockState),
-    Acquire(std::io::Error),
-}
-
-/// 等待并原子取得 provider-sync 生命周期 guard。
-///
-/// guard 同时持有 OS 文件锁与兼容旧版本的目录锁。取得后，旧/新 launcher 都不能在
-/// 最终检查和停止进程之间启动新的 provider sync，关闭先检查后强杀的竞态（issue #1901）。
-/// 等不到就拒绝本次重启，而不是把同步中的 launcher 打断。
-fn wait_for_idle_provider_sync<T>(
-    try_acquire: impl Fn() -> std::io::Result<T>,
-    inspect: impl Fn() -> codex_plus_data::ProviderSyncLockState,
-    sleep: impl Fn(u64),
-    timeout_ms: u64,
-) -> Result<T, ProviderSyncWaitFailure> {
-    use codex_plus_data::ProviderSyncLockState;
-
-    let mut waited_ms = 0;
-    loop {
-        match try_acquire() {
-            Ok(guard) => return Ok(guard),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::WouldBlock
-                ) =>
-            {
-                if waited_ms >= timeout_ms {
-                    let state = match inspect() {
-                        ProviderSyncLockState::Free => ProviderSyncLockState::Indeterminate,
-                        state => state,
-                    };
-                    return Err(ProviderSyncWaitFailure::Busy(state));
-                }
-            }
-            Err(error) => return Err(ProviderSyncWaitFailure::Acquire(error)),
-        }
-        sleep(PROVIDER_SYNC_WAIT_INTERVAL_MS);
-        waited_ms += PROVIDER_SYNC_WAIT_INTERVAL_MS;
-    }
-}
-
-/// 在强杀 launcher 前放行或拦截本次重启，并把判定结果写进诊断日志。
+/// 原子取得 provider-sync 生命周期 guard；同步正忙时立即拒绝重启。
 fn ensure_provider_sync_is_idle_before_stop()
 -> Result<codex_plus_data::ProviderSyncLifecycleGuard, String> {
-    let outcome = wait_for_idle_provider_sync(
-        || codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None),
-        || codex_plus_data::inspect_provider_sync_lock(None),
-        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
-        PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-    );
-    match outcome {
+    match codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None) {
         Ok(guard) => Ok(guard),
-        Err(ProviderSyncWaitFailure::Busy(state)) => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            let state = codex_plus_data::inspect_provider_sync_lock(None);
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "manager.restart_blocked_by_provider_sync",
-                json!({
-                    "state": state,
-                    "waited_ms": PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-                }),
+                json!({ "state": state }),
             );
             Err(format!(
-                "历史会话同步正在进行中（已等待 {} 秒）。为避免中断同步导致会话丢失，本次重启未执行；请等待同步完成后重试。",
-                PROVIDER_SYNC_WAIT_TIMEOUT_MS / 1000
+                "历史会话同步正在进行中。为避免中断同步导致会话丢失，本次重启未执行；请稍后重试。"
             ))
         }
-        Err(ProviderSyncWaitFailure::Acquire(error)) => {
+        Err(error) => {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "manager.restart_provider_sync_guard_failed",
                 json!({ "message": error.to_string() }),
@@ -6348,23 +6248,15 @@ mod tests {
     #[test]
     fn ordinary_restart_uses_launch_path_when_target_app_is_absent() {
         assert_eq!(
-            restart_disposition(false, false, false),
+            restart_disposition(false, false),
             RestartDisposition::LaunchOnly
         );
     }
 
     #[test]
-    fn ordinary_restart_stops_and_restarts_when_target_cdp_is_reachable() {
+    fn ordinary_restart_stops_and_restarts_when_target_app_is_running() {
         assert_eq!(
-            restart_disposition(false, true, false),
-            RestartDisposition::StopAndRestart
-        );
-    }
-
-    #[test]
-    fn ordinary_restart_stops_and_restarts_when_native_app_is_running_without_cdp() {
-        assert_eq!(
-            restart_disposition(false, false, true),
+            restart_disposition(false, true),
             RestartDisposition::StopAndRestart
         );
     }
@@ -6372,7 +6264,7 @@ mod tests {
     #[test]
     fn active_relay_restart_keeps_full_restart_when_target_app_is_absent() {
         assert_eq!(
-            restart_disposition(true, false, false),
+            restart_disposition(true, false),
             RestartDisposition::StopAndRestart
         );
     }
@@ -6397,17 +6289,17 @@ mod tests {
             .expect("restart-as-launch branch");
         let provider_guard = body
             .find("ensure_provider_sync_is_idle_before_stop")
-            .expect("provider sync guard wait");
+            .expect("provider sync guard");
 
-        assert!(async_body.contains("codex_plus_core::cdp::endpoint_address(request.debug_port)"));
-        assert!(async_body.contains("codex_plus_core::watcher::find_codex_processes()"));
-        assert!(!async_body.contains("watcher::cdp_listening"));
+        assert!(async_body.contains("spawn_blocking"));
+        assert!(body.contains("codex_plus_core::watcher::find_codex_processes()"));
+        assert!(!body.contains("codex_plus_core::cdp"));
         assert!(launch_only < provider_guard);
         assert!(body[launch_only..provider_guard].contains("spawn_codex_plus_launch"));
     }
 
     #[test]
-    fn full_restart_prepares_and_revalidates_the_target_before_live_sync() {
+    fn full_restart_stops_native_app_before_live_sync() {
         let source = include_str!("commands.rs");
         let start = source
             .find("fn restart_codex_plus_blocking")
@@ -6417,38 +6309,37 @@ mod tests {
             .map(|offset| start + offset)
             .expect("restart helper boundary");
         let body = &source[start..end];
-        let prepare = body
-            .find("prepare_windows_codex_stop_plan")
-            .expect("target identity capture");
         let stop_launcher = body
             .find("stop_launcher_processes_and_wait")
             .expect("launcher stop");
-        let execute = body
-            .find("execute_windows_codex_stop_plan")
-            .expect("target identity recheck and stop");
+        let stop_app = body
+            .find("stop_codex_processes_for_restart_and_wait")
+            .expect("native app stop");
         let live_sync = body
             .find("restart_codex_plus_after_stop")
             .unwrap_or(body.len());
 
-        assert!(prepare < stop_launcher);
-        assert!(stop_launcher < execute);
-        assert!(execute < live_sync);
-        assert!(body[execute..live_sync].contains("return failed"));
+        assert!(stop_launcher < stop_app);
+        assert!(stop_app < live_sync);
+        assert!(body[stop_app..live_sync].contains("return failed"));
     }
 
     #[test]
-    fn restart_does_not_wait_when_no_provider_sync_is_running() {
-        let slept = std::cell::Cell::new(0);
+    fn restart_provider_sync_guard_is_fail_fast() {
+        let source = include_str!("commands.rs");
+        let start = source
+            .find("fn ensure_provider_sync_is_idle_before_stop")
+            .expect("provider sync guard");
+        let end = source[start..]
+            .find("fn default_debug_port")
+            .map(|offset| start + offset)
+            .expect("provider sync guard boundary");
+        let body = &source[start..end];
 
-        let outcome = wait_for_idle_provider_sync(
-            || Ok(()),
-            || codex_plus_data::ProviderSyncLockState::Free,
-            |ms| slept.set(slept.get() + ms),
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(slept.get(), 0);
+        assert!(body.contains("try_acquire_provider_sync_lifecycle_guard"));
+        assert!(!body.contains("sleep"));
+        assert!(!body.contains("WAIT_TIMEOUT"));
+        assert!(!body.contains("wait_for_idle_provider_sync"));
     }
 
     #[test]
@@ -6460,102 +6351,6 @@ mod tests {
         assert!(matches!(second, Err(message) if message.contains("正在进行")));
         drop(first);
         assert!(try_acquire_restart_guard().is_ok());
-    }
-
-    #[test]
-    fn restart_does_not_wait_on_a_lock_whose_owner_already_exited() {
-        let slept = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || Ok(()),
-            || codex_plus_data::ProviderSyncLockState::Stale { pid: Some(4321) },
-            |ms| slept.set(slept.get() + ms),
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(slept.get(), 0);
-    }
-
-    #[test]
-    fn restart_proceeds_once_an_in_flight_provider_sync_releases_the_lock() {
-        let polls = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || {
-                polls.set(polls.get() + 1);
-                if polls.get() < 3 {
-                    Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
-                } else {
-                    Ok(())
-                }
-            },
-            || codex_plus_data::ProviderSyncLockState::Held {
-                pid: 4321,
-                started_at: 1234,
-            },
-            |_| {},
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(polls.get(), 3);
-    }
-
-    /// issue #1901：同步一直不结束时宁可拒绝重启，也不能强杀持锁的 launcher。
-    #[test]
-    fn restart_is_refused_while_a_provider_sync_keeps_holding_the_lock() {
-        let held = codex_plus_data::ProviderSyncLockState::Held {
-            pid: 4321,
-            started_at: 1234,
-        };
-
-        let outcome = wait_for_idle_provider_sync(
-            || Err::<(), _>(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
-            || held.clone(),
-            |_| {},
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(matches!(
-            outcome,
-            Err(ProviderSyncWaitFailure::Busy(state)) if state == held
-        ));
-    }
-
-    #[test]
-    fn restart_is_refused_while_the_lock_owner_cannot_be_determined() {
-        let outcome = wait_for_idle_provider_sync(
-            || Err::<(), _>(std::io::Error::from(std::io::ErrorKind::AlreadyExists)),
-            || codex_plus_data::ProviderSyncLockState::Indeterminate,
-            |_| {},
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(matches!(
-            outcome,
-            Err(ProviderSyncWaitFailure::Busy(
-                codex_plus_data::ProviderSyncLockState::Indeterminate
-            ))
-        ));
-    }
-
-    #[test]
-    fn restart_reports_non_contention_guard_errors_without_waiting() {
-        let slept = std::cell::Cell::new(0);
-        let outcome = wait_for_idle_provider_sync(
-            || Err::<(), _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
-            || codex_plus_data::ProviderSyncLockState::Free,
-            |ms| slept.set(slept.get() + ms),
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(matches!(
-            outcome,
-            Err(ProviderSyncWaitFailure::Acquire(error))
-                if error.kind() == std::io::ErrorKind::PermissionDenied
-        ));
-        assert_eq!(slept.get(), 0);
     }
 
     #[test]
