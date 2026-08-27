@@ -129,6 +129,20 @@ pub struct AggregateRelayMember {
     pub weight: u32,
 }
 
+/// 聚合供应商按模型名路由规则：model 匹配 pattern 时转发到指定成员
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateRelayRoute {
+    /// 模型匹配模式，如 "deepseek-*" / "gpt-*" / "*"；仅支持 * 通配符
+    pub pattern: String,
+    /// 目标聚合成员 relayId（必须是本聚合 members 之一）
+    #[serde(rename = "relayId")]
+    pub relay_id: String,
+    /// 数字越大越优先，缺省 0；同 priority 按数组顺序（稳定优先）
+    #[serde(default)]
+    pub priority: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RelaySessionProvider {
@@ -157,6 +171,8 @@ pub struct AggregateRelayProfile {
     pub strategy: AggregateRelayStrategy,
     #[serde(default)]
     pub members: Vec<AggregateRelayMember>,
+    #[serde(default)]
+    pub routes: Vec<AggregateRelayRoute>,
 }
 
 impl Default for RelayProfile {
@@ -2444,6 +2460,7 @@ experimental_bearer_token = "sk-existing""#
                         weight: 3,
                     },
                 ],
+                routes: Vec::new(),
             }],
             active_aggregate_relay_id: "agg".to_string(),
             ..BackendSettings::default()
