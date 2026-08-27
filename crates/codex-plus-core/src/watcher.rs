@@ -16,6 +16,31 @@ const RESTART_STOP_WAIT_INTERVAL_MS: u64 = 100;
 pub const WATCHER_RUN_NAME: &str = "CodexPlusPlusWatcher";
 pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "CodexPlusPlusWatcher.lnk";
+#[cfg(any(test, target_os = "macos"))]
+const LEGACY_MACOS_LAUNCHER_BINARY: &str = "CodexPlusPlus";
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_launcher_binary_names() -> [&'static str; 2] {
+    [crate::install::SILENT_BINARY, LEGACY_MACOS_LAUNCHER_BINARY]
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn macos_launcher_process_ids_from_pgrep_outputs(
+    outputs: impl IntoIterator<Item = Vec<u8>>,
+) -> Vec<u32> {
+    let mut process_ids = outputs
+        .into_iter()
+        .flat_map(|output| {
+            String::from_utf8_lossy(&output)
+                .lines()
+                .filter_map(|value| value.trim().parse::<u32>().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    process_ids.sort_unstable();
+    process_ids.dedup();
+    process_ids
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatcherInstallPlan {
@@ -279,6 +304,24 @@ mod process_identity_tests {
         assert_eq!(parse_ps_elapsed_seconds("02:03:04"), Some(7_384));
         assert_eq!(parse_ps_elapsed_seconds("2-02:03:04"), Some(180_184));
         assert_eq!(parse_ps_elapsed_seconds("invalid"), None);
+    }
+
+    #[test]
+    fn macos_launcher_names_preserve_current_and_legacy_binaries() {
+        assert_eq!(
+            macos_launcher_binary_names(),
+            ["codex-plus-plus", "CodexPlusPlus"]
+        );
+    }
+
+    #[test]
+    fn macos_launcher_process_ids_merge_names_and_deduplicate() {
+        let process_ids = macos_launcher_process_ids_from_pgrep_outputs([
+            b"20\n10\n".to_vec(),
+            b"30\n20\ninvalid\n".to_vec(),
+        ]);
+
+        assert_eq!(process_ids, vec![10, 20, 30]);
     }
 
     #[cfg(windows)]
@@ -1239,18 +1282,17 @@ fn terminate_macos_process(process_id: u32) -> std::io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn find_launcher_processes() -> Vec<u32> {
-    std::process::Command::new("pgrep")
-        .args(["-x", crate::install::SILENT_BINARY])
-        .output()
-        .ok()
-        .into_iter()
-        .flat_map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|value| value.trim().parse::<u32>().ok())
-                .collect::<Vec<_>>()
-        })
-        .collect()
+    macos_launcher_process_ids_from_pgrep_outputs(
+        macos_launcher_binary_names()
+            .into_iter()
+            .filter_map(|binary| {
+                std::process::Command::new("pgrep")
+                    .args(["-x", binary])
+                    .output()
+                    .ok()
+                    .map(|output| output.stdout)
+            }),
+    )
 }
 
 #[cfg(target_os = "macos")]
