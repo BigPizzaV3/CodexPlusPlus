@@ -1990,6 +1990,10 @@ fn remote_control_finalization_uses_only_recorded_rollout_and_preserves_full_syn
     let other_rollout = home.join("sessions/rollout-other.jsonl");
     write_rollout(&target_rollout, "openai", "mobile", "C:/workspace");
     write_rollout(&other_rollout, "openai", "other", "C:/workspace");
+    let seeded = run_provider_sync_with_target(Some(&home), Some("openai"));
+    assert_eq!(seeded.status, ProviderSyncStatus::Synced, "{}", seeded.message);
+    let scan_state_path = home.join("backups_state/provider-sync/rollout-scan-state.json");
+    assert!(scan_state_path.is_file());
     create_remote_control_state_db(
         &home.join("state_5.sqlite"),
         &[
@@ -2025,6 +2029,7 @@ fn remote_control_finalization_uses_only_recorded_rollout_and_preserves_full_syn
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.changed_session_files, 1);
     assert_eq!(result.sqlite_catalog_rows_inserted, 1);
+    assert!(!scan_state_path.exists());
     let target_first: serde_json::Value = serde_json::from_str(
         fs::read_to_string(&target_rollout)
             .unwrap()
@@ -2553,6 +2558,10 @@ fn provider_sync_restores_rollout_first_line_when_later_step_fails() {
     fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
     let rollout = home.join("sessions/rollout-needs-rewrite.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let seeded = run_provider_sync_with_target(Some(&home), Some("openai"));
+    assert_eq!(seeded.status, ProviderSyncStatus::Synced, "{}", seeded.message);
+    let scan_state_path = home.join("backups_state/provider-sync/rollout-scan-state.json");
+    assert!(scan_state_path.is_file());
     let original_first_line = fs::read_to_string(&rollout)
         .unwrap()
         .lines()
@@ -2588,6 +2597,7 @@ fn provider_sync_restores_rollout_first_line_when_later_step_fails() {
         .unwrap()
         .to_string();
     assert_eq!(restored_first_line, original_first_line);
+    assert!(!scan_state_path.exists());
 }
 
 #[test]
@@ -2813,6 +2823,99 @@ fn provider_sync_preserves_rollout_mtime() {
 }
 
 #[test]
+fn provider_sync_commits_scan_state_for_the_rewritten_file_instance() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-state.jsonl");
+    write_rollout(&rollout, "openai", "thread-state", "C:/workspace");
+
+    let first = run_provider_sync(Some(&home));
+
+    assert_eq!(first.status, ProviderSyncStatus::Synced, "{}", first.message);
+    assert_eq!(first.changed_session_files, 1);
+    let state_path = home.join("backups_state/provider-sync/rollout-scan-state.json");
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let entries = state["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["providers"], json!(["custom"]));
+    assert!(entries[0]["fileIdentity"].as_str().unwrap().contains(':'));
+    let bytes = fs::read(&rollout).unwrap();
+    assert_eq!(entries[0]["size"], bytes.len() as u64);
+    assert_eq!(
+        entries[0]["sha256"],
+        format!("{:x}", Sha256::digest(&bytes))
+    );
+
+    let second = run_provider_sync(Some(&home));
+
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{}", second.message);
+    assert_eq!(second.changed_session_files, 0);
+    assert!(second.backup_dir.is_none());
+    assert!(second.message.contains("already up to date"));
+}
+
+#[test]
+fn provider_sync_cache_write_failure_does_not_fail_an_up_to_date_sync() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-cache-write.jsonl"),
+        "openai",
+        "thread-cache-write",
+        "C:/workspace",
+    );
+    fs::create_dir_all(home.join("backups_state")).unwrap();
+    fs::write(home.join("backups_state/provider-sync"), b"block-cache-directory").unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{}", result.message);
+    assert_eq!(result.changed_session_files, 0);
+    assert!(result.message.contains("already up to date"));
+}
+
+#[test]
+fn provider_sync_refuses_rollout_mutation_when_scan_state_cannot_be_invalidated() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-invalidation.jsonl");
+    write_rollout(
+        &rollout,
+        "openai",
+        "thread-invalidation",
+        "C:/workspace",
+    );
+    let scan_state_path = home.join("backups_state/provider-sync/rollout-scan-state.json");
+    fs::create_dir_all(&scan_state_path).unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout).unwrap().lines().next().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "openai");
+    let backup_root = home.join("backups_state/provider-sync");
+    let transaction = fs::read_dir(&backup_root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("session-transaction.json"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let transaction: serde_json::Value =
+        serde_json::from_slice(&fs::read(transaction).unwrap()).unwrap();
+    assert_eq!(transaction["status"], "rolled_back");
+}
+
+#[test]
 fn provider_sync_streams_large_payloads_without_copying_them_into_the_journal() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
@@ -2910,6 +3013,19 @@ fn provider_sync_manifest_indexes_only_rollouts_that_enter_the_transaction() {
         .unwrap()
         .ends_with("rollout-b-applied.jsonl"));
     assert_eq!(manifest[0]["sessionMetaBackup"], "session-meta/0.jsonl");
+    let scan_state: serde_json::Value = serde_json::from_slice(
+        &fs::read(home.join("backups_state/provider-sync/rollout-scan-state.json")).unwrap(),
+    )
+    .unwrap();
+    let entries = scan_state["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0]["relativePath"]
+            .as_str()
+            .unwrap()
+            .ends_with("rollout-b-applied.jsonl")
+    );
+    assert_eq!(entries[0]["providers"], json!(["custom"]));
 }
 
 #[test]
@@ -2946,6 +3062,46 @@ fn provider_sync_bounded_memory_benchmark() {
     if let Some(peak_working_set) = peak_working_set {
         assert!(peak_working_set < 256 * 1024 * 1024);
     }
+}
+
+#[test]
+#[ignore = "synthetic unchanged-rollout prefilter benchmark"]
+fn provider_sync_unchanged_rollout_prefilter_benchmark() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    let file_count = 118_usize;
+    let payload_bytes = 1024 * 1024;
+    for index in 0..file_count {
+        write_large_rollout(
+            &home.join(format!("sessions/rollout-prefilter-{index}.jsonl")),
+            "custom",
+            &format!("prefilter-{index}"),
+            payload_bytes,
+        );
+    }
+
+    let full_started = Instant::now();
+    let first = run_provider_sync(Some(&home));
+    let full_elapsed = full_started.elapsed();
+    let unchanged_started = Instant::now();
+    let second = run_provider_sync(Some(&home));
+    let unchanged_elapsed = unchanged_started.elapsed();
+
+    assert_eq!(first.status, ProviderSyncStatus::Synced, "{}", first.message);
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{}", second.message);
+    assert_eq!(first.changed_session_files, 0);
+    assert_eq!(second.changed_session_files, 0);
+    assert!(first.backup_dir.is_none());
+    assert!(second.backup_dir.is_none());
+    eprintln!(
+        "provider-sync prefilter {} files / {} MiB: full {:?}, unchanged {:?}",
+        file_count,
+        file_count * payload_bytes / (1024 * 1024),
+        full_elapsed,
+        unchanged_elapsed
+    );
 }
 
 #[test]

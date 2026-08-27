@@ -18,6 +18,17 @@ const SESSION_TRANSACTION_NAMESPACE: &str = "provider-sync-rollout-transaction";
 const SESSION_TRANSACTION_IN_PROGRESS: &str = "in_progress";
 const SESSION_TRANSACTION_COMMITTED: &str = "committed";
 const SESSION_TRANSACTION_ROLLED_BACK: &str = "rolled_back";
+const PROVIDER_SYNC_SCAN_STATE_FILE: &str = "rollout-scan-state.json";
+const PROVIDER_SYNC_SCAN_STATE_NAMESPACE: &str = "provider-sync-rollout-scan-state";
+const PROVIDER_SYNC_SCAN_STATE_VERSION: u32 = 1;
+const PROVIDER_SYNC_SCAN_STATE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const PROVIDER_SYNC_SCAN_STATE_MAX_ENTRIES: usize = 100_000;
+const PROVIDER_SYNC_SCAN_RULES_V1: &str = concat!(
+    "provider-sync-rollout-scan/v1;",
+    "utf8-jsonl;session_meta-payload-id-cwd-model_provider;",
+    "user_message-or-user_input;encrypted_content-byte-marker;",
+    "non-root-agent-source;missing-provider-sentinel"
+);
 
 /// `create_lock` 先建目录再写 `owner.json`，两步之间被强杀会留下没有 owner 的锁目录。
 /// 该窗口只有几毫秒，因此超过这个时长仍缺 owner 的锁一定是中断残留，可以安全回收；
@@ -343,12 +354,41 @@ struct RolloutRewrite {
     original_size: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSyncRolloutScanState {
+    relative_path: String,
+    size: u64,
+    modified_secs: Option<u64>,
+    modified_nanos: Option<u32>,
+    file_identity: String,
+    sha256: String,
+    thread_id: Option<String>,
+    cwd: Option<String>,
+    has_user_event: bool,
+    has_encrypted_content: bool,
+    marks_non_root_agent: bool,
+    session_meta_count: usize,
+    providers: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderSyncRolloutScanStateManifest {
+    version: u32,
+    namespace: String,
+    rules_sha256: String,
+    rollout_roots: HashMap<String, SessionTransactionRootEvidence>,
+    entries: Vec<ProviderSyncRolloutScanState>,
+}
+
 #[derive(Debug, Default)]
 struct SessionChanges {
     changes: Vec<SessionChange>,
     skipped_locked_rollout_files: Vec<PathBuf>,
     encrypted_content_counts: HashMap<String, usize>,
     subagent_thread_ids: HashSet<String>,
+    scan_state_entries: Vec<ProviderSyncRolloutScanState>,
 }
 
 #[derive(Debug, Default)]
@@ -1057,6 +1097,16 @@ pub fn run_provider_sync_with_target(
             && catalog_repair_count == 0
             && global_state_update_count == 0
         {
+            if require_stopped_app {
+                let running_processes =
+                    codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+                if !running_processes.is_empty() {
+                    anyhow::bail!(
+                        "Codex App / ChatGPT started while provider sync was scanning rollouts"
+                    );
+                }
+            }
+            persist_provider_sync_scan_state_best_effort(&home, &collected.scan_state_entries);
             let mut synced = result(
                 ProviderSyncStatus::Synced,
                 "Provider sync already up to date",
@@ -1124,6 +1174,12 @@ pub fn run_provider_sync_with_target(
         };
         set_session_transaction_phase(&backup_dir, SessionTransactionPhase::CommitDecided)?;
         commit_session_transaction(&backup_dir)?;
+        persist_committed_provider_sync_scan_state_best_effort(
+            &home,
+            &backup_dir,
+            &target_provider,
+            collected.scan_state_entries.clone(),
+        );
         prune_backups(&home)?;
         let mut synced = result(
             ProviderSyncStatus::Synced,
@@ -1642,26 +1698,463 @@ fn release_owned_lock(path: &Path, lock_id: &str) -> std::io::Result<bool> {
     Ok(false)
 }
 
+fn provider_sync_scan_rules_sha256() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(PROVIDER_SYNC_SCAN_RULES_V1.as_bytes());
+    hasher.update([0]);
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn provider_sync_scan_state_path(home: &Path) -> PathBuf {
+    home.join("backups_state/provider-sync")
+        .join(PROVIDER_SYNC_SCAN_STATE_FILE)
+}
+
+fn load_provider_sync_scan_state(
+    home: &Path,
+) -> anyhow::Result<HashMap<String, ProviderSyncRolloutScanState>> {
+    let path = provider_sync_scan_state_path(home);
+    let path_metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) => return Err(error.into()),
+    };
+    if !path_metadata.is_file() {
+        anyhow::bail!("provider-sync rollout scan state is not a bounded regular file");
+    }
+    if let Some(parent) = path.parent() {
+        ensure_path_components_not_reparse(home, parent)?;
+    }
+    ensure_not_reparse_or_symlink(&path)?;
+    let mut file = File::open(&path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > PROVIDER_SYNC_SCAN_STATE_MAX_BYTES {
+        anyhow::bail!("provider-sync rollout scan state is not a bounded regular file");
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    std::io::Read::take(&mut file, PROVIDER_SYNC_SCAN_STATE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > PROVIDER_SYNC_SCAN_STATE_MAX_BYTES {
+        anyhow::bail!("provider-sync rollout scan state exceeded the read limit");
+    }
+    let manifest: ProviderSyncRolloutScanStateManifest = serde_json::from_slice(&bytes)?;
+    if manifest.version != PROVIDER_SYNC_SCAN_STATE_VERSION
+        || manifest.namespace != PROVIDER_SYNC_SCAN_STATE_NAMESPACE
+        || manifest.rules_sha256 != provider_sync_scan_rules_sha256()
+        || manifest.rollout_roots != session_transaction_rollout_roots(home)?
+        || manifest.entries.len() > PROVIDER_SYNC_SCAN_STATE_MAX_ENTRIES
+    {
+        anyhow::bail!("unsupported provider-sync rollout scan state");
+    }
+    let mut entries = HashMap::new();
+    for entry in manifest.entries {
+        validated_rollout_relative_path(&entry.relative_path)?;
+        if entry.relative_path.len() > 32 * 1024
+            || entry.file_identity.is_empty()
+            || entry.file_identity.len() > 512
+            || entry.sha256.len() != 64
+            || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || entry.modified_secs.is_some() != entry.modified_nanos.is_some()
+            || entry
+                .thread_id
+                .as_ref()
+                .is_some_and(|value| value.len() > 512)
+            || entry
+                .cwd
+                .as_ref()
+                .is_some_and(|value| value.len() > 32 * 1024)
+            || entry.providers.len() > 1024
+            || entry.providers.iter().any(|value| value.len() > 512)
+            || !entry.providers.windows(2).all(|pair| pair[0] < pair[1])
+            || entries.insert(entry.relative_path.clone(), entry).is_some()
+        {
+            anyhow::bail!("invalid provider-sync rollout scan state entry");
+        }
+    }
+    Ok(entries)
+}
+
+fn load_provider_sync_scan_state_best_effort(
+    home: &Path,
+) -> HashMap<String, ProviderSyncRolloutScanState> {
+    match load_provider_sync_scan_state(home) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "provider_sync.scan_state_ignored",
+                json!({
+                    "error": error.to_string(),
+                    "path": provider_sync_scan_state_path(home).to_string_lossy(),
+                }),
+            );
+            HashMap::new()
+        }
+    }
+}
+
+fn persist_provider_sync_scan_state(
+    home: &Path,
+    entries: &[ProviderSyncRolloutScanState],
+) -> anyhow::Result<()> {
+    if entries.len() > PROVIDER_SYNC_SCAN_STATE_MAX_ENTRIES {
+        anyhow::bail!("provider-sync rollout scan state has too many entries");
+    }
+    let mut entries = entries.to_vec();
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let path = provider_sync_scan_state_path(home);
+    if let Some(parent) = path.parent() {
+        create_validated_directory_path(home, parent)?;
+    }
+    match fs::symlink_metadata(&path) {
+        Ok(_) => ensure_not_reparse_or_symlink(&path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let bytes = serde_json::to_vec_pretty(&ProviderSyncRolloutScanStateManifest {
+        version: PROVIDER_SYNC_SCAN_STATE_VERSION,
+        namespace: PROVIDER_SYNC_SCAN_STATE_NAMESPACE.to_string(),
+        rules_sha256: provider_sync_scan_rules_sha256(),
+        rollout_roots: session_transaction_rollout_roots(home)?,
+        entries,
+    })?;
+    if bytes.len() as u64 > PROVIDER_SYNC_SCAN_STATE_MAX_BYTES {
+        anyhow::bail!("provider-sync rollout scan state is too large");
+    }
+    codex_plus_core::settings::atomic_write(&path, &bytes)
+}
+
+fn persist_provider_sync_scan_state_best_effort(
+    home: &Path,
+    entries: &[ProviderSyncRolloutScanState],
+) {
+    if let Err(error) = persist_provider_sync_scan_state(home, entries) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "provider_sync.scan_state_write_failed",
+            json!({
+                "error": error.to_string(),
+                "path": provider_sync_scan_state_path(home).to_string_lossy(),
+            }),
+        );
+    }
+}
+
+fn invalidate_provider_sync_scan_state(home: &Path) -> anyhow::Result<()> {
+    let path = provider_sync_scan_state_path(home);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    if let Some(parent) = path.parent() {
+        ensure_path_components_not_reparse(home, parent)?;
+    }
+    ensure_not_reparse_or_symlink(&path)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn committed_provider_sync_scan_state(
+    home: &Path,
+    backup_dir: &Path,
+    target_provider: &str,
+    mut entries: Vec<ProviderSyncRolloutScanState>,
+) -> anyhow::Result<Vec<ProviderSyncRolloutScanState>> {
+    let transaction = read_session_transaction(backup_dir)?;
+    if transaction.status != SESSION_TRANSACTION_COMMITTED
+        || transaction.mode != SessionTransactionMode::Full
+    {
+        anyhow::bail!("provider-sync rollout scan state requires a committed full transaction");
+    }
+    let committed = transaction
+        .entries
+        .iter()
+        .map(|entry| (entry.relative_path.as_str(), entry))
+        .collect::<HashMap<_, _>>();
+    let mut next_entries = Vec::with_capacity(entries.len());
+    for mut state in entries.drain(..) {
+        let relative = validated_rollout_relative_path(&state.relative_path)?;
+        let path = home.join(relative);
+        if let Some(entry) = committed.get(state.relative_path.as_str()) {
+            state.size = entry.next_size;
+            state.sha256 = entry.next_sha256.clone();
+            if state.session_meta_count > 0 {
+                state.providers = vec![target_provider.to_string()];
+            }
+            let Ok(file) = File::open(&path) else {
+                continue;
+            };
+            let Ok(metadata) = file.metadata() else {
+                continue;
+            };
+            let Ok(file_identity) = codex_plus_core::settings::file_instance_identity(&file) else {
+                continue;
+            };
+            let modified = metadata.modified().ok();
+            if !metadata.is_file() || metadata.len() != entry.next_size || modified.is_none() {
+                continue;
+            }
+            state.file_identity = file_identity;
+            (state.modified_secs, state.modified_nanos) = system_time_parts(modified);
+            next_entries.push(state);
+        } else {
+            let providers = state.providers.iter().cloned().collect::<HashSet<_>>();
+            let still_needs_rewrite = state.session_meta_count > 0
+                && !state.marks_non_root_agent
+                && rewrite_needed_for_providers(
+                    &providers,
+                    target_provider,
+                    &SessionRewriteMode::AllProviders,
+                );
+            if !still_needs_rewrite && provider_sync_scan_state_matches(&path, &state) {
+                next_entries.push(state);
+            }
+        }
+    }
+    Ok(next_entries)
+}
+
+fn persist_committed_provider_sync_scan_state_best_effort(
+    home: &Path,
+    backup_dir: &Path,
+    target_provider: &str,
+    entries: Vec<ProviderSyncRolloutScanState>,
+) {
+    match committed_provider_sync_scan_state(home, backup_dir, target_provider, entries) {
+        Ok(entries) => persist_provider_sync_scan_state_best_effort(home, &entries),
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "provider_sync.scan_state_commit_failed",
+                json!({
+                    "error": error.to_string(),
+                    "backup_dir": backup_dir.to_string_lossy(),
+                }),
+            );
+        }
+    }
+}
+
+fn provider_sync_scan_state_matches(path: &Path, state: &ProviderSyncRolloutScanState) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    let Ok(file_identity) = codex_plus_core::settings::file_instance_identity(&file) else {
+        return false;
+    };
+    let (modified_secs, modified_nanos) = system_time_parts(metadata.modified().ok());
+    state.modified_secs.is_some()
+        && metadata.is_file()
+        && metadata.len() == state.size
+        && file_identity == state.file_identity
+        && modified_secs == state.modified_secs
+        && modified_nanos == state.modified_nanos
+}
+
+fn rewrite_needed_for_providers(
+    providers: &HashSet<String>,
+    target_provider: &str,
+    rewrite_mode: &SessionRewriteMode,
+) -> bool {
+    match rewrite_mode {
+        SessionRewriteMode::AllProviders => {
+            providers.iter().any(|provider| provider != target_provider)
+        }
+        SessionRewriteMode::SourceProvider { source_provider } => providers
+            .iter()
+            .any(|provider| provider == "(missing)" || provider == source_provider),
+    }
+}
+
+fn rollout_rewrite_from_scan_state(
+    state: &ProviderSyncRolloutScanState,
+    target_provider: &str,
+    rewrite_mode: &SessionRewriteMode,
+) -> RolloutRewrite {
+    let providers = state.providers.iter().cloned().collect::<HashSet<_>>();
+    RolloutRewrite {
+        rewrite_needed: rewrite_needed_for_providers(&providers, target_provider, rewrite_mode),
+        thread_id: state.thread_id.clone(),
+        cwd: state.cwd.clone(),
+        providers,
+        session_meta_count: state.session_meta_count,
+        has_user_event: state.has_user_event,
+        has_encrypted_content: state.has_encrypted_content,
+        marks_non_root_agent: state.marks_non_root_agent,
+        original_sha256: state.sha256.clone(),
+        original_size: state.size,
+    }
+}
+
+fn provider_sync_cached_state_can_skip_body(
+    state: &ProviderSyncRolloutScanState,
+    target_provider: &str,
+    excluded_thread_ids: &HashSet<String>,
+    explicit_user_thread_ids: &HashSet<String>,
+) -> bool {
+    if state.session_meta_count == 0 || state.marks_non_root_agent {
+        return true;
+    }
+    let is_explicit_user = state
+        .thread_id
+        .as_ref()
+        .is_some_and(|thread_id| explicit_user_thread_ids.contains(thread_id));
+    if !is_explicit_user
+        && state
+            .thread_id
+            .as_ref()
+            .is_some_and(|thread_id| excluded_thread_ids.contains(thread_id))
+    {
+        return true;
+    }
+    let providers = state.providers.iter().cloned().collect::<HashSet<_>>();
+    !rewrite_needed_for_providers(
+        &providers,
+        target_provider,
+        &SessionRewriteMode::AllProviders,
+    )
+}
+
+fn scan_rollout_for_provider_sync_state(
+    home: &Path,
+    path: &Path,
+    target_provider: &str,
+    rewrite_mode: &SessionRewriteMode,
+) -> std::io::Result<(
+    RolloutRewrite,
+    Option<SystemTime>,
+    Option<ProviderSyncRolloutScanState>,
+)> {
+    let mut file = File::open(path)?;
+    let before = file.metadata()?;
+    let before_modified = before.modified().ok();
+    let before_identity = codex_plus_core::settings::file_instance_identity(&file).ok();
+    let rewrite =
+        scan_rollout_session_meta_providers_from_file(&mut file, target_provider, rewrite_mode)?;
+    let after = file.metadata()?;
+    let after_modified = after.modified().ok();
+    let after_identity = codex_plus_core::settings::file_instance_identity(&file).ok();
+    let current = File::open(path)?;
+    let current_metadata = current.metadata()?;
+    let current_modified = current_metadata.modified().ok();
+    let current_identity = codex_plus_core::settings::file_instance_identity(&current).ok();
+    let stable = before.len() == after.len()
+        && after.len() == rewrite.original_size
+        && after.len() == current_metadata.len()
+        && before_modified.is_some()
+        && before_modified == after_modified
+        && after_modified == current_modified
+        && before_identity.is_some()
+        && before_identity == after_identity
+        && after_identity == current_identity;
+    let mut providers = rewrite.providers.iter().cloned().collect::<Vec<_>>();
+    providers.sort();
+    let relative_path = rollout_relative_path(home, path)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let (modified_secs, modified_nanos) = system_time_parts(after_modified);
+    let state = stable.then(|| ProviderSyncRolloutScanState {
+        relative_path,
+        size: rewrite.original_size,
+        modified_secs,
+        modified_nanos,
+        file_identity: after_identity.expect("stable rollout scan has file identity"),
+        sha256: rewrite.original_sha256.clone(),
+        thread_id: rewrite.thread_id.clone(),
+        cwd: rewrite.cwd.clone(),
+        has_user_event: rewrite.has_user_event,
+        has_encrypted_content: rewrite.has_encrypted_content,
+        marks_non_root_agent: rewrite.marks_non_root_agent,
+        session_meta_count: rewrite.session_meta_count,
+        providers,
+    });
+    Ok((rewrite, after_modified, state))
+}
+
 fn collect_session_changes(
     home: &Path,
     target_provider: &str,
     excluded_thread_ids: &HashSet<String>,
     explicit_user_thread_ids: &HashSet<String>,
 ) -> anyhow::Result<SessionChanges> {
+    collect_session_changes_with_scanner(
+        home,
+        target_provider,
+        excluded_thread_ids,
+        explicit_user_thread_ids,
+        load_provider_sync_scan_state_best_effort(home),
+        scan_rollout_for_provider_sync_state,
+    )
+}
+
+fn collect_session_changes_with_scanner<F>(
+    home: &Path,
+    target_provider: &str,
+    excluded_thread_ids: &HashSet<String>,
+    explicit_user_thread_ids: &HashSet<String>,
+    mut scan_state: HashMap<String, ProviderSyncRolloutScanState>,
+    mut scanner: F,
+) -> anyhow::Result<SessionChanges>
+where
+    F: FnMut(
+        &Path,
+        &Path,
+        &str,
+        &SessionRewriteMode,
+    ) -> std::io::Result<(
+        RolloutRewrite,
+        Option<SystemTime>,
+        Option<ProviderSyncRolloutScanState>,
+    )>,
+{
     let mut collected = SessionChanges::default();
     for path in rollout_files(home)? {
-        let rewrite = match scan_rollout_session_meta_providers(
-            &path,
-            target_provider,
-            &SessionRewriteMode::AllProviders,
-        ) {
-            Ok(rewrite) => rewrite,
-            Err(error) if is_locked_io_error(&error) => {
-                collected.skipped_locked_rollout_files.push(path);
-                continue;
+        let relative_path = rollout_relative_path(home, &path)?;
+        let cached = scan_state
+            .remove(&relative_path)
+            .filter(|state| provider_sync_scan_state_matches(&path, state))
+            .filter(|state| {
+                provider_sync_cached_state_can_skip_body(
+                    state,
+                    target_provider,
+                    excluded_thread_ids,
+                    explicit_user_thread_ids,
+                )
+            });
+        let (rewrite, original_mtime, scan_state_entry) = match cached {
+            Some(state) => {
+                let original_mtime = fs::metadata(&path).and_then(|value| value.modified()).ok();
+                (
+                    rollout_rewrite_from_scan_state(
+                        &state,
+                        target_provider,
+                        &SessionRewriteMode::AllProviders,
+                    ),
+                    original_mtime,
+                    Some(state),
+                )
             }
-            Err(error) => return Err(error.into()),
+            None => match scanner(
+                home,
+                &path,
+                target_provider,
+                &SessionRewriteMode::AllProviders,
+            ) {
+                Ok(scanned) => scanned,
+                Err(error) if is_locked_io_error(&error) => {
+                    collected.skipped_locked_rollout_files.push(path);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            },
         };
+        if let Some(scan_state_entry) = scan_state_entry {
+            collected.scan_state_entries.push(scan_state_entry);
+        }
         if rewrite.session_meta_count == 0 {
             continue;
         }
@@ -1691,7 +2184,6 @@ fn collect_session_changes(
                     .or_insert(0) += 1;
             }
         }
-        let original_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
         collected.changes.push(SessionChange {
             path,
             original_sha256: rewrite.original_sha256,
@@ -1899,8 +2391,17 @@ fn scan_rollout_session_meta_providers(
     target_provider: &str,
     rewrite_mode: &SessionRewriteMode,
 ) -> std::io::Result<RolloutRewrite> {
+    let mut file = File::open(path)?;
+    scan_rollout_session_meta_providers_from_file(&mut file, target_provider, rewrite_mode)
+}
+
+fn scan_rollout_session_meta_providers_from_file(
+    file: &mut File,
+    target_provider: &str,
+    rewrite_mode: &SessionRewriteMode,
+) -> std::io::Result<RolloutRewrite> {
     let mut rewrite = RolloutRewrite::default();
-    let file = File::open(path)?;
+    file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     let mut hasher = Sha256::new();
@@ -2671,6 +3172,9 @@ fn apply_session_changes(
     changes: &[SessionChange],
 ) -> anyhow::Result<AppliedSessionChanges> {
     let apply_result = (|| -> anyhow::Result<AppliedSessionChanges> {
+        if !changes.is_empty() {
+            invalidate_provider_sync_scan_state(home)?;
+        }
         let mut applied = AppliedSessionChanges::default();
         let mut transaction = read_session_transaction(backup_dir)?;
         for change in changes {
@@ -5654,6 +6158,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod bounded_memory_tests {
     use super::*;
+    use std::cell::Cell;
     use std::io::{BufWriter, Write};
     use tempfile::tempdir;
 
@@ -5738,6 +6243,279 @@ mod bounded_memory_tests {
 
         assert_eq!(rewrite.session_meta_count, 10_000);
         assert_eq!(rewrite.providers, HashSet::from(["openai".to_string()]));
+    }
+
+    #[test]
+    fn unchanged_rollout_reuses_committed_scan_state_without_reading_the_body() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let rollout = home.join("sessions/rollout-cached.jsonl");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(
+            &rollout,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "thread-cached",
+                        "model_provider": "openai",
+                        "cwd": "C:/cached"
+                    }
+                }),
+                json!({"type": "event_msg", "payload": {"type": "user_message"}})
+            ),
+        )
+        .unwrap();
+        let (_, _, state) = scan_rollout_for_provider_sync_state(
+            &home,
+            &rollout,
+            "openai",
+            &SessionRewriteMode::AllProviders,
+        )
+        .unwrap();
+        let state = state.unwrap();
+        persist_provider_sync_scan_state(&home, std::slice::from_ref(&state)).unwrap();
+
+        let collected = collect_session_changes_with_scanner(
+            &home,
+            "openai",
+            &HashSet::new(),
+            &HashSet::new(),
+            load_provider_sync_scan_state(&home).unwrap(),
+            |_, _, _, _| panic!("unchanged rollout body should not be opened"),
+        )
+        .unwrap();
+
+        assert_eq!(collected.changes.len(), 1);
+        assert!(!collected.changes[0].rewrite_needed);
+        assert!(collected.changes[0].has_user_event);
+        assert_eq!(collected.changes[0].cwd.as_deref(), Some("C:/cached"));
+        assert_eq!(collected.scan_state_entries, vec![state]);
+    }
+
+    #[test]
+    fn changed_target_or_missing_mtime_forces_a_full_rollout_scan() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let rollout = home.join("sessions/rollout-rescan.jsonl");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(
+            &rollout,
+            format!(
+                "{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "thread-rescan",
+                        "model_provider": "openai"
+                    }
+                })
+            ),
+        )
+        .unwrap();
+        let (_, _, state) = scan_rollout_for_provider_sync_state(
+            &home,
+            &rollout,
+            "openai",
+            &SessionRewriteMode::AllProviders,
+        )
+        .unwrap();
+        let state = state.unwrap();
+        let scans = Cell::new(0);
+        let collected = collect_session_changes_with_scanner(
+            &home,
+            "custom",
+            &HashSet::new(),
+            &HashSet::new(),
+            HashMap::from([(state.relative_path.clone(), state.clone())]),
+            |home, path, target, mode| {
+                scans.set(scans.get() + 1);
+                scan_rollout_for_provider_sync_state(home, path, target, mode)
+            },
+        )
+        .unwrap();
+        assert_eq!(scans.get(), 1);
+        assert!(collected.changes[0].rewrite_needed);
+
+        let mut legacy = state;
+        legacy.modified_secs = None;
+        legacy.modified_nanos = None;
+        let scans = Cell::new(0);
+        collect_session_changes_with_scanner(
+            &home,
+            "openai",
+            &HashSet::new(),
+            &HashSet::new(),
+            HashMap::from([(legacy.relative_path.clone(), legacy)]),
+            |home, path, target, mode| {
+                scans.set(scans.get() + 1);
+                scan_rollout_for_provider_sync_state(home, path, target, mode)
+            },
+        )
+        .unwrap();
+        assert_eq!(scans.get(), 1);
+    }
+
+    #[test]
+    fn same_path_size_and_mtime_still_reject_a_replaced_file_instance() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let rollout = home.join("sessions/rollout-replaced.jsonl");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        let bytes = format!(
+            "{}\n",
+            json!({
+                "type": "session_meta",
+                "payload": {"id": "thread-replaced", "model_provider": "openai"}
+            })
+        );
+        fs::write(&rollout, &bytes).unwrap();
+        let (_, _, state) = scan_rollout_for_provider_sync_state(
+            &home,
+            &rollout,
+            "openai",
+            &SessionRewriteMode::AllProviders,
+        )
+        .unwrap();
+        let state = state.unwrap();
+        let original_mtime = fs::metadata(&rollout).unwrap().modified().unwrap();
+        let original_identity = state.file_identity.clone();
+        let replacement = rollout.with_extension("replacement");
+        fs::write(&replacement, &bytes).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(original_mtime))
+            .unwrap();
+        fs::remove_file(&rollout).unwrap();
+        fs::rename(&replacement, &rollout).unwrap();
+        let replacement_file = File::open(&rollout).unwrap();
+        assert_ne!(
+            codex_plus_core::settings::file_instance_identity(&replacement_file).unwrap(),
+            original_identity
+        );
+        assert_eq!(fs::metadata(&rollout).unwrap().len(), state.size);
+        assert_eq!(
+            system_time_parts(fs::metadata(&rollout).unwrap().modified().ok()),
+            (state.modified_secs, state.modified_nanos)
+        );
+        assert!(!provider_sync_scan_state_matches(&rollout, &state));
+    }
+
+    #[test]
+    fn scan_rule_digest_or_corrupt_state_invalidates_the_entire_cache() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let path = provider_sync_scan_state_path(&home);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&ProviderSyncRolloutScanStateManifest {
+                version: PROVIDER_SYNC_SCAN_STATE_VERSION,
+                namespace: PROVIDER_SYNC_SCAN_STATE_NAMESPACE.to_string(),
+                rules_sha256: "0".repeat(64),
+                rollout_roots: session_transaction_rollout_roots(&home).unwrap(),
+                entries: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(load_provider_sync_scan_state(&home).is_err());
+
+        fs::write(&path, b"not-json").unwrap();
+        assert!(load_provider_sync_scan_state(&home).is_err());
+        assert!(load_provider_sync_scan_state_best_effort(&home).is_empty());
+
+        let oversized = File::create(&path).unwrap();
+        oversized
+            .set_len(PROVIDER_SYNC_SCAN_STATE_MAX_BYTES + 1)
+            .unwrap();
+        drop(oversized);
+        assert!(load_provider_sync_scan_state(&home).is_err());
+    }
+
+    #[test]
+    fn replacing_a_rollout_root_invalidates_the_entire_cache() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let sessions = home.join("sessions");
+        let rollout = sessions.join("rollout-root.jsonl");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            &rollout,
+            format!(
+                "{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {"id": "thread-root", "model_provider": "openai"}
+                })
+            ),
+        )
+        .unwrap();
+        let (_, _, state) = scan_rollout_for_provider_sync_state(
+            &home,
+            &rollout,
+            "openai",
+            &SessionRewriteMode::AllProviders,
+        )
+        .unwrap();
+        persist_provider_sync_scan_state(&home, &[state.unwrap()]).unwrap();
+
+        fs::rename(&sessions, home.join("sessions-old")).unwrap();
+        fs::create_dir(&sessions).unwrap();
+
+        assert!(load_provider_sync_scan_state(&home).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_state_parent_creation_rejects_a_symlink_before_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let outside = tmp.path().join("outside");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, home.join("backups_state")).unwrap();
+
+        assert!(persist_provider_sync_scan_state(&home, &[]).is_err());
+        assert!(!outside.join("provider-sync").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn scan_state_parent_creation_rejects_a_junction_before_touching_its_target() {
+        use std::process::Command;
+
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join(".codex");
+        let outside = tmp.path().join("outside");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let link = home.join("backups_state");
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "New-Item -ItemType Junction -Path $env:CODEXPP_TEST_LINK -Target $env:CODEXPP_TEST_TARGET | Out-Null",
+            ])
+            .env("CODEXPP_TEST_LINK", &link)
+            .env("CODEXPP_TEST_TARGET", &outside)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "junction creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        assert!(persist_provider_sync_scan_state(&home, &[]).is_err());
+        assert!(!outside.join("provider-sync").exists());
+        fs::remove_dir(link).unwrap();
     }
 
     #[test]
