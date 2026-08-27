@@ -1241,6 +1241,7 @@ mod tests {
     #[test]
     fn launcher_hooks_forward_runtime_watchdog_and_marketplace_methods() {
         let source = include_str!("main.rs");
+        let compact_source = source.split_whitespace().collect::<String>();
 
         assert!(source.contains("async fn start_bridge_watchdog"));
         assert!(source.contains("self.watchdog_bridge_context()?"));
@@ -1250,8 +1251,8 @@ mod tests {
         assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
         assert!(source.contains("async fn ensure_active_protocol_proxy_config"));
         assert!(
-            source
-                .contains("self.core\n            .ensure_active_protocol_proxy_config(settings)")
+            compact_source
+                .contains("self.core.ensure_active_protocol_proxy_config(settings).await")
         );
     }
 
