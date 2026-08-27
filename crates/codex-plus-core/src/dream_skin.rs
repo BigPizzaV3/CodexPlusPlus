@@ -590,7 +590,7 @@ fn normalized_identity_string(path: &Path) -> String {
         .strip_prefix(r"\\?\UNC\")
         .map(|rest| format!(r"\\{rest}"))
         .or_else(|| raw.strip_prefix(r"\\?\").map(ToString::to_string))
-        .unwrap_or_else(|| raw.into_owned());
+        .unwrap_or_else(|| raw);
     normalized.to_lowercase()
 }
 
