@@ -127,6 +127,7 @@ import {
   type DreamSkinVerificationResult,
 } from "./dream-skin";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
+import { vlmTestTranslation } from "./vlm-test-translation";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
@@ -8170,6 +8171,7 @@ function RelayProfileEditor({
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [vlmTestOpen, setVlmTestOpen] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
   // VLM/Strip 对 Chat Completions 与 Responses 协议均可用(注入块类型已按协议适配)。
   const vlmUnsupportedProtocol = false;
@@ -8610,6 +8612,17 @@ function RelayProfileEditor({
             {modelWindowRows.some((row) => row.imageHandling === "vlm") && (!profile.vlmApiKey || !profile.vlmModel || !profile.vlmBaseUrl) ? (
               <p className="field-hint warn">{t("VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。")}</p>
             ) : null}
+            <div className="vlm-test-entry">
+              <Button
+                onClick={() => setVlmTestOpen((v) => !v)}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
+                {vlmTestOpen ? t("收起测试面板") : t("测试 VLM")}
+              </Button>
+            </div>
+            {vlmTestOpen ? <VlmTestPanel profile={profile} onClose={() => setVlmTestOpen(false)} /> : null}
           </div>
         ) : null}
         {showApiFields ? (
@@ -8708,6 +8721,207 @@ function RelayProfileEditor({
         <ShieldCheck className="h-4 w-4" />
         <span>{relayProfileModeHelp(profile)}</span>
       </div>
+    </div>
+  );
+}
+
+type VlmTestState =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | { kind: "done"; result: TestVlmResult };
+
+type TestVlmResult = {
+  status: string;
+  message: string;
+  vlmStatus: string;
+  httpCode: number | null;
+  durationMs: number;
+  error: string | null;
+  description: string | null;
+  model: string;
+  rawRequest: string | null;
+  rawResponse: string | null;
+};
+
+const VLM_TEST_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/// 方向 C：选图即测 + 排障增强（spec §4）。
+/// 选完文件自动开跑；失败时给通俗诊断 + 复制错误 + 原始请求/响应折叠。
+function VlmTestPanel({
+  profile,
+  onClose,
+}: {
+  profile: Pick<RelayProfile, "vlmApiKey" | "vlmModel" | "vlmBaseUrl">;
+  onClose: () => void;
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [state, setState] = useState<VlmTestState>({ kind: "idle" });
+  const [showRaw, setShowRaw] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const tr = (zh: string, params?: string[]) => (params ? tf(zh, params) : t(zh));
+
+  const runTest = async (url: string) => {
+    setState({ kind: "running" });
+    setLocalError(null);
+    try {
+      const res = await invoke<TestVlmResult>("test_vlm", {
+        request: {
+          apiKey: profile.vlmApiKey,
+          model: profile.vlmModel,
+          baseUrl: profile.vlmBaseUrl,
+          imageDataUrl: url,
+        },
+      });
+      setState({ kind: "done", result: res });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setState({
+        kind: "done",
+        result: {
+          status: "failed",
+          message: msg,
+          vlmStatus: "client_error",
+          httpCode: null,
+          durationMs: 0,
+          error: msg,
+          description: null,
+          model: profile.vlmModel,
+          rawRequest: null,
+          rawResponse: null,
+        },
+      });
+    }
+  };
+
+  // 选图即测：选完文件自动发起，无需二次点击（spec §4）。
+  const onFile = (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setLocalError(t("请选择图片文件。"));
+      return;
+    }
+    if (file.size > VLM_TEST_MAX_IMAGE_BYTES) {
+      setLocalError(t("图片超过 10MB，请换一张较小的图片。"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => setLocalError(t("读取图片失败，请重新选择"));
+    reader.onload = () => {
+      const url = typeof reader.result === "string" ? reader.result : null;
+      if (url) {
+        setDataUrl(url);
+        void runTest(url);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 复制完整排障信息（诊断 + 原始报文，无 API Key），可直接贴 issue（spec §3）。
+  const copyError = async () => {
+    if (state.kind !== "done") return;
+    const r = state.result;
+    const text = [
+      vlmTestTranslation(r.vlmStatus, r.httpCode ?? undefined, r.durationMs, tr),
+      `model: ${r.model}`,
+      r.httpCode != null ? `HTTP ${r.httpCode}` : null,
+      r.error ? `error: ${r.error}` : null,
+      r.rawRequest ? `--- request ---\n${r.rawRequest}` : null,
+      r.rawResponse ? `--- response ---\n${r.rawResponse}` : null,
+    ]
+      .filter((x) => x !== null)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setLocalError(t("复制失败，请从报文中手动复制。"));
+    }
+  };
+
+  const done = state.kind === "done" ? state.result : null;
+  const running = state.kind === "running";
+  const formReady = !!profile.vlmApiKey && !!profile.vlmModel && !!profile.vlmBaseUrl;
+  const canRun = !!dataUrl && formReady;
+
+  return (
+    <div className="vlm-test-panel">
+      <div className="modal-head">
+        <div>
+          <h2>{t("测试 VLM")}</h2>
+          <p className="modal-message">
+            {t("选一张图片立即验证当前 VLM 配置（使用表单当前值，无需保存）。")}
+          </p>
+        </div>
+        <button className="toast-close" aria-label={t("关闭窗口")} onClick={onClose} type="button">×</button>
+      </div>
+
+      <div className="vlm-test-upload">
+        <input
+          ref={fileInputRef}
+          accept="image/*"
+          onChange={(e) => {
+            onFile(e.currentTarget.files?.[0]);
+            e.currentTarget.value = "";
+          }}
+          type="file"
+          style={{ display: "none" }}
+        />
+        <Button disabled={running || !formReady} onClick={() => fileInputRef.current?.click()} size="sm" type="button" variant="secondary">
+          {dataUrl ? t("换图并测试") : t("选择图片并测试")}
+        </Button>
+        {dataUrl ? <img alt={t("图片预览")} className="vlm-test-preview" src={dataUrl} /> : null}
+        {running ? (
+          <p className="vlm-test-running">
+            <span className="vlm-test-spinner" aria-hidden="true" />
+            {t("正在调用 VLM…")}
+          </p>
+        ) : null}
+      </div>
+
+      {localError ? <p className="field-hint warn">{localError}</p> : null}
+
+      {done ? (
+        <div className="vlm-test-result">
+          <p className="vlm-test-summary" role="status">
+            {vlmTestTranslation(done.vlmStatus, done.httpCode ?? undefined, done.durationMs, tr)}
+          </p>
+          {done.description ? (
+            <pre className="vlm-test-description">{done.description}</pre>
+          ) : null}
+          {done.vlmStatus !== "ok" ? (
+            <button className="vlm-test-detail-toggle" onClick={() => void copyError()} type="button">
+              {t("复制错误")}
+            </button>
+          ) : null}
+          <button
+            className="vlm-test-detail-toggle"
+            aria-expanded={showRaw}
+            onClick={() => setShowRaw((v) => !v)}
+            type="button"
+          >
+            {showRaw ? t("隐藏原始报文") : t("显示原始报文")}
+          </button>
+          {showRaw ? (
+            <div className="vlm-test-raw">
+              <div className="label">{t("原始请求")}</div>
+              <pre className="vlm-test-description">{done.rawRequest ?? "-"}</pre>
+              <div className="label">{t("原始响应")}</div>
+              <pre className="vlm-test-description">{done.rawResponse ?? "-"}</pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <Toolbar>
+        {dataUrl ? (
+          <Button disabled={!canRun || running} onClick={() => dataUrl && void runTest(dataUrl)} type="button">
+            {t("重测")}
+          </Button>
+        ) : null}
+        <Button onClick={onClose} type="button" variant="secondary">
+          {t("收起")}
+        </Button>
+      </Toolbar>
     </div>
   );
 }
