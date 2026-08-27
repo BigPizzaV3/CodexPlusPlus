@@ -109,12 +109,8 @@ fn response_contains_codex_target(response: &[u8], debug_port: u16) -> bool {
         return false;
     };
     targets.iter().any(|target| {
-        is_primary_codex_page_target(target)
-            && target
-                .url
-                .trim()
-                .to_ascii_lowercase()
-                .starts_with("app://-/")
+        is_injectable_page_target(target)
+            && is_exact_codex_app_main_target(target)
             && target
                 .web_socket_debugger_url
                 .as_deref()
@@ -384,10 +380,10 @@ mod endpoint_tests {
     }
 
     #[test]
-    fn endpoint_address_returns_the_matching_loopback_family() {
+    fn endpoint_address_accepts_the_current_chatgpt_titled_app_main_target() {
         let (port, server) = serve_once(|port| {
             format!(
-                r#"[{{"id":"codex","type":"page","title":"Codex","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+                r#"[{{"id":"codex","type":"page","title":"ChatGPT","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
             )
         });
 
@@ -435,6 +431,18 @@ mod endpoint_tests {
         let (port, server) = serve_once(|port| {
             format!(
                 r#"[{{"id":"quick-chat","type":"page","title":"Codex","url":"app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+            )
+        });
+
+        assert!(!endpoint_available(port));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn endpoint_available_rejects_avatar_overlay_only_target() {
+        let (port, server) = serve_once(|port| {
+            format!(
+                r#"[{{"id":"avatar","type":"page","title":"ChatGPT","url":"app://-/index.html?initialRoute=%2Favatar-overlay","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
             )
         });
 
