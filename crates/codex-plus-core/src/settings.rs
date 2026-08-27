@@ -40,6 +40,8 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    #[serde(rename = "noAuth", default)]
+    pub no_auth: bool,
     #[serde(rename = "hideOfficialUsageAlert", default)]
     pub hide_official_usage_alert: bool,
     #[serde(rename = "testModel", default)]
@@ -169,6 +171,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
             config_contents: String::new(),
@@ -192,6 +195,10 @@ impl Default for RelayProfile {
 }
 
 impl RelayProfile {
+    pub fn uses_no_auth(&self) -> bool {
+        self.relay_mode == RelayMode::PureApi && self.no_auth
+    }
+
     pub fn has_model_routes(&self) -> bool {
         self.model_routes
             .iter()
@@ -631,6 +638,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                no_auth: false,
                 hide_official_usage_alert: false,
                 test_model: String::new(),
                 config_contents: String::new(),
@@ -682,6 +690,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
             config_contents: String::new(),
@@ -754,6 +763,7 @@ impl BackendSettings {
         self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
             || self.active_relay_profile().has_model_routes()
+            || self.active_relay_profile().uses_no_auth()
             || self.active_relay_session_provider() == RelaySessionProvider::Openai
     }
 }
@@ -1917,6 +1927,21 @@ mod tests {
         assert!(profile.model_list.is_empty());
         assert!(profile.model_routes.is_empty());
         assert!(!profile.has_model_routes());
+    }
+
+    #[test]
+    fn no_auth_relay_requires_protocol_proxy() {
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                relay_mode: RelayMode::PureApi,
+                no_auth: true,
+                base_url: "https://relay.example.test/v1".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        assert!(settings.active_relay_uses_protocol_proxy());
     }
 
     #[test]

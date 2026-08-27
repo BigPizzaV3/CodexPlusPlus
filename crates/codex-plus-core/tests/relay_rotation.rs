@@ -238,6 +238,28 @@ fn aggregate_members_must_be_api_capable_relay_profiles() {
 }
 
 #[test]
+fn aggregate_members_accept_no_auth_pure_api_profiles() {
+    let mut settings = settings(AggregateRelayStrategy::RequestRoundRobin);
+    settings.relay_profiles[0] = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "relay-a".to_string(),
+        base_url: "https://relay-a.example/v1".to_string(),
+        relay_mode: RelayMode::PureApi,
+        no_auth: true,
+        api_key: String::new(),
+        ..RelayProfile::default()
+    };
+
+    let mut selector = RelayRotationSelector::from_settings(&settings).unwrap();
+    let selected = selector
+        .select(&settings, RotationContext::default())
+        .unwrap();
+
+    assert_eq!(selected.id, "relay-a");
+    assert!(selected.uses_no_auth());
+}
+
+#[test]
 fn select_relay_for_request_uses_active_relay_id_as_aggregate_source_of_truth() {
     let _guard = global_selector_test_lock();
     let mut settings = settings(AggregateRelayStrategy::WeightedRoundRobin);

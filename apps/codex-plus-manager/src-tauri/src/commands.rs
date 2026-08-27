@@ -4877,22 +4877,24 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
     if codex_plus_core::relay_config::relay_profile_base_url(&profile)
         .trim()
         .is_empty()
-        || codex_plus_core::relay_config::relay_profile_api_key(&profile)
-            .trim()
-            .is_empty()
+        || (!profile.uses_no_auth()
+            && codex_plus_core::relay_config::relay_profile_api_key(&profile)
+                .trim()
+                .is_empty())
     {
         checks.push(ProviderDoctorCheck {
             id: "config".to_string(),
             title: "配置完整性".to_string(),
             status: "failed".to_string(),
-            detail: "Base URL 或 API Key 为空。".to_string(),
+            detail: "Base URL 为空，或需要认证但 API Key 为空。".to_string(),
         });
         let payload = ProviderDoctorPayload {
             profile_name,
             model: test_model,
             summary: "配置不完整，无法发起上游诊断。".to_string(),
-            recommendation: "先填写 Base URL 和 API Key；如果是官方账号，请切换到官方登录模式。"
-                .to_string(),
+            recommendation:
+                "先填写 Base URL，并填写 API Key 或为可信上游开启无需认证；如果是官方账号，请切换到官方登录模式。"
+                    .to_string(),
             checks,
         };
         return failed("Provider Doctor：配置不完整。", payload);

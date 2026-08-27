@@ -310,7 +310,9 @@ fn validate_aggregate_members(
                 relay_id: member.relay_id.clone(),
             });
         };
-        if relay.base_url.trim().is_empty() || relay.api_key.trim().is_empty() {
+        if relay.base_url.trim().is_empty()
+            || (relay.api_key.trim().is_empty() && !relay.uses_no_auth())
+        {
             return Err(SelectionError::InvalidMemberRelay {
                 aggregate_id: aggregate.id.clone(),
                 relay_id: member.relay_id.clone(),
