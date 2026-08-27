@@ -1673,8 +1673,51 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(!script.contains("function patchObjectGraphForModels"));
     assert!(!script.contains("window.dispatchEvent = function patchedCodexPlusDispatchEvent"));
     assert!(script.contains("String(name) === \"107580212\""));
+    assert!(script.contains("default_model: value.default_model || names[0]"));
+    assert!(!script.contains("default_model: names[0] || value.default_model"));
     assert!(script.contains("window.addEventListener(\"codex-message-from-view\""));
     assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
+}
+
+#[test]
+fn model_whitelist_preserves_the_app_default_model() {
+    let script = assets::injection_script(57321);
+    let start = script
+        .find("function patchStatsigModelDynamicConfig(config)")
+        .expect("Statsig model patch should exist");
+    let end = script[start..]
+        .find("\n  function statsigClients()")
+        .map(|offset| start + offset)
+        .expect("Statsig model patch should have a stable end marker");
+    let function_source = &script[start..end];
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let harness_path = temp.path().join("model-default-harness.cjs");
+    std::fs::write(
+        &harness_path,
+        format!(
+            r#"
+const codexPlusModelNames = () => ["supplier-default", "extra-model"];
+{function_source}
+const config = {{ value: {{ available_models: ["native-model"], default_model: "thread-model" }} }};
+const patched = patchStatsigModelDynamicConfig(config);
+if (patched.value.default_model !== "thread-model") process.exit(2);
+if (!patched.value.available_models.includes("supplier-default")) process.exit(3);
+if (!patched.value.available_models.includes("extra-model")) process.exit(4);
+"#
+        ),
+    )
+    .expect("model default harness should be written");
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run model default harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1971,6 +2014,7 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["refreshedCustomProviderOverride"], "refreshed_vendor");
     assert_eq!(cases["refreshedOpenAiProvider"], "openai");
     assert_eq!(cases["refreshedPureApiResumeProvider"], "custom");
+    assert_eq!(cases["refreshedPureApiResumeModel"], "gpt-5.6-terra");
     assert_eq!(cases["failedRefreshProviderUnchanged"], "openai");
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
@@ -2495,8 +2539,10 @@ window.__codexSessionDeleteBridge = async (path) => {{
 await appServerClient.sendRequest("thread/resume", {{
   threadId: "thread-mobile-pure-api-refresh",
   modelProvider: "openai",
+  model: "gpt-5.6-terra",
 }}, {{ signal: "pure-api-switch" }});
 const refreshedPureApiResumeProvider = appServerCalls.at(-1)?.params?.modelProvider || "";
+const refreshedPureApiResumeModel = appServerCalls.at(-1)?.params?.model || "";
 delete window.__codexSessionDeleteBridge;
 api.setBackendSettings({{
   relayProfilesEnabled: true,
@@ -2609,6 +2655,7 @@ process.stdout.write(JSON.stringify({{
   refreshedCustomProviderOverride,
   refreshedOpenAiProvider,
   refreshedPureApiResumeProvider,
+  refreshedPureApiResumeModel,
   failedRefreshProviderUnchanged,
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,

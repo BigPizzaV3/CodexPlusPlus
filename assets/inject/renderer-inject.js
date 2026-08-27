@@ -104,7 +104,6 @@
     const installationKey = `2:${enabled ? "on" : "off"}:${locale}`;
     if (window.__codexPlusForceChineseLocaleInstalled === installationKey) return;
     window.__codexPlusForceChineseLocaleInstalled = installationKey;
-    const languages = [locale, "zh", "en-US", "en"];
     const managedLocaleStorageKey = "codexPlus.forceChineseLocale.managed.v1";
     const localeReloadStorageKey = "codexPlus.forceChineseLocale.reload.v1";
 
@@ -240,26 +239,6 @@
 
     syncOfficialLocaleSetting().catch(() => {});
     if (!enabled) return;
-
-    const defineNavigatorGetter = (name, value) => {
-      try {
-        Object.defineProperty(Navigator.prototype, name, {
-          configurable: true,
-          get: () => value,
-        });
-      } catch {
-        try {
-          Object.defineProperty(navigator, name, {
-            configurable: true,
-            get: () => value,
-          });
-        } catch {
-        }
-      }
-    };
-
-    defineNavigatorGetter("language", locale);
-    defineNavigatorGetter("languages", languages);
 
     const patchI18nConfig = (dynamicConfig) => {
       if (!dynamicConfig || typeof dynamicConfig !== "object") return dynamicConfig;
@@ -6749,7 +6728,7 @@
     const nextValue = {
       ...value,
       available_models: availableModels,
-      default_model: names[0] || value.default_model,
+      default_model: value.default_model || names[0],
     };
     if (!changed && nextValue.default_model === value.default_model) return config;
     try {

@@ -90,6 +90,8 @@ fn injection_script_includes_force_chinese_locale_global_and_patch() {
     assert!(script.contains("window.location.reload()"));
     assert!(script.contains("codexPlus.forceChineseLocale.managed.v1"));
     assert!(!script.contains("setItem(\"localeOverride\""));
+    assert!(!script.contains("defineNavigatorGetter"));
+    assert!(!script.contains("Object.defineProperty(Navigator.prototype"));
 
     settings.codex_app_force_chinese_locale = false;
     let script = injection_script_with_settings(0, &settings);
