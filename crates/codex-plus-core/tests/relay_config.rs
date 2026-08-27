@@ -831,6 +831,40 @@ base_url = "https://responses.example.test/v1"
 }
 
 #[test]
+fn launcher_repairs_no_auth_transport_without_rewriting_managed_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://no-auth.example.test/v1"
+experimental_bearer_token = "codex-plus-no-auth"
+custom_setting = "preserve-me"
+"#,
+    )
+    .unwrap();
+    let settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            no_auth: true,
+            base_url: "https://no-auth.example.test/v1".to_string(),
+            protocol: RelayProtocol::Responses,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+
+    assert!(ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+    let updated = std::fs::read_to_string(&config_path).unwrap();
+    assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(updated.contains(r#"experimental_bearer_token = "codex-plus-no-auth""#));
+    assert!(updated.contains(r#"custom_setting = "preserve-me""#));
+    assert!(!ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+}
+
+#[test]
 fn launcher_repairs_route_transport_and_openai_identity_endpoints_together() {
     let temp = tempfile::tempdir().unwrap();
     let config_path = temp.path().join("config.toml");
