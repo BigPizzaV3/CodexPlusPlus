@@ -405,6 +405,40 @@ mod process_identity_tests {
 
     #[cfg(windows)]
     #[test]
+    fn native_stop_selects_a_directly_started_chatgpt_tree_without_cdp() {
+        let root = windows_process(
+            10,
+            1,
+            "ChatGPT.exe",
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.820.7780.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe",
+        );
+        let renderer = windows_process(
+            11,
+            10,
+            "ChatGPT.exe",
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.820.7780.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe",
+        );
+        let cli = windows_process(
+            20,
+            10,
+            "codex.exe",
+            r"C:\Users\test\AppData\Local\OpenAI\Codex\bin\build\codex.exe",
+        );
+        let processes = [root, renderer, cli];
+        let native_process_ids = find_codex_processes_from_snapshot(&processes);
+
+        let selected = target_codex_process_tree_from_snapshot(
+            &processes,
+            &native_process_ids,
+            &HashMap::from([(10, 100), (11, 110), (20, 120)]),
+        );
+
+        assert_eq!(native_process_ids, vec![10, 11]);
+        assert_eq!(selected, vec![11, 10]);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn targeted_stop_refuses_an_untrusted_listener_owner() {
         let unrelated = windows_process(30, 1, "other.exe", r"C:\Tools\other.exe");
 
@@ -617,6 +651,7 @@ pub struct WindowsCodexStopPlan {
     debug_port: u16,
     endpoint: Option<SocketAddr>,
     listener_process_ids: Vec<u32>,
+    native_app_process_ids: Vec<u32>,
     target_processes: Vec<WindowsTargetProcess>,
 }
 
@@ -978,14 +1013,25 @@ pub fn stop_codex_processes_and_wait() {}
 #[cfg(target_os = "macos")]
 pub fn stop_codex_processes_for_debug_port_and_wait(
     debug_port: u16,
+    target_cdp_reachable: bool,
 ) -> Result<TargetedStopOutcome, String> {
-    let process_ids = find_macos_codex_processes_for_debug_port(debug_port);
+    let process_ids = if target_cdp_reachable {
+        find_macos_codex_processes_for_debug_port(debug_port)
+    } else {
+        find_codex_processes()
+    };
     if process_ids.is_empty() {
         return Ok(TargetedStopOutcome::AlreadyAbsent);
     }
     if terminate_macos_processes_and_wait(
         process_ids,
-        || find_macos_codex_processes_for_debug_port(debug_port),
+        || {
+            if target_cdp_reachable {
+                find_macos_codex_processes_for_debug_port(debug_port)
+            } else {
+                find_codex_processes()
+            }
+        },
         RESTART_STOP_WAIT_TIMEOUT_MS,
         RESTART_STOP_WAIT_INTERVAL_MS,
     ) {
@@ -1012,6 +1058,7 @@ pub fn prepare_windows_codex_stop_plan(
                     debug_port,
                     endpoint: None,
                     listener_process_ids: Vec::new(),
+                    native_app_process_ids: Vec::new(),
                     target_processes: Vec::new(),
                 });
             }
@@ -1034,54 +1081,90 @@ pub fn prepare_windows_codex_stop_plan(
                 "目标 Codex App CDP 不可确认，但调试端口仍有监听，已拒绝停止。".to_string(),
             );
         }
-        return Ok(WindowsCodexStopPlan {
-            debug_port,
-            endpoint: None,
-            listener_process_ids: Vec::new(),
-            target_processes: Vec::new(),
-        });
+        Vec::new()
     };
-    if listener_process_ids.len() != 1 {
+    if endpoint.is_some() && listener_process_ids.len() != 1 {
         return Err("目标 Codex App 调试 endpoint 对应多个进程，已拒绝停止。".to_string());
     }
 
     let processes = crate::windows_integration::enumerate_processes();
-    let owner_process_id = listener_process_ids[0];
+    let native_app_process_ids = if endpoint.is_none() {
+        find_codex_processes_from_snapshot(&processes)
+    } else {
+        Vec::new()
+    };
+    if endpoint.is_none() && native_app_process_ids.is_empty() {
+        return Ok(WindowsCodexStopPlan {
+            debug_port,
+            endpoint: None,
+            listener_process_ids: Vec::new(),
+            native_app_process_ids,
+            target_processes: Vec::new(),
+        });
+    }
+    let target_seed_process_ids = if endpoint.is_some() {
+        &listener_process_ids
+    } else {
+        &native_app_process_ids
+    };
+    let owner_process_id = target_seed_process_ids[0];
     let owner = processes
         .iter()
         .find(|process| process.process_id == owner_process_id)
-        .ok_or_else(|| "目标 Codex App 端口进程已退出，已拒绝按旧 PID 停止。".to_string())?;
+        .ok_or_else(|| "目标 Codex App 进程已退出，已拒绝按旧 PID 停止。".to_string())?;
     let owner_path = owner
         .executable_path
         .as_deref()
         .ok_or_else(|| "无法读取目标 Codex App 可执行路径，已拒绝停止。".to_string())?;
     let identity_root = process_identity_root(owner_path);
+    if endpoint.is_none() {
+        let identity_roots = native_app_process_ids
+            .iter()
+            .map(|process_id| {
+                processes
+                    .iter()
+                    .find(|process| process.process_id == *process_id)
+                    .and_then(|process| process.executable_path.as_deref())
+                    .map(process_identity_root)
+                    .ok_or_else(|| {
+                        format!(
+                            "无法读取目标 Codex App 进程 {process_id} 的可执行路径，已拒绝停止。"
+                        )
+                    })
+            })
+            .collect::<Result<HashSet<_>, String>>()?;
+        if identity_roots.len() != 1 || !identity_roots.contains(&identity_root) {
+            return Err("发现多个 Codex App 安装实例，无法安全判断应重启哪一个。".to_string());
+        }
+    }
     let processes_by_id = processes
         .iter()
         .map(|process| (process.process_id, process))
         .collect::<HashMap<_, _>>();
-    let mut ancestor_cursor = owner_process_id;
-    let mut visited_ancestors = HashSet::new();
-    while visited_ancestors.insert(ancestor_cursor) {
-        let Some(process) = processes_by_id.get(&ancestor_cursor) else {
-            break;
-        };
-        let Some(parent) = processes_by_id.get(&process.parent_process_id) else {
-            break;
-        };
-        let Some(parent_path) = parent.executable_path.as_deref() else {
-            if crate::app_paths::is_supported_app_executable_name(&parent.exe_file) {
-                return Err(format!(
-                    "无法读取目标候选父进程 {} 的可执行路径，已拒绝生成部分停止计划。",
-                    parent.process_id
-                ));
+    for target_seed_process_id in target_seed_process_ids {
+        let mut ancestor_cursor = *target_seed_process_id;
+        let mut visited_ancestors = HashSet::new();
+        while visited_ancestors.insert(ancestor_cursor) {
+            let Some(process) = processes_by_id.get(&ancestor_cursor) else {
+                break;
+            };
+            let Some(parent) = processes_by_id.get(&process.parent_process_id) else {
+                break;
+            };
+            let Some(parent_path) = parent.executable_path.as_deref() else {
+                if crate::app_paths::is_supported_app_executable_name(&parent.exe_file) {
+                    return Err(format!(
+                        "无法读取目标候选父进程 {} 的可执行路径，已拒绝生成部分停止计划。",
+                        parent.process_id
+                    ));
+                }
+                break;
+            };
+            if process_identity_root(parent_path) != identity_root {
+                break;
             }
-            break;
-        };
-        if process_identity_root(parent_path) != identity_root {
-            break;
+            ancestor_cursor = parent.process_id;
         }
-        ancestor_cursor = parent.process_id;
     }
     let birth_ids = collect_identity_birth_ids(&processes, &identity_root, |process_id| {
         crate::windows_integration::process_birth_id(process_id)
@@ -1090,20 +1173,29 @@ pub fn prepare_windows_codex_stop_plan(
         format!("无法读取目标同包进程 {process_id} 的创建时间，已拒绝生成部分停止计划。")
     })?;
     let target_process_ids =
-        target_codex_process_tree_from_snapshot(&processes, &listener_process_ids, &birth_ids);
+        target_codex_process_tree_from_snapshot(&processes, target_seed_process_ids, &birth_ids);
     if target_process_ids.is_empty() {
-        return Err("目标调试端口不属于受支持的 Codex App 进程树，已拒绝停止。".to_string());
+        return Err("目标不属于受支持的 Codex App 进程树，已拒绝停止。".to_string());
     }
-    let root_process_id = *target_process_ids
-        .last()
-        .ok_or_else(|| "目标 Codex App 停止计划缺少根进程。".to_string())?;
     let parents = processes
         .iter()
         .map(|process| (process.process_id, process.parent_process_id))
         .collect::<HashMap<_, _>>();
+    let target_process_id_set = target_process_ids.iter().copied().collect::<HashSet<_>>();
+    let root_process_ids = target_process_ids
+        .iter()
+        .copied()
+        .filter(|process_id| {
+            parents
+                .get(process_id)
+                .is_none_or(|parent| !target_process_id_set.contains(parent))
+        })
+        .collect::<Vec<_>>();
     if let Some(process) = processes.iter().find(|process| {
         process.executable_path.is_none()
-            && process_descends_from(process.process_id, root_process_id, &parents)
+            && root_process_ids.iter().any(|root_process_id| {
+                process_descends_from(process.process_id, *root_process_id, &parents)
+            })
     }) {
         return Err(format!(
             "无法读取目标进程树内 PID {} 的可执行路径，已拒绝生成部分停止计划。",
@@ -1137,6 +1229,7 @@ pub fn prepare_windows_codex_stop_plan(
         debug_port,
         endpoint,
         listener_process_ids,
+        native_app_process_ids,
         target_processes,
     })
 }
@@ -1149,29 +1242,41 @@ pub fn execute_windows_codex_stop_plan(
         let listeners =
             crate::windows_integration::loopback_tcp_listener_process_ids(plan.debug_port)
                 .map_err(|error| format!("复核 Codex App 调试端口失败：{error}"))?;
-        return if listeners.is_empty() {
+        let native_app_process_ids = find_codex_processes();
+        return if listeners.is_empty() && native_app_process_ids.is_empty() {
             Ok(TargetedStopOutcome::AlreadyAbsent)
         } else {
-            Err("Codex App 在停止 Launcher 后重新占用了调试端口，已中止重启。".to_string())
+            Err("Codex App 在停止 Launcher 后重新出现，已中止重启。".to_string())
         };
     }
 
-    let endpoint = plan
-        .endpoint
-        .ok_or_else(|| "安全停止计划缺少目标 endpoint。".to_string())?;
-    let current_listener_process_ids =
-        crate::windows_integration::loopback_tcp_listener_process_ids(plan.debug_port)
-            .map_err(|error| format!("停止前复核目标 Codex App 端口归属失败：{error}"))?;
-    if !listener_owners_unchanged(&plan.listener_process_ids, &current_listener_process_ids) {
-        return Err("目标 Codex App 端口归属在停止前发生变化，已中止重启。".to_string());
+    if plan.endpoint.is_some() {
+        let current_listener_process_ids =
+            crate::windows_integration::loopback_tcp_listener_process_ids(plan.debug_port)
+                .map_err(|error| format!("停止前复核目标 Codex App 端口归属失败：{error}"))?;
+        if !listener_owners_unchanged(&plan.listener_process_ids, &current_listener_process_ids) {
+            return Err("目标 Codex App 端口归属在停止前发生变化，已中止重启。".to_string());
+        }
+    } else {
+        let current_native_app_process_ids = find_codex_processes();
+        if current_native_app_process_ids != plan.native_app_process_ids {
+            return Err("目标 Codex App 进程集合在停止前发生变化，已中止重启。".to_string());
+        }
+        let current_listener_process_ids =
+            crate::windows_integration::loopback_tcp_listener_process_ids(plan.debug_port)
+                .map_err(|error| format!("停止前复核 Codex App 调试端口失败：{error}"))?;
+        if !current_listener_process_ids.is_empty() {
+            return Err("目标 Codex App 在停止前新建了调试端口，已中止重启。".to_string());
+        }
     }
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "watcher.targeted_stop_started",
         serde_json::json!({
             "debug_port": plan.debug_port,
-            "endpoint": endpoint.to_string(),
+            "endpoint": plan.endpoint.map(|endpoint| endpoint.to_string()),
             "listener_process_ids": &plan.listener_process_ids,
+            "native_app_process_ids": &plan.native_app_process_ids,
             "target_process_ids": plan.target_processes.iter().map(|process| process.process_id).collect::<Vec<_>>(),
         }),
     );
@@ -1224,12 +1329,16 @@ pub fn execute_windows_codex_stop_plan(
     if !remaining_listeners.is_empty() {
         return Err("目标 Codex App 停止后调试 endpoint 仍被占用，已中止重启。".to_string());
     }
+    if plan.endpoint.is_none() && !find_codex_processes().is_empty() {
+        return Err("目标 Codex App 停止后仍有受支持的 App 进程，已中止重启。".to_string());
+    }
     Ok(TargetedStopOutcome::Stopped)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn stop_codex_processes_for_debug_port_and_wait(
     _debug_port: u16,
+    _target_cdp_reachable: bool,
 ) -> Result<TargetedStopOutcome, String> {
     Ok(TargetedStopOutcome::AlreadyAbsent)
 }
