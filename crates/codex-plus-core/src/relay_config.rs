@@ -1760,6 +1760,18 @@ fn apply_model_catalog_to_config(
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
+    let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
+        if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
+        } else {
+            (
+                profile.model_list.clone(),
+                serde_json::from_str(&profile.model_windows).unwrap_or_default(),
+            )
+        };
+    let entries =
+        crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
+    let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     // cc-switch 的固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
@@ -1771,7 +1783,13 @@ fn apply_model_catalog_to_config(
             } else if official_deepseek_responses {
                 return Ok(config_text.to_string());
             } else if custom_responses
-                && copy_standard_responses_catalog(home, &existing, &catalog_relative)?
+                && copy_standard_responses_catalog(
+                    home,
+                    &existing,
+                    &catalog_relative,
+                    &entries,
+                    fallback,
+                )?
             {
                 let mut doc = parse_toml_document(&config_text)?;
                 doc["model_catalog_json"] = toml_edit::value(catalog_relative);
@@ -1786,7 +1804,13 @@ fn apply_model_catalog_to_config(
     {
         let mut doc = parse_toml_document(&config_text)?;
         if custom_responses
-            && copy_standard_responses_catalog(home, &external_catalog, &catalog_relative)?
+            && copy_standard_responses_catalog(
+                home,
+                &external_catalog,
+                &catalog_relative,
+                &entries,
+                fallback,
+            )?
         {
             doc["model_catalog_json"] = toml_edit::value(catalog_relative);
         } else {
@@ -1794,17 +1818,6 @@ fn apply_model_catalog_to_config(
         }
         return Ok(normalize_optional_toml(doc));
     }
-    let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
-        if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
-            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
-        } else {
-            (
-                profile.model_list.clone(),
-                serde_json::from_str(&profile.model_windows).unwrap_or_default(),
-            )
-        };
-    let entries =
-        crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
     // Known bundled metadata entries need a catalog even without a user-supplied window.
     if !entries.iter().any(|entry| {
         entry.suffix_window.is_some()
@@ -1813,7 +1826,6 @@ fn apply_model_catalog_to_config(
     }) {
         return Ok(config_text);
     }
-    let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     let catalog_path = home.join(&catalog_relative);
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1954,6 +1966,8 @@ fn copy_standard_responses_catalog(
     home: &Path,
     source: &str,
     target_relative: &str,
+    entries: &[crate::model_suffix::ModelCatalogEntry],
+    fallback_window: Option<u64>,
 ) -> anyhow::Result<bool> {
     let source_path = {
         let path = Path::new(source);
@@ -1973,9 +1987,27 @@ fn copy_standard_responses_catalog(
         return Ok(false);
     };
     let mut changed = false;
+    let configured_windows = entries
+        .iter()
+        .map(|entry| (entry.slug.as_str(), entry.suffix_window.or(fallback_window)))
+        .collect::<std::collections::HashMap<_, _>>();
     for model in models {
         if model.get("use_responses_lite").and_then(Value::as_bool) == Some(true) {
             model["use_responses_lite"] = Value::Bool(false);
+            changed = true;
+        }
+        let Some(slug) = model.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(Some(window)) = configured_windows.get(slug) else {
+            continue;
+        };
+        if model.get("context_window").and_then(Value::as_u64) != Some(*window) {
+            model["context_window"] = json!(window);
+            changed = true;
+        }
+        if model.get("max_context_window").and_then(Value::as_u64) != Some(*window) {
+            model["max_context_window"] = json!(window);
             changed = true;
         }
     }

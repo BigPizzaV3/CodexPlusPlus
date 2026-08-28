@@ -4493,6 +4493,8 @@ fn apply_relay_profile_copies_external_lite_catalog_for_standard_responses() {
   "models": [
     {
       "slug": "gpt-5.6-sol",
+      "context_window": 272000,
+      "max_context_window": 272000,
       "supports_search_tool": true,
       "web_search_tool_type": "text_and_image",
       "use_responses_lite": true
@@ -4521,6 +4523,8 @@ experimental_bearer_token = "sk-new"
         ),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_list: "gpt-5.6-sol".to_string(),
+        context_window: "1000000".to_string(),
+        auto_compact_limit: "900000".to_string(),
         ..RelayProfile::default()
     };
 
@@ -4543,6 +4547,15 @@ experimental_bearer_token = "sk-new"
         "text_and_image"
     );
     assert_eq!(copied["models"][0]["use_responses_lite"], false);
+    assert_eq!(copied["models"][0]["context_window"], 1_000_000);
+    assert_eq!(copied["models"][0]["max_context_window"], 1_000_000);
+
+    let config_value: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(config_value["model_context_window"].as_integer(), Some(1_000_000));
+    assert_eq!(
+        config_value["model_auto_compact_token_limit"].as_integer(),
+        Some(900_000)
+    );
 
     let original: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(external_catalog).unwrap()).unwrap();
