@@ -489,6 +489,31 @@
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
   const codexPlusDreamSkinRevision = String(window.__CODEX_PLUS_DREAM_SKIN_REVISION__ || "1");
+
+  function setCodexPlusInlineStyleIfChanged(element, property, value, priority = "") {
+    if (!element?.style) return;
+    if (element.style.getPropertyValue(property) === value && element.style.getPropertyPriority(property) === priority) return;
+    element.style.setProperty(property, value, priority);
+  }
+
+  function setCodexPlusAttributeIfChanged(element, name, value) {
+    if (!element) return;
+    const normalized = String(value);
+    if (element.getAttribute(name) !== normalized) element.setAttribute(name, normalized);
+  }
+
+  function setCodexPlusTextIfChanged(element, value) {
+    if (element && element.textContent !== value) element.textContent = value;
+  }
+
+  function setCodexPlusDatasetIfChanged(element, name, value) {
+    if (element && element.dataset[name] !== value) element.dataset[name] = value;
+  }
+
+  function setCodexPlusBooleanPropertyIfChanged(element, name, value) {
+    if (element && element[name] !== value) element[name] = value;
+  }
+
   clearTimeout(window.__codexThreadScrollSaveTimer);
   window.__codexThreadScrollSaveTimer = null;
   (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
@@ -1865,7 +1890,7 @@
     }
 
     if (footer.parentElement !== main) main.appendChild(footer);
-    footer.setAttribute(codexPlusDreamSkinComposerDockAttribute, "true");
+    setCodexPlusAttributeIfChanged(footer, codexPlusDreamSkinComposerDockAttribute, "true");
     for (const [property, value] of Object.entries({
       position: "absolute",
       top: "auto",
@@ -1875,15 +1900,19 @@
       width: "auto",
       "z-index": "10",
     })) {
-      footer.style.setProperty(property, value, "important");
+      setCodexPlusInlineStyleIfChanged(footer, property, value, "important");
     }
   }
 
   function ensureDreamSkinCompanion(theme) {
     const config = dreamSkinCompanionConfig(theme);
+    if (!config) {
+      if (document.getElementById(dreamSkinCompanionId)) removeDreamSkinCompanion();
+      return;
+    }
     const composer = visibleDreamSkinComposer();
-    if (!config || !composer) {
-      removeDreamSkinCompanion();
+    if (!composer) {
+      if (document.getElementById(dreamSkinCompanionId)) removeDreamSkinCompanion();
       return;
     }
 
@@ -1928,7 +1957,7 @@
         : fitsRight || !fitsLeft;
 
     if (!fitsRight && !fitsLeft) {
-      companion.style.opacity = "0";
+      setCodexPlusInlineStyleIfChanged(companion, "opacity", "0");
       return;
     }
 
@@ -1939,10 +1968,10 @@
         window.innerHeight - renderedHeight - edge,
       ),
     );
-    companion.style.width = `${config.width}px`;
-    companion.style.left = `${Math.round(useRight ? right : left)}px`;
-    companion.style.top = `${Math.round(top)}px`;
-    companion.style.opacity = "1";
+    setCodexPlusInlineStyleIfChanged(companion, "width", `${config.width}px`);
+    setCodexPlusInlineStyleIfChanged(companion, "left", `${Math.round(useRight ? right : left)}px`);
+    setCodexPlusInlineStyleIfChanged(companion, "top", `${Math.round(top)}px`);
+    setCodexPlusInlineStyleIfChanged(companion, "opacity", "1");
   }
 
   function clearDreamSkinPresentation() {
@@ -2318,23 +2347,51 @@
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
     const active = settings.dreamSkinEnabled && !settings.dreamSkinPaused;
+    const root = document.documentElement;
     if (active) ensureDreamSkinMainSurface();
     if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
       if (codexPlusBackendSettingsLoaded && !active) {
-        syncDreamSkinComposerDocking(false);
-        cleanupDreamSkin();
+        const hasPresentation = !!(
+          window.__CODEX_DREAM_SKIN_STATE__
+          || window.__CODEX_GLASS_VISION_SKIN_STATE__
+          || root?.classList.contains("codex-dream-skin")
+          || root?.classList.contains("codex-glass-vision-skin")
+          || document.getElementById(codexPlusDreamSkinStyleId)
+        );
+        if (hasPresentation) {
+          syncDreamSkinComposerDocking(false);
+          cleanupDreamSkin();
+        }
       } else {
         const theme = window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig;
         const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
-        state?.ensure?.();
+        const needsEnsure = !!(
+          state?.ensure
+          && (!root?.classList.contains("codex-dream-skin")
+            || !document.getElementById(codexPlusDreamSkinStyleId)
+            || window.__codexPlusDreamSkinNeedsEnsure)
+        );
+        if (needsEnsure) {
+          state.ensure();
+          window.__codexPlusDreamSkinNeedsEnsure = false;
+        }
         if (active) syncDreamSkinComposerDocking(true);
         ensureDreamSkinCompanion(theme);
       }
       return;
     }
     if (!active) {
-      syncDreamSkinComposerDocking(false);
-      cleanupDreamSkin();
+      const hasPresentation = !!(
+        window.__CODEX_DREAM_SKIN_STATE__
+        || window.__CODEX_GLASS_VISION_SKIN_STATE__
+        || root?.classList.contains("codex-dream-skin")
+        || root?.classList.contains("codex-glass-vision-skin")
+        || document.getElementById(codexPlusDreamSkinStyleId)
+      );
+      if (hasPresentation) {
+        syncDreamSkinComposerDocking(false);
+        cleanupDreamSkin();
+      }
       return;
     }
     installDreamSkin(settings);
@@ -2349,6 +2406,7 @@
     }
     window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = String(payload.artSignature || "");
     window.__CODEX_PLUS_DREAM_SKIN_THEME__ = payload.theme && typeof payload.theme === "object" ? payload.theme : {};
+    window.__codexPlusDreamSkinNeedsEnsure = true;
     codexPlusBackendSettings.codexAppDreamSkinEnabled = true;
     codexPlusBackendSettings.codexAppDreamSkinPaused = false;
     codexPlusBackendSettings.codexAppDreamSkinThemeConfig = window.__CODEX_PLUS_DREAM_SKIN_THEME__;
@@ -2537,6 +2595,8 @@
     fastModelName: "",
     fastSupported: false,
   };
+  let codexServiceTierBadgeRetryAt = 0;
+  let codexServiceTierBadgeRetryRoute = "";
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
@@ -3162,11 +3222,11 @@
   function refreshCodexServiceTierBadges() {
     const state = codexServiceTierBadgeState();
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((node) => {
-      node.dataset.tier = state.tier;
-      node.dataset.disabled = String(!!state.disabled);
-      node.textContent = state.label;
-      node.title = state.title;
-      node.setAttribute("aria-label", state.title);
+      setCodexPlusDatasetIfChanged(node, "tier", state.tier);
+      setCodexPlusDatasetIfChanged(node, "disabled", String(!!state.disabled));
+      setCodexPlusTextIfChanged(node, state.label);
+      if (node.title !== state.title) node.title = state.title;
+      setCodexPlusAttributeIfChanged(node, "aria-label", state.title);
     });
   }
 
@@ -3183,44 +3243,45 @@
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
-      node.hidden = !featureEnabled;
+      setCodexPlusBooleanPropertyIfChanged(node, "hidden", !featureEnabled);
     });
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
-      node.dataset.status = fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed"));
-      node.textContent = featureEnabled
+      setCodexPlusDatasetIfChanged(node, "status", fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed")));
+      setCodexPlusTextIfChanged(node, featureEnabled
         ? (backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接"))
-        : "未启用";
+        : "未启用");
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "inherit");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "inherit"));
     });
     document.querySelectorAll("[data-codex-service-tier-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "global-standard"));
     });
     document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
-      button.disabled = fastDisabled;
-      button.dataset.active = String(codexServiceTierState.controlMode === "global-fast");
-      button.title = fastTitle;
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", fastDisabled);
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "global-fast"));
+      if (button.title !== fastTitle) button.title = fastTitle;
     });
     document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom"));
     });
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit"));
+      const title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      if (button.title !== title) button.title = title;
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard"));
     });
     document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
-      button.disabled = fastDisabled;
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
-      button.title = fastTitle;
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", fastDisabled);
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast"));
+      if (button.title !== fastTitle) button.title = fastTitle;
     });
     refreshCodexServiceTierBadges();
   }
@@ -4676,7 +4737,7 @@
       }
     }
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
-    if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
+    if (status) setCodexPlusDatasetIfChanged(status, "status", codexPlusBackendStatus.status || "checking");
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
     setCodexPlusSidebarNavActive(active);
   }
@@ -6226,6 +6287,8 @@
   }
 
   function updateThreadScrollHandlers() {
+    if (window.__codexThreadScrollHandlersVersion === codexThreadScrollListenerVersion
+        && window.__codexThreadScrollHandlers) return;
     window.__codexThreadScrollHandlers = {
       shouldBlockAutobottom: shouldBlockThreadScrollAutobottom,
       shouldBlockIntoView: shouldBlockThreadScrollIntoView,
@@ -6237,6 +6300,7 @@
       prepareRestoreLock: prepareThreadScrollRestoreLock,
       scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
     };
+    window.__codexThreadScrollHandlersVersion = codexThreadScrollListenerVersion;
   }
 
   function installThreadScrollUserIntentCapture() {
@@ -6257,6 +6321,9 @@
   }
 
   function installThreadScrollNavigationCapture() {
+    if (window.__codexThreadScrollNavigationInstalled === codexThreadScrollRouteHooksVersion
+        && window.__codexThreadScrollNavigationHandler) return;
+    window.__codexThreadScrollNavigationInstalled = codexThreadScrollRouteHooksVersion;
     document.removeEventListener("pointerdown", window.__codexThreadScrollNavigationHandler, true);
     document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
     document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
@@ -6529,6 +6596,7 @@
   let codexModelCatalogPromise = null;
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
+  let codexModelWhitelistLastRefreshAt = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -7177,6 +7245,9 @@
       loadCodexModelCatalog();
       return;
     }
+    const now = Date.now();
+    if (now - codexModelWhitelistLastRefreshAt < 1000) return;
+    codexModelWhitelistLastRefreshAt = now;
     runCodexModelWhitelistRefreshPass();
   }
 
@@ -7461,9 +7532,9 @@
       || document.querySelector("header .ms-auto")
       || nativeShare?.parentElement?.parentElement?.parentElement;
     if (actionGroup instanceof HTMLElement) {
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
+      setCodexPlusInlineStyleIfChanged(button, "position", "static");
+      setCodexPlusInlineStyleIfChanged(button, "pointer-events", "auto");
+      setCodexPlusInlineStyleIfChanged(button, "-webkit-app-region", "no-drag");
       // 只在按钮还不在操作栏里时才搬动它。过去还要求它必须排在最后，
       // 一旦 Codex 在它后面挂了别的节点，这个条件就永远成立，
       // 于是每轮 scan 都 appendChild 一次，反过来又触发下一轮 scan（issue #1960）。
@@ -7477,10 +7548,10 @@
       || document.querySelector(selectors.appHeader);
     if (header instanceof HTMLElement) {
       // 没有明确操作栏时也保持文档流，避免遮挡原生按钮。
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      button.style.marginLeft = "8px";
+      setCodexPlusInlineStyleIfChanged(button, "position", "static");
+      setCodexPlusInlineStyleIfChanged(button, "pointer-events", "auto");
+      setCodexPlusInlineStyleIfChanged(button, "-webkit-app-region", "no-drag");
+      setCodexPlusInlineStyleIfChanged(button, "margin-left", "8px");
       if (button.parentElement !== header) header.appendChild(button);
     } else if (!button.isConnected) {
       document.body.appendChild(button);
@@ -7547,6 +7618,9 @@
   }
 
   function installSessionShareImportListener() {
+    if (window.__codexSessionShareImportListenerInstalled === sessionShareButtonVersion
+        && window.__codexSessionShareImportHandler) return;
+    window.__codexSessionShareImportListenerInstalled = sessionShareButtonVersion;
     window.removeEventListener("message", window.__codexSessionShareImportHandler);
     window.__codexSessionShareImportHandler = (event) => {
       if (!/^(https:\/\/share\.codexpp\.cc|https:\/\/codexpp-share\.pages\.dev)$/.test(event.origin || "") || event.data?.type !== "codexpp-import-session") return;
@@ -7878,7 +7952,7 @@
         if (localizeCodexMenuTextNode(node)) changed = true;
       }
       if (localizeCodexMenuAttributes(scope)) changed = true;
-      scope.dataset.codexMenuLocalizationVersion = codexMenuLocalizationVersion;
+      setCodexPlusDatasetIfChanged(scope, "codexMenuLocalizationVersion", codexMenuLocalizationVersion);
     }
     return changed;
   }
@@ -8526,14 +8600,18 @@
 
   function updateDeleteButtonOffsets() {
     sessionRows().forEach((row) => {
+      const rowRect = row.getBoundingClientRect();
       const hasArchiveConfirm = Array.from(row.querySelectorAll("button")).some((button) => {
-        const rect = button.getBoundingClientRect();
         const label = button.getAttribute("aria-label") || "";
         const text = (button.textContent || "").trim();
         if (button.classList.contains(buttonClass) || button.classList.contains(exportButtonClass) || label === "归档对话" || label === "置顶对话") return false;
-        return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
+        if (text === "确认") return true;
+        const rect = button.getBoundingClientRect();
+        return text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > rowRect.right - 50;
       });
-      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+      if (row.classList.contains("codex-archive-confirm-visible") !== hasArchiveConfirm) {
+        row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+      }
     });
   }
 
@@ -8570,6 +8648,9 @@
   }
 
   function installDeleteButtonEventDelegation() {
+    if (window.__codexSessionDeleteDocumentDeleteHandlerVersion === codexDeleteVersion
+        && window.__codexSessionDeleteDocumentDeleteHandler) return;
+    window.__codexSessionDeleteDocumentDeleteHandlerVersion = codexDeleteVersion;
     document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
     const handler = (event) => {
       const button = event.target?.closest?.(`.${buttonClass}`);
@@ -9261,13 +9342,22 @@
       removeCodexServiceTierBadges();
       return;
     }
-    const composer = codexServiceTierFindComposerEl();
-    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
-    if (!composer || !placement?.parent) {
-      existingBadges.forEach((badge) => badge.remove());
+    if (existingBadges.length > 0) {
+      refreshCodexServiceTierBadges();
       return;
     }
+    const route = String(location.href || "");
+    const now = Date.now();
+    if (codexServiceTierBadgeRetryRoute === route && codexServiceTierBadgeRetryAt > now) return;
+    codexServiceTierBadgeRetryRoute = route;
+    const composer = codexServiceTierFindComposerEl();
+    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
+    if (!composer || !placement?.parent) {
+      codexServiceTierBadgeRetryAt = now + 1000;
+      return;
+    }
+    codexServiceTierBadgeRetryAt = 0;
     let badge = existingBadges.find((node) => node.closest?.(".composer-footer") || node.closest?.("button") == null) || existingBadges[0];
     existingBadges.forEach((node) => {
       if (node !== badge) node.remove();
@@ -9375,21 +9465,21 @@
     return rect.left + rect.width / 2;
   }
 
-  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds) {
+  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds, htmlCenter) {
     if (!nativeRect || !bounds) return false;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    const targetLeft = htmlCenter - nativeRect.width / 2;
     const targetRight = targetLeft + nativeRect.width;
     return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
   }
 
-  function conversationViewAlignElement(el) {
+  function conversationViewAlignElement(el, htmlCenter) {
     if (!el?.isConnected) return;
     conversationViewApplyNativeWidth(el);
     conversationViewResetOwnOffset(el);
     const nativeRect = el.getBoundingClientRect();
     const bounds = conversationViewSessionRectFor(el);
-    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds)) return;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds, htmlCenter)) return;
+    const targetLeft = htmlCenter - nativeRect.width / 2;
     const delta = targetLeft - nativeRect.left;
     if (Math.abs(delta) > 0.5) {
       const nextLeft = `${delta.toFixed(2)}px`;
@@ -9418,14 +9508,34 @@
     ].forEach(conversationViewObserveIfNeeded);
   }
 
+  function conversationViewMutationAffectsLayout(record) {
+    const content = conversationViewState.contentEl;
+    const composer = conversationViewState.composerEl;
+    if (!content?.isConnected || !composer?.isConnected) return true;
+    const watched = [
+      content,
+      content.parentElement,
+      content.parentElement?.parentElement,
+      composer,
+      composer.parentElement,
+      composer.parentElement?.parentElement,
+    ].filter(Boolean);
+    if (watched.some((node) => node === record.target || node.contains?.(record.target))) return true;
+    if (record.type !== "childList") return false;
+    return [...record.addedNodes, ...record.removedNodes].some((node) =>
+      watched.some((parent) => parent === node || parent.contains?.(node))
+    );
+  }
+
   function conversationViewAlignNow() {
     if (!codexPlusSettings().conversationView) return;
     conversationViewResolveTargets();
-    conversationViewAlignElement(conversationViewState.contentEl);
-    conversationViewAlignElement(conversationViewState.composerEl);
+    const htmlCenter = conversationViewHtmlCenter();
+    conversationViewAlignElement(conversationViewState.contentEl, htmlCenter);
+    conversationViewAlignElement(conversationViewState.composerEl, htmlCenter);
   }
 
-  function scheduleConversationViewAlign(frames = 16) {
+  function scheduleConversationViewAlign(frames = 3) {
     conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
     if (conversationViewState.rafId) return;
     const tick = () => {
@@ -9440,6 +9550,13 @@
   }
 
   function cleanupConversationView() {
+    if (!conversationViewState.rafId
+        && !conversationViewState.pollId
+        && !conversationViewState.mo
+        && !conversationViewState.ro
+        && conversationViewState.elements.size === 0
+        && !conversationViewState.contentEl
+        && !conversationViewState.composerEl) return;
     if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
     if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
     conversationViewState.rafId = 0;
@@ -9461,7 +9578,9 @@
   function ensureConversationViewRuntime() {
     if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
-    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver((records) => {
+      if (records.some(conversationViewMutationAffectsLayout)) scheduleConversationViewAlign();
+    });
     if (document.body && !conversationViewState.moObserved) {
       conversationViewState.mo.observe(document.body, {
         childList: true,
@@ -9471,7 +9590,7 @@
       });
       conversationViewState.moObserved = true;
     }
-    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(2), 350);
+    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(1), 1000);
   }
 
   function refreshConversationView() {
@@ -9479,8 +9598,14 @@
       cleanupConversationView();
       return;
     }
+    const previousContentEl = conversationViewState.contentEl;
+    const previousComposerEl = conversationViewState.composerEl;
+    const wasRunning = !!(conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId);
     ensureConversationViewRuntime();
-    scheduleConversationViewAlign();
+    conversationViewResolveTargets();
+    if (!wasRunning || previousContentEl !== conversationViewState.contentEl || previousComposerEl !== conversationViewState.composerEl) {
+      scheduleConversationViewAlign(3);
+    }
   }
 
   function scanLightweight() {
@@ -9504,7 +9629,7 @@
     installThreadScrollNavigationCapture();
     installThreadScrollUserIntentCapture();
     installThreadScrollRouteHooks();
-    scheduleThreadScrollSync(true);
+    scheduleThreadScrollSync();
     refreshCodexServiceTierControls();
   }
 
@@ -10461,10 +10586,16 @@
     }
   }
 
+  let scanDeferredFrame = 0;
+
   function scan() {
     void installDictationSupportPatch();
     runScanStep(scanLightweight);
-    requestAnimationFrame(() => runScanStep(scanDeferred));
+    if (scanDeferredFrame) return;
+    scanDeferredFrame = requestAnimationFrame(() => {
+      scanDeferredFrame = 0;
+      runScanStep(scanDeferred);
+    });
   }
 
   function isExtensionUiNode(node) {

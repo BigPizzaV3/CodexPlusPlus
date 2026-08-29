@@ -139,7 +139,7 @@ describe("dream skin theme helpers", () => {
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "24-stable-codex-skin-mutation-sync"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "25-codex-plus-renderer-performance"/);
   });
 
   it("bridges the modern Codex Skin API without forcing visual properties", async () => {

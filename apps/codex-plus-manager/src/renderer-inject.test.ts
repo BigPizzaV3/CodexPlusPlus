@@ -263,7 +263,18 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /_ComposerLayoutRoot_/);
     assert.match(renderer, /syncDreamSkinComposerDocking/);
     assert.match(renderer, /data-codex-plus-dreamskin-composer-docked/);
-    assert.match(renderer, /footer\.style\.setProperty\(property, value, "important"\)/);
+    assert.match(renderer, /setCodexPlusInlineStyleIfChanged\(footer, property, value, "important"\)/);
+  });
+
+  it("coalesces renderer work and keeps layout writes idempotent", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /let scanDeferredFrame = 0/);
+    assert.match(renderer, /if \(!wasRunning \|\| previousContentEl !== conversationViewState\.contentEl/);
+    assert.match(renderer, /function setCodexPlusInlineStyleIfChanged\(/);
+    assert.match(renderer, /function setCodexPlusDatasetIfChanged\(/);
+    assert.match(renderer, /codexServiceTierBadgeRetryAt/);
+    assert.match(renderer, /scheduleThreadScrollSync\(\);/);
   });
 });
 
