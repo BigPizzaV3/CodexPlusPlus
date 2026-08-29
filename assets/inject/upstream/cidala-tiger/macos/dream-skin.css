@@ -1109,8 +1109,19 @@ html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface
    already owns its readable surface, so retaining this layer creates a false
    bottom panel and makes the control look duplicated. */
 html.codex-dream-skin[data-dream-art-wide="true"] main.main-surface
-  .thread-scroll-container .bg-gradient-to-t.from-token-main-surface-primary {
+  .thread-scroll-container :is(
+    .bg-gradient-to-t.from-token-main-surface-primary,
+    .bg-gradient-to-t.from-surface.via-surface,
+    [class*="bg-gradient-to-t"][class*="from-surface"][class*="via-surface"]
+  ) {
   background: transparent !important;
+}
+
+/* The modern Codex bottom button sits above a large backdrop-filter surface.
+   Its native opacity transition can trigger a visible compositor repaint when
+   scrolling starts, so keep the state change instantaneous under Dream Skin. */
+html.codex-dream-skin [data-thread-scroll-footer] button[class*="end-1/2"][class*="bottom-"] {
+  transition: none !important;
 }
 
 /* Theme the thread Outputs/Sources utility without changing unrelated menus. */

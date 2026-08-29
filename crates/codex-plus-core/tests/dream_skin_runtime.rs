@@ -197,6 +197,16 @@ fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
                 || source.contains("data-dream-home-layout=\\\"structured\\\""),
             "missing soft layout CSS in {relative_path}"
         );
+        if relative_path.ends_with("/macos/dream-skin.css") {
+            assert!(
+                source.contains("from-surface.via-surface"),
+                "missing modern composer fade selector in {relative_path}"
+            );
+            assert!(
+                source.contains("[data-thread-scroll-footer] button[class*=\"end-1/2\"][class*=\"bottom-\"]"),
+                "missing modern bottom-button transition guard in {relative_path}"
+            );
+        }
     }
 }
 

@@ -52,7 +52,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "26-codex-plus-eva-focus-stability";
+const DREAM_SKIN_RENDERER_REVISION: &str = "27-codex-plus-compositor-stability";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
