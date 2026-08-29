@@ -1551,7 +1551,9 @@
     const existing = document.querySelector("main.main-surface");
     if (existing) return existing;
 
-    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    const modularSurface = document.querySelector(
+      'main[data-app-shell-main-surface], main[class*="MainContentSurface"], main[class*="_MainContentSurface_"]',
+    );
     const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
     const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
     if (!shellMain) return null;
@@ -1769,10 +1771,112 @@
   }
 
   function visibleDreamSkinComposer() {
-    return [...document.querySelectorAll(".composer-footer, .composer-surface-chrome")]
+    return [...document.querySelectorAll(
+      ".composer-footer, .composer-surface-chrome, [data-thread-scroll-footer], [class*='_ComposerLayoutRoot_'], [data-composer-surface-variant][data-composer-radius-variant]",
+    )]
       .map((node) => ({ node, rect: node.getBoundingClientRect?.() }))
       .filter(({ rect }) => rect && rect.width > 200 && rect.height > 0)
       .sort((left, right) => right.rect.bottom - left.rect.bottom)[0] || null;
+  }
+
+  const codexPlusDreamSkinComposerDockAttribute = "data-codex-plus-dreamskin-composer-docked";
+  const codexPlusDreamSkinComposerDockProperties = [
+    "position", "top", "right", "bottom", "left", "width", "z-index",
+  ];
+  const codexPlusDreamSkinComposerDockState = {
+    node: null,
+    scroll: null,
+    parent: null,
+    nextSibling: null,
+    attribute: null,
+    styles: null,
+  };
+
+  function restoreDreamSkinComposerDock() {
+    const state = codexPlusDreamSkinComposerDockState;
+    const composer = state.node;
+    if (!composer) return;
+
+    if (composer.isConnected && state.parent?.isConnected) {
+      if (state.nextSibling?.parentElement === state.parent) state.parent.insertBefore(composer, state.nextSibling);
+      else state.parent.appendChild(composer);
+    } else if (composer.isConnected) {
+      // The old route may already have been unmounted. Do not leave an
+      // interactive composer from a previous conversation on the new route.
+      composer.remove();
+    }
+
+    if (composer.isConnected) {
+      for (const property of codexPlusDreamSkinComposerDockProperties) {
+        const saved = state.styles?.[property];
+        if (saved?.value) composer.style.setProperty(property, saved.value, saved.priority || "");
+        else composer.style.removeProperty(property);
+      }
+      if (state.attribute === null) composer.removeAttribute(codexPlusDreamSkinComposerDockAttribute);
+      else composer.setAttribute(codexPlusDreamSkinComposerDockAttribute, state.attribute);
+    }
+
+    Object.assign(state, {
+      node: null,
+      scroll: null,
+      parent: null,
+      nextSibling: null,
+      attribute: null,
+      styles: null,
+    });
+  }
+
+  function syncDreamSkinComposerDocking(enabled) {
+    const state = codexPlusDreamSkinComposerDockState;
+    const main = document.querySelector(
+      "main.main-surface, main[data-app-shell-main-surface], main[class*='_MainContentSurface_']",
+    );
+    const scroll = enabled
+      ? main?.querySelector(".thread-scroll-container[data-app-action-timeline-scroll], .thread-scroll-container")
+      : null;
+    const renderedFooter = scroll?.querySelector("[data-thread-scroll-footer]") || null;
+
+    if (state.node && (state.scroll !== scroll || (renderedFooter && renderedFooter !== state.node))) {
+      restoreDreamSkinComposerDock();
+    }
+    if (!enabled || !main || !scroll) {
+      if (state.node) restoreDreamSkinComposerDock();
+      return;
+    }
+
+    const footer = renderedFooter || (state.scroll === scroll && state.node?.isConnected ? state.node : null);
+    if (!footer) {
+      if (state.node) restoreDreamSkinComposerDock();
+      return;
+    }
+    if (!state.node) {
+      // Codex may eventually own this layout itself, or a user script may
+      // already have moved the live node. Leave an already docked footer alone.
+      if (footer.parentElement === main) return;
+      state.node = footer;
+      state.scroll = scroll;
+      state.parent = footer.parentElement;
+      state.nextSibling = footer.nextSibling;
+      state.attribute = footer.getAttribute(codexPlusDreamSkinComposerDockAttribute);
+      state.styles = Object.fromEntries(codexPlusDreamSkinComposerDockProperties.map((property) => [
+        property,
+        { value: footer.style.getPropertyValue(property), priority: footer.style.getPropertyPriority(property) },
+      ]));
+    }
+
+    if (footer.parentElement !== main) main.appendChild(footer);
+    footer.setAttribute(codexPlusDreamSkinComposerDockAttribute, "true");
+    for (const [property, value] of Object.entries({
+      position: "absolute",
+      top: "auto",
+      right: "0",
+      bottom: "0",
+      left: "0",
+      width: "auto",
+      "z-index": "10",
+    })) {
+      footer.style.setProperty(property, value, "important");
+    }
   }
 
   function ensureDreamSkinCompanion(theme) {
@@ -1842,6 +1946,7 @@
   }
 
   function clearDreamSkinPresentation() {
+    restoreDreamSkinComposerDock();
     const root = document.documentElement;
     for (const className of [...(root?.classList || [])]) {
       if (
@@ -1867,6 +1972,30 @@
       "--ds-text",
       "--ds-muted",
       "--ds-line",
+      "--ds-theme-font-family",
+      "--ds-theme-font-scale",
+      "--ds-theme-surface-radius",
+      "--ds-theme-surface-opacity",
+      "--ds-theme-surface-blur",
+      "--ds-theme-surface-border-alpha",
+      "--ds-theme-surface-shadow",
+      "--ds-theme-image-focus-x",
+      "--ds-theme-image-focus-y",
+      "--ds-theme-image-zoom",
+      "--ds-theme-image-dim",
+      "--ds-theme-image-task-intensity",
+      "--ds-theme-density-scale",
+      "--ds-theme-motion-level",
+      "--ds-theme-color-background",
+      "--ds-theme-color-panel",
+      "--ds-theme-color-panel-alt",
+      "--ds-theme-color-accent",
+      "--ds-theme-color-accent-alt",
+      "--ds-theme-color-secondary",
+      "--ds-theme-color-highlight",
+      "--ds-theme-color-text",
+      "--ds-theme-color-muted",
+      "--ds-theme-color-line",
       "--dream-ink",
       "--dream-purple",
       "--dream-violet",
@@ -1879,6 +2008,19 @@
       "--dream-skin-project-prefix",
       "--dream-skin-project-label",
     ].forEach((name) => root?.style.removeProperty(name));
+    window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__?.disconnect?.();
+    delete window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__;
+    const registeredParts = new Set([
+      "root", "sidebar", "main", "header", "home", "home-hero", "project-list",
+      "thread", "message", "composer", "composer-toolbar", "dialog",
+    ]);
+    document.querySelectorAll("[data-ds-part]").forEach((node) => {
+      if (registeredParts.has(node.getAttribute("data-ds-part"))) node.removeAttribute("data-ds-part");
+    });
+    document.querySelectorAll("[data-ds-thread-surface], [data-ds-thread-scroll]").forEach((node) => {
+      node.removeAttribute("data-ds-thread-surface");
+      node.removeAttribute("data-ds-thread-scroll");
+    });
     document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
     document.querySelectorAll('[role="main"][data-dream-home-layout]').forEach((node) => {
       node.removeAttribute("data-dream-home-layout");
@@ -2175,24 +2317,29 @@
 
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
-    if (settings.dreamSkinEnabled && !settings.dreamSkinPaused) ensureDreamSkinMainSurface();
+    const active = settings.dreamSkinEnabled && !settings.dreamSkinPaused;
+    if (active) ensureDreamSkinMainSurface();
     if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
-      if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
+      if (codexPlusBackendSettingsLoaded && !active) {
+        syncDreamSkinComposerDocking(false);
         cleanupDreamSkin();
       } else {
+        const theme = window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig;
         const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
         state?.ensure?.();
-        ensureDreamSkinCompanion(
-          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
-        );
+        if (active) syncDreamSkinComposerDocking(true);
+        ensureDreamSkinCompanion(theme);
       }
       return;
     }
-    if (!settings.dreamSkinEnabled || settings.dreamSkinPaused) {
+    if (!active) {
+      syncDreamSkinComposerDocking(false);
       cleanupDreamSkin();
       return;
     }
     installDreamSkin(settings);
+    syncDreamSkinComposerDocking(true);
+    ensureDreamSkinCompanion(settings.dreamSkinThemeConfig);
   }
 
   function applyDreamSkinLiveUpdate(payload) {

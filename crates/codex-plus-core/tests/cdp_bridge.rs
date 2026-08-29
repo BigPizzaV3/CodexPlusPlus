@@ -660,9 +660,8 @@ fn injection_script_installs_dream_skin_from_backend_settings() {
     assert!(script.contains("--dream-skin-art"));
     assert!(script.contains("--dream-art"));
     assert!(script.contains("function refreshDreamSkin()"));
-    assert!(script.contains(
-        "codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)"
-    ));
+    assert!(script.contains("const active = settings.dreamSkinEnabled && !settings.dreamSkinPaused"));
+    assert!(script.contains("codexPlusBackendSettingsLoaded && !active"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__"));
     assert!(!script.contains(

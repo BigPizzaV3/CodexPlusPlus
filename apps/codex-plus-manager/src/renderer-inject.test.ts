@@ -255,6 +255,16 @@ describe("renderer injection header compatibility", () => {
       assert.match(renderer, /ensureShellMain/);
     }
   });
+
+  it("keeps modern Dream Skin composers out of reverse thread scrolling", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /data-thread-scroll-footer/);
+    assert.match(renderer, /_ComposerLayoutRoot_/);
+    assert.match(renderer, /syncDreamSkinComposerDocking/);
+    assert.match(renderer, /data-codex-plus-dreamskin-composer-docked/);
+    assert.match(renderer, /footer\.style\.setProperty\(property, value, "important"\)/);
+  });
 });
 
 /** 从注入脚本里取出 `shouldScheduleScan`，配上可控的依赖来跑。 */

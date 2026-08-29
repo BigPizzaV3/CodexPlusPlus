@@ -413,6 +413,12 @@ pub fn renderer_verification_script() -> &'static str {
   const home = document.querySelector('[role="main"].dream-home, [role="main"].dream-skin-home, [role="main"].glass-vision-home');
   const suggestions = home?.querySelector('.group\\/home-suggestions') || null;
   const cards = suggestions ? [...suggestions.querySelectorAll('button')].map(box) : [];
+  const composer = [...document.querySelectorAll(
+    '.composer-surface-chrome, .composer-footer, [data-thread-scroll-footer], [data-codex-composer], [contenteditable="true"][role="textbox"]'
+  )]
+    .map((node) => ({ node, rect: node.getBoundingClientRect(), style: getComputedStyle(node) }))
+    .filter(({ rect, style }) => rect.width > 200 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden")
+    .sort((left, right) => right.rect.bottom - left.rect.bottom)[0]?.node || null;
   const chrome = document.getElementById('codex-dream-skin-chrome') ||
     document.getElementById('codex-glass-vision-skin-chrome');
   return JSON.stringify({
@@ -429,7 +435,7 @@ pub fn renderer_verification_script() -> &'static str {
     hero: box(home?.firstElementChild?.firstElementChild?.firstElementChild),
     visibleCardCount: cards.filter((item) => item?.visible).length,
     projectButton: box(home?.querySelector('.group\\/project-selector > button')),
-    composer: box(document.querySelector('.composer-surface-chrome')),
+    composer: box(composer),
     sidebar: box(document.querySelector('aside.app-shell-left-panel')),
     documentOverflow: {
       x: document.documentElement.scrollWidth > document.documentElement.clientWidth,

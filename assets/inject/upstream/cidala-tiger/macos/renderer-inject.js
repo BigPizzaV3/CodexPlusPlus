@@ -30,7 +30,14 @@
     "--dream-skin-focus-x", "--dream-skin-focus-y", "--dream-skin-art-position",
     "--dream-skin-decor-intensity",
     "--dream-skin-name", "--dream-skin-tagline", "--dream-skin-project-prefix",
-    "--dream-skin-project-label",
+    "--dream-skin-project-label", "--ds-theme-color-background", "--ds-theme-color-panel",
+    "--ds-theme-color-panel-alt", "--ds-theme-color-accent", "--ds-theme-color-accent-alt",
+    "--ds-theme-color-secondary", "--ds-theme-color-highlight", "--ds-theme-color-text",
+    "--ds-theme-color-muted", "--ds-theme-color-line", "--ds-theme-font-family", "--ds-theme-font-scale",
+    "--ds-theme-surface-radius", "--ds-theme-surface-opacity", "--ds-theme-surface-blur",
+    "--ds-theme-surface-border-alpha", "--ds-theme-surface-shadow", "--ds-theme-image-focus-x",
+    "--ds-theme-image-focus-y", "--ds-theme-image-zoom", "--ds-theme-image-dim",
+    "--ds-theme-image-task-intensity", "--ds-theme-density-scale", "--ds-theme-motion-level",
   ];
   const installToken = {};
   const existingAnalysisCache = window[ANALYSIS_CACHE_KEY];
