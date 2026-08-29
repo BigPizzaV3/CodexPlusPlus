@@ -275,6 +275,8 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /function setCodexPlusDatasetIfChanged\(/);
     assert.match(renderer, /codexServiceTierBadgeRetryAt/);
     assert.match(renderer, /scheduleThreadScrollSync\(\);/);
+    assert.match(renderer, /ownedOffsets: new WeakMap\(\)/);
+    assert.match(renderer, /Number\.parseFloat\(owned\.left\)/);
   });
 });
 

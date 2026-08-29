@@ -2041,7 +2041,7 @@
     delete window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__;
     const registeredParts = new Set([
       "root", "sidebar", "main", "header", "home", "home-hero", "project-list",
-      "thread", "message", "composer", "composer-toolbar", "dialog",
+      "thread", "message", "composer", "composer-toolbar", "composer-toolbar-empty", "dialog",
     ]);
     document.querySelectorAll("[data-ds-part]").forEach((node) => {
       if (registeredParts.has(node.getAttribute("data-ds-part"))) node.removeAttribute("data-ds-part");
@@ -9153,6 +9153,7 @@
     moObserved: false,
     observed: new WeakSet(),
     elements: new Set(),
+    ownedOffsets: new WeakMap(),
   };
 
   function conversationViewTokenSet(el) {
@@ -9475,16 +9476,31 @@
   function conversationViewAlignElement(el, htmlCenter) {
     if (!el?.isConnected) return;
     conversationViewApplyNativeWidth(el);
-    conversationViewResetOwnOffset(el);
+    const owned = conversationViewState.ownedOffsets.get(el);
+    const ownsCurrentOffset = !!owned
+      && el.style.left === owned.left
+      && el.style.transform === owned.transform;
+    if (!ownsCurrentOffset) conversationViewResetOwnOffset(el);
     const nativeRect = el.getBoundingClientRect();
     const bounds = conversationViewSessionRectFor(el);
-    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds, htmlCenter)) return;
+    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds, htmlCenter)) {
+      if (ownsCurrentOffset) conversationViewResetOwnOffset(el);
+      conversationViewState.ownedOffsets.delete(el);
+      return;
+    }
     const targetLeft = htmlCenter - nativeRect.width / 2;
     const delta = targetLeft - nativeRect.left;
-    if (Math.abs(delta) > 0.5) {
-      const nextLeft = `${delta.toFixed(2)}px`;
-      if (el.style.left !== nextLeft) el.style.left = nextLeft;
+    if (Math.abs(delta) <= 0.5) {
+      if (!ownsCurrentOffset) conversationViewState.ownedOffsets.delete(el);
+      return;
     }
+    const currentLeft = ownsCurrentOffset ? Number.parseFloat(owned.left) : 0;
+    const nextLeft = `${(Number.isFinite(currentLeft) ? currentLeft + delta : delta).toFixed(2)}px`;
+    if (el.style.left !== nextLeft) el.style.left = nextLeft;
+    conversationViewState.ownedOffsets.set(el, {
+      left: nextLeft,
+      transform: el.style.transform,
+    });
   }
 
   function conversationViewObserveIfNeeded(el) {
@@ -9569,6 +9585,7 @@
     conversationViewState.observed = new WeakSet();
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();
+    conversationViewState.ownedOffsets = new WeakMap();
     conversationViewState.contentEl = null;
     conversationViewState.composerEl = null;
   }

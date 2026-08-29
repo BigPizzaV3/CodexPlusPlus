@@ -296,6 +296,7 @@ fn parse_safe_css(css: &str) -> anyhow::Result<Vec<SafeCssRule<'_>>> {
         "message",
         "composer",
         "composer-toolbar",
+        "composer-toolbar-empty",
         "dialog",
     ];
     let mut parsed = Vec::new();

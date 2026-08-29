@@ -52,7 +52,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "25-codex-plus-renderer-performance";
+const DREAM_SKIN_RENDERER_REVISION: &str = "26-codex-plus-eva-focus-stability";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -301,7 +301,7 @@ fn dream_skin_skin_api_bootstrap_script(theme: &str) -> String {
     "composer-toolbar": ".composer-surface-chrome [role='toolbar'], [class*='_ComposerLayoutRoot_'] [class*='_ComposerLayoutFooter_'], [data-composer-surface-variant][data-composer-radius-variant] :is([data-composer-footer-responsive], [class*='_ComposerLayoutFooter_'], [class*='_footer_'])",
     dialog: "[role='dialog']",
   }};
-  const knownParts = new Set([...Object.keys(map), "home", "thread"]);
+  const knownParts = new Set([...Object.keys(map), "home", "thread", "composer-toolbar-empty"]);
   const mark = () => {{
     const desiredParts = new Map();
     const desiredThreadSurfaces = new Set();
@@ -333,6 +333,18 @@ fn dream_skin_skin_api_bootstrap_script(theme: &str) -> String {
       if (threadViewport) desiredThreadSurfaces.add(threadViewport);
       if (threadScroll) desiredThreadScrolls.add(threadScroll);
       rememberPart(threadSurface, "thread");
+
+      const modernComposer = shellMain.querySelector(
+        '[data-composer-surface-variant][data-composer-radius-variant], [class*="_ComposerLayoutRoot_"]'
+      );
+      const attachments = modernComposer?.querySelector("[data-composer-attachments]");
+      const toolbar = modernComposer?.querySelector(
+        "[data-composer-footer-responsive], [class*='_ComposerLayoutFooter_'], [class*='_footer_']"
+      );
+      if (attachments && toolbar && attachments.children.length === 0
+          && desiredParts.get(toolbar) === "composer-toolbar") {{
+        desiredParts.set(toolbar, "composer-toolbar-empty");
+      }}
     }}
 
     document.querySelectorAll("[data-ds-part]").forEach((node) => {{
