@@ -588,7 +588,7 @@
     applyTheme(root, shell);
     applyArtMetadata(root);
     applyDecor(root);
-    root.classList.add("codex-dream-skin");
+    if (!root.classList.contains("codex-dream-skin")) root.classList.add("codex-dream-skin");
     return shell;
   };
 

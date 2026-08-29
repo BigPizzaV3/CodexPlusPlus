@@ -139,7 +139,7 @@ describe("dream skin theme helpers", () => {
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "23-modern-codex-skin-api-compat"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "24-stable-codex-skin-mutation-sync"/);
   });
 
   it("bridges the modern Codex Skin API without forcing visual properties", async () => {
@@ -160,6 +160,8 @@ describe("dream skin theme helpers", () => {
     assert.match(assets, /data-app-shell-main-surface/);
     assert.match(assets, /data-local-conversation-user-anchor/);
     assert.match(assets, /_ComposerLayoutRoot_/);
+    assert.match(assets, /desiredParts = new Map/);
+    assert.match(assets, /desiredThreadSurfaces = new Set/);
     assert.doesNotMatch(assets, /DREAM_MODERN_CODEX_COMPAT_CSS/);
   });
 

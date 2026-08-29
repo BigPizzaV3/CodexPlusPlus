@@ -52,7 +52,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "23-modern-codex-skin-api-compat";
+const DREAM_SKIN_RENDERER_REVISION: &str = "24-stable-codex-skin-mutation-sync";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -302,41 +302,58 @@ fn dream_skin_skin_api_bootstrap_script(theme: &str) -> String {
     dialog: "[role='dialog']",
   }};
   const knownParts = new Set([...Object.keys(map), "home", "thread"]);
-  const clearKnownParts = () => {{
-    document.querySelectorAll("[data-ds-part]").forEach((node) => {{
-      if (knownParts.has(node.getAttribute("data-ds-part"))) node.removeAttribute("data-ds-part");
-    }});
-  }};
   const mark = () => {{
-    clearKnownParts();
-    document.querySelectorAll("[data-ds-thread-surface], [data-ds-thread-scroll]").forEach((node) => {{
-      node.removeAttribute("data-ds-thread-surface");
-      node.removeAttribute("data-ds-thread-scroll");
-    }});
+    const desiredParts = new Map();
+    const desiredThreadSurfaces = new Set();
+    const desiredThreadScrolls = new Set();
     const shellMain = ensureMainSurface();
-    if (!shellMain) return;
-    for (const [part, selector] of Object.entries(map)) {{
-      for (const node of document.querySelectorAll(selector)) node.setAttribute("data-ds-part", part);
+    if (shellMain) {{
+      const rememberPart = (node, part) => {{
+        if (node) desiredParts.set(node, part);
+      }};
+      for (const [part, selector] of Object.entries(map)) {{
+        for (const node of document.querySelectorAll(selector)) rememberPart(node, part);
+      }}
+
+      const home = shellMain.querySelector(
+        '[role="main"].dream-skin-home, [role="main"].dream-home, [role="main"]:has([data-feature="game-source"])'
+      );
+      rememberPart(home, "home");
+
+      const classicThreadNodes = [...shellMain.querySelectorAll('[role="main"]')].filter(
+        (node) => node !== home && node.querySelector("article, [data-message-id]")
+      );
+      const threadViewport = shellMain.querySelector(
+        '[data-app-shell-main-content-layout="thread-edge-scroll"]'
+      );
+      const threadScroll = shellMain.querySelector(
+        '.thread-scroll-container[data-app-action-timeline-scroll], .thread-scroll-container'
+      );
+      const threadSurface = threadViewport || threadScroll || classicThreadNodes[0] || null;
+      if (threadViewport) desiredThreadSurfaces.add(threadViewport);
+      if (threadScroll) desiredThreadScrolls.add(threadScroll);
+      rememberPart(threadSurface, "thread");
     }}
 
-    const home = shellMain.querySelector(
-      '[role="main"].dream-skin-home, [role="main"].dream-home, [role="main"]:has([data-feature="game-source"])'
-    );
-    if (home) home.setAttribute("data-ds-part", "home");
-
-    const classicThreadNodes = [...shellMain.querySelectorAll('[role="main"]')].filter(
-      (node) => node !== home && node.querySelector("article, [data-message-id]")
-    );
-    const threadViewport = shellMain.querySelector(
-      '[data-app-shell-main-content-layout="thread-edge-scroll"]'
-    );
-    const threadScroll = shellMain.querySelector(
-      '.thread-scroll-container[data-app-action-timeline-scroll], .thread-scroll-container'
-    );
-    const threadSurface = threadViewport || threadScroll || classicThreadNodes[0] || null;
-    if (threadViewport) threadViewport.setAttribute("data-ds-thread-surface", "true");
-    if (threadScroll) threadScroll.setAttribute("data-ds-thread-scroll", "true");
-    if (threadSurface) threadSurface.setAttribute("data-ds-part", "thread");
+    document.querySelectorAll("[data-ds-part]").forEach((node) => {{
+      const current = node.getAttribute("data-ds-part");
+      if (knownParts.has(current) && desiredParts.get(node) !== current) node.removeAttribute("data-ds-part");
+    }});
+    for (const [node, part] of desiredParts) {{
+      if (node.getAttribute("data-ds-part") !== part) node.setAttribute("data-ds-part", part);
+    }}
+    document.querySelectorAll("[data-ds-thread-surface]").forEach((node) => {{
+      if (!desiredThreadSurfaces.has(node)) node.removeAttribute("data-ds-thread-surface");
+    }});
+    for (const node of desiredThreadSurfaces) {{
+      if (node.getAttribute("data-ds-thread-surface") !== "true") node.setAttribute("data-ds-thread-surface", "true");
+    }}
+    document.querySelectorAll("[data-ds-thread-scroll]").forEach((node) => {{
+      if (!desiredThreadScrolls.has(node)) node.removeAttribute("data-ds-thread-scroll");
+    }});
+    for (const node of desiredThreadScrolls) {{
+      if (node.getAttribute("data-ds-thread-scroll") !== "true") node.setAttribute("data-ds-thread-scroll", "true");
+    }}
   }};
   mark();
   window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__?.disconnect?.();
