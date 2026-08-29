@@ -204,6 +204,52 @@ html.codex-dream-skin aside.app-shell-left-panel {
 
 html.codex-dream-skin aside.app-shell-left-panel nav { background: transparent !important; }
 
+/* Modern Codex renders the right side panel as a separate app-shell surface
+   instead of an aside. Keep its native panel variable on the same Dream Skin
+   surface so the panel chrome does not fall back to opaque white. */
+html.codex-dream-skin
+  :is([data-app-shell-tabs="true"], [data-browser-sidebar-webview]) {
+  --app-shell-panel-background: var(--ds-immersive-sidebar) !important;
+  background: var(--app-shell-panel-background) !important;
+  border-color: var(--ds-immersive-line) !important;
+  color: var(--ds-text) !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"]
+  :is([data-app-shell-tabs="true"], [data-browser-sidebar-webview]) {
+  --app-shell-panel-background: var(--ds-task-immersive-sidebar) !important;
+}
+
+html.codex-dream-skin [data-browser-sidebar-webview-host-root] {
+  --app-shell-panel-background: var(--ds-immersive-sidebar) !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"]
+  [data-browser-sidebar-webview-host-root] {
+  --app-shell-panel-background: var(--ds-task-immersive-sidebar) !important;
+}
+
+html.codex-dream-skin
+  :has(> [data-app-shell-tabs="true"]) {
+  --app-shell-panel-background: var(--ds-immersive-sidebar) !important;
+  background: var(--app-shell-panel-background) !important;
+  border-color: var(--ds-immersive-line) !important;
+}
+
+html.codex-dream-skin[data-dream-art-wide="true"]
+  :has(> [data-app-shell-tabs="true"]) {
+  --app-shell-panel-background: var(--ds-task-immersive-sidebar) !important;
+}
+
+html.codex-dream-skin [data-app-shell-tabs="true"] [data-app-shell-tab-row="true"] {
+  background: transparent !important;
+  color: var(--ds-text) !important;
+}
+
+html.codex-dream-skin [data-browser-sidebar-webview] > webview {
+  background: var(--app-shell-panel-background, var(--ds-immersive-sidebar)) !important;
+}
+
 html.codex-dream-skin aside.app-shell-left-panel button,
 html.codex-dream-skin aside.app-shell-left-panel a {
   color: var(--ds-text) !important;

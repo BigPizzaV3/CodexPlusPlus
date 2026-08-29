@@ -1860,11 +1860,16 @@
       ? main?.querySelector(".thread-scroll-container[data-app-action-timeline-scroll], .thread-scroll-container")
       : null;
     const renderedFooter = scroll?.querySelector("[data-thread-scroll-footer]") || null;
+    const dock = enabled
+      ? scroll?.closest?.(
+        '[data-app-shell-main-content-layout], [data-ds-thread-surface="true"]',
+      ) || main
+      : null;
 
     if (state.node && (state.scroll !== scroll || (renderedFooter && renderedFooter !== state.node))) {
       restoreDreamSkinComposerDock();
     }
-    if (!enabled || !main || !scroll) {
+    if (!enabled || !main || !scroll || !dock) {
       if (state.node) restoreDreamSkinComposerDock();
       return;
     }
@@ -1889,7 +1894,7 @@
       ]));
     }
 
-    if (footer.parentElement !== main) main.appendChild(footer);
+    if (footer.parentElement !== dock) dock.appendChild(footer);
     setCodexPlusAttributeIfChanged(footer, codexPlusDreamSkinComposerDockAttribute, "true");
     for (const [property, value] of Object.entries({
       position: "absolute",

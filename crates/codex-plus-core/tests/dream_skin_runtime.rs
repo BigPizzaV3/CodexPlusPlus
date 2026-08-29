@@ -206,6 +206,15 @@ fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
                 source.contains("[data-thread-scroll-footer] button[class*=\"end-1/2\"][class*=\"bottom-\"]"),
                 "missing modern bottom-button transition guard in {relative_path}"
             );
+            assert!(
+                source.contains("[data-app-shell-tabs=\"true\"]"),
+                "missing modern right side panel surface selector in {relative_path}"
+            );
+            assert!(
+                source.contains("[data-browser-sidebar-webview-host-root]")
+                    && source.contains("[data-browser-sidebar-webview]"),
+                "missing modern browser side panel background selectors in {relative_path}"
+            );
         }
     }
 }
