@@ -1475,6 +1475,30 @@ fn normalize_text_toml(contents: String) -> String {
     }
 }
 
+pub fn strip_legacy_skill_tables(contents: &str) -> String {
+    let Ok(mut doc) = parse_toml_document(contents) else {
+        return contents.to_string();
+    };
+    let Some(skills) = doc.as_table_mut().get_mut("skills") else {
+        return contents.to_string();
+    };
+    let Some(table) = skills.as_table_like_mut() else {
+        return contents.to_string();
+    };
+    let legacy_ids: Vec<String> = table
+        .iter()
+        .filter(|(_, item)| item.is_table_like())
+        .map(|(id, _)| id.to_string())
+        .collect();
+    for id in legacy_ids {
+        table.remove(&id);
+    }
+    if table.is_empty() {
+        doc.as_table_mut().remove("skills");
+    }
+    normalize_optional_toml(doc)
+}
+
 pub fn normalize_config_text(contents: &str) -> String {
     normalize_duplicate_toml_text(contents)
 }
