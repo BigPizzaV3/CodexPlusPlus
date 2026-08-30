@@ -206,6 +206,17 @@ describe("renderer injection header compatibility", () => {
     assert.match(appended[0].textContent ?? "", /#codex-plus-sidebar-nav/);
   });
 
+  it("does not override the host document root typography or foreground", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const appended = installRendererStyle(renderer);
+    const css = appended[0].textContent ?? "";
+    const rootRule = css.match(/:root\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    assert.doesNotMatch(rootRule, /(?:^|;)\s*font(?:-family)?\s*:/);
+    assert.doesNotMatch(rootRule, /(?:^|;)\s*color\s*:/);
+    assert.match(css, /:where\([^)]*codex-plus-modal-overlay[^)]*\)\s*\{[^}]*font-family:\s*inherit;/s);
+  });
+
   it("hides only the official usage alert and restores it without changing upstream styles", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const wrapper = new FakeElement({ className: "w-full", styleDisplay: "grid" });

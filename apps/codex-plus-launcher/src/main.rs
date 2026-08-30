@@ -192,7 +192,6 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
     let hooks = LauncherHooks::default();
-    let helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let has_pending_recovery = hooks.has_pending_remote_control_session_recoveries();
@@ -218,9 +217,6 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             &settings.codex_extra_args,
         )
         .await;
-    if settings.enhancements_enabled {
-        hooks.start_helper(helper_port).await?;
-    }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
     #[cfg(windows)]
     let activated = process_ids
@@ -229,31 +225,18 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         .any(codex_plus_core::windows_activate_process_window);
     #[cfg(not(windows))]
     let activated = false;
-    let injection_ready = if settings.enhancements_enabled {
-        hooks
-            .ensure_injection(options.debug_port, helper_port, &app_dir)
-            .await
-    } else {
-        false
-    };
-    if injection_ready {
-        hooks
-            .start_bridge_watchdog(options.debug_port, helper_port)
-            .await?;
-        hooks.write_status("running").await;
-    } else if settings.enhancements_enabled {
-        hooks.write_status("running_degraded").await;
-    }
+    let helper_available = !settings.enhancements_enabled
+        || codex_plus_core::ports::can_connect_loopback_port(options.helper_port);
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "launcher.activate_existing_codex",
         json!({
             "app_dir": app_dir.to_string_lossy(),
             "debug_port": options.debug_port,
-            "helper_port": helper_port,
+            "helper_port": options.helper_port,
             "requested_helper_port": options.helper_port,
             "process_ids": process_ids,
             "activated": activated,
-            "injection_ready": injection_ready,
+            "helper_available": helper_available,
             "launch_ok": launch_result.is_ok(),
             "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
         }),
@@ -1147,6 +1130,24 @@ mod tests {
         assert!(
             body[recovery..launch].contains("hooks.run_remote_control_session_recovery().await?")
         );
+    }
+
+    #[test]
+    fn existing_launcher_path_reuses_the_primary_launcher_runtime() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("existing launcher activation function");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after existing launcher activation");
+        let body = &source[start..end];
+
+        assert!(!body.contains("hooks.start_helper"));
+        assert!(!body.contains("hooks.ensure_injection"));
+        assert!(!body.contains("hooks.start_bridge_watchdog"));
+        assert!(body.contains("can_connect_loopback_port(options.helper_port)"));
     }
 
     #[test]

@@ -153,6 +153,13 @@ pub fn process_ids_still_running(
         .collect()
 }
 
+pub fn macos_launcher_process_names() -> [&'static str; 2] {
+    [
+        crate::install::SILENT_BINARY,
+        crate::install::MACOS_SILENT_EXECUTABLE,
+    ]
+}
+
 #[cfg(windows)]
 pub fn process_id_is_running(process_id: u32) -> Option<bool> {
     if process_id == 0 {
@@ -515,18 +522,28 @@ fn terminate_macos_process(process_id: u32) -> std::io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn find_launcher_processes() -> Vec<u32> {
-    std::process::Command::new("pgrep")
-        .args(["-x", crate::install::SILENT_BINARY])
-        .output()
-        .ok()
+    let current_process_id = std::process::id();
+    let mut process_ids = macos_launcher_process_names()
         .into_iter()
-        .flat_map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|value| value.trim().parse::<u32>().ok())
+        .flat_map(|process_name| {
+            std::process::Command::new("pgrep")
+                .args(["-x", process_name])
+                .output()
+                .ok()
+                .into_iter()
+                .flat_map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .filter_map(|value| value.trim().parse::<u32>().ok())
+                        .collect::<Vec<_>>()
+                })
                 .collect::<Vec<_>>()
         })
-        .collect()
+        .filter(|process_id| *process_id != current_process_id)
+        .collect::<Vec<_>>();
+    process_ids.sort_unstable();
+    process_ids.dedup();
+    process_ids
 }
 
 #[cfg(target_os = "macos")]
