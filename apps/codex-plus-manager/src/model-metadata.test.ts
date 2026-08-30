@@ -90,6 +90,21 @@ describe("model metadata helpers", () => {
     );
   });
 
+  it("保留 Codex++ 已填写的显示名称，其他 metadata 采用最新导入值", () => {
+    const replaced = replaceModelMetadataForSlug(
+      '{"model-a":{"display_name":"我的模型名","vendor":"old"}}',
+      "model-a",
+      { display_name: "供应商模型名", vendor: "new", supports_search_tool: true },
+    );
+    assert.deepStrictEqual(JSON.parse(replaced), {
+      "model-a": {
+        display_name: "我的模型名",
+        vendor: "new",
+        supports_search_tool: true,
+      },
+    });
+  });
+
   it("模型窗口和比例使用十进制 K/M 及 half-up 舍入", () => {
     const document = serializeModelMetadataDocument("model-a", { vendor: "x" }, "1M", "80%");
     assert.deepStrictEqual(JSON.parse(document), {
