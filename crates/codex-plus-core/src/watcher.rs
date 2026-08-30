@@ -160,20 +160,157 @@ pub fn macos_launcher_process_names() -> [&'static str; 2] {
     ]
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessInstanceState {
+    NotRunning,
+    Running {
+        started_at_secs: Option<u64>,
+        birth_id: Option<String>,
+    },
+    Unknown,
+}
+
 #[cfg(windows)]
-pub fn process_id_is_running(process_id: u32) -> Option<bool> {
+pub fn inspect_process_instance(process_id: u32) -> ProcessInstanceState {
     if process_id == 0 {
-        return Some(false);
+        return ProcessInstanceState::NotRunning;
     }
     let processes = crate::windows_integration::enumerate_processes();
     if processes.is_empty() {
-        return None;
+        return ProcessInstanceState::Unknown;
     }
-    Some(
-        processes
-            .iter()
-            .any(|process| process.process_id == process_id),
+    if !processes
+        .iter()
+        .any(|process| process.process_id == process_id)
+    {
+        return ProcessInstanceState::NotRunning;
+    }
+    let birth_id = crate::windows_integration::process_birth_id(process_id);
+    ProcessInstanceState::Running {
+        started_at_secs: birth_id
+            .and_then(crate::windows_integration::process_started_at_secs_from_birth_id),
+        birth_id: birth_id.map(|birth_id| birth_id.to_string()),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn inspect_process_instance(process_id: u32) -> ProcessInstanceState {
+    match process_id_is_running(process_id) {
+        Some(false) => ProcessInstanceState::NotRunning,
+        Some(true) => {
+            let (started_at_secs, birth_id) = unix_process_identity(process_id);
+            ProcessInstanceState::Running {
+                started_at_secs,
+                birth_id,
+            }
+        }
+        None => ProcessInstanceState::Unknown,
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+pub fn inspect_process_instance(process_id: u32) -> ProcessInstanceState {
+    if process_id == 0 {
+        ProcessInstanceState::NotRunning
+    } else {
+        ProcessInstanceState::Unknown
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn unix_process_identity(process_id: u32) -> (Option<u64>, Option<String>) {
+    let process_id_arg = process_id.to_string();
+    let output = std::process::Command::new("ps")
+        .args([
+            "-p",
+            process_id_arg.as_str(),
+            "-o",
+            "etime=",
+            "-o",
+            "lstart=",
+        ])
+        .env("LC_ALL", "C")
+        .output();
+    let Ok(output) = output else {
+        return (None, None);
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    let Some(split_at) = text.find(char::is_whitespace) else {
+        return (None, None);
+    };
+    let elapsed = parse_ps_elapsed_seconds(&text[..split_at]);
+    let birth_id = text[split_at..].trim();
+    let started_at_secs = elapsed.and_then(|elapsed| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|now| now.as_secs().saturating_sub(elapsed))
+    });
+    (
+        started_at_secs,
+        (!birth_id.is_empty()).then(|| birth_id.to_string()),
     )
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn parse_ps_elapsed_seconds(value: &str) -> Option<u64> {
+    let (days, time) = if let Some((days, time)) = value.split_once('-') {
+        (days.parse().ok()?, time)
+    } else {
+        (0, value)
+    };
+    let parts = time
+        .split(':')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let (hours, minutes, seconds) = match parts.as_slice() {
+        [minutes, seconds] => (0, *minutes, *seconds),
+        [hours, minutes, seconds] => (*hours, *minutes, *seconds),
+        _ => return None,
+    };
+    Some(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
+}
+
+#[cfg(test)]
+mod process_identity_tests {
+    use super::*;
+
+    #[test]
+    fn parses_ps_elapsed_time_formats() {
+        assert_eq!(parse_ps_elapsed_seconds("03:04"), Some(184));
+        assert_eq!(parse_ps_elapsed_seconds("02:03:04"), Some(7_384));
+        assert_eq!(parse_ps_elapsed_seconds("2-02:03:04"), Some(180_184));
+        assert_eq!(parse_ps_elapsed_seconds("invalid"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn current_windows_process_has_a_stable_birth_identity() {
+        let ProcessInstanceState::Running {
+            started_at_secs,
+            birth_id,
+        } = inspect_process_instance(std::process::id())
+        else {
+            panic!("current process should be visible");
+        };
+
+        assert!(started_at_secs.is_some());
+        assert!(birth_id.is_some());
+    }
+}
+
+#[cfg(windows)]
+pub fn process_id_is_running(process_id: u32) -> Option<bool> {
+    match inspect_process_instance(process_id) {
+        ProcessInstanceState::NotRunning => Some(false),
+        ProcessInstanceState::Running { .. } => Some(true),
+        ProcessInstanceState::Unknown => None,
+    }
 }
 
 #[cfg(target_os = "linux")]
