@@ -621,6 +621,13 @@ impl Default for LauncherDataService {
 
 #[async_trait::async_trait]
 impl BridgeDataService for LauncherDataService {
+    async fn provider_guard_status(&self) -> anyhow::Result<Value> {
+        let status = tokio::task::spawn_blocking(|| codex_plus_data::inspect_provider_guard(None))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider guard status task failed: {error}"))??;
+        Ok(serde_json::to_value(status)?)
+    }
+
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         let db_paths = self.candidate_db_paths();
         let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());

@@ -1,10 +1,15 @@
 pub mod backup;
 pub mod markdown;
+pub mod provider_guard;
 pub mod provider_sync;
 pub mod storage;
 
 pub use backup::BackupStore;
 pub use markdown::{MarkdownExportService, export_markdown_from_paths};
+pub use provider_guard::{
+    ProviderBucket, ProviderEndpoint, ProviderGuardFinding, ProviderGuardRepairResult,
+    ProviderGuardStatus, inspect_provider_guard, repair_provider_guard,
+};
 pub use provider_sync::{
     ProviderSyncAudit, ProviderSyncLockState, ProviderSyncResult, ProviderSyncStatus,
     ProviderSyncTargetList, ProviderSyncTargetOption, ProviderSyncTargetSource,

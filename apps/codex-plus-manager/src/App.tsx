@@ -766,6 +766,28 @@ type ProviderSyncTargetsPayload = {
 
 type ProviderSyncTargetsResult = CommandResult<ProviderSyncTargetsPayload>;
 
+type ProviderGuardFinding = {
+  code: string;
+  severity: "warning" | "critical" | string;
+  message: string;
+};
+
+type ProviderGuardStatusPayload = {
+  level: "ok" | "warning" | "critical" | string;
+  stableProvider: string;
+  currentProvider: string;
+  stableProviderConfigured: boolean;
+  totalThreads: number;
+  databasesScanned: number;
+  providerBuckets: Array<{ provider: string; threads: number }>;
+  endpoint: { kind: string; loopback: boolean; port?: number | null };
+  findings: ProviderGuardFinding[];
+  canRepair: boolean;
+  repairRequiresNativeConfirmation: boolean;
+};
+
+type ProviderGuardResult = CommandResult<ProviderGuardStatusPayload>;
+
 type ProviderSyncProgress = {
   active: boolean;
   percent: number;
@@ -1183,6 +1205,7 @@ export function App() {
     message: t("尚未检查官方远端插件缓存。"),
   });
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
+  const [providerGuard, setProviderGuard] = useState<ProviderGuardResult | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
@@ -2151,6 +2174,7 @@ export function App() {
       await refreshSettings(true);
       await refreshLocalSessions(true);
       await refreshProviderSyncTargets(true);
+      await refreshProviderGuard(true);
     }
     if (next === "zedRemote") {
       await refreshSettings(true);
@@ -2606,6 +2630,35 @@ export function App() {
       if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
     }
     return result;
+  };
+
+  const refreshProviderGuard = async (silent = false) => {
+    const result = await run(() => call<ProviderGuardResult>("load_provider_guard_status"));
+    if (result) {
+      setProviderGuard(result);
+      if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider Guard"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const repairProviderGuard = async () => {
+    if (!providerGuard?.canRepair) {
+      showNotice(t("Provider Guard"), t("当前配置不满足安全修复条件，请先配置 model_providers.custom。"), "failed");
+      return;
+    }
+    const confirmed = window.confirm(
+      t("修复前会备份 config.toml、会话文件和 SQLite 索引，并将稳定供应商 ID 设为 custom。是否继续？"),
+    );
+    if (!confirmed) return;
+    const result = await run(() =>
+      call<CommandResult<{ guard?: ProviderGuardStatusPayload }>>("repair_provider_guard", { confirmed: true }),
+    );
+    if (result) {
+      showNotice(t("Provider Guard"), result.message, result.status);
+      await refreshProviderGuard(true);
+      await refreshProviderSyncTargets(true);
+      await refreshLocalSessions(true);
+    }
   };
 
   const syncProvidersNow = async () => {
@@ -3081,6 +3134,7 @@ export function App() {
       await refreshRelay(true);
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
+      await refreshProviderGuard(true);
       await refreshPendingProviderImport(true);
       await refreshPendingSessionShare(true);
       await refreshPendingDreamSkinCommunity();
@@ -3360,6 +3414,8 @@ export function App() {
       },
       syncProvidersNow,
       refreshProviderSyncTargets,
+      refreshProviderGuard,
+      repairProviderGuard,
       setProviderSyncTarget: (provider: string) => {
         setSelectedProviderSyncTarget(provider);
         setSettingsForm((current) => ({ ...current, providerSyncLastSelectedProvider: provider }));
@@ -3445,7 +3501,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, providerGuard, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -3568,6 +3624,7 @@ export function App() {
               sessions={localSessions}
               providerSyncProgress={providerSyncProgress}
               providerSyncTargets={providerSyncTargets}
+              providerGuard={providerGuard}
               selectedProviderSyncTarget={selectedProviderSyncTarget}
               onFormChange={setSettingsForm}
               actions={actions}
@@ -3784,6 +3841,8 @@ type Actions = {
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
+  refreshProviderGuard: (silent?: boolean) => Promise<ProviderGuardResult | null>;
+  repairProviderGuard: () => Promise<void>;
   setProviderSyncTarget: (provider: string) => void;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
@@ -6838,6 +6897,7 @@ function SessionsScreen({
   sessions,
   providerSyncProgress,
   providerSyncTargets,
+  providerGuard,
   selectedProviderSyncTarget,
   onFormChange,
   actions,
@@ -6847,6 +6907,7 @@ function SessionsScreen({
   sessions: LocalSessionsResult | null;
   providerSyncProgress: ProviderSyncProgress;
   providerSyncTargets: ProviderSyncTargetsResult | null;
+  providerGuard: ProviderGuardResult | null;
   selectedProviderSyncTarget: string;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
@@ -6909,6 +6970,59 @@ function SessionsScreen({
 
   return (
     <>
+      <Panel>
+        <CardHead
+          title={t("Provider Guard")}
+          detail={t("固定稳定供应商 ID，检查会话分桶，并阻止脚本市场静默修改配置或 SQLite")}
+        />
+        <CardContent>
+          <div className="metric-list">
+            <Metric label={t("安全状态")} value={providerGuard?.level ?? t("尚未检查")} />
+            <Metric label={t("当前 provider")} value={providerGuard?.currentProvider ?? "-"} />
+            <Metric label={t("稳定 provider")} value={providerGuard?.stableProvider ?? "custom"} />
+            <Metric label={t("索引会话")} value={tf("{0} 个", [providerGuard?.totalThreads ?? 0])} />
+            <Metric
+              label={t("接口类型")}
+              value={providerGuard?.endpoint ? `${providerGuard.endpoint.kind}${providerGuard.endpoint.port ? `:${providerGuard.endpoint.port}` : ""}` : "-"}
+            />
+          </div>
+          {(providerGuard?.providerBuckets ?? []).length ? (
+            <div className="hint-line">
+              <Info className="h-4 w-4" />
+              <span>
+                {t("会话分桶：")}
+                {providerGuard?.providerBuckets.map((bucket) => `${bucket.provider}=${bucket.threads}`).join("，")}
+              </span>
+            </div>
+          ) : null}
+          {(providerGuard?.findings ?? []).map((finding) => (
+            <div className="hint-line" key={finding.code}>
+              {finding.severity === "critical" ? <ShieldAlert className="h-4 w-4" /> : <Info className="h-4 w-4" />}
+              <span>{finding.message}</span>
+            </div>
+          ))}
+          {!providerGuard?.findings?.length && providerGuard ? (
+            <div className="hint-line">
+              <ShieldCheck className="h-4 w-4" />
+              <span>{t("配置与会话分桶保持稳定。")}</span>
+            </div>
+          ) : null}
+          <Toolbar>
+            <Button onClick={() => void actions.refreshProviderGuard()} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              {t("重新检查")}
+            </Button>
+            <Button disabled={!providerGuard?.canRepair} onClick={() => void actions.repairProviderGuard()}>
+              <ShieldCheck className="h-4 w-4" />
+              {t("备份并修复")}
+            </Button>
+          </Toolbar>
+          <div className="hint-line">
+            <ShieldCheck className="h-4 w-4" />
+            <span>{t("修复只能从原生管理器执行；脚本市场仅拥有只读检查权限。")}</span>
+          </div>
+        </CardContent>
+      </Panel>
       <Panel className="sessions-overview-panel">
         <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
         <CardContent className="sessions-overview-content">

@@ -33,6 +33,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/manager/open", json!({})),
         ("/manager/open-transient", json!({})),
         ("/backend/status", json!({})),
+        ("/provider-guard/status", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         (
@@ -410,6 +411,19 @@ async fn unknown_bridge_path_preserves_empty_session_id_shape() {
             "message": "Unknown bridge path"
         })
     );
+}
+
+#[tokio::test]
+async fn provider_guard_repair_is_not_exposed_to_injected_user_scripts() {
+    let result = handle_bridge_request(
+        test_context(),
+        "/provider-guard/repair",
+        json!({"confirmed": true}),
+    )
+    .await;
+
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["message"], "Unknown bridge path");
 }
 
 #[tokio::test]
