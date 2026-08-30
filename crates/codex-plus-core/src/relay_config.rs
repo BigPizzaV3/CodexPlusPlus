@@ -2921,7 +2921,7 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["requires_openai_auth"] = toml_edit::value(true);
     }
-    let provider_base_url = if profile.has_model_routes() {
+    let provider_base_url = if profile.has_model_routes() || profile.uses_no_auth() {
         crate::protocol_proxy::local_responses_proxy_base_url(
             crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
         )
@@ -2935,7 +2935,10 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     if !provider_base_url.trim().is_empty() {
         provider["base_url"] = toml_edit::value(provider_base_url.trim());
     }
-    if profile.relay_mode == crate::settings::RelayMode::PureApi {
+    if profile.uses_no_auth() {
+        provider["experimental_bearer_token"] =
+            toml_edit::value(crate::protocol_proxy::NO_AUTH_PROXY_BEARER_TOKEN);
+    } else if profile.relay_mode == crate::settings::RelayMode::PureApi {
         provider.remove("experimental_bearer_token");
     } else if !api_key.trim().is_empty() {
         provider["experimental_bearer_token"] = toml_edit::value(api_key.trim());
@@ -2947,6 +2950,12 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    profile.no_auth = profile.relay_mode == crate::settings::RelayMode::PureApi && profile.no_auth;
+    if profile.no_auth {
+        profile.api_key.clear();
+        profile.sub2api_enabled = false;
+        profile.sub2api_multiplier.clear();
+    }
     let mut seen_models = HashSet::new();
     profile.model_routes = profile
         .model_routes
@@ -3026,6 +3035,9 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
                 // auth.json 本身已损坏时保不住原内容，但 key 必须有落点，直接重建。
                 .or_else(|_| set_openai_api_key_in_auth_contents("", &source_api_key))?;
     }
+    if profile.uses_no_auth() {
+        profile.auth_contents = no_auth_auth_contents(&profile.auth_contents)?;
+    }
     if profile.relay_mode == crate::settings::RelayMode::Official {
         profile.auth_contents = remove_openai_api_key_from_auth_contents(&profile.auth_contents)?;
     }
@@ -3034,6 +3046,9 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
     profile.upstream_base_url = source_base_url.clone();
     profile.base_url = source_base_url;
     profile.api_key = relay_profile_api_key(profile);
+    if profile.uses_no_auth() {
+        profile.api_key.clear();
+    }
     Ok(())
 }
 
@@ -3050,6 +3065,19 @@ fn remove_openai_api_key_from_auth_contents(auth_contents: &str) -> anyhow::Resu
     if object.is_empty() {
         return Ok(String::new());
     }
+    Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
+}
+
+fn no_auth_auth_contents(auth_contents: &str) -> anyhow::Result<String> {
+    let mut value = if auth_contents.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str::<Value>(auth_contents).with_context(|| "auth.json JSON 解析失败")?
+    };
+    let Some(object) = value.as_object_mut() else {
+        anyhow::bail!("auth.json 必须是 JSON 对象");
+    };
+    object.remove("OPENAI_API_KEY");
     Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
 }
 
