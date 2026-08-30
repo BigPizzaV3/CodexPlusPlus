@@ -703,6 +703,9 @@ describe("relay pureApi provider resolution", () => {
     );
 
     assert.equal(runtime.codexRemoteSessionTargetProvider(), "deepseek");
+  });
+});
+
 class SidebarFixtureNode {
   children: SidebarFixtureNode[] = [];
   parentElement: SidebarFixtureNode | null = null;
