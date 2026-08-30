@@ -116,7 +116,7 @@ describe("dream skin theme helpers", () => {
     assert.match(app, /Math\.max\(-160, Math\.min\(160, Number\(event\.currentTarget\.value\) \|\| 0\)\)/);
   });
 
-  it("keeps the Windows skin active when the sidebar is hidden", async () => {
+  it("uses the current shared selector contract without requiring a visible sidebar", async () => {
     const renderer = await readFile(
       new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
       "utf8",
@@ -130,18 +130,19 @@ describe("dream skin theme helpers", () => {
       "utf8",
     );
 
-    assert.match(renderer, /const ensureShellMain = \(\) =>/);
-    assert.match(renderer, /main\[class\*="MainContentSurface"\]/);
-    assert.match(renderer, /data-codex-plus-dream-surface/);
-    assert.doesNotMatch(renderer, /!shellMain\s*\|\|\s*!shellSidebar/);
+    assert.match(renderer, /codex-dream-skin-selectors\/1/);
+    assert.match(renderer, /data-app-shell-main-surface/);
+    assert.match(renderer, /_MainContentSurface_/);
+    assert.match(renderer, /data-ds-part/);
+    assert.match(renderer, /MutationObserver/);
     assert.match(compatibility, /main\[class\*="_MainContentSurface_"\]/);
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "21-upstream-v1\.5\.16"/);
   });
 
-  it("extends the Windows wallpaper treatment to right and bottom dock panels", async () => {
+  it("covers the current shell, composer, message, and top-fade contracts", async () => {
     const renderer = await readFile(
       new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
       "utf8",
@@ -151,33 +152,12 @@ describe("dream skin theme helpers", () => {
       "utf8",
     );
 
-    assert.match(renderer, /\[data-app-shell-tabs="true"\]/);
-    assert.match(renderer, /dream-aux-panel-layer/);
-    assert.match(renderer, /dream-aux-panel-right/);
-    assert.match(renderer, /dream-aux-panel-bottom/);
-    assert.match(renderer, /clearAuxiliaryPanelClasses/);
-    assert.match(css, /\.dream-aux-panel-layer/);
-    assert.match(css, /\.dream-aux-panel-right/);
-    assert.match(css, /\.dream-aux-panel-bottom/);
-    assert.match(css, /\[data-codex-terminal="true"\]/);
-  });
-
-  it("keeps transient new-chat drafts on native geometry", async () => {
-    const renderer = await readFile(
-      new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
-      "utf8",
-    );
-    const css = await readFile(
-      new URL("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css", import.meta.url),
-      "utf8",
-    );
-
-    assert.match(renderer, /homeHasClassicChrome/);
-    assert.match(renderer, /data-dream-home-layout/);
-    assert.match(renderer, /data-dream-home-layout.*soft/);
-    assert.match(css, /data-dream-home-layout.*structured/);
-    assert.match(css, /overflow-y: auto !important/);
-    assert.match(css, /\.composer-surface-chrome/);
+    assert.match(renderer, /_ComposerLayoutRoot_/);
+    assert.match(renderer, /data-local-conversation-final-assistant/);
+    assert.match(renderer, /data-local-conversation-user-anchor/);
+    assert.match(css, /_MainContentTopFade_/);
+    assert.match(css, /_ComposerLayoutBody_/);
+    assert.match(css, /data-markdown-table="true"/);
   });
 
   it("exposes companion image controls in the theme editor", async () => {

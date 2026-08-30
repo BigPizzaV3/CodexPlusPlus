@@ -703,14 +703,15 @@ fn injection_script_installs_dream_skin_from_backend_settings() {
     assert!(script.contains("window.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__"));
     assert!(script.contains("state.version = `codex-plus:"));
-    assert!(script.contains("state.observer?.disconnect?.()"));
+    assert!(!script.contains("state.observer?.disconnect?.()"));
+    assert!(!script.contains("if (state.timer) clearInterval(state.timer)"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__"));
     assert!(script.contains("window.__CODEX_PLUS_DREAM_SKIN_THEME__"));
     assert!(script.contains("data:image/webp;base64,UklGRg=="));
     assert!(script.contains("codex-dream-skin-companion"));
     assert!(script.contains("removeDreamSkinCompanion"));
     if cfg!(windows) {
-        assert!(script.contains(":root.codex-dream-skin"));
+        assert!(script.contains("data-dream-skin=\\\"active\\\""));
         assert!(!script.contains("薛凯琪专属定制皮肤"));
     }
     assert!(script.contains(".group\\\\/home-suggestions"));
