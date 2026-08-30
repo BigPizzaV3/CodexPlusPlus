@@ -3331,9 +3331,10 @@
   }
 
   function codexRemoteSessionProviderRequestMethod(method) {
+    // app-server restores persisted model/provider/reasoning for thread/resume only
+    // when the caller supplies none of those overrides.
     return [
       "thread/start",
-      "thread/resume",
       "start-conversation",
       "start-thread-for-host",
       "thread-prewarm-start",
@@ -3349,8 +3350,7 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
-    const isExtendedPureApiRequest = requestMethod === "thread/resume" || requestMethod === "turn/start";
-    if (isExtendedPureApiRequest && !pureApi) return params;
+    if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");
     if (requestMethod === "turn/start" && !hasModelProvider) return params;
@@ -6566,7 +6566,7 @@
       displayName: metadata?.displayName || modelName,
       description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
       hidden: false,
-      isDefault: (codexModelCatalog.default_model || codexModelCatalog.model) === modelName,
+      isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
     };
@@ -6675,13 +6675,6 @@
       value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
       if (value.hidden_models.length !== before) changed = true;
     }
-    if (value.defaultModel == null && names.length > 0) {
-      value.defaultModel = codexPlusModelDescriptor(names[0]);
-      changed = true;
-    } else if (typeof value.defaultModel === "string" && names.includes(value.defaultModel) && value.model == null) {
-      value.model = value.defaultModel;
-      changed = true;
-    }
     return changed;
   }
 
@@ -6748,12 +6741,8 @@
         changed = true;
       }
     });
-    const nextValue = {
-      ...value,
-      available_models: availableModels,
-      default_model: names[0] || value.default_model,
-    };
-    if (!changed && nextValue.default_model === value.default_model) return config;
+    if (!changed) return config;
+    const nextValue = { ...value, available_models: availableModels };
     try {
       config.value = nextValue;
     } catch {
