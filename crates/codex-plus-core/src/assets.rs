@@ -116,6 +116,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
     }
 
     let (engine, renderer, base_css) = dream_skin_target_assets(settings);
+    let base_css = preserve_host_typography(base_css);
     let managed_css = managed_dream_skin_css(settings);
     let css = format!("{base_css}\n{managed_css}");
     let theme = serde_json::to_string(&settings.codex_app_dream_skin_theme_config)
@@ -190,6 +191,27 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         serde_json::to_string(&payload_revision).unwrap(),
     );
     payload
+}
+
+fn preserve_host_typography(css: &str) -> String {
+    let mut output = String::with_capacity(css.len());
+    let mut host_body_rule = false;
+    for line in css.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if matches!(
+            trimmed,
+            "html.codex-dream-skin body {" | "html.codex-glass-vision-skin body {"
+        ) {
+            host_body_rule = true;
+        }
+        if !(host_body_rule && trimmed.starts_with("font-family:")) {
+            output.push_str(line);
+        }
+        if host_body_rule && trimmed == "}" {
+            host_body_rule = false;
+        }
+    }
+    output
 }
 
 fn managed_dream_skin_css(settings: &BackendSettings) -> String {
@@ -468,6 +490,9 @@ pub fn dream_skin_art_content_signature(settings: &BackendSettings) -> String {
 
 pub fn dream_skin_runtime_content_signature(settings: &BackendSettings) -> String {
     let (engine, _, css) = dream_skin_target_assets(settings);
+    let css = preserve_host_typography(css);
+    let managed_css = managed_dream_skin_css(settings);
+    let css = format!("{css}\n{managed_css}");
     let theme = serde_json::to_string(&settings.codex_app_dream_skin_theme_config)
         .expect("dream skin target theme should serialize");
     let style_revision = dream_skin_content_signature(css.as_bytes());
@@ -738,6 +763,50 @@ mod tests {
         let config = image_overlay_config(57321, &settings);
 
         assert_eq!(config["fitMode"].as_str(), Some("fill"));
+    }
+
+    #[test]
+    fn dream_skin_preserves_host_body_typography() {
+        let css = concat!(
+            "html.codex-dream-skin body {\n",
+            "  color: white;\n",
+            "  font-family: Example, sans-serif !important;\n",
+            "}\n",
+            "html.codex-dream-skin button {\n",
+            "  font-family: inherit !important;\n",
+            "}\n",
+        );
+
+        let preserved = preserve_host_typography(css);
+
+        assert!(!preserved.contains("font-family: Example"));
+        assert!(preserved.contains("font-family: inherit !important"));
+    }
+
+    #[test]
+    fn bundled_dream_skins_drop_only_the_host_body_font_rule() {
+        for css in [
+            DREAM_TARGET_CSS,
+            CIDALA_TARGET_CSS,
+            CODEX_SNOW_CSS,
+            GLASS_VISION_CSS,
+        ] {
+            let preserved = preserve_host_typography(css);
+
+            assert_eq!(css.lines().count(), preserved.lines().count() + 1);
+        }
+    }
+
+    #[test]
+    fn dream_skin_runtime_signature_matches_the_filtered_payload() {
+        let settings = BackendSettings {
+            codex_app_dream_skin_enabled: true,
+            ..BackendSettings::default()
+        };
+        let signature = dream_skin_runtime_content_signature(&settings);
+        let script = dream_skin_live_update_script(&settings, false);
+
+        assert!(script.contains(&serde_json::to_string(&signature).unwrap()));
     }
 
     #[test]
