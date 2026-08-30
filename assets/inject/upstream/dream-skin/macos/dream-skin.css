@@ -1189,11 +1189,21 @@ html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]):has(
   :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"], [data-composer-surface-variant][data-composer-radius-variant]) {
   border: 0 !important;
   border-radius: 0 0 22px 22px !important;
+  overflow: hidden !important;
   box-shadow:
     0 10px 28px rgb(var(--ds-bg-rgb) / .24),
     inset 1px 0 rgb(var(--ds-muted-rgb) / .18),
     inset -1px 0 rgb(var(--ds-muted-rgb) / .18),
     inset 0 -1px rgb(var(--ds-muted-rgb) / .18) !important;
+}
+
+/* Windows can paint native ComposerLayoutRoot children beyond the rounded
+   edge when the Home composer keeps its default overflow: visible. Clip only
+   the Home surface so task-route popovers retain their native escape area. */
+html[data-dream-skin="active"]
+  :is([data-ds-part="home"], [role="main"]:has([data-testid="home-icon"]))
+  :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"], [data-composer-surface-variant][data-composer-radius-variant]) {
+  overflow: hidden !important;
 }
 
 html[data-dream-skin="active"][data-dream-art-wide="true"] :is([class*="_homeUtilityBar_"], [class*="_ComposerHomeUtilityBar_"]) {
