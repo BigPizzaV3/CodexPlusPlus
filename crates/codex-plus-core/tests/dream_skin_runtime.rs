@@ -120,10 +120,61 @@ fn verification_accepts_target_project_live_contract() {
 }
 
 #[test]
-fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
+fn bundled_skin_runtimes_cover_the_current_selector_contract() {
     for relative_path in [
         "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
         "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative_path);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"));
+        assert!(
+            source.contains("codex-dream-skin-selectors/1"),
+            "missing selector contract in {relative_path}"
+        );
+        assert!(
+            source.contains("_MainContentSurface_"),
+            "missing modular main surface in {relative_path}"
+        );
+        assert!(
+            source.contains("_ComposerLayoutRoot_"),
+            "missing modern composer root in {relative_path}"
+        );
+        assert!(
+            source.contains("data-ds-part"),
+            "missing public theme part bridge in {relative_path}"
+        );
+    }
+
+    for relative_path in [
+        "assets/inject/upstream/dream-skin/windows/dream-skin.css",
+        "assets/inject/upstream/dream-skin/macos/dream-skin.css",
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative_path);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"));
+        assert!(
+            source.contains("_MainContentTopFade_"),
+            "missing modular top fade in {relative_path}"
+        );
+        assert!(
+            source.contains("_ComposerLayoutBody_"),
+            "missing modern composer body in {relative_path}"
+        );
+        assert!(
+            source.contains("data-markdown-table=\"true\""),
+            "missing modern markdown table contract in {relative_path}"
+        );
+    }
+}
+
+#[test]
+fn other_bundled_skin_runtimes_keep_their_existing_layout_contract() {
+    for relative_path in [
         "assets/inject/upstream/cidala-tiger/windows/renderer-inject.js",
         "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
         "assets/inject/upstream/snow-skin/renderer-inject.js",
@@ -144,8 +195,6 @@ fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
     }
 
     for relative_path in [
-        "assets/inject/upstream/dream-skin/windows/dream-skin.css",
-        "assets/inject/upstream/dream-skin/macos/dream-skin.css",
         "assets/inject/upstream/cidala-tiger/windows/dream-skin.css",
         "assets/inject/upstream/cidala-tiger/macos/dream-skin.css",
         "assets/inject/upstream/snow-skin/dream-skin.css",
