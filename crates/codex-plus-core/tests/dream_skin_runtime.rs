@@ -177,7 +177,7 @@ fn bundled_skin_runtimes_cover_the_current_selector_contract() {
 fn verification_accepts_modern_adopted_runtime_without_decorative_chrome() {
     let result = parse_renderer_verification(serde_json::json!({
         "installed": true,
-        "version": "codex-plus:windows:dream-skin:r22-upstream-26.825-surfaces",
+        "version": "codex-plus:windows:dream-skin:r23-home-composer-clipping",
         "stylePresent": true,
         "chromePresent": false,
         "chromePointerEvents": null,
