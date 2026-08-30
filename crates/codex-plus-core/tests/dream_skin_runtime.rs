@@ -1,6 +1,7 @@
 use codex_plus_core::dream_skin_runtime::{
     DreamSkinRuntimeStatus, DreamSkinState, apply_dream_skin_live, macos_arch_name,
-    parse_renderer_verification, windows_app_path_matches_registered_root,
+    parse_renderer_verification, renderer_verification_script,
+    windows_app_path_matches_registered_root,
 };
 use std::path::Path;
 
@@ -170,6 +171,47 @@ fn bundled_skin_runtimes_cover_the_current_selector_contract() {
             "missing modern markdown table contract in {relative_path}"
         );
     }
+}
+
+#[test]
+fn verification_accepts_modern_adopted_runtime_without_decorative_chrome() {
+    let result = parse_renderer_verification(serde_json::json!({
+        "installed": true,
+        "version": "codex-plus:windows:dream-skin:r22-upstream-26.825-surfaces",
+        "stylePresent": true,
+        "chromePresent": false,
+        "chromePointerEvents": null,
+        "decorationSafe": true,
+        "homeRoute": false,
+        "homePresent": false,
+        "visibleCardCount": 0,
+        "projectButton": null,
+        "composer": { "visible": true },
+        "sidebar": { "visible": true },
+        "documentOverflow": { "x": false, "y": false }
+    }))
+    .unwrap();
+
+    assert_eq!(result.state, DreamSkinState::Pass);
+    assert!(result.pass);
+    assert!(
+        result
+            .checks
+            .iter()
+            .any(|check| check.id == "chrome" && check.level.as_str() == "pass")
+    );
+}
+
+#[test]
+fn verifier_queries_the_modern_dream_skin_contract() {
+    let script = renderer_verification_script();
+
+    assert!(script.contains("data-dream-skin"));
+    assert!(script.contains("data-ds-part=\"home\""));
+    assert!(script.contains("data-ds-part=\"composer\""));
+    assert!(script.contains("_ComposerLayoutRoot_"));
+    assert!(script.contains("adoptedStyleSheets"));
+    assert!(script.contains("decorationSafe"));
 }
 
 #[test]

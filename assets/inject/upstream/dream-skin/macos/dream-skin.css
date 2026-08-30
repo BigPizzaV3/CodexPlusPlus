@@ -542,6 +542,13 @@ html[data-dream-skin="active"] main:is(.main-surface, [data-app-shell-main-surfa
   backdrop-filter: blur(14px) saturate(108%) !important;
 }
 
+/* Codex 26.825 paints each header toolbar group with the native surface token.
+   Let the themed header remain the single continuous surface. */
+html[data-dream-skin="active"] main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"]) > header:is(.app-header-tint, [data-app-shell-header-edge-scroll], [class*="_Header_"])
+  [class*="_Toolbar_"] > * {
+  background-color: transparent !important;
+}
+
 /* Decorative chrome lives on the native shell; no injected positioning host is needed. */
 html[data-dream-skin="active"]
   main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"]):not(:has([role="main"])) > header:is(.app-header-tint, [data-app-shell-header-edge-scroll], [class*="_Header_"])::before {
@@ -930,12 +937,20 @@ html[data-dream-skin="active"] [data-codex-composer-root][data-composer-placemen
    Match its surface to the public composer without affecting task routes. */
 html[data-dream-skin="active"] [data-codex-composer-root][data-composer-placement="home"]
   [data-composer-home-utility-bar-position="above"] {
+  box-sizing: border-box;
+  width: 100% !important;
+  margin-inline: 0 !important;
   background: rgb(var(--ds-panel-rgb) / .94) !important;
   border: 1px solid rgb(var(--ds-muted-rgb) / .18) !important;
   border-bottom: 0 !important;
   border-radius: 22px 22px 0 0 !important;
   box-shadow: 0 10px 28px rgb(var(--ds-bg-rgb) / .24) !important;
   backdrop-filter: blur(16px) saturate(108%) !important;
+}
+
+html[data-dream-skin="active"] [data-codex-composer-root][data-composer-placement="home"]:has([data-composer-home-utility-bar-position="above"])
+  :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"], [data-composer-surface-variant][data-composer-radius-variant]) {
+  border-radius: 0 0 22px 22px !important;
 }
 
 /* Newer app shells may no longer expose the selector contract above. The
@@ -1263,6 +1278,13 @@ html[data-dream-skin="active"] [data-markdown-text-style]
   min-width: 0 !important;
   overflow-x: auto !important;
   overflow-y: hidden !important;
+}
+
+/* Codex 26.825 moved code-block actions into a sticky native surface. Keep the
+   language label and actions within the same palette as the code container. */
+html[data-dream-skin="active"] [class*="_CodeBlock_"] [class*="_StickyActionBar_"] {
+  background: rgb(var(--ds-panel-rgb) / .72) !important;
+  border-bottom: 1px solid rgb(var(--ds-muted-rgb) / .14) !important;
 }
 
 /* Streaming reasoning is not yet inside the final assistant message. Give it
