@@ -12,6 +12,7 @@ export type RelayModelRouteProfile = {
   protocol: "responses" | "chatCompletions";
   relayMode: "official" | "mixedApi" | "pureApi" | "aggregate";
   officialMixApiKey: boolean;
+  noAuth?: boolean;
   modelRoutes?: RelayModelRoute[];
 };
 
@@ -23,6 +24,7 @@ export type RelayModelRouteSettings = {
 };
 
 export const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
+export const NO_AUTH_PROXY_BEARER_TOKEN = "codex-plus-no-auth";
 
 export type RelayModelRouteIssue = {
   kind: "incomplete" | "duplicate" | "self" | "missingTarget" | "aggregateTarget" | "targetProtocol" | "targetCredentials";
@@ -59,7 +61,10 @@ export function findRelayModelRouteIssue(
       if (target.protocol !== "responses") return { kind: "targetProtocol", model, sourceRelayId: source.id };
       const targetHasApiCredentials =
         !(target.relayMode === "official" && !target.officialMixApiKey)
-        && Boolean(target.baseUrl.trim() && target.apiKey.trim());
+        && Boolean(
+          target.baseUrl.trim()
+          && (target.apiKey.trim() || (target.relayMode === "pureApi" && target.noAuth)),
+        );
       if (!targetHasApiCredentials) return { kind: "targetCredentials", model, sourceRelayId: source.id };
     }
   }
@@ -73,6 +78,7 @@ export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): b
   if (!active) return false;
   return active.relayMode === "aggregate"
     || active.protocol === "chatCompletions"
+    || (active.relayMode === "pureApi" && active.noAuth === true)
     || (active.relayMode === "official" && active.officialMixApiKey)
     || normalizeRelayModelRoutes(active.modelRoutes).some(
       (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
@@ -85,23 +91,10 @@ export function modelRouteSaveRequiresRestart(
   activeLiveBaseUrl: string,
 ): boolean {
   if (!proposed.relayProfilesEnabled) return false;
-  const active = proposed.relayProfiles.find((profile) => profile.id === proposed.activeRelayId)
-    ?? proposed.relayProfiles[0];
-  const activeHasRoutes = active
-    ? normalizeRelayModelRoutes(active.modelRoutes).some(
-      (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
-    )
-    : false;
-  if (!activeHasRoutes) return false;
-  const currentActive = current.relayProfiles.find((profile) => profile.id === current.activeRelayId)
-    ?? current.relayProfiles[0];
-  const currentActiveHasRoutes = currentActive
-    ? normalizeRelayModelRoutes(currentActive.modelRoutes).some(
-      (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
-    )
-    : false;
+  if (!settingsRequireLocalHelper(proposed)) return false;
+  const currentRequiresHelper = settingsRequireLocalHelper(current);
   // Persisted enhancement/protocol settings do not prove the already-running helper is healthy.
-  // The first active route therefore always uses the restart transaction.
-  if (!currentActiveHasRoutes) return true;
+  // The first helper-dependent configuration therefore always uses the restart transaction.
+  if (!currentRequiresHelper) return true;
   return activeLiveBaseUrl.trim() !== PROTOCOL_PROXY_BASE_URL;
 }

@@ -13,6 +13,7 @@ use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
+pub const NO_AUTH_PROXY_BEARER_TOKEN: &str = "codex-plus-no-auth";
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
@@ -624,7 +625,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     original_user_agent,
                 ))?,
                 &endpoint,
-                relay.api_key.trim(),
+                &relay,
                 is_stream,
                 &upstream_body,
             ),
@@ -781,15 +782,12 @@ pub async fn open_models_proxy_request(
             "wireApi": UpstreamWireApi::Responses
         }),
     );
-    let upstream = send_upstream_request(
-        crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?
-        .get(endpoint)
-        .bearer_auth(relay.api_key.trim()),
-    )
-    .await?;
+    let request = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?
+    .get(endpoint);
+    let upstream = send_upstream_request(with_relay_auth(request, &relay)).await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
@@ -831,17 +829,14 @@ pub async fn open_audio_transcriptions_proxy_request(
             "bodyBytes": body.len()
         }),
     );
-    let upstream = send_upstream_request(
-        crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?
-        .post(endpoint)
-        .bearer_auth(relay.api_key.trim())
-        .header(reqwest::header::CONTENT_TYPE, content_type)
-        .body(body.to_vec()),
-    )
-    .await?;
+    let request = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?
+    .post(endpoint)
+    .header(reqwest::header::CONTENT_TYPE, content_type)
+    .body(body.to_vec());
+    let upstream = send_upstream_request(with_relay_auth(request, &relay)).await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
@@ -879,7 +874,7 @@ pub async fn open_chat_completions_proxy_request(
     if relay.base_url.trim().is_empty() {
         anyhow::bail!("Chat Completions 上游 Base URL 不能为空");
     }
-    if relay.api_key.trim().is_empty() {
+    if relay.api_key.trim().is_empty() && !relay.uses_no_auth() {
         anyhow::bail!("Chat Completions 上游 Key 不能为空");
     }
 
@@ -888,16 +883,14 @@ pub async fn open_chat_completions_proxy_request(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let upstream = crate::http_client::proxied_client(&effective_user_agent(
+    let request = crate::http_client::proxied_client(&effective_user_agent(
         &relay.user_agent,
         original_user_agent,
     ))?
     .post(chat_completions_url(&relay.base_url))
-    .bearer_auth(relay.api_key.trim())
     .header(reqwest::header::CONTENT_TYPE, "application/json")
-    .json(&request_json)
-    .send()
-    .await?;
+    .json(&request_json);
+    let upstream = with_relay_auth(request, &relay).send().await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
@@ -1004,14 +997,14 @@ async fn upstream_request_parts(
 fn upstream_request_builder(
     client: reqwest::Client,
     endpoint: &str,
-    api_key: &str,
+    relay: &crate::settings::RelayProfile,
     is_stream: bool,
     upstream_body: &Value,
 ) -> reqwest::RequestBuilder {
     let mut builder = client
         .post(endpoint)
-        .bearer_auth(api_key)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    builder = with_relay_auth(builder, relay);
     if is_stream {
         builder = builder
             .header(reqwest::header::ACCEPT, "text/event-stream")
@@ -1024,10 +1017,21 @@ fn validate_upstream(relay: &crate::settings::RelayProfile) -> anyhow::Result<()
     if relay.base_url.trim().is_empty() {
         anyhow::bail!("上游 Base URL 不能为空");
     }
-    if relay.api_key.trim().is_empty() {
+    if relay.api_key.trim().is_empty() && !relay.uses_no_auth() {
         anyhow::bail!("上游 Key 不能为空");
     }
     Ok(())
+}
+
+fn with_relay_auth(
+    request: reqwest::RequestBuilder,
+    relay: &crate::settings::RelayProfile,
+) -> reqwest::RequestBuilder {
+    if relay.uses_no_auth() {
+        request
+    } else {
+        request.bearer_auth(relay.api_key.trim())
+    }
 }
 
 fn conversation_id_from_responses_request(body: &Value) -> Option<String> {

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use rusqlite::Connection;
 use serde_json::Value;
 
@@ -18,6 +18,14 @@ pub struct CcsProviderImport {
     pub auth_contents: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CcsProviderSource {
+    pub configured_db_path: String,
+    pub db_path: PathBuf,
+    pub fallback_reason: Option<String>,
+    pub providers: Vec<CcsProviderImport>,
+}
+
 pub fn default_ccs_db_path() -> PathBuf {
     home_dir()
         .join(format!(".{}-{}", "cc", "switch"))
@@ -26,6 +34,59 @@ pub fn default_ccs_db_path() -> PathBuf {
 
 pub fn list_codex_providers_from_default_db() -> anyhow::Result<Vec<CcsProviderImport>> {
     list_codex_providers_from_db(&default_ccs_db_path())
+}
+
+pub fn resolve_codex_provider_source(
+    configured_db_path: &str,
+) -> anyhow::Result<CcsProviderSource> {
+    resolve_codex_provider_source_with_default(configured_db_path, default_ccs_db_path())
+}
+
+fn resolve_codex_provider_source_with_default(
+    configured_db_path: &str,
+    default_db_path: PathBuf,
+) -> anyhow::Result<CcsProviderSource> {
+    let configured_db_path = configured_db_path.trim().to_string();
+    if configured_db_path.is_empty() {
+        let providers = list_codex_providers_from_db(&default_db_path)?;
+        return Ok(CcsProviderSource {
+            configured_db_path,
+            db_path: default_db_path,
+            fallback_reason: None,
+            providers,
+        });
+    }
+
+    let custom_db_path = PathBuf::from(&configured_db_path);
+    let custom_result = if custom_db_path.exists() {
+        list_codex_providers_from_db(&custom_db_path)
+    } else {
+        Err(anyhow!("自定义数据库不存在：{}", custom_db_path.display()))
+    };
+    match custom_result {
+        Ok(providers) => Ok(CcsProviderSource {
+            configured_db_path,
+            db_path: custom_db_path,
+            fallback_reason: None,
+            providers,
+        }),
+        Err(custom_error) => {
+            let providers = list_codex_providers_from_db(&default_db_path).with_context(|| {
+                format!(
+                    "自定义数据库不可用（{custom_error}），默认数据库 {} 也无法读取",
+                    default_db_path.display()
+                )
+            })?;
+            Ok(CcsProviderSource {
+                configured_db_path,
+                db_path: default_db_path,
+                fallback_reason: Some(format!(
+                    "自定义数据库不可用（{custom_error}），已回退默认数据库。"
+                )),
+                providers,
+            })
+        }
+    }
 }
 
 pub fn list_codex_providers_from_db(path: &Path) -> anyhow::Result<Vec<CcsProviderImport>> {
@@ -88,6 +149,7 @@ pub fn relay_profile_from_ccs(
         protocol: provider.protocol,
         relay_mode: RelayMode::PureApi,
         official_mix_api_key: false,
+        no_auth: false,
         hide_official_usage_alert: false,
         test_model: String::new(),
         config_contents: provider.config_contents.clone(),
@@ -420,5 +482,79 @@ mod tests {
         assert_eq!(providers[0].base_url, "https://relay.example/v1");
         assert_eq!(providers[0].api_key, "key-2");
         assert_eq!(providers[0].protocol, RelayProtocol::Responses);
+    }
+
+    #[test]
+    fn resolved_source_prefers_a_valid_custom_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("custom.db");
+        let default = dir.path().join("default.db");
+        create_ccs_db(&custom);
+        create_ccs_db(&default);
+        insert_provider(
+            &custom,
+            "custom",
+            "Custom",
+            json!({ "base_url": "https://custom.example/v1" }),
+            1,
+        );
+
+        let source =
+            resolve_codex_provider_source_with_default(&custom.to_string_lossy(), default.clone())
+                .unwrap();
+
+        assert_eq!(source.db_path, custom);
+        assert_eq!(source.fallback_reason, None);
+        assert_eq!(source.providers[0].name, "Custom");
+    }
+
+    #[test]
+    fn resolved_source_falls_back_when_custom_database_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("missing.db");
+        let default = dir.path().join("default.db");
+        create_ccs_db(&default);
+        insert_provider(
+            &default,
+            "default",
+            "Default",
+            json!({ "base_url": "https://default.example/v1" }),
+            1,
+        );
+
+        let source =
+            resolve_codex_provider_source_with_default(&custom.to_string_lossy(), default.clone())
+                .unwrap();
+
+        assert_eq!(source.configured_db_path, custom.to_string_lossy());
+        assert_eq!(source.db_path, default);
+        assert!(
+            source
+                .fallback_reason
+                .as_deref()
+                .unwrap()
+                .contains("不存在")
+        );
+        assert_eq!(source.providers[0].name, "Default");
+    }
+
+    #[test]
+    fn resolved_source_falls_back_when_custom_schema_is_incompatible() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("custom.db");
+        let default = dir.path().join("default.db");
+        Connection::open(&custom)
+            .unwrap()
+            .execute("CREATE TABLE unrelated (id TEXT)", [])
+            .unwrap();
+        create_ccs_db(&default);
+
+        let source =
+            resolve_codex_provider_source_with_default(&custom.to_string_lossy(), default.clone())
+                .unwrap();
+
+        assert_eq!(source.db_path, default);
+        assert!(source.fallback_reason.is_some());
+        assert!(source.providers.is_empty());
     }
 }

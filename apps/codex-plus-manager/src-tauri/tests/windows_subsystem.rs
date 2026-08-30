@@ -234,6 +234,11 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     assert!(app_tsx.contains(
         "buildRelayConfigToml(profile, { includeBearerToken: false, requiresOpenAiAuth: true })"
     ));
+    assert!(
+        app_tsx.contains(
+            "`requires_openai_auth = ${options.requiresOpenAiAuth ? \"true\" : \"false\"}`"
+        )
+    );
     assert!(!commands_rs.contains("缺少独立 auth.json"));
     assert!(commands_rs.contains("backfill_relay_profile_from_live"));
     assert!(commands_rs.contains("apply_relay_profile_to_home_with_switch_rules"));

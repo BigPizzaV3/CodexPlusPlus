@@ -40,6 +40,8 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    #[serde(rename = "noAuth", default)]
+    pub no_auth: bool,
     #[serde(rename = "hideOfficialUsageAlert", default)]
     pub hide_official_usage_alert: bool,
     #[serde(rename = "testModel", default)]
@@ -169,6 +171,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
             config_contents: String::new(),
@@ -192,6 +195,10 @@ impl Default for RelayProfile {
 }
 
 impl RelayProfile {
+    pub fn uses_no_auth(&self) -> bool {
+        self.relay_mode == RelayMode::PureApi && self.no_auth
+    }
+
     pub fn has_model_routes(&self) -> bool {
         self.model_routes
             .iter()
@@ -360,6 +367,8 @@ pub struct BackendSettings {
     pub provider_sync_manual_providers: Vec<String>,
     #[serde(rename = "providerSyncLastSelectedProvider", default)]
     pub provider_sync_last_selected_provider: String,
+    #[serde(rename = "ccsDbPath", default)]
+    pub ccs_db_path: String,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
@@ -537,6 +546,7 @@ impl Default for BackendSettings {
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
+            ccs_db_path: String::new(),
             relay_profiles_enabled: true,
             enhancements_enabled: true,
             codex_app_plugin_marketplace_unlock: true,
@@ -628,6 +638,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                no_auth: false,
                 hide_official_usage_alert: false,
                 test_model: String::new(),
                 config_contents: String::new(),
@@ -679,6 +690,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
             config_contents: String::new(),
@@ -751,6 +763,7 @@ impl BackendSettings {
         self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
             || self.active_relay_profile().has_model_routes()
+            || self.active_relay_profile().uses_no_auth()
             || self.active_relay_session_provider() == RelaySessionProvider::Openai
     }
 }
@@ -1162,6 +1175,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
     }
+    if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
+        target.insert(
+            "ccsDbPath".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
     }
@@ -1535,6 +1554,7 @@ fn settings_to_object(settings: &BackendSettings) -> Map<String, Value> {
 }
 
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
+    settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     let (common, extracted_context) =
         split_context_config_sections(&settings.relay_common_config_contents);
     let context = join_config_sections(&[
@@ -1907,6 +1927,21 @@ mod tests {
         assert!(profile.model_list.is_empty());
         assert!(profile.model_routes.is_empty());
         assert!(!profile.has_model_routes());
+    }
+
+    #[test]
+    fn no_auth_relay_requires_protocol_proxy() {
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                relay_mode: RelayMode::PureApi,
+                no_auth: true,
+                base_url: "https://relay.example.test/v1".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        assert!(settings.active_relay_uses_protocol_proxy());
     }
 
     #[test]
@@ -2285,6 +2320,7 @@ experimental_bearer_token = "sk-existing""#
         let settings = BackendSettings {
             provider_sync_enabled: true,
             codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
+            ccs_db_path: dir.join("cc-switch.db").to_string_lossy().to_string(),
             ..BackendSettings::default()
         };
 

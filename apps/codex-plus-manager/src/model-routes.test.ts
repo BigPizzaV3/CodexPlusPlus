@@ -79,6 +79,18 @@ test("saving a route target validates every reverse reference against the propos
     "targetCredentials",
   );
   assert.equal(
+    findRelayModelRouteIssue([
+      source,
+    ], [source, profile("target", { apiKey: "", noAuth: true })]),
+    null,
+  );
+  assert.equal(
+    findRelayModelRouteIssue([
+      source,
+    ], [source, profile("target", { relayMode: "mixedApi", apiKey: "", noAuth: true })])?.kind,
+    "targetCredentials",
+  );
+  assert.equal(
     findRelayModelRouteIssue([source], [source, profile("target", {
       relayMode: "official",
       officialMixApiKey: false,
@@ -100,6 +112,16 @@ test("the first active model route transitions from no helper to a required help
       target,
     ],
   };
+
+  assert.equal(settingsRequireLocalHelper(before), false);
+  assert.equal(settingsRequireLocalHelper(after), true);
+  assert.equal(modelRouteSaveRequiresRestart(before, after, source.baseUrl), true);
+});
+
+test("enabling no-auth upstream restarts into the local helper", () => {
+  const source = profile("source");
+  const before = settings([source]);
+  const after = settings([profile("source", { apiKey: "", noAuth: true })]);
 
   assert.equal(settingsRequireLocalHelper(before), false);
   assert.equal(settingsRequireLocalHelper(after), true);
@@ -133,6 +155,10 @@ test("the first active route restarts conservatively even when settings claim a 
     true,
   );
   assert.equal(settingsRequireLocalHelper(settings([profile("chat", { protocol: "chatCompletions" })])), true);
+  assert.equal(settingsRequireLocalHelper(settings([profile("no-auth", {
+    apiKey: "",
+    noAuth: true,
+  })])), true);
   assert.equal(settingsRequireLocalHelper(settings([profile("mixed", {
     relayMode: "official",
     officialMixApiKey: true,

@@ -11,6 +11,7 @@ use codex_plus_core::protocol_proxy::{
     send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
     upstream_stream_header_timeout,
 };
+use codex_plus_core::relay_config::test_relay_profile;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
     RelayMode, RelayModelRoute, RelayProfile, RelayProtocol, RelaySessionProvider,
@@ -1814,19 +1815,24 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         .await
         .unwrap();
     let second_addr = second.local_addr().unwrap();
-    let first_server = tokio::spawn(respond_once(
+    let first_server = tokio::spawn(capture_request_and_respond_once(
         first,
         "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 11\r\ncontent-type: application/json\r\n\r\n{\"error\":1}",
     ));
-    let second_server = tokio::spawn(respond_once(
+    let second_server = tokio::spawn(capture_request_and_respond_once(
         second,
         "HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
     ));
-    let settings = aggregate_proxy_settings(
+    let mut settings = aggregate_proxy_settings(
         "failover",
         format!("http://{first_addr}/v1"),
         format!("http://{second_addr}/v1"),
     );
+    for relay in settings.relay_profiles.iter_mut().take(2) {
+        relay.relay_mode = RelayMode::PureApi;
+        relay.no_auth = true;
+        relay.api_key.clear();
+    }
 
     let result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
@@ -1838,8 +1844,18 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
 
     assert_eq!(result.status_code, 200);
     assert_eq!(body.as_ref(), br#"{"id":"resp_1","object":"response"}"#);
-    first_server.await.unwrap();
-    second_server.await.unwrap();
+    let first_request = first_server.await.unwrap();
+    let second_request = second_server.await.unwrap();
+    assert!(
+        !first_request
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
+    assert!(
+        !second_request
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
 }
 
 #[tokio::test]
@@ -1885,6 +1901,33 @@ async fn model_route_uses_target_responses_provider_without_mutating_request() {
             .to_ascii_lowercase()
             .contains("authorization: bearer sk-target")
     );
+    assert_eq!(upstream_body, request);
+}
+
+#[tokio::test]
+async fn model_route_supports_no_auth_target_without_authorization_header() {
+    let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_server = tokio::spawn(capture_json_request_once(target));
+    let request = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hello",
+        "stream": false
+    });
+    let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{target_addr}/v1"));
+    settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+    settings.relay_profiles[1].no_auth = true;
+    settings.relay_profiles[1].api_key.clear();
+
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    let (headers, upstream_body) = target_server.await.unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert!(!headers.to_ascii_lowercase().contains("authorization:"));
     assert_eq!(upstream_body, request);
 }
 
@@ -2098,6 +2141,18 @@ async fn respond_once(listener: tokio::net::TcpListener, response: &'static str)
     let mut buffer = [0; 1024];
     let _ = stream.read(&mut buffer).await.unwrap();
     stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+async fn capture_request_and_respond_once(
+    listener: tokio::net::TcpListener,
+    response: &'static str,
+) -> String {
+    let (mut stream, _) = listener.accept().await.unwrap();
+    let mut buffer = [0; 4096];
+    let read = stream.read(&mut buffer).await.unwrap();
+    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+    stream.write_all(response.as_bytes()).await.unwrap();
+    request
 }
 
 async fn capture_json_request_once(
@@ -2376,6 +2431,67 @@ async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
     assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
 }
 
+#[tokio::test]
+async fn no_auth_proxy_endpoints_omit_authorization_header() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "responses");
+    let upstream = open_responses_proxy_request(
+        r#"{"model":"gpt-5.5","input":"hello","stream":false}"#,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "chatCompletions");
+    let upstream = open_chat_completions_proxy_request(
+        r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}"#,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "responses");
+    let upstream = open_models_proxy_request(None).await.unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+
+    let server = spawn_chat_server();
+    write_no_auth_relay_settings(temp.path(), &server.base_url, "responses");
+    let upstream = open_audio_transcriptions_proxy_request(b"audio", "audio/wav", None)
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    assert_eq!(server.finish().authorization, None);
+}
+
+#[tokio::test]
+async fn no_auth_profile_test_omits_authorization_header() {
+    let server = spawn_chat_server();
+    let profile = RelayProfile {
+        base_url: server.base_url.clone(),
+        upstream_base_url: server.base_url.clone(),
+        relay_mode: RelayMode::PureApi,
+        no_auth: true,
+        api_key: String::new(),
+        ..RelayProfile::default()
+    };
+
+    let result = test_relay_profile(&profile, "gpt-5.5").await.unwrap();
+
+    assert_eq!(result.http_status, 200);
+    assert_eq!(server.finish().authorization, None);
+}
+
 fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &str) {
     let settings = json!({
         "relayProfiles": [{
@@ -2389,6 +2505,27 @@ fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &s
             "userAgent": user_agent
         }],
         "activeRelayId": "chat"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_no_auth_relay_settings(settings_dir: &Path, base_url: &str, protocol: &str) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "no-auth",
+            "name": "No Auth",
+            "baseUrl": base_url,
+            "upstreamBaseUrl": base_url,
+            "apiKey": "",
+            "protocol": protocol,
+            "relayMode": "pureApi",
+            "noAuth": true
+        }],
+        "activeRelayId": "no-auth"
     });
     std::fs::write(
         settings_dir.join("settings.json"),
@@ -2432,6 +2569,7 @@ impl ChatServer {
 
 struct ChatRequest {
     user_agent: String,
+    authorization: Option<String>,
 }
 
 fn spawn_chat_server() -> ChatServer {
@@ -2475,6 +2613,12 @@ fn spawn_chat_server() -> ChatServer {
                 })
             })
             .unwrap_or_default();
+        let authorization = request.lines().find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim().to_string())
+            })
+        });
         let body = r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[]}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -2482,7 +2626,10 @@ fn spawn_chat_server() -> ChatServer {
             body
         );
         stream.write_all(response.as_bytes()).unwrap();
-        ChatRequest { user_agent }
+        ChatRequest {
+            user_agent,
+            authorization,
+        }
     });
     ChatServer { base_url, handle }
 }

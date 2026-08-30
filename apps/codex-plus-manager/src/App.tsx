@@ -89,6 +89,7 @@ import { MCP_PRESETS, mcpPresetById } from "./mcp-presets";
 import {
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
+  NO_AUTH_PROXY_BEARER_TOKEN,
   normalizeRelayModelRoutes,
   PROTOCOL_PROXY_BASE_URL,
   type RelayModelRoute,
@@ -212,6 +213,7 @@ type BackendSettings = {
   providerSyncSavedProviders: string[];
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
+  ccsDbPath: string;
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
@@ -290,6 +292,7 @@ export type RelayProfile = {
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;
   officialMixApiKey: boolean;
+  noAuth: boolean;
   hideOfficialUsageAlert: boolean;
   testModel: string;
   configContents: string;
@@ -651,6 +654,8 @@ type CcsProviderImport = {
 
 type CcsProvidersResult = CommandResult<{
   dbPath: string;
+  configuredDbPath: string;
+  fallbackReason: string | null;
   providers: CcsProviderImport[];
 }>;
 
@@ -1006,6 +1011,7 @@ const defaultSettings: BackendSettings = {
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
+  ccsDbPath: "",
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
   codexAppPluginMarketplaceUnlock: true,
@@ -1071,6 +1077,7 @@ const defaultSettings: BackendSettings = {
       protocol: "responses",
       relayMode: "official",
       officialMixApiKey: false,
+      noAuth: false,
       hideOfficialUsageAlert: false,
       testModel: "",
       configContents: "",
@@ -1478,6 +1485,29 @@ export function App() {
       showResultNotice(t("cc-switch 导入"), result);
       await refreshCcsProviders(true);
     }
+  };
+
+  const chooseCcsDbPath = async () => {
+    let selected: unknown;
+    try {
+      selected = await open({
+        directory: false,
+        multiple: false,
+        title: t("选择 cc-switch 数据库"),
+        filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
+      });
+    } catch (error) {
+      showNotice(t("cc-switch 数据库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
+      return;
+    }
+    if (typeof selected !== "string" || !selected.trim()) return;
+    const saved = await saveSettingsValue({ ...settingsForm, ccsDbPath: selected.trim() }, true);
+    if (saved) await refreshCcsProviders(false);
+  };
+
+  const resetCcsDbPath = async () => {
+    const saved = await saveSettingsValue({ ...settingsForm, ccsDbPath: "" }, true);
+    if (saved) await refreshCcsProviders(false);
   };
 
   const refreshPendingProviderImport = async (silent = true) => {
@@ -3345,6 +3375,8 @@ export function App() {
       removeEnvConflicts,
       refreshCcsProviders,
       importCcsProviders,
+      chooseCcsDbPath,
+      resetCcsDbPath,
       refreshLiveContextEntries,
       syncLiveContextEntries,
       refreshAds,
@@ -3762,6 +3794,8 @@ type Actions = {
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
   importCcsProviders: () => Promise<void>;
+  chooseCcsDbPath: () => Promise<void>;
+  resetCcsDbPath: () => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;
@@ -4974,6 +5008,30 @@ function RelayScreen({
                     <span>{ccsProviderSummary(ccsProviders)}</span>
                   </button>
                   <button
+                    className="third-party-import-action"
+                    onClick={() => {
+                      setThirdPartyImportOpen(false);
+                      void actions.chooseCcsDbPath();
+                    }}
+                    type="button"
+                  >
+                    <FileCode2 className="h-4 w-4" />
+                    {t("选择 cc-switch 数据库")}
+                  </button>
+                  <button
+                    className="third-party-import-action"
+                    disabled={!normalized.ccsDbPath}
+                    onClick={() => {
+                      setThirdPartyImportOpen(false);
+                      void actions.resetCcsDbPath();
+                    }}
+                    type="button"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    {t("恢复默认数据库")}
+                  </button>
+                  <button
+                    className="third-party-import-action"
                     onClick={() => void actions.refreshCcsProviders()}
                     type="button"
                   >
@@ -7859,7 +7917,7 @@ function RelayProfileDetail({
       next,
       activeLiveBaseUrl,
     );
-    if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
+    if (requiresRestart && !window.confirm(t("此配置需要启动本地协议代理。保存后将立即重启 Codex，使配置生效。是否继续？"))) {
       return;
     }
     const savedSettings = await onFormChange(next);
@@ -8247,7 +8305,11 @@ function RelayProfileEditor({
           <AppSelect
             value={profile.relayMode}
             onChange={(relayMode) => {
-              updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
+              updateDraft({
+                relayMode,
+                officialMixApiKey: relayMode === "official" ? false : profile.officialMixApiKey,
+                noAuth: relayMode === "pureApi" ? profile.noAuth : false,
+              });
             }}
             options={[
               { value: "official", label: t("官方登录") },
@@ -8265,6 +8327,25 @@ function RelayProfileEditor({
             <span>
               <strong>{t("关闭官方低额度提示")}</strong>
               <small>{t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+        ) : null}
+        {profile.relayMode === "pureApi" ? (
+          <label className="switch-row compact relay-switch-row relay-field-no-auth">
+            <input
+              checked={profile.noAuth}
+              onChange={(event) => updateDraft({
+                noAuth: event.currentTarget.checked,
+                apiKey: event.currentTarget.checked ? "" : profile.apiKey,
+                sub2apiEnabled: event.currentTarget.checked ? false : profile.sub2apiEnabled,
+                sub2apiMultiplier: event.currentTarget.checked ? "" : profile.sub2apiMultiplier,
+              })}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("无需认证")}</strong>
+              <small>{t("仅用于可信的本地或内网上游。请勿将无认证服务暴露到公网，任何能访问该地址的人都可调用模型。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -8294,10 +8375,11 @@ function RelayProfileEditor({
             </Field>
             <Field className="relay-field-key" label="Key">
               <Input
+                disabled={profile.noAuth}
                 type="password"
                 value={profile.apiKey}
                 onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
-                placeholder={t("输入中转服务的 API Key")}
+                placeholder={profile.noAuth ? t("无需认证时不发送 Authorization") : t("输入中转服务的 API Key")}
               />
             </Field>
             <Field className="relay-field-protocol" label={t("上游协议")}>
@@ -8472,7 +8554,7 @@ function RelayProfileEditor({
           <ToggleVisual />
         </label>
         {/* 开关旁边还挂着一个按钮，所以整行用 div：button 套在 label 里点了会误触开关 */}
-        {showApiFields ? (
+        {showApiFields && !profile.noAuth ? (
           <div className="relay-switch-row relay-field-sub2api">
             <div className="relay-switch-copy">
               <strong>{t("尝试从sub2api获取倍率显示")}</strong>
@@ -11238,6 +11320,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             relayMode: "official" as RelayMode,
             sessionProvider: "custom" as RelaySessionProvider,
             officialMixApiKey: false,
+            noAuth: false,
             hideOfficialUsageAlert: false,
             testModel: "",
             configContents: "",
@@ -11262,6 +11345,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    ccsDbPath: (settings.ccsDbPath || "").trim(),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
@@ -11321,6 +11405,7 @@ function normalizeRelayProfile(profile: RelayProfile): RelayProfile {
         relayMode: "aggregate",
         sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
         officialMixApiKey: false,
+        noAuth: false,
         hideOfficialUsageAlert: false,
         testModel: profile.testModel || "",
         configContents: "",
@@ -11339,16 +11424,18 @@ function normalizeRelayProfile(profile: RelayProfile): RelayProfile {
   }
   const relayMode = normalizeRelayMode(profile.relayMode);
   const officialMixApiKey = profile.officialMixApiKey === true || legacyMixedApi;
+  const noAuth = relayMode === "pureApi" && profile.noAuth === true;
   let normalized: RelayProfile = {
     ...profile,
     model: profile.model || "",
     baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
-    apiKey: profile.apiKey || "",
+    apiKey: noAuth ? "" : profile.apiKey || "",
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
     relayMode,
     sessionProvider: relaySessionProvider(profile),
     officialMixApiKey,
+    noAuth,
     hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
     testModel: profile.testModel || "",
     configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
@@ -11360,8 +11447,8 @@ function normalizeRelayProfile(profile: RelayProfile): RelayProfile {
     modelWindows: profile.modelWindows || "",
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
-    sub2apiEnabled: profile.sub2apiEnabled === true,
-    sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
+    sub2apiEnabled: noAuth ? false : profile.sub2apiEnabled === true,
+    sub2apiMultiplier: !noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     aggregate: null,
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
@@ -11400,7 +11487,8 @@ function ccsProviderSummary(result: CcsProvidersResult | null): string {
   if (!result) return t("读取 ~/.cc-switch/cc-switch.db");
   if (!isSuccessStatus(result.status)) return result.message || t("读取 cc-switch 供应商失败。");
   const count = result.providers.length;
-  return count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
+  const summary = count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
+  return result.fallbackReason ? `${summary}；${result.fallbackReason}` : summary;
 }
 
 function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
@@ -11457,7 +11545,7 @@ function relayProfileConfigBrief(profile: RelayProfile): string {
     return tf("{0} · {1} 个成员", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
   }
   if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
-  return profile.baseUrl || t("未填写 URL");
+  return profile.noAuth ? `${profile.baseUrl || t("未填写 URL")} · ${t("无需认证")}` : profile.baseUrl || t("未填写 URL");
 }
 
 function relaySub2ApiMultiplierLabel(profile: RelayProfile): string {
@@ -11483,7 +11571,9 @@ function relayProfileModeHelp(profile: RelayProfile): string {
     return t("此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。");
   }
   if (profile.relayMode === "pureApi") {
-    return t("此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。");
+    return profile.noAuth
+      ? t("此供应商会通过本地协议代理连接上游，Codex 侧保持认证模式，但不会向上游发送 Authorization。")
+      : t("此供应商会同时写入 config.toml 和 auth.json；API Key 保存在 auth.json 中。");
   }
   return t("此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。");
 }
@@ -11506,9 +11596,11 @@ function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | n
       : t("当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。");
   }
   const hasFiles = profile.configContents.trim() && profile.authContents.trim();
-  if (!hasFiles) return t("当前供应商还没有完整 config.toml / API Key 存档。");
-  if (relay && !relay.configured) return t("纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。");
-  return t("纯 API 就绪：会同时写入 config.toml 和 auth.json。");
+  if (!hasFiles) return t("当前供应商还没有完整 config.toml / auth.json 存档。");
+  if (relay && !relay.configured) return t("纯 API 配置未完整写入：请检查 config.toml 是否包含 model_provider / provider / base_url，以及认证设置是否匹配上游。");
+  return profile.noAuth
+    ? t("纯 API 就绪：上游请求不发送 Authorization。")
+    : t("纯 API 就绪：会同时写入 config.toml 和 auth.json。");
 }
 
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
@@ -11530,20 +11622,23 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
         ? buildRelayConfigToml(profile, { includeBearerToken: true, requiresOpenAiAuth: true })
         : "",
       authContents: profile.authContents || "",
+      noAuth: false,
     };
   }
   return {
     ...profile,
     configContents: buildRelayConfigToml(profile, { includeBearerToken: false, requiresOpenAiAuth: true }),
-    authContents: buildRelayAuthJson(profile),
+    authContents: profile.noAuth ? removeAuthOpenAiApiKey(profile.authContents) : buildRelayAuthJson(profile),
   };
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider">,
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "noAuth">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+  const baseUrl = profile.protocol === "chatCompletions" || profile.noAuth
+    ? PROTOCOL_PROXY_BASE_URL
+    : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const rootLines = [
@@ -11557,15 +11652,31 @@ function buildRelayConfigToml(
     "[model_providers.custom]",
     'name = "custom"',
     'wire_api = "responses"',
-    options.requiresOpenAiAuth ? "requires_openai_auth = true" : null,
+    options.requiresOpenAiAuth === undefined ? null : `requires_openai_auth = ${options.requiresOpenAiAuth ? "true" : "false"}`,
     `base_url = "${tomlString(baseUrl)}"`,
-    options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
+    profile.noAuth
+      ? `experimental_bearer_token = "${NO_AUTH_PROXY_BEARER_TOKEN}"`
+      : options.includeBearerToken && apiKey
+        ? `experimental_bearer_token = "${tomlString(apiKey)}"`
+        : null,
     "",
   ].filter((line): line is string => line !== null).join("\n");
 }
 
 function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
   return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
+}
+
+function removeAuthOpenAiApiKey(contents: string): string {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(contents || "{}");
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+  delete parsed.OPENAI_API_KEY;
+  return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
 function buildOfficialRelayAuthJson(contents: string): string {
@@ -11593,6 +11704,7 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
   const configModel = codexModelFromConfig(configContents);
+  const noAuth = profile.relayMode === "pureApi" && profile.noAuth === true;
   // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
   // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
   const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
@@ -11602,9 +11714,12 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
     sessionProvider: relaySessionProviderFromConfig(configContents),
     baseUrl: upstreamBaseUrl,
     upstreamBaseUrl,
-    apiKey: profile.relayMode === "official"
-      ? configApiKey || profile.apiKey || ""
-      : codexApiKeyFromAuth(authContents) || configApiKey || "",
+    apiKey: noAuth
+      ? ""
+      : profile.relayMode === "official"
+        ? configApiKey || profile.apiKey || ""
+        : codexApiKeyFromAuth(authContents) || configApiKey || "",
+    noAuth,
     contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
     autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
     configContents,
@@ -11620,6 +11735,12 @@ function applyRelayProfilePatchToFiles(
   let next: RelayProfile = { ...profile, ...patch };
   if (isAggregateRelayProfile(next)) {
     return normalizeAggregateRelayProfile(next, null);
+  }
+  next.noAuth = next.relayMode === "pureApi" && next.noAuth === true;
+  if (next.noAuth) {
+    next.apiKey = "";
+    next.sub2apiEnabled = false;
+    next.sub2apiMultiplier = "";
   }
   const shouldHaveFiles =
     next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim() || next.authContents.trim();
@@ -11642,12 +11763,37 @@ function applyRelayProfilePatchToFiles(
     next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
   }
   if ("apiKey" in patch) {
-    if (next.relayMode === "pureApi") {
+    if (next.noAuth) {
+      next.authContents = removeAuthOpenAiApiKey(next.authContents);
+      next.configContents = setCodexExperimentalBearerToken(next.configContents, NO_AUTH_PROXY_BEARER_TOKEN);
+    } else if (next.relayMode === "pureApi") {
       next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
       next.configContents = removeCodexExperimentalBearerToken(next.configContents);
     } else {
       next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
     }
+  }
+  if ("noAuth" in patch || "relayMode" in patch) {
+    const sessionProvider = rootTomlStringValue(next.configContents, "model_provider") || "custom";
+    const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
+    next.configContents = setTomlSectionBoolKey(
+      next.configContents,
+      `model_providers.${provider}`,
+      "requires_openai_auth",
+      true,
+    );
+    if (next.noAuth) {
+      next.configContents = setCodexExperimentalBearerToken(next.configContents, NO_AUTH_PROXY_BEARER_TOKEN);
+      next.authContents = removeAuthOpenAiApiKey(next.authContents);
+    }
+    const baseUrlForConfig = next.protocol === "chatCompletions"
+      || next.noAuth
+      || normalizeRelayModelRoutes(next.modelRoutes).length > 0
+      ? PROTOCOL_PROXY_BASE_URL
+      : next.upstreamBaseUrl || next.baseUrl;
+    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
+      requiresOpenAiAuth: next.relayMode !== "pureApi" || next.noAuth,
+    });
   }
   if ("baseUrl" in patch) {
     next.upstreamBaseUrl = patch.baseUrl || "";
@@ -11656,11 +11802,11 @@ function applyRelayProfilePatchToFiles(
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
   if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch) {
-    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0
+    const baseUrlForConfig = next.protocol === "chatCompletions" || next.noAuth || normalizeRelayModelRoutes(next.modelRoutes).length > 0
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
-      requiresOpenAiAuth: next.relayMode !== "pureApi",
+      requiresOpenAiAuth: next.relayMode !== "pureApi" || next.noAuth,
     });
     next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   }
@@ -12018,7 +12164,7 @@ function relayModelRouteIssueMessage(issue: ReturnType<typeof findRelayModelRout
     case "targetProtocol":
       return tf("模型「{0}」的目标供应商必须使用 Responses API。", [issue.model]);
     case "targetCredentials":
-      return tf("模型「{0}」的目标供应商缺少 Base URL 或 Key。", [issue.model]);
+      return tf("模型「{0}」的目标供应商缺少 Base URL，或没有 Key 且未开启无需认证。", [issue.model]);
   }
 }
 
@@ -12120,6 +12266,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     relayMode: "official" as RelayMode,
     sessionProvider: "custom" as RelaySessionProvider,
     officialMixApiKey: false,
+    noAuth: false,
     hideOfficialUsageAlert: false,
     testModel: "",
     configContents: "",
@@ -12156,6 +12303,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       relayMode: "aggregate",
       sessionProvider: "custom",
       officialMixApiKey: false,
+      noAuth: false,
       hideOfficialUsageAlert: false,
       testModel: "",
       configContents: "",
@@ -12295,6 +12443,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     relayMode: "aggregate",
     sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
     officialMixApiKey: false,
+    noAuth: false,
     hideOfficialUsageAlert: false,
     configContents: "",
     authContents: "",
@@ -12331,7 +12480,8 @@ function aggregateMemberCandidates(settings: BackendSettings, aggregateId: strin
 }
 
 function isApiRelayProfile(profile: RelayProfile): boolean {
-  return Boolean(profile.baseUrl.trim() && profile.apiKey.trim());
+  const usesNoAuth = profile.relayMode === "pureApi" && profile.noAuth;
+  return Boolean(profile.baseUrl.trim() && (profile.apiKey.trim() || usesNoAuth));
 }
 
 function clampAggregateWeight(value: number): number {

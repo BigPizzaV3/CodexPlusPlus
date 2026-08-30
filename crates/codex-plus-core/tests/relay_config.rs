@@ -483,6 +483,30 @@ base_url = "http://127.0.0.1:57321/v1"
 }
 
 #[test]
+fn reports_internal_no_auth_proxy_provider_configured() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+experimental_bearer_token = "codex-plus-no-auth"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    assert!(status.requires_openai_auth);
+    assert!(status.has_bearer_token);
+}
+
+#[test]
 fn apply_relay_config_writes_isolated_provider_without_live_config_carryover() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -839,6 +863,86 @@ model_provider = "custom"
     normalize_relay_profile_for_storage(&mut profile).unwrap();
 
     assert!(!profile.config_contents.contains("openai_base_url"));
+}
+
+#[test]
+fn no_auth_pure_api_profile_clears_credentials_and_applies_without_auth_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = RelayProfile {
+        relay_mode: RelayMode::PureApi,
+        no_auth: true,
+        base_url: "https://relay.example/v1".to_string(),
+        api_key: "sk-stale".to_string(),
+        sub2api_enabled: true,
+        sub2api_multiplier: "0.5".to_string(),
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-stale"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-stale","auth_mode":"chatgpt","tokens":{"access_token":"keep"}}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert!(profile.no_auth);
+    assert!(profile.api_key.is_empty());
+    assert!(!profile.sub2api_enabled);
+    assert!(profile.sub2api_multiplier.is_empty());
+    assert!(
+        profile
+            .config_contents
+            .contains("requires_openai_auth = true")
+    );
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"experimental_bearer_token = "codex-plus-no-auth""#)
+    );
+    assert!(
+        profile
+            .config_contents
+            .contains(r#"base_url = "http://127.0.0.1:57321/v1""#)
+    );
+    let stored_auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    assert!(stored_auth.get("OPENAI_API_KEY").is_none());
+    assert_eq!(stored_auth["tokens"]["access_token"], "keep");
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+    let live_config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let live_auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+    assert!(live_config.contains("requires_openai_auth = true"));
+    assert!(live_config.contains(r#"experimental_bearer_token = "codex-plus-no-auth""#));
+    assert!(live_config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(live_auth.get("OPENAI_API_KEY").is_none());
+    assert_eq!(live_auth["tokens"]["access_token"], "keep");
+}
+
+#[test]
+fn no_auth_is_disabled_outside_pure_api_mode() {
+    for relay_mode in [
+        RelayMode::Official,
+        RelayMode::MixedApi,
+        RelayMode::Aggregate,
+    ] {
+        let mut profile = RelayProfile {
+            relay_mode,
+            no_auth: true,
+            ..RelayProfile::default()
+        };
+
+        normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+        assert!(!profile.no_auth);
+    }
 }
 
 #[test]

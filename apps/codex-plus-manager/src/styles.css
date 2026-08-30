@@ -796,7 +796,7 @@ body {
   text-align: left;
 }
 
-.third-party-import-menu button:last-child {
+.third-party-import-menu button.third-party-import-action {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
 }

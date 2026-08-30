@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
@@ -245,8 +246,17 @@ fn apply_base_theme(
     let desktop_existed = document.get("desktop").is_some();
 
     if backup_path.exists() {
-        validate_backup_identity(backup_path, config_path)?;
-    } else {
+        match backup_identity(backup_path, config_path)? {
+            BackupIdentity::Same => {}
+            BackupIdentity::Stale => {
+                isolate_stale_backup(backup_path)?;
+            }
+            BackupIdentity::DifferentExisting => {
+                bail!("Dream Skin theme backup belongs to a different config.toml");
+            }
+        }
+    }
+    if !backup_path.exists() {
         let values = APPEARANCE_KEYS
             .iter()
             .map(|key| {
@@ -260,7 +270,7 @@ fn apply_base_theme(
             .collect();
         let backup = DreamSkinThemeBackup {
             schema_version: BACKUP_SCHEMA_VERSION,
-            config_path: config_path.to_string_lossy().to_string(),
+            config_path: normalized_config_identity(config_path),
             desktop_existed,
             values,
         };
@@ -296,8 +306,15 @@ fn restore_base_theme(config_path: &Path, backup_path: &Path) -> anyhow::Result<
         return Ok(());
     }
     let backup = read_backup(backup_path)?;
-    if backup.config_path != config_path.to_string_lossy() {
-        bail!("Dream Skin theme backup belongs to a different config.toml");
+    match compare_backup_identity(&backup, config_path) {
+        BackupIdentity::Same => {}
+        BackupIdentity::Stale => {
+            isolate_stale_backup(backup_path)?;
+            return Ok(());
+        }
+        BackupIdentity::DifferentExisting => {
+            bail!("Dream Skin theme backup belongs to a different config.toml");
+        }
     }
 
     let existing = read_config_or_empty(config_path)?;
@@ -507,12 +524,107 @@ fn read_backup(path: &Path) -> anyhow::Result<DreamSkinThemeBackup> {
     Ok(backup)
 }
 
-fn validate_backup_identity(backup_path: &Path, config_path: &Path) -> anyhow::Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackupIdentity {
+    Same,
+    Stale,
+    DifferentExisting,
+}
+
+fn backup_identity(backup_path: &Path, config_path: &Path) -> anyhow::Result<BackupIdentity> {
     let backup = read_backup(backup_path)?;
-    if backup.config_path != config_path.to_string_lossy() {
-        bail!("Dream Skin theme backup belongs to a different config.toml");
+    Ok(compare_backup_identity(&backup, config_path))
+}
+
+fn compare_backup_identity(backup: &DreamSkinThemeBackup, config_path: &Path) -> BackupIdentity {
+    let backup_path = Path::new(&backup.config_path);
+    if normalized_config_identity(backup_path) == normalized_config_identity(config_path) {
+        BackupIdentity::Same
+    } else if backup_path.exists() {
+        BackupIdentity::DifferentExisting
+    } else {
+        BackupIdentity::Stale
     }
-    Ok(())
+}
+
+fn normalized_config_identity(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let normalized = std::fs::canonicalize(&absolute).unwrap_or_else(|_| {
+        absolute
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .and_then(|parent| absolute.file_name().map(|name| parent.join(name)))
+            .unwrap_or_else(|| lexical_normalize(&absolute))
+    });
+    normalized_identity_string(&normalized)
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+#[cfg(windows)]
+fn normalized_identity_string(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('/', "\\");
+    let normalized = raw
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| raw.strip_prefix(r"\\?\").map(ToString::to_string))
+        .unwrap_or_else(|| raw.to_owned());
+    normalized.to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn normalized_identity_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn isolate_stale_backup(backup_path: &Path) -> anyhow::Result<PathBuf> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    for attempt in 0..100u32 {
+        let suffix = if attempt == 0 {
+            String::new()
+        } else {
+            format!("-{attempt}")
+        };
+        let isolated = backup_path.with_file_name(format!(
+            "dream-skin-base-theme-backup.stale-{timestamp}{suffix}.json"
+        ));
+        if isolated.exists() {
+            continue;
+        }
+        std::fs::rename(backup_path, &isolated).with_context(|| {
+            format!(
+                "failed to isolate stale Dream Skin backup {}",
+                backup_path.display()
+            )
+        })?;
+        return Ok(isolated);
+    }
+    bail!("failed to allocate a stale Dream Skin backup path")
 }
 
 fn read_config_or_empty(path: &Path) -> anyhow::Result<String> {
