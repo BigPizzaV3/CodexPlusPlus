@@ -950,7 +950,7 @@ html[data-dream-skin="active"] [data-codex-composer-root][data-composer-placemen
 
 html[data-dream-skin="active"] [data-codex-composer-root][data-composer-placement="home"]:has([data-composer-home-utility-bar-position="above"])
   :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"], [data-composer-surface-variant][data-composer-radius-variant]) {
-  border-radius: 0 0 22px 22px !important;
+  border-radius: 22px !important;
 }
 
 /* Newer app shells may no longer expose the selector contract above. The
@@ -1188,7 +1188,7 @@ html[data-dream-skin="active"] :is([class*="_homeUtilityBar_"], [class*="_Compos
 html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]):has(:is([class*="_homeUtilityBar_"], [class*="_ComposerHomeUtilityBar_"]))
   :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"], [data-composer-surface-variant][data-composer-radius-variant]) {
   border: 0 !important;
-  border-radius: 0 0 22px 22px !important;
+  border-radius: 22px !important;
   overflow: hidden !important;
   box-shadow:
     0 10px 28px rgb(var(--ds-bg-rgb) / .24),

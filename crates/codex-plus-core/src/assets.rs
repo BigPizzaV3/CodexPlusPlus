@@ -70,7 +70,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "23-home-composer-clipping";
+const DREAM_SKIN_RENDERER_REVISION: &str = "24-home-composer-rounded";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
