@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol, RelaySessionProvider};
+use crate::settings::{RelayProfile, RelayProtocol, RelaySessionProvider};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -476,11 +476,10 @@ pub fn apply_relay_files_to_home_with_context(
     config_contents: &str,
     auth_contents: &str,
     common_config_contents: &str,
-    selection: &RelayContextSelection,
     context_window: &str,
     auto_compact_limit: &str,
 ) -> anyhow::Result<RelayApplyResult> {
-    let selected_common = filter_common_config_for_selection(common_config_contents, selection)?;
+    let selected_common = prepare_common_config_for_apply(common_config_contents)?;
     let config_with_common = merge_common_config_into_config(config_contents, &selected_common)?;
     let config_with_common =
         preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
@@ -495,7 +494,7 @@ pub fn apply_relay_profile_files_to_home_with_context(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_profile(common_config_contents, profile)?
+        prepare_common_config_for_apply(common_config_contents)?
     } else {
         String::new()
     };
@@ -523,7 +522,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_profile(common_config_contents, profile)?
+        prepare_common_config_for_apply(common_config_contents)?
     } else {
         String::new()
     };
@@ -557,7 +556,7 @@ pub fn apply_relay_profile_config_to_home_with_context(
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
     let selected_common = if profile.use_common_config {
-        filter_common_config_for_selection(common_config_contents, &profile.context_selection)?
+        prepare_common_config_for_apply(common_config_contents)?
     } else {
         String::new()
     };
@@ -1115,40 +1114,6 @@ fn preserve_unmanaged_live_context_entries(
         managed_doc.as_table(),
     );
     Ok(normalize_optional_toml(target_doc))
-}
-
-fn filter_context_tables_for_selection(
-    table: &mut toml_edit::Table,
-    selection: &RelayContextSelection,
-) {
-    filter_context_table_for_ids(table, "mcp_servers", &selection.mcp_servers);
-    filter_context_table_for_ids(table, "skills", &selection.skills);
-    filter_context_table_for_ids(table, "plugins", &selection.plugins);
-}
-
-fn filter_context_table_for_ids(
-    table: &mut toml_edit::Table,
-    table_name: &str,
-    selected_ids: &[String],
-) {
-    let Some(item) = table.get_mut(table_name) else {
-        return;
-    };
-    let Some(context_table) = item.as_table_mut() else {
-        return;
-    };
-    let selected = selected_ids
-        .iter()
-        .map(|id| id.trim())
-        .filter(|id| !id.is_empty())
-        .collect::<HashSet<_>>();
-    let remove_ids = context_table
-        .iter()
-        .filter_map(|(id, _)| (!selected.contains(id)).then_some(id.to_string()))
-        .collect::<Vec<_>>();
-    for id in remove_ids {
-        context_table.remove(&id);
-    }
 }
 
 fn merge_managed_context_tables(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
