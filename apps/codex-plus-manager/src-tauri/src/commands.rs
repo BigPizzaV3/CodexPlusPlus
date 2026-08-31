@@ -5920,6 +5920,23 @@ pub struct TestVlmResult {
 /// 用表单当前值（未保存亦可）；失败也返回结构化 payload 供前端渲染诊断。
 #[tauri::command]
 pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
+    // 加固 spec §4.1 第二道门：前端校验可被绕过（IPC 直调），类型与大小在
+    // 信任边界重新校验；非法输入不发起网络请求。
+    if let Err(reason) = codex_plus_core::vision::validate_image_data_url(&request.image_data_url) {
+        return failed(
+            "VLM 测试失败：invalid_image",
+            TestVlmResult {
+                vlm_status: "invalid_image".to_string(),
+                http_code: None,
+                duration_ms: 0,
+                error: Some(reason),
+                description: None,
+                model: request.model,
+                raw_request: None,
+                raw_response: None,
+            },
+        );
+    }
     let config = codex_plus_core::vision::VlmConfig {
         api_key: request.api_key,
         model: request.model.clone(),
@@ -5934,7 +5951,11 @@ pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
                     vlm_status: "client_error".to_string(),
                     http_code: None,
                     duration_ms: 0,
-                    error: Some(e.to_string()),
+                    // 加固 spec §4.2：client_error 路径同样过脱敏，全仓库一条规则
+                    error: Some(codex_plus_core::vision::redact_secrets(
+                        &e.to_string(),
+                        &config.api_key,
+                    )),
                     description: None,
                     model: request.model,
                     raw_request: None,

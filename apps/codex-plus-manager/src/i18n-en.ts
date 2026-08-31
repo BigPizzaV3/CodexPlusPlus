@@ -1054,6 +1054,8 @@ export const EN_PLAIN: Record<string, string> = {
   "选择图片并测试": "Choose image & test",
   "正在调用 VLM…": "Calling VLM...",
   "图片超过 10MB，请换一张较小的图片。": "Image exceeds 10MB. Please choose a smaller one.",
+  "❌ 测试图片无效：仅支持图片文件，且不超过 10MB":
+    "❌ Invalid test image: only image files up to 10MB are supported.",
   "复制错误": "Copy error",
   "显示原始报文": "Show raw messages",
   "隐藏原始报文": "Hide raw messages",

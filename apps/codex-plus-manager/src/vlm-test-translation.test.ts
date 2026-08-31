@@ -56,4 +56,8 @@ describe("vlmTestTranslation", () => {
   it("401 文案逐字锁定（含模型名归因）", () => {
     assert.equal(vlmTestTranslation("http_error", 401, 0, tr), "❌ 认证失败（HTTP 401）：API Key 或模型名可能不正确");
   });
+  it("invalid_image 提示图片无效与大小上限", () => {
+    assert.ok(vlmTestTranslation("invalid_image", undefined, 0, tr).includes("测试图片无效"));
+    assert.ok(vlmTestTranslation("invalid_image", undefined, 0, tr).includes("10MB"));
+  });
 });

@@ -504,6 +504,33 @@ pub struct VlCallOutcome {
     pub raw_response: Option<String>,
 }
 
+/// 「测试 VLM」输入图片上限：与前端 VLM_TEST_MAX_IMAGE_BYTES（App.tsx）同口径。
+pub const VLM_TEST_MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// 校验测试入口的 image_data_url（加固 spec §4.1）。仅由 test_vlm 命令调用，
+/// 真实识图链路不经过（其 URL 来自会话消息，本就不限类型与大小——同源契约）。
+/// 口径：data:image/* + base64 段 + 解码后字节 ≤ 10MB。量解码后字节而非字符
+/// 串长度：base64 膨胀约 4/3，量字符串会把前端合法放行的图误拒。
+pub fn validate_image_data_url(url: &str) -> Result<(), String> {
+    use base64::Engine as _;
+    let Some((meta, payload)) = url.split_once(',') else {
+        return Err("image_data_url 不是合法的 data URL（缺少元数据段）".to_string());
+    };
+    if !meta.starts_with("data:image/") {
+        return Err(format!("仅支持图片文件（data:image/*），收到：{meta}"));
+    }
+    if !meta.ends_with(";base64") {
+        return Err("仅支持 base64 编码的 data URL".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|e| format!("图片 base64 解码失败：{e}"))?;
+    if bytes.len() > VLM_TEST_MAX_IMAGE_BYTES {
+        return Err(format!("图片超过 10MB 上限（解码后 {} 字节）", bytes.len()));
+    }
+    Ok(())
+}
+
 /// 「测试 VLM」单图调用：与真实识图链路共用提示词与请求体构造（spec §5.1）。
 /// 先读响应体再判 HTTP 码：非 2xx 一律 http_error，HTML 错误页不误判为
 /// json_error（spec §5.3）。status 口径：ok/http_error/timeout/send_error/
@@ -2507,6 +2534,40 @@ mod tests {
         assert_eq!(redact_secrets("HTTP 401 未授权", "sk-test"), "HTTP 401 未授权");
         // authorization 作为普通单词（无冒号）不触发
         assert_eq!(redact_secrets("authorization failed", "sk-test"), "authorization failed");
+    }
+
+    // ── validate_image_data_url（加固 spec §4.1 第二道门）────────────
+
+    #[test]
+    fn validate_image_data_url_accepts_normal_image() {
+        assert!(validate_image_data_url("data:image/png;base64,QUJD").is_ok());
+        assert!(validate_image_data_url("data:image/jpeg;base64,/9j/4AAQ").is_ok());
+    }
+
+    #[test]
+    fn validate_image_data_url_rejects_non_image_and_non_data() {
+        assert!(validate_image_data_url("https://example.com/cat.png").is_err());
+        assert!(validate_image_data_url("data:text/html;base64,PGh0bWw+").is_err());
+        // 非 base64 编码段（正常前端 FileReader 产物恒为 base64）
+        assert!(validate_image_data_url("data:image/png,QUJD").is_err());
+        assert!(validate_image_data_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn validate_image_data_url_enforces_size_limit_on_decoded_bytes() {
+        use base64::Engine as _;
+        let encode = |n: usize| {
+            let payload = base64::engine::general_purpose::STANDARD.encode(vec![b'A'; n]);
+            format!("data:image/png;base64,{payload}")
+        };
+        // 恰好 10MB 放行（与前端 > 判断口径一致）；量的是解码后字节而非字符串长度
+        assert!(validate_image_data_url(&encode(VLM_TEST_MAX_IMAGE_BYTES)).is_ok());
+        assert!(validate_image_data_url(&encode(VLM_TEST_MAX_IMAGE_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn validate_image_data_url_rejects_broken_base64() {
+        assert!(validate_image_data_url("data:image/png;base64,!!!not-base64!!!").is_err());
     }
 
     // ── test_vlm_once（测试 VLM 命令核心）─────────────────────────

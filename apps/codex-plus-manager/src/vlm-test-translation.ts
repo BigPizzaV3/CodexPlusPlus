@@ -30,6 +30,8 @@ export function vlmTestTranslation(
       return tr("❌ 批量描述解析失败（单图测试不应触发）");
     case "client_error":
       return tr("❌ HTTP 客户端构建失败");
+    case "invalid_image":
+      return tr("❌ 测试图片无效：仅支持图片文件，且不超过 10MB");
     default:
       return tr("❌ 未知错误");
   }
