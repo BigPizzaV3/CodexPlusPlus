@@ -7814,7 +7814,7 @@
     }
   }
 
-  async function continueSessionWithCurrentApi(row, ref) {
+  async function continueSessionWithCurrentLogin(row, ref) {
     const threadId = validThreadScrollSessionKey(ref?.session_id);
     if (!threadId) {
       showToast("无法继续：未找到有效的本地会话 ID", null);
@@ -8135,7 +8135,7 @@
     const group = document.createElement("div");
     group.className = actionGroupClass;
     group.dataset.codexActionGroupVersion = codexActionGroupVersion;
-    if (settings.markdownExport) {
+    {
       const moreButton = document.createElement("button");
       moreButton.type = "button";
       moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
@@ -8146,10 +8146,10 @@
       moreMenu.className = moreMenuClass;
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
-      moreMenu.appendChild(createSessionMoreMenuItem("用当前 API 继续", "↪", (event) => {
+      moreMenu.appendChild(createSessionMoreMenuItem("用当前登录方式继续", "↪", (event) => {
         stopActionButtonEvent(row, moreButton, event);
         closeSessionMoreMenus();
-        continueSessionWithCurrentApi(row, ref);
+        continueSessionWithCurrentLogin(row, ref);
       }));
       if (settings.markdownExport) {
         moreMenu.appendChild(createSessionMoreMenuItem("导出", "⇩", (event) => {

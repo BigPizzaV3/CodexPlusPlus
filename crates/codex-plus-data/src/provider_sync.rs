@@ -253,6 +253,17 @@ pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
     run_provider_sync_with_target(codex_home, None)
 }
 
+/// Synchronize historical providers before Codex is launched by this process.
+///
+/// Unlike the manager's manual repair entrypoint, this does not reject the
+/// operation merely because the launcher itself or another ChatGPT surface is
+/// running. Rollout files that are actively locked are still skipped by the
+/// normal collection/apply path and will be retried on a later launch.
+pub fn run_provider_sync_before_launch() -> ProviderSyncResult {
+    let home = default_codex_home_dir();
+    run_provider_sync_with_target(Some(&home), None)
+}
+
 pub fn remote_control_session_recovery_candidate_exists(
     codex_home: Option<&Path>,
     thread_id: &str,

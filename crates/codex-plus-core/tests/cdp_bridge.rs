@@ -1679,7 +1679,7 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("thread/resume"));
     assert!(script.contains("/fork-session"));
     assert!(script.contains("...(modelProvider ? { modelProvider } : {})"));
-    assert!(script.contains("用当前 API 继续"));
+    assert!(script.contains("用当前登录方式继续"));
     assert!(script.contains("turn/start"));
     assert!(script.contains("start-conversation"));
     assert!(script.contains("applyCodexServiceTierRequestOverride(\"thread/start\", message)"));

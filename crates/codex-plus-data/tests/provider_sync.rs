@@ -2,6 +2,7 @@ use codex_plus_data::{
     ProviderSyncStatus, ProviderSyncTargetSource, apply_session_index_cleanup,
     load_provider_sync_targets, preview_session_index_cleanup,
     remote_control_session_recovery_candidate_exists, run_provider_sync,
+    run_provider_sync_before_launch,
     run_provider_sync_with_target,
     run_remote_control_session_catalog_recovery_for_thread_with_target,
     run_remote_control_session_finalization_for_thread_with_target,
@@ -406,6 +407,46 @@ experimental_bearer_token = "sk-test"
         )
         .unwrap();
     assert_eq!(provider, "custom");
+}
+
+#[test]
+fn before_launch_sync_discovers_and_maps_legacy_providers_to_current_login() {
+    let _env_lock = CODEX_HOME_ENV_LOCK.lock().unwrap();
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let rollout = home.join("sessions/2026/rollout-legacy-provider.jsonl");
+    write_rollout(&rollout, "custom", "thread-legacy", "C:/workspace");
+    create_state_db_with_providers(
+        &home.join("state_5.sqlite"),
+        &[("thread-legacy", "custom", 0)],
+    );
+    let _guard = CodexHomeEnvGuard::set(&home);
+
+    let result = run_provider_sync_before_launch();
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert_eq!(result.target_provider, "openai");
+    assert_eq!(result.changed_session_files, 1);
+    let first: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&rollout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["payload"]["model_provider"], "openai");
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = db
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "openai");
 }
 
 #[test]

@@ -353,9 +353,18 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
+        let sync = tokio::task::spawn_blocking(codex_plus_data::run_provider_sync_before_launch)
             .await
             .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
+        if !sync.skipped_locked_rollout_files.is_empty() {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.provider_sync_locked_rollouts",
+                json!({
+                    "count": sync.skipped_locked_rollout_files.len(),
+                    "target_provider": sync.target_provider,
+                }),
+            );
+        }
         Ok(())
     }
 

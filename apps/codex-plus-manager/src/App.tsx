@@ -793,13 +793,13 @@ function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
 
 function providerSyncActionText(targetProvider: string, active: boolean): string {
   if (active) return t("正在修复…");
-  return targetProvider === "openai" ? t("显示 API 登录历史") : t("修复历史会话");
+  return targetProvider === "openai" ? t("兼容官方账号历史") : t("兼容 API 登录历史");
 }
 
 function providerSyncHelpText(targetProvider: string): string {
   return targetProvider === "openai"
-    ? t("将 JOJO Code/custom 等 API 登录创建的本地历史归到官方登录可见。")
-    : t("启动 Codex 前整理旧对话的归属标记。");
+    ? t("让官方账号登录看到并继续 API Key 登录创建的本地任务。")
+    : t("让 API Key 登录看到并继续官方账号或其他 provider 创建的本地任务。");
 }
 
 function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
@@ -2287,11 +2287,11 @@ export function App() {
       const targets = result.targets ?? [];
       const saved = settingsForm.providerSyncLastSelectedProvider;
       const preferred =
-        targets.find((target) => target.id === saved)?.id ||
         targets.find((target) => target.isCurrentProvider)?.id ||
+        targets.find((target) => target.id === saved)?.id ||
         targets[0]?.id ||
         "openai";
-      setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
+      setSelectedProviderSyncTarget(preferred);
       if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
     }
     return result;
@@ -5808,8 +5808,8 @@ function SessionsScreen({
                 type="checkbox"
               />
               <span>
-                <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{providerSyncHelpText(selectedProviderSyncTarget)}</small>
+                <strong>{t("启动前自动兼容双向历史")}</strong>
+                <small>{providerSyncHelpText(providerSyncTargets?.currentProvider || selectedProviderSyncTarget)}</small>
               </span>
               <ToggleVisual />
             </label>

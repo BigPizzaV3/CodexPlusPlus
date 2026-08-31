@@ -381,6 +381,8 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default = "default_provider_sync_enabled")]
     pub provider_sync_enabled: bool,
+    #[serde(rename = "providerSyncAutoRepairVersion", default)]
+    pub provider_sync_auto_repair_version: u32,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
     #[serde(rename = "providerSyncManualProviders", default)]
@@ -561,6 +563,7 @@ impl Default for BackendSettings {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: true,
+            provider_sync_auto_repair_version: CURRENT_PROVIDER_SYNC_AUTO_REPAIR_VERSION,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
@@ -633,6 +636,8 @@ impl Default for BackendSettings {
 fn default_provider_sync_enabled() -> bool {
     true
 }
+
+const CURRENT_PROVIDER_SYNC_AUTO_REPAIR_VERSION: u32 = 1;
 
 impl BackendSettings {
     pub fn active_relay_profile(&self) -> RelayProfile {
@@ -1118,8 +1123,14 @@ impl SettingsStore {
             }
         };
 
+        let mut raw = match serde_json::from_str::<Value>(&contents) {
+            Ok(Value::Object(raw)) => raw,
+            _ => return Ok(BackendSettings::default()),
+        };
+        migrate_provider_sync_auto_repair(&mut raw);
+
         Ok(normalize_settings_config_sections(
-            serde_json::from_str(&contents).unwrap_or_default(),
+            serde_json::from_value(Value::Object(raw)).unwrap_or_default(),
         ))
     }
 
@@ -1132,7 +1143,7 @@ impl SettingsStore {
 
     pub fn update(&self, payload: Value) -> anyhow::Result<BackendSettings> {
         let Value::Object(payload) = payload else {
-            return self.load();
+            return self.load_without_migrations();
         };
 
         let mut raw = self.load_raw_object()?;
@@ -1153,6 +1164,22 @@ impl SettingsStore {
         Ok(settings)
     }
 
+    fn load_without_migrations(&self) -> anyhow::Result<BackendSettings> {
+        let contents = match fs::read_to_string(&self.path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BackendSettings::default());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read settings {}", self.path.display()));
+            }
+        };
+        Ok(normalize_settings_config_sections(
+            serde_json::from_str(&contents).unwrap_or_default(),
+        ))
+    }
+
     fn load_raw_object(&self) -> anyhow::Result<Map<String, Value>> {
         let contents = match fs::read_to_string(&self.path) {
             Ok(contents) => contents,
@@ -1166,10 +1193,28 @@ impl SettingsStore {
         };
 
         match serde_json::from_str::<Value>(&contents) {
-            Ok(Value::Object(map)) => Ok(map),
+            Ok(Value::Object(mut map)) => {
+                migrate_provider_sync_auto_repair(&mut map);
+                Ok(map)
+            }
             Ok(_) | Err(_) => Ok(settings_to_object(&BackendSettings::default())),
         }
     }
+}
+
+fn migrate_provider_sync_auto_repair(raw: &mut Map<String, Value>) {
+    let migration_version = raw
+        .get("providerSyncAutoRepairVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    if migration_version >= u64::from(CURRENT_PROVIDER_SYNC_AUTO_REPAIR_VERSION) {
+        return;
+    }
+    raw.insert("providerSyncEnabled".to_string(), Value::Bool(true));
+    raw.insert(
+        "providerSyncAutoRepairVersion".to_string(),
+        Value::from(CURRENT_PROVIDER_SYNC_AUTO_REPAIR_VERSION),
+    );
 }
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
@@ -1196,6 +1241,15 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source
+        .get("providerSyncAutoRepairVersion")
+        .and_then(Value::as_u64)
+    {
+        target.insert(
+            "providerSyncAutoRepairVersion".to_string(),
+            Value::from(value),
+        );
     }
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
@@ -1771,6 +1825,46 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn settings_store_load_migrates_legacy_disabled_provider_sync_without_writing() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let original = r#"{"providerSyncEnabled":false,"customField":"keep me"}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let updated = store.load().unwrap();
+
+        assert!(updated.provider_sync_enabled);
+        assert_eq!(
+            updated.provider_sync_auto_repair_version,
+            CURRENT_PROVIDER_SYNC_AUTO_REPAIR_VERSION
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn settings_store_preserves_disabled_provider_sync_after_auto_repair_migration() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"providerSyncEnabled":false,"providerSyncAutoRepairVersion":{CURRENT_PROVIDER_SYNC_AUTO_REPAIR_VERSION}}}"#
+            ),
+        )
+        .unwrap();
+
+        let settings = store.load().unwrap();
+
+        assert!(!settings.provider_sync_enabled);
+        assert_eq!(
+            settings.provider_sync_auto_repair_version,
+            CURRENT_PROVIDER_SYNC_AUTO_REPAIR_VERSION
+        );
     }
 
     #[test]

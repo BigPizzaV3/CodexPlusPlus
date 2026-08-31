@@ -345,6 +345,12 @@ export const EN_PLAIN: Record<string, string> = {
   "保存设置": "Save settings",
   "设置有修改时，保存后才会写入本地配置。": "Save to write changed settings to the local configuration.",
   "修复历史会话": "Repair historical sessions",
+  "兼容官方账号历史": "Make official-account history compatible",
+  "兼容 API 登录历史": "Make API-login history compatible",
+  "让官方账号登录看到并继续 API Key 登录创建的本地任务。":
+    "Let an official-account login see and continue local tasks created with an API key.",
+  "让 API Key 登录看到并继续官方账号或其他 provider 创建的本地任务。":
+    "Let an API-key login see and continue local tasks created by an official account or another provider.",
   "启动 Codex 前整理旧对话的归属标记。": "Organize historical session ownership before Codex starts.",
   "保存路径": "Saved path",
   "修复入口": "Repair entrypoints",
@@ -431,6 +437,7 @@ export const EN_PLAIN: Record<string, string> = {
   "启动 Codex++": "Launch Codex++",
   "启动任务": "Launch task",
   "启动前自动修复历史会话": "Auto-repair historical sessions before launch",
+  "启动前自动兼容双向历史": "Make bidirectional history compatible before launch",
   "启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。":
     "Localizes the Codex native menu via the local main-process debug port at launch; doesn't modify the install package. Requires restarting Codex.",
   "启用": "Enable",

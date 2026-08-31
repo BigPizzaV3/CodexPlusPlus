@@ -156,7 +156,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /codexPlusIsNodeTestHarness/);
   });
 
-  it("offers a non-destructive local-history fork for the current API", async () => {
+  it("offers a non-destructive local-history fork for the current login", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /postJson\("\/fork-session",\s*\{/);
@@ -166,7 +166,9 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /已创建新会话，但重命名失败/);
     assert.match(renderer, /\.\.\.\(modelProvider \? \{ modelProvider \} : \{\}\)/);
     assert.match(renderer, /\.\.\.\(model \? \{ model \} : \{\}\)/);
-    assert.match(renderer, /用当前 API 继续/);
+    assert.match(renderer, /用当前登录方式继续/);
+    assert.match(renderer, /async function continueSessionWithCurrentLogin/);
+    assert.doesNotMatch(renderer, /if \(settings\.markdownExport\) \{\s*const moreButton/);
     assert.match(renderer, /原历史会话保持不变/);
   });
 
