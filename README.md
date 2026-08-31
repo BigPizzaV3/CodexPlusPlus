@@ -111,6 +111,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
+      <a href="https://ergouapi.com/r/gh-codexplusplus">
+        <img src="docs/images/sponsor-ergou-api.png" alt="二狗 API" height="80">
+      </a>
+    </td>
+    <td><a href="https://ergouapi.com/r/gh-codexplusplus"><strong>二狗 API</strong></a><br>二狗，稳如老狗的 AI API 中转站。全站 0.1x~0.2x 超低倍率，提供 Claude/GPT/Gemini 等多个国内外 100% 纯血大模型接口，顶级 IPLC 线路 + 住宅双 ISP 冗余，确保全国范围稳定低延迟访问。欢迎各位开发者、工作室注册使用。</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8">
         <img src="docs/images/sponsor-baikewei-ai.jpg" alt="百可为AI" height="80">
       </a>
