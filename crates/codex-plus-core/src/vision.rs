@@ -372,10 +372,127 @@ fn raw_snippet(text: &str) -> String {
     }
 }
 
+/// 脱敏占位符：读者可辨识此处发生过脱敏，且无法从占位符还原原文。
+const REDACTED_PLACEHOLDER: &str = "***";
+
+/// 排障文本凭据脱敏（加固 spec §4.2）：① 已配置 Key 的精确字符串（Key 为空时
+/// 跳过——对空串做替换会毁掉整个文本）；② 授权头形态：`Authorization: <值>`
+/// 掩到行/结构分隔符、独立词 `Bearer <令牌>` 掩单个词，匹配不区分大小写。
+/// description（OCR 结果）为功能本体，不经过本函数。
+pub fn redact_secrets(text: &str, api_key: &str) -> String {
+    let out = if api_key.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(api_key, REDACTED_PLACEHOLDER)
+    };
+    mask_bearer_tokens(&mask_authorization_values(&out))
+}
+
+/// 掩码值段的词边界：空白、引号、逗号、花/尖括号。
+fn is_word_delimiter(b: u8) -> bool {
+    matches!(
+        b,
+        b' ' | b'\t' | b'\n' | b'\r' | b',' | b'"' | b'\'' | b'}' | b'{' | b'<' | b'>'
+    )
+}
+
+/// 掩码 `Authorization: <值>`。头名后允许 JSON 引号（`"authorization":`）；
+/// 值可含空格（`Bearer sk-x` 是一个头值），掩到行/结构分隔符为止。
+fn mask_authorization_values(text: &str) -> String {
+    const WORD: &str = "authorization";
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
+    let mut i = 0;
+    while let Some(rel) = lower[i..].find(WORD) {
+        let at = i + rel;
+        let mut j = at + WORD.len();
+        while j < bytes.len() && bytes[j] == b'"' {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b':' {
+            // 不是头形态（如普通文案 "authorization failed"）：原样保留
+            result.push_str(&text[i..j]);
+            i = j;
+            continue;
+        }
+        j += 1; // 冒号
+        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t') {
+            j += 1;
+        }
+        result.push_str(&text[i..j]);
+        // JSON 字符串值掩到闭引号；裸值可含空格（`Bearer sk-x` 是一个头值），
+        // 空白不截断，掩到行/结构分隔符为止。空值不掩（j == value_start）。
+        let value_start;
+        if j < bytes.len() && bytes[j] == b'"' {
+            result.push('"');
+            j += 1;
+            value_start = j;
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += 1;
+            }
+        } else {
+            value_start = j;
+            while j < bytes.len()
+                && (matches!(bytes[j], b' ' | b'\t') || !is_word_delimiter(bytes[j]))
+            {
+                j += 1;
+            }
+        }
+        if j > value_start {
+            result.push_str(REDACTED_PLACEHOLDER);
+        }
+        i = j; // 闭引号/分隔符留给下一轮原样输出
+    }
+    result.push_str(&text[i..]);
+    result
+}
+
+/// 掩码独立词 `Bearer <令牌>`：bearer 前一字符不是字母数字/下划线、后随空白
+/// 才算命中，掩码其后的单个词。
+fn mask_bearer_tokens(text: &str) -> String {
+    const WORD: &str = "bearer";
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
+    let mut i = 0;
+    while let Some(rel) = lower[i..].find(WORD) {
+        let at = i + rel;
+        let after = at + WORD.len();
+        // 前一字符是字母数字或 `_` 视为词内（如 token_bearer），不算独立词
+        let prev_in_word = at > 0
+            && ((bytes[at - 1] as char).is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+        let next_is_ws = after < bytes.len() && matches!(bytes[after], b' ' | b'\t');
+        result.push_str(&text[i..after]);
+        if prev_in_word || !next_is_ws {
+            i = after;
+            continue;
+        }
+        let mut j = after;
+        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t') {
+            j += 1;
+        }
+        // bearer 与令牌之间的空白原样保留
+        result.push_str(&text[after..j]);
+        let value_start = j;
+        while j < bytes.len() && !is_word_delimiter(bytes[j]) {
+            j += 1;
+        }
+        if j > value_start {
+            result.push_str(REDACTED_PLACEHOLDER);
+        }
+        i = j;
+    }
+    result.push_str(&text[i..]);
+    result
+}
+
 /// 单次 VLM 测试调用的结构化结果（spec §4/§5）。
 /// raw_request/raw_response 供排障折叠区展示；raw_request 是展示副本，图片
-/// base64 截断为 64 字符前缀 + 占位符（真实请求体可含数 MB base64）；请求体不
-/// 含 API Key（Key 在请求头），因此 raw_* 永不泄露密钥（spec §5.4）。
+/// base64 截断为 64 字符前缀 + 占位符（真实请求体可含数 MB base64），构造上
+/// 不含 API Key（Key 在请求头）。raw_response/error 携带上游可控内容，构造时
+/// 经 redact_secrets 机器脱敏（加固 spec §4.5：请求侧天然不含 + 响应侧脱敏）。
+/// description（OCR 结果）为功能本体，从原始响应解析、逐字可见、不脱敏。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct VlCallOutcome {
     pub status: String,
@@ -436,7 +553,7 @@ pub async fn test_vlm_once(
                 status: s.to_string(),
                 http_code: None,
                 duration_ms: started.elapsed().as_millis() as u64,
-                error: Some(e.to_string()),
+                error: Some(redact_secrets(&e.to_string(), &config.api_key)),
                 text: None,
                 raw_request,
                 raw_response: None,
@@ -445,7 +562,11 @@ pub async fn test_vlm_once(
     };
     let http_code = response.status().as_u16();
     let body_text = response.text().await.unwrap_or_default();
-    let raw_response = Some(raw_snippet(&body_text));
+    // 加固 spec §4.2：脱敏只应用于 raw_response/error 展示字段；description
+    // （OCR 结果）从原始 body 解析、逐字可见（spec §3/§5）。脱敏副本在截断前
+    // 生成——先截断会把跨界 Key 截成半截，精确替换就匹配不到了。
+    let redacted_body = redact_secrets(&body_text, &config.api_key);
+    let raw_response = Some(raw_snippet(&redacted_body));
     let finish = |status: &str, error: Option<String>, text: Option<String>| VlCallOutcome {
         status: status.to_string(),
         http_code: Some(http_code),
@@ -456,7 +577,7 @@ pub async fn test_vlm_once(
         raw_response: raw_response.clone(),
     };
     if !(200..300).contains(&http_code) {
-        let snippet: String = body_text.chars().take(ERROR_BODY_TRUNCATE).collect();
+        let snippet: String = redacted_body.chars().take(ERROR_BODY_TRUNCATE).collect();
         return finish(
             "http_error",
             Some(format!("VLM API {http_code}: {snippet}")),
@@ -466,7 +587,7 @@ pub async fn test_vlm_once(
     let response_body: Value = match serde_json::from_str(&body_text) {
         Ok(v) => v,
         Err(e) => {
-            let snippet: String = body_text.chars().take(ERROR_BODY_TRUNCATE).collect();
+            let snippet: String = redacted_body.chars().take(ERROR_BODY_TRUNCATE).collect();
             return finish(
                 "json_error",
                 Some(format!("JSON parse failed: {e} | body: {snippet}")),
@@ -2336,6 +2457,58 @@ mod tests {
         }
     }
 
+    // ── redact_secrets（加固 spec §4.2 脱敏）─────────────────────────
+
+    #[test]
+    fn redact_secrets_replaces_exact_key_everywhere() {
+        assert_eq!(
+            redact_secrets("Incorrect API key provided: sk-test-123", "sk-test-123"),
+            "Incorrect API key provided: ***"
+        );
+        assert_eq!(redact_secrets("sk-a and sk-a", "sk-a"), "*** and ***");
+    }
+
+    #[test]
+    fn redact_secrets_skips_exact_replacement_when_key_empty() {
+        // 空串不做精确替换（会把整段文本毁掉），但授权头形态规则照常生效
+        assert_eq!(redact_secrets("bearer abc123", ""), "bearer ***");
+        assert_eq!(redact_secrets("plain text", ""), "plain text");
+    }
+
+    #[test]
+    fn redact_secrets_masks_authorization_header_forms() {
+        let cases = [
+            ("Authorization: Bearer sk-abc", "Authorization: ***"),
+            ("authorization: Basic dXNlcjpwYXNz", "authorization: ***"),
+            ("\"Authorization\": \"Bearer xyz\"", "\"Authorization\": \"***\""),
+            // 空值不掩成占位符
+            ("\"Authorization\": \"\"", "\"Authorization\": \"\""),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(redact_secrets(input, "unused-key"), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn redact_secrets_masks_standalone_bearer_words() {
+        assert_eq!(
+            redact_secrets("header was bearer tok123, then more", "unused"),
+            "header was bearer ***, then more"
+        );
+        // 非独立词 / 后面不是空白：不误伤
+        assert_eq!(redact_secrets("unbearer something", "unused"), "unbearer something");
+        assert_eq!(redact_secrets("bearerxyz", "unused"), "bearerxyz");
+        // 下划线词内（token_bearer）不算独立词
+        assert_eq!(redact_secrets("token_bearer abc", "unused"), "token_bearer abc");
+    }
+
+    #[test]
+    fn redact_secrets_keeps_normal_text_intact() {
+        assert_eq!(redact_secrets("HTTP 401 未授权", "sk-test"), "HTTP 401 未授权");
+        // authorization 作为普通单词（无冒号）不触发
+        assert_eq!(redact_secrets("authorization failed", "sk-test"), "authorization failed");
+    }
+
     // ── test_vlm_once（测试 VLM 命令核心）─────────────────────────
 
     fn test_vlm_config(base_url: String) -> VlmConfig {
@@ -2352,7 +2525,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "choices": [{"message": {"content": "mock: a cat on a sofa"}}]
+                "choices": [{"message": {"content": "mock: a cat on a sofa"}}],
+                // 模拟上游在成功响应里夹带回显凭据（加固 spec §5 边界情况）
+                "echo": "sk-test"
             })))
             .mount(&mock_server)
             .await;
@@ -2377,6 +2552,73 @@ mod tests {
         // spec §5.4：raw_request 不得泄露 API Key
         assert!(!raw.contains("sk-test"));
         assert!(outcome.raw_response.as_deref().unwrap().contains("a cat"));
+        // 加固 spec §4.2：raw_response 对已配置 Key 机器脱敏（响应侧回显场景）
+        let raw_resp = outcome.raw_response.as_deref().unwrap();
+        assert!(!raw_resp.contains("sk-test"));
+        assert!(raw_resp.contains("***"));
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_redacts_upstream_echoed_credentials() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_string(
+                "{\"error\":{\"message\":\"Incorrect API key provided: sk-test\",\"authorization\":\"Bearer sk-test\"}}",
+            ))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "http_error");
+        for field in [
+            outcome.error.as_deref().unwrap_or(""),
+            outcome.raw_response.as_deref().unwrap_or(""),
+        ] {
+            assert!(!field.contains("sk-test"), "leaked in: {field}");
+            assert!(field.contains("***"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vlm_once_keeps_description_verbatim_while_redacting_raw_and_error() {
+        // 加固 spec §3/§5：图里印着已配置 Key 且成功——description（OCR 结果）
+        // 逐字可见；脱敏只应用于 raw_response/error，不吞 description。
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "content": "the image prints the key sk-test on a red badge",
+                        // 模拟上游把 Key 回显在 content 之外的结构化字段
+                        "reflected_key": "sk-test",
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+        let client = reqwest::Client::new();
+        let outcome = test_vlm_once(
+            &test_vlm_config(mock_server.uri()),
+            "data:image/png;base64,QUJD",
+            &client,
+        )
+        .await;
+        assert_eq!(outcome.status, "ok");
+        // description 逐字可见：命中精确匹配的那串不被掩
+        let desc = outcome.text.as_deref().unwrap();
+        assert!(desc.contains("sk-test"), "description must stay verbatim: {desc}");
+        assert!(!desc.contains("***"), "description must stay verbatim: {desc}");
+        // raw_response 仍整段脱敏
+        let raw_resp = outcome.raw_response.as_deref().unwrap();
+        assert!(!raw_resp.contains("sk-test"));
+        assert!(raw_resp.contains("***"));
     }
 
     #[tokio::test]
