@@ -3071,7 +3071,11 @@ pub async fn sync_providers_now(
             None,
             target_provider.as_deref(),
             |progress| {
-                let _ = progress_window.emit(PROVIDER_SYNC_PROGRESS_EVENT, progress);
+                let _ = progress_window.emit_to(
+                    progress_window.label(),
+                    PROVIDER_SYNC_PROGRESS_EVENT,
+                    progress,
+                );
             },
         )
     })

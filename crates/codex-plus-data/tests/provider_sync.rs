@@ -586,6 +586,119 @@ fn provider_sync_reports_stream_progress() {
     assert_eq!(progress.last().map(|event| &event.phase), Some(&ProviderSyncProgressPhase::Complete));
 }
 
+#[cfg(not(windows))]
+#[test]
+fn provider_sync_reports_rollback_when_rewrite_write_fails() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let first_rollout = home.join("sessions/rollout-a.jsonl");
+    let blocked_rollout = home.join("sessions/rollout-b.jsonl");
+    write_rollout(&first_rollout, "openai", "thread-a", "C:/workspace");
+    write_rollout(&blocked_rollout, "openai", "thread-b", "C:/workspace");
+    let original_first_rollout = fs::read(&first_rollout).unwrap();
+    fs::create_dir(blocked_rollout.with_extension("jsonl.tmp")).unwrap();
+    let mut progress = Vec::new();
+
+    let result = run_provider_sync_with_target_and_progress(Some(&home), None, |event| {
+        progress.push(event);
+    });
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert_eq!(fs::read(&first_rollout).unwrap(), original_first_rollout);
+    assert!(progress
+        .iter()
+        .any(|event| event.phase == ProviderSyncProgressPhase::RollingBack));
+}
+
+#[test]
+fn provider_sync_continues_rollback_after_a_conflicted_rollout() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let first_rollout = home.join("sessions/rollout-a.jsonl");
+    let conflicted_rollout = home.join("sessions/rollout-b.jsonl");
+    write_rollout(&first_rollout, "openai", "thread-a", "C:/workspace");
+    write_rollout(&conflicted_rollout, "openai", "thread-b", "C:/workspace");
+    let original_first_rollout = fs::read(&first_rollout).unwrap();
+    let external_contents = b"{\"type\":\"event_msg\",\"payload\":{\"changed\":true}}\n";
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER, cwd TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES ('thread-a', 'old-provider', 0, 0, 'C:/old')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES ('thread-b', 'old-provider', 0, 0, 'C:/old')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TRIGGER fail_provider_sync_update BEFORE UPDATE ON threads BEGIN SELECT RAISE(ABORT, 'boom'); END",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let mut progress = Vec::new();
+    let mut conflicted = false;
+
+    let result = run_provider_sync_with_target_and_progress(Some(&home), None, |event| {
+        if !conflicted && event.phase == ProviderSyncProgressPhase::UpdatingIndexes {
+            fs::write(&conflicted_rollout, external_contents).unwrap();
+            conflicted = true;
+        }
+        progress.push(event);
+    });
+
+    assert!(conflicted);
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert_eq!(fs::read(&first_rollout).unwrap(), original_first_rollout);
+    assert_eq!(fs::read(&conflicted_rollout).unwrap(), external_contents);
+    assert!(progress
+        .iter()
+        .any(|event| event.phase == ProviderSyncProgressPhase::RollingBack));
+}
+
+#[cfg(windows)]
+#[test]
+fn provider_sync_skips_rollout_locked_after_planning() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    let rollout = home.join("sessions/rollout-locked.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let original_rollout = fs::read(&rollout).unwrap();
+    let mut held_rollout: Option<fs::File> = None;
+
+    let result = run_provider_sync_with_target_and_progress(Some(&home), None, |event| {
+        if held_rollout.is_none() && event.phase == ProviderSyncProgressPhase::Planning {
+            held_rollout = Some(
+                fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&rollout)
+                    .unwrap(),
+            );
+        }
+    });
+
+    assert!(held_rollout.is_some());
+    drop(held_rollout);
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    assert!(result.skipped_locked_rollout_files.contains(&rollout));
+    assert_eq!(fs::read(&rollout).unwrap(), original_rollout);
+}
+
 #[test]
 fn provider_sync_skips_rollout_changed_after_scanning() {
     let tmp = tempdir().unwrap();

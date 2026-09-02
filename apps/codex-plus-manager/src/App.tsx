@@ -2431,12 +2431,24 @@ export function App() {
     try {
       unlisten = await listen<ProviderSyncStreamProgress>("provider-sync-progress", (event) => {
         const progress = event.payload;
-        const message =
-          progress.phase === "scanning"
-            ? t("正在扫描历史会话与索引…")
-            : progress.phase === "planning"
-              ? t("正在检查会话 provider 标记…")
-              : t("正在写入修复与备份…");
+        const message = (() => {
+          switch (progress.phase) {
+            case "scanning":
+              return t("正在扫描历史会话与索引…");
+            case "planning":
+              return t("正在检查会话 provider 标记…");
+            case "backing_up":
+              return t("正在创建修复备份…");
+            case "rewriting":
+              return t("正在写入会话修复…");
+            case "updating_indexes":
+              return t("正在更新会话索引…");
+            case "rolling_back":
+              return t("正在回滚已写入的会话…");
+            case "complete":
+              return t("正在完成历史会话修复…");
+          }
+        })();
         setProviderSyncProgress((current) => {
           if (!current.active) return current;
           return {

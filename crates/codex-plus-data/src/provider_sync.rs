@@ -335,9 +335,6 @@ struct SessionChange {
     original_text: String,
     next_text: String,
     original_session_meta_lines: Vec<String>,
-    thread_id: Option<String>,
-    cwd: Option<String>,
-    has_user_event: bool,
     rewrite_needed: bool,
     original_mtime: Option<SystemTime>,
 }
@@ -347,7 +344,6 @@ struct RolloutRewrite {
     next_text: String,
     rewrite_needed: bool,
     thread_id: Option<String>,
-    cwd: Option<String>,
     providers: Vec<String>,
     original_session_meta_lines: Vec<String>,
     session_meta_count: usize,
@@ -358,7 +354,6 @@ struct SessionChanges {
     changes: Vec<SessionChange>,
     skipped_locked_rollout_files: Vec<PathBuf>,
     encrypted_content_counts: HashMap<String, usize>,
-    subagent_thread_ids: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -416,8 +411,6 @@ struct SessionIndexPlan {
     path: PathBuf,
     original_bytes: Vec<u8>,
     original_text: String,
-    snapshot_sha256: String,
-    candidates: Vec<SessionIndexCleanupCandidate>,
 }
 
 #[derive(Debug, Clone)]
@@ -1927,7 +1920,6 @@ fn collect_session_change_for_path(
     if rewrite.session_meta_count == 0 || rewrite.thread_id.as_deref() != Some(thread_id) {
         return Ok(collected);
     }
-    let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
     if text.contains("encrypted_content") {
         for provider in &rewrite.providers {
             *collected
@@ -1944,9 +1936,6 @@ fn collect_session_change_for_path(
         original_text: text,
         next_text: rewrite.next_text,
         original_session_meta_lines: rewrite.original_session_meta_lines,
-        thread_id: rewrite.thread_id,
-        cwd: rewrite.cwd,
-        has_user_event,
         rewrite_needed: rewrite.rewrite_needed,
         original_mtime,
     });
@@ -1964,59 +1953,6 @@ fn rollout_file_matches_provider(
     Ok(rollout_thread_id == thread_id
         && !providers.is_empty()
         && providers.iter().all(|provider| provider == target_provider))
-}
-
-fn rewrite_rollout_session_meta_providers(
-    text: &str,
-    target_provider: &str,
-) -> anyhow::Result<RolloutRewrite> {
-    let mut rewrite = RolloutRewrite::default();
-    for segment in text.split_inclusive('\n') {
-        let (line, line_ending) = split_line_ending(segment);
-        let mut next_line = line.to_string();
-        if !line.trim().is_empty() {
-            if let Ok(mut record) = serde_json::from_str::<Value>(line) {
-                if record.get("type").and_then(Value::as_str) == Some("session_meta") {
-                    let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut)
-                    else {
-                        rewrite.next_text.push_str(&next_line);
-                        rewrite.next_text.push_str(line_ending);
-                        continue;
-                    };
-                    rewrite.session_meta_count += 1;
-                    rewrite.original_session_meta_lines.push(line.to_string());
-                    if rewrite.thread_id.is_none() {
-                        rewrite.thread_id = payload
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(ToString::to_string);
-                    }
-                    if rewrite.cwd.is_none() {
-                        rewrite.cwd = payload
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .and_then(to_desktop_workspace_path);
-                    }
-                    let provider = payload
-                        .get("model_provider")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(missing)")
-                        .to_string();
-                    rewrite.providers.push(provider);
-                    if payload.get("model_provider").and_then(Value::as_str)
-                        != Some(target_provider)
-                    {
-                        payload.insert("model_provider".to_string(), json!(target_provider));
-                        next_line = serde_json::to_string(&record)?;
-                        rewrite.rewrite_needed = true;
-                    }
-                }
-            }
-        }
-        rewrite.next_text.push_str(&next_line);
-        rewrite.next_text.push_str(line_ending);
-    }
-    Ok(rewrite)
 }
 
 fn rewrite_rollout_session_meta_providers_for_threads(
@@ -2064,12 +2000,6 @@ fn rewrite_rollout_session_meta_providers_for_threads(
                     };
                     rewrite.session_meta_count += 1;
                     rewrite.original_session_meta_lines.push(line.to_string());
-                    if rewrite.cwd.is_none() {
-                        rewrite.cwd = payload
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .and_then(to_desktop_workspace_path);
-                    }
                     let provider = payload
                         .get("model_provider")
                         .and_then(Value::as_str)
@@ -2492,10 +2422,8 @@ pub fn remove_session_index_entry(
     let original_text = String::from_utf8(original_bytes.clone())?;
     let plan = SessionIndexPlan {
         path,
-        snapshot_sha256: sha256_hex(&original_bytes),
         original_bytes,
         original_text,
-        candidates: Vec::new(),
     };
     let selected_ids = HashSet::from([thread_id.to_string()]);
     let (next_text, removed_entries) = filtered_session_index_text(&plan, &selected_ids);
@@ -2882,6 +2810,18 @@ fn apply_bulk_session_rewrite_plans(
                 applied.skipped_locked_rollout_files.push(plan.path.clone());
             }
             Err(error) => {
+                if !applied.changes.is_empty() {
+                    report_provider_sync_progress(
+                        report_progress,
+                        ProviderSyncProgressPhase::RollingBack,
+                        total_rollout_files,
+                        total_rollout_files,
+                        rewrite_plans.len(),
+                        applied.changes.len(),
+                        scanned_skipped_rollout_files
+                            + applied.skipped_locked_rollout_files.len(),
+                    );
+                }
                 if let Err(restore_error) = restore_bulk_session_rewrites(&applied.changes) {
                     return Err(anyhow::anyhow!(
                         "{error}; rollout rollback failed: {restore_error}"
@@ -2993,8 +2933,18 @@ fn stream_rewrite_rollout_session_meta_providers<W: Write>(
 }
 
 fn restore_bulk_session_rewrites(changes: &[AppliedBulkSessionRewrite]) -> anyhow::Result<()> {
+    let mut restore_errors = Vec::new();
     for change in changes.iter().rev() {
-        restore_bulk_session_rewrite(change)?;
+        if let Err(error) = restore_bulk_session_rewrite(change) {
+            restore_errors.push(format!("{}: {error:#}", change.plan.path.display()));
+        }
+    }
+    if !restore_errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "failed to restore {} rollout file(s): {}",
+            restore_errors.len(),
+            restore_errors.join("; ")
+        ));
     }
     Ok(())
 }
@@ -3007,7 +2957,6 @@ fn restore_bulk_session_rewrite(change: &AppliedBulkSessionRewrite) -> anyhow::R
         ));
     }
 
-    let mut restored_sha256 = None;
     codex_plus_core::settings::atomic_write_with(&change.plan.path, |file| {
         let mut writer = HashingWriter::new(BufWriter::new(file));
         let source_sha256 = stream_restore_rollout_session_meta_lines(
@@ -3021,15 +2970,11 @@ fn restore_bulk_session_rewrite(change: &AppliedBulkSessionRewrite) -> anyhow::R
         {
             return Err(std::io::Error::other(BULK_SESSION_SOURCE_CHANGED_ERROR));
         }
-        restored_sha256 = Some(writer.sha256_hex());
+        if writer.sha256_hex() != change.plan.original_sha256 {
+            return Err(std::io::Error::other("rollout rollback hash mismatch"));
+        }
         Ok(())
     })?;
-    if restored_sha256.as_deref() != Some(change.plan.original_sha256.as_str()) {
-        return Err(anyhow::anyhow!(
-            "rollout rollback hash mismatch: {}",
-            change.plan.path.display()
-        ));
-    }
     restore_file_mtime(&change.plan.path, change.plan.original_mtime);
     Ok(())
 }
@@ -3245,19 +3190,6 @@ fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSes
         applied.changes.push(change.clone());
     }
     Ok(applied)
-}
-
-fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
-    for change in changes {
-        if replace_session_text_if_unchanged(
-            &change.path,
-            &change.next_text,
-            &change.original_text,
-        )? {
-            restore_file_mtime(&change.path, change.original_mtime);
-        }
-    }
-    Ok(())
 }
 
 fn replace_session_text_if_unchanged(
@@ -4801,6 +4733,46 @@ mod non_root_agent_tests {
         assert!(!marks_non_root(r#"{"origin":"subagent"}"#));
         assert!(!marks_non_root(r#"{"sub_agent":"#));
         assert!(!marks_non_root("cli"));
+    }
+}
+
+#[cfg(test)]
+mod rollback_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_hash_mismatch_keeps_rewritten_rollout_intact() {
+        let temp = tempfile::tempdir().unwrap();
+        let rollout = temp.path().join("rollout.jsonl");
+        let original_meta =
+            r#"{"type":"session_meta","payload":{"id":"thread-1","model_provider":"openai"}}"#;
+        let rewritten_meta =
+            r#"{"type":"session_meta","payload":{"id":"thread-1","model_provider":"apigather"}}"#;
+        let incorrect_meta =
+            r#"{"type":"session_meta","payload":{"id":"thread-1","model_provider":"incorrect"}}"#;
+        let event = r#"{"type":"event_msg","payload":{"type":"user_message"}}"#;
+        let original = format!("{original_meta}\n{event}\n");
+        let rewritten = format!("{rewritten_meta}\n{event}\n");
+        fs::write(&rollout, original).unwrap();
+        let original_sha256 = sha256_file(&rollout).unwrap();
+        fs::write(&rollout, &rewritten).unwrap();
+        let rewritten_sha256 = sha256_file(&rollout).unwrap();
+        let change = AppliedBulkSessionRewrite {
+            plan: BulkSessionRewritePlan {
+                path: rollout.clone(),
+                original_sha256,
+                original_mtime: None,
+                original_session_meta_lines: vec![incorrect_meta.to_string()],
+            },
+            rewritten_sha256,
+        };
+
+        let error = restore_bulk_session_rewrite(&change).unwrap_err();
+
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string().contains("rollout rollback hash mismatch")));
+        assert_eq!(fs::read(&rollout).unwrap(), rewritten.into_bytes());
     }
 }
 
