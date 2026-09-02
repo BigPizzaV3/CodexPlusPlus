@@ -72,6 +72,7 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::load_settings,
             commands::save_settings,
+            commands::test_vlm,
             commands::load_grok_config,
             commands::save_grok_config,
             commands::weixin_connect_qr_start,

@@ -5901,6 +5901,95 @@ fn shortcut_state(shortcut: install::ShortcutState) -> PathState {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestVlmRequest {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+    pub image_data_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestVlmResult {
+    pub vlm_status: String,
+    pub http_code: Option<u16>,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+    pub description: Option<String>,
+    pub model: String,
+    pub raw_request: Option<String>,
+    pub raw_response: Option<String>,
+}
+
+/// 用表单当前 VLM 配置 + 用户上传图片（data URL）测试 VLM 可用性。
+/// 用表单当前值（未保存亦可）；失败也返回结构化 payload 供前端渲染诊断。
+#[tauri::command]
+pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
+    // 加固 spec §4.1 第二道门：前端校验可被绕过（IPC 直调），类型与大小在
+    // 信任边界重新校验；非法输入不发起网络请求。
+    if let Err(reason) = codex_plus_core::vision::validate_image_data_url(&request.image_data_url) {
+        return failed(
+            "VLM 测试失败：invalid_image",
+            TestVlmResult {
+                vlm_status: "invalid_image".to_string(),
+                http_code: None,
+                duration_ms: 0,
+                error: Some(reason),
+                description: None,
+                model: request.model,
+                raw_request: None,
+                raw_response: None,
+            },
+        );
+    }
+    let config = codex_plus_core::vision::VlmConfig {
+        api_key: request.api_key,
+        model: request.model.clone(),
+        base_url: request.base_url,
+    };
+    let client = match codex_plus_core::http_client::vlm_http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            return failed(
+                &format!("VLM HTTP 客户端构建失败：{e}"),
+                TestVlmResult {
+                    vlm_status: "client_error".to_string(),
+                    http_code: None,
+                    duration_ms: 0,
+                    // 加固 spec §4.2：client_error 路径同样过脱敏，全仓库一条规则
+                    error: Some(codex_plus_core::vision::redact_secrets(
+                        &e.to_string(),
+                        &config.api_key,
+                    )),
+                    description: None,
+                    model: request.model,
+                    raw_request: None,
+                    raw_response: None,
+                },
+            );
+        }
+    };
+    let outcome =
+        codex_plus_core::vision::test_vlm_once(&config, &request.image_data_url, &client).await;
+    let result = TestVlmResult {
+        vlm_status: outcome.status.clone(),
+        http_code: outcome.http_code,
+        duration_ms: outcome.duration_ms,
+        error: outcome.error,
+        description: outcome.text,
+        model: request.model,
+        raw_request: outcome.raw_request,
+        raw_response: outcome.raw_response,
+    };
+    if outcome.status == "ok" {
+        ok("VLM 测试成功。", result)
+    } else {
+        failed(&format!("VLM 测试失败：{}", outcome.status), result)
+    }
+}
+
 fn ok<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     CommandResult {
         status: "ok".to_string(),
