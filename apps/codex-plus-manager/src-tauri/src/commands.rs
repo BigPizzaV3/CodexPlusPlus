@@ -492,6 +492,7 @@ pub struct SkillsPayload {
     pub repo_errors: Vec<String>,
     pub skills_dir: String,
     pub codex_skills_dir: String,
+    pub shared_source: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3520,6 +3521,7 @@ fn skills_payload(
         repo_errors,
         skills_dir: manager.source_dir().to_string_lossy().to_string(),
         codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),
+        shared_source: manager.shared_source(),
     }
 }
 
@@ -3528,12 +3530,16 @@ fn current_skills_payload(manager: &codex_plus_core::skills::SkillsManager) -> S
 }
 
 fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
-    codex_plus_core::skills::SkillsManager::new(
-        codex_plus_core::paths::default_skills_source_dir(),
-        codex_plus_core::paths::default_skill_backups_dir(),
-        codex_plus_core::paths::default_skills_state_path(),
-        codex_plus_core::codex_home::default_codex_home_dir(),
-    )
+    let source = codex_plus_core::paths::default_skills_source_dir();
+    let shared = codex_plus_core::paths::default_shared_skills_source_dir();
+    let backups = codex_plus_core::paths::default_skill_backups_dir();
+    let state = codex_plus_core::paths::default_skills_state_path();
+    let home = codex_plus_core::codex_home::default_codex_home_dir();
+    if source == shared {
+        codex_plus_core::skills::SkillsManager::new_shared(source, backups, state, home)
+    } else {
+        codex_plus_core::skills::SkillsManager::new(source, backups, state, home)
+    }
 }
 
 /// 上一次成功拉取的远端清单，按仓库 key 存。

@@ -11,6 +11,7 @@ const PENDING_REMOTE_CONTROL_RECOVERY_FILE: &str = "pending-remote-control-recov
 const SKILLS_STATE_FILE: &str = "skills.json";
 const SKILLS_DIR: &str = "skills";
 const SKILL_BACKUPS_DIR: &str = "skill-backups";
+const SHARED_AGENT_DIR: &str = ".agents";
 
 pub fn default_app_state_dir() -> PathBuf {
     if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
@@ -47,10 +48,24 @@ pub fn default_pending_remote_control_recovery_path() -> PathBuf {
     default_app_state_dir().join(PENDING_REMOTE_CONTROL_RECOVERY_FILE)
 }
 
-/// Skills 的「单一事实来源」目录。已安装的 skill 目录都放这里，
-/// 启用时再软链到 `$CODEX_HOME/skills/<id>`，停用只删链接、源目录留着。
+/// 跨 Agent 共用的 Skills 单一事实来源。
+pub fn default_shared_skills_source_dir() -> PathBuf {
+    if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        return home_dir.join(SHARED_AGENT_DIR).join(SKILLS_DIR);
+    }
+
+    PathBuf::from(SHARED_AGENT_DIR).join(SKILLS_DIR)
+}
+
+/// Skills 的「单一事实来源」目录。已有共享根时优先复用；没有时保持
+/// Codex++ 原有的私有目录，避免改变首次安装行为。
 pub fn default_skills_source_dir() -> PathBuf {
-    default_app_state_dir().join(SKILLS_DIR)
+    let shared = default_shared_skills_source_dir();
+    if shared.is_dir() {
+        shared
+    } else {
+        default_app_state_dir().join(SKILLS_DIR)
+    }
 }
 
 pub fn default_skills_state_path() -> PathBuf {

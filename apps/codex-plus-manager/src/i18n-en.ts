@@ -1135,10 +1135,18 @@ export const EN_TEMPLATE: Record<string, string> = {
   "备份（{0}）": "Backups ({0})",
   "当前显示 {0} / {1}": "Showing {0} of {1}",
   "源目录 {0}；启用后软链到 {1}": "Source directory {0}; enabled skills are symlinked into {1}",
+  "共享源目录 {0}；Codex 兼容入口 {1}": "Shared source {0}; Codex compatibility entrypoint {1}",
   "以下仓库拉取失败，显示的是上次的结果：{0}":
     "These repositories failed to load, so the previous results are shown: {0}",
   "卸载 Skill「{0}」？源目录会先备份，可以再恢复回来。":
     "Uninstall the skill \"{0}\"? The source directory is backed up first and can be restored.",
+  "归档共享 Skill「{0}」？源目录会移入备份，这会影响所有使用共享根的 Agent。":
+    "Archive the shared skill \"{0}\"? Its source directory will move to backup and all agents using the shared root will be affected.",
+  "管理跨 Agent 共享 Skill；启停使用 Codex 官方配置，原有共享源不会被覆盖。":
+    "Manage skills shared across agents. Enablement uses Codex's official configuration and existing shared sources are protected from overwrite.",
+  "共享": "Shared",
+  "Codex++ 托管": "Managed by Codex++",
+  "归档": "Archive",
   "删除备份「{0}」？此操作不可撤销。": "Delete the backup \"{0}\"? This cannot be undone.",
   "删除仓库源「{0}」？已装的 Skill 不受影响，只是不再更新。":
     "Delete the repository \"{0}\"? Installed skills are unaffected — they just stop receiving updates.",

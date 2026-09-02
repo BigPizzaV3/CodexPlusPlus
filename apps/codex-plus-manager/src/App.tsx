@@ -333,8 +333,8 @@ type AggregateRelayProfile = {
   members: AggregateRelayMember[];
 };
 
-/// codex 的 config.toml 上下文表。skill 不在这里——它是 `$CODEX_HOME/skills/`
-/// 下的目录约定，`[skills.<id>]` codex 根本不读，由 Skills 面板单独管。
+/// codex 的 config.toml 上下文表。Skill 内容来自目录，单项启停由
+/// `[[skills.config]]` 管理，不与 MCP / Plugin 的通用配置混在一起。
 type ContextKind = "mcp" | "plugin";
 
 type CodexContextEntry = {
@@ -870,6 +870,7 @@ type SkillEntry = {
   repoPath: string;
   installed: boolean;
   enabled: boolean;
+  managed: boolean;
   bundled: boolean;
   contentHash: string;
   remoteHash: string;
@@ -890,6 +891,7 @@ type SkillsResult = CommandResult<{
   repoErrors: string[];
   skillsDir: string;
   codexSkillsDir: string;
+  sharedSource: boolean;
 }>;
 
 /** 仓库源的稳定标识，必须和 Rust 侧 `SkillRepo::key()` 生成的一致。 */
@@ -1364,9 +1366,12 @@ export function App() {
   const setSkillEnabled = (id: string, enabled: boolean) =>
     runSkillAction(id, "set_skill_enabled", { id, enabled });
 
-  const uninstallSkill = async (id: string) => {
-    if (!window.confirm(tf("卸载 Skill「{0}」？源目录会先备份，可以再恢复回来。", [id]))) return;
-    await runSkillAction(id, "uninstall_skill", { id });
+  const uninstallSkill = async (entry: SkillEntry, sharedSource: boolean) => {
+    const prompt = sharedSource
+      ? tf("归档共享 Skill「{0}」？源目录会移入备份，这会影响所有使用共享根的 Agent。", [entry.id])
+      : tf("卸载 Skill「{0}」？源目录会先备份，可以再恢复回来。", [entry.id]);
+    if (!window.confirm(prompt)) return;
+    await runSkillAction(entry.id, "uninstall_skill", { id: entry.id });
   };
 
   const restoreSkillBackup = (backupId: string) =>
@@ -3808,7 +3813,7 @@ type Actions = {
   installSkill: (repoKey: string, id: string) => Promise<void>;
   updateSkill: (repoKey: string, id: string) => Promise<void>;
   setSkillEnabled: (id: string, enabled: boolean) => Promise<void>;
-  uninstallSkill: (id: string) => Promise<void>;
+  uninstallSkill: (entry: SkillEntry, sharedSource: boolean) => Promise<void>;
   restoreSkillBackup: (backupId: string) => Promise<void>;
   deleteSkillBackup: (backupId: string) => Promise<void>;
   upsertSkillRepo: (repo: SkillRepo) => Promise<SkillsResult | null>;
@@ -6373,8 +6378,8 @@ type SkillFilter = "all" | "installed" | "available";
 /**
  * Skills 面板。
  *
- * codex 的 skill 是文件系统约定（`$CODEX_HOME/skills/<id>/SKILL.md`），不是配置项，
- * 所以这里管的是目录：从 GitHub 仓库源装到我们的 SSOT，再软链进 codex home。
+ * 共享根模式直接管理 `~/.agents/skills`，启停写入 Codex 官方 `[[skills.config]]`。
+ * 原有共享 Skill 只允许启停；只有 Codex++ 自己安装的条目才允许归档。
  */
 function SkillsScreen({ skills, actions }: { skills: SkillsResult | null; actions: Actions }) {
   const entries = skills?.skills ?? [];
@@ -6414,7 +6419,9 @@ function SkillsScreen({ skills, actions }: { skills: SkillsResult | null; action
       <Panel>
         <CardHead
           title={t("Skills 技能")}
-          detail={t("从 GitHub 仓库安装 Skill 到 Codex。启用后软链到 ~/.codex/skills/，下次对话即可用。")}
+          detail={skills?.sharedSource
+            ? t("管理跨 Agent 共享 Skill；启停使用 Codex 官方配置，原有共享源不会被覆盖。")
+            : t("从 GitHub 仓库安装 Skill 到 Codex。启用后软链到 ~/.codex/skills/，下次对话即可用。")}
         />
         <CardContent>
           <div className="metric-list">
@@ -6445,7 +6452,9 @@ function SkillsScreen({ skills, actions }: { skills: SkillsResult | null; action
           </Toolbar>
           {skills ? (
             <div className="relay-context-summary">
-              {tf("源目录 {0}；启用后软链到 {1}", [skills.skillsDir, skills.codexSkillsDir])}
+              {skills.sharedSource
+                ? tf("共享源目录 {0}；Codex 兼容入口 {1}", [skills.skillsDir, skills.codexSkillsDir])
+                : tf("源目录 {0}；启用后软链到 {1}", [skills.skillsDir, skills.codexSkillsDir])}
             </div>
           ) : null}
           {repoErrors.length ? (
@@ -6494,7 +6503,7 @@ function SkillsScreen({ skills, actions }: { skills: SkillsResult | null; action
           {visible.length ? (
             <div className="script-market-grid">
               {visible.map((entry) => (
-                <SkillCard actions={actions} entry={entry} key={entry.id} />
+                <SkillCard actions={actions} entry={entry} key={entry.id} sharedSource={skills?.sharedSource ?? false} />
               ))}
             </div>
           ) : (
@@ -6508,10 +6517,12 @@ function SkillsScreen({ skills, actions }: { skills: SkillsResult | null; action
   );
 }
 
-function SkillCard({ entry, actions }: { entry: SkillEntry; actions: Actions }) {
+function SkillCard({ entry, actions, sharedSource }: { entry: SkillEntry; actions: Actions; sharedSource: boolean }) {
   const busy = actions.skillBusyId === entry.id;
   const tags = [
     entry.bundled ? t("内置") : null,
+    sharedSource && entry.installed && !entry.managed && !entry.bundled ? t("共享") : null,
+    entry.managed && !entry.bundled ? t("Codex++ 托管") : null,
     entry.installed && !entry.bundled ? (entry.enabled ? t("已启用") : t("已停用")) : null,
     entry.updateAvailable ? t("有新版本") : null,
   ].filter((tag): tag is string => tag !== null);
@@ -6553,10 +6564,12 @@ function SkillCard({ entry, actions }: { entry: SkillEntry; actions: Actions }) 
                 {t("更新")}
               </Button>
             ) : null}
-            <Button disabled={busy} onClick={() => void actions.uninstallSkill(entry.id)} size="sm" variant="ghost">
-              <Trash2 className="h-4 w-4" />
-              {t("卸载")}
-            </Button>
+            {entry.managed ? (
+              <Button disabled={busy} onClick={() => void actions.uninstallSkill(entry, sharedSource)} size="sm" variant="ghost">
+                <Trash2 className="h-4 w-4" />
+                {sharedSource ? t("归档") : t("卸载")}
+              </Button>
+            ) : null}
           </>
         ) : (
           <Button disabled={busy || !entry.repoKey} onClick={() => void actions.installSkill(entry.repoKey, entry.id)} size="sm">

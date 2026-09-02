@@ -175,6 +175,7 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 | --- | --- |
 | 供应商配置 | 官方登录、官方登录混入 API、纯 API、聚合供应商；Responses / Chat Completions；模型测试、模型列表、Provider Doctor、cc-switch 与链接导入 |
 | 模型与上下文 | 每模型上下文窗口、自动压缩阈值、`model_catalog_json`、通用配置，以及按供应商选择 MCP、Skill 和 Plugin |
+| Skill 管理 | 优先复用 `~/.agents/skills` 作为跨 Agent 共享根；原有共享 Skill 只启停不覆盖，Codex++ 安装的 Skill 可更新和归档 |
 | 会话管理 | 扫描本地会话、批量删除、Markdown 导出、Token 用量历史、Provider metadata 同步与备份 |
 | Codex 增强 | 插件市场与模型白名单、会话操作、粘贴修复、中文界面、快速启动、会话宽度与滚动恢复、服务层级控制、Goals、Stepwise、图片覆盖层 |
 | 开发工作流 | 项目移动、Upstream worktree、线程 ID、Zed Remote 项目识别与打开 |
@@ -221,6 +222,7 @@ Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程
 - Codex 配置：`~/.codex/config.toml`
 - Codex 登录状态：`~/.codex/auth.json`
 - Codex 本地数据库：优先读取 `~/.codex/sqlite/*.db`，旧版回退到 `~/.codex/state_5.sqlite`
+- 共享 Skill：`~/.agents/skills`（目录存在时由 Codex++ 优先复用）
 - Codex++ 状态与日志：`~/.codex-session-delete/`
 - Provider 同步备份：`~/.codex/backups_state/provider-sync`
 
