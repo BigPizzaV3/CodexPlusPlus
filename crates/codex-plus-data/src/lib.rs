@@ -11,6 +11,7 @@ pub use provider_sync::{
     SessionIndexCleanupApplyError, SessionIndexCleanupCandidate, SessionIndexCleanupPreview,
     SessionIndexCleanupResult, apply_session_index_cleanup, inspect_provider_sync_lock,
     load_provider_sync_targets, preview_session_index_cleanup,
+    remove_thread_sidebar_references, ThreadSidebarCleanupResult,
     remote_control_session_recovery_candidate_exists, run_provider_sync,
     run_provider_sync_with_target,
     run_remote_control_session_catalog_recovery_for_thread_with_target,

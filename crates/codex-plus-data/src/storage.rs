@@ -66,6 +66,20 @@ pub fn delete_local_from_paths(
                     format!("{}；session_index.jsonl 清理失败：{error}", result.message);
             }
         }
+        match crate::provider_sync::remove_thread_sidebar_references(home, &thread_id) {
+            Ok(cleanup) if cleanup.global_state_entries_removed > 0
+                || cleanup.catalog_rows_removed > 0 =>
+            {
+                if matches!(result.status, DeleteStatus::Failed) {
+                    result.status = DeleteStatus::LocalDeleted;
+                    result.message = "已清理侧边栏索引".to_string();
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                result.message = format!("{}；侧边栏索引清理失败：{error}", result.message);
+            }
+        }
     }
     result
 }
@@ -202,6 +216,11 @@ impl SQLiteStorageAdapter {
             if let Err(error) = crate::provider_sync::remove_session_index_entry(home, &thread_id) {
                 result.message =
                     format!("{}；session_index.jsonl 清理失败：{error}", result.message);
+            }
+            if let Err(error) =
+                crate::provider_sync::remove_thread_sidebar_references(home, &thread_id)
+            {
+                result.message = format!("{}；侧边栏索引清理失败：{error}", result.message);
             }
         }
         result
