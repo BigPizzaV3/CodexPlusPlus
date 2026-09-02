@@ -73,11 +73,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn launcher_main(
-    args: Vec<String>,
-    helper_only: bool,
-    options: LaunchOptions,
-) -> Result<()> {
+async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOptions) -> Result<()> {
     if helper_only {
         let hooks = LauncherHooks::default();
         hooks.start_helper(options.helper_port).await?;
@@ -132,13 +128,15 @@ fn acquire_single_instance_guard_with_retry(
             }
             Ok(Some(guard))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AddrInUse
+            ) =>
+        {
             log_launcher_already_running(debug_port);
-            Ok(None)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-            log_launcher_already_running(debug_port);
-            if allow_stale_recovery && should_recover_stale_launcher(debug_port) {
+            let stale = allow_stale_recovery && should_recover_stale_launcher(debug_port);
+            if should_retry_stale_launcher_guard(error.kind(), allow_stale_recovery, stale) {
                 codex_plus_core::watcher::stop_launcher_processes();
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 return acquire_single_instance_guard_with_retry(debug_port, false);
@@ -154,6 +152,19 @@ fn acquire_single_instance_guard_with_retry(
             })
             .map(Some),
     }
+}
+
+fn should_retry_stale_launcher_guard(
+    error_kind: std::io::ErrorKind,
+    allow_stale_recovery: bool,
+    stale_launcher: bool,
+) -> bool {
+    allow_stale_recovery
+        && stale_launcher
+        && matches!(
+            error_kind,
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AddrInUse
+        )
 }
 
 fn try_acquire_single_instance_guard() -> std::io::Result<codex_plus_core::ports::LoopbackPortGuard>
@@ -494,6 +505,15 @@ impl LaunchHooks for LauncherHooks {
         settings: &codex_plus_core::settings::BackendSettings,
     ) -> anyhow::Result<()> {
         self.core.apply_active_relay_profile(settings).await
+    }
+
+    async fn ensure_active_protocol_proxy_config(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core
+            .ensure_active_protocol_proxy_config(settings)
+            .await
     }
 
     async fn ensure_plugin_marketplace_config(
@@ -1109,6 +1129,30 @@ mod tests {
     }
 
     #[test]
+    fn stale_launcher_recovery_covers_port_and_fallback_lock_conflicts() {
+        assert!(should_retry_stale_launcher_guard(
+            std::io::ErrorKind::WouldBlock,
+            true,
+            true
+        ));
+        assert!(should_retry_stale_launcher_guard(
+            std::io::ErrorKind::AddrInUse,
+            true,
+            true
+        ));
+        assert!(!should_retry_stale_launcher_guard(
+            std::io::ErrorKind::WouldBlock,
+            false,
+            true
+        ));
+        assert!(!should_retry_stale_launcher_guard(
+            std::io::ErrorKind::PermissionDenied,
+            true,
+            true
+        ));
+    }
+
+    #[test]
     fn existing_launcher_path_drains_pending_remote_control_recovery_before_activation() {
         let source = include_str!("main.rs");
         let start = source
@@ -1198,6 +1242,7 @@ mod tests {
     #[test]
     fn launcher_hooks_forward_runtime_watchdog_and_marketplace_methods() {
         let source = include_str!("main.rs");
+        let compact_source = source.split_whitespace().collect::<String>();
 
         assert!(source.contains("async fn start_bridge_watchdog"));
         assert!(source.contains("self.watchdog_bridge_context()?"));
@@ -1205,6 +1250,11 @@ mod tests {
         assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
         assert!(source.contains("async fn ensure_plugin_marketplace_config"));
         assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
+        assert!(source.contains("async fn ensure_active_protocol_proxy_config"));
+        assert!(
+            compact_source
+                .contains("self.core.ensure_active_protocol_proxy_config(settings).await")
+        );
     }
 
     #[tokio::test]
