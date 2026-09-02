@@ -2233,6 +2233,150 @@ pub fn remove_session_index_entry(
     Ok(removed_entries)
 }
 
+/// 删除 Codex 侧边栏对线程的本地引用。
+///
+/// 线程正文由 `state_5.sqlite`/rollout 文件保存，而侧边栏还会从全局状态和
+/// `sqlite/codex-dev.db` 的目录缓存读取条目。删除正文时必须同步清理这些缓存，
+/// 否则重启后仍会显示一个无法恢复的“幽灵会话”。该操作按 thread id 精确匹配，
+/// 可重复执行；缓存不存在或目标不存在均视为成功。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThreadSidebarCleanupResult {
+    pub global_state_entries_removed: usize,
+    pub catalog_rows_removed: usize,
+}
+
+pub fn remove_thread_sidebar_references(
+    codex_home: &Path,
+    thread_id: &str,
+) -> anyhow::Result<ThreadSidebarCleanupResult> {
+    let thread_id = thread_id.strip_prefix("local:").unwrap_or(thread_id);
+    let (global_state_entries_removed, global_error) =
+        match remove_thread_from_global_state(codex_home, thread_id) {
+            Ok(count) => (count, None),
+            Err(error) => (0, Some(error)),
+        };
+    let (catalog_rows_removed, catalog_error) =
+        match remove_thread_from_catalog_dbs(codex_home, thread_id) {
+            Ok(count) => (count, None),
+            Err(error) => (0, Some(error)),
+        };
+    if let Some(error) = global_error {
+        return Err(error);
+    }
+    if let Some(error) = catalog_error {
+        return Err(error);
+    }
+    Ok(ThreadSidebarCleanupResult {
+        global_state_entries_removed,
+        catalog_rows_removed,
+    })
+}
+
+fn remove_thread_from_global_state(codex_home: &Path, thread_id: &str) -> anyhow::Result<usize> {
+    let path = codex_home.join(".codex-global-state.json");
+    if !path.exists() {
+        return Ok(0);
+    }
+    let original_bytes = fs::read(&path)?;
+    let mut state: Value = serde_json::from_slice(&original_bytes)?;
+    let Some(root) = state.as_object_mut() else {
+        return Ok(0);
+    };
+    let mut removed = 0usize;
+    if let Some(ids) = root
+        .get_mut("projectless-thread-ids")
+        .and_then(Value::as_array_mut)
+    {
+        let before = ids.len();
+        ids.retain(|value| value.as_str() != Some(thread_id));
+        removed += before.saturating_sub(ids.len());
+    }
+    for key in [
+        "thread-projectless-output-directories",
+        "thread-workspace-root-hints",
+        "thread-writable-roots",
+    ] {
+        if let Some(map) = root.get_mut(key).and_then(Value::as_object_mut) {
+            for candidate in [thread_id, &format!("local:{thread_id}")] {
+                if map.remove(candidate).is_some() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    if let Some(atom) = root
+        .get_mut("electron-persisted-atom-state")
+        .and_then(Value::as_object_mut)
+    {
+        let encoded_local = format!("local%3A{thread_id}");
+        let client_id = format!("thread-client-id-v1:{thread_id}");
+        let client_id_encoded = format!("thread-client-id-v1:{encoded_local}");
+        let reference_capability = format!("thread-reference-capability:{thread_id}");
+        let reference_capability_encoded = format!("thread-reference-capability:{encoded_local}");
+        let keys = atom
+            .keys()
+            .filter(|key| {
+                *key == &client_id
+                    || *key == &client_id_encoded
+                    || *key == &reference_capability
+                    || *key == &reference_capability_encoded
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            atom.remove(&key);
+            removed += 1;
+        }
+    }
+    if removed == 0 {
+        return Ok(0);
+    }
+    if fs::read(&path)? != original_bytes {
+        anyhow::bail!(".codex-global-state.json changed while deleting thread {thread_id}");
+    }
+    codex_plus_core::settings::atomic_write(&path, serde_json::to_string_pretty(&state)?.as_bytes())?;
+    Ok(removed)
+}
+
+fn remove_thread_from_catalog_dbs(codex_home: &Path, thread_id: &str) -> anyhow::Result<usize> {
+    let mut removed_total = 0usize;
+    for path in codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(codex_home) {
+        if !path.exists() {
+            continue;
+        }
+        let mut db = Connection::open(&path)?;
+        db.busy_timeout(std::time::Duration::from_millis(500))?;
+        let tx = db.transaction()?;
+        let mut removed = 0usize;
+        for table in [
+            "local_thread_catalog",
+            "thread_timeline_ledger",
+            "local_thread_catalog_scan_entries",
+        ] {
+            let columns = table_columns(&tx, table)?;
+            if !columns.contains("thread_id") {
+                continue;
+            }
+            removed += tx.execute(
+                &format!("DELETE FROM {table} WHERE thread_id = ?1"),
+                [thread_id],
+            )?;
+        }
+        if removed > 0 {
+            let metadata_columns = table_columns(&tx, "local_thread_catalog_metadata")?;
+            if metadata_columns.contains("catalog_revision") {
+                tx.execute(
+                    "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + ?1",
+                    [removed as i64],
+                )?;
+            }
+        }
+        tx.commit()?;
+        removed_total += removed;
+    }
+    Ok(removed_total)
+}
+
 /// Append previously removed `session_index.jsonl` lines back (undo flow).
 /// Lines whose `id` already exists are skipped. Returns the number of
 /// appended lines. Best-effort: returns `Ok(0)` without writing when the
