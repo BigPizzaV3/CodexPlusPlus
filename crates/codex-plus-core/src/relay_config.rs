@@ -1075,24 +1075,15 @@ pub fn delete_context_entry_from_common_config(
     Ok(normalize_optional_toml(doc))
 }
 
-<<<<<<< ours
 /// 剥掉通用配置里供应商各自持有的键，丢掉历史遗留的 `[skills.<id>]` 死表，
 /// 再丢掉标记为 `enabled = false` 的上下文条目，得到本次切换真正要合并进
 /// config.toml 的那份通用配置。
-=======
-/// 剥掉通用配置里供应商各自持有的键，再丢掉标记为 `enabled = false` 的上下文条目，
-/// 得到本次切换真正要合并进 config.toml 的那份通用配置。
->>>>>>> theirs
 ///
 /// 条目启停以条目自身的 `enabled` 为唯一依据——旧版还存在一份「按供应商勾选」的
 /// selection，两套机制重叠，空的 selection 会把 live config 里的 MCP 全清空，已移除。
 pub fn prepare_common_config_for_apply(common_config: &str) -> anyhow::Result<String> {
-<<<<<<< ours
     let sanitized_common =
         strip_legacy_skill_tables(&sanitize_common_config_contents(common_config));
-=======
-    let sanitized_common = sanitize_common_config_contents(common_config);
->>>>>>> theirs
     let mut filtered = parse_toml_document(&sanitized_common)?;
     remove_disabled_context_tables(filtered.as_table_mut());
     Ok(normalize_optional_toml(filtered))
