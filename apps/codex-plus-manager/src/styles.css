@@ -3315,6 +3315,10 @@ body {
   margin-bottom: 12px;
 }
 
+.settings-test-model-field {
+  margin-top: 16px;
+}
+
 .field span,
 .check-row span {
   color: hsl(var(--foreground) / 0.86);
@@ -3749,6 +3753,18 @@ body {
 
 .stepwise-settings-block .form-row {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.stepwise-settings-block {
+  --stepwise-control-height: 40px;
+}
+
+.stepwise-settings-block input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.stepwise-settings-block .app-select-trigger,
+.stepwise-settings-block .field-select,
+.stepwise-settings-block .select-input {
+  height: var(--stepwise-control-height);
+  min-height: var(--stepwise-control-height);
 }
 
 .stepwise-settings-section {
