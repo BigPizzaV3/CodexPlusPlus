@@ -171,10 +171,40 @@ DMG_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-plus-plus-dmg.XXXXXX")"
 DMG_WORK_PATH="$DMG_WORK_DIR/$(basename "$DMG")"
 DMG_CREATED=false
 MOUNT_POINT=""
+MOUNT_DEVICE=""
+
+detach_dmg() {
+  local target="$1"
+  local attempt
+
+  [ -z "$target" ] && return 0
+  for attempt in 1 2 3 4; do
+    if hdiutil detach "$target" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    # hdiutil can report a transient failure even though the device detached
+    # while the command was returning. Treat an already-gone device as done.
+    if ! hdiutil info 2>/dev/null | grep -Fq -- "$target"; then
+      return 0
+    fi
+
+    sleep "$attempt"
+    hdiutil detach "$target" -force >/dev/null 2>&1 || true
+    if ! hdiutil info 2>/dev/null | grep -Fq -- "$target"; then
+      return 0
+    fi
+  done
+
+  echo "error: failed to detach DMG device: $target" >&2
+  return 1
+}
 
 cleanup_dmg_work_dir() {
-  if [ -n "$MOUNT_POINT" ]; then
-    hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+  if [ -n "$MOUNT_DEVICE" ]; then
+    detach_dmg "$MOUNT_DEVICE" || true
+  elif [ -n "$MOUNT_POINT" ]; then
+    detach_dmg "$MOUNT_POINT" || true
   fi
   rm -f "$DMG_WORK_PATH"
   rmdir "$DMG_WORK_DIR" 2>/dev/null || true
@@ -185,6 +215,7 @@ trap cleanup_dmg_work_dir EXIT
 hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDRW "$DMG_WORK_PATH"
 
 MOUNT_OUTPUT="$(hdiutil attach "$DMG_WORK_PATH" -readwrite -noverify -noautoopen -nobrowse)"
+MOUNT_DEVICE="$(printf '%s\n' "$MOUNT_OUTPUT" | awk '/^\/dev\/disk/ {print $1; exit}')"
 MOUNT_POINT="$(printf '%s\n' "$MOUNT_OUTPUT" | awk 'match($0, /\/Volumes\//) {print substr($0, RSTART)}' | tail -1)"
 if [ -z "$MOUNT_POINT" ]; then
   echo "error: failed to find mounted DMG volume" >&2
@@ -251,6 +282,7 @@ if ! detach_volume; then
   exit 1
 fi
 MOUNT_POINT=""
+MOUNT_DEVICE=""
 
 # 上一步 detach 可能触发延迟弹出：卷目录已消失但磁盘镜像仍在弹出中，
 # convert 会暂时报 Resource temporarily unavailable——退避重试等它完成。

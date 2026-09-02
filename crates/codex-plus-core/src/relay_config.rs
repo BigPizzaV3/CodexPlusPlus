@@ -6,16 +6,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{BackendSettings, RelayProfile, RelayProtocol, RelaySessionProvider};
+use crate::settings::{
+    BackendSettings, RelayProfile, RelayProtocol, RelaySessionProvider,
+};
 
 const RELAY_PROVIDER: &str = "custom";
-/// 我们代管的 config.toml 上下文表。
-///
-/// 这里没有 `skills`：codex 的 `skills` 配置键是一个三字段结构体
-/// （bundled / include_instructions / max_context_tokens），`[skills.<id>]` 会被
-/// serde 当未知字段丢掉。skill 靠 `$CODEX_HOME/skills/<id>/SKILL.md` 目录发现，
-/// 由 crate::skills 管理。
-const CONTEXT_TABLE_NAMES: [&str; 2] = ["mcp_servers", "plugins"];
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
 const CC_SWITCH_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
 const CHAT_UPSTREAM_BASE_URL_KEY: &str = "codex_plus_chat_base_url";
@@ -98,6 +93,7 @@ pub struct CodexContextEntry {
 #[serde(rename_all = "camelCase")]
 pub struct CodexContextEntries {
     pub mcp_servers: Vec<CodexContextEntry>,
+    pub skills: Vec<CodexContextEntry>,
     pub plugins: Vec<CodexContextEntry>,
 }
 
@@ -242,10 +238,6 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .and_then(|values| values.get("requires_openai_auth"))
         .map(|value| value.trim() == "true")
         .unwrap_or(false);
-    let explicitly_disables_auth = provider
-        .as_ref()
-        .and_then(|values| values.get("requires_openai_auth"))
-        .is_some_and(|value| value.trim() == "false");
     let has_bearer_token = provider
         .as_ref()
         .and_then(|values| values.get("experimental_bearer_token"))
@@ -259,7 +251,7 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         .unwrap_or(false);
     RelayConfigStatus {
         configured: root_provider.is_some()
-            && (has_bearer_token || has_auth_api_key || explicitly_disables_auth)
+            && (has_bearer_token || has_auth_api_key)
             && has_base_url,
         requires_openai_auth,
         has_bearer_token,
@@ -277,10 +269,7 @@ fn provider_values_are_configured(
     let has_bearer_token = values
         .get("experimental_bearer_token")
         .is_some_and(|value| !unquote_toml_string(value).trim().is_empty());
-    let explicitly_disables_auth = values
-        .get("requires_openai_auth")
-        .is_some_and(|value| value.trim() == "false");
-    has_base_url && (has_bearer_token || has_auth_api_key || explicitly_disables_auth)
+    has_base_url && (has_bearer_token || has_auth_api_key)
 }
 
 pub fn responses_proxy_configured_in_home(home: &Path) -> bool {
@@ -520,10 +509,13 @@ pub fn apply_relay_profile_files_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    let compatible_config = apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
-    let auth_contents = relay_profile_auth_contents_for_apply(profile)?;
-    apply_relay_files_to_home(home, &compatible_config, &auth_contents)
+    with_model_catalog_rollback(home, profile, || {
+        let config_with_catalog =
+            apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+        let compatible_config =
+            apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
+        apply_relay_files_to_home(home, &compatible_config, &profile.auth_contents)
+    })
 }
 
 pub fn apply_relay_profile_to_home_with_switch_rules(
@@ -545,24 +537,19 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    let compatible_config = apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
+    with_model_catalog_rollback(home, profile, || {
+        let config_with_catalog =
+            apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+        let compatible_config =
+            apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
 
-    if profile.relay_mode == crate::settings::RelayMode::PureApi {
-        let auth_contents = relay_profile_auth_contents_for_apply(profile)?;
-        apply_relay_files_to_home(home, &compatible_config, &auth_contents)
-    } else {
-        let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
-        apply_relay_files_to_home(home, &compatible_config, &auth_contents)
-    }
-}
-
-fn relay_profile_auth_contents_for_apply(profile: &RelayProfile) -> anyhow::Result<String> {
-    if profile.uses_no_auth() {
-        no_auth_auth_contents(&profile.auth_contents)
-    } else {
-        Ok(profile.auth_contents.clone())
-    }
+        if profile.relay_mode == crate::settings::RelayMode::PureApi {
+            apply_relay_files_to_home(home, &compatible_config, &profile.auth_contents)
+        } else {
+            let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
+            apply_relay_files_to_home(home, &compatible_config, &auth_contents)
+        }
+    })
 }
 
 pub fn apply_relay_profile_config_to_home_with_context(
@@ -582,9 +569,13 @@ pub fn apply_relay_profile_config_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    let config_with_catalog = apply_model_catalog_to_config(home, profile, &config_with_limits)?;
-    let compatible_config = apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
-    apply_relay_config_file_to_home(home, &compatible_config)
+    with_model_catalog_rollback(home, profile, || {
+        let config_with_catalog =
+            apply_model_catalog_to_config(home, profile, &config_with_limits)?;
+        let compatible_config =
+            apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
+        apply_relay_config_file_to_home(home, &compatible_config)
+    })
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -1030,6 +1021,7 @@ pub fn list_context_entries_from_common_config(
     let doc = parse_toml_document(&normalized)?;
     Ok(CodexContextEntries {
         mcp_servers: list_context_entries_for_table(&doc, "mcp_servers"),
+        skills: list_context_entries_for_table(&doc, "skills"),
         plugins: list_context_entries_for_table(&doc, "plugins"),
     })
 }
@@ -1129,7 +1121,7 @@ fn preserve_unmanaged_live_context_entries(
 }
 
 fn merge_managed_context_tables(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
-    for table_name in CONTEXT_TABLE_NAMES {
+    for table_name in ["mcp_servers", "skills", "plugins"] {
         merge_managed_context_table(target, managed, table_name);
     }
 }
@@ -1158,7 +1150,7 @@ fn merge_managed_context_table(
 }
 
 fn remove_managed_context_entries(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
-    for table_name in CONTEXT_TABLE_NAMES {
+    for table_name in ["mcp_servers", "skills", "plugins"] {
         remove_managed_context_entry_table(target, managed, table_name);
     }
 }
@@ -1187,7 +1179,7 @@ fn preserve_unmanaged_context_tables(
     live: &toml_edit::Table,
     managed: &toml_edit::Table,
 ) {
-    for table_name in CONTEXT_TABLE_NAMES {
+    for table_name in ["mcp_servers", "skills", "plugins"] {
         preserve_unmanaged_context_table(target, live, managed, table_name);
     }
 }
@@ -1228,7 +1220,7 @@ fn preserve_unmanaged_context_table(
 }
 
 fn remove_disabled_context_tables(table: &mut toml_edit::Table) {
-    for table_name in CONTEXT_TABLE_NAMES {
+    for table_name in ["mcp_servers", "skills", "plugins"] {
         let Some(item) = table.get_mut(table_name) else {
             continue;
         };
@@ -1311,6 +1303,30 @@ fn write_codex_live_atomic(
     }
 
     Ok(backup_path)
+}
+
+fn with_model_catalog_rollback<T>(
+    home: &Path,
+    profile: &RelayProfile,
+    operation: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let catalog_path = home
+        .join("model-catalogs")
+        .join(format!("{}.json", sanitize_catalog_filename(&profile.id)));
+    let previous_catalog = read_optional_bytes(&catalog_path)?;
+    match operation() {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let Err(restore_error) =
+                restore_optional_file(&catalog_path, previous_catalog.as_deref())
+            {
+                return Err(
+                    error.context(format!("应用失败后恢复模型 catalog 失败：{restore_error}"))
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 fn preserve_live_marketplace_configs(home: &Path, config_text: &str) -> anyhow::Result<String> {
@@ -1463,14 +1479,6 @@ fn normalize_text_toml(contents: String) -> String {
     }
 }
 
-/// 丢掉历史遗留的 `[skills.<id>]` 表。
-///
-/// 这些条目是早期把 skill 当 config.toml 注册表管留下来的，codex 从来没读过它们
-/// （`skills` 是个三字段结构体，`[skills.<id>]` 会被当未知字段丢掉）。skill 现在由
-/// `$CODEX_HOME/skills/` 目录管，这里顺手把死数据从用户配置里清掉。
-///
-/// 注意只删 `[skills.<id>]` 子表，`[skills]` 本身是合法配置（bundled /
-/// include_instructions / max_context_tokens），得留着。
 pub fn strip_legacy_skill_tables(contents: &str) -> String {
     let Ok(mut doc) = parse_toml_document(contents) else {
         return contents.to_string();
@@ -1486,9 +1494,6 @@ pub fn strip_legacy_skill_tables(contents: &str) -> String {
         .filter(|(_, item)| item.is_table_like())
         .map(|(id, _)| id.to_string())
         .collect();
-    if legacy_ids.is_empty() {
-        return contents.to_string();
-    }
     for id in legacy_ids {
         table.remove(&id);
     }
@@ -1863,21 +1868,38 @@ fn apply_model_catalog_to_config(
         sanitize_catalog_filename(&profile.id)
     );
     let mut config_text = config_text.to_string();
+    let mut model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+    validate_model_windows(&model_windows)?;
+    let model_list = if profile.model_list.contains('[') {
+        let (clean_list, migrated_windows) =
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        for (slug, window) in migrated_windows {
+            model_windows.entry(slug).or_insert(window);
+        }
+        clean_list
+    } else {
+        profile.model_list.clone()
+    };
+    let model_auto_compact =
+        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
+    validate_model_auto_compact(&model_auto_compact)?;
+    let model_metadata = parse_model_metadata_map(&profile.model_metadata)?;
+    let entries = crate::model_suffix::collect_catalog_entries(
+        &model_list,
+        &model_windows,
+        &model_auto_compact,
+        &profile.model,
+    );
+    let entry_slugs: HashSet<String> = entries.iter().map(|entry| entry.slug.clone()).collect();
+    let has_metadata_overrides = model_metadata_has_entries(&model_metadata, &entry_slugs);
+    let has_per_model_overrides = has_metadata_overrides
+        || entries
+            .iter()
+            .any(|entry| entry.suffix_window.is_some() || entry.auto_compact_percent.is_some());
     let custom_responses = custom_responses_provider(&config_text);
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
-    let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
-        if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
-            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
-        } else {
-            (
-                profile.model_list.clone(),
-                serde_json::from_str(&profile.model_windows).unwrap_or_default(),
-            )
-        };
-    let entries =
-        crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
@@ -1887,21 +1909,28 @@ fn apply_model_catalog_to_config(
         if existing != catalog_relative {
             if is_cc_switch_model_catalog(&existing) {
                 config_text = remove_root_key(&config_text, "model_catalog_json");
-            } else if official_deepseek_responses {
-                return Ok(config_text.to_string());
-            } else if custom_responses
-                && copy_standard_responses_catalog(
-                    home,
-                    &existing,
-                    &catalog_relative,
-                    &entries,
-                    fallback,
-                )?
-            {
-                let mut doc = parse_toml_document(&config_text)?;
-                doc["model_catalog_json"] = toml_edit::value(catalog_relative);
-                return Ok(normalize_optional_toml(doc));
             } else {
+                if has_per_model_overrides {
+                    anyhow::bail!(
+                        "当前配置使用外部 model_catalog_json，无法同时应用每模型窗口、自动压缩或元数据"
+                    );
+                }
+                if official_deepseek_responses {
+                    return Ok(config_text.to_string());
+                }
+                if custom_responses
+                    && copy_standard_responses_catalog(
+                        home,
+                        &existing,
+                        &catalog_relative,
+                        &entries,
+                        fallback,
+                    )?
+                {
+                    let mut doc = parse_toml_document(&config_text)?;
+                    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                    return Ok(normalize_optional_toml(doc));
+                }
                 return Ok(config_text);
             }
         }
@@ -1909,6 +1938,11 @@ fn apply_model_catalog_to_config(
     if !official_deepseek_responses
         && let Some(external_catalog) = live_external_model_catalog(home)
     {
+        if has_per_model_overrides {
+            anyhow::bail!(
+                "当前 Codex 配置使用外部 model_catalog_json，无法同时应用每模型窗口、自动压缩或元数据"
+            );
+        }
         let mut doc = parse_toml_document(&config_text)?;
         if custom_responses
             && copy_standard_responses_catalog(
@@ -1926,12 +1960,21 @@ fn apply_model_catalog_to_config(
         return Ok(normalize_optional_toml(doc));
     }
     // Known bundled metadata entries need a catalog even without a user-supplied window.
-    if !entries.iter().any(|entry| {
-        entry.suffix_window.is_some()
-            || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
-            || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
-    }) {
-        return Ok(config_text);
+    if !has_metadata_overrides
+        && !entries.iter().any(|entry| {
+            entry.suffix_window.is_some()
+                || entry.auto_compact_percent.is_some()
+                || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+                || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
+        })
+    {
+        let mut doc = parse_toml_document(&config_text)?;
+        if root_key_string(&config_text, "model_catalog_json").as_deref()
+            == Some(catalog_relative.as_str())
+        {
+            doc.remove("model_catalog_json");
+        }
+        return Ok(normalize_optional_toml(doc));
     }
     let catalog_path = home.join(&catalog_relative);
     if let Some(parent) = catalog_path.parent() {
@@ -1946,10 +1989,108 @@ fn apply_model_catalog_to_config(
         custom_responses.then_some(false),
         official_deepseek_responses,
     );
-    std::fs::write(&catalog_path, catalog_json)?;
+    let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
+    crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
+}
+
+fn parse_model_string_map(
+    value: &str,
+    field_name: &str,
+) -> anyhow::Result<HashMap<String, String>> {
+    if value.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    let parsed: Value = serde_json::from_str(value)
+        .map_err(|error| anyhow::anyhow!("{field_name} JSON 解析失败：{error}"))?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{field_name} 必须是 JSON 对象"))?;
+    object
+        .iter()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("{field_name} 的模型 {key} 值必须是字符串"))?;
+            Ok((key.clone(), value.to_string()))
+        })
+        .collect()
+}
+
+fn validate_model_windows(model_windows: &HashMap<String, String>) -> anyhow::Result<()> {
+    for (slug, value) in model_windows {
+        if crate::model_suffix::parse_window_token(value).is_none() {
+            anyhow::bail!("model_windows 的模型 {slug} 窗口值无效：{value}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_model_auto_compact(model_auto_compact: &HashMap<String, String>) -> anyhow::Result<()> {
+    for (slug, value) in model_auto_compact {
+        if crate::model_suffix::parse_compact_percent(value).is_none() {
+            anyhow::bail!("model_auto_compact 的模型 {slug} 百分比无效：{value}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
+    if metadata_json.trim().is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    let value: Value = serde_json::from_str(metadata_json)
+        .map_err(|error| anyhow::anyhow!("model_metadata JSON 解析失败：{error}"))?;
+    let map = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("model_metadata 必须是 JSON 对象"))?;
+    for (slug, metadata) in map {
+        if !metadata.is_object() {
+            anyhow::bail!("model_metadata 的模型 {slug} 值必须是对象");
+        }
+    }
+    Ok(map.clone())
+}
+
+fn model_metadata_has_entries(
+    metadata: &serde_json::Map<String, Value>,
+    entry_slugs: &HashSet<String>,
+) -> bool {
+    metadata.keys().any(|slug| entry_slugs.contains(slug))
+}
+
+fn apply_model_metadata_overrides(
+    catalog_json: &str,
+    override_map: &serde_json::Map<String, Value>,
+) -> anyhow::Result<String> {
+    if override_map.is_empty() {
+        return Ok(catalog_json.to_string());
+    }
+    let mut catalog: Value = serde_json::from_str(catalog_json)
+        .map_err(|error| anyhow::anyhow!("catalog JSON 解析失败：{error}"))?;
+    let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+        return Ok(catalog_json.to_string());
+    };
+    for model in models {
+        let Some(slug) = model.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(user_override) = override_map.get(slug).and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(model_object) = model.as_object_mut() else {
+            continue;
+        };
+        for (key, value) in user_override {
+            if matches!(key.as_str(), "slug" | "context_window" | "auto_compact_token_limit") {
+                continue;
+            }
+            model_object.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(serde_json::to_string_pretty(&catalog)?)
 }
 
 pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
@@ -2399,6 +2540,7 @@ fn table_body_to_string(table: &Table) -> String {
 fn context_table_name(kind: &str) -> anyhow::Result<&'static str> {
     match kind {
         "mcp" | "mcpServer" | "mcpServers" => Ok("mcp_servers"),
+        "skill" | "skills" => Ok("skills"),
         "plugin" | "plugins" => Ok("plugins"),
         other => anyhow::bail!("未知上下文类型：{other}"),
     }
@@ -2407,6 +2549,7 @@ fn context_table_name(kind: &str) -> anyhow::Result<&'static str> {
 fn context_kind_name(table: &str) -> &'static str {
     match table {
         "mcp_servers" => "mcp",
+        "skills" => "skill",
         "plugins" => "plugin",
         _ => "unknown",
     }
@@ -2492,13 +2635,6 @@ fn restore_profile_credentials_after_backfill(
     template_api_key: &str,
     live_auth: &str,
 ) -> anyhow::Result<()> {
-    if profile.uses_no_auth() {
-        profile.config_contents =
-            remove_experimental_bearer_token_from_config(&profile.config_contents)?;
-        profile.auth_contents = no_auth_auth_contents(template_auth)?;
-        profile.api_key.clear();
-        return Ok(());
-    }
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
         profile.config_contents =
             remove_experimental_bearer_token_from_config(&profile.config_contents)?;
@@ -2587,11 +2723,6 @@ fn set_experimental_bearer_token_in_config(
 }
 
 fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
-    if profile.uses_no_auth() {
-        profile.relay_mode = crate::settings::RelayMode::PureApi;
-        profile.official_mix_api_key = false;
-        return;
-    }
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         return;
     }
@@ -2690,9 +2821,6 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
 }
 
 pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
-    if profile.uses_no_auth() {
-        return String::new();
-    }
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return "codex-plus-aggregate".to_string();
     }
@@ -2789,9 +2917,7 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["wire_api"] = toml_edit::value("responses");
     }
-    if profile.uses_no_auth() {
-        provider["requires_openai_auth"] = toml_edit::value(true);
-    } else if profile.relay_mode != crate::settings::RelayMode::PureApi
+    if profile.relay_mode != crate::settings::RelayMode::PureApi
         && provider
             .get("requires_openai_auth")
             .and_then(Item::as_bool)
@@ -2852,12 +2978,22 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
             }
         })
         .collect();
-    if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
-        let (clean_list, windows) =
+    if profile.model_list.contains('[') {
+        let (clean_list, migrated_windows) =
             crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+        let mut windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+        for (slug, window) in migrated_windows {
+            windows.entry(slug).or_insert(window);
+        }
         profile.model_list = clean_list;
-        profile.model_windows = serde_json::to_string(&windows).unwrap_or_default();
+        profile.model_windows = serde_json::to_string(&windows)?;
     }
+    let model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
+    validate_model_windows(&model_windows)?;
+    let model_auto_compact =
+        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
+    validate_model_auto_compact(&model_auto_compact)?;
+    parse_model_metadata_map(&profile.model_metadata)?;
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         let has_api_config = !profile.base_url.trim().is_empty()
             || !profile.api_key.trim().is_empty()
@@ -2914,6 +3050,9 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
     profile.upstream_base_url = source_base_url.clone();
     profile.base_url = source_base_url;
     profile.api_key = relay_profile_api_key(profile);
+    if profile.uses_no_auth() {
+        profile.api_key.clear();
+    }
     Ok(())
 }
 

@@ -5517,6 +5517,7 @@ fn relay_switch_mutex() -> &'static Mutex<()> {
 fn empty_context_entries() -> codex_plus_core::relay_config::CodexContextEntries {
     codex_plus_core::relay_config::CodexContextEntries {
         mcp_servers: Vec::new(),
+        skills: Vec::new(),
         plugins: Vec::new(),
     }
 }

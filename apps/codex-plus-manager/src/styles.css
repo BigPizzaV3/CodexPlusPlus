@@ -4961,7 +4961,7 @@ input[type="range"]:disabled {
 
 .relay-model-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(180px, 1fr) 40px;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(110px, 0.6fr) minmax(180px, 1fr) 40px 40px;
   align-items: center;
   gap: 8px;
   min-height: var(--relay-control-height);
@@ -4973,11 +4973,74 @@ input[type="range"]:disabled {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .relay-model-row input {
   min-width: 0;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.relay-model-entry {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-model-import-workbench {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+  padding: 12px;
+}
+
+.relay-model-import-workbench textarea {
+  min-height: 150px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.relay-model-metadata-import-error,
+.relay-model-metadata-import-warning {
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.relay-model-metadata-import-error {
+  color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / 0.08);
+}
+
+.relay-model-metadata-import-warning {
+  color: hsl(var(--warning-foreground, var(--foreground)));
+  background: hsl(var(--warning) / 0.12);
+}
+
+.relay-model-metadata-import-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.relay-model-import-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.relay-model-import-copy span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.relay-model-metadata-import-flow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .relay-model-route-editor {
@@ -5914,6 +5977,15 @@ select {
   .relay-model-row,
   .relay-model-route-row {
     grid-template-columns: 1fr;
+  }
+
+  .relay-model-metadata-import-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-model-metadata-import-flow {
+    justify-content: flex-start;
   }
 
   .relay-model-row-head,
