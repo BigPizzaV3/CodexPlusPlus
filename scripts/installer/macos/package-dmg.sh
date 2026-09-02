@@ -252,19 +252,21 @@ if ! detach_volume; then
 fi
 MOUNT_POINT=""
 
-for attempt in 1 2 3; do
+# 上一步 detach 可能触发延迟弹出：卷目录已消失但磁盘镜像仍在弹出中，
+# convert 会暂时报 Resource temporarily unavailable——退避重试等它完成。
+for attempt in 1 2 3 4 5; do
   if hdiutil convert "$DMG_WORK_PATH" -format UDZO -ov -o "$DMG"; then
     DMG_CREATED=true
     break
   fi
 
-  if [ "$attempt" -lt 3 ]; then
-    sleep "$((attempt * 2))"
+  if [ "$attempt" -lt 5 ]; then
+    sleep "$((attempt * 3))"
   fi
 done
 
 if [ "$DMG_CREATED" != true ]; then
-  echo "error: failed to create DMG after 3 attempts" >&2
+  echo "error: failed to create DMG after 5 attempts" >&2
   exit 1
 fi
 
