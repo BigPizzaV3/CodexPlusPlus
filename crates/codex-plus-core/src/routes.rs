@@ -83,9 +83,9 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value>;
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn open_devtools(&self) -> anyhow::Result<Value>;
-    async fn open_manager(&self) -> anyhow::Result<Value>;
-    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
-        self.open_manager().await
+    async fn open_manager(&self, payload: Value) -> anyhow::Result<Value>;
+    async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        self.open_manager(payload).await
     }
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
@@ -182,8 +182,8 @@ pub async fn handle_bridge_request(
         }
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
-        "/manager/open" => ctx.runtime.open_manager().await,
-        "/manager/open-transient" => ctx.runtime.open_transient_manager().await,
+        "/manager/open" => ctx.runtime.open_manager(payload.clone()).await,
+        "/manager/open-transient" => ctx.runtime.open_transient_manager(payload.clone()).await,
         "/backend/status" => backend_status_value(
             ctx.runtime.backend_status().await,
             ctx.settings.get_settings().await,
@@ -459,23 +459,39 @@ impl BridgeRuntimeService for CoreRuntimeService {
         }))
     }
 
-    async fn open_manager(&self) -> anyhow::Result<Value> {
-        let target = crate::install::spawn_companion(
-            crate::install::MANAGER_BINARY,
-            std::iter::empty::<&str>(),
-        )?;
+    async fn open_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        let navigation =
+            crate::manager_navigation::save_pending_manager_navigation_from_payload(&payload)?;
+        let target = crate::install::open_or_activate_manager().map_err(|error| {
+            crate::manager_navigation::rollback_pending_manager_navigation_after_launch_failure(
+                navigation.as_ref(),
+                error,
+            )
+        })?;
         Ok(json!({
             "status": "ok",
-            "path": target
+            "path": target,
+            "navigation": navigation
         }))
     }
 
-    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
-        let target =
-            crate::install::spawn_companion(crate::install::MANAGER_BINARY, ["--transient"])?;
+    async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        let navigation =
+            crate::manager_navigation::save_pending_manager_navigation_from_payload(&payload)?;
+        let target = crate::install::spawn_companion(
+            crate::install::MANAGER_BINARY,
+            ["--transient"],
+        )
+        .map_err(|error| {
+            crate::manager_navigation::rollback_pending_manager_navigation_after_launch_failure(
+                navigation.as_ref(),
+                error,
+            )
+        })?;
         Ok(json!({
             "status": "ok",
-            "path": target
+            "path": target,
+            "navigation": navigation
         }))
     }
 
