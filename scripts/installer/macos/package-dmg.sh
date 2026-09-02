@@ -227,9 +227,28 @@ then
   echo "warning: unable to persist Finder DMG window layout; the background is still included" >&2
 fi
 
-if ! hdiutil detach "$MOUNT_POINT" >/dev/null; then
-  sleep 1
-  hdiutil detach "$MOUNT_POINT" -force >/dev/null
+# GitHub macOS runner 上 Finder 刚完成窗口布局，卷可能仍被短暂占用
+# （Resource busy）；且优雅 detach 失败也可能已触发延迟弹出，后续重试会报
+# No such file or directory（卷已消失，应视为成功）。退避重试后仍失败才
+# -force；-force 后卷已消失同样视为成功。
+detach_volume() {
+  local attempt
+  for attempt in 1 2 3; do
+    if hdiutil detach "$MOUNT_POINT" >/dev/null; then
+      return 0
+    fi
+    if [ ! -e "$MOUNT_POINT" ]; then
+      return 0
+    fi
+    sleep "$((attempt * 2))"
+  done
+  hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1
+  [ ! -e "$MOUNT_POINT" ]
+}
+
+if ! detach_volume; then
+  echo "error: failed to detach DMG volume $MOUNT_POINT" >&2
+  exit 1
 fi
 MOUNT_POINT=""
 
