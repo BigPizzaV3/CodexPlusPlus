@@ -121,16 +121,8 @@ pub fn build_bridge_script(binding_name: &str) -> String {
 pub fn bridge_health_check_script() -> &'static str {
     r#"
 (() => {
-  const bridge = window.__codexSessionDeleteBridge;
-  if (typeof bridge !== "function") return false;
-  try {
-    return Promise.race([
-      Promise.resolve(bridge("/backend/status", {})).then((result) => !!result && result.status === "ok"),
-      new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
-    ]);
-  } catch (error) {
-    return false;
-  }
+  // Watchdog health checks must not create a second bridge request.
+  return typeof window.__codexSessionDeleteBridge === "function";
 })()
 "#
 }
