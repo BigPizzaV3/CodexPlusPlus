@@ -21,6 +21,7 @@ use crate::status::{LaunchStatus, StatusStore};
 
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
+const BRIDGE_HEALTH_FAILURE_THRESHOLD: u8 = 2;
 const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 5_000;
 const MACOS_DEBUG_TAKEOVER_INTERVAL_MS: u64 = 100;
 
@@ -944,6 +945,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             #[cfg(windows)]
             let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
             let mut observed_browser_id: Option<String> = None;
+            let mut bridge_health_failures = 0u8;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
@@ -968,6 +970,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                                 helper_port,
                                 identity_changed,
                                 bridge_reinjector.clone(),
+                                &mut bridge_health_failures,
                             ),
                         );
                         record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
@@ -2424,7 +2427,9 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-    check_and_reinject_bridge_inner(debug_port, helper_port, false, None).await
+    let mut health_failures = 0;
+    check_and_reinject_bridge_inner(debug_port, helper_port, false, None, &mut health_failures)
+        .await
 }
 
 pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
@@ -2444,6 +2449,7 @@ async fn check_and_reinject_bridge_inner(
     helper_port: u16,
     browser_identity_changed: bool,
     bridge_reinjector: Option<BridgeReinjector>,
+    health_failures: &mut u8,
 ) -> bool {
     let healthy = if browser_identity_changed {
         false
@@ -2464,6 +2470,16 @@ async fn check_and_reinject_bridge_inner(
         }
     };
     if healthy {
+        *health_failures = 0;
+        return false;
+    }
+
+    if browser_identity_changed {
+        *health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD;
+    } else {
+        *health_failures = health_failures.saturating_add(1);
+    }
+    if *health_failures < BRIDGE_HEALTH_FAILURE_THRESHOLD {
         return false;
     }
 
@@ -2472,7 +2488,8 @@ async fn check_and_reinject_bridge_inner(
         serde_json::json!({
             "debug_port": debug_port,
             "helper_port": helper_port,
-            "browser_identity_changed": browser_identity_changed
+            "browser_identity_changed": browser_identity_changed,
+            "consecutive_health_failures": *health_failures
         }),
     );
     let default_reinjector: BridgeReinjector =
@@ -2487,6 +2504,7 @@ async fn check_and_reinject_bridge_inner(
                     "helper_port": helper_port
                 }),
             );
+            *health_failures = 0;
             true
         }
         Err(error) => {

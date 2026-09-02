@@ -3877,6 +3877,9 @@
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
   let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
+  let codexPlusBackendCheckInFlight = false;
+  let codexPlusBackendFailureCount = 0;
+  const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
 
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
@@ -3911,22 +3914,35 @@
   }
 
   async function checkBackendStatus() {
+    if (codexPlusBackendCheckInFlight) return;
+    codexPlusBackendCheckInFlight = true;
     const seq = ++codexPlusBackendCheckSeq;
-    const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
-    if (seq !== codexPlusBackendCheckSeq) return;
-    codexPlusBackendStatus = nextStatus;
-    if (nextStatus?.status === "ok" && typeof nextStatus.hideOfficialUsageAlert === "boolean") {
-      window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
-      refreshOfficialUsageAlertVisibility();
+    try {
+      const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
+      if (seq !== codexPlusBackendCheckSeq) return;
+      if (nextStatus?.status === "ok") {
+        codexPlusBackendFailureCount = 0;
+        codexPlusBackendStatus = nextStatus;
+        if (typeof nextStatus.hideOfficialUsageAlert === "boolean") {
+          window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
+          refreshOfficialUsageAlertVisibility();
+        }
+      } else {
+        codexPlusBackendFailureCount += 1;
+        sendCodexPlusDiagnostic("backend_check_failed", {
+          status: nextStatus?.status || "unknown",
+          message: nextStatus?.message || "",
+          timeout: !!nextStatus?.timeout,
+          consecutiveFailures: codexPlusBackendFailureCount,
+        });
+        if (codexPlusBackendFailureCount >= CODEX_PLUS_BACKEND_FAILURE_THRESHOLD) {
+          codexPlusBackendStatus = nextStatus;
+        }
+      }
+      renderBackendStatus();
+    } finally {
+      codexPlusBackendCheckInFlight = false;
     }
-    if (nextStatus?.status !== "ok") {
-      sendCodexPlusDiagnostic("backend_check_failed", {
-        status: nextStatus?.status || "unknown",
-        message: nextStatus?.message || "",
-        timeout: !!nextStatus?.timeout,
-      });
-    }
-    renderBackendStatus();
   }
 
   async function openManagerFromCodex() {
@@ -6223,18 +6239,30 @@
   }
 
   async function postJson(path, payload) {
+    async function fetchBackendStatusFromHelper(path, payload) {
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timeoutId = setTimeout(() => controller?.abort(), 2000);
+      try {
+        const response = await fetch(`${helperBase}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+        return await response.json();
+      } catch (error) {
+        return {
+          status: "failed",
+          message: error?.name === "AbortError" ? "后端检查超时" : "未连接",
+          timeout: error?.name === "AbortError",
+        };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
     if (!window.__codexSessionDeleteBridge) {
       if (path === "/backend/status") {
-        try {
-          const response = await fetch(`${helperBase}${path}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload || {}),
-          });
-          return await response.json();
-        } catch (error) {
-          return { status: "failed", message: "未连接" };
-        }
+        return await fetchBackendStatusFromHelper(path, payload);
       }
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
       return { status: "failed", message: "桥接不可用，请重启启动器" };
@@ -6244,18 +6272,6 @@
         window.__codexSessionDeleteBridge(path, payload),
         new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
       ]);
-    }
-    async function fetchBackendStatusFromHelper(path, payload) {
-      try {
-        const response = await fetch(`${helperBase}${path}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload || {}),
-        });
-        return await response.json();
-      } catch (error) {
-        return { status: "failed", message: "未连接" };
-      }
     }
     try {
       if (path === "/backend/status") {
