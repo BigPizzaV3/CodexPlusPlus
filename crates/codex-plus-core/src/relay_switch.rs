@@ -147,6 +147,11 @@ fn apply_selected_relay_profile(
         )?
     };
     let status = relay_config_status_from_home(home);
+    // `configured` 判定在 `relay_config_status_from_home` 里已经做了通用化：
+    // OpenAI 兼容形状走严格路径（`base_url` + Bearer/API Key），原生 provider
+    //（例如 Amazon Bedrock AWS Profile 只写 `[model_providers.<id>.<sub>]` 子表段、
+    // 没有 `base_url` 的形态）走"表段存在即视为已配置"的兜底。因此这里不需要对
+    // 特定供应商做特判，`relay_switch` 保持对所有 provider 一视同仁。
     if relay.relay_mode == RelayMode::PureApi && !status.configured {
         anyhow::bail!(
             "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。"

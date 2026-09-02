@@ -39,6 +39,7 @@ const WRITE = process.argv.includes("--write");
 const FILES = [
   "src/App.tsx",
   "src/components/ProviderPresetSelector.tsx",
+  "src/components/BedrockRelayProfileEditor.tsx",
 ];
 
 const CJK = /[㐀-䶿一-鿿　-〿＀-￯]/;

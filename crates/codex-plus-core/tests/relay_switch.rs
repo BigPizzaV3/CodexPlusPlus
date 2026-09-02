@@ -1,7 +1,8 @@
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    LaunchMode, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
+    BedrockAuthMode, BedrockConfig, LaunchMode, RelayMode, RelayProfile, RelaySessionProvider,
+    SettingsStore, default_bedrock_iam_key_validity_days,
 };
 
 #[test]
@@ -359,6 +360,162 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
         snapshot["state"]["electron-persisted-atom-state"]
             .get("provider-token-cache")
             .is_none()
+    );
+}
+
+#[test]
+fn switch_to_bedrock_bearer_token_writes_expected_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    // 用一份合法的初始 config 作种子，方便 backfill 有内容可读
+    std::fs::write(
+        home.join("config.toml"),
+        "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://example.com/v1\"\n",
+    )
+    .unwrap();
+    std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-init"}"#).unwrap();
+
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let seed_profile = pure_profile("seed", "https://example.com/v1", "sk-init");
+    let bedrock_profile = RelayProfile {
+        id: "bedrock".to_string(),
+        name: "Bedrock (Bearer)".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model: "openai.gpt-oss-120b-1:0".to_string(),
+        api_key: "brk-test-key-12345".to_string(),
+        bedrock: Some(BedrockConfig {
+            auth_mode: BedrockAuthMode::BearerToken,
+            provider_id: "my-bedrock".to_string(),
+            region: "us-east-2".to_string(),
+            aws_profile: String::new(),
+            iam_user_name: String::new(),
+            iam_key_validity_days: default_bedrock_iam_key_validity_days(),
+        }),
+        ..RelayProfile::default()
+    };
+    let original = BackendSettings {
+        active_relay_id: "seed".to_string(),
+        relay_profiles: vec![seed_profile.clone(), bedrock_profile.clone()],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+
+    let next = BackendSettings {
+        active_relay_id: "bedrock".to_string(),
+        relay_profiles: vec![seed_profile, bedrock_profile],
+        ..BackendSettings::default()
+    };
+    switch_relay_profile_in_home(&store, &home, next, "seed").unwrap();
+
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    // Property 1 关键片段
+    assert!(
+        live.contains("model_provider = \"my-bedrock\""),
+        "expected model_provider = \"my-bedrock\", got:\n{live}"
+    );
+    assert!(
+        live.contains("base_url = \"https://bedrock-mantle.us-east-2.api.aws/openai/v1\""),
+        "expected bedrock-mantle base_url, got:\n{live}"
+    );
+    assert!(
+        live.contains("experimental_bearer_token = \"brk-test-key-12345\""),
+        "expected experimental_bearer_token, got:\n{live}"
+    );
+    // `requires_openai_auth` 表示"走 OpenAI 鉴权语义（ChatGPT 登录态）"，
+    // 上游仅在混合 / 官方模式下写入。Bedrock Bearer Token 自带 Bedrock API Key，
+    // 属纯 API 形态，因此切换后的 live config 不应含该字段——种子 config 里
+    // 那份 `requires_openai_auth = true` 也必须被整表替换清掉。
+    assert!(
+        !live.contains("requires_openai_auth"),
+        "requires_openai_auth should not be written for Bedrock, got:\n{live}"
+    );
+    assert!(
+        live.contains("web_search = \"disabled\""),
+        "expected web_search = \"disabled\", got:\n{live}"
+    );
+}
+
+#[test]
+fn switch_to_bedrock_aws_profile_writes_expected_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    // 用一份合法的初始 config 作种子
+    std::fs::write(
+        home.join("config.toml"),
+        "model_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://example.com/v1\"\n",
+    )
+    .unwrap();
+    std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-init"}"#).unwrap();
+
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let seed_profile = pure_profile("seed", "https://example.com/v1", "sk-init");
+    let bedrock_profile = RelayProfile {
+        id: "bedrock-aws".to_string(),
+        name: "Bedrock (AWS Profile)".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model: "openai.gpt-oss-120b-1:0".to_string(),
+        bedrock: Some(BedrockConfig {
+            auth_mode: BedrockAuthMode::AwsProfile,
+            provider_id: String::new(),
+            region: "us-west-2".to_string(),
+            aws_profile: "my-dev".to_string(),
+            iam_user_name: String::new(),
+            iam_key_validity_days: default_bedrock_iam_key_validity_days(),
+        }),
+        ..RelayProfile::default()
+    };
+    let original = BackendSettings {
+        active_relay_id: "seed".to_string(),
+        relay_profiles: vec![seed_profile.clone(), bedrock_profile.clone()],
+        ..BackendSettings::default()
+    };
+    store.save(&original).unwrap();
+
+    let next = BackendSettings {
+        active_relay_id: "bedrock-aws".to_string(),
+        relay_profiles: vec![seed_profile, bedrock_profile],
+        ..BackendSettings::default()
+    };
+    switch_relay_profile_in_home(&store, &home, next, "seed").unwrap();
+
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+
+    // Property 2 关键片段
+    assert!(
+        live.contains("model_provider = \"amazon-bedrock\""),
+        "expected model_provider = \"amazon-bedrock\", got:\n{live}"
+    );
+    assert!(
+        live.contains("[model_providers.amazon-bedrock.aws]"),
+        "expected [model_providers.amazon-bedrock.aws] table header, got:\n{live}"
+    );
+    assert!(
+        live.contains("region = \"us-west-2\""),
+        "expected region = \"us-west-2\", got:\n{live}"
+    );
+    assert!(
+        live.contains("profile = \"my-dev\""),
+        "expected profile = \"my-dev\", got:\n{live}"
+    );
+
+    // Requirement 4.2：顶层 model_provider 所在行号 < 第一个 [...] 表头所在行号
+    let lines: Vec<&str> = live.lines().collect();
+    let model_provider_line = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("model_provider ="))
+        .expect("expected a model_provider line in generated config");
+    let first_table_line = lines
+        .iter()
+        .position(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with('[') && trimmed.contains(']')
+        })
+        .expect("expected at least one [...] table header in generated config");
+    assert!(
+        model_provider_line < first_table_line,
+        "model_provider (line {model_provider_line}) must precede first table (line {first_table_line}); got:\n{live}"
     );
 }
 

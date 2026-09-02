@@ -37,6 +37,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "fast-check": "4.8.0",
     "tailwindcss": "^4.0.0"
   }
 }

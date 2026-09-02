@@ -20,6 +20,20 @@ export const EN_PLAIN: Record<string, string> = {
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
+  "AWS Profile 模式下无法在此测试供应商；请在 Codex 会话中验证":
+    "Testing this provider isn't available in AWS Profile mode; verify it inside a Codex session instead",
+  "AWS Profile (SSO)": "AWS Profile (SSO)",
+  "AWS Profile 名称（可选）": "AWS Profile name (optional)",
+  "AWS Region": "AWS Region",
+  "AWS SSO 配置/登录命令": "AWS SSO configure / login commands",
+  "Amazon Bedrock": "Amazon Bedrock",
+  "Amazon Bedrock 配置": "Amazon Bedrock configuration",
+  "Bedrock API Key": "Bedrock API Key",
+  "Bedrock API Key (Bearer Token)": "Bedrock API Key (Bearer Token)",
+  "Bedrock Mantle 仅暴露 OpenAI 系模型。GPT-5.6 三款均为 1M 上下文：openai.gpt-5.6-sol（us-east-1 / us-east-2）、openai.gpt-5.6-terra、openai.gpt-5.6-luna（两者另支持 us-west-2）。GPT-OSS 等 Bedrock native 模型 ID 走 Mantle 会返回 404，需要通过 LiteLLM 中转。":
+    "Bedrock Mantle only exposes OpenAI-family models. All three GPT-5.6 models have a 1M context window: openai.gpt-5.6-sol (us-east-1 / us-east-2), openai.gpt-5.6-terra, and openai.gpt-5.6-luna (the latter two also support us-west-2). Bedrock native model IDs such as GPT-OSS return 404 through Mantle and need a LiteLLM relay.",
+  "Bedrock via OpenAI-兼容 endpoint 通常需要 openai.* 前缀的模型 ID；已按当前值保存":
+    "Bedrock via an OpenAI-compatible endpoint usually needs a model ID prefixed with openai.*; saved as entered",
   "Chat Completions 转 Responses": "Chat Completions to Responses",
   "Codex 启动参数": "Codex launch arguments",
   "Codex MCP&插件": "Codex MCP & plugins",
@@ -40,11 +54,16 @@ export const EN_PLAIN: Record<string, string> = {
   "GitHub Release 更新": "GitHub Release update",
   "GitHub Release 检查": "GitHub Release check",
   "Helper 端口": "Helper port",
+  "IAM 用户名": "IAM user name",
+  "Long-Term API Key 生成命令": "Long-Term API Key generation command",
+  "Long-Term Key 有效期（天）": "Long-Term Key validity (days)",
   "MCP 与插件作为全局配置独立管理，切换任意供应商都会合并。":
     "MCP, Skills and Plugins are managed independently as global config and merged in whenever you switch providers.",
   "Markdown 导出": "Markdown export",
   "SKRouteTag": "SKRouteTag",
   "Provider 同步目标": "Provider sync target",
+  "Provider 标识符": "Provider identifier",
+  "Short-Term API Key 说明": "Short-Term API Key notes",
   "Stepwise 直接发送": "Stepwise direct send",
   "基于当前对话生成下一步建议，使用独立 API 配置。": "Generate next-step suggestions from the current conversation using a separate API configuration.",
   "VLM API Key": "VLM API Key",
@@ -304,6 +323,7 @@ export const EN_PLAIN: Record<string, string> = {
     "Pull models from environment variables and config.toml's /v1/models and add them to the model list.",
   "从第三方导入": "Import from third party",
   "从预设模板创建": "Create from a preset template",
+  "从 AWS IAM 生成的 Long-Term 或 Short-Term Key": "A Long-Term or Short-Term Key generated from AWS IAM",
   "会话": "Session",
   "会话 ID 标识": "Session ID badge",
   "会话删除": "Session deletion",
@@ -318,6 +338,7 @@ export const EN_PLAIN: Record<string, string> = {
   "例如 deepseek-v4-pro": "e.g. deepseek-v4-pro",
   "例如 gpt-5.4-mini": "e.g. gpt-5.4-mini",
   "例如 主力聚合池": "e.g. Primary aggregate pool",
+  "例如 Bedrock 生产环境": "e.g. Bedrock production",
   "供": "P",
   "供应商": "Provider",
   "供应商切换": "Provider switch",
@@ -333,6 +354,10 @@ export const EN_PLAIN: Record<string, string> = {
   "供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件":
     "The provider configuration master switch is off; changes are only saved, not written to Codex live files",
   "供应商预设列表": "Provider preset list",
+  "需要选择鉴权路径": "Requires choosing an auth path",
+  "鉴权路径": "Auth path",
+  "以下为命令行生成示例，不影响实际配置":
+    "The following are command-line examples; they do not affect the actual configuration",
   "保存": "Save",
   "保存为默认路径": "Save as default path",
   "保存到 Codex++ state，不改写 Zed settings。": "Saved to Codex++ state, does not modify Zed settings.",
@@ -804,6 +829,10 @@ export const EN_PLAIN: Record<string, string> = {
   "为纯文本模型配置图片分析路由": "Configure image analysis routing for text-only models",
   "若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。": "If VLM analysis is enabled, make sure the VLM settings are complete and the service is available.",
   "仅在 Chat Completion 和聚合模式生效。": "Only effective in Chat Completion and aggregate mode.",
+  "仅用于拼接下方 Long-Term Key 示例命令的 --user-name 参数，不写入配置；留空时渲染成 <IAM_USER_NAME> 占位符。":
+    "Only used as the --user-name argument of the Long-Term Key example command below; not written to the configuration. Left blank it renders as the <IAM_USER_NAME> placeholder.",
+  "仅用于拼接下方 Long-Term Key 示例命令的 --credential-age-days 参数，不写入配置。":
+    "Only used as the --credential-age-days argument of the Long-Term Key example command below; not written to the configuration.",
   "VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。":
     "Incomplete VLM configuration: API Key, Model, and Base URL are required, otherwise VLM will not take effect.",
   "填充": "Fill",
@@ -835,6 +864,7 @@ export const EN_PLAIN: Record<string, string> = {
   "等待生成建议。": "Waiting to generate a recommendation.",
   "正在检查配置完整性…": "Checking configuration integrity…",
   "该步骤未执行。": "This step was not run.",
+  "该标识符与保留供应商冲突": "This identifier conflicts with a reserved provider",
   "请先填写或选择应用路径。": "Fill in or select an app path first.",
   "请先选择要删除的会话。": "Select the sessions to delete first.",
   "读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件":

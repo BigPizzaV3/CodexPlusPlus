@@ -7889,3 +7889,139 @@ select {
     white-space: nowrap;
   }
 }
+
+/* -----------------------------------------------------------------------
+ * Bedrock 编辑器独有样式
+ *
+ * BedrockRelayProfileEditor 用 <Field>/<Input>/<Button> 通用组件，
+ * 表单字段本身的排版走 .field / .field span / Input 内置 tailwind 规则；
+ * 下面只保留 Bedrock 独有的部分：容器 gap、标题字号、鉴权路径 radio
+ * 分段选择器、CLI 命令展示块、错误/警告文案色。
+ * ----------------------------------------------------------------------- */
+
+.bedrock-editor h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+
+.bedrock-editor h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+.bedrock-auth-mode {
+  display: grid;
+  gap: 8px;
+}
+
+.bedrock-auth-mode > label {
+  color: hsl(var(--foreground));
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.bedrock-auth-mode-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.bedrock-auth-mode-choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease);
+}
+
+.bedrock-auth-mode-choices label:hover {
+  border-color: hsl(var(--primary) / 0.45);
+}
+
+.bedrock-auth-mode-choices input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+/* CLI 示例区分隔线：横线 + 居中说明，用来把"命令行生成示例"和上方实际配置字段隔开。
+ * 两侧的 1px 横线通过 ::before / ::after 伪元素用 flex:1 撑满剩余宽度实现。 */
+.bedrock-cli-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.bedrock-cli-divider::before,
+.bedrock-cli-divider::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: hsl(var(--border));
+}
+
+.bedrock-cli-divider span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.bedrock-cli-hint {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+}
+
+.bedrock-cli-hint p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.bedrock-cli-hint pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.bedrock-error {
+  margin: 4px 0 0;
+  color: hsl(var(--destructive));
+  font-size: 12px;
+}
+
+.bedrock-warning {
+  margin: 4px 0 0;
+  color: hsl(38 92% 55%);
+  font-size: 12px;
+}

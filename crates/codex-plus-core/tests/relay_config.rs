@@ -482,6 +482,76 @@ base_url = "http://127.0.0.1:57321/v1"
     assert!(!status.has_bearer_token);
 }
 
+/// 通用兜底：provider 没有 `base_url`（即不属于 OpenAI 兼容形状）时，只要
+/// config.toml 里存在与顶层 `model_provider` 对应的 `[model_providers.<id>]`
+/// 或 `[model_providers.<id>.<sub>]` 表段，就应视为 configured。这类原生
+/// provider 的凭据由各自 SDK 解析，不写 `experimental_bearer_token`。
+///
+/// 这条测试覆盖 Amazon Bedrock AWS Profile 生成的 config.toml 形态：
+/// 顶层只有 `model_provider = "amazon-bedrock"` 与 `[model_providers.amazon-bedrock.aws]`
+/// 子表段，此前会被误判为 "未检测到完整 custom provider"。改动后 relay_switch 无
+/// 需针对 Bedrock 特判也能正确通过写入校验。
+#[test]
+fn reports_native_provider_configured_via_child_table_only() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "amazon-bedrock"
+
+[model_providers.amazon-bedrock.aws]
+region = "us-east-2"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    // 未声明 `requires_openai_auth`/`experimental_bearer_token`，字段保持 false。
+    assert!(!status.requires_openai_auth);
+    assert!(!status.has_bearer_token);
+}
+
+/// 与上一条互为对照：仅有顶层 `model_provider` 而缺失任何 `[model_providers.*]`
+/// 表段时，仍应判为未 configured（防止过度放宽兜底）。
+#[test]
+fn reports_not_configured_when_provider_section_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model_provider = \"amazon-bedrock\"\n",
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(!status.configured);
+}
+
+/// 兜底的另一条边界：provider 声明了 `base_url` 就属于 OpenAI 兼容形状，必须走
+/// 严格路径（要求 Bearer/API Key），不能因为 `[model_providers.<id>]` 表段存在
+/// 而被判为 configured——否则缺失 Key 的中转配置会被误判为写入成功。
+#[test]
+fn reports_not_configured_when_openai_compatible_provider_lacks_api_key() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "deepseek-v4-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "http://127.0.0.1:57321/v1"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(!status.configured);
+}
+
 #[test]
 fn reports_internal_no_auth_proxy_provider_configured() {
     let temp = tempfile::tempdir().unwrap();

@@ -209,6 +209,7 @@ fn relay_profile_from_request(
         sub2api_enabled: false,
         sub2api_multiplier: String::new(),
         model_routes: Vec::new(),
+        bedrock: None,
     }
 }
 

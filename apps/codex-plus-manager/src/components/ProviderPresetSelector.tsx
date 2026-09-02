@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import type { ProviderPreset, RelayProtocol } from "../presets";
 import { PRESETS } from "../presets";
+import { shouldRenderBedrockPresetButton } from "../bedrock-config";
 import { t, tf } from "@/i18n";
 
 export type RelayProfile = {
@@ -53,10 +54,24 @@ export function createPresetPatch(preset: ProviderPreset): PresetPatch {
   };
 }
 
+/**
+ * Bedrock 按钮在搜索模式下命中的关键词集合——包含中英文常见叫法。
+ * 只有当前查询与其中之一（子串关系）匹配时，才把 Bedrock 按钮塞进搜索结果。
+ */
+const BEDROCK_SEARCH_KEYWORDS = ["amazon bedrock", "bedrock", "aws", "amazon"] as const;
+
+function bedrockMatchesQuery(query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  return BEDROCK_SEARCH_KEYWORDS.some((keyword) => keyword.includes(q) || q.includes(keyword));
+}
+
 export function ProviderPresetSelector({
   onSelect,
+  onSelectBedrock,
 }: {
   onSelect: (patch: PresetPatch) => void;
+  onSelectBedrock?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(true);
   const [query, setQuery] = useState("");
@@ -79,6 +94,15 @@ export function ProviderPresetSelector({
     setCollapsed(true);
     setQuery("");
   };
+
+  const handleSelectBedrock = () => {
+    if (onSelectBedrock) onSelectBedrock();
+    setCollapsed(true);
+    setQuery("");
+  };
+
+  const bedrockButtonAvailable = shouldRenderBedrockPresetButton(onSelectBedrock);
+  const bedrockVisibleInSearch = bedrockButtonAvailable && bedrockMatchesQuery(query);
 
   return (
     <div className="preset-selector">
@@ -110,31 +134,40 @@ export function ProviderPresetSelector({
             />
           </div>
 
-          {filtered.length === 0 && (
+          {filtered.length === 0 && !bedrockVisibleInSearch && (
             <div className="preset-empty">
               {t("没有匹配「")}{query}{t("」的供应商")}
             </div>
           )}
 
           {query.trim()
-            ? // 搜索模式：所有匹配结果放在一个分组
-              filtered.map((preset) => (
-                <PresetButton
-                  key={preset.id}
-                  preset={preset}
-                  onSelect={handleSelect}
-                />
-              ))
-            : // 浏览模式：按分类分组
+            ? // 搜索模式：Bedrock（如果匹配）排在最前，然后是过滤后的常规 preset
+              (
+                <>
+                  {bedrockVisibleInSearch && (
+                    <BedrockPresetButton onSelect={handleSelectBedrock} />
+                  )}
+                  {filtered.map((preset) => (
+                    <PresetButton
+                      key={preset.id}
+                      preset={preset}
+                      onSelect={handleSelect}
+                    />
+                  ))}
+                </>
+              )
+            : // 浏览模式：按分类分组；Bedrock 归入「第三方」分组，排在 Azure OpenAI 前面
               categories.map((cat) => {
                 const items = PRESETS.filter((p) => p.category === cat);
-                if (items.length === 0) return null;
+                const injectBedrock = cat === "third_party" && bedrockButtonAvailable;
+                if (items.length === 0 && !injectBedrock) return null;
                 return (
                   <div className="preset-category" key={cat}>
                     <h3 className="preset-category-label">
                       {categoryLabels[cat] || cat}
                     </h3>
                     <div className="preset-category-items">
+                      {injectBedrock && <BedrockPresetButton onSelect={handleSelectBedrock} />}
                       {items.map((preset) => (
                         <PresetButton
                           key={preset.id}
@@ -149,6 +182,27 @@ export function ProviderPresetSelector({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Bedrock 专用的预设按钮：外观与普通 `PresetButton` 一致，
+ * 但点击后不派发 `onSelect(patch)`，而是走 `onSelectBedrock` 通道
+ * （由宿主编辑器切换到 `BedrockRelayProfileEditor`）。
+ */
+function BedrockPresetButton({ onSelect }: { onSelect: () => void }) {
+  return (
+    <button
+      className="preset-btn"
+      onClick={onSelect}
+      type="button"
+      data-preset-kind="bedrock"
+      title={t("Amazon Bedrock")}
+    >
+      <span className="preset-btn-icon">B</span>
+      <span className="preset-btn-name">{t("Amazon Bedrock")}</span>
+      <span className="preset-btn-model">{t("需要选择鉴权路径")}</span>
+    </button>
   );
 }
 
