@@ -174,9 +174,23 @@ where
         .collect()
 }
 
+fn proxy_variables_from_os_pairs<I>(
+    pairs: I,
+    source: ProxyEnvironmentSource,
+) -> Vec<ProxyEnvironmentVariable>
+where
+    I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+{
+    let pairs = pairs.into_iter().filter_map(|(name, value)| {
+        let name = name.into_string().ok()?;
+        Some((name, value.to_string_lossy().into_owned()))
+    });
+    proxy_variables_from_pairs(pairs, source)
+}
+
 fn detect_proxy_environment_variables() -> Vec<ProxyEnvironmentVariable> {
     let mut variables =
-        proxy_variables_from_pairs(std::env::vars(), ProxyEnvironmentSource::Process);
+        proxy_variables_from_os_pairs(std::env::vars_os(), ProxyEnvironmentSource::Process);
     variables.extend(detect_user_proxy_environment_variables());
     variables.sort_by(|left, right| {
         left.name
