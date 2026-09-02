@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayProfile, RelayProtocol, RelaySessionProvider};
+use crate::settings::{
+    BackendSettings, RelayProfile, RelayProtocol, RelaySessionProvider,
+};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -666,7 +668,7 @@ pub async fn test_relay_profile(
     }
     let api_key = relay_profile_api_key(profile);
     let api_key = api_key.trim();
-    if api_key.is_empty() {
+    if api_key.is_empty() && !profile.uses_no_auth() {
         anyhow::bail!("API Key 不能为空");
     }
 
@@ -681,13 +683,14 @@ pub async fn test_relay_profile(
     }
 
     let payload = relay_profile_test_payload(profile.protocol, test_model);
-    let response = client
+    let mut request = client
         .post(&endpoint)
-        .bearer_auth(api_key)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&payload)
-        .send()
-        .await?;
+        .json(&payload);
+    if !profile.uses_no_auth() {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send().await?;
     let http_status = response.status().as_u16();
 
     // 如果 404 且 base_url 末尾没有 /v1，尝试自动补 /v1 后再发一次。
@@ -699,13 +702,14 @@ pub async fn test_relay_profile(
             RelayProtocol::Responses => format!("{v1_url}/responses"),
             RelayProtocol::ChatCompletions => format!("{v1_url}/chat/completions"),
         };
-        let v1_response = client
+        let mut request = client
             .post(&v1_endpoint)
-            .bearer_auth(api_key)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&payload)
-            .send()
-            .await?;
+            .json(&payload);
+        if !profile.uses_no_auth() {
+            request = request.bearer_auth(api_key);
+        }
+        let v1_response = request.send().await?;
         let v1_status = v1_response.status().as_u16();
         if v1_status < 400 {
             let response_text = v1_response.text().await.unwrap_or_default();

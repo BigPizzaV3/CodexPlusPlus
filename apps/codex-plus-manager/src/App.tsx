@@ -520,6 +520,11 @@ type ContextEntriesResult = CommandResult<{
   entries: CodexContextEntries;
 }>;
 
+type McpImportPreviewResult = CommandResult<{
+  entries: Array<{ id: string; tomlBody: string }>;
+  warnings: string[];
+}>;
+
 type LiveContextEntriesResult = CommandResult<{
   entries: CodexContextEntries;
 }>;
@@ -868,7 +873,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
-  { id: "context", label: t("工具与插件"), icon: Network },
+  { id: "context", label: t("MCP&插件"), icon: Network },
   { id: "weixin", label: t("微信连接"), icon: ScanLine },
   { id: "enhance", label: t("Codex增强"), icon: Hammer },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
@@ -1857,7 +1862,7 @@ export function App() {
     const result = await run(() => call<LiveContextEntriesResult>("read_live_context_entries"));
     if (result) {
       setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result, { silentSuccess: true });
     }
     return result;
   };
@@ -1866,7 +1871,7 @@ export function App() {
     const result = await run(() => call<LiveContextEntriesResult>("sync_live_context_entries", { request: { settings: next } }));
     if (result) {
       setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result, { silentSuccess: true });
     }
     return result;
   };
@@ -2574,7 +2579,7 @@ export function App() {
       normalized = normalizeSettings(saveResult.settings);
     }
     setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
+    if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
     return normalized;
   };
 
@@ -2592,8 +2597,30 @@ export function App() {
       normalized = normalizeSettings(saveResult.settings);
     }
     setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
+    if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
     return normalized;
+  };
+
+  const previewMcpServersJson = async (json: string) => {
+    const result = await run(() => call<McpImportPreviewResult>("preview_mcp_servers_json", { json }));
+    if (result && !isSuccessStatus(result.status)) showResultNotice(t("MCP 导入"), result);
+    return result;
+  };
+
+  const importMcpServersJson = async (next: BackendSettings, json: string) => {
+    const result = await run(() =>
+      call<ContextEntriesResult>("import_mcp_servers_json", { request: { settings: next, json } }),
+    );
+    if (!result) return null;
+    let normalized = normalizeSettings(result.settings);
+    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+    if (saveResult) {
+      setSettings(saveResult);
+      normalized = normalizeSettings(saveResult.settings);
+    }
+    setSettingsForm(normalized);
+    showResultNotice(t("MCP 导入"), result);
+    return isSuccessStatus(result.status) ? normalized : null;
   };
 
   const extractRelayCommonConfig = async (configContents: string) => {
@@ -3123,6 +3150,8 @@ export function App() {
       saveRelayFile,
       upsertContextEntry,
       deleteContextEntry,
+      previewMcpServersJson,
+      importMcpServersJson,
       extractRelayCommonConfig,
       testRelayProfile,
       diagnoseRelayProfile,
@@ -3522,6 +3551,8 @@ type Actions = {
     tomlBody: string,
   ) => Promise<BackendSettings | null>;
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
+  previewMcpServersJson: (json: string) => Promise<McpImportPreviewResult | null>;
+  importMcpServersJson: (settings: BackendSettings, json: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
@@ -6930,7 +6961,7 @@ function RelayProfileDetail({
     : relayProfileEditorStatus(draft, form, isNew);
   return (
     <div className="relay-detail-page" key={profile.id}>
-      <div className="relay-detail-sticky">
+      <div className="relay-detail-header">
         <div className="relay-editor-heading">
           <Button aria-label={t("返回列表")} onClick={() => {
             if (hasUnsavedModelChanges && !window.confirm(t("有未保存的模型修改，确定放弃吗？"))) return;
@@ -6973,27 +7004,29 @@ function RelayProfileDetail({
           </Button>
         </div>
       </div>
-      <RelayProfileEditor
-        profile={draft}
-        form={form}
-        isNew={isNew}
-        onProfileChange={setDraft}
-        actions={actions}
-        modelWindowRows={modelWindowRows}
-        setModelWindowRows={setModelWindowRows}
-      />
-      {isAggregateRelayProfile(draft) ? null : (
-      <RelayFileEditors
-        contextProfile={profile}
-        profile={draft}
-        form={form}
-        isActive={isActive}
-        profileId={profile.id}
-        onFormChange={onFormChange}
-        onProfileChange={setDraft}
-        actions={actions}
-      />
-      )}
+      <div className="relay-detail-body">
+        <RelayProfileEditor
+          profile={draft}
+          form={form}
+          isNew={isNew}
+          onProfileChange={setDraft}
+          actions={actions}
+          modelWindowRows={modelWindowRows}
+          setModelWindowRows={setModelWindowRows}
+        />
+        {isAggregateRelayProfile(draft) ? null : (
+        <RelayFileEditors
+          contextProfile={profile}
+          profile={draft}
+          form={form}
+          isActive={isActive}
+          profileId={profile.id}
+          onFormChange={onFormChange}
+          onProfileChange={setDraft}
+          actions={actions}
+        />
+        )}
+      </div>
       {doctorOpen ? (
         <ProviderDoctorModal
           result={doctorResult}
@@ -7022,7 +7055,7 @@ function ContextScreen({
 }) {
   return (
     <Panel fill>
-      <CardHead title={t("Codex 工具与插件")} detail={t("独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。")} />
+      <CardHead title={t("Codex MCP&插件")} detail={t("独立管理 Codex 的 MCP 服务器与插件；切换任意供应商都会带上。")} />
       <CardContent>
         <RelayContextManager
           form={normalizeSettings(form)}
@@ -7971,6 +8004,7 @@ function RelayContextManager({
   const entries = contextEntriesWithLiveEntries(form, liveEntries);
   const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
   const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const visibleEntries = contextEntriesByKind(entries, activeKind);
   const label = contextKindLabel(activeKind);
 
@@ -8004,14 +8038,35 @@ function RelayContextManager({
     await syncContextEntries(next);
   };
 
+  const importJson = async (json: string) => {
+    const next = await actions.importMcpServersJson(form, json);
+    if (!next) return;
+    onFormChange(next);
+    if (!(await syncContextEntries(next))) return;
+    setImportOpen(false);
+  };
+
   return (
     <div className="relay-context-panel">
       <div className="relay-context-head">
         <div>
-          <strong>{t("Codex 工具与插件")}</strong>
-          <span>{t("MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。")}</span>
+          <strong>{t("Codex MCP&插件")}</strong>
+          <span>{t("MCP 与插件作为全局配置独立管理，切换任意供应商都会合并。")}</span>
         </div>
         <div className="relay-context-head-actions">
+          {activeKind === "mcp" ? (
+            <Button
+              onClick={() => {
+                setEditor(null);
+                setImportOpen(true);
+              }}
+              size="sm"
+              variant="secondary"
+            >
+              <Download className="h-4 w-4" />
+              {t("导入 JSON")}
+            </Button>
+          ) : null}
           <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
             <Plus className="h-4 w-4" />
             {t("新增")}{label}
@@ -8072,6 +8127,9 @@ function RelayContextManager({
           <div className="empty">{t("暂无")}{label}{t("，可以从通用配置文件或这里新增。")}</div>
         )}
       </div>
+      {importOpen ? (
+        <McpJsonImporter actions={actions} onCancel={() => setImportOpen(false)} onImport={importJson} />
+      ) : null}
       {editor ? (
         <ContextEntryEditor
           entry={editor.entry}
@@ -8080,6 +8138,64 @@ function RelayContextManager({
           onSave={(kind, id, tomlBody) => void saveEntry(kind, id, tomlBody)}
         />
       ) : null}
+    </div>
+  );
+}
+
+function McpJsonImporter({
+  actions,
+  onCancel,
+  onImport,
+}: {
+  actions: Actions;
+  onCancel: () => void;
+  onImport: (json: string) => void;
+}) {
+  const [json, setJson] = useState("");
+  const [preview, setPreview] = useState<McpImportPreviewResult | null>(null);
+
+  const runPreview = async () => {
+    const result = await actions.previewMcpServersJson(json);
+    setPreview(result && isSuccessStatus(result.status) ? result : null);
+  };
+
+  return (
+    <div aria-modal="true" className="modal-backdrop" role="dialog">
+      <div className="modal-card context-modal">
+        <div className="modal-head">
+          <div>
+            <h2>{t("导入 MCP JSON")}</h2>
+            <p className="modal-message">{t("支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。")}</p>
+          </div>
+          <button aria-label={t("关闭窗口")} className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <Field label={t("MCP 配置 JSON")}>
+          <Textarea
+            className="context-editor-textarea"
+            value={json}
+            onChange={(event) => {
+              setJson(event.currentTarget.value);
+              setPreview(null);
+            }}
+            placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'}
+            spellCheck={false}
+          />
+        </Field>
+        {preview ? (
+          <div className="relay-context-summary">
+            <div>{tf("将导入 {0} 个：{1}", [preview.entries.length, preview.entries.map((item) => item.id).join("、")])}</div>
+            {preview.warnings.map((warning) => <div key={warning}>{warning}</div>)}
+          </div>
+        ) : null}
+        <Toolbar>
+          <Button disabled={!json.trim()} onClick={() => void runPreview()} size="sm" variant="secondary">{t("预览")}</Button>
+          <Button disabled={!preview} onClick={() => onImport(json)} size="sm">
+            <Download className="h-4 w-4" />
+            {t("确认导入")}
+          </Button>
+          <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
+        </Toolbar>
+      </div>
     </div>
   );
 }
@@ -8231,7 +8347,7 @@ function RelayFileEditors({
         <div className="relay-file-head">
           <div>
             <strong>{t("通用配置文件")}</strong>
-            <span>{t("只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。")}</span>
+            <span>{t("只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。")}</span>
           </div>
           <Button
             onClick={async () => {
@@ -8992,7 +9108,7 @@ function routeSubtitle(route: Route) {
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
-    context: t("独立管理 MCP、Skills、Plugins"),
+    context: t("独立管理 MCP 服务器与插件"),
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("会话删除、导出和脚本能力"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
@@ -9054,7 +9170,7 @@ function mergeLiveContextEntries(entries: CodexContextEntry[], liveEntries: Map<
 }
 
 function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry): CodexContextEntry {
-  return live ? { ...entry, enabled: live.enabled } : { ...entry, enabled: false };
+  return live ? { ...entry, enabled: live.enabled } : entry;
 }
 
 function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfile): CodexContextEntries {
@@ -10033,12 +10149,15 @@ function buildRelayConfigToml(
     sessionProvider === "openai" ? `openai_base_url = "${PROTOCOL_PROXY_BASE_URL}"` : null,
     "",
   ].filter((line): line is string => line !== null);
+  const requiresOpenAiAuthLine = options.requiresOpenAiAuth === undefined
+    ? null
+    : `requires_openai_auth = ${options.requiresOpenAiAuth ? "true" : "false"}`;
   return [
     ...rootLines,
     "[model_providers.custom]",
     'name = "custom"',
     'wire_api = "responses"',
-    options.requiresOpenAiAuth ? "requires_openai_auth = true" : null,
+    requiresOpenAiAuthLine,
     `base_url = "${tomlString(baseUrl)}"`,
     options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
     "",

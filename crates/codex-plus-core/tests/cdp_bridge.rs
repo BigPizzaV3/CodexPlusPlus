@@ -1655,7 +1655,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"6\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"7\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -2097,7 +2097,7 @@ fn injection_script_applies_fast_service_tier_contract() {
             "turn/start:"
         ])
     );
-    assert_eq!(cases["modelSwitchResumeProvider"], "sub2api");
+    assert_eq!(cases["modelSwitchResumeProvider"], "");
     assert_eq!(cases["failedModelSwitchResumeAttempts"], 2);
     assert_eq!(cases["failedModelSwitchTurnAttempts"], 2);
 }
@@ -2719,6 +2719,7 @@ api.setBackendSettings({{
     id: "per-model-context",
     relayMode: "pureApi",
     officialMixApiKey: true,
+    configContents: "model_provider = \"sub2api\"",
     modelWindows: JSON.stringify({{ "model-old": "200000", "model-new": "1000000" }}),
     modelAutoCompact: "{{}}",
     modelMetadata: "{{}}",
