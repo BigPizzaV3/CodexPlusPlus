@@ -120,6 +120,8 @@ export const EN_PLAIN: Record<string, string> = {
   "恢复 Codex 默认配色": "Restore Codex default colors",
   "外观模式": "Appearance mode",
   "自动": "Auto",
+  "自动兼容": "Automatic compatibility",
+  "自动生成": "Automatic generation",
   "亮色": "Light",
   "暗色": "Dark",
   "跟随图片配色": "Use image colors",
@@ -560,6 +562,7 @@ export const EN_PLAIN: Record<string, string> = {
   "成员数量": "Member count",
   "或": " or ",
   "手动": "Manual",
+  "手动刷新": "Manual refresh",
   "手动启动": "Manual launch",
   "打开": "Open",
   "打开 JOJO Code": "Open JOJO Code",
@@ -800,6 +803,11 @@ export const EN_PLAIN: Record<string, string> = {
   "覆盖图片": "Overlay image",
   "背景适配方式": "Background fit mode",
   "原样发送图片": "Send images as-is",
+  "移除图片": "Remove images",
+  "视觉辅助分析": "Vision-assisted analysis",
+  "多模态模型直接接收图片,不经过任何处理": "Multimodal models receive images directly, without any processing.",
+  "删掉图片只发文字,避免纯文本模型报错(模型看不到图)": "Strip images and send text only, so text-only models don't error out (the model can't see the image).",
+  "图片先由视觉辅助模型(Qwen)转成文字描述,纯文本模型也能\"看图\"": "Images are first turned into text descriptions by a vision model (Qwen), so text-only models can \"see\" images too.",
   "为纯文本模型移除消息中的图片": "Remove images from messages for text-only models",
   "为纯文本模型配置图片分析路由": "Configure image analysis routing for text-only models",
   "若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。": "If VLM analysis is enabled, make sure the VLM settings are complete and the service is available.",
@@ -1046,6 +1054,40 @@ export const EN_PLAIN: Record<string, string> = {
   "高级：直接编辑 TOML": "Advanced: edit TOML directly",
   "此条目还有表单未覆盖的高级配置，保存时会原样保留。展开下方高级区可查看。":
     "This entry has advanced settings the form does not cover. They are preserved on save — expand the advanced section below to view them.",
+  "测试 VLM": "Test VLM",
+  "收起测试面板": "Collapse test panel",
+  "选一张图片立即验证当前 VLM 配置（使用表单当前值，无需保存）。":
+    "Pick an image to instantly verify the current VLM configuration (uses current form values; no need to save).",
+  "换图并测试": "Swap image & test",
+  "选择图片并测试": "Choose image & test",
+  "正在调用 VLM…": "Calling VLM...",
+  "图片超过 10MB，请换一张较小的图片。": "Image exceeds 10MB. Please choose a smaller one.",
+  "❌ 测试图片无效：仅支持图片文件，且不超过 10MB":
+    "❌ Invalid test image: only image files up to 10MB are supported.",
+  "复制错误": "Copy error",
+  "显示原始报文": "Show raw messages",
+  "隐藏原始报文": "Hide raw messages",
+  "原始请求": "Raw request",
+  "原始响应": "Raw response",
+  "重测": "Retest",
+  "收起": "Collapse",
+  "复制失败，请从报文中手动复制。": "Copy failed. Please copy from the raw messages instead.",
+  "请选择图片文件。": "Please choose an image file.",
+  "图片预览": "Image preview",
+  "❌ 接口不存在：Base URL 或模型名有误（HTTP 404）":
+    "❌ Endpoint not found: check the Base URL or model name (HTTP 404)",
+  "❌ 被限流，稍后再试（HTTP 429）": "❌ Rate limited. Try again later (HTTP 429)",
+  "❌ 请求超时：VLM 响应过慢或网络不通": "❌ Request timed out: the VLM is too slow or unreachable",
+  "❌ 发送失败：网络错误，检查 Base URL 是否可达":
+    "❌ Send failed: network error. Check that the Base URL is reachable",
+  "❌ 返回内容解析失败：上游返回的不是有效 JSON":
+    "❌ Failed to parse the response: upstream did not return valid JSON",
+  "❌ 返回中未找到描述文本：模型可能不支持视觉或返回格式异常":
+    "❌ No description text found in the response: the model may not support vision or returned an unexpected format",
+  "❌ 批量描述解析失败（单图测试不应触发）":
+    "❌ Batch description parse failed (should not trigger for single-image tests)",
+  "❌ HTTP 客户端构建失败": "❌ Failed to build the HTTP client",
+  "❌ 未知错误": "❌ Unknown error",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -1142,6 +1184,9 @@ export const EN_TEMPLATE: Record<string, string> = {
   "删除备份「{0}」？此操作不可撤销。": "Delete the backup \"{0}\"? This cannot be undone.",
   "删除仓库源「{0}」？已装的 Skill 不受影响，只是不再更新。":
     "Delete the repository \"{0}\"? Installed skills are unaffected — they just stop receiving updates.",
+  "✅ 识别成功（耗时 {0}s）": "✅ Recognition succeeded ({0}s)",
+  "❌ 服务返回错误（HTTP {0}）": "❌ Server returned an error (HTTP {0})",
+  "❌ 认证失败（HTTP {0}）：API Key 或模型名可能不正确": "❌ Auth failed (HTTP {0}): the API key or model name may be incorrect",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated

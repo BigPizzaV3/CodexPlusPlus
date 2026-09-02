@@ -3,7 +3,7 @@
 //! 后缀语法：`deepseek-v4-pro[1M]` 表示 slug=deepseek-v4-pro、context_window=1000000。
 //! 单位 K/k=1000、M/m=1000000；纯数字也接受。后缀在生成 catalog 时剥离。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +12,9 @@ pub struct ModelCatalogEntry {
     pub display_name: String,
     /// 来自后缀的窗口值；None 表示该条目无后缀（回落顶层默认）。
     pub suffix_window: Option<u64>,
+    /// 显式自动压缩百分比，以百万分之一百分比为单位（90% = 90_000_000）。
+    /// None 表示不覆盖 Codex 默认的自动压缩行为。
+    pub auto_compact_percent: Option<u32>,
 }
 
 /// 解析单个模型条目的后缀，返回 (slug, 可选窗口)。
@@ -69,8 +72,36 @@ pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
         .trim()
         .parse::<u64>()
         .ok()
-        .map(|value| value * multiplier)
+        .and_then(|value| value.checked_mul(multiplier))
         .filter(|value| *value > 0)
+}
+
+/// 解析自动压缩百分比 token，如 "90"、"84.329412%"。
+/// 返回百万分之一百分比，供 Rust 与前端使用同一套精度和舍入规则。
+pub(crate) fn parse_compact_percent(token: &str) -> Option<u32> {
+    let token = token.trim();
+    let token = token.strip_suffix('%').unwrap_or(token).trim();
+    if token.ends_with('%') {
+        return None;
+    }
+    let (whole, fraction) = token.split_once('.').unwrap_or((token, ""));
+    if fraction.len() > 6 || whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if !fraction.is_empty() && !fraction.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let whole = whole.parse::<u32>().ok()?;
+    let mut fraction_value = if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse::<u32>().ok()?
+    };
+    for _ in fraction.len()..6 {
+        fraction_value = fraction_value.checked_mul(10)?;
+    }
+    let scaled = whole.checked_mul(1_000_000)?.checked_add(fraction_value)?;
+    (scaled > 0 && scaled <= 100_000_000).then_some(scaled)
 }
 
 /// 收集 profile 的全部模型条目（当前 model + model_list），去重并从 `model_windows` map 读取窗口。
@@ -82,6 +113,7 @@ pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
 pub fn collect_catalog_entries(
     model_list: &str,
     model_windows: &HashMap<String, String>,
+    model_auto_compact: &HashMap<String, String>,
     current_model: &str,
 ) -> Vec<ModelCatalogEntry> {
     // 先解析 model_list，保留顺序并去重；后缀已从 model_list 剥离，窗口来自 model_windows map。
@@ -102,10 +134,14 @@ pub fn collect_catalog_entries(
         let suffix_window = model_windows
             .get(&slug)
             .and_then(|token| parse_window_token(token));
+        let auto_compact_percent = model_auto_compact
+            .get(&slug)
+            .and_then(|token| parse_compact_percent(token));
         list_entries.push(ModelCatalogEntry {
             display_name: slug.clone(),
             slug,
             suffix_window,
+            auto_compact_percent,
         });
     }
 
@@ -118,10 +154,14 @@ pub fn collect_catalog_entries(
             let suffix_window = model_windows
                 .get(&slug)
                 .and_then(|token| parse_window_token(token));
+            let auto_compact_percent = model_auto_compact
+                .get(&slug)
+                .and_then(|token| parse_compact_percent(token));
             entries.push(ModelCatalogEntry {
                 display_name: slug.clone(),
                 slug: slug.clone(),
                 suffix_window,
+                auto_compact_percent,
             });
             // 从 list_entries 中移除同 slug 条目，避免重复。
             list_entries.retain(|entry| entry.slug != slug);
@@ -204,7 +244,7 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
 /// 再覆盖 slug / display_name / description / context_window / max_context_window /
 /// effective_context_window_percent / priority / auto_compact_token_limit 等字段。
 /// 无后缀条目用 fallback_window；fallback 也无时回落 272000（codex 默认）。
-/// auto_compact_token_limit 留 null：codex 内置模型即 null（按比例算，调研第六节）。
+/// auto_compact_token_limit 仅在条目带显式百分比时写入；否则留 null，保持 Codex 默认行为。
 pub fn build_model_catalog_json(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
@@ -262,7 +302,14 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             if !deepseek_metadata {
                 model["effective_context_window_percent"] = json!(100);
             }
-            model["auto_compact_token_limit"] = Value::Null;
+            if let Some(compact_percent) = entry.auto_compact_percent {
+                let compact_limit = ((context_window as u128 * compact_percent as u128
+                    + 50_000_000)
+                    / 100_000_000) as u64;
+                model["auto_compact_token_limit"] = json!(compact_limit.max(1));
+            } else {
+                model["auto_compact_token_limit"] = Value::Null;
+            }
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
             if !deepseek_metadata {

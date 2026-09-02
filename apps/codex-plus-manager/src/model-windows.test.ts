@@ -21,16 +21,19 @@ const _profileTypeCheck: RelayProfile = {
   protocol: "responses",
   relayMode: "official",
   officialMixApiKey: false,
-  noAuth: false,
   hideOfficialUsageAlert: false,
   testModel: "",
   configContents: "",
   authContents: "",
   useCommonConfig: true,
+  contextSelection: { mcpServers: [], skills: [], plugins: [] },
+  contextSelectionInitialized: false,
   contextWindow: "",
   autoCompactLimit: "",
   modelList: "",
   modelWindows: "",
+  modelAutoCompact: "",
+  modelMetadata: "",
   modelVlm: "",
   vlmApiKey: "",
   vlmModel: "",
@@ -89,9 +92,9 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{"a":"1M","c":"200K"}'),
       [
-        { model: "a", window: "1M", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
-        { model: "c", window: "200K", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "c", window: "200K", autoCompact: "90%", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -100,9 +103,34 @@ describe("model-windows helpers", () => {
     assert.deepStrictEqual(
       modelWindowRowsFromProfile("a\nb\nc", '{}', '{"a":"vlm","b":"strip"}'),
       [
-        { model: "a", window: "", imageHandling: "vlm" },
-        { model: "b", window: "", imageHandling: "strip" },
-        { model: "c", window: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "90%", imageHandling: "vlm" },
+        { model: "b", window: "", autoCompact: "90%", imageHandling: "strip" },
+        { model: "c", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+      ],
+    );
+  });
+
+  it("modelWindowRowsFromProfile 忽略损坏 map 中的非字符串值", () => {
+    assert.deepStrictEqual(
+      modelWindowRowsFromProfile(
+        "a\nb",
+        '{"a":1048576,"b":"512K"}',
+        '{"a":true,"b":"strip"}',
+        '{"a":90,"b":"80%"}',
+      ),
+      [
+        { model: "a", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "b", window: "512K", autoCompact: "80%", imageHandling: "strip" },
+      ],
+    );
+  });
+
+  it("modelWindowRowsFromProfile 不因 null map 崩溃", () => {
+    assert.deepStrictEqual(
+      modelWindowRowsFromProfile("a\nb", "null", "{}", "null"),
+      [
+        { model: "a", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "90%", imageHandling: "send-as-is" },
       ],
     );
   });
@@ -110,34 +138,49 @@ describe("model-windows helpers", () => {
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
-        { model: "a", window: "1M", imageHandling: "vlm" },
-        { model: "", window: "400K", imageHandling: "send-as-is" },
-        { model: "b", window: "", imageHandling: "send-as-is" },
+        { model: "a", window: "1M", autoCompact: "", imageHandling: "vlm" },
+        { model: "", window: "400K", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
       ]),
       {
         modelList: "a\nb",
         modelWindows: '{"a":"1M"}',
         modelVlm: '{"a":"vlm"}',
+        modelAutoCompact: '{"a":"90%","b":"90%"}',
       },
     );
+  });
+
+  it("删除模型后序列化保存载荷不会保留已删除模型", () => {
+    const rows = [
+      { model: "keep", window: "1M", autoCompact: "90%", imageHandling: "send-as-is" as const },
+      { model: "remove", window: "200K", autoCompact: "80%", imageHandling: "vlm" as const },
+    ];
+    const saved = serializeModelWindowRows(rows.filter((row) => row.model !== "remove"));
+    assert.deepStrictEqual(saved, {
+      modelList: "keep",
+      modelWindows: '{"keep":"1M"}',
+      modelVlm: "{}",
+      modelAutoCompact: '{"keep":"90%"}',
+    });
   });
 
   it("mergeModelWindowRows 追加上游模型时跳过已有模型并保留窗口和图片处理", () => {
     assert.deepStrictEqual(
       mergeModelWindowRows(
         [
-          { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-          { model: "  ", window: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "1M", autoCompact: "90%", imageHandling: "vlm" },
+          { model: "  ", window: "", autoCompact: "", imageHandling: "send-as-is" },
         ],
         [
-          { model: "deepseek-v4-flash", window: "", imageHandling: "send-as-is" },
-          { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
-          { model: " deepseek-v4-pro ", window: "200K", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-flash", window: "", autoCompact: "", imageHandling: "send-as-is" },
+          { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
+          { model: " deepseek-v4-pro ", window: "200K", autoCompact: "", imageHandling: "send-as-is" },
         ],
       ),
       [
-        { model: "deepseek-v4-flash", window: "1M", imageHandling: "vlm" },
-        { model: "deepseek-v4-pro", window: "", imageHandling: "vlm" },
+        { model: "deepseek-v4-flash", window: "1M", autoCompact: "90%", imageHandling: "vlm" },
+        { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
       ],
     );
   });

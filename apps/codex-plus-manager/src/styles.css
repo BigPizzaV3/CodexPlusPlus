@@ -3315,6 +3315,10 @@ body {
   margin-bottom: 12px;
 }
 
+.settings-test-model-field {
+  margin-top: 16px;
+}
+
 .field span,
 .check-row span {
   color: hsl(var(--foreground) / 0.86);
@@ -3749,6 +3753,18 @@ body {
 
 .stepwise-settings-block .form-row {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.stepwise-settings-block {
+  --stepwise-control-height: 40px;
+}
+
+.stepwise-settings-block input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.stepwise-settings-block .app-select-trigger,
+.stepwise-settings-block .field-select,
+.stepwise-settings-block .select-input {
+  height: var(--stepwise-control-height);
+  min-height: var(--stepwise-control-height);
 }
 
 .stepwise-settings-section {
@@ -4945,7 +4961,7 @@ input[type="range"]:disabled {
 
 .relay-model-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(180px, 1fr) 40px;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(110px, 0.6fr) minmax(180px, 1fr) 40px 40px;
   align-items: center;
   gap: 8px;
   min-height: var(--relay-control-height);
@@ -4957,11 +4973,74 @@ input[type="range"]:disabled {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .relay-model-row input {
   min-width: 0;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.relay-model-entry {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-model-import-workbench {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+  padding: 12px;
+}
+
+.relay-model-import-workbench textarea {
+  min-height: 150px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.relay-model-metadata-import-error,
+.relay-model-metadata-import-warning {
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.relay-model-metadata-import-error {
+  color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / 0.08);
+}
+
+.relay-model-metadata-import-warning {
+  color: hsl(var(--warning-foreground, var(--foreground)));
+  background: hsl(var(--warning) / 0.12);
+}
+
+.relay-model-metadata-import-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.relay-model-import-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.relay-model-import-copy span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.relay-model-metadata-import-flow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .relay-model-route-editor {
@@ -5900,6 +5979,15 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .relay-model-metadata-import-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-model-metadata-import-flow {
+    justify-content: flex-start;
+  }
+
   .relay-model-row-head,
   .relay-model-route-head {
     display: none;
@@ -6006,6 +6094,95 @@ select {
 
   .relay-model-list-tools {
     justify-content: flex-start;
+  }
+}
+
+/* ── VLM 测试面板（测试 VLM）────────────────────────────── */
+.vlm-test-entry {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+}
+.vlm-test-panel {
+  grid-column: 1 / -1;
+  max-width: 560px;
+  margin-top: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  padding: 12px;
+}
+.vlm-test-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  align-items: flex-start;
+}
+.vlm-test-preview {
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+}
+.vlm-test-running {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  margin: 0;
+}
+.vlm-test-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.vlm-test-summary {
+  font-weight: 600;
+  margin: 0;
+}
+.vlm-test-description {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: hsl(var(--muted) / 0.4);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0;
+  font-size: 12px;
+}
+.vlm-test-detail-toggle {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: hsl(var(--primary));
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+.vlm-test-raw {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.vlm-test-raw .label {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.vlm-test-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid hsl(var(--muted));
+  border-top-color: hsl(var(--primary));
+  border-radius: 50%;
+  animation: vlm-test-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+@keyframes vlm-test-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

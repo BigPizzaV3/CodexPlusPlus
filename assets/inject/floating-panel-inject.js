@@ -1,4 +1,4 @@
-/* Public floating-panel injection entry: publish the runtime and start it. */
+/* Public floating-panel injection entry: lifecycle methods and debug surface. */
 
   window[API_KEY] = {
     version: SCRIPT_VERSION,
@@ -9,6 +9,11 @@
     destroy,
     loadSettings,
     syncSettings,
+    setOpen,
+    setMaterial: writeMaterial,
+    toggleMaterial,
+    dockRight: dockRightKeepHeight,
+    getFabExpression: () => resolveFabExpression(),
     renderFloat,
     diagnostics: () => state.diagnostics.slice(),
   };

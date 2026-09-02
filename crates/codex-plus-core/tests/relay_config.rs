@@ -4830,8 +4830,16 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
-fn apply_relay_profile_does_not_overwrite_user_model_catalog_json() {
+fn apply_relay_profile_rejects_external_catalog_with_model_override_without_partial_update() {
     let temp = tempfile::tempdir().unwrap();
+    let previous_config = "model = \"previous\"\n";
+    let previous_auth = r#"{"OPENAI_API_KEY":"old"}"#;
+    std::fs::write(temp.path().join("config.toml"), previous_config).unwrap();
+    std::fs::write(temp.path().join("auth.json"), previous_auth).unwrap();
+    let catalog_path = temp.path().join("model-catalogs").join("relay-a.json");
+    std::fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
+    let previous_catalog = br#"{"models":[{"slug":"previous"}]}"#;
+    std::fs::write(&catalog_path, previous_catalog).unwrap();
     let profile = RelayProfile {
         id: "relay-a".to_string(),
         name: "Relay A".to_string(),
@@ -4851,17 +4859,23 @@ experimental_bearer_token = "sk-new"
         .to_string(),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_insert_mode: Default::default(),
-        // 即使有后缀，用户已手写指针也应保留不覆盖
         model_list: "deepseek-v4-pro[1M]".to_string(),
         ..RelayProfile::default()
     };
 
-    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let error = apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect_err("外部 catalog 与每模型窗口覆盖冲突时应失败");
 
-    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "/old/catalog.json""#));
-    assert!(!config.contains("model-catalogs/relay-a.json"));
-    assert!(!temp.path().join("model-catalogs").exists());
+    assert!(error.to_string().contains("外部 model_catalog_json"));
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+        previous_config
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+        previous_auth
+    );
+    assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
 }
 
 #[test]
@@ -5127,87 +5141,191 @@ experimental_bearer_token = "sk-new"
     assert!(!windows.contains_key("deepseek-v4-pro"));
 }
 
-/// issue #1965：PureApi 会把 config.toml 里的 `experimental_bearer_token` 移除，
-/// 只留 auth.json 一个落点。旧实现要求 auth.json 为空才回填，于是退出 ChatGPT 登录后
-/// 残留的 `{"last_refresh": ...}` 会把回填挡掉，key 两边都没有，
-/// Codex CLI 只能读 OPENAI_API_KEY 环境变量，上游返回 401。
 #[test]
-fn pure_api_backfills_api_key_into_a_non_empty_auth_json_without_openai_api_key() {
+fn apply_model_auto_compact_generates_explicit_threshold_without_changing_fallback_behavior() {
     let temp = tempfile::tempdir().unwrap();
-    let mut profile = RelayProfile {
-        id: "deepseek".to_string(),
+    let profile = RelayProfile {
+        id: "relay-auto-only".to_string(),
         relay_mode: RelayMode::PureApi,
-        protocol: RelayProtocol::Responses,
-        base_url: "https://api.deepseek.com".to_string(),
-        upstream_base_url: "https://api.deepseek.com".to_string(),
-        api_key: "sk-test-redacted".to_string(),
-        config_contents: r#"model = "deepseek-chat"
+        config_contents: r#"model = "qwen3-coder"
 model_provider = "custom"
 
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
-base_url = "https://api.deepseek.com"
-experimental_bearer_token = "sk-test-redacted"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
 "#
         .to_string(),
-        auth_contents: r#"{"last_refresh":"2026-08-01T00:00:00Z"}"#.to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model: "qwen3-coder".to_string(),
+        model_list: "qwen3-coder".to_string(),
+        model_auto_compact: r#"{"qwen3-coder":"80%"}"#.to_string(),
+        context_window: "200000".to_string(),
         ..RelayProfile::default()
     };
 
-    normalize_relay_profile_for_storage(&mut profile).unwrap();
-
-    // config.toml 依旧不带 token，key 必须出现在 auth.json 里。
-    assert!(
-        !profile
-            .config_contents
-            .contains("experimental_bearer_token")
-    );
-    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
-    assert_eq!(
-        auth.get("OPENAI_API_KEY")
-            .and_then(serde_json::Value::as_str),
-        Some("sk-test-redacted")
-    );
-    // 回填不应吃掉 auth.json 里其他字段。
-    assert_eq!(
-        auth.get("last_refresh").and_then(serde_json::Value::as_str),
-        Some("2026-08-01T00:00:00Z")
-    );
-    assert_eq!(relay_profile_api_key(&profile), "sk-test-redacted");
-
-    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
-    let live_auth: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        live_auth
-            .get("OPENAI_API_KEY")
-            .and_then(serde_json::Value::as_str),
-        Some("sk-test-redacted")
-    );
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-auto-only.json""#));
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs/relay-auto-only.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["models"][0]["context_window"], 200_000);
+    assert_eq!(catalog["models"][0]["auto_compact_token_limit"], 160_000);
 }
 
-/// auth.json 已经不是合法 JSON 时也不能把 key 丢掉，否则同样退化成 401。
 #[test]
-fn pure_api_rebuilds_a_corrupt_auth_json_rather_than_dropping_the_api_key() {
-    let mut profile = RelayProfile {
-        id: "deepseek".to_string(),
+fn apply_model_auto_compact_rejects_invalid_percent_before_writing_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let original_config = "model = \"qwen3-coder\"\n";
+    let original_auth = r#"{"OPENAI_API_KEY":"old"}"#;
+    std::fs::write(temp.path().join("config.toml"), original_config).unwrap();
+    std::fs::write(temp.path().join("auth.json"), original_auth).unwrap();
+    let profile = RelayProfile {
+        id: "relay-invalid-auto".to_string(),
         relay_mode: RelayMode::PureApi,
-        protocol: RelayProtocol::Responses,
-        base_url: "https://api.deepseek.com".to_string(),
-        upstream_base_url: "https://api.deepseek.com".to_string(),
-        api_key: "sk-test-redacted".to_string(),
-        auth_contents: "not json at all".to_string(),
+        model: "qwen3-coder".to_string(),
+        model_list: "qwen3-coder".to_string(),
+        model_auto_compact: r#"{"qwen3-coder":"101%"}"#.to_string(),
+        config_contents: "model = \"qwen3-coder\"\n".to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"new"}"#.to_string(),
         ..RelayProfile::default()
     };
 
-    normalize_relay_profile_for_storage(&mut profile).unwrap();
-
-    let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
+    let error = apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect_err("非法自动压缩比例应在写文件前失败");
+    assert!(error.to_string().contains("model_auto_compact"));
     assert_eq!(
-        auth.get("OPENAI_API_KEY")
-            .and_then(serde_json::Value::as_str),
-        Some("sk-test-redacted")
+        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+        original_config
     );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+        original_auth
+    );
+    assert!(!temp.path().join("model-catalogs").exists());
+}
+
+#[test]
+fn apply_model_auto_compact_rejects_external_catalog_without_partial_update() {
+    let temp = tempfile::tempdir().unwrap();
+    let previous_config = "model = \"previous\"\n";
+    let previous_auth = r#"{"OPENAI_API_KEY":"old"}"#;
+    std::fs::write(temp.path().join("config.toml"), previous_config).unwrap();
+    std::fs::write(temp.path().join("auth.json"), previous_auth).unwrap();
+    let catalog_path = temp
+        .path()
+        .join("model-catalogs")
+        .join("relay-external-auto.json");
+    std::fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
+    let previous_catalog = br#"{"models":[{"slug":"previous"}]}"#;
+    std::fs::write(&catalog_path, previous_catalog).unwrap();
+    let profile = RelayProfile {
+        id: "relay-external-auto".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model: "qwen3-coder".to_string(),
+        model_list: "qwen3-coder".to_string(),
+        model_auto_compact: r#"{"qwen3-coder":"80%"}"#.to_string(),
+        config_contents: r#"model = "qwen3-coder"
+model_catalog_json = "external-catalog.json"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    let error = apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect_err("外部 catalog 与每模型自动压缩覆盖冲突时应失败");
+
+    assert!(error.to_string().contains("外部 model_catalog_json"));
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+        previous_config
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+        previous_auth
+    );
+    assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
+}
+
+#[test]
+fn apply_model_metadata_overrides_catalog_and_protects_managed_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-metadata".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model: "model-a".to_string(),
+        model_list: "model-a".to_string(),
+        context_window: "200000".to_string(),
+        model_windows: serde_json::json!({"model-a": "1M"}).to_string(),
+        model_auto_compact: serde_json::json!({"model-a": "70%"}).to_string(),
+        model_metadata: serde_json::json!({
+            "model-a": {
+                "display_name": "Imported model",
+                "description": "Imported description",
+                "context_window": 1,
+                "max_context_window": 1_000_000,
+                "auto_compact_token_limit": 3,
+                "effective_context_window_percent": 4,
+                "priority": 5,
+                "visibility": "hidden",
+                "supported_in_api": false,
+                "use_responses_lite": true,
+                "supports_search_tool": true,
+                "vendor_extension": {"source": "models.json"}
+            }
+        })
+        .to_string(),
+        config_contents: r#"model = "model-a"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            temp.path()
+                .join("model-catalogs")
+                .join("relay-metadata.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let model = &catalog["models"][0];
+
+    assert_eq!(model["slug"], "model-a");
+    assert_eq!(model["display_name"], "Imported model");
+    assert_eq!(model["description"], "Imported description");
+    assert_eq!(model["supports_search_tool"], true);
+    assert_eq!(model["vendor_extension"]["source"], "models.json");
+    assert_eq!(model["context_window"], 1_000_000);
+    assert_eq!(model["max_context_window"], 1_000_000);
+    assert_eq!(model["auto_compact_token_limit"], 700_000);
+    assert_eq!(model["effective_context_window_percent"], 4);
+    assert_eq!(model["priority"], 5);
+    assert_eq!(model["visibility"], "hidden");
+    assert_eq!(model["supported_in_api"], false);
+    assert_eq!(model["use_responses_lite"], true);
 }

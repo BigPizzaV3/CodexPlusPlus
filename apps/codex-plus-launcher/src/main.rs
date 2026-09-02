@@ -866,27 +866,46 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         }))
     }
 
-    async fn open_manager(&self) -> anyhow::Result<Value> {
-        let target = codex_plus_core::install::spawn_companion(
-            codex_plus_core::install::MANAGER_BINARY,
-            std::iter::empty::<&str>(),
-        )
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+    async fn open_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        let navigation =
+            codex_plus_core::manager_navigation::save_pending_manager_navigation_from_payload(
+                &payload,
+            )?;
+        let target = codex_plus_core::install::open_or_activate_manager()
+            .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+            .map_err(|error| {
+                codex_plus_core::manager_navigation::rollback_pending_manager_navigation_after_launch_failure(
+                    navigation.as_ref(),
+                    error,
+                )
+            })?;
         Ok(json!({
             "status": "ok",
-            "path": target
+            "path": target,
+            "navigation": navigation
         }))
     }
 
-    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+    async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        let navigation =
+            codex_plus_core::manager_navigation::save_pending_manager_navigation_from_payload(
+                &payload,
+            )?;
         let target = codex_plus_core::install::spawn_companion(
             codex_plus_core::install::MANAGER_BINARY,
             ["--transient"],
         )
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+        .map_err(|error| {
+            codex_plus_core::manager_navigation::rollback_pending_manager_navigation_after_launch_failure(
+                navigation.as_ref(),
+                error,
+            )
+        })?;
         Ok(json!({
             "status": "ok",
-            "path": target
+            "path": target,
+            "navigation": navigation
         }))
     }
 

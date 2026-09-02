@@ -294,6 +294,24 @@ where
     Ok(path.to_string_lossy().to_string())
 }
 
+pub fn open_or_activate_manager() -> anyhow::Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        if let Some(bundle_id) = macos_companion_bundle_identifier_from_exe(&exe, MANAGER_BINARY) {
+            let activated = Command::new("/usr/bin/open")
+                .args(["-b", bundle_id])
+                .status()
+                .is_ok_and(|status| status.success());
+            if activated {
+                return Ok(format!("bundle:{bundle_id}"));
+            }
+        }
+    }
+
+    spawn_companion(MANAGER_BINARY, std::iter::empty::<&str>())
+}
+
 pub fn macos_companion_bundle_identifier_from_exe(
     exe: &Path,
     binary: &str,
