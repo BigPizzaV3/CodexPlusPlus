@@ -66,14 +66,6 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub model_windows: String,
-    /// 每模型自动压缩百分比（JSON map: slug -> 百分比字符串，如 "90" 或 "90%"）。
-    /// 为空时保持 Codex 原有的默认自动压缩行为，不向 catalog 写入覆盖值。
-    #[serde(
-        rename = "modelAutoCompact",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub model_auto_compact: String,
     #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
     pub model_vlm: String,
     #[serde(
@@ -190,7 +182,6 @@ impl Default for RelayProfile {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
-            model_auto_compact: String::new(),
             model_vlm: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
@@ -658,7 +649,6 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 model_windows: String::new(),
-                model_auto_compact: String::new(),
                 model_vlm: String::new(),
                 vlm_api_key: String::new(),
                 vlm_model: String::new(),
@@ -711,7 +701,6 @@ impl BackendSettings {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
-            model_auto_compact: String::new(),
             model_vlm: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
@@ -1940,7 +1929,6 @@ mod tests {
         assert!(profile.auto_compact_limit.is_empty());
         assert_eq!(profile.model_insert_mode, RelayModelInsertMode::Patch);
         assert!(profile.model_list.is_empty());
-        assert!(profile.model_auto_compact.is_empty());
         assert!(profile.model_routes.is_empty());
         assert!(!profile.has_model_routes());
     }
@@ -1958,24 +1946,6 @@ mod tests {
         };
 
         assert!(settings.active_relay_uses_protocol_proxy());
-    }
-
-    #[test]
-    fn relay_profile_model_auto_compact_is_opt_in_and_round_trips() {
-        let profile = RelayProfile::default();
-        let serialized = serde_json::to_value(&profile).unwrap();
-        assert!(serialized.get("modelAutoCompact").is_none());
-
-        let profile: RelayProfile = serde_json::from_value(serde_json::json!({
-            "id": "relay",
-            "name": "Relay",
-            "modelAutoCompact": "{\"gpt-5.6-sol\":\"84.329412%\"}"
-        }))
-        .unwrap();
-        assert_eq!(
-            profile.model_auto_compact,
-            r#"{"gpt-5.6-sol":"84.329412%"}"#
-        );
     }
 
     #[test]

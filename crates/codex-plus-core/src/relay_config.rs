@@ -1863,31 +1863,21 @@ fn apply_model_catalog_to_config(
         sanitize_catalog_filename(&profile.id)
     );
     let mut config_text = config_text.to_string();
-    let mut model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
-    validate_model_windows(&model_windows)?;
-    let model_list = if profile.model_list.contains('[') {
-        let (clean_list, migrated_windows) =
-            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
-        for (slug, window) in migrated_windows {
-            model_windows.entry(slug).or_insert(window);
-        }
-        clean_list
-    } else {
-        profile.model_list.clone()
-    };
-    let model_auto_compact =
-        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
-    validate_model_auto_compact(&model_auto_compact)?;
-    let entries = crate::model_suffix::collect_catalog_entries(
-        &model_list,
-        &model_windows,
-        &model_auto_compact,
-        &profile.model,
-    );
     let custom_responses = custom_responses_provider(&config_text);
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
+    let (model_list, model_windows): (String, std::collections::HashMap<String, String>) =
+        if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+            crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list)
+        } else {
+            (
+                profile.model_list.clone(),
+                serde_json::from_str(&profile.model_windows).unwrap_or_default(),
+            )
+        };
+    let entries =
+        crate::model_suffix::collect_catalog_entries(&model_list, &model_windows, &profile.model);
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
@@ -1938,20 +1928,9 @@ fn apply_model_catalog_to_config(
     // Known bundled metadata entries need a catalog even without a user-supplied window.
     if !entries.iter().any(|entry| {
         entry.suffix_window.is_some()
-            || entry.auto_compact_percent.is_some()
             || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
             || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
     }) {
-        // Clear a stale catalog pointer previously generated for this profile when
-        // the user removes all per-model overrides. External catalogs are returned
-        // earlier and remain untouched.
-        if root_key_string(&config_text, "model_catalog_json").as_deref()
-            == Some(catalog_relative.as_str())
-        {
-            let mut doc = parse_toml_document(&config_text)?;
-            doc.remove("model_catalog_json");
-            return Ok(normalize_optional_toml(doc));
-        }
         return Ok(config_text);
     }
     let catalog_path = home.join(&catalog_relative);
@@ -1971,47 +1950,6 @@ fn apply_model_catalog_to_config(
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
     Ok(normalize_optional_toml(doc))
-}
-
-fn parse_model_string_map(
-    value: &str,
-    field_name: &str,
-) -> anyhow::Result<HashMap<String, String>> {
-    if value.trim().is_empty() {
-        return Ok(HashMap::new());
-    }
-    let parsed: Value = serde_json::from_str(value)
-        .map_err(|error| anyhow::anyhow!("{field_name} JSON 解析失败：{error}"))?;
-    let object = parsed
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("{field_name} 必须是 JSON 对象"))?;
-    object
-        .iter()
-        .map(|(key, value)| {
-            let value = value
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("{field_name} 的模型 {key} 值必须是字符串"))?;
-            Ok((key.clone(), value.to_string()))
-        })
-        .collect()
-}
-
-fn validate_model_windows(model_windows: &HashMap<String, String>) -> anyhow::Result<()> {
-    for (slug, value) in model_windows {
-        if crate::model_suffix::parse_window_token(value).is_none() {
-            anyhow::bail!("model_windows 的模型 {slug} 窗口值无效：{value}");
-        }
-    }
-    Ok(())
-}
-
-fn validate_model_auto_compact(model_auto_compact: &HashMap<String, String>) -> anyhow::Result<()> {
-    for (slug, value) in model_auto_compact {
-        if crate::model_suffix::parse_compact_percent(value).is_none() {
-            anyhow::bail!("model_auto_compact 的模型 {slug} 百分比无效：{value}");
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
@@ -2914,21 +2852,12 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
             }
         })
         .collect();
-    if profile.model_list.contains('[') {
-        let (clean_list, migrated_windows) =
+    if profile.model_windows.trim().is_empty() && profile.model_list.contains('[') {
+        let (clean_list, windows) =
             crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
-        let mut windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
-        for (slug, window) in migrated_windows {
-            windows.entry(slug).or_insert(window);
-        }
         profile.model_list = clean_list;
-        profile.model_windows = serde_json::to_string(&windows)?;
+        profile.model_windows = serde_json::to_string(&windows).unwrap_or_default();
     }
-    let model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
-    validate_model_windows(&model_windows)?;
-    let model_auto_compact =
-        parse_model_string_map(&profile.model_auto_compact, "model_auto_compact")?;
-    validate_model_auto_compact(&model_auto_compact)?;
     if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
         let has_api_config = !profile.base_url.trim().is_empty()
             || !profile.api_key.trim().is_empty()
