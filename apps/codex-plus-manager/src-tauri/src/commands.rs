@@ -18,6 +18,7 @@ use codex_plus_core::user_scripts::UserScriptManager;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tauri::Emitter;
 
 use crate::install::{self, InstallActionResult, InstallOptions};
 
@@ -3051,16 +3052,28 @@ pub async fn apply_session_index_cleanup(
     }
 }
 
+const PROVIDER_SYNC_PROGRESS_EVENT: &str = "provider-sync-progress";
+
 #[tauri::command]
-pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
+pub async fn sync_providers_now(
+    window: tauri::WebviewWindow,
+    target_provider: Option<String>,
+) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let target_for_settings = target_provider.clone();
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
+    let progress_window = window.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
+        codex_plus_data::run_provider_sync_with_target_and_progress(
+            None,
+            target_provider.as_deref(),
+            |progress| {
+                let _ = progress_window.emit(PROVIDER_SYNC_PROGRESS_EVENT, progress);
+            },
+        )
     })
     .await
     .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));

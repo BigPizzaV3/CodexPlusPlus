@@ -110,7 +110,12 @@ import {
   type ModelWindowRow,
 } from "./model-windows";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
-import { resolveProviderSyncCompletion } from "./provider-sync-flow";
+import { resolveProviderName } from "./provider-name";
+import {
+  providerSyncStreamPercent,
+  resolveProviderSyncCompletion,
+  type ProviderSyncStreamProgress,
+} from "./provider-sync-flow";
 import { resolveLaunchStatus } from "./launch-status";
 import {
   defaultDreamSkinTheme,
@@ -2418,21 +2423,29 @@ export function App() {
     if (providerSyncProgress.active) return;
     setProviderSyncProgress({
       active: true,
-      percent: 12,
-      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
+      percent: 0,
+      message: t("正在扫描历史会话与索引…"),
       result: null,
     });
-    const progressTimer = window.setInterval(() => {
-      setProviderSyncProgress((current) => {
-        if (!current.active) return current;
-        return {
-          ...current,
-          percent: Math.min(88, current.percent + 8),
-          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
-        };
-      });
-    }, 350);
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await listen<ProviderSyncStreamProgress>("provider-sync-progress", (event) => {
+        const progress = event.payload;
+        const message =
+          progress.phase === "scanning"
+            ? t("正在扫描历史会话与索引…")
+            : progress.phase === "planning"
+              ? t("正在检查会话 provider 标记…")
+              : t("正在写入修复与备份…");
+        setProviderSyncProgress((current) => {
+          if (!current.active) return current;
+          return {
+            ...current,
+            percent: Math.max(current.percent, providerSyncStreamPercent(progress)),
+            message,
+          };
+        });
+      });
       const targetProvider = selectedProviderSyncTarget || undefined;
       const result = await run(() =>
         call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
@@ -2519,8 +2532,17 @@ export function App() {
           result: null,
         });
       }
+    } catch (error) {
+      const message = stringifyError(error);
+      setProviderSyncProgress({
+        active: false,
+        percent: 100,
+        message,
+        result: null,
+      });
+      showNotice(t("历史会话修复"), message, "failed");
     } finally {
-      window.clearInterval(progressTimer);
+      unlisten?.();
     }
   };
 

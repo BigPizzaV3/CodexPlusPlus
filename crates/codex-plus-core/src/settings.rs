@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -1744,14 +1745,41 @@ fn normalize_text_config(contents: String) -> String {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    atomic_write_with(path, |file| file.write_all(bytes))
+}
+
+pub fn atomic_write_with(
+    path: &Path,
+    write_contents: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
 
+    let existing_permissions = match fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read permissions for {}", path.display()));
+        }
+    };
     let temp_path = temp_path_for(path);
-    fs::write(&temp_path, bytes)
-        .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
+    let write_result = (|| -> std::io::Result<()> {
+        let mut temp_file = File::create(&temp_path)?;
+        write_contents(&mut temp_file)?;
+        temp_file.flush()?;
+        if let Some(permissions) = existing_permissions {
+            temp_file.set_permissions(permissions)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error)
+            .with_context(|| format!("failed to write temp file {}", temp_path.display()));
+    }
     if let Err(error) = replace_file(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(error).with_context(|| {
@@ -1837,6 +1865,46 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.join("settings.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_with_streams_chunks_and_keeps_existing_contents_on_error() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"old").unwrap();
+
+        atomic_write_with(&path, |file| {
+            file.write_all(b"new")?;
+            file.write_all(b"-value")
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new-value");
+
+        let error =
+            atomic_write_with(&path, |_| Err(std::io::Error::other("writer failed"))).unwrap_err();
+        assert!(error.to_string().contains("failed to write temp file"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"new-value");
+        assert!(!dir.join("settings.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_with_preserves_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        atomic_write_with(&path, |file| file.write_all(b"new")).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
