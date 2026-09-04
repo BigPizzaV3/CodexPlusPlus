@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use anyhow::Context;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
@@ -3107,16 +3107,120 @@ fn normalize_chat_tool_parameters(parameters: &Value) -> Value {
     } else {
         json!({})
     };
-    if normalized.get("type").is_none() {
-        normalized["type"] = json!("object");
+    // 裸 `$ref` 已经是完整 schema，补默认字段会人为制造 sibling。
+    let is_bare_ref = normalized
+        .as_object()
+        .is_some_and(|object| object.len() == 1 && object.contains_key("$ref"));
+    if !is_bare_ref {
+        if normalized.get("type").is_none() {
+            normalized["type"] = json!("object");
+        }
+        if normalized.get("properties").is_none() {
+            normalized["properties"] = json!({});
+        }
+        if normalized.get("required").is_none() {
+            normalized["required"] = json!([]);
+        }
     }
-    if normalized.get("properties").is_none() {
-        normalized["properties"] = json!({});
+    inline_ref_siblings(&normalized)
+}
+
+fn inline_ref_siblings(root: &Value) -> Value {
+    let defs = root.get("$defs").and_then(Value::as_object);
+    let mut resolving = Vec::new();
+    normalize_schema_value(root, defs, &mut resolving).unwrap_or_else(|_| root.clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalRefNormalizationError {
+    Cycle,
+}
+
+fn normalize_schema_value(
+    node: &Value,
+    defs: Option<&Map<String, Value>>,
+    resolving: &mut Vec<String>,
+) -> Result<Value, LocalRefNormalizationError> {
+    match node {
+        Value::Array(items) => Ok(Value::Array(
+            items
+                .iter()
+                .map(|item| normalize_schema_value(item, defs, resolving))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        Value::Object(object) => normalize_schema_object(object, defs, resolving),
+        _ => Ok(node.clone()),
     }
-    if normalized.get("required").is_none() {
-        normalized["required"] = json!([]);
+}
+
+fn normalize_schema_object(
+    object: &Map<String, Value>,
+    defs: Option<&Map<String, Value>>,
+    resolving: &mut Vec<String>,
+) -> Result<Value, LocalRefNormalizationError> {
+    if object.len() > 1
+        && let Some(reference) = object.get("$ref").and_then(Value::as_str)
+        && let Some(name) = local_definition_name(reference)
+    {
+        match resolve_local_definition(name, defs, resolving)? {
+            Some(Value::Object(mut merged)) if merged.get("$ref").is_none() => {
+                for (key, value) in object {
+                    if key != "$ref" {
+                        merged.insert(key.clone(), normalize_schema_value(value, defs, resolving)?);
+                    }
+                }
+                return Ok(Value::Object(merged));
+            }
+            Some(_) | None => {}
+        }
     }
-    normalized
+
+    let mut normalized = Map::new();
+    for (key, value) in object {
+        normalized.insert(key.clone(), normalize_schema_value(value, defs, resolving)?);
+    }
+    Ok(Value::Object(normalized))
+}
+
+fn resolve_local_definition(
+    name: &str,
+    defs: Option<&Map<String, Value>>,
+    resolving: &mut Vec<String>,
+) -> Result<Option<Value>, LocalRefNormalizationError> {
+    let Some(defs) = defs else {
+        return Ok(None);
+    };
+    let Some(target) = defs.get(name) else {
+        return Ok(None);
+    };
+    if resolving.iter().any(|current| current == name) {
+        return Err(LocalRefNormalizationError::Cycle);
+    }
+
+    resolving.push(name.to_string());
+    let resolved = if let Some(alias) = bare_local_ref_name(target) {
+        resolve_local_definition(alias, Some(defs), resolving)
+    } else {
+        normalize_schema_value(target, Some(defs), resolving).map(Some)
+    };
+    resolving.pop();
+    resolved
+}
+
+fn bare_local_ref_name(node: &Value) -> Option<&str> {
+    let object = node.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    local_definition_name(object.get("$ref")?.as_str()?)
+}
+
+fn local_definition_name(reference: &str) -> Option<&str> {
+    let name = reference.strip_prefix("#/$defs/")?;
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(name)
 }
 
 fn generic_custom_proxy_tool(name: &str, description: &str) -> Value {
