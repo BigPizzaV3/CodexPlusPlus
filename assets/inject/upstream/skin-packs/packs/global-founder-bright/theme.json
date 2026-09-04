@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "global-founder-bright",
+  "name": "Global Founder Bright",
+  "brandSubtitle": "CODEX DREAM SKIN",
+  "tagline": "明亮出海赚钱皮肤，适合增长、运营和商业分析。",
+  "projectPrefix": "project · ",
+  "projectLabel": "◉  Select project",
+  "statusText": "SKIN ONLINE",
+  "quote": "BUILD FOR THE WORLD",
+  "image": "background.png",
+  "colors": {
+    "background": "#eff9f7",
+    "panel": "rgba(255, 255, 252, 0.9)",
+    "panelAlt": "rgba(232, 248, 244, 0.82)",
+    "accent": "#1f9e8d",
+    "accentAlt": "#d7a83e",
+    "secondary": "#8ecfc4",
+    "highlight": "#d7a83e",
+    "text": "#1f2f31",
+    "muted": "#62787b",
+    "line": "rgba(31, 158, 141, 0.2)"
+  },
+  "promoTitle": "Global Founder Bright",
+  "promoSub": "出海增长感皮肤图和可复用主题配置。",
+  "promoUrl": "https://codex-theme-gallery.howardhua.chatgpt.site"
+}

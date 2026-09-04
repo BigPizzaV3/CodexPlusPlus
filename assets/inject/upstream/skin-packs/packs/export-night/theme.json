@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "export-night",
+  "name": "Export Night",
+  "brandSubtitle": "CODEX DREAM SKIN",
+  "tagline": "深色出海运营皮肤，适合夜间增长和数据工作。",
+  "projectPrefix": "project · ",
+  "projectLabel": "◉  Select project",
+  "statusText": "SKIN ONLINE",
+  "quote": "SELL WHILE YOU SLEEP",
+  "image": "background.png",
+  "colors": {
+    "background": "#071d2a",
+    "panel": "rgba(10, 25, 34, 0.88)",
+    "panelAlt": "rgba(15, 41, 52, 0.82)",
+    "accent": "#19a78f",
+    "accentAlt": "#d59f45",
+    "secondary": "#1f6f96",
+    "highlight": "#35d28b",
+    "text": "#eef8f6",
+    "muted": "#a5babf",
+    "line": "rgba(53, 210, 139, 0.2)"
+  },
+  "promoTitle": "Export Night",
+  "promoSub": "夜间出海运营皮肤图和可复用主题配置。",
+  "promoUrl": "https://codex-theme-gallery.howardhua.chatgpt.site"
+}

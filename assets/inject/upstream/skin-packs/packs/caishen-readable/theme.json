@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "caishen-readable",
+  "name": "Caishen Readable",
+  "brandSubtitle": "CODEX DREAM SKIN",
+  "tagline": "柔和财神皮肤，保留财气但优先保证阅读区干净。",
+  "projectPrefix": "选择项目 · ",
+  "projectLabel": "◉  选择项目",
+  "statusText": "THEME ONLINE",
+  "quote": "SHIP GOOD THINGS",
+  "image": "background.png",
+  "colors": {
+    "background": "#fff8ef",
+    "panel": "rgba(255, 250, 242, 0.92)",
+    "panelAlt": "rgba(255, 241, 222, 0.84)",
+    "accent": "#d96b42",
+    "accentAlt": "#e8b866",
+    "secondary": "#e8b866",
+    "highlight": "#2aa876",
+    "text": "#35251c",
+    "muted": "#7c6253",
+    "line": "rgba(217, 107, 66, 0.20)"
+  },
+  "promoTitle": "财神 Readable",
+  "promoSub": "轻量财神背景和可复用主题配置。",
+  "promoUrl": "https://codex-theme-gallery.howardhua.chatgpt.site"
+}

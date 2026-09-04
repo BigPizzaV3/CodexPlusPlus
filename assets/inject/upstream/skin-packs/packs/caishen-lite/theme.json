@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "caishen-lite",
+  "name": "Caishen Lite",
+  "brandSubtitle": "CODEX DREAM SKIN",
+  "tagline": "浅色财神皮肤，财气明显但不过度压住文字。",
+  "projectPrefix": "选择项目 · ",
+  "projectLabel": "◉  选择项目",
+  "statusText": "SKIN ONLINE",
+  "quote": "SHIP AND COLLECT",
+  "image": "background.png",
+  "colors": {
+    "background": "#fff4e7",
+    "panel": "rgba(255, 251, 244, 0.9)",
+    "panelAlt": "rgba(255, 238, 218, 0.78)",
+    "accent": "#d65f3b",
+    "accentAlt": "#e7b95b",
+    "secondary": "#ef9d72",
+    "highlight": "#2aa876",
+    "text": "#36261d",
+    "muted": "#7f6658",
+    "line": "rgba(214, 95, 59, 0.18)"
+  },
+  "promoTitle": "Caishen Lite",
+  "promoSub": "浅色财神皮肤图和可复用主题配置。",
+  "promoUrl": "https://codex-theme-gallery.howardhua.chatgpt.site"
+}

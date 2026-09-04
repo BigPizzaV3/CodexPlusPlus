@@ -1,0 +1,682 @@
+:root.codex-glass-vision-skin {
+  --gv-ink: #18334f;
+  --gv-ink-soft: #496985;
+  --gv-blue: #4b91d8;
+  --gv-cyan: #83d8f2;
+  --gv-ice: #dff6ff;
+  --gv-white: #f9fdff;
+  --gv-line: rgba(105, 169, 216, .34);
+  --gv-line-strong: rgba(92, 156, 207, .54);
+  --gv-glass: rgba(245, 252, 255, .68);
+  --gv-glass-strong: rgba(250, 254, 255, .84);
+  --gv-shadow: rgba(37, 96, 144, .16);
+  --gv-radius-shell: 32px;
+  --gv-radius-panel: 28px;
+  --gv-radius-control: 16px;
+}
+
+html.electron-light.codex-glass-vision-skin { color-scheme: light !important; }
+
+html.electron-dark.codex-glass-vision-skin {
+  color-scheme: dark !important;
+  --gv-ink: #e3f3ff;
+  --gv-ink-soft: #a9c7de;
+  --gv-blue: #69b8ed;
+  --gv-cyan: #8de6ff;
+  --gv-ice: #c9f2ff;
+  --gv-white: #eefaff;
+  --gv-line: rgba(125, 204, 244, .24);
+  --gv-line-strong: rgba(139, 220, 255, .42);
+  --gv-glass: rgba(13, 35, 59, .66);
+  --gv-glass-strong: rgba(18, 46, 75, .84);
+  --gv-shadow: rgba(0, 9, 22, .46);
+}
+
+html.codex-glass-vision-skin body {
+  background:
+    radial-gradient(circle at 80% 4%, rgba(161, 222, 249, .72), transparent 25%),
+    radial-gradient(circle at 28% 10%, rgba(255, 255, 255, .96), transparent 31%),
+    linear-gradient(135deg, #eef9ff 0%, #ddecf8 52%, #cfE4f4 100%) !important;
+  color: var(--gv-ink) !important;
+  font-family: "Microsoft YaHei UI", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif !important;
+}
+
+html.codex-glass-vision-skin body::before,
+html.codex-glass-vision-skin body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+html.codex-glass-vision-skin body::before {
+  opacity: .22;
+  background-image:
+    linear-gradient(110deg, rgba(245, 252, 255, .72), rgba(226, 244, 255, .36)),
+    var(--glass-vision-art);
+  background-size: cover;
+  background-position: center;
+  filter: saturate(.85) brightness(1.08);
+}
+
+html.codex-glass-vision-skin body::after {
+  opacity: .52;
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, .98) 0 1px, transparent 1.8px),
+    radial-gradient(circle, rgba(113, 185, 230, .62) 0 1px, transparent 1.7px);
+  background-position: 0 0, 23px 31px;
+  background-size: 61px 61px, 83px 83px;
+  mask-image: linear-gradient(180deg, black, transparent 76%);
+}
+
+html.codex-glass-vision-skin aside.app-shell-left-panel {
+  background:
+    linear-gradient(145deg, rgba(251, 255, 255, .82), rgba(217, 239, 253, .58)) !important;
+  border: 1px solid rgba(255, 255, 255, .86) !important;
+  border-left: 0 !important;
+  border-radius: 0 var(--gv-radius-shell) var(--gv-radius-shell) 0 !important;
+  box-shadow:
+    12px 0 36px rgba(31, 91, 137, .13),
+    inset -1px 0 rgba(102, 172, 219, .22),
+    inset 0 1px rgba(255, 255, 255, .94) !important;
+  backdrop-filter: blur(24px) saturate(135%) !important;
+  color: var(--gv-ink) !important;
+}
+
+html.codex-glass-vision-skin aside.app-shell-left-panel nav { background: transparent !important; }
+
+html.codex-glass-vision-skin aside.app-shell-left-panel button {
+  color: #244663 !important;
+  border-radius: var(--gv-radius-control) !important;
+  transition: transform .16s ease, background .16s ease, box-shadow .16s ease !important;
+}
+
+html.codex-glass-vision-skin aside.app-shell-left-panel button:hover {
+  background: linear-gradient(100deg, rgba(255, 255, 255, .68), rgba(181, 224, 249, .56)) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .72), 0 6px 18px rgba(49, 111, 157, .10) !important;
+  transform: translateX(2px);
+}
+
+html.codex-glass-vision-skin aside.app-shell-left-panel button[aria-label^="切换模式"] {
+  color: #2f6f9f !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .76), rgba(205, 237, 255, .50)) !important;
+  border: 1px solid rgba(255, 255, 255, .82) !important;
+  box-shadow: inset 0 1px white, 0 8px 22px rgba(41, 105, 151, .12) !important;
+  font-weight: 750 !important;
+  letter-spacing: .02em;
+}
+
+html.codex-glass-vision-skin aside.app-shell-left-panel button[aria-label^="切换模式"]::after {
+  content: "✦";
+  margin-left: 5px;
+  color: #78c9e8;
+  text-shadow: 0 0 12px rgba(83, 181, 225, .65);
+}
+
+html.codex-glass-vision-skin aside.app-shell-left-panel [class~="bg-token-list-hover-background"],
+html.codex-glass-vision-skin aside.app-shell-left-panel [aria-current="page"] {
+  background: linear-gradient(105deg, rgba(255, 255, 255, .82), rgba(170, 218, 246, .64)) !important;
+  border: 1px solid rgba(255, 255, 255, .88) !important;
+  box-shadow: 0 8px 22px rgba(42, 103, 150, .13), inset 0 0 16px rgba(255, 255, 255, .48) !important;
+  border-radius: 18px !important;
+}
+
+html.codex-glass-vision-skin main.main-surface {
+  background:
+    radial-gradient(circle at 83% 5%, rgba(174, 224, 247, .35), transparent 28%),
+    linear-gradient(145deg, rgba(248, 253, 255, .76), rgba(220, 238, 249, .56)) !important;
+  border: 1px solid rgba(255, 255, 255, .91) !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  border-radius: var(--gv-radius-shell) 0 0 0 !important;
+  box-shadow: -10px 0 38px rgba(35, 91, 132, .11), inset 0 1px rgba(255, 255, 255, .98) !important;
+  overflow: hidden !important;
+}
+
+html.codex-glass-vision-skin main.main-surface > header.app-header-tint {
+  background: linear-gradient(90deg, rgba(249, 254, 255, .82), rgba(220, 242, 255, .66), rgba(199, 229, 247, .60)) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, .84) !important;
+  box-shadow: 0 6px 22px rgba(37, 94, 135, .07), inset 0 -1px rgba(91, 159, 207, .14) !important;
+  backdrop-filter: blur(22px) saturate(140%) !important;
+}
+
+#codex-glass-vision-skin-chrome {
+  position: fixed;
+  z-index: 31;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: var(--gv-radius-shell) 0 0 0;
+}
+
+.glass-vision-brand {
+  position: absolute;
+  left: 24px;
+  top: 5px;
+  height: 38px;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  color: #2b648f;
+  text-shadow: 0 1px rgba(255, 255, 255, .94);
+}
+
+#codex-glass-vision-skin-chrome.glass-vision-home-shell .glass-vision-brand { display: flex; }
+.glass-vision-brand b { display: block; font-size: 13px; letter-spacing: .16em; }
+.glass-vision-brand small { display: block; margin-top: 1px; color: #668ba7; font-size: 9px; letter-spacing: .14em; }
+
+.glass-vision-orbit-mark {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, white, #b9e4fb 42%, #6aaed8 100%);
+  box-shadow: inset -4px -5px 10px rgba(44, 104, 148, .22), 0 0 18px rgba(91, 182, 225, .45);
+}
+
+.glass-vision-orbit-mark::before,
+.glass-vision-orbit-mark::after {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 12px;
+  width: 44px;
+  height: 7px;
+  border: 1px solid rgba(65, 131, 179, .62);
+  border-radius: 50%;
+  transform: rotate(-17deg);
+}
+.glass-vision-orbit-mark::after { transform: rotate(17deg); opacity: .45; }
+
+.glass-vision-status {
+  position: absolute;
+  right: 30px;
+  top: 14px;
+  display: none;
+  align-items: center;
+  gap: 7px;
+  color: #5b7f99;
+  font-size: 9px;
+  letter-spacing: .16em;
+}
+#codex-glass-vision-skin-chrome.glass-vision-home-shell .glass-vision-status { display: flex; }
+.glass-vision-status i { width: 7px; height: 7px; border-radius: 50%; background: #83ddf2; box-shadow: 0 0 12px #54b6df; }
+
+.glass-vision-atmosphere { position: absolute; inset: 45px 0 0; opacity: .76; }
+.glass-vision-atmosphere i { position: absolute; width: 4px; height: 4px; border-radius: 50%; background: white; box-shadow: 0 0 12px 3px rgba(86, 175, 220, .55); }
+.glass-vision-atmosphere i::before,
+.glass-vision-atmosphere i::after { content: ""; position: absolute; left: 1.5px; top: -7px; width: 1px; height: 18px; background: linear-gradient(transparent, white, transparent); }
+.glass-vision-atmosphere i::after { transform: rotate(90deg); }
+.glass-vision-atmosphere i:nth-child(1) { left: 5%; top: 9%; }
+.glass-vision-atmosphere i:nth-child(2) { left: 22%; top: 28%; opacity: .48; }
+.glass-vision-atmosphere i:nth-child(3) { left: 41%; top: 7%; opacity: .64; }
+.glass-vision-atmosphere i:nth-child(4) { left: 58%; top: 20%; }
+.glass-vision-atmosphere i:nth-child(5) { left: 74%; top: 11%; opacity: .55; }
+.glass-vision-atmosphere i:nth-child(6) { left: 90%; top: 32%; }
+.glass-vision-atmosphere i:nth-child(7) { left: 67%; top: 72%; opacity: .38; }
+.glass-vision-atmosphere i:nth-child(8) { left: 32%; top: 78%; opacity: .42; }
+
+.glass-vision-orbit-lines i {
+  position: absolute;
+  right: -110px;
+  top: 68px;
+  width: 360px;
+  height: 110px;
+  border: 1px solid rgba(255, 255, 255, .70);
+  border-radius: 50%;
+  transform: rotate(-13deg);
+  box-shadow: 0 0 20px rgba(91, 173, 216, .14);
+  opacity: .52;
+}
+.glass-vision-orbit-lines i:nth-child(2) { top: 82px; width: 410px; opacity: .30; }
+.glass-vision-orbit-lines i:nth-child(3) { top: 48%; right: auto; left: -190px; width: 430px; opacity: .22; }
+
+.glass-vision-prism {
+  position: absolute;
+  right: 22px;
+  bottom: 78px;
+  width: 92px;
+  height: 92px;
+  display: none;
+  border: 1px solid rgba(255, 255, 255, .82);
+  border-radius: 30px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, .60), rgba(153, 211, 242, .20)),
+    var(--glass-vision-art);
+  background-size: auto 260%;
+  background-position: 78% 28%;
+  box-shadow: 0 13px 32px rgba(42, 102, 148, .18), inset 0 0 0 5px rgba(255, 255, 255, .28);
+  backdrop-filter: blur(14px);
+  transform: rotate(5deg);
+}
+#codex-glass-vision-skin-chrome.glass-vision-home-shell .glass-vision-prism { display: block; }
+
+html.codex-glass-vision-skin [role="main"] {
+  background: transparent !important;
+  scrollbar-color: rgba(83, 150, 198, .44) transparent;
+}
+
+html.codex-glass-vision-skin .glass-vision-home {
+  --thread-content-max-width: min(980px, calc(100cqw - 44px)) !important;
+  overflow-x: hidden !important;
+}
+
+.glass-vision-home > div:first-child { padding-top: 15px !important; min-height: 100% !important; }
+.glass-vision-home > div:first-child > div:first-child {
+  flex: 0 0 438px !important;
+  min-height: 438px !important;
+  align-items: flex-start !important;
+  padding-bottom: 0 !important;
+}
+
+.glass-vision-home > div:first-child > div:first-child > div:first-child {
+  position: relative !important;
+  isolation: isolate;
+  width: calc(100% - 44px) !important;
+  max-width: none !important;
+  height: 258px !important;
+  min-height: 258px !important;
+  flex: 0 1 auto !important;
+  padding: 0 !important;
+  border: 1px solid rgba(255, 255, 255, .92) !important;
+  border-radius: var(--gv-radius-shell) !important;
+  overflow: visible !important;
+  background-image:
+    linear-gradient(100deg, rgba(245, 252, 255, .85) 0%, rgba(222, 243, 255, .48) 45%, rgba(183, 219, 242, .12) 100%),
+    var(--glass-vision-art) !important;
+  background-repeat: no-repeat !important;
+  background-size: 100% 100%, cover !important;
+  background-position: center, center !important;
+  box-shadow: 0 20px 46px rgba(35, 92, 135, .20), inset 0 0 0 4px rgba(255, 255, 255, .28) !important;
+}
+
+.glass-vision-home > div:first-child > div:first-child > div:first-child::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0 auto 0 0;
+  width: 58%;
+  border-radius: 31px 0 0 31px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(240, 250, 255, .94) 0%, rgba(223, 242, 253, .78) 58%, transparent 100%);
+  backdrop-filter: blur(4px);
+}
+
+.glass-vision-home > div:first-child > div:first-child > div:first-child > div:first-child {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  padding-left: 40px;
+}
+
+.glass-vision-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  width: 52% !important;
+  align-items: flex-start !important;
+  gap: 0 !important;
+}
+
+.glass-vision-home [data-testid="home-icon"] { display: none !important; }
+.glass-vision-home [data-feature="game-source"] {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  max-width: 100% !important;
+  color: #1f4a6b !important;
+  font-size: clamp(21px, 2vw, 31px) !important;
+  line-height: 1.25 !important;
+  font-weight: 760 !important;
+  text-align: left !important;
+  letter-spacing: -.02em;
+  text-shadow: 0 1px white, 0 6px 22px rgba(34, 96, 142, .13);
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.glass-vision-home [data-feature="game-source"]::after {
+  content: "让灵感穿过星光，在清澈界面中自然流动";
+  display: block;
+  margin-top: 13px;
+  color: #577894;
+  font-size: 14px;
+  line-height: 1.55;
+  font-weight: 540;
+  letter-spacing: .02em;
+}
+
+.glass-vision-home [data-feature="game-source"] button {
+  margin: 0 5px;
+  padding: 3px 10px 4px;
+  border: 1px solid rgba(98, 165, 211, .35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .52);
+  color: #3676a5 !important;
+  text-underline-offset: 5px;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .82), 0 5px 14px rgba(48, 111, 157, .10);
+}
+
+.glass-vision-home [data-feature="game-source"] button::before {
+  content: "选择项目 · ";
+  font-size: .48em;
+  font-weight: 650;
+  vertical-align: middle;
+  opacity: .82;
+}
+
+.glass-vision-home > div:first-child > div:first-child > div:first-child > div:nth-child(2) {
+  left: 14px !important;
+  right: 14px !important;
+  top: 100% !important;
+  margin-top: 13px !important;
+}
+
+.glass-vision-home .group\/home-suggestions { overflow: visible !important; }
+.glass-vision-home .group\/home-suggestions button {
+  position: relative !important;
+  min-height: 126px !important;
+  padding: 15px 13px 12px !important;
+  align-items: stretch !important;
+  justify-content: flex-start !important;
+  text-align: center !important;
+  border: 1px solid rgba(255, 255, 255, .88) !important;
+  border-radius: var(--gv-radius-panel) !important;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, .96), transparent 34%),
+    linear-gradient(145deg, rgba(249, 254, 255, .82), rgba(208, 236, 252, .60)) !important;
+  color: #244e6c !important;
+  font-weight: 620 !important;
+  line-height: 1.45 !important;
+  box-shadow: 0 12px 28px rgba(38, 94, 136, .13), inset 0 0 0 3px rgba(255, 255, 255, .38) !important;
+  backdrop-filter: blur(18px) saturate(130%) !important;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease !important;
+}
+
+.glass-vision-home .group\/home-suggestions button:hover {
+  transform: translateY(-5px) !important;
+  border-color: rgba(132, 201, 235, .82) !important;
+  box-shadow: 0 18px 34px rgba(34, 95, 139, .19), 0 0 0 2px rgba(255, 255, 255, .56) !important;
+}
+
+.glass-vision-home .group\/home-suggestions button > span:first-child > span:first-child {
+  width: 40px;
+  height: 40px;
+  display: grid !important;
+  place-items: center;
+  margin: 0 auto;
+  border: 1px solid rgba(255, 255, 255, .88);
+  border-radius: 14px;
+  color: white !important;
+  background: linear-gradient(145deg, #9cddf4, #4b91ce);
+  box-shadow: 0 0 0 7px rgba(221, 244, 255, .58), 0 7px 15px rgba(41, 105, 151, .20), inset 0 1px white;
+}
+.glass-vision-home .group\/home-suggestions button svg { width: 21px !important; height: 21px !important; color: white !important; }
+.glass-vision-home .group\/home-suggestions button > span:first-child { justify-content: center !important; }
+.glass-vision-home .group\/home-suggestions button > span:last-child { align-items: center !important; text-align: center !important; }
+
+.glass-vision-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector) {
+  position: relative;
+  padding-top: 28px !important;
+  border: 1px solid rgba(255, 255, 255, .76);
+  border-bottom: 0;
+  background: linear-gradient(180deg, rgba(246, 253, 255, .62), rgba(213, 238, 252, .47)) !important;
+  backdrop-filter: blur(20px) !important;
+}
+
+.glass-vision-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector)::before {
+  content: "✦  选择项目";
+  position: absolute;
+  left: 13px;
+  top: 6px;
+  z-index: 2;
+  color: #3c7198;
+  font-size: 12px;
+  font-weight: 720;
+  letter-spacing: .08em;
+  text-shadow: 0 1px white;
+  white-space: nowrap;
+}
+
+.glass-vision-home .group\/project-selector > button {
+  border-color: rgba(104, 169, 213, .34) !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .78), rgba(203, 234, 251, .60)) !important;
+  color: #316f9d !important;
+  box-shadow: 0 5px 14px rgba(42, 104, 149, .10), inset 0 1px white !important;
+}
+
+html.codex-glass-vision-skin .composer-surface-chrome {
+  border: 1px solid rgba(255, 255, 255, .92) !important;
+  border-radius: 30px !important;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(255, 255, 255, .94), transparent 28%),
+    linear-gradient(145deg, rgba(249, 254, 255, .82), rgba(206, 234, 250, .66)) !important;
+  box-shadow: 0 15px 34px rgba(35, 91, 132, .16), inset 0 0 0 3px rgba(255, 255, 255, .34) !important;
+  backdrop-filter: blur(22px) saturate(135%) !important;
+  overflow: visible !important;
+}
+
+html.codex-glass-vision-skin .composer-surface-chrome::before {
+  content: "✦";
+  position: absolute;
+  left: -12px;
+  top: -12px;
+  z-index: 20;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .88);
+  border-radius: 50%;
+  color: white;
+  background: linear-gradient(145deg, #a8e4f5, #4f96cf);
+  box-shadow: 0 5px 15px rgba(45, 108, 154, .25), inset 0 1px white;
+}
+
+html.codex-glass-vision-skin .ProseMirror { color: #254963 !important; caret-color: #3189c2 !important; }
+html.codex-glass-vision-skin button[class~="bg-token-foreground"] {
+  background: linear-gradient(145deg, #77c8e8, #3f86bd) !important;
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, .68) !important;
+  box-shadow: 0 7px 16px rgba(41, 104, 150, .23), inset 0 1px rgba(255, 255, 255, .55) !important;
+}
+
+html.codex-glass-vision-skin main.main-surface article,
+html.codex-glass-vision-skin main.main-surface [data-message-author-role] {
+  border-radius: 24px !important;
+}
+
+html.codex-glass-vision-skin main.main-surface [data-message-author-role="user"] {
+  background: linear-gradient(145deg, rgba(236, 249, 255, .84), rgba(192, 226, 247, .62)) !important;
+  border: 1px solid rgba(255, 255, 255, .82) !important;
+  box-shadow: 0 8px 22px rgba(36, 91, 132, .10), inset 0 1px white !important;
+}
+
+html.codex-glass-vision-skin main.main-surface pre,
+html.codex-glass-vision-skin main.main-surface [class*="code-block"] {
+  border: 1px solid rgba(116, 174, 213, .28) !important;
+  border-radius: 19px !important;
+  background: rgba(235, 247, 253, .72) !important;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .82), 0 8px 20px rgba(41, 93, 130, .08) !important;
+  backdrop-filter: blur(16px) !important;
+}
+
+html.codex-glass-vision-skin [role="dialog"],
+html.codex-glass-vision-skin [role="menu"],
+html.codex-glass-vision-skin [data-radix-popper-content-wrapper] > div {
+  border-radius: 22px !important;
+  border-color: rgba(255, 255, 255, .86) !important;
+  background: rgba(241, 250, 255, .88) !important;
+  box-shadow: 0 22px 52px rgba(30, 79, 116, .22), inset 0 1px white !important;
+  backdrop-filter: blur(26px) saturate(135%) !important;
+}
+
+/* Electron dark appearance: deep celestial glass, not a dimmed light theme. */
+html.electron-dark.codex-glass-vision-skin body {
+  background:
+    radial-gradient(circle at 82% 3%, rgba(37, 113, 166, .38), transparent 28%),
+    radial-gradient(circle at 25% 8%, rgba(42, 88, 132, .30), transparent 32%),
+    linear-gradient(135deg, #071523 0%, #0b2035 52%, #102d48 100%) !important;
+  color: var(--gv-ink) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin body::before {
+  opacity: .28;
+  background-image:
+    linear-gradient(110deg, rgba(5, 17, 30, .82), rgba(13, 40, 66, .48)),
+    var(--glass-vision-art);
+  filter: saturate(.82) brightness(.64) contrast(1.08);
+}
+
+html.electron-dark.codex-glass-vision-skin body::after { opacity: .24; }
+
+html.electron-dark.codex-glass-vision-skin aside.app-shell-left-panel {
+  background:
+    radial-gradient(circle at 16% 7%, rgba(91, 174, 222, .13), transparent 25%),
+    linear-gradient(155deg, rgba(16, 43, 70, .88), rgba(7, 24, 42, .76)) !important;
+  border-color: rgba(151, 221, 255, .19) !important;
+  box-shadow:
+    14px 0 40px rgba(0, 8, 20, .34),
+    inset -1px 0 rgba(126, 203, 244, .14),
+    inset 0 1px rgba(221, 246, 255, .16) !important;
+  color: #dff2ff !important;
+}
+
+html.electron-dark.codex-glass-vision-skin aside.app-shell-left-panel button {
+  color: #c7deef !important;
+}
+
+html.electron-dark.codex-glass-vision-skin aside.app-shell-left-panel button:hover {
+  background: linear-gradient(100deg, rgba(87, 161, 205, .18), rgba(40, 98, 139, .22)) !important;
+  box-shadow: inset 0 0 0 1px rgba(139, 215, 251, .13), 0 8px 20px rgba(0, 9, 21, .22) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin aside.app-shell-left-panel button[aria-label^="切换模式"] {
+  color: #bfeaff !important;
+  background: linear-gradient(140deg, rgba(52, 111, 153, .36), rgba(18, 54, 83, .52)) !important;
+  border-color: rgba(137, 216, 252, .18) !important;
+  box-shadow: inset 0 1px rgba(222, 247, 255, .18), 0 9px 24px rgba(0, 10, 24, .26) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin aside.app-shell-left-panel [class~="bg-token-list-hover-background"],
+html.electron-dark.codex-glass-vision-skin aside.app-shell-left-panel [aria-current="page"] {
+  background:
+    radial-gradient(circle at 82% 18%, rgba(103, 199, 239, .20), transparent 30%),
+    linear-gradient(105deg, rgba(43, 102, 143, .46), rgba(19, 57, 87, .64)) !important;
+  border-color: rgba(139, 221, 255, .24) !important;
+  box-shadow: 0 10px 28px rgba(0, 9, 22, .30), inset 0 1px rgba(229, 249, 255, .18) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin main.main-surface {
+  background:
+    radial-gradient(circle at 85% 4%, rgba(60, 139, 187, .18), transparent 30%),
+    linear-gradient(145deg, rgba(14, 38, 62, .82), rgba(8, 25, 43, .66)) !important;
+  border-color: rgba(164, 226, 255, .17) !important;
+  box-shadow: -12px 0 42px rgba(0, 7, 18, .32), inset 0 1px rgba(225, 248, 255, .14) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin main.main-surface > header.app-header-tint {
+  background: linear-gradient(90deg, rgba(14, 39, 64, .96), rgba(18, 53, 84, .91), rgba(20, 66, 101, .86)) !important;
+  border-bottom-color: rgba(139, 213, 248, .17) !important;
+  box-shadow: 0 8px 24px rgba(0, 8, 19, .22), inset 0 -1px rgba(124, 198, 235, .11) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin .glass-vision-home > div:first-child > div:first-child > div:first-child {
+  background-image:
+    linear-gradient(100deg, rgba(8, 27, 46, .93) 0%, rgba(13, 43, 70, .70) 46%, rgba(12, 45, 75, .18) 100%),
+    var(--glass-vision-art) !important;
+  border-color: rgba(174, 231, 255, .24) !important;
+  box-shadow: 0 22px 50px rgba(0, 8, 20, .38), inset 0 0 0 4px rgba(202, 241, 255, .07) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin .glass-vision-home > div:first-child > div:first-child > div:first-child::before {
+  background: linear-gradient(90deg, rgba(7, 26, 45, .96) 0%, rgba(11, 39, 65, .78) 60%, transparent 100%);
+}
+
+html.electron-dark.codex-glass-vision-skin .glass-vision-home [data-feature="game-source"] { color: #e5f5ff !important; }
+html.electron-dark.codex-glass-vision-skin .glass-vision-home [data-feature="game-source"]::after { color: #a9cde4; }
+html.electron-dark.codex-glass-vision-skin .glass-vision-home [data-feature="game-source"] button {
+  color: #aee7ff !important;
+  background: rgba(39, 92, 128, .38);
+  border-color: rgba(133, 215, 250, .22);
+}
+
+html.electron-dark.codex-glass-vision-skin .glass-vision-home .group\/home-suggestions button {
+  background:
+    radial-gradient(circle at 50% 14%, rgba(101, 184, 225, .17), transparent 34%),
+    linear-gradient(145deg, rgba(20, 52, 82, .84), rgba(9, 31, 52, .76)) !important;
+  border-color: rgba(151, 221, 252, .18) !important;
+  color: #dcefff !important;
+  box-shadow: 0 14px 32px rgba(0, 8, 20, .30), inset 0 0 0 3px rgba(196, 238, 255, .05) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin .glass-vision-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector) {
+  background: linear-gradient(180deg, rgba(17, 49, 78, .76), rgba(8, 28, 48, .66)) !important;
+  border-color: rgba(137, 210, 244, .16);
+}
+
+html.electron-dark.codex-glass-vision-skin .glass-vision-home div:has(> .horizontal-scroll-fade-mask .group\/project-selector)::before { color: #a7ddf6; }
+html.electron-dark.codex-glass-vision-skin .glass-vision-home .group\/project-selector > button {
+  color: #bce9ff !important;
+  background: linear-gradient(135deg, rgba(45, 106, 148, .46), rgba(18, 54, 84, .64)) !important;
+  border-color: rgba(139, 216, 251, .20) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin .composer-surface-chrome {
+  background:
+    radial-gradient(circle at 88% 18%, rgba(91, 179, 221, .12), transparent 29%),
+    linear-gradient(145deg, rgba(18, 50, 79, .90), rgba(8, 28, 48, .80)) !important;
+  border-color: rgba(155, 225, 255, .22) !important;
+  box-shadow: 0 17px 38px rgba(0, 7, 18, .38), inset 0 0 0 3px rgba(198, 239, 255, .06) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin .ProseMirror { color: #e3f2ff !important; caret-color: #79d8ff !important; }
+html.electron-dark.codex-glass-vision-skin main.main-surface [data-message-author-role="user"] {
+  color: #e3f3ff !important;
+  background: linear-gradient(145deg, rgba(36, 91, 130, .62), rgba(17, 55, 86, .70)) !important;
+  border-color: rgba(145, 216, 249, .17) !important;
+  box-shadow: 0 10px 26px rgba(0, 7, 18, .24), inset 0 1px rgba(215, 245, 255, .10) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin main.main-surface pre,
+html.electron-dark.codex-glass-vision-skin main.main-surface [class*="code-block"] {
+  color: #d9ecf8 !important;
+  background: rgba(7, 27, 46, .82) !important;
+  border-color: rgba(132, 204, 238, .16) !important;
+  box-shadow: inset 0 1px rgba(209, 241, 255, .08), 0 9px 22px rgba(0, 6, 15, .20) !important;
+}
+
+html.electron-dark.codex-glass-vision-skin [role="dialog"],
+html.electron-dark.codex-glass-vision-skin [role="menu"],
+html.electron-dark.codex-glass-vision-skin [data-radix-popper-content-wrapper] > div {
+  color: #deeffb !important;
+  border-color: rgba(149, 219, 251, .20) !important;
+  background: rgba(11, 34, 56, .94) !important;
+  box-shadow: 0 24px 56px rgba(0, 6, 16, .48), inset 0 1px rgba(217, 244, 255, .10) !important;
+}
+
+html.codex-glass-vision-skin * { scrollbar-color: rgba(75, 145, 194, .42) transparent; }
+html.codex-glass-vision-skin *::-webkit-scrollbar-thumb { background: rgba(75, 145, 194, .38); border-radius: 999px; }
+
+@media (max-width: 1120px) {
+  .glass-vision-prism { display: none !important; }
+  .glass-vision-home { --thread-content-max-width: min(880px, calc(100cqw - 30px)) !important; }
+  .glass-vision-home > div:first-child > div:first-child > div:first-child { width: calc(100% - 28px) !important; }
+}
+
+@media (max-width: 900px) {
+  .glass-vision-status { display: none !important; }
+  .glass-vision-brand { left: 15px; }
+  .glass-vision-brand b { font-size: 11px; }
+  .glass-vision-home > div:first-child > div:first-child { flex-basis: 398px !important; min-height: 398px !important; }
+  .glass-vision-home > div:first-child > div:first-child > div:first-child { height: 225px !important; min-height: 225px !important; }
+  .glass-vision-home > div:first-child > div:first-child > div:first-child > div:first-child { padding-left: 26px; }
+  .glass-vision-home > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child { width: 66% !important; }
+  .glass-vision-home [data-feature="game-source"] { font-size: 18px !important; }
+  .glass-vision-home [data-feature="game-source"]::after { font-size: 12px; margin-top: 10px; }
+  .glass-vision-home .group\/home-suggestions button { min-height: 114px !important; font-size: 12px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-vision-atmosphere i,
+  .glass-vision-home .group\/home-suggestions button { transition: none !important; animation: none !important; }
+}
