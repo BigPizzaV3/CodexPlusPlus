@@ -49,7 +49,7 @@ fn app_paths_find_latest_windows_package_prefers_highest_version_app_dir() {
 }
 
 #[test]
-fn app_paths_find_latest_windows_package_ignores_chatgpt_desktop_package() {
+fn app_paths_find_latest_windows_package_accepts_chatgpt_desktop_migration() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(temp.path().join("OpenAI.Codex_26.707.3748.0_x64__abc/app")).unwrap();
     std::fs::create_dir_all(
@@ -59,7 +59,7 @@ fn app_paths_find_latest_windows_package_ignores_chatgpt_desktop_package() {
     .unwrap();
     std::fs::create_dir_all(
         temp.path()
-            .join("OpenAI.ChatGPT-Desktop_2026.514.421.0_neutral_~_abc"),
+            .join("OpenAI.ChatGPT-Desktop_2026.514.421.0_neutral_~_abc/app"),
     )
     .unwrap();
 
@@ -67,12 +67,17 @@ fn app_paths_find_latest_windows_package_ignores_chatgpt_desktop_package() {
 
     assert_eq!(
         latest,
-        temp.path().join("OpenAI.Codex_26.707.3748.0_x64__abc/app")
+        temp.path()
+            .join("OpenAI.ChatGPT-Desktop_2026.514.421.0_neutral_~_abc")
+            .join("app")
     );
-    assert_eq!(codex_app_version(&latest).as_deref(), Some("26.707.3748.0"));
+    assert_eq!(
+        codex_app_version(&latest).as_deref(),
+        Some("2026.514.421.0")
+    );
     assert_eq!(
         packaged_app_user_model_id(&latest).as_deref(),
-        Some("OpenAI.Codex_abc!App")
+        Some("OpenAI.ChatGPT-Desktop_abc!App")
     );
 }
 
@@ -121,8 +126,23 @@ fn app_paths_find_latest_windows_package_checks_roots_before_fallback() {
     assert!(latest.ends_with("OpenAI.Codex_26.513.3673.0_x64__abc/app"));
 }
 
+#[cfg(windows)]
 #[test]
-fn app_paths_find_latest_windows_package_ignores_chatgpt_across_roots() {
+fn app_paths_keep_explicit_store_path_override_without_re_resolving() {
+    let temp = tempfile::tempdir().unwrap();
+    let explicit = temp
+        .path()
+        .join("OpenAI.Codex_26.707.3748.0_x64__abc")
+        .join("app");
+    std::fs::create_dir_all(&explicit).unwrap();
+
+    let resolved = resolve_codex_app_dir_with_saved(Some(&explicit), None);
+
+    assert_eq!(resolved.as_deref(), Some(explicit.as_path()));
+}
+
+#[test]
+fn app_paths_find_latest_windows_package_accepts_chatgpt_migration_across_roots() {
     let temp = tempfile::tempdir().unwrap();
     let root_a = temp.path().join("WindowsAppsA");
     let root_b = temp.path().join("WindowsAppsB");
@@ -132,7 +152,7 @@ fn app_paths_find_latest_windows_package_ignores_chatgpt_across_roots() {
 
     let latest = find_latest_codex_app_dir_from_roots(&[root_a, root_b]).unwrap();
 
-    assert!(latest.ends_with("OpenAI.Codex_26.999.0.0_x64__abc/app"));
+    assert!(latest.ends_with("OpenAI.ChatGPT-Desktop_1.2026.133.0_x64__abc/app"));
 }
 
 #[test]
