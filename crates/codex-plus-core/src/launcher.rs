@@ -1835,8 +1835,8 @@ async fn handle_image_proxy_connection(
             return Ok(());
         }
     };
-    let status = upstream.status();
-    let is_success = upstream.is_success();
+    let status = upstream.response.status().to_string();
+    let is_success = upstream.response.status().is_success();
     let content_type = if upstream.content_type.is_empty() {
         "application/json; charset=utf-8".to_string()
     } else {
