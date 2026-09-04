@@ -481,10 +481,14 @@ impl SQLiteStorageAdapter {
         } else {
             Vec::new()
         };
+        let mut tables = Map::new();
+        tables.insert("sessions".to_string(), Value::Array(sessions));
+        tables.insert("messages".to_string(), Value::Array(messages));
+        self.add_thread_sidebar_backups(&mut tables, &session.session_id)?;
         let token = self.backup_store.write_backup(
             &session.session_id,
             &self.db_path,
-            json!({"sessions": sessions, "messages": messages}),
+            Value::Object(tables),
         )?;
         let backup_path = self.backup_store.path_for(&token);
         let delete_result = (|| -> anyhow::Result<()> {
@@ -564,28 +568,7 @@ impl SQLiteStorageAdapter {
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
         }
-        let session_index_lines = self
-            .codex_home
-            .as_deref()
-            .and_then(|home| {
-                crate::provider_sync::session_index_lines_for_thread(home, &thread_id).ok()
-            })
-            .unwrap_or_default();
-        if !session_index_lines.is_empty() {
-            tables.insert(
-                "__session_index".to_string(),
-                Value::Array(
-                    session_index_lines
-                        .iter()
-                        .map(|line| Value::String(line.clone()))
-                        .collect(),
-                ),
-            );
-        }
-        if let Some(home) = self.codex_home.as_deref() {
-            let sidebar = crate::provider_sync::snapshot_thread_sidebar_references(home, &thread_id)?;
-            tables.insert("__sidebar".to_string(), sidebar);
-        }
+        self.add_thread_sidebar_backups(&mut tables, &thread_id)?;
         let token =
             self.backup_store
                 .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
@@ -659,6 +642,29 @@ impl SQLiteStorageAdapter {
         Ok(result)
     }
 
+    fn add_thread_sidebar_backups(
+        &self,
+        tables: &mut Map<String, Value>,
+        thread_id: &str,
+    ) -> anyhow::Result<()> {
+        let Some(home) = self.codex_home.as_deref() else {
+            return Ok(());
+        };
+        let session_index_lines =
+            crate::provider_sync::session_index_lines_for_thread(home, thread_id)?;
+        if !session_index_lines.is_empty() {
+            tables.insert(
+                "__session_index".to_string(),
+                Value::Array(session_index_lines.into_iter().map(Value::String).collect()),
+            );
+        }
+        tables.insert(
+            "__sidebar".to_string(),
+            crate::provider_sync::snapshot_thread_sidebar_references(home, thread_id)?,
+        );
+        Ok(())
+    }
+
     fn delete_codex_automation_run(
         &self,
         db: &mut Connection,
@@ -680,6 +686,7 @@ impl SQLiteStorageAdapter {
             "thread_id = ?1",
             &[&thread_id],
         )?;
+        self.add_thread_sidebar_backups(&mut tables, &thread_id)?;
         if tables.values().all(|rows| {
             rows.as_array()
                 .map(|items| items.is_empty())
