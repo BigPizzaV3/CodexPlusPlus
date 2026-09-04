@@ -58,6 +58,10 @@ pub fn run() {
                 main_window_builder = main_window_builder.icon(icon)?;
             }
             let main_window = main_window_builder.build()?;
+            // 确保窗口在创建后立即可见并获得焦点，
+            // 避免某些 Windows 环境下窗口被系统最小化或隐藏。
+            let _ = main_window.show();
+            let _ = main_window.set_focus();
             install_tray(app)?;
             commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window, startup_is_transient());
@@ -318,8 +322,17 @@ fn register_main_window_events<R: tauri::Runtime>(
     let close_event_app = event_window.app_handle().clone();
     let focus_event_window = event_window.clone();
 
+    // 启动保护期：窗口创建后前 2 秒内的 Resized 事件不触发 hide，
+    // 避免系统在窗口初始化阶段误报 minimized 状态导致白屏。
+    let created_at = std::time::Instant::now();
+    let startup_grace = std::time::Duration::from_secs(2);
+
     event_window.on_window_event(move |event| match event {
         WindowEvent::Resized(_) => {
+            // 启动保护期内跳过 minimize 检测，避免初始化阶段的误触发
+            if created_at.elapsed() < startup_grace {
+                return;
+            }
             if matches!(minimized_window.is_minimized(), Ok(true)) {
                 let _ = minimized_window.hide();
             }

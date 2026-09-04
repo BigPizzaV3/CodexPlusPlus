@@ -292,28 +292,76 @@ pub fn resolve_codex_app_dir(app_dir: Option<&Path>) -> Option<PathBuf> {
 /// - %LOCALAPPDATA%\OpenAI\Codex\bin\  (standalone installer)
 /// - %LOCALAPPDATA%\OpenAI\Codex\      (user data root)
 /// - %LOCALAPPDATA%\Programs\OpenAI\Codex\ (alternative)
+/// - %LOCALAPPDATA%\OpenAI\ChatGPT\    (ChatGPT Desktop rebrand)
+/// - %APPDATA%\OpenAI\Codex\           (roaming profile)
 pub fn find_standalone_codex_app_dir() -> Option<PathBuf> {
     let local_appdata = std::env::var_os("LOCALAPPDATA")?;
+    let roaming_appdata = std::env::var_os("APPDATA");
 
-    let candidates: &[PathBuf] = &[
+    let mut candidates: Vec<PathBuf> = vec![
+        // Primary: OpenAI Codex standalone installer paths
         PathBuf::from(&local_appdata)
             .join("OpenAI")
             .join("Codex")
             .join("bin"),
-        PathBuf::from(&local_appdata).join("OpenAI").join("Codex"),
+        PathBuf::from(&local_appdata)
+            .join("OpenAI")
+            .join("Codex"),
         PathBuf::from(&local_appdata)
             .join("Programs")
             .join("OpenAI")
             .join("Codex"),
+        // ChatGPT Desktop (rebranded) paths
+        PathBuf::from(&local_appdata)
+            .join("OpenAI")
+            .join("ChatGPT")
+            .join("bin"),
+        PathBuf::from(&local_appdata)
+            .join("OpenAI")
+            .join("ChatGPT"),
+        PathBuf::from(&local_appdata)
+            .join("Programs")
+            .join("OpenAI")
+            .join("ChatGPT"),
     ];
 
-    for candidate in candidates {
+    // Also check roaming profile paths
+    if let Some(roaming) = roaming_appdata {
+        candidates.push(PathBuf::from(&roaming).join("OpenAI").join("Codex"));
+        candidates.push(PathBuf::from(&roaming).join("OpenAI").join("ChatGPT"));
+    }
+
+    for candidate in &candidates {
         if let Some(path) = normalize_codex_app_path(candidate) {
             if build_codex_executable(&path).exists() {
                 return Some(path);
             }
         }
     }
+
+    // Fallback: scan %LOCALAPPDATA%\OpenAI\ for any Codex-like directory
+    let openai_dir = PathBuf::from(&local_appdata).join("OpenAI");
+    if openai_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&openai_dir) {
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    let lower = name.to_ascii_lowercase();
+                    if lower.contains("codex") || lower.contains("chatgpt") {
+                        if let Some(normalized) = normalize_codex_app_path(&path) {
+                            if build_codex_executable(&normalized).exists() {
+                                return Some(normalized);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -329,10 +377,19 @@ pub fn resolve_codex_app_dir_with_saved(
         .map(str::trim)
         .filter(|saved| !saved.is_empty())
     {
-        // 已保存路径无效（例如误选 Codex++）时回退自动探测
-        if let Some(path) = normalize_codex_app_path(Path::new(saved)) {
-            return Some(path);
+        let saved_path = Path::new(saved);
+
+        // 快速拒绝：已保存路径明显是 Codex++ 而非 Codex 桌面应用
+        if is_codex_plus_plus_path(saved_path) {
+            // 不 return，继续走自动探测
+        } else if let Some(path) = normalize_codex_app_path(saved_path) {
+            // 路径有效且包含可执行文件，直接返回
+            if executable_in_dir(&path).is_some() || is_codex_store_package_dir(&path) {
+                return Some(path);
+            }
+            // 路径被 normalize 但不含可执行文件（可能是残留的旧路径），继续探测
         }
+        // saved 无效或不含可执行文件 → 回退自动探测
     }
     resolve_codex_app_dir(None)
 }

@@ -413,9 +413,19 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
     let app = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app).unwrap();
 
+    // macOS .app bundle 路径无需含可执行文件即被接受
     assert_eq!(
         resolve_codex_app_dir_with_saved(None, Some(&app.to_string_lossy())).as_deref(),
         Some(app.as_path())
+    );
+
+    // Windows 独立安装目录必须含可执行文件才被接受
+    let standalone = temp.path().join("OpenAI").join("Codex").join("bin");
+    std::fs::create_dir_all(&standalone).unwrap();
+    std::fs::write(standalone.join("codex.exe"), "").unwrap();
+    assert_eq!(
+        resolve_codex_app_dir_with_saved(None, Some(&standalone.to_string_lossy())).as_deref(),
+        Some(standalone.as_path())
     );
 }
 
