@@ -96,6 +96,8 @@ pub fn build_bridge_script(binding_name: &str) -> String {
 (() => {{
   window.__codexSessionDeleteCallbacks = new Map();
   window.__codexSessionDeleteSeq = 0;
+  window.__codexPlusBridgeHealth = window.__codexPlusBridgeHealth || {{}};
+  window.__codexPlusBridgeHealth.lastInjectionAt = Date.now();
   window.__codexSessionDeleteResolve = (id, result) => {{
     const callback = window.__codexSessionDeleteCallbacks.get(id);
     if (!callback) return;
@@ -121,16 +123,16 @@ pub fn build_bridge_script(binding_name: &str) -> String {
 pub fn bridge_health_check_script() -> &'static str {
     r#"
 (() => {
+  // The renderer heartbeat records real bridge results. Reading this state
+  // keeps the watchdog probe synchronous and cannot create a duplicate call.
   const bridge = window.__codexSessionDeleteBridge;
-  if (typeof bridge !== "function") return false;
-  try {
-    return Promise.race([
-      Promise.resolve(bridge("/backend/status", {})).then((result) => !!result && result.status === "ok"),
-      new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
-    ]);
-  } catch (error) {
-    return false;
-  }
+  const health = window.__codexPlusBridgeHealth;
+  if (typeof bridge !== "function" || !health) return false;
+  const now = Date.now();
+  const lastSuccessAt = Number(health.lastSuccessAt) || 0;
+  const lastInjectionAt = Number(health.lastInjectionAt) || 0;
+  if (lastInjectionAt > 0 && now - lastInjectionAt <= 5000) return true;
+  return lastSuccessAt > 0 && now - lastSuccessAt <= 15000;
 })()
 "#
 }
