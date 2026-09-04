@@ -587,6 +587,41 @@ fn delete_codex_thread_clears_sidebar_global_state_and_catalog_cache() {
             .unwrap();
         assert_eq!(count, 0, "{table}");
     }
+
+    let restored = SQLiteStorageAdapter::new(
+        &state_db,
+        BackupStore::new(tmp.path().join("backups")),
+    )
+    .with_codex_home(&home)
+    .undo(deleted.undo_token.as_deref().unwrap());
+    assert_eq!(restored.status, DeleteStatus::Undone);
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["projectless-thread-ids"], json!([keep_id, "t1"]));
+    assert_eq!(
+        state["thread-projectless-output-directories"]["t1"],
+        "C:/out"
+    );
+    assert_eq!(
+        state["electron-persisted-atom-state"]["thread-client-id-v1:t1"],
+        "client"
+    );
+    let catalog_db = Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
+    for table in [
+        "local_thread_catalog",
+        "thread_timeline_ledger",
+        "local_thread_catalog_scan_entries",
+    ] {
+        let count: i64 = catalog_db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "{table}");
+    }
 }
 
 #[test]
