@@ -2655,7 +2655,7 @@ fn remove_thread_from_global_state(codex_home: &Path, thread_id: &str) -> anyhow
         .and_then(Value::as_array_mut)
     {
         let before = ids.len();
-        ids.retain(|value| value.as_str() != Some(thread_id));
+        ids.retain(|value| !thread_value_matches(value, thread_id));
         removed += before.saturating_sub(ids.len());
     }
     for key in [

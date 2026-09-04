@@ -512,7 +512,7 @@ fn delete_codex_thread_clears_sidebar_global_state_and_catalog_cache() {
     fs::write(
         home.join(".codex-global-state.json"),
         json!({
-            "projectless-thread-ids": ["t1", keep_id],
+            "projectless-thread-ids": ["local:t1", "t1", keep_id],
             "thread-projectless-output-directories": {"t1": "C:/out", "keep": "C:/keep"},
             "thread-workspace-root-hints": {"local:t1": "C:/workspace", "keep": "C:/keep"},
             "thread-writable-roots": {"t1": ["C:/work"], "keep": ["C:/keep"]},
@@ -598,7 +598,10 @@ fn delete_codex_thread_clears_sidebar_global_state_and_catalog_cache() {
     let state: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
             .unwrap();
-    assert_eq!(state["projectless-thread-ids"], json!([keep_id, "t1"]));
+    assert_eq!(
+        state["projectless-thread-ids"],
+        json!([keep_id, "local:t1", "t1"])
+    );
     assert_eq!(
         state["thread-projectless-output-directories"]["t1"],
         "C:/out"
