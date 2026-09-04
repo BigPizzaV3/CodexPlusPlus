@@ -489,6 +489,31 @@
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
   const codexPlusDreamSkinRevision = String(window.__CODEX_PLUS_DREAM_SKIN_REVISION__ || "1");
+
+  function setCodexPlusInlineStyleIfChanged(element, property, value, priority = "") {
+    if (!element?.style) return;
+    if (element.style.getPropertyValue(property) === value && element.style.getPropertyPriority(property) === priority) return;
+    element.style.setProperty(property, value, priority);
+  }
+
+  function setCodexPlusAttributeIfChanged(element, name, value) {
+    if (!element) return;
+    const normalized = String(value);
+    if (element.getAttribute(name) !== normalized) element.setAttribute(name, normalized);
+  }
+
+  function setCodexPlusTextIfChanged(element, value) {
+    if (element && element.textContent !== value) element.textContent = value;
+  }
+
+  function setCodexPlusDatasetIfChanged(element, name, value) {
+    if (element && element.dataset[name] !== value) element.dataset[name] = value;
+  }
+
+  function setCodexPlusBooleanPropertyIfChanged(element, name, value) {
+    if (element && element[name] !== value) element[name] = value;
+  }
+
   clearTimeout(window.__codexThreadScrollSaveTimer);
   window.__codexThreadScrollSaveTimer = null;
   (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
@@ -1555,7 +1580,9 @@
     const existing = document.querySelector("main.main-surface");
     if (existing) return existing;
 
-    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    const modularSurface = document.querySelector(
+      'main[data-app-shell-main-surface], main[class*="MainContentSurface"], main[class*="_MainContentSurface_"]',
+    );
     const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
     const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
     if (!shellMain) return null;
@@ -1773,17 +1800,128 @@
   }
 
   function visibleDreamSkinComposer() {
-    return [...document.querySelectorAll(".composer-footer, .composer-surface-chrome")]
+    return [...document.querySelectorAll(
+      ".composer-footer, .composer-surface-chrome, [data-thread-scroll-footer], [class*='_ComposerLayoutRoot_'], [data-composer-surface-variant][data-composer-radius-variant]",
+    )]
       .map((node) => ({ node, rect: node.getBoundingClientRect?.() }))
       .filter(({ rect }) => rect && rect.width > 200 && rect.height > 0)
       .sort((left, right) => right.rect.bottom - left.rect.bottom)[0] || null;
   }
 
+  const codexPlusDreamSkinComposerDockAttribute = "data-codex-plus-dreamskin-composer-docked";
+  const codexPlusDreamSkinComposerDockProperties = [
+    "position", "top", "right", "bottom", "left", "width", "z-index",
+  ];
+  const codexPlusDreamSkinComposerDockState = {
+    node: null,
+    scroll: null,
+    parent: null,
+    nextSibling: null,
+    attribute: null,
+    styles: null,
+  };
+
+  function restoreDreamSkinComposerDock() {
+    const state = codexPlusDreamSkinComposerDockState;
+    const composer = state.node;
+    if (!composer) return;
+
+    if (composer.isConnected && state.parent?.isConnected) {
+      if (state.nextSibling?.parentElement === state.parent) state.parent.insertBefore(composer, state.nextSibling);
+      else state.parent.appendChild(composer);
+    } else if (composer.isConnected) {
+      // The old route may already have been unmounted. Do not leave an
+      // interactive composer from a previous conversation on the new route.
+      composer.remove();
+    }
+
+    if (composer.isConnected) {
+      for (const property of codexPlusDreamSkinComposerDockProperties) {
+        const saved = state.styles?.[property];
+        if (saved?.value) composer.style.setProperty(property, saved.value, saved.priority || "");
+        else composer.style.removeProperty(property);
+      }
+      if (state.attribute === null) composer.removeAttribute(codexPlusDreamSkinComposerDockAttribute);
+      else composer.setAttribute(codexPlusDreamSkinComposerDockAttribute, state.attribute);
+    }
+
+    Object.assign(state, {
+      node: null,
+      scroll: null,
+      parent: null,
+      nextSibling: null,
+      attribute: null,
+      styles: null,
+    });
+  }
+
+  function syncDreamSkinComposerDocking(enabled) {
+    const state = codexPlusDreamSkinComposerDockState;
+    const main = document.querySelector(
+      "main.main-surface, main[data-app-shell-main-surface], main[class*='_MainContentSurface_']",
+    );
+    const scroll = enabled
+      ? main?.querySelector(".thread-scroll-container[data-app-action-timeline-scroll], .thread-scroll-container")
+      : null;
+    const renderedFooter = scroll?.querySelector("[data-thread-scroll-footer]") || null;
+    const dock = enabled
+      ? scroll?.closest?.(
+        '[data-app-shell-main-content-layout], [data-ds-thread-surface="true"]',
+      ) || main
+      : null;
+
+    if (state.node && (state.scroll !== scroll || (renderedFooter && renderedFooter !== state.node))) {
+      restoreDreamSkinComposerDock();
+    }
+    if (!enabled || !main || !scroll || !dock) {
+      if (state.node) restoreDreamSkinComposerDock();
+      return;
+    }
+
+    const footer = renderedFooter || (state.scroll === scroll && state.node?.isConnected ? state.node : null);
+    if (!footer) {
+      if (state.node) restoreDreamSkinComposerDock();
+      return;
+    }
+    if (!state.node) {
+      // Codex may eventually own this layout itself, or a user script may
+      // already have moved the live node. Leave an already docked footer alone.
+      if (footer.parentElement === main) return;
+      state.node = footer;
+      state.scroll = scroll;
+      state.parent = footer.parentElement;
+      state.nextSibling = footer.nextSibling;
+      state.attribute = footer.getAttribute(codexPlusDreamSkinComposerDockAttribute);
+      state.styles = Object.fromEntries(codexPlusDreamSkinComposerDockProperties.map((property) => [
+        property,
+        { value: footer.style.getPropertyValue(property), priority: footer.style.getPropertyPriority(property) },
+      ]));
+    }
+
+    if (footer.parentElement !== dock) dock.appendChild(footer);
+    setCodexPlusAttributeIfChanged(footer, codexPlusDreamSkinComposerDockAttribute, "true");
+    for (const [property, value] of Object.entries({
+      position: "absolute",
+      top: "auto",
+      right: "0",
+      bottom: "0",
+      left: "0",
+      width: "auto",
+      "z-index": "10",
+    })) {
+      setCodexPlusInlineStyleIfChanged(footer, property, value, "important");
+    }
+  }
+
   function ensureDreamSkinCompanion(theme) {
     const config = dreamSkinCompanionConfig(theme);
+    if (!config) {
+      if (document.getElementById(dreamSkinCompanionId)) removeDreamSkinCompanion();
+      return;
+    }
     const composer = visibleDreamSkinComposer();
-    if (!config || !composer) {
-      removeDreamSkinCompanion();
+    if (!composer) {
+      if (document.getElementById(dreamSkinCompanionId)) removeDreamSkinCompanion();
       return;
     }
 
@@ -1828,7 +1966,7 @@
         : fitsRight || !fitsLeft;
 
     if (!fitsRight && !fitsLeft) {
-      companion.style.opacity = "0";
+      setCodexPlusInlineStyleIfChanged(companion, "opacity", "0");
       return;
     }
 
@@ -1839,13 +1977,14 @@
         window.innerHeight - renderedHeight - edge,
       ),
     );
-    companion.style.width = `${config.width}px`;
-    companion.style.left = `${Math.round(useRight ? right : left)}px`;
-    companion.style.top = `${Math.round(top)}px`;
-    companion.style.opacity = "1";
+    setCodexPlusInlineStyleIfChanged(companion, "width", `${config.width}px`);
+    setCodexPlusInlineStyleIfChanged(companion, "left", `${Math.round(useRight ? right : left)}px`);
+    setCodexPlusInlineStyleIfChanged(companion, "top", `${Math.round(top)}px`);
+    setCodexPlusInlineStyleIfChanged(companion, "opacity", "1");
   }
 
   function clearDreamSkinPresentation() {
+    restoreDreamSkinComposerDock();
     const root = document.documentElement;
     for (const className of [...(root?.classList || [])]) {
       if (
@@ -1871,6 +2010,30 @@
       "--ds-text",
       "--ds-muted",
       "--ds-line",
+      "--ds-theme-font-family",
+      "--ds-theme-font-scale",
+      "--ds-theme-surface-radius",
+      "--ds-theme-surface-opacity",
+      "--ds-theme-surface-blur",
+      "--ds-theme-surface-border-alpha",
+      "--ds-theme-surface-shadow",
+      "--ds-theme-image-focus-x",
+      "--ds-theme-image-focus-y",
+      "--ds-theme-image-zoom",
+      "--ds-theme-image-dim",
+      "--ds-theme-image-task-intensity",
+      "--ds-theme-density-scale",
+      "--ds-theme-motion-level",
+      "--ds-theme-color-background",
+      "--ds-theme-color-panel",
+      "--ds-theme-color-panel-alt",
+      "--ds-theme-color-accent",
+      "--ds-theme-color-accent-alt",
+      "--ds-theme-color-secondary",
+      "--ds-theme-color-highlight",
+      "--ds-theme-color-text",
+      "--ds-theme-color-muted",
+      "--ds-theme-color-line",
       "--dream-ink",
       "--dream-purple",
       "--dream-violet",
@@ -1883,6 +2046,19 @@
       "--dream-skin-project-prefix",
       "--dream-skin-project-label",
     ].forEach((name) => root?.style.removeProperty(name));
+    window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__?.disconnect?.();
+    delete window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__;
+    const registeredParts = new Set([
+      "root", "sidebar", "main", "header", "home", "home-hero", "project-list",
+      "thread", "message", "composer", "composer-toolbar", "composer-toolbar-empty", "dialog",
+    ]);
+    document.querySelectorAll("[data-ds-part]").forEach((node) => {
+      if (registeredParts.has(node.getAttribute("data-ds-part"))) node.removeAttribute("data-ds-part");
+    });
+    document.querySelectorAll("[data-ds-thread-surface], [data-ds-thread-scroll]").forEach((node) => {
+      node.removeAttribute("data-ds-thread-surface");
+      node.removeAttribute("data-ds-thread-scroll");
+    });
     document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
     document.querySelectorAll('[role="main"][data-dream-home-layout]').forEach((node) => {
       node.removeAttribute("data-dream-home-layout");
@@ -2179,24 +2355,57 @@
 
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
-    if (settings.dreamSkinEnabled && !settings.dreamSkinPaused) ensureDreamSkinMainSurface();
+    const active = settings.dreamSkinEnabled && !settings.dreamSkinPaused;
+    const root = document.documentElement;
+    if (active) ensureDreamSkinMainSurface();
     if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
-      if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
-        cleanupDreamSkin();
-      } else {
-        const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
-        state?.ensure?.();
-        ensureDreamSkinCompanion(
-          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+      if (codexPlusBackendSettingsLoaded && !active) {
+        const hasPresentation = !!(
+          window.__CODEX_DREAM_SKIN_STATE__
+          || window.__CODEX_GLASS_VISION_SKIN_STATE__
+          || root?.classList.contains("codex-dream-skin")
+          || root?.classList.contains("codex-glass-vision-skin")
+          || document.getElementById(codexPlusDreamSkinStyleId)
         );
+        if (hasPresentation) {
+          syncDreamSkinComposerDocking(false);
+          cleanupDreamSkin();
+        }
+      } else {
+        const theme = window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig;
+        const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
+        const needsEnsure = !!(
+          state?.ensure
+          && (!root?.classList.contains("codex-dream-skin")
+            || !document.getElementById(codexPlusDreamSkinStyleId)
+            || window.__codexPlusDreamSkinNeedsEnsure)
+        );
+        if (needsEnsure) {
+          state.ensure();
+          window.__codexPlusDreamSkinNeedsEnsure = false;
+        }
+        if (active) syncDreamSkinComposerDocking(true);
+        ensureDreamSkinCompanion(theme);
       }
       return;
     }
-    if (!settings.dreamSkinEnabled || settings.dreamSkinPaused) {
-      cleanupDreamSkin();
+    if (!active) {
+      const hasPresentation = !!(
+        window.__CODEX_DREAM_SKIN_STATE__
+        || window.__CODEX_GLASS_VISION_SKIN_STATE__
+        || root?.classList.contains("codex-dream-skin")
+        || root?.classList.contains("codex-glass-vision-skin")
+        || document.getElementById(codexPlusDreamSkinStyleId)
+      );
+      if (hasPresentation) {
+        syncDreamSkinComposerDocking(false);
+        cleanupDreamSkin();
+      }
       return;
     }
     installDreamSkin(settings);
+    syncDreamSkinComposerDocking(true);
+    ensureDreamSkinCompanion(settings.dreamSkinThemeConfig);
   }
 
   function applyDreamSkinLiveUpdate(payload) {
@@ -2206,6 +2415,7 @@
     }
     window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = String(payload.artSignature || "");
     window.__CODEX_PLUS_DREAM_SKIN_THEME__ = payload.theme && typeof payload.theme === "object" ? payload.theme : {};
+    window.__codexPlusDreamSkinNeedsEnsure = true;
     codexPlusBackendSettings.codexAppDreamSkinEnabled = true;
     codexPlusBackendSettings.codexAppDreamSkinPaused = false;
     codexPlusBackendSettings.codexAppDreamSkinThemeConfig = window.__CODEX_PLUS_DREAM_SKIN_THEME__;
@@ -2401,6 +2611,8 @@
     fastModelName: "",
     fastSupported: false,
   };
+  let codexServiceTierBadgeRetryAt = 0;
+  let codexServiceTierBadgeRetryRoute = "";
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
@@ -3026,11 +3238,11 @@
   function refreshCodexServiceTierBadges() {
     const state = codexServiceTierBadgeState();
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((node) => {
-      node.dataset.tier = state.tier;
-      node.dataset.disabled = String(!!state.disabled);
-      node.textContent = state.label;
-      node.title = state.title;
-      node.setAttribute("aria-label", state.title);
+      setCodexPlusDatasetIfChanged(node, "tier", state.tier);
+      setCodexPlusDatasetIfChanged(node, "disabled", String(!!state.disabled));
+      setCodexPlusTextIfChanged(node, state.label);
+      if (node.title !== state.title) node.title = state.title;
+      setCodexPlusAttributeIfChanged(node, "aria-label", state.title);
     });
   }
 
@@ -3047,44 +3259,45 @@
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
-      node.hidden = !featureEnabled;
+      setCodexPlusBooleanPropertyIfChanged(node, "hidden", !featureEnabled);
     });
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
-      node.dataset.status = fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed"));
-      node.textContent = featureEnabled
+      setCodexPlusDatasetIfChanged(node, "status", fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed")));
+      setCodexPlusTextIfChanged(node, featureEnabled
         ? (backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接"))
-        : "未启用";
+        : "未启用");
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "inherit");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "inherit"));
     });
     document.querySelectorAll("[data-codex-service-tier-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "global-standard"));
     });
     document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
-      button.disabled = fastDisabled;
-      button.dataset.active = String(codexServiceTierState.controlMode === "global-fast");
-      button.title = fastTitle;
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", fastDisabled);
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "global-fast"));
+      if (button.title !== fastTitle) button.title = fastTitle;
     });
     document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom"));
     });
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit"));
+      const title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      if (button.title !== title) button.title = title;
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard"));
     });
     document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
-      button.disabled = fastDisabled;
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
-      button.title = fastTitle;
+      setCodexPlusBooleanPropertyIfChanged(button, "disabled", fastDisabled);
+      setCodexPlusDatasetIfChanged(button, "active", String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast"));
+      if (button.title !== fastTitle) button.title = fastTitle;
     });
     refreshCodexServiceTierBadges();
   }
@@ -4566,7 +4779,7 @@
       }
     }
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
-    if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
+    if (status) setCodexPlusDatasetIfChanged(status, "status", codexPlusBackendStatus.status || "checking");
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
     setCodexPlusSidebarNavActive(active);
   }
@@ -6116,6 +6329,8 @@
   }
 
   function updateThreadScrollHandlers() {
+    if (window.__codexThreadScrollHandlersVersion === codexThreadScrollListenerVersion
+        && window.__codexThreadScrollHandlers) return;
     window.__codexThreadScrollHandlers = {
       shouldBlockAutobottom: shouldBlockThreadScrollAutobottom,
       shouldBlockIntoView: shouldBlockThreadScrollIntoView,
@@ -6127,6 +6342,7 @@
       prepareRestoreLock: prepareThreadScrollRestoreLock,
       scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
     };
+    window.__codexThreadScrollHandlersVersion = codexThreadScrollListenerVersion;
   }
 
   function installThreadScrollUserIntentCapture() {
@@ -6147,6 +6363,9 @@
   }
 
   function installThreadScrollNavigationCapture() {
+    if (window.__codexThreadScrollNavigationInstalled === codexThreadScrollRouteHooksVersion
+        && window.__codexThreadScrollNavigationHandler) return;
+    window.__codexThreadScrollNavigationInstalled = codexThreadScrollRouteHooksVersion;
     document.removeEventListener("pointerdown", window.__codexThreadScrollNavigationHandler, true);
     document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
     document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
@@ -6419,6 +6638,7 @@
   let codexModelCatalogPromise = null;
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
+  let codexModelWhitelistLastRefreshAt = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -7118,6 +7338,9 @@
       loadCodexModelCatalog();
       return;
     }
+    const now = Date.now();
+    if (now - codexModelWhitelistLastRefreshAt < 1000) return;
+    codexModelWhitelistLastRefreshAt = now;
     runCodexModelWhitelistRefreshPass();
   }
 
@@ -7402,9 +7625,9 @@
       || document.querySelector("header .ms-auto")
       || nativeShare?.parentElement?.parentElement?.parentElement;
     if (actionGroup instanceof HTMLElement) {
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
+      setCodexPlusInlineStyleIfChanged(button, "position", "static");
+      setCodexPlusInlineStyleIfChanged(button, "pointer-events", "auto");
+      setCodexPlusInlineStyleIfChanged(button, "-webkit-app-region", "no-drag");
       // 只在按钮还不在操作栏里时才搬动它。过去还要求它必须排在最后，
       // 一旦 Codex 在它后面挂了别的节点，这个条件就永远成立，
       // 于是每轮 scan 都 appendChild 一次，反过来又触发下一轮 scan（issue #1960）。
@@ -7418,10 +7641,10 @@
       || document.querySelector(selectors.appHeader);
     if (header instanceof HTMLElement) {
       // 没有明确操作栏时也保持文档流，避免遮挡原生按钮。
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      button.style.marginLeft = "8px";
+      setCodexPlusInlineStyleIfChanged(button, "position", "static");
+      setCodexPlusInlineStyleIfChanged(button, "pointer-events", "auto");
+      setCodexPlusInlineStyleIfChanged(button, "-webkit-app-region", "no-drag");
+      setCodexPlusInlineStyleIfChanged(button, "margin-left", "8px");
       if (button.parentElement !== header) header.appendChild(button);
     } else if (!button.isConnected) {
       document.body.appendChild(button);
@@ -7488,6 +7711,9 @@
   }
 
   function installSessionShareImportListener() {
+    if (window.__codexSessionShareImportListenerInstalled === sessionShareButtonVersion
+        && window.__codexSessionShareImportHandler) return;
+    window.__codexSessionShareImportListenerInstalled = sessionShareButtonVersion;
     window.removeEventListener("message", window.__codexSessionShareImportHandler);
     window.__codexSessionShareImportHandler = (event) => {
       if (!/^(https:\/\/share\.codexpp\.cc|https:\/\/codexpp-share\.pages\.dev)$/.test(event.origin || "") || event.data?.type !== "codexpp-import-session") return;
@@ -7819,7 +8045,7 @@
         if (localizeCodexMenuTextNode(node)) changed = true;
       }
       if (localizeCodexMenuAttributes(scope)) changed = true;
-      scope.dataset.codexMenuLocalizationVersion = codexMenuLocalizationVersion;
+      setCodexPlusDatasetIfChanged(scope, "codexMenuLocalizationVersion", codexMenuLocalizationVersion);
     }
     return changed;
   }
@@ -8467,14 +8693,18 @@
 
   function updateDeleteButtonOffsets() {
     sessionRows().forEach((row) => {
+      const rowRect = row.getBoundingClientRect();
       const hasArchiveConfirm = Array.from(row.querySelectorAll("button")).some((button) => {
-        const rect = button.getBoundingClientRect();
         const label = button.getAttribute("aria-label") || "";
         const text = (button.textContent || "").trim();
         if (button.classList.contains(buttonClass) || button.classList.contains(exportButtonClass) || label === "归档对话" || label === "置顶对话") return false;
-        return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
+        if (text === "确认") return true;
+        const rect = button.getBoundingClientRect();
+        return text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > rowRect.right - 50;
       });
-      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+      if (row.classList.contains("codex-archive-confirm-visible") !== hasArchiveConfirm) {
+        row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+      }
     });
   }
 
@@ -8511,6 +8741,9 @@
   }
 
   function installDeleteButtonEventDelegation() {
+    if (window.__codexSessionDeleteDocumentDeleteHandlerVersion === codexDeleteVersion
+        && window.__codexSessionDeleteDocumentDeleteHandler) return;
+    window.__codexSessionDeleteDocumentDeleteHandlerVersion = codexDeleteVersion;
     document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
     const handler = (event) => {
       const button = event.target?.closest?.(`.${buttonClass}`);
@@ -9013,6 +9246,7 @@
     moObserved: false,
     observed: new WeakSet(),
     elements: new Set(),
+    ownedOffsets: new WeakMap(),
   };
 
   function conversationViewTokenSet(el) {
@@ -9202,13 +9436,22 @@
       removeCodexServiceTierBadges();
       return;
     }
-    const composer = codexServiceTierFindComposerEl();
-    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
-    if (!composer || !placement?.parent) {
-      existingBadges.forEach((badge) => badge.remove());
+    if (existingBadges.length > 0) {
+      refreshCodexServiceTierBadges();
       return;
     }
+    const route = String(location.href || "");
+    const now = Date.now();
+    if (codexServiceTierBadgeRetryRoute === route && codexServiceTierBadgeRetryAt > now) return;
+    codexServiceTierBadgeRetryRoute = route;
+    const composer = codexServiceTierFindComposerEl();
+    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
+    if (!composer || !placement?.parent) {
+      codexServiceTierBadgeRetryAt = now + 1000;
+      return;
+    }
+    codexServiceTierBadgeRetryAt = 0;
     let badge = existingBadges.find((node) => node.closest?.(".composer-footer") || node.closest?.("button") == null) || existingBadges[0];
     existingBadges.forEach((node) => {
       if (node !== badge) node.remove();
@@ -9316,26 +9559,41 @@
     return rect.left + rect.width / 2;
   }
 
-  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds) {
+  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds, htmlCenter) {
     if (!nativeRect || !bounds) return false;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    const targetLeft = htmlCenter - nativeRect.width / 2;
     const targetRight = targetLeft + nativeRect.width;
     return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
   }
 
-  function conversationViewAlignElement(el) {
+  function conversationViewAlignElement(el, htmlCenter) {
     if (!el?.isConnected) return;
     conversationViewApplyNativeWidth(el);
-    conversationViewResetOwnOffset(el);
+    const owned = conversationViewState.ownedOffsets.get(el);
+    const ownsCurrentOffset = !!owned
+      && el.style.left === owned.left
+      && el.style.transform === owned.transform;
+    if (!ownsCurrentOffset) conversationViewResetOwnOffset(el);
     const nativeRect = el.getBoundingClientRect();
     const bounds = conversationViewSessionRectFor(el);
-    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds)) return;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
-    const delta = targetLeft - nativeRect.left;
-    if (Math.abs(delta) > 0.5) {
-      const nextLeft = `${delta.toFixed(2)}px`;
-      if (el.style.left !== nextLeft) el.style.left = nextLeft;
+    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds, htmlCenter)) {
+      if (ownsCurrentOffset) conversationViewResetOwnOffset(el);
+      conversationViewState.ownedOffsets.delete(el);
+      return;
     }
+    const targetLeft = htmlCenter - nativeRect.width / 2;
+    const delta = targetLeft - nativeRect.left;
+    if (Math.abs(delta) <= 0.5) {
+      if (!ownsCurrentOffset) conversationViewState.ownedOffsets.delete(el);
+      return;
+    }
+    const currentLeft = ownsCurrentOffset ? Number.parseFloat(owned.left) : 0;
+    const nextLeft = `${(Number.isFinite(currentLeft) ? currentLeft + delta : delta).toFixed(2)}px`;
+    if (el.style.left !== nextLeft) el.style.left = nextLeft;
+    conversationViewState.ownedOffsets.set(el, {
+      left: nextLeft,
+      transform: el.style.transform,
+    });
   }
 
   function conversationViewObserveIfNeeded(el) {
@@ -9359,14 +9617,34 @@
     ].forEach(conversationViewObserveIfNeeded);
   }
 
+  function conversationViewMutationAffectsLayout(record) {
+    const content = conversationViewState.contentEl;
+    const composer = conversationViewState.composerEl;
+    if (!content?.isConnected || !composer?.isConnected) return true;
+    const watched = [
+      content,
+      content.parentElement,
+      content.parentElement?.parentElement,
+      composer,
+      composer.parentElement,
+      composer.parentElement?.parentElement,
+    ].filter(Boolean);
+    if (watched.some((node) => node === record.target || node.contains?.(record.target))) return true;
+    if (record.type !== "childList") return false;
+    return [...record.addedNodes, ...record.removedNodes].some((node) =>
+      watched.some((parent) => parent === node || parent.contains?.(node))
+    );
+  }
+
   function conversationViewAlignNow() {
     if (!codexPlusSettings().conversationView) return;
     conversationViewResolveTargets();
-    conversationViewAlignElement(conversationViewState.contentEl);
-    conversationViewAlignElement(conversationViewState.composerEl);
+    const htmlCenter = conversationViewHtmlCenter();
+    conversationViewAlignElement(conversationViewState.contentEl, htmlCenter);
+    conversationViewAlignElement(conversationViewState.composerEl, htmlCenter);
   }
 
-  function scheduleConversationViewAlign(frames = 16) {
+  function scheduleConversationViewAlign(frames = 3) {
     conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
     if (conversationViewState.rafId) return;
     const tick = () => {
@@ -9381,6 +9659,13 @@
   }
 
   function cleanupConversationView() {
+    if (!conversationViewState.rafId
+        && !conversationViewState.pollId
+        && !conversationViewState.mo
+        && !conversationViewState.ro
+        && conversationViewState.elements.size === 0
+        && !conversationViewState.contentEl
+        && !conversationViewState.composerEl) return;
     if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
     if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
     conversationViewState.rafId = 0;
@@ -9393,6 +9678,7 @@
     conversationViewState.observed = new WeakSet();
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();
+    conversationViewState.ownedOffsets = new WeakMap();
     conversationViewState.contentEl = null;
     conversationViewState.composerEl = null;
   }
@@ -9402,7 +9688,9 @@
   function ensureConversationViewRuntime() {
     if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
-    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver((records) => {
+      if (records.some(conversationViewMutationAffectsLayout)) scheduleConversationViewAlign();
+    });
     if (document.body && !conversationViewState.moObserved) {
       conversationViewState.mo.observe(document.body, {
         childList: true,
@@ -9412,7 +9700,7 @@
       });
       conversationViewState.moObserved = true;
     }
-    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(2), 350);
+    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(1), 1000);
   }
 
   function refreshConversationView() {
@@ -9420,8 +9708,14 @@
       cleanupConversationView();
       return;
     }
+    const previousContentEl = conversationViewState.contentEl;
+    const previousComposerEl = conversationViewState.composerEl;
+    const wasRunning = !!(conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId);
     ensureConversationViewRuntime();
-    scheduleConversationViewAlign();
+    conversationViewResolveTargets();
+    if (!wasRunning || previousContentEl !== conversationViewState.contentEl || previousComposerEl !== conversationViewState.composerEl) {
+      scheduleConversationViewAlign(3);
+    }
   }
 
   function scanLightweight() {
@@ -9446,7 +9740,7 @@
     installThreadScrollNavigationCapture();
     installThreadScrollUserIntentCapture();
     installThreadScrollRouteHooks();
-    scheduleThreadScrollSync(true);
+    scheduleThreadScrollSync();
     refreshCodexServiceTierControls();
   }
 
@@ -10403,10 +10697,16 @@
     }
   }
 
+  let scanDeferredFrame = 0;
+
   function scan() {
     void installDictationSupportPatch();
     runScanStep(scanLightweight);
-    requestAnimationFrame(() => runScanStep(scanDeferred));
+    if (scanDeferredFrame) return;
+    scanDeferredFrame = requestAnimationFrame(() => {
+      scanDeferredFrame = 0;
+      runScanStep(scanDeferred);
+    });
   }
 
   function isExtensionUiNode(node) {

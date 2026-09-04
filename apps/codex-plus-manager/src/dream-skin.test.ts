@@ -99,7 +99,8 @@ describe("dream skin theme helpers", () => {
     assert.match(renderer, /\.composer-surface-chrome/);
     assert.match(renderer, /data:image\/(?:png|jpeg|webp|gif);base64/);
     assert.match(renderer, /removeDreamSkinCompanion/);
-    assert.match(renderer, /ensureDreamSkinCompanion\(\s*window\.__CODEX_PLUS_DREAM_SKIN_THEME__/);
+    assert.match(renderer, /const theme = window\.__CODEX_PLUS_DREAM_SKIN_THEME__/);
+    assert.match(renderer, /ensureDreamSkinCompanion\(theme\)/);
   });
 
   it("aligns tall companion images by rendered height with a wider vertical offset range", async () => {
@@ -138,7 +139,31 @@ describe("dream skin theme helpers", () => {
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "28-codex-plus-side-panel-layout"/);
+  });
+
+  it("bridges the modern Codex Skin API without forcing visual properties", async () => {
+    const assets = await readFile(
+      new URL("../../../crates/codex-plus-core/src/assets.rs", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(assets, /--ds-theme-font-family/);
+    assert.match(assets, /--ds-theme-surface-radius/);
+    assert.match(assets, /--ds-theme-surface-opacity/);
+    assert.match(assets, /--ds-theme-surface-blur/);
+    assert.match(assets, /dream-skin\/themes/);
+    assert.match(assets, /join\("theme\.css"\)/);
+    assert.match(assets, /threadViewport/);
+    assert.match(assets, /const threadSurface = threadViewport \|\| threadScroll/);
+    assert.match(assets, /data-ds-thread-scroll/);
+    assert.match(assets, /data-app-shell-main-surface/);
+    assert.match(assets, /data-local-conversation-user-anchor/);
+    assert.match(assets, /_ComposerLayoutRoot_/);
+    assert.match(assets, /composer-toolbar-empty/);
+    assert.match(assets, /desiredParts = new Map/);
+    assert.match(assets, /desiredThreadSurfaces = new Set/);
+    assert.doesNotMatch(assets, /DREAM_MODERN_CODEX_COMPAT_CSS/);
   });
 
   it("extends the Windows wallpaper treatment to right and bottom dock panels", async () => {
@@ -160,6 +185,18 @@ describe("dream skin theme helpers", () => {
     assert.match(css, /\.dream-aux-panel-right/);
     assert.match(css, /\.dream-aux-panel-bottom/);
     assert.match(css, /\[data-codex-terminal="true"\]/);
+  });
+
+  it("themes the modern Codex right side panel surface", async () => {
+    const css = await readFile(
+      new URL("../../../assets/inject/upstream/dream-skin/macos/dream-skin.css", import.meta.url),
+      "utf8",
+    );
+
+    assert.match(css, /\[data-app-shell-tabs="true"\]/);
+    assert.match(css, /\[data-browser-sidebar-webview-host-root\]/);
+    assert.match(css, /\[data-browser-sidebar-webview\]/);
+    assert.match(css, /--app-shell-panel-background/);
   });
 
   it("keeps transient new-chat drafts on native geometry", async () => {

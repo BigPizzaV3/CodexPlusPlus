@@ -1,6 +1,7 @@
 use codex_plus_core::dream_skin_runtime::{
     DreamSkinRuntimeStatus, DreamSkinState, apply_dream_skin_live, macos_arch_name,
-    parse_renderer_verification, windows_app_path_matches_registered_root,
+    parse_renderer_verification, renderer_verification_script,
+    windows_app_path_matches_registered_root,
 };
 use std::path::Path;
 
@@ -120,6 +121,38 @@ fn verification_accepts_target_project_live_contract() {
 }
 
 #[test]
+fn generated_skin_runtime_tracks_modern_codex_surface_contract() {
+    let settings = codex_plus_core::settings::BackendSettings {
+        codex_app_dream_skin_enabled: true,
+        ..Default::default()
+    };
+    let injection = codex_plus_core::assets::injection_script_with_settings(57321, &settings);
+    let assets_source =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/assets.rs")).unwrap();
+
+    assert!(injection.contains("data-app-shell-main-content-layout=\"thread-edge-scroll\""));
+    assert!(injection.contains(".thread-scroll-container[data-app-action-timeline-scroll]"));
+    assert!(injection.contains("data-pip-obstacle=\"app-shell-header\""));
+    assert!(injection.contains("[data-thread-scroll-footer]"));
+    assert!(injection.contains("data-ds-thread-surface"));
+    assert!(injection.contains("data-ds-thread-scroll"));
+    assert!(injection.contains("const threadSurface = threadViewport || threadScroll"));
+    assert!(injection.contains("data-app-shell-main-surface"));
+    assert!(injection.contains("data-local-conversation-user-anchor"));
+    assert!(injection.contains("_ComposerLayoutRoot_"));
+    assert!(injection.contains("--ds-theme-surface-radius"));
+    assert!(injection.contains("--ds-theme-surface-opacity"));
+    assert!(injection.contains("--ds-theme-surface-blur"));
+    assert!(assets_source.contains("dream-skin/themes"));
+    assert!(assets_source.contains("join(\"theme.css\")"));
+    assert!(!assets_source.contains("DREAM_MODERN_CODEX_COMPAT_CSS"));
+    assert!(renderer_verification_script().contains("[data-codex-composer]"));
+    assert!(
+        renderer_verification_script().contains("[contenteditable=\"true\"][role=\"textbox\"]")
+    );
+}
+
+#[test]
 fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
     for relative_path in [
         "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
@@ -164,6 +197,25 @@ fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
                 || source.contains("data-dream-home-layout=\\\"structured\\\""),
             "missing soft layout CSS in {relative_path}"
         );
+        if relative_path.ends_with("/macos/dream-skin.css") {
+            assert!(
+                source.contains("from-surface.via-surface"),
+                "missing modern composer fade selector in {relative_path}"
+            );
+            assert!(
+                source.contains("[data-thread-scroll-footer] button[class*=\"end-1/2\"][class*=\"bottom-\"]"),
+                "missing modern bottom-button transition guard in {relative_path}"
+            );
+            assert!(
+                source.contains("[data-app-shell-tabs=\"true\"]"),
+                "missing modern right side panel surface selector in {relative_path}"
+            );
+            assert!(
+                source.contains("[data-browser-sidebar-webview-host-root]")
+                    && source.contains("[data-browser-sidebar-webview]"),
+                "missing modern browser side panel background selectors in {relative_path}"
+            );
+        }
     }
 }
 

@@ -209,6 +209,25 @@ fn stored_theme_image_extension(state_dir: &Path, source: &Path) -> Option<Strin
     valid_theme_id(theme_id).then_some(extension)
 }
 
+fn stored_theme_css_path(state_dir: &Path, source: &Path) -> Option<PathBuf> {
+    let source = std::fs::canonicalize(source).ok()?;
+    let themes_dir = std::fs::canonicalize(state_dir.join(THEMES_DIR)).ok()?;
+    let theme_dir = source.parent()?;
+    if theme_dir.parent()? != themes_dir {
+        return None;
+    }
+    let theme_id = theme_dir.file_name()?.to_str()?;
+    if !valid_theme_id(theme_id) {
+        return None;
+    }
+    let css_path = theme_dir.join("theme.css");
+    let metadata = std::fs::symlink_metadata(&css_path).ok()?;
+    (metadata.file_type().is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.len() <= 262_144)
+        .then_some(css_path)
+}
+
 fn valid_theme_id(value: &str) -> bool {
     let bytes = value.as_bytes();
     (1..=64).contains(&bytes.len())
@@ -283,6 +302,18 @@ pub fn save_dream_skin_theme(
             bail!("Dream Skin theme config exceeds 256 KiB");
         }
         crate::settings::atomic_write(&staging.join(THEME_CONFIG_FILE), &config)?;
+        if let Some(source_css) =
+            stored_theme_css_path(state_dir, Path::new(draft.image_path.trim()))
+        {
+            let css = std::fs::read_to_string(&source_css).with_context(|| {
+                format!(
+                    "failed to read Dream Skin Safe CSS {}",
+                    source_css.display()
+                )
+            })?;
+            crate::dream_skin_package::validate_safe_css(&css)?;
+            crate::settings::atomic_write(&staging.join("theme.css"), css.as_bytes())?;
+        }
         Ok(())
     })();
     if let Err(error) = staged {

@@ -142,6 +142,132 @@ function installRendererStyle(renderer: string) {
   return appended;
 }
 
+class DockStyle {
+  private readonly values = new Map<string, { value: string; priority: string }>();
+
+  setProperty(property: string, value: string, priority = "") {
+    this.values.set(property, { value, priority });
+  }
+
+  getPropertyValue(property: string) {
+    return this.values.get(property)?.value ?? "";
+  }
+
+  getPropertyPriority(property: string) {
+    return this.values.get(property)?.priority ?? "";
+  }
+
+  removeProperty(property: string) {
+    this.values.delete(property);
+  }
+}
+
+class DockElement {
+  readonly children: DockElement[] = [];
+  readonly style = new DockStyle();
+  parentElement: DockElement | null = null;
+  closestElement: DockElement | null = null;
+  querySelectorResult: DockElement | null = null;
+  private readonly attributes = new Map<string, string>();
+  readonly name: string;
+
+  constructor(name: string) {
+    this.name = name;
+  }
+
+  get nextSibling(): DockElement | null {
+    if (!this.parentElement) return null;
+    const index = this.parentElement.children.indexOf(this);
+    return index >= 0 ? this.parentElement.children[index + 1] ?? null : null;
+  }
+
+  appendChild(child: DockElement) {
+    if (child.parentElement) {
+      const index = child.parentElement.children.indexOf(child);
+      if (index >= 0) child.parentElement.children.splice(index, 1);
+    }
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  querySelector() {
+    return this.querySelectorResult;
+  }
+
+  closest() {
+    return this.closestElement;
+  }
+
+  getAttribute(name: string) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  setAttribute(name: string, value: string) {
+    this.attributes.set(name, value);
+  }
+
+  removeAttribute(name: string) {
+    this.attributes.delete(name);
+  }
+}
+
+function composerDockRuntime(renderer: string) {
+  const start = renderer.indexOf("  function visibleDreamSkinComposer()");
+  const end = renderer.indexOf("\n  function ensureDreamSkinCompanion", start);
+  assert.ok(start >= 0 && end > start, "composer docking block not found in renderer-inject.js");
+  const source = renderer.slice(start, end);
+
+  const main = new DockElement("main");
+  const layout = new DockElement("thread-viewport");
+  const scroll = new DockElement("thread-scroll");
+  const footer = new DockElement("thread-footer");
+  main.appendChild(layout);
+  layout.appendChild(scroll);
+  scroll.appendChild(footer);
+  scroll.closestElement = layout;
+  main.querySelectorResult = scroll;
+  scroll.querySelectorResult = footer;
+
+  const document = {
+    querySelector(selector: string) {
+      return selector.startsWith("main.main-surface") ? main : null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+  const factory = new Function(
+    "document",
+    "setCodexPlusInlineStyleIfChanged",
+    "setCodexPlusAttributeIfChanged",
+    `${source}\nreturn { syncDreamSkinComposerDocking };`,
+  ) as (
+    documentValue: typeof document,
+    setStyle: (element: DockElement, property: string, value: string, priority?: string) => void,
+    setAttribute: (element: DockElement, name: string, value: string) => void,
+  ) => {
+    syncDreamSkinComposerDocking: (enabled: boolean) => void;
+  };
+  return {
+    ...factory(
+      document,
+      (element, property, value, priority = "") => {
+        if (element.style.getPropertyValue(property) !== value
+          || element.style.getPropertyPriority(property) !== priority) {
+          element.style.setProperty(property, value, priority);
+        }
+      },
+      (element, name, value) => {
+        if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+      },
+    ),
+    footer,
+    main,
+    layout,
+  };
+}
+
 describe("renderer injection header compatibility", () => {
   it("纯 API 会话使用当前真实 provider，不强行改成 custom", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
@@ -308,6 +434,41 @@ describe("renderer injection header compatibility", () => {
       assert.match(renderer, /data-codex-plus-dream-surface/);
       assert.match(renderer, /ensureShellMain/);
     }
+  });
+
+  it("keeps modern Dream Skin composers out of reverse thread scrolling", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /data-thread-scroll-footer/);
+    assert.match(renderer, /_ComposerLayoutRoot_/);
+    assert.match(renderer, /syncDreamSkinComposerDocking/);
+    assert.match(renderer, /data-codex-plus-dreamskin-composer-docked/);
+    assert.match(renderer, /setCodexPlusInlineStyleIfChanged\(footer, property, value, "important"\)/);
+  });
+
+  it("anchors a docked composer footer to the resizable modern thread viewport", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = composerDockRuntime(renderer);
+
+    runtime.syncDreamSkinComposerDocking(true);
+
+    assert.equal(runtime.footer.parentElement, runtime.layout);
+    assert.notEqual(runtime.footer.parentElement, runtime.main);
+    assert.equal(runtime.footer.style.getPropertyValue("left"), "0");
+    assert.equal(runtime.footer.style.getPropertyValue("right"), "0");
+  });
+
+  it("coalesces renderer work and keeps layout writes idempotent", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /let scanDeferredFrame = 0/);
+    assert.match(renderer, /if \(!wasRunning \|\| previousContentEl !== conversationViewState\.contentEl/);
+    assert.match(renderer, /function setCodexPlusInlineStyleIfChanged\(/);
+    assert.match(renderer, /function setCodexPlusDatasetIfChanged\(/);
+    assert.match(renderer, /codexServiceTierBadgeRetryAt/);
+    assert.match(renderer, /scheduleThreadScrollSync\(\);/);
+    assert.match(renderer, /ownedOffsets: new WeakMap\(\)/);
+    assert.match(renderer, /Number\.parseFloat\(owned\.left\)/);
   });
 });
 

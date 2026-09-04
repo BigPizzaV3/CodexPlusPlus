@@ -70,7 +70,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface";
+const DREAM_SKIN_RENDERER_REVISION: &str = "28-codex-plus-side-panel-layout";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -220,16 +220,43 @@ fn managed_dream_skin_css(settings: &BackendSettings) -> String {
     {
         return String::new();
     }
-    let css_path = Path::new(image_path)
+    let current_css = Path::new(image_path)
         .parent()
         .map(|parent| parent.join("current.css"));
-    let Some(css_path) = css_path else {
+    if let Some(css) = current_css.and_then(|path| read_managed_dream_skin_css(&path)) {
+        return css;
+    }
+
+    let theme_id = settings.codex_app_dream_skin_theme_config.id.trim();
+    if !valid_dream_skin_theme_id(theme_id) {
         return String::new();
-    };
-    let Ok(css) = std::fs::read_to_string(css_path) else {
-        return String::new();
-    };
-    crate::dream_skin_package::compile_safe_css(&css).unwrap_or_default()
+    }
+    let stored_css = crate::paths::default_app_state_dir()
+        .join("dream-skin/themes")
+        .join(theme_id)
+        .join("theme.css");
+    read_managed_dream_skin_css(&stored_css).unwrap_or_default()
+}
+
+fn read_managed_dream_skin_css(path: &Path) -> Option<String> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > 262_144
+    {
+        return None;
+    }
+    let css = std::fs::read_to_string(path).ok()?;
+    crate::dream_skin_package::compile_safe_css(&css).ok()
+}
+
+fn valid_dream_skin_theme_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        })
 }
 
 fn dream_skin_skin_api_bootstrap_script(theme: &str) -> String {
@@ -253,21 +280,124 @@ fn dream_skin_skin_api_bootstrap_script(theme: &str) -> String {
     "--ds-theme-image-focus-y": String(theme?.art?.focusY ?? 0.5),
   }};
   for (const [name, value] of Object.entries(variables)) if (typeof value === "string" && value) root.style.setProperty(name, value);
-  const map = {{
-    root: "html", sidebar: "aside.app-shell-left-panel", main: "main.main-surface",
-    header: "header.app-header-tint", home: ".dream-skin-home, [data-feature='game-source']",
-    "home-hero": ".dream-skin-home > div:first-child, [data-feature='game-source']",
-    "project-list": "[data-feature='game-source']", thread: "main.main-surface [role='main']",
-    message: "main.main-surface article", composer: ".composer-surface-chrome",
-    "composer-toolbar": ".composer-surface-chrome [role='toolbar']", dialog: "[role='dialog']",
+  const apiVariables = {{
+    "--ds-theme-font-family": "system",
+    "--ds-theme-font-scale": "1",
+    "--ds-theme-surface-radius": "12px",
+    "--ds-theme-surface-opacity": "1",
+    "--ds-theme-surface-blur": "0px",
+    "--ds-theme-surface-border-alpha": "0.14",
+    "--ds-theme-surface-shadow": "soft",
+    "--ds-theme-image-focus-x": String(theme?.art?.focusX ?? 0.5),
+    "--ds-theme-image-focus-y": String(theme?.art?.focusY ?? 0.5),
+    "--ds-theme-image-zoom": "1",
+    "--ds-theme-image-dim": "0",
+    "--ds-theme-image-task-intensity": "0.35",
+    "--ds-theme-density-scale": "standard",
+    "--ds-theme-motion-level": "standard",
   }};
+  for (const [name, value] of Object.entries(apiVariables)) if (typeof value === "string" && value) root.style.setProperty(name, value);
+  const mainSurfaceMarker = "data-codex-plus-dream-skin-main-surface";
+  const ensureMainSurface = () => {{
+    const classic = document.querySelector("main.main-surface");
+    if (classic) return classic;
+    const modern = document.querySelector('main[data-app-shell-main-surface], main[class*="MainContentSurface"], main[class*="_MainContentSurface_"]');
+    const candidates = modern ? [modern] : [...document.querySelectorAll("main")];
+    const shellMain = candidates.length === 1 ? candidates[0] : null;
+    if (!shellMain) return null;
+    shellMain.classList.add("main-surface");
+    shellMain.setAttribute(mainSurfaceMarker, "true");
+    return shellMain;
+  }};
+  const map = {{
+    root: "html", sidebar: "aside.app-shell-left-panel", main: "main:is(.main-surface, [data-app-shell-main-surface], [class*='_MainContentSurface_'])",
+    header: 'header[data-pip-obstacle="app-shell-header"], header[data-app-shell-header-edge-scroll], header[data-app-shell-header-layout], header[class*="_Header_"], header.app-header-tint',
+    "home-hero": "[data-feature='game-source'], [data-testid='home-icon']",
+    "project-list": "[data-feature='game-source']",
+    message: "main:is(.main-surface, [data-app-shell-main-surface], [class*='_MainContentSurface_']) article, main:is(.main-surface, [data-app-shell-main-surface], [class*='_MainContentSurface_']) [data-message-author-role], main:is(.main-surface, [data-app-shell-main-surface], [class*='_MainContentSurface_']) [data-local-conversation-user-anchor], main:is(.main-surface, [data-app-shell-main-surface], [class*='_MainContentSurface_']) [data-local-conversation-final-assistant]",
+    composer: ".composer-surface-chrome, [class*='_ComposerLayoutRoot_'], [data-composer-surface-variant][data-composer-radius-variant]",
+    "composer-toolbar": ".composer-surface-chrome [role='toolbar'], [class*='_ComposerLayoutRoot_'] [class*='_ComposerLayoutFooter_'], [data-composer-surface-variant][data-composer-radius-variant] :is([data-composer-footer-responsive], [class*='_ComposerLayoutFooter_'], [class*='_footer_'])",
+    dialog: "[role='dialog']",
+  }};
+  const knownParts = new Set([...Object.keys(map), "home", "thread", "composer-toolbar-empty"]);
   const mark = () => {{
-    for (const [part, selector] of Object.entries(map)) for (const node of document.querySelectorAll(selector)) node.setAttribute("data-ds-part", part);
+    const desiredParts = new Map();
+    const desiredThreadSurfaces = new Set();
+    const desiredThreadScrolls = new Set();
+    const shellMain = ensureMainSurface();
+    if (shellMain) {{
+      const rememberPart = (node, part) => {{
+        if (node) desiredParts.set(node, part);
+      }};
+      for (const [part, selector] of Object.entries(map)) {{
+        for (const node of document.querySelectorAll(selector)) rememberPart(node, part);
+      }}
+
+      const home = shellMain.querySelector(
+        '[role="main"].dream-skin-home, [role="main"].dream-home, [role="main"]:has([data-feature="game-source"])'
+      );
+      rememberPart(home, "home");
+
+      const classicThreadNodes = [...shellMain.querySelectorAll('[role="main"]')].filter(
+        (node) => node !== home && node.querySelector("article, [data-message-id]")
+      );
+      const threadViewport = shellMain.querySelector(
+        '[data-app-shell-main-content-layout="thread-edge-scroll"]'
+      );
+      const threadScroll = shellMain.querySelector(
+        '.thread-scroll-container[data-app-action-timeline-scroll], .thread-scroll-container'
+      );
+      const threadSurface = threadViewport || threadScroll || classicThreadNodes[0] || null;
+      if (threadViewport) desiredThreadSurfaces.add(threadViewport);
+      if (threadScroll) desiredThreadScrolls.add(threadScroll);
+      rememberPart(threadSurface, "thread");
+
+      const modernComposer = shellMain.querySelector(
+        '[data-composer-surface-variant][data-composer-radius-variant], [class*="_ComposerLayoutRoot_"]'
+      );
+      const attachments = modernComposer?.querySelector("[data-composer-attachments]");
+      const toolbar = modernComposer?.querySelector(
+        "[data-composer-footer-responsive], [class*='_ComposerLayoutFooter_'], [class*='_footer_']"
+      );
+      if (attachments && toolbar && attachments.children.length === 0
+          && desiredParts.get(toolbar) === "composer-toolbar") {{
+        desiredParts.set(toolbar, "composer-toolbar-empty");
+      }}
+    }}
+
+    document.querySelectorAll("[data-ds-part]").forEach((node) => {{
+      const current = node.getAttribute("data-ds-part");
+      if (knownParts.has(current) && desiredParts.get(node) !== current) node.removeAttribute("data-ds-part");
+    }});
+    for (const [node, part] of desiredParts) {{
+      if (node.getAttribute("data-ds-part") !== part) node.setAttribute("data-ds-part", part);
+    }}
+    document.querySelectorAll("[data-ds-thread-surface]").forEach((node) => {{
+      if (!desiredThreadSurfaces.has(node)) node.removeAttribute("data-ds-thread-surface");
+    }});
+    for (const node of desiredThreadSurfaces) {{
+      if (node.getAttribute("data-ds-thread-surface") !== "true") node.setAttribute("data-ds-thread-surface", "true");
+    }}
+    document.querySelectorAll("[data-ds-thread-scroll]").forEach((node) => {{
+      if (!desiredThreadScrolls.has(node)) node.removeAttribute("data-ds-thread-scroll");
+    }});
+    for (const node of desiredThreadScrolls) {{
+      if (node.getAttribute("data-ds-thread-scroll") !== "true") node.setAttribute("data-ds-thread-scroll", "true");
+    }}
   }};
   mark();
   window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__?.disconnect?.();
   const observer = new MutationObserver(() => mark());
-  observer.observe(document.documentElement, {{ childList: true, subtree: true }});
+  observer.observe(document.documentElement, {{
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: [
+      "role", "data-feature", "data-app-shell-main-content-layout",
+      "data-app-action-timeline-scroll", "data-thread-scroll-footer", "data-pip-obstacle",
+      "data-app-shell-header-layout", "data-app-shell-header-edge-scroll",
+    ],
+  }});
   window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__ = observer;
 }})();"#,
         theme,
@@ -489,7 +619,8 @@ pub fn dream_skin_runtime_content_signature(settings: &BackendSettings) -> Strin
     let (engine, _, css) = dream_skin_target_assets(settings);
     let theme = serde_json::to_string(&settings.codex_app_dream_skin_theme_config)
         .expect("dream skin target theme should serialize");
-    let style_revision = dream_skin_content_signature(css.as_bytes());
+    let managed_css = managed_dream_skin_css(settings);
+    let style_revision = dream_skin_content_signature(format!("{css}\n{managed_css}").as_bytes());
     dream_skin_target_payload_signature(settings, engine, &style_revision, &theme)
 }
 

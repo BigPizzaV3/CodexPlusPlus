@@ -1,7 +1,8 @@
 use std::io::{Cursor, Write};
 
 use codex_plus_core::dream_skin_library::{
-    load_stored_dream_skin_theme, prepare_dream_skin_activation, save_validated_dream_skin_package,
+    load_stored_dream_skin_theme, prepare_dream_skin_activation, save_dream_skin_theme,
+    save_validated_dream_skin_package,
 };
 use codex_plus_core::dream_skin_package::{compile_safe_css, validate_and_read_package};
 use serde_json::json;
@@ -165,6 +166,27 @@ fn installed_package_preserves_and_activates_safe_css() {
 
     assert_eq!(
         std::fs::read(temp.path().join("dream-skin/theme/current.css")).unwrap(),
+        css
+    );
+}
+
+#[test]
+fn editing_stored_theme_preserves_safe_css() {
+    let temp = tempfile::tempdir().unwrap();
+    let css = br#"[data-ds-part="thread"] { backdrop-filter: blur(4px); }"#;
+    let package = validate_and_read_package(&package_bytes("macos", css, None), "macos").unwrap();
+
+    save_validated_dream_skin_package(temp.path(), &package).unwrap();
+    let mut stored = load_stored_dream_skin_theme(temp.path(), "community.theme").unwrap();
+    stored.config.name = "Renamed Community Theme".into();
+    save_dream_skin_theme(temp.path(), &stored).unwrap();
+
+    assert_eq!(
+        std::fs::read(
+            temp.path()
+                .join("dream-skin/themes/community.theme/theme.css")
+        )
+        .unwrap(),
         css
     );
 }
