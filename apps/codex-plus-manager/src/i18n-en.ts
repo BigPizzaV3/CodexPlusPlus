@@ -17,6 +17,23 @@ export const EN_PLAIN: Record<string, string> = {
   "正在等待 Codex 重新启动…": "Waiting for Codex to restart...",
   "正在等待 Codex 启动结果…": "Waiting for the Codex startup result...",
   "运行中（增强等待中）": "Running (waiting for enhancements)",
+  "Provider Guard": "Provider Guard",
+  "当前配置不满足安全修复条件，请先配置 model_providers.custom。":
+    "The current configuration cannot be repaired safely. Configure model_providers.custom first.",
+  "修复前会备份 config.toml、会话文件和 SQLite 索引，并将稳定供应商 ID 设为 custom。是否继续？":
+    "Before repairing, Codex++ will back up config.toml, session files, and SQLite indexes, then set the stable provider ID to custom. Continue?",
+  "固定稳定供应商 ID，检查会话分桶，并阻止脚本市场静默修改配置或 SQLite":
+    "Keep a stable provider ID, inspect session buckets, and prevent marketplace scripts from silently changing config or SQLite.",
+  "安全状态": "Safety status",
+  "稳定 provider": "Stable provider",
+  "索引会话": "Indexed sessions",
+  "接口类型": "Endpoint type",
+  "会话分桶：": "Session buckets: ",
+  "配置与会话分桶保持稳定。": "Configuration and session buckets are stable.",
+  "重新检查": "Check again",
+  "备份并修复": "Back up and repair",
+  "修复只能从原生管理器执行；脚本市场仅拥有只读检查权限。":
+    "Repairs can only run from the native manager; marketplace scripts have read-only inspection access.",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
