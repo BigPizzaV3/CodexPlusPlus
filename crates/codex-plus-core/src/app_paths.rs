@@ -79,16 +79,14 @@ pub fn find_latest_codex_app_dir_from_roots(roots: &[PathBuf]) -> Option<PathBuf
 pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        // WindowsApps 目录常因 ACL 无法完整枚举；同时查询目录和 AppX 注册表，
-        // 再统一按包优先级/版本选择，避免更新后继续命中旧目录。
-        let mut candidates = windows_app_package_roots()
+        // 注册信息是 Store 当前状态的权威来源；查询失败时再退回目录扫描。
+        if let Ok(Some(appx)) = find_latest_codex_app_dir_from_appx_package() {
+            return Some(appx);
+        }
+        windows_app_package_roots()
             .iter()
             .filter_map(|root| find_latest_codex_app_dir(root))
-            .collect::<Vec<_>>();
-        if let Some(appx) = find_latest_codex_app_dir_from_appx_package() {
-            candidates.push(appx);
-        }
-        candidates.into_iter().max_by(compare_app_dir_candidates)
+            .max_by(compare_app_dir_candidates)
     }
 
     #[cfg(not(windows))]
@@ -98,13 +96,12 @@ pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn find_latest_codex_app_dir_from_appx_package() -> Option<PathBuf> {
-    registered_windows_packages()
-        .ok()?
+fn find_latest_codex_app_dir_from_appx_package() -> anyhow::Result<Option<PathBuf>> {
+    Ok(registered_windows_packages()?
         .into_iter()
         .filter(|package| is_supported_windows_app_package_name(&package.full_name))
         .filter_map(|package| normalize_codex_app_path(&package.install_location))
-        .max_by(compare_app_dir_candidates)
+        .max_by(compare_app_dir_candidates))
 }
 
 #[cfg(windows)]
@@ -332,14 +329,28 @@ pub fn resolve_codex_app_dir_with_saved(
         if let Some(path) = normalize_codex_app_path(Path::new(saved)) {
             #[cfg(windows)]
             if is_codex_store_package_dir(&path) {
-                // Store 更新会生成新的版本目录；保存的旧目录即使仍存在，也不应
-                // 压过当前注册的最高版本。若系统查询失败则保留旧路径，兼容离线/受限环境。
-                return Some(find_latest_codex_app_dir_default().unwrap_or(path));
+                // Store 更新会生成新的版本目录；注册查询成功时选择当前最高版本，
+                // 查询失败则保留已保存路径，兼容离线或受限环境。
+                return Some(resolve_saved_store_path(
+                    path,
+                    find_latest_codex_app_dir_from_appx_package(),
+                ));
             }
             return Some(path);
         }
     }
     resolve_codex_app_dir(None)
+}
+
+#[cfg(windows)]
+fn resolve_saved_store_path(
+    saved_path: PathBuf,
+    current: anyhow::Result<Option<PathBuf>>,
+) -> PathBuf {
+    match current {
+        Ok(Some(current)) => current,
+        Ok(None) | Err(_) => saved_path,
+    }
 }
 
 pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
@@ -698,4 +709,30 @@ fn strip_prefix_ignore_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'
     }
     let (head, rest) = value.split_at(prefix.len());
     head.eq_ignore_ascii_case(prefix).then_some(rest)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::resolve_saved_store_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn saved_store_path_prefers_current_registered_package() {
+        let saved = PathBuf::from(r"C:\old\app");
+        let current = PathBuf::from(r"C:\new\app");
+        assert_eq!(
+            resolve_saved_store_path(saved, Ok(Some(current.clone()))),
+            current
+        );
+    }
+
+    #[test]
+    fn saved_store_path_falls_back_when_registration_is_unavailable() {
+        let saved = PathBuf::from(r"C:\old\app");
+        assert_eq!(resolve_saved_store_path(saved.clone(), Ok(None)), saved);
+        assert_eq!(
+            resolve_saved_store_path(saved.clone(), Err(anyhow::anyhow!("query failed"))),
+            saved
+        );
+    }
 }
