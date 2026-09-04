@@ -1,10 +1,12 @@
 use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
-    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
+    chat_sse_to_responses_sse_with_request, image_edits_url, image_generations_url,
+    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
+    is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
     is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
-    open_chat_completions_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    open_chat_completions_proxy_request, open_image_edits_proxy_request,
+    open_image_generations_proxy_request, open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
     open_responses_proxy_request_with_settings_for_path, responses_compact_url,
     responses_error_from_upstream, responses_to_chat_completions,
@@ -148,6 +150,25 @@ fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
     ] {
         assert!(is_audio_transcriptions_proxy_path(path), "{path}");
     }
+
+    for path in [
+        "/images/generations",
+        "/v1/images/generations",
+        "/v1/v1/images/generations",
+        "/codex/v1/images/generations",
+    ] {
+        assert!(is_image_generations_proxy_path(path), "{path}");
+    }
+    for path in [
+        "/images/edits",
+        "/v1/images/edits",
+        "/v1/v1/images/edits",
+        "/codex/v1/images/edits",
+    ] {
+        assert!(is_image_edits_proxy_path(path), "{path}");
+    }
+    assert!(!is_image_generations_proxy_path("/images/unknown"));
+    assert!(!is_image_edits_proxy_path("/images/generation"));
 }
 
 #[test]
@@ -1731,6 +1752,41 @@ fn audio_transcriptions_url_normalizes_common_base_urls() {
 }
 
 #[test]
+fn image_urls_normalize_common_base_urls() {
+    for base in [
+        "https://api.example.test",
+        "https://api.example.test/",
+        "https://api.example.test/v1",
+        "https://api.example.test/v1/",
+    ] {
+        assert_eq!(
+            image_generations_url(base),
+            "https://api.example.test/v1/images/generations"
+        );
+        assert_eq!(
+            image_edits_url(base),
+            "https://api.example.test/v1/images/edits"
+        );
+    }
+    assert_eq!(
+        image_generations_url("https://api.example.test/v1/images/generations"),
+        "https://api.example.test/v1/images/generations"
+    );
+    assert_eq!(
+        image_edits_url("https://api.example.test/v1/images/edits"),
+        "https://api.example.test/v1/images/edits"
+    );
+    assert_eq!(
+        image_generations_url("https://api.example.test/openai"),
+        "https://api.example.test/openai/images/generations"
+    );
+    assert_eq!(
+        image_generations_url("https://api.example.test/v1/v1"),
+        "https://api.example.test/v1/images/generations"
+    );
+}
+
+#[test]
 fn models_url_normalizes_common_base_urls() {
     assert_eq!(
         models_url("https://api.example.test"),
@@ -2355,6 +2411,101 @@ async fn audio_transcriptions_proxy_forwards_multipart_body() {
 }
 
 #[tokio::test]
+async fn image_generations_proxy_forwards_json_and_upstream_error() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_async_http_request(&mut stream).await;
+        let body = br#"{"error":{"message":"rate limited"}}"#;
+        let response = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        request
+    });
+    write_image_relay_settings(temp.path(), &format!("http://{addr}/v1"));
+    let body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
+    let upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 429);
+    assert_eq!(upstream.content_type, "application/problem+json");
+    assert_eq!(
+        upstream.response.bytes().await.unwrap().as_ref(),
+        br#"{"error":{"message":"rate limited"}}"#
+    );
+    let request = server.await.unwrap();
+    let header_end = find_http_header_end(&request).unwrap();
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    assert!(headers.starts_with("POST /v1/images/generations HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer ")
+    );
+    assert_eq!(&request[header_end + 4..], body);
+}
+
+#[tokio::test]
+async fn image_edits_proxy_preserves_multipart_body_and_content_type() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_async_http_request(&mut stream).await;
+        let body = br#"{"error":{"message":"invalid image"}}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        request
+    });
+    write_image_relay_settings(temp.path(), &format!("http://{addr}/v1/"));
+    let boundary = "codex-image-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nmake it blue\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x00, 0xff]);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    let upstream = open_image_edits_proxy_request(&body, &content_type, None)
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 400);
+    let request = server.await.unwrap();
+    let header_end = find_http_header_end(&request).unwrap();
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    assert!(headers.starts_with("POST /v1/images/edits HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: multipart/form-data; boundary=codex-image-boundary")
+    );
+    assert_eq!(&request[header_end + 4..], body.as_slice());
+}
+
+#[tokio::test]
 async fn chat_completions_proxy_uses_configured_user_agent() {
     let _lock = settings_path_test_lock().lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
@@ -2513,6 +2664,26 @@ fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &s
     .unwrap();
 }
 
+fn write_image_relay_settings(settings_dir: &Path, upstream_base_url: &str) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "images",
+            "name": "Images",
+            "baseUrl": upstream_base_url,
+            "upstreamBaseUrl": upstream_base_url,
+            "apiKey": "sk-test",
+            "protocol": "responses",
+            "relayMode": "mixedApi"
+        }],
+        "activeRelayId": "images"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
 fn write_no_auth_relay_settings(settings_dir: &Path, base_url: &str, protocol: &str) {
     let settings = json!({
         "relayProfiles": [{
@@ -2554,6 +2725,41 @@ impl Drop for SettingsPathGuard {
     fn drop(&mut self) {
         codex_plus_core::paths::set_settings_path_for_tests(self.previous.take());
     }
+}
+
+fn find_http_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+async fn read_async_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut expected_len = None;
+    loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert!(read > 0, "upstream request ended before body completed");
+        request.extend_from_slice(&buffer[..read]);
+        if expected_len.is_none()
+            && let Some(header_end) = find_http_header_end(&request)
+        {
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            expected_len = Some(header_end + 4 + content_length);
+        }
+        if expected_len.is_some_and(|length| request.len() >= length) {
+            break;
+        }
+    }
+    request
 }
 
 struct ChatServer {
