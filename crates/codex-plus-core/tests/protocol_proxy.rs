@@ -8,6 +8,7 @@ use codex_plus_core::protocol_proxy::{
     open_responses_proxy_request_with_settings,
     open_responses_proxy_request_with_settings_for_path, responses_compact_url,
     responses_error_from_upstream, responses_to_chat_completions,
+    responses_to_chat_completions_with_options,
     send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
     upstream_stream_header_timeout,
 };
@@ -294,6 +295,96 @@ fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
     .unwrap();
     assert_eq!(off["thinking"]["type"], "disabled");
     assert!(off.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
+    // standard=true 时强制走默认风格：厂商方言字段（reasoning_split / thinking /
+    // enable_thinking / openrouter reasoning）一律不注入，而标准 reasoning_effort 仍按
+    // 模型能力正常注入。面向 NVIDIA 等只认标准 OpenAI 协议、却拒绝 MiniMax 私有
+    // reasoning_split 参数的第三方网关。
+    let minimax = responses_to_chat_completions_with_options(
+        json!({
+            "model": "MiniMax-M2.7",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(minimax.get("reasoning_split").is_none());
+    assert!(minimax.get("thinking").is_none());
+    assert!(minimax.get("enable_thinking").is_none());
+    assert!(minimax.get("reasoning_effort").is_none());
+
+    let glm = responses_to_chat_completions_with_options(
+        json!({
+            "model": "glm-4.6",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(glm.get("thinking").is_none());
+    assert!(glm.get("reasoning_effort").is_none());
+
+    let qwen = responses_to_chat_completions_with_options(
+        json!({
+            "model": "qwen3-235b-a22b",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(qwen.get("enable_thinking").is_none());
+    assert!(qwen.get("reasoning_effort").is_none());
+
+    let openrouter = responses_to_chat_completions_with_options(
+        json!({
+            "model": "openrouter/deepseek/deepseek-r1",
+            "reasoning": { "effort": "max" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert!(openrouter.get("reasoning").is_none());
+    assert!(openrouter.get("reasoning_effort").is_none());
+
+    // 标准协议下，支持推理强度控制的模型仍保留 reasoning_effort。
+    let deepseek = responses_to_chat_completions_with_options(
+        json!({
+            "model": "deepseek-reasoner",
+            "reasoning": { "effort": "xhigh" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert_eq!(deepseek["reasoning_effort"], "xhigh");
+    assert!(deepseek.get("reasoning_split").is_none());
+
+    let gpt5 = responses_to_chat_completions_with_options(
+        json!({
+            "model": "gpt-5.4",
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert_eq!(gpt5["reasoning_effort"], "high");
+
+    // 回归守护：默认路径仍照常注入方言字段。
+    let minimax_default = responses_to_chat_completions(json!({
+        "model": "MiniMax-M2.7",
+        "reasoning": { "effort": "high" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(minimax_default["reasoning_split"], true);
 }
 
 #[test]

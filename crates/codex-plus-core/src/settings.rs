@@ -17,6 +17,10 @@ pub enum LaunchMode {
     Relay,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
@@ -109,6 +113,9 @@ pub struct RelayProfile {
     pub sub2api_multiplier: String,
     #[serde(rename = "modelRoutes", default, skip_serializing_if = "Vec::is_empty")]
     pub model_routes: Vec<RelayModelRoute>,
+    // 上游审查要求：导出 round-trip 不改变既有 provider；为 false 时不写出该字段。
+    #[serde(rename = "standardOpenaiProtocol", default, skip_serializing_if = "is_false")]
+    pub standard_openai_protocol: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -207,6 +214,7 @@ impl Default for RelayProfile {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            standard_openai_protocol: false,
         }
     }
 }
@@ -686,6 +694,7 @@ impl BackendSettings {
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
                 model_routes: Vec::new(),
+                standard_openai_protocol: false,
             };
         }
 
@@ -740,6 +749,7 @@ impl BackendSettings {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            standard_openai_protocol: false,
         }
     }
 
@@ -3149,5 +3159,33 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(!updated.provider_sync_enabled);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn relay_profile_standard_openai_protocol_defaults_off_for_legacy_profiles() {
+        // 旧 profile 没有该字段：反序列化后默认关闭。
+        let mut enabled = RelayProfile::default();
+        enabled.standard_openai_protocol = true;
+        let mut legacy = serde_json::to_value(&enabled).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("standardOpenaiProtocol");
+        let profile: RelayProfile = serde_json::from_value(legacy).unwrap();
+        assert!(!profile.standard_openai_protocol);
+    }
+
+    #[test]
+    fn relay_profile_standard_openai_protocol_round_trip_keeps_existing_providers() {
+        // 关闭时导出不写该字段，round-trip 不改变既有 provider。
+        let value = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(value.get("standardOpenaiProtocol").is_none());
+
+        let mut enabled = RelayProfile::default();
+        enabled.standard_openai_protocol = true;
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["standardOpenaiProtocol"], json!(true));
+        let round_tripped: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(round_tripped.standard_openai_protocol);
     }
 }
