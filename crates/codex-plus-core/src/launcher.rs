@@ -2427,7 +2427,8 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-    let mut health_failures = 0;
+    // This one-shot entry point preserves its historical immediate-repair behavior.
+    let mut health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD.saturating_sub(1);
     check_and_reinject_bridge_inner(debug_port, helper_port, false, None, &mut health_failures)
         .await
 }
@@ -2444,6 +2445,27 @@ fn should_probe_launcher_cdp(is_windows: bool, has_codex_process: bool) -> bool 
     is_windows && !has_codex_process
 }
 
+fn should_reinject_after_health_result(
+    healthy: Option<bool>,
+    browser_identity_changed: bool,
+    health_failures: &mut u8,
+) -> bool {
+    let Some(healthy) = healthy else {
+        *health_failures = 0;
+        return false;
+    };
+    if healthy {
+        *health_failures = 0;
+        return false;
+    }
+    if browser_identity_changed {
+        *health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD;
+    } else {
+        *health_failures = health_failures.saturating_add(1);
+    }
+    *health_failures >= BRIDGE_HEALTH_FAILURE_THRESHOLD
+}
+
 async fn check_and_reinject_bridge_inner(
     debug_port: u16,
     helper_port: u16,
@@ -2452,10 +2474,10 @@ async fn check_and_reinject_bridge_inner(
     health_failures: &mut u8,
 ) -> bool {
     let healthy = if browser_identity_changed {
-        false
+        Some(false)
     } else {
         match bridge_health_ok(debug_port).await {
-            Ok(healthy) => healthy,
+            Ok(healthy) => Some(healthy),
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "bridge.health_check_failed",
@@ -2465,21 +2487,15 @@ async fn check_and_reinject_bridge_inner(
                         "message": error.to_string()
                     }),
                 );
-                false
+                // A CDP timeout only means that the renderer did not answer
+                // this probe in time. The bridge heartbeat is the source of
+                // truth for actual availability; do not reinject on an
+                // indeterminate CDP result or a busy page will cause churn.
+                None
             }
         }
     };
-    if healthy {
-        *health_failures = 0;
-        return false;
-    }
-
-    if browser_identity_changed {
-        *health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD;
-    } else {
-        *health_failures = health_failures.saturating_add(1);
-    }
-    if *health_failures < BRIDGE_HEALTH_FAILURE_THRESHOLD {
+    if !should_reinject_after_health_result(healthy, browser_identity_changed, health_failures) {
         return false;
     }
 
@@ -3142,6 +3158,42 @@ mod tests {
         assert!(should_probe_launcher_cdp(true, false));
         assert!(!should_probe_launcher_cdp(true, true));
         assert!(!should_probe_launcher_cdp(false, false));
+    }
+
+    #[test]
+    fn bridge_health_failures_reinject_only_after_consecutive_unhealthy_results() {
+        let mut failures = 0;
+        assert!(!should_reinject_after_health_result(
+            Some(false),
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, 1);
+        assert!(should_reinject_after_health_result(
+            Some(false),
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, BRIDGE_HEALTH_FAILURE_THRESHOLD);
+        assert!(!should_reinject_after_health_result(
+            Some(true),
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, 0);
+
+        failures = 1;
+        assert!(!should_reinject_after_health_result(
+            None,
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, 0);
+        assert!(should_reinject_after_health_result(
+            Some(false),
+            true,
+            &mut failures
+        ));
     }
 
     #[test]
