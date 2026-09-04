@@ -17,6 +17,7 @@ pub const NO_AUTH_PROXY_BEARER_TOKEN: &str = "codex-plus-no-auth";
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(300);
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -301,6 +302,8 @@ pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
     AudioTranscriptions,
+    ImageGenerations,
+    ImageEdits,
 }
 
 #[derive(Debug, Clone)]
@@ -510,6 +513,25 @@ pub fn is_audio_transcriptions_proxy_path(path: &str) -> bool {
             | "/v1/audio/transcriptions"
             | "/v1/v1/audio/transcriptions"
             | "/codex/v1/audio/transcriptions"
+    )
+}
+
+pub fn is_image_generations_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/images/generations"
+            | "/v1/images/generations"
+            | "/v1/v1/images/generations"
+            | "/codex/v1/images/generations"
+    )
+}
+
+pub fn is_image_edits_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/images/edits" | "/v1/images/edits" | "/v1/v1/images/edits" | "/codex/v1/images/edits"
     )
 }
 
@@ -854,6 +876,137 @@ pub async fn open_audio_transcriptions_proxy_request(
     })
 }
 
+pub async fn open_image_generations_proxy_request(
+    body: &[u8],
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    open_image_proxy_request(
+        body,
+        "application/json",
+        original_user_agent,
+        ImageProxyEndpoint::Generations,
+    )
+    .await
+}
+
+pub async fn open_image_edits_proxy_request(
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    open_image_proxy_request(
+        body,
+        content_type,
+        original_user_agent,
+        ImageProxyEndpoint::Edits,
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ImageProxyEndpoint {
+    Generations,
+    Edits,
+}
+
+impl ImageProxyEndpoint {
+    fn url(self, base_url: &str) -> String {
+        match self {
+            Self::Generations => image_generations_url(base_url),
+            Self::Edits => image_edits_url(base_url),
+        }
+    }
+
+    fn wire_api(self) -> UpstreamWireApi {
+        match self {
+            Self::Generations => UpstreamWireApi::ImageGenerations,
+            Self::Edits => UpstreamWireApi::ImageEdits,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Generations => "image_generations",
+            Self::Edits => "image_edits",
+        }
+    }
+}
+
+async fn open_image_proxy_request(
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+    endpoint_kind: ImageProxyEndpoint,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    let base_url = if relay.upstream_base_url.trim().is_empty() {
+        crate::relay_config::relay_profile_base_url(&relay)
+    } else {
+        relay.upstream_base_url.trim().to_string()
+    };
+    if is_local_protocol_proxy_base_url(&base_url) {
+        anyhow::bail!("图片上游 Base URL 不能指向本地协议代理");
+    }
+    if base_url.trim().is_empty() {
+        anyhow::bail!("图片上游 Base URL 不能为空");
+    }
+    if relay.api_key.trim().is_empty() && !relay.uses_no_auth() {
+        anyhow::bail!("图片上游 Key 不能为空");
+    }
+    let content_type = content_type.trim();
+    let content_type = if content_type.is_empty() {
+        match endpoint_kind {
+            ImageProxyEndpoint::Generations => "application/json",
+            ImageProxyEndpoint::Edits => {
+                anyhow::bail!("图片 edits 请求缺少 Content-Type");
+            }
+        }
+    } else {
+        content_type
+    };
+    let endpoint = endpoint_kind.url(&base_url);
+    let wire_api = endpoint_kind.wire_api();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.image_request",
+        json!({
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "endpoint": endpoint,
+            "wireApi": wire_api,
+            "bodyBytes": body.len(),
+            "endpointKind": endpoint_kind.name()
+        }),
+    );
+    let request = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?
+    .post(endpoint)
+    .header(reqwest::header::CONTENT_TYPE, content_type)
+    .body(body.to_vec());
+    let upstream = send_upstream_request_with_header_timeout(
+        with_relay_auth(request, &relay),
+        UPSTREAM_IMAGE_HEADER_TIMEOUT,
+    )
+    .await?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json; charset=utf-8")
+        .to_string();
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        is_stream: false,
+        content_type,
+        wire_api,
+        response: upstream,
+    })
+}
+
 fn response_header_timeout(is_stream: bool) -> Duration {
     if is_stream {
         UPSTREAM_STREAM_HEADER_TIMEOUT
@@ -1173,6 +1326,75 @@ pub fn audio_transcriptions_url(base_url: &str) -> String {
         url = url.replace("/v1/v1", "/v1");
     }
     url
+}
+
+pub fn image_generations_url(base_url: &str) -> String {
+    image_endpoint_url(base_url, "generations")
+}
+
+pub fn image_edits_url(base_url: &str) -> String {
+    image_endpoint_url(base_url, "edits")
+}
+
+fn image_endpoint_url(base_url: &str, endpoint: &str) -> String {
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    if base
+        .to_ascii_lowercase()
+        .ends_with(&format!("/images/{endpoint}"))
+    {
+        return base.to_string();
+    }
+    let origin_only = base
+        .split_once("://")
+        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
+    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
+        format!("{base}/images/{endpoint}")
+    } else {
+        format!("{base}/v1/images/{endpoint}")
+    };
+    while url.contains("/v1/v1") {
+        url = url.replace("/v1/v1", "/v1");
+    }
+    url
+}
+
+fn is_local_protocol_proxy_base_url(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    if !url.scheme().eq_ignore_ascii_case("http") || url.port() != Some(DEFAULT_PROTOCOL_PROXY_PORT)
+    {
+        return false;
+    }
+    matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+}
+
+#[cfg(test)]
+mod image_proxy_tests {
+    use super::is_local_protocol_proxy_base_url;
+
+    #[test]
+    fn local_protocol_proxy_detection_covers_common_loopback_forms() {
+        for base_url in [
+            "http://127.0.0.1:57321",
+            "http://127.0.0.1:57321/",
+            "http://127.0.0.1:57321/v1",
+            "http://localhost:57321/v1/",
+            "http://[::1]:57321/v1",
+        ] {
+            assert!(is_local_protocol_proxy_base_url(base_url), "{base_url}");
+        }
+
+        for base_url in [
+            "https://127.0.0.1:57321/v1",
+            "http://127.0.0.1:57322/v1",
+            "http://api.example.test:57321/v1",
+            "not-a-url",
+        ] {
+            assert!(!is_local_protocol_proxy_base_url(base_url), "{base_url}");
+        }
+    }
 }
 
 pub fn models_url(base_url: &str) -> String {

@@ -1139,6 +1139,35 @@ async fn handle_helper_connection(
         )
         .await;
     }
+    if (crate::protocol_proxy::is_image_generations_proxy_path(path)
+        || crate::protocol_proxy::is_image_edits_proxy_path(path))
+        && method == "OPTIONS"
+    {
+        write_http_response(
+            &mut stream,
+            "204 No Content",
+            "application/json; charset=utf-8",
+            &[],
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if (crate::protocol_proxy::is_image_generations_proxy_path(path)
+        || crate::protocol_proxy::is_image_edits_proxy_path(path))
+        && method == "POST"
+    {
+        return handle_image_proxy_connection(
+            &mut stream,
+            &request.body,
+            request_content_type.as_deref(),
+            request_user_agent.as_deref(),
+            method,
+            path,
+            remote_addr_text,
+        )
+        .await;
+    }
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "GET" {
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "upgrade_required",
@@ -1748,6 +1777,78 @@ async fn handle_audio_transcriptions_proxy_connection(
             "helper.audio_transcriptions_proxy_ok"
         } else {
             "helper.audio_transcriptions_proxy_upstream_error"
+        },
+        method,
+        path,
+        &status,
+        remote_addr_text,
+    );
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn handle_image_proxy_connection(
+    stream: &mut tokio::net::TcpStream,
+    request_body: &[u8],
+    request_content_type: Option<&str>,
+    request_user_agent: Option<&str>,
+    method: &str,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    let upstream = if crate::protocol_proxy::is_image_generations_proxy_path(path) {
+        crate::protocol_proxy::open_image_generations_proxy_request(
+            request_body,
+            request_user_agent,
+        )
+        .await
+    } else {
+        crate::protocol_proxy::open_image_edits_proxy_request(
+            request_body,
+            request_content_type.unwrap_or_default(),
+            request_user_agent,
+        )
+        .await
+    };
+    let upstream = match upstream {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": error.to_string()
+            }))?;
+            write_http_response(
+                stream,
+                "502 Bad Gateway",
+                "application/json; charset=utf-8",
+                &body,
+            )
+            .await?;
+            log_helper_response(
+                "helper.image_proxy_failed",
+                method,
+                path,
+                "502 Bad Gateway",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
+    let status = upstream.status();
+    let is_success = upstream.is_success();
+    let content_type = if upstream.content_type.is_empty() {
+        "application/json; charset=utf-8".to_string()
+    } else {
+        upstream.content_type.clone()
+    };
+    let body = upstream.response.bytes().await?.to_vec();
+    write_http_response(stream, &status, &content_type, &body).await?;
+    log_helper_response(
+        if is_success {
+            "helper.image_proxy_ok"
+        } else {
+            "helper.image_proxy_upstream_error"
         },
         method,
         path,
@@ -3285,6 +3386,75 @@ mod tests {
         .await;
 
         assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 426 Upgrade Required"));
+    }
+
+    #[tokio::test]
+    async fn helper_keeps_unknown_image_path_as_not_found() {
+        let response = send_raw_helper_request(
+            b"POST /v1/images/unknown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .await;
+
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 404 Not Found"));
+        assert!(response.contains("未知后端路径"));
+    }
+
+    #[tokio::test]
+    async fn helper_proxies_image_generation_upstream_error_response() {
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings_path =
+            crate::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let settings = serde_json::json!({
+            "relayProfiles": [{
+                "id": "images",
+                "name": "Images",
+                "baseUrl": format!("http://{upstream_addr}/v1"),
+                "upstreamBaseUrl": format!("http://{upstream_addr}/v1"),
+                "apiKey": "sk-test",
+                "protocol": "responses",
+                "relayMode": "mixedApi"
+            }],
+            "activeRelayId": "images"
+        });
+        std::fs::write(settings_path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await.unwrap();
+            let body = br#"{"error":{"message":"rate limited"}}"#;
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            request
+        });
+        let request_body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
+        let headers = format!(
+            "POST /v1/images/generations HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            request_body.len()
+        );
+        let mut request = headers.into_bytes();
+        request.extend_from_slice(request_body);
+
+        let response = send_raw_helper_request(&request).await;
+
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(response_text.starts_with("HTTP/1.1 429 Too Many Requests"));
+        assert!(response_text.contains("Content-Type: application/problem+json"));
+        assert!(response.ends_with(br#"{"error":{"message":"rate limited"}}"#));
+        let upstream_request = upstream.await.unwrap();
+        let request_line = String::from_utf8_lossy(&upstream_request.headers);
+        assert!(request_line.starts_with("POST /v1/images/generations HTTP/1.1"));
+        assert_eq!(upstream_request.body, request_body);
+        crate::paths::set_settings_path_for_tests(previous_settings_path);
     }
 
     #[test]
