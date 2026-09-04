@@ -3875,11 +3875,19 @@
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
-  let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
+  let codexPlusBackendStatus = window.__codexPlusBackendStatus || { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
+  const codexPlusBackendGeneration = (Number(window.__codexPlusBackendGeneration) || 0) + 1;
+  window.__codexPlusBackendGeneration = codexPlusBackendGeneration;
+
+  function recordCodexPlusBridgeSuccess() {
+    if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
+    const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
+    health.lastSuccessAt = Date.now();
+  }
 
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
@@ -3918,11 +3926,11 @@
     codexPlusBackendCheckInFlight = true;
     const seq = ++codexPlusBackendCheckSeq;
     try {
-      const nextStatus = await withBackendTimeout(postJson("/backend/status", {}));
-      if (seq !== codexPlusBackendCheckSeq) return;
+      const nextStatus = await postJson("/backend/status", {});
+      if (seq !== codexPlusBackendCheckSeq || codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
       if (nextStatus?.status === "ok") {
         codexPlusBackendFailureCount = 0;
-        codexPlusBackendStatus = nextStatus;
+        codexPlusBackendStatus = window.__codexPlusBackendStatus = nextStatus;
         if (typeof nextStatus.hideOfficialUsageAlert === "boolean") {
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
           refreshOfficialUsageAlertVisibility();
@@ -3936,7 +3944,7 @@
           consecutiveFailures: codexPlusBackendFailureCount,
         });
         if (codexPlusBackendFailureCount >= CODEX_PLUS_BACKEND_FAILURE_THRESHOLD) {
-          codexPlusBackendStatus = nextStatus;
+          codexPlusBackendStatus = window.__codexPlusBackendStatus = nextStatus;
         }
       }
       renderBackendStatus();
@@ -3955,7 +3963,11 @@
   }
 
   function scheduleBackendHeartbeat() {
-    if (window.__codexPlusBackendHeartbeat) return;
+    if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
+    if (window.__codexPlusBackendHeartbeat &&
+        window.__codexPlusBackendHeartbeatGeneration === codexPlusBackendGeneration) return;
+    if (window.__codexPlusBackendHeartbeat) clearInterval(window.__codexPlusBackendHeartbeat);
+    window.__codexPlusBackendHeartbeatGeneration = codexPlusBackendGeneration;
     window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 5000);
     checkBackendStatus();
   }
@@ -6268,15 +6280,21 @@
       return { status: "failed", message: "桥接不可用，请重启启动器" };
     }
     function bridgeWithBackendTimeout(path, payload) {
-      return Promise.race([
-        window.__codexSessionDeleteBridge(path, payload),
-        new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
-      ]);
+      let request;
+      try {
+        request = window.__codexSessionDeleteBridge(path, payload);
+      } catch (error) {
+        return Promise.resolve({ status: "failed", message: error?.message || "未连接" });
+      }
+      return withBackendTimeout(request);
     }
     try {
       if (path === "/backend/status") {
         const result = await bridgeWithBackendTimeout(path, payload);
-        if (result?.status === "ok") return result;
+        if (result?.status === "ok") {
+          recordCodexPlusBridgeSuccess();
+          return result;
+        }
         if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
         const fallback = await fetchBackendStatusFromHelper(path, payload);
         if (fallback?.status === "ok") {
