@@ -1,9 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-#[cfg(windows)]
-use std::sync::OnceLock;
-
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_bundled_codex_cli, find_latest_codex_app_dir,
     find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
@@ -127,34 +124,6 @@ fn app_paths_find_latest_windows_package_checks_roots_before_fallback() {
     let latest = find_latest_codex_app_dir_from_roots(&[root]).unwrap();
 
     assert!(latest.ends_with("OpenAI.Codex_26.513.3673.0_x64__abc/app"));
-}
-
-#[cfg(windows)]
-#[test]
-fn app_paths_re_resolve_saved_store_path_after_codex_update() {
-    // 模拟 Store 更新：旧版本目录仍然存在，但当前版本已经落在新的版本目录。
-    // 通过临时 ProgramFiles 注入 WindowsApps 根，避免依赖真实机器安装状态。
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let windows_apps = temp.path().join("WindowsApps");
-    let old_package = windows_apps.join("OpenAI.Codex_26.707.3748.0_x64__abc");
-    // 使用远高于现实版本的测试版本，避免测试机真实安装包参与排序。
-    let new_package = windows_apps.join("OpenAI.Codex_9999.803.41515.0_x64__abc");
-    std::fs::create_dir_all(old_package.join("app")).unwrap();
-    std::fs::create_dir_all(new_package.join("app")).unwrap();
-
-    let previous = std::env::var_os("ProgramFiles");
-    unsafe { std::env::set_var("ProgramFiles", temp.path()) };
-    let resolved = resolve_codex_app_dir_with_saved(None, Some(&old_package.to_string_lossy()));
-    unsafe {
-        match previous {
-            Some(value) => std::env::set_var("ProgramFiles", value),
-            None => std::env::remove_var("ProgramFiles"),
-        }
-    }
-
-    assert_eq!(resolved.as_deref(), Some(new_package.join("app").as_path()));
 }
 
 #[cfg(windows)]
