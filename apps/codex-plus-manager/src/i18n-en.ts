@@ -798,6 +798,19 @@ export const EN_PLAIN: Record<string, string> = {
     "An aggregate provider needs at least 1 selected API provider with a Base URL / Key filled in.",
   "聚合策略": "Aggregate strategy",
   "聚合配置只引用已有供应商，不复制 Key 和配置文件": "Aggregate config only references existing providers; it doesn't copy keys or config files",
+  "该路由的目标供应商不可用或未选择，请重新选择或删除该规则。": "Route target provider is unavailable or unselected; pick one or delete this rule.",
+  "路由规则": "Route rules",
+  "按模型名自动路由到指定成员；仅支持 * 通配符，chat/completions 协议不走路由。":
+    "Automatically route models to a member; only * wildcards are supported and chat/completions traffic is not routed.",
+  "例如 deepseek-*": "e.g. deepseek-*",
+  "优先级": "Priority",
+  "删除规则": "Delete rule",
+  "暂无路由规则，未匹配的模型会按聚合策略选择成员。":
+    "No route rules yet; unmatched models fall back to the aggregate strategy.",
+  "添加规则": "Add rule",
+  "路由规则的模型匹配模式不能为空。": "Route rule model pattern must not be empty.",
+  "路由目标必须是已勾选的聚合成员，请先在成员供应商中勾选。":
+    "Route target must be a checked aggregate member; check it under Member providers first.",
   "脚本市场": "Script marketplace",
   "自动接管": "Auto-takeover",
   "覆盖图片": "Overlay image",
@@ -1092,6 +1105,10 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "路由规则「{0}」的优先级必须是大于等于 0 的整数。":
+    "Route rule \"{0}\" priority must be an integer greater than or equal to 0.",
+  "路由规则「{0}」的目标供应商必须是聚合成员，请先将其勾选为成员。":
+    "Route rule \"{0}\" target provider must be an aggregate member; select it as a member first.",
   "{0} 个模型": "{0} model(s)",
   "删除 Grok 模型「{0}」？": "Delete Grok model \"{0}\"?",
   "模型「{0}」的上下文窗口必须是大于 0 的整数。": "The context window for model \"{0}\" must be a positive integer.",
