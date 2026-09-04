@@ -4352,6 +4352,7 @@
       event.preventDefault();
       event.stopPropagation();
       overlay.remove();
+      if (pageMode) setCodexPlusSidebarNavActive(false);
     }, true);
     overlay.addEventListener("input", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -4492,6 +4493,26 @@
     setCodexPlusSidebarNavActive(false);
   }
 
+  function closeCodexPlusPageAfterNativeNavigation() {
+    clearTimeout(window.__codexPlusPageNavigationCloseTimer);
+    window.__codexPlusPageNavigationCloseTimer = setTimeout(() => {
+      window.__codexPlusPageNavigationCloseTimer = null;
+      closeCodexPlusPage();
+    }, 0);
+  }
+
+  function installCodexPlusPageNavigationCloseHandler() {
+    document.removeEventListener("click", window.__codexPlusPageNavigationCloseHandler, true);
+    window.__codexPlusPageNavigationCloseHandler = (event) => {
+      if (!document.querySelector(`.${codexPlusPageClass}`)) return;
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (!target?.closest(selectors.sidebarThread)) return;
+      // Let Codex's own click handler update its route before removing our page.
+      closeCodexPlusPageAfterNativeNavigation();
+    };
+    document.addEventListener("click", window.__codexPlusPageNavigationCloseHandler, true);
+  }
+
   function installCodexPlusSidebarNavigation() {
     document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
     const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"], nav[role="navigation"]');
@@ -4511,7 +4532,7 @@
       navigation.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
-        if (target?.closest("button, a")) closeCodexPlusPage();
+        if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
     let wrapper = document.getElementById(codexPlusSidebarNavId);
@@ -9415,6 +9436,7 @@
       );
     }
     installCodexPlusSidebarNavigation();
+    installCodexPlusPageNavigationCloseHandler();
     installSessionShareImportListener();
     localizeCodexMenus();
     scheduleBackendHeartbeat();

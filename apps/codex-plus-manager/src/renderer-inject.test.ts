@@ -221,8 +221,12 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /openCodexPlusPage\(\)/);
     assert.match(renderer, /codex-plus-page-overlay/);
     assert.match(renderer, /positionCodexPlusPage/);
+    assert.match(renderer, /overlay\.remove\(\);\s*if \(pageMode\) setCodexPlusSidebarNavActive\(false\);/);
     assert.match(renderer, /function closeCodexPlusPage\(\)/);
-    assert.match(renderer, /target\?\.closest\("button, a"\)\) closeCodexPlusPage\(\)/);
+    assert.match(renderer, /function installCodexPlusPageNavigationCloseHandler\(\)/);
+    assert.match(renderer, /target\?\.closest\(selectors\.sidebarThread\)/);
+    assert.match(renderer, /closeCodexPlusPageAfterNativeNavigation\(\)/);
+    assert.match(renderer, /setTimeout\(\(\) => \{\s*window\.__codexPlusPageNavigationCloseTimer = null;\s*closeCodexPlusPage\(\);/);
     assert.match(renderer, /installCodexPlusSidebarNavigation\(\);/);
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
   });
