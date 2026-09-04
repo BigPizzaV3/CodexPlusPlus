@@ -17,7 +17,7 @@ pub const NO_AUTH_PROXY_BEARER_TOKEN: &str = "codex-plus-no-auth";
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
-const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(300);
+const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -1367,12 +1367,22 @@ fn is_local_protocol_proxy_base_url(base_url: &str) -> bool {
     {
         return false;
     }
-    matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+    matches!(
+        url.host_str(),
+        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
+    )
 }
 
 #[cfg(test)]
 mod image_proxy_tests {
+    use super::UPSTREAM_IMAGE_HEADER_TIMEOUT;
     use super::is_local_protocol_proxy_base_url;
+    use std::time::Duration;
+
+    #[test]
+    fn image_requests_allow_ten_minutes_for_response_headers() {
+        assert_eq!(UPSTREAM_IMAGE_HEADER_TIMEOUT, Duration::from_secs(600));
+    }
 
     #[test]
     fn local_protocol_proxy_detection_covers_common_loopback_forms() {
