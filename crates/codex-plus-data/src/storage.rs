@@ -582,6 +582,10 @@ impl SQLiteStorageAdapter {
                 ),
             );
         }
+        if let Some(home) = self.codex_home.as_deref() {
+            let sidebar = crate::provider_sync::snapshot_thread_sidebar_references(home, &thread_id)?;
+            tables.insert("__sidebar".to_string(), sidebar);
+        }
         let token =
             self.backup_store
                 .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
@@ -892,6 +896,11 @@ fn restore_backups(
         detect_restore_conflicts(&db, tables)?;
         detect_file_restore_conflicts(tables)?;
         preflight_restore_rows(&db, tables)?;
+        if let Some(sidebar) = tables.get("__sidebar") {
+            let home = codex_home
+                .ok_or_else(|| anyhow::anyhow!("sidebar restore requires a Codex home"))?;
+            crate::provider_sync::validate_thread_sidebar_snapshot(home, sidebar)?;
+        }
     }
 
     for backup in backups {
@@ -929,6 +938,11 @@ fn restore_backups(
                 if let Some(home) = codex_home {
                     let _ = crate::provider_sync::restore_session_index_entries(home, &lines);
                 }
+            }
+        }
+        if let Some(sidebar) = tables.get("__sidebar") {
+            if let Some(home) = codex_home {
+                let _ = crate::provider_sync::restore_thread_sidebar_references(home, sidebar)?;
             }
         }
     }
@@ -1009,7 +1023,7 @@ fn schema_kind(db: &Connection) -> anyhow::Result<Option<SchemaKind>> {
     Ok(None)
 }
 
-fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
+pub(crate) fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
     Ok(db
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -1033,7 +1047,11 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn select_dicts(db: &Connection, sql: &str, params: &[&dyn ToSql]) -> anyhow::Result<Vec<Value>> {
+pub(crate) fn select_dicts(
+    db: &Connection,
+    sql: &str,
+    params: &[&dyn ToSql],
+) -> anyhow::Result<Vec<Value>> {
     let mut stmt = db.prepare(sql)?;
     let columns: Vec<String> = stmt
         .column_names()
@@ -1064,6 +1082,7 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "inbox_items",
         "__files",
         "__session_index",
+        "__sidebar",
     ];
     for table in tables.keys() {
         if !allowed.contains(&table.as_str()) {
@@ -1304,7 +1323,7 @@ fn sql_value_to_json(value: ValueRef<'_>) -> Value {
     }
 }
 
-fn json_to_sql_value(value: &Value) -> SqlValue {
+pub(crate) fn json_to_sql_value(value: &Value) -> SqlValue {
     match value {
         Value::Null => SqlValue::Null,
         Value::Bool(value) => SqlValue::Integer(i64::from(*value)),
