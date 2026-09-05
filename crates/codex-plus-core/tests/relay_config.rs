@@ -4266,6 +4266,47 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
+fn apply_relay_profile_generates_astra_catalog_without_suffix() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-astra".to_string(),
+        model: "gpt-6-astra".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-6-astra"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-astra.json""#));
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs/relay-astra.json")).unwrap(),
+    )
+    .unwrap();
+    let astra = &catalog["models"][0];
+    assert_eq!(astra["slug"], "gpt-6-astra");
+    assert_eq!(astra["context_window"], 272_000);
+    assert_eq!(astra["use_responses_lite"], false);
+    let efforts: Vec<_> = astra["supported_reasoning_levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|level| level["effort"].as_str().unwrap())
+        .collect();
+    assert_eq!(efforts, vec!["low", "medium", "high", "xhigh", "max", "ultra"]);
+}
+
+#[test]
 fn apply_deepseek_responses_official_mix_writes_official_tool_compatibility() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
