@@ -296,6 +296,10 @@ pub struct ProviderSyncTargetOption {
     pub is_current_provider: bool,
     pub is_manual: bool,
     pub is_saved: bool,
+    #[serde(default)]
+    pub is_resolvable: bool,
+    #[serde(default)]
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -771,6 +775,23 @@ pub fn run_provider_sync_with_target(
     let home = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(default_codex_home_dir);
+    run_provider_sync_with_target_in_home(
+        home,
+        explicit_target_provider,
+        require_stopped_app,
+        || {},
+    )
+}
+
+fn run_provider_sync_with_target_in_home<BeforeFirstWrite>(
+    home: PathBuf,
+    explicit_target_provider: Option<&str>,
+    require_stopped_app: bool,
+    before_first_write: BeforeFirstWrite,
+) -> ProviderSyncResult
+where
+    BeforeFirstWrite: FnOnce(),
+{
     if !home.exists() {
         return result(
             ProviderSyncStatus::Skipped,
@@ -781,20 +802,22 @@ pub fn run_provider_sync_with_target(
             0,
         );
     }
-    let target_provider =
-        match resolve_target_provider(&home.join("config.toml"), explicit_target_provider) {
-            Ok(provider) => provider,
+    let config_path = home.join("config.toml");
+    let target_snapshot =
+        match resolve_provider_sync_target_snapshot(&config_path, explicit_target_provider) {
+            Ok(snapshot) => snapshot,
             Err(message) => {
                 return result(
                     ProviderSyncStatus::Skipped,
                     message,
-                    DEFAULT_PROVIDER,
+                    &safe_explicit_target_provider(explicit_target_provider),
                     None,
                     0,
                     0,
                 );
             }
         };
+    let target_provider = target_snapshot.target_provider.clone();
     if require_stopped_app {
         let running_processes =
             codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
@@ -894,6 +917,12 @@ pub fn run_provider_sync_with_target(
             && catalog_repair_count == 0
             && global_state_update_count == 0
         {
+            revalidate_provider_sync_target_snapshot(
+                &config_path,
+                explicit_target_provider,
+                &target_snapshot,
+            )
+            .map_err(anyhow::Error::msg)?;
             let mut synced = result(
                 ProviderSyncStatus::Synced,
                 "Provider sync already up to date",
@@ -909,6 +938,13 @@ pub fn run_provider_sync_with_target(
                 provider_sync_message_with_audit(&synced.message, &synced.repair_audit);
             return Ok(synced);
         }
+        before_first_write();
+        revalidate_provider_sync_target_snapshot(
+            &config_path,
+            explicit_target_provider,
+            &target_snapshot,
+        )
+        .map_err(anyhow::Error::msg)?;
         let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
         let applied = apply_session_changes(&rewrite_changes)?;
         let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
@@ -1115,11 +1151,67 @@ fn collect_files_recursive(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Res
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct LiveProviderConfig {
+    current_provider: Option<String>,
+    configured_provider_ids: HashSet<String>,
+    provider_table_ids: HashSet<String>,
+}
+
+impl LiveProviderConfig {
+    fn is_provider_resolvable(&self, provider: &str) -> bool {
+        is_valid_explicit_provider_id(provider)
+            && (provider == DEFAULT_PROVIDER || self.provider_table_ids.contains(provider))
+    }
+
+    fn validate_current_provider(&self) -> Result<(), String> {
+        let Some(current_provider) = self.current_provider.as_deref() else {
+            return Err(
+                "Current provider identity is missing or invalid in live config.toml".to_string(),
+            );
+        };
+        if !self.is_provider_resolvable(current_provider) {
+            return Err(
+                "Current provider is not resolvable from an exact live model provider table"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Secret-free provider identity inputs used to detect a config switch while history is scanned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderSyncTargetSnapshot {
+    target_provider: String,
+    current_provider: Option<String>,
+}
+
+/// Resolves a repair target from live config without modifying configuration or history.
+pub fn validate_provider_sync_target(
+    codex_home: Option<&Path>,
+    explicit_target_provider: Option<&str>,
+) -> Result<String, String> {
+    let home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_codex_home_dir);
+    if !home.exists() {
+        return Err(format!("Codex home not found: {}", home.to_string_lossy()));
+    }
+    resolve_provider_sync_target_snapshot(&home.join("config.toml"), explicit_target_provider)
+        .map(|snapshot| snapshot.target_provider)
+}
+
 pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTargetList {
     let home = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(default_codex_home_dir);
-    let current_provider = read_current_provider(&home.join("config.toml"));
+    let config_path = home.join("config.toml");
+    let live_config = load_live_provider_config(&config_path);
+    let current_provider = match &live_config {
+        Ok(config) => config.current_provider.clone().unwrap_or_default(),
+        Err(_) => read_current_provider(&config_path),
+    };
     let mut sources: HashMap<String, HashSet<ProviderSyncTargetSource>> = HashMap::new();
 
     fn add_sources(
@@ -1137,7 +1229,10 @@ pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTarg
 
     add_sources(
         &mut sources,
-        list_configured_provider_ids(&home.join("config.toml")),
+        live_config
+            .as_ref()
+            .map(|config| sorted_provider_ids(config.configured_provider_ids.clone()))
+            .unwrap_or_else(|_| list_configured_provider_ids(&config_path)),
         ProviderSyncTargetSource::Config,
     );
     add_sources(
@@ -1159,10 +1254,14 @@ pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTarg
         .map(|(id, source_set)| {
             let mut source_list = source_set.into_iter().collect::<Vec<_>>();
             source_list.sort();
+            let (is_resolvable, unavailable_reason) =
+                provider_resolution_for_discovery(&live_config, &id);
             ProviderSyncTargetOption {
                 is_current_provider: id == current_provider,
                 is_manual: source_list.contains(&ProviderSyncTargetSource::Manual),
                 is_saved: false,
+                is_resolvable,
+                unavailable_reason,
                 id,
                 sources: source_list,
             }
@@ -1183,38 +1282,139 @@ pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTarg
 
 fn read_current_provider(path: &Path) -> String {
     let Ok(text) = fs::read_to_string(path) else {
-        return DEFAULT_PROVIDER.to_string();
+        return String::new();
     };
     let provider = root_toml_string_value(&text, "model_provider").unwrap_or_default();
-    if provider.trim().is_empty() {
-        DEFAULT_PROVIDER.to_string()
-    } else {
-        provider
-    }
+    let provider = provider.trim();
+    is_valid_explicit_provider_id(provider)
+        .then(|| provider.to_string())
+        .unwrap_or_default()
 }
 
-fn resolve_target_provider(
+fn resolve_provider_sync_target_snapshot(
     config_path: &Path,
     explicit_target_provider: Option<&str>,
-) -> Result<String, String> {
-    if let Some(raw) = explicit_target_provider {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Ok(read_current_provider(config_path));
-        }
+) -> Result<ProviderSyncTargetSnapshot, String> {
+    let explicit_target_provider = explicit_target_provider
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty());
+    if let Some(trimmed) = explicit_target_provider {
         if !is_valid_explicit_provider_id(trimmed) {
-            return Err(format!("Invalid provider sync target: {trimmed:?}"));
+            return Err("Invalid provider sync target identity".to_string());
         }
-        return Ok(trimmed.to_string());
     }
-    Ok(read_current_provider(config_path))
+
+    let live_config = load_live_provider_config(config_path)?;
+    let target_provider = match explicit_target_provider {
+        Some(provider) => provider,
+        None => {
+            live_config.validate_current_provider()?;
+            live_config.current_provider.as_deref().ok_or_else(|| {
+                "Current provider identity is missing or invalid in live config.toml".to_string()
+            })?
+        }
+    };
+    if !live_config.is_provider_resolvable(target_provider) {
+        return Err(format!(
+            "Provider sync target {target_provider:?} is not resolvable from an exact live model provider table"
+        ));
+    }
+
+    Ok(ProviderSyncTargetSnapshot {
+        target_provider: target_provider.to_string(),
+        current_provider: live_config.current_provider,
+    })
+}
+
+fn safe_explicit_target_provider(explicit_target_provider: Option<&str>) -> String {
+    explicit_target_provider
+        .map(str::trim)
+        .filter(|provider| is_valid_explicit_provider_id(provider))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn revalidate_provider_sync_target_snapshot(
+    config_path: &Path,
+    explicit_target_provider: Option<&str>,
+    expected: &ProviderSyncTargetSnapshot,
+) -> Result<(), String> {
+    let current = resolve_provider_sync_target_snapshot(config_path, explicit_target_provider)
+        .map_err(|_| {
+            "Live provider configuration changed or became unavailable during provider sync; retry"
+                .to_string()
+        })?;
+    if &current != expected {
+        return Err(
+            "Live provider configuration changed or became unavailable during provider sync; retry"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn is_valid_explicit_provider_id(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
+}
+
+fn load_live_provider_config(path: &Path) -> Result<LiveProviderConfig, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("Live config.toml was not found".to_string());
+        }
+        Err(_) => return Err("Live config.toml could not be read safely".to_string()),
+    };
+    let root = toml::from_str::<toml::Table>(&text)
+        .map_err(|_| "Live config.toml could not be parsed safely".to_string())?;
+    let current_provider = match root.get("model_provider") {
+        None => Some(DEFAULT_PROVIDER.to_string()),
+        Some(value) => value
+            .as_str()
+            .filter(|provider| is_valid_explicit_provider_id(provider))
+            .map(ToString::to_string),
+    };
+
+    let mut configured_provider_ids = HashSet::from([DEFAULT_PROVIDER.to_string()]);
+    let mut provider_table_ids = HashSet::new();
+    if let Some(value) = root.get("model_providers") {
+        let providers = value
+            .as_table()
+            .ok_or_else(|| "Live model provider mappings are invalid".to_string())?;
+        for (provider, mapping) in providers {
+            configured_provider_ids.insert(provider.clone());
+            if mapping.is_table() {
+                provider_table_ids.insert(provider.clone());
+            }
+        }
+    }
+
+    Ok(LiveProviderConfig {
+        current_provider,
+        configured_provider_ids,
+        provider_table_ids,
+    })
+}
+
+fn provider_resolution_for_discovery(
+    live_config: &Result<LiveProviderConfig, String>,
+    provider: &str,
+) -> (bool, Option<String>) {
+    let config = match live_config {
+        Ok(config) => config,
+        Err(message) => return (false, Some(message.clone())),
+    };
+    if config.is_provider_resolvable(provider) {
+        (true, None)
+    } else {
+        (
+            false,
+            Some(
+                "Provider is visible in history but has no exact live model provider table"
+                    .to_string(),
+            ),
+        )
+    }
 }
 
 fn list_configured_provider_ids(path: &Path) -> Vec<String> {
@@ -4056,6 +4256,70 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod provider_target_snapshot_tests {
+    use super::*;
+
+    fn write_config(home: &Path, current: &str, providers: &[&str]) {
+        let mut text = format!("model_provider = {current:?}\n");
+        for provider in providers {
+            text.push_str(&format!(
+                "\n[model_providers.{provider:?}]\nname = {provider:?}\n"
+            ));
+        }
+        fs::write(home.join("config.toml"), text).unwrap();
+    }
+
+    #[test]
+    fn current_provider_change_at_first_write_boundary_leaves_history_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let rollout = home.join("sessions/rollout-race.jsonl");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        write_config(&home, "relay-alpha", &["relay-alpha"]);
+        let original_rollout = format!(
+            "{}\n{}\n",
+            json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": "thread-1",
+                    "model_provider": "openai",
+                    "cwd": "C:/workspace"
+                }
+            }),
+            json!({"type": "event_msg", "payload": {"type": "user_message"}}),
+        );
+        fs::write(&rollout, &original_rollout).unwrap();
+        let config_path = home.join("config.toml");
+
+        let result = run_provider_sync_with_target_in_home(home.clone(), None, false, || {
+            write_config(&home, "relay-beta", &["relay-beta"]);
+        });
+
+        assert_eq!(result.status, ProviderSyncStatus::Skipped);
+        assert!(result.message.contains("configuration changed"));
+        assert!(result.backup_dir.is_none());
+        assert_eq!(fs::read_to_string(rollout).unwrap(), original_rollout);
+        assert!(!home.join("backups_state/provider-sync").exists());
+        assert!(!home.join("tmp/provider-sync.lock").exists());
+        assert!(config_path.exists());
+    }
+
+    #[test]
+    fn adding_an_unrelated_provider_table_does_not_change_target_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir(&home).unwrap();
+        write_config(&home, "relay-alpha", &["relay-alpha"]);
+        let config_path = home.join("config.toml");
+        let snapshot = resolve_provider_sync_target_snapshot(&config_path, None).unwrap();
+
+        write_config(&home, "relay-alpha", &["relay-alpha", "relay-beta"]);
+
+        revalidate_provider_sync_target_snapshot(&config_path, None, &snapshot).unwrap();
+    }
 }
 
 #[cfg(test)]

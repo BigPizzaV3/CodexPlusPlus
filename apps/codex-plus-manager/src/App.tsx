@@ -111,6 +111,7 @@ import {
 } from "./model-windows";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
+import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./provider-sync-target";
 import { resolveLaunchStatus } from "./launch-status";
 import {
   defaultDreamSkinTheme,
@@ -708,6 +709,8 @@ type ProviderSyncTargetOption = {
   isCurrentProvider: boolean;
   isManual: boolean;
   isSaved: boolean;
+  isResolvable: boolean;
+  unavailableReason: string | null;
 };
 
 type ProviderSyncTargetsPayload = {
@@ -840,7 +843,8 @@ const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
 function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
   const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
   const current = target.isCurrentProvider ? [t("当前")] : [];
-  return [...labels, ...current].join(" / ") || t("发现");
+  const unavailable = isProviderSyncTargetSelectable(target) ? [] : [t("供应商切换不可用")];
+  return [...labels, ...current, ...unavailable].join(" / ") || t("发现");
 }
 
 function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
@@ -2403,12 +2407,8 @@ export function App() {
       setProviderSyncTargets(result);
       const targets = result.targets ?? [];
       const saved = settingsForm.providerSyncLastSelectedProvider;
-      const preferred =
-        targets.find((target) => target.id === saved)?.id ||
-        targets.find((target) => target.isCurrentProvider)?.id ||
-        targets[0]?.id ||
-        "openai";
-      setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
+      const preferred = preferredProviderSyncTarget(targets, result.currentProvider, saved);
+      setSelectedProviderSyncTarget(preferred);
       if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
     }
     return result;
@@ -3184,7 +3184,6 @@ export function App() {
       refreshProviderSyncTargets,
       setProviderSyncTarget: (provider: string) => {
         setSelectedProviderSyncTarget(provider);
-        setSettingsForm((current) => ({ ...current, providerSyncLastSelectedProvider: provider }));
       },
       setLaunchMode: async (launchMode: LaunchMode) => {
         await saveLaunchMode(launchMode);
@@ -5909,6 +5908,13 @@ function SessionsScreen({
   const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
   const selectedCount = selectedSessions.length;
   const allSelected = items.length > 0 && selectedCount === items.length;
+  const providerTargets = providerSyncTargets?.targets ?? [];
+  const selectedProviderTarget = providerTargets.find(
+    (target) => target.id === selectedProviderSyncTarget,
+  );
+  const canRepairProviderSessions = selectedProviderTarget
+    ? isProviderSyncTargetSelectable(selectedProviderTarget)
+    : false;
 
   useEffect(() => {
     const itemIds = new Set(items.map((session) => session.id));
@@ -5981,15 +5987,22 @@ function SessionsScreen({
           <div className="session-repair-tools">
             <Field className="session-sync-target" label={t("同步目标")}>
               <AppSelect
-                disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
+                disabled={providerSyncProgress.active || !providerTargets.length}
                 value={selectedProviderSyncTarget}
                 onChange={(value) => actions.setProviderSyncTarget(value)}
                 options={
-                  (providerSyncTargets?.targets ?? []).length
-                    ? (providerSyncTargets?.targets ?? []).map((target) => ({
-                        value: target.id,
-                        label: `${target.id}${t("（")}${providerSyncTargetLabel(target)}${t("）")}`,
-                      }))
+                  providerTargets.length
+                    ? [
+                        ...(!selectedProviderSyncTarget
+                          ? [{ value: "", label: t("当前配置 provider"), disabled: true }]
+                          : []),
+                        ...providerTargets.map((target) => ({
+                          value: target.id,
+                          label: `${target.id}${t("（")}${providerSyncTargetLabel(target)}${t("）")}`,
+                          disabled: !isProviderSyncTargetSelectable(target),
+                          title: target.unavailableReason ?? undefined,
+                        })),
+                      ]
                     : [{ value: "", label: t("当前配置 provider"), disabled: true }]
                 }
               />
@@ -6017,7 +6030,11 @@ function SessionsScreen({
                 <PackageOpen className="h-4 w-4" />
                 {t("导入文件")}
               </Button>
-              <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
+              <Button
+                disabled={providerSyncProgress.active || !canRepairProviderSessions}
+                onClick={() => void actions.syncProvidersNow()}
+                variant="outline"
+              >
                 <Wrench className="h-4 w-4" />
                 {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
               </Button>

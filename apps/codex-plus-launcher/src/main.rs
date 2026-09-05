@@ -355,10 +355,10 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
+        let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
             .await
             .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        Ok(())
+        require_completed_provider_sync(&result.status, &result.message)
     }
 
     fn has_pending_remote_control_session_recoveries(&self) -> bool {
@@ -605,6 +605,16 @@ impl LaunchHooks for LauncherHooks {
     async fn terminate_codex(&self, launch: &codex_plus_core::launcher::CodexLaunch) {
         self.core.terminate_codex(launch).await;
     }
+}
+
+fn require_completed_provider_sync(
+    status: &codex_plus_data::ProviderSyncStatus,
+    message: &str,
+) -> anyhow::Result<()> {
+    if *status == codex_plus_data::ProviderSyncStatus::Synced {
+        return Ok(());
+    }
+    anyhow::bail!("provider sync did not complete ({status:?}): {message}")
 }
 
 #[derive(Debug, Clone)]
@@ -1134,6 +1144,26 @@ mod tests {
 
         assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
         assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+    }
+
+    #[test]
+    fn launcher_accepts_only_a_completed_provider_sync() {
+        assert!(
+            require_completed_provider_sync(
+                &codex_plus_data::ProviderSyncStatus::Synced,
+                "Provider sync complete",
+            )
+            .is_ok()
+        );
+
+        for status in [
+            codex_plus_data::ProviderSyncStatus::Disabled,
+            codex_plus_data::ProviderSyncStatus::Skipped,
+        ] {
+            let error = require_completed_provider_sync(&status, "target is unresolved")
+                .expect_err("an incomplete provider sync must stop launch");
+            assert!(error.to_string().contains("target is unresolved"));
+        }
     }
 
     #[test]
