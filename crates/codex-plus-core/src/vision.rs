@@ -2846,19 +2846,28 @@ mod tests {
         assert!(outcome.http_code.is_none());
     }
 
-    /// 连接错误（非超时）→ send_error。
-    /// 用端口 0：Windows 安全软件可能让「连接被拒」延迟 ~2s 才返回，恰好撞上
-    /// cfg(test) 的 2s 请求超时而被误判为 timeout；连接端口 0 则立即报
-    /// 传输层错误（WSAEADDRNOTAVAIL），确定性地走 send_error 路径。
+    /// 对端在建立 TCP 连接后立刻关闭，稳定覆盖传输层 send_error 分支。
+    /// 这里不能直接请求未监听端口：macOS 可能把它报成 timeout，HTTP 代理也可能
+    /// 返回自己的错误页并把结果变成 http_error，二者都不再是在测客户端传输失败。
     #[tokio::test]
-    async fn test_vlm_once_send_error_on_connection_refused() {
-        let client = reqwest::Client::new();
+    async fn test_vlm_once_send_error_when_peer_closes_connection() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        // 接受一次连接后立刻丢弃 TCP 流，模拟已建立连接的对端异常关闭。
+        let close_peer = tokio::spawn(async move {
+            let _ = listener.accept().await.unwrap();
+        });
+        // 测试必须绕过开发机/CI 的代理设置，否则 loopback 请求可能被代理接管。
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let outcome = test_vlm_once(
-            &test_vlm_config("http://127.0.0.1:0".to_string()),
+            &test_vlm_config(format!("http://{address}")),
             "data:image/png;base64,QUJD",
             &client,
         )
         .await;
+        close_peer.await.unwrap();
         assert_eq!(outcome.status, "send_error");
         assert!(outcome.http_code.is_none());
         assert!(outcome.raw_request.is_some());

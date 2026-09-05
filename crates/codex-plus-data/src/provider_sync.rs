@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +13,7 @@ const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
 const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
+const PROVIDER_SYNC_PROGRESS_INTERVAL: usize = 32;
 
 /// `create_lock` 先建目录再写 `owner.json`，两步之间被强杀会留下没有 owner 的锁目录。
 /// 该窗口只有几毫秒，因此超过这个时长仍缺 owner 的锁一定是中断残留，可以安全回收；
@@ -241,6 +242,29 @@ pub struct ProviderSyncResult {
     pub repair_audit: ProviderSyncAudit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSyncProgressPhase {
+    Scanning,
+    Planning,
+    BackingUp,
+    Rewriting,
+    UpdatingIndexes,
+    RollingBack,
+    Complete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSyncProgress {
+    pub phase: ProviderSyncProgressPhase,
+    pub total_rollout_files: usize,
+    pub scanned_rollout_files: usize,
+    pub planned_rewrite_files: usize,
+    pub applied_rewrite_files: usize,
+    pub skipped_locked_rollout_files: usize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSyncAudit {
@@ -311,9 +335,6 @@ struct SessionChange {
     original_text: String,
     next_text: String,
     original_session_meta_lines: Vec<String>,
-    thread_id: Option<String>,
-    cwd: Option<String>,
-    has_user_event: bool,
     rewrite_needed: bool,
     original_mtime: Option<SystemTime>,
 }
@@ -323,7 +344,6 @@ struct RolloutRewrite {
     next_text: String,
     rewrite_needed: bool,
     thread_id: Option<String>,
-    cwd: Option<String>,
     providers: Vec<String>,
     original_session_meta_lines: Vec<String>,
     session_meta_count: usize,
@@ -334,7 +354,6 @@ struct SessionChanges {
     changes: Vec<SessionChange>,
     skipped_locked_rollout_files: Vec<PathBuf>,
     encrypted_content_counts: HashMap<String, usize>,
-    subagent_thread_ids: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -350,10 +369,53 @@ struct AppliedSessionChanges {
 }
 
 #[derive(Debug, Clone)]
+struct BulkSessionRewritePlan {
+    path: PathBuf,
+    original_sha256: String,
+    original_mtime: Option<SystemTime>,
+    original_session_meta_lines: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct BulkSessionScan {
+    rewrite_plans: Vec<BulkSessionRewritePlan>,
+    skipped_locked_rollout_files: Vec<PathBuf>,
+    encrypted_content_counts: HashMap<String, usize>,
+    subagent_thread_ids: HashSet<String>,
+    thread_ids_with_user_events: HashSet<String>,
+    cwd_by_thread_id: HashMap<String, String>,
+    total_rollout_files: usize,
+}
+
+#[derive(Debug, Clone)]
+struct AppliedBulkSessionRewrite {
+    plan: BulkSessionRewritePlan,
+    rewritten_sha256: String,
+}
+
+#[derive(Debug, Default)]
+struct AppliedBulkSessionRewrites {
+    changes: Vec<AppliedBulkSessionRewrite>,
+    skipped_locked_rollout_files: Vec<PathBuf>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionMetaBackupEntry<'a> {
+    path: String,
+    original_session_meta_lines: &'a [String],
+}
+
+#[derive(Debug, Clone)]
 struct SessionIndexPlan {
     path: PathBuf,
     original_bytes: Vec<u8>,
     original_text: String,
+}
+
+#[derive(Debug, Clone)]
+struct SessionIndexCleanupPlan {
+    path: PathBuf,
     snapshot_sha256: String,
     candidates: Vec<SessionIndexCleanupCandidate>,
 }
@@ -767,6 +829,14 @@ pub fn run_provider_sync_with_target(
     codex_home: Option<&Path>,
     explicit_target_provider: Option<&str>,
 ) -> ProviderSyncResult {
+    run_provider_sync_with_target_and_progress(codex_home, explicit_target_provider, |_| {})
+}
+
+pub fn run_provider_sync_with_target_and_progress(
+    codex_home: Option<&Path>,
+    explicit_target_provider: Option<&str>,
+    mut report_progress: impl FnMut(ProviderSyncProgress),
+) -> ProviderSyncResult {
     let require_stopped_app = codex_home.is_none();
     let home = codex_home
         .map(Path::to_path_buf)
@@ -848,36 +918,39 @@ pub fn run_provider_sync_with_target(
                 ProviderSyncAudit::default()
             }
         };
-        let collected = collect_session_changes(
+        let scan = scan_bulk_session_rewrites(
             &home,
             &target_provider,
             &thread_kinds.subagent_thread_ids,
             &thread_kinds.explicit_user_thread_ids,
+            &mut report_progress,
         )?;
+        let BulkSessionScan {
+            rewrite_plans,
+            skipped_locked_rollout_files: scanned_skipped_rollout_files,
+            encrypted_content_counts,
+            subagent_thread_ids: scanned_subagent_thread_ids,
+            thread_ids_with_user_events,
+            cwd_by_thread_id: scanned_cwd_by_thread_id,
+            total_rollout_files,
+        } = scan;
         let mut subagent_thread_ids = thread_kinds.subagent_thread_ids;
-        subagent_thread_ids.extend(collected.subagent_thread_ids.iter().cloned());
+        subagent_thread_ids.extend(scanned_subagent_thread_ids);
         let encrypted_content_warning =
-            build_encrypted_content_warning(&collected.encrypted_content_counts, &target_provider);
-        let rewrite_changes = collected
-            .changes
-            .iter()
-            .filter(|change| change.rewrite_needed)
-            .cloned()
-            .collect::<Vec<_>>();
-        let thread_ids_with_user_events = collected
-            .changes
-            .iter()
-            .filter(|change| change.has_user_event)
-            .filter_map(|change| change.thread_id.clone())
-            .collect::<HashSet<_>>();
+            build_encrypted_content_warning(&encrypted_content_counts, &target_provider);
+        report_provider_sync_progress(
+            &mut report_progress,
+            ProviderSyncProgressPhase::Planning,
+            total_rollout_files,
+            total_rollout_files,
+            rewrite_plans.len(),
+            0,
+            scanned_skipped_rollout_files.len(),
+        );
         let projectless_thread_ids =
             load_projectless_thread_ids(&home.join(".codex-global-state.json"))?;
-        let cwd_by_thread_id = collected
-            .changes
-            .iter()
-            .filter_map(|change| Some((change.thread_id.clone()?, change.cwd.clone()?)))
-            .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
-            .collect::<HashMap<_, _>>();
+        let mut cwd_by_thread_id = scanned_cwd_by_thread_id;
+        cwd_by_thread_id.retain(|thread_id, _| !projectless_thread_ids.contains(thread_id));
         let sqlite_update_count = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
@@ -889,7 +962,7 @@ pub fn run_provider_sync_with_target(
             count_local_thread_catalog_repairs(&home, &sqlite_paths, &target_provider)?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
-        if rewrite_changes.is_empty()
+        if rewrite_plans.is_empty()
             && sqlite_update_count == 0
             && catalog_repair_count == 0
             && global_state_update_count == 0
@@ -902,15 +975,48 @@ pub fn run_provider_sync_with_target(
                 0,
                 0,
             );
-            synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
+            synced.skipped_locked_rollout_files = scanned_skipped_rollout_files;
             synced.encrypted_content_warning = encrypted_content_warning;
             synced.repair_audit = repair_audit;
             synced.message =
                 provider_sync_message_with_audit(&synced.message, &synced.repair_audit);
+            report_provider_sync_progress(
+                &mut report_progress,
+                ProviderSyncProgressPhase::Complete,
+                total_rollout_files,
+                total_rollout_files,
+                0,
+                0,
+                synced.skipped_locked_rollout_files.len(),
+            );
             return Ok(synced);
         }
-        let backup_dir = create_backup(&home, &target_provider, &rewrite_changes)?;
-        let applied = apply_session_changes(&rewrite_changes)?;
+        report_provider_sync_progress(
+            &mut report_progress,
+            ProviderSyncProgressPhase::BackingUp,
+            total_rollout_files,
+            total_rollout_files,
+            rewrite_plans.len(),
+            0,
+            scanned_skipped_rollout_files.len(),
+        );
+        let backup_dir = create_bulk_backup(&home, &target_provider, &rewrite_plans)?;
+        let applied = apply_bulk_session_rewrite_plans(
+            &rewrite_plans,
+            &target_provider,
+            total_rollout_files,
+            scanned_skipped_rollout_files.len(),
+            &mut report_progress,
+        )?;
+        report_provider_sync_progress(
+            &mut report_progress,
+            ProviderSyncProgressPhase::UpdatingIndexes,
+            total_rollout_files,
+            total_rollout_files,
+            rewrite_plans.len(),
+            applied.changes.len(),
+            scanned_skipped_rollout_files.len() + applied.skipped_locked_rollout_files.len(),
+        );
         let apply_result = (|| -> anyhow::Result<(SqliteUpdateCounts, usize)> {
             let sqlite_updates = apply_sqlite_update_for_paths(
                 &sqlite_paths,
@@ -932,7 +1038,21 @@ pub fn run_provider_sync_with_target(
         let (sqlite_updates, updated_workspace_roots) = match apply_result {
             Ok(counts) => counts,
             Err(err) => {
-                let _ = restore_session_changes(&applied.changes);
+                report_provider_sync_progress(
+                    &mut report_progress,
+                    ProviderSyncProgressPhase::RollingBack,
+                    total_rollout_files,
+                    total_rollout_files,
+                    rewrite_plans.len(),
+                    applied.changes.len(),
+                    scanned_skipped_rollout_files.len()
+                        + applied.skipped_locked_rollout_files.len(),
+                );
+                if let Err(restore_error) = restore_bulk_session_rewrites(&applied.changes) {
+                    return Err(anyhow::anyhow!(
+                        "{err}; rollout rollback failed: {restore_error}"
+                    ));
+                }
                 return Err(err);
             }
         };
@@ -944,7 +1064,7 @@ pub fn run_provider_sync_with_target(
             applied.changes.len(),
             sqlite_updates.total(),
         );
-        synced.skipped_locked_rollout_files = collected.skipped_locked_rollout_files;
+        synced.skipped_locked_rollout_files = scanned_skipped_rollout_files;
         synced
             .skipped_locked_rollout_files
             .extend(applied.skipped_locked_rollout_files);
@@ -959,6 +1079,15 @@ pub fn run_provider_sync_with_target(
         synced.encrypted_content_warning = encrypted_content_warning;
         synced.repair_audit = repair_audit;
         synced.message = provider_sync_message_with_audit(&synced.message, &synced.repair_audit);
+        report_provider_sync_progress(
+            &mut report_progress,
+            ProviderSyncProgressPhase::Complete,
+            total_rollout_files,
+            total_rollout_files,
+            rewrite_plans.len(),
+            applied.changes.len(),
+            synced.skipped_locked_rollout_files.len(),
+        );
         Ok(synced)
     })();
     sync_result.unwrap_or_else(|err| {
@@ -971,6 +1100,25 @@ pub fn run_provider_sync_with_target(
             0,
         )
     })
+}
+
+fn report_provider_sync_progress(
+    report_progress: &mut dyn FnMut(ProviderSyncProgress),
+    phase: ProviderSyncProgressPhase,
+    total_rollout_files: usize,
+    scanned_rollout_files: usize,
+    planned_rewrite_files: usize,
+    applied_rewrite_files: usize,
+    skipped_locked_rollout_files: usize,
+) {
+    report_progress(ProviderSyncProgress {
+        phase,
+        total_rollout_files,
+        scanned_rollout_files,
+        planned_rewrite_files,
+        applied_rewrite_files,
+        skipped_locked_rollout_files,
+    });
 }
 
 fn result(
@@ -1453,80 +1601,177 @@ fn release_owned_lock(path: &Path, lock_id: &str) -> std::io::Result<bool> {
     Ok(false)
 }
 
-fn collect_session_changes(
+fn scan_bulk_session_rewrites(
     home: &Path,
     target_provider: &str,
     excluded_thread_ids: &HashSet<String>,
     explicit_user_thread_ids: &HashSet<String>,
-) -> anyhow::Result<SessionChanges> {
-    let mut collected = SessionChanges::default();
-    for path in rollout_files(home)? {
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+    report_progress: &mut dyn FnMut(ProviderSyncProgress),
+) -> anyhow::Result<BulkSessionScan> {
+    let paths = rollout_files(home)?;
+    let mut scan = BulkSessionScan {
+        total_rollout_files: paths.len(),
+        ..Default::default()
+    };
+    report_provider_sync_progress(
+        report_progress,
+        ProviderSyncProgressPhase::Scanning,
+        scan.total_rollout_files,
+        0,
+        0,
+        0,
+        0,
+    );
+    for (index, path) in paths.iter().enumerate() {
+        let scanned_rollout_files = index + 1;
+        let file = match File::open(path) {
+            Ok(file) => file,
             Err(error) if is_locked_io_error(&error) => {
-                collected.skipped_locked_rollout_files.push(path);
+                scan.skipped_locked_rollout_files.push(path.clone());
+                report_scan_progress(
+                    report_progress,
+                    scan.total_rollout_files,
+                    scanned_rollout_files,
+                    scan.skipped_locked_rollout_files.len(),
+                );
                 continue;
             }
             Err(error) => return Err(error.into()),
         };
-        let rewrite = rewrite_rollout_session_meta_providers(&text, target_provider)?;
-        if rewrite.session_meta_count == 0 {
-            continue;
-        }
-        let is_explicit_user = rewrite
-            .thread_id
-            .as_ref()
-            .is_some_and(|thread_id| explicit_user_thread_ids.contains(thread_id));
-        if rollout_session_meta_marks_non_root_agent(&text) {
-            if let Some(thread_id) = &rewrite.thread_id {
-                collected.subagent_thread_ids.insert(thread_id.clone());
+
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        let mut original_hasher = Sha256::new();
+        let mut session_meta_count = 0;
+        let mut thread_id = None;
+        let mut cwd = None;
+        let mut providers = Vec::new();
+        let mut original_session_meta_lines = Vec::new();
+        let mut rewrite_needed = false;
+        let mut rollout_marks_non_root_agent = false;
+        let mut has_user_event = false;
+        let mut has_encrypted_content = false;
+
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
             }
-            continue;
+            original_hasher.update(line.as_bytes());
+            has_user_event |= line.contains("\"user_message\"") || line.contains("\"user_input\"");
+            has_encrypted_content |= line.contains("encrypted_content");
+
+            let (record_line, _) = split_line_ending(&line);
+            if record_line.trim().is_empty() {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<Value>(record_line) else {
+                continue;
+            };
+            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+                continue;
+            }
+            let Some(payload) = record.get("payload").and_then(Value::as_object) else {
+                continue;
+            };
+
+            session_meta_count += 1;
+            original_session_meta_lines.push(record_line.to_string());
+            if thread_id.is_none() {
+                thread_id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+            }
+            if cwd.is_none() {
+                cwd = payload
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .and_then(to_desktop_workspace_path);
+            }
+            let provider = payload
+                .get("model_provider")
+                .and_then(Value::as_str)
+                .unwrap_or("(missing)")
+                .to_string();
+            providers.push(provider);
+            rewrite_needed |=
+                payload.get("model_provider").and_then(Value::as_str) != Some(target_provider);
+            rollout_marks_non_root_agent |= payload
+                .get("source")
+                .is_some_and(source_value_marks_non_root_agent);
         }
-        if !is_explicit_user
-            && rewrite
-                .thread_id
+
+        if session_meta_count > 0 {
+            let is_explicit_user = thread_id
                 .as_ref()
-                .is_some_and(|thread_id| excluded_thread_ids.contains(thread_id))
-        {
-            continue;
-        }
-        let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
-        if text.contains("encrypted_content") {
-            for provider in &rewrite.providers {
-                *collected
-                    .encrypted_content_counts
-                    .entry(provider.clone())
-                    .or_insert(0) += 1;
+                .is_some_and(|id| explicit_user_thread_ids.contains(id));
+            if rollout_marks_non_root_agent {
+                if let Some(thread_id) = thread_id {
+                    scan.subagent_thread_ids.insert(thread_id);
+                }
+            } else if !is_explicit_user
+                && thread_id
+                    .as_ref()
+                    .is_some_and(|id| excluded_thread_ids.contains(id))
+            {
+                // Keep the existing SQLite subagent exclusion behavior.
+            } else {
+                if has_user_event {
+                    if let Some(thread_id) = &thread_id {
+                        scan.thread_ids_with_user_events.insert(thread_id.clone());
+                    }
+                }
+                if let (Some(thread_id), Some(cwd)) = (thread_id.as_ref(), cwd) {
+                    scan.cwd_by_thread_id.insert(thread_id.clone(), cwd);
+                }
+                if has_encrypted_content {
+                    for provider in providers {
+                        *scan.encrypted_content_counts.entry(provider).or_insert(0) += 1;
+                    }
+                }
+                if rewrite_needed {
+                    scan.rewrite_plans.push(BulkSessionRewritePlan {
+                        path: path.clone(),
+                        original_sha256: format!("{:x}", original_hasher.finalize()),
+                        original_mtime: fs::metadata(path)
+                            .and_then(|metadata| metadata.modified())
+                            .ok(),
+                        original_session_meta_lines,
+                    });
+                }
             }
         }
-        let original_mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
-        collected.changes.push(SessionChange {
-            path,
-            original_text: text,
-            next_text: rewrite.next_text,
-            original_session_meta_lines: rewrite.original_session_meta_lines,
-            thread_id: rewrite.thread_id,
-            cwd: rewrite.cwd,
-            has_user_event,
-            rewrite_needed: rewrite.rewrite_needed,
-            original_mtime,
-        });
+        report_scan_progress(
+            report_progress,
+            scan.total_rollout_files,
+            scanned_rollout_files,
+            scan.skipped_locked_rollout_files.len(),
+        );
     }
-    Ok(collected)
+    Ok(scan)
 }
 
-fn rollout_session_meta_marks_non_root_agent(text: &str) -> bool {
-    text.lines().any(|line| {
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            return false;
-        };
-        record.get("type").and_then(Value::as_str) == Some("session_meta")
-            && record
-                .get("payload")
-                .and_then(|payload| payload.get("source"))
-                .is_some_and(source_value_marks_non_root_agent)
-    })
+fn report_scan_progress(
+    report_progress: &mut dyn FnMut(ProviderSyncProgress),
+    total_rollout_files: usize,
+    scanned_rollout_files: usize,
+    skipped_locked_rollout_files: usize,
+) {
+    if scanned_rollout_files == 1
+        || scanned_rollout_files == total_rollout_files
+        || scanned_rollout_files % PROVIDER_SYNC_PROGRESS_INTERVAL == 0
+    {
+        report_provider_sync_progress(
+            report_progress,
+            ProviderSyncProgressPhase::Scanning,
+            total_rollout_files,
+            scanned_rollout_files,
+            0,
+            0,
+            skipped_locked_rollout_files,
+        );
+    }
 }
 
 fn remote_control_rollout_for_thread(
@@ -1675,7 +1920,6 @@ fn collect_session_change_for_path(
     if rewrite.session_meta_count == 0 || rewrite.thread_id.as_deref() != Some(thread_id) {
         return Ok(collected);
     }
-    let has_user_event = text.contains("\"user_message\"") || text.contains("\"user_input\"");
     if text.contains("encrypted_content") {
         for provider in &rewrite.providers {
             *collected
@@ -1692,9 +1936,6 @@ fn collect_session_change_for_path(
         original_text: text,
         next_text: rewrite.next_text,
         original_session_meta_lines: rewrite.original_session_meta_lines,
-        thread_id: rewrite.thread_id,
-        cwd: rewrite.cwd,
-        has_user_event,
         rewrite_needed: rewrite.rewrite_needed,
         original_mtime,
     });
@@ -1712,59 +1953,6 @@ fn rollout_file_matches_provider(
     Ok(rollout_thread_id == thread_id
         && !providers.is_empty()
         && providers.iter().all(|provider| provider == target_provider))
-}
-
-fn rewrite_rollout_session_meta_providers(
-    text: &str,
-    target_provider: &str,
-) -> anyhow::Result<RolloutRewrite> {
-    let mut rewrite = RolloutRewrite::default();
-    for segment in text.split_inclusive('\n') {
-        let (line, line_ending) = split_line_ending(segment);
-        let mut next_line = line.to_string();
-        if !line.trim().is_empty() {
-            if let Ok(mut record) = serde_json::from_str::<Value>(line) {
-                if record.get("type").and_then(Value::as_str) == Some("session_meta") {
-                    let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut)
-                    else {
-                        rewrite.next_text.push_str(&next_line);
-                        rewrite.next_text.push_str(line_ending);
-                        continue;
-                    };
-                    rewrite.session_meta_count += 1;
-                    rewrite.original_session_meta_lines.push(line.to_string());
-                    if rewrite.thread_id.is_none() {
-                        rewrite.thread_id = payload
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(ToString::to_string);
-                    }
-                    if rewrite.cwd.is_none() {
-                        rewrite.cwd = payload
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .and_then(to_desktop_workspace_path);
-                    }
-                    let provider = payload
-                        .get("model_provider")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(missing)")
-                        .to_string();
-                    rewrite.providers.push(provider);
-                    if payload.get("model_provider").and_then(Value::as_str)
-                        != Some(target_provider)
-                    {
-                        payload.insert("model_provider".to_string(), json!(target_provider));
-                        next_line = serde_json::to_string(&record)?;
-                        rewrite.rewrite_needed = true;
-                    }
-                }
-            }
-        }
-        rewrite.next_text.push_str(&next_line);
-        rewrite.next_text.push_str(line_ending);
-    }
-    Ok(rewrite)
 }
 
 fn rewrite_rollout_session_meta_providers_for_threads(
@@ -1812,12 +2000,6 @@ fn rewrite_rollout_session_meta_providers_for_threads(
                     };
                     rewrite.session_meta_count += 1;
                     rewrite.original_session_meta_lines.push(line.to_string());
-                    if rewrite.cwd.is_none() {
-                        rewrite.cwd = payload
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .and_then(to_desktop_workspace_path);
-                    }
                     let provider = payload
                         .get("model_provider")
                         .and_then(Value::as_str)
@@ -1867,13 +2049,19 @@ fn collect_live_thread_ids(
         {
             ids.insert(id);
         }
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let file = match File::open(&path) {
+            Ok(file) => file,
             Err(error) if is_locked_io_error(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        for segment in text.split_inclusive('\n') {
-            let (line, _) = split_line_ending(segment);
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let (line, _) = split_line_ending(&line);
             let Ok(record) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
@@ -1998,26 +2186,31 @@ fn sqlite_user_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
 fn plan_session_index_cleanup(
     path: &Path,
     live_thread_ids: &HashSet<String>,
-) -> anyhow::Result<Option<SessionIndexPlan>> {
+) -> anyhow::Result<Option<SessionIndexCleanupPlan>> {
     if !path.exists() {
         return Ok(None);
     }
-    let original_bytes = fs::read(path)?;
-    let original_text = String::from_utf8(original_bytes.clone())?;
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut hasher = Sha256::new();
     let mut candidates = Vec::new();
-    for segment in original_text.split_inclusive('\n') {
-        let (line, _) = split_line_ending(segment);
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        hasher.update(line.as_bytes());
+        let (line, _) = split_line_ending(&line);
         if let Some(candidate) = known_session_index_candidate(line)
             && !live_thread_ids.contains(&candidate.id)
         {
             candidates.push(candidate);
         }
     }
-    Ok(Some(SessionIndexPlan {
+    Ok(Some(SessionIndexCleanupPlan {
         path: path.to_path_buf(),
-        snapshot_sha256: sha256_hex(&original_bytes),
-        original_bytes,
-        original_text,
+        snapshot_sha256: format!("{:x}", hasher.finalize()),
         candidates,
     }))
 }
@@ -2139,7 +2332,11 @@ pub fn apply_session_index_cleanup(
                 None,
             ));
         }
-        let (next_text, removed_entries) = filtered_session_index_text(&plan, &selected_ids);
+        let removed_entries = plan
+            .candidates
+            .iter()
+            .filter(|candidate| selected_ids.contains(&candidate.id))
+            .count();
         if removed_entries == 0 {
             return Ok(SessionIndexCleanupResult {
                 pruned_entries: 0,
@@ -2147,30 +2344,39 @@ pub fn apply_session_index_cleanup(
             });
         }
         let backup_dir = create_session_index_cleanup_backup(&home, &plan, removed_entries)?;
-        let current_bytes = fs::read(&plan.path)
-            .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
-        if current_bytes != plan.original_bytes {
-            return Err(cleanup_apply_error(
-                "session_index.jsonl 在写入前再次发生变化；未覆盖 Codex 新内容，请重新预览",
-                Some(backup_dir),
-            ));
-        }
         if require_stopped_app {
             ensure_codex_app_stopped(Some(backup_dir.clone()))?;
         }
-        codex_plus_core::settings::atomic_write(&plan.path, next_text.as_bytes()).map_err(
-            |error| {
-                cleanup_apply_error(
-                    format!(
-                        "原子写入 session_index.jsonl 失败；原文件未被主动覆盖，可从备份目录手动恢复：{error}"
-                    ),
-                    Some(backup_dir.clone()),
-                )
-            },
-        )?;
+        let mut streamed_removed_entries = None;
+        let write_result = codex_plus_core::settings::atomic_write_with(&plan.path, |file| {
+            let mut writer = BufWriter::new(file);
+            let removed = stream_filtered_session_index(
+                &plan.path,
+                &plan.snapshot_sha256,
+                &selected_ids,
+                &mut writer,
+            )?;
+            writer.flush()?;
+            streamed_removed_entries = Some(removed);
+            Ok(())
+        });
+        if let Err(error) = write_result {
+            if error_chain_contains(&error, SESSION_INDEX_SNAPSHOT_CHANGED_ERROR) {
+                return Err(cleanup_apply_error(
+                    "session_index.jsonl 在写入前再次发生变化；未覆盖 Codex 新内容，请重新预览",
+                    Some(backup_dir),
+                ));
+            }
+            return Err(cleanup_apply_error(
+                format!(
+                    "原子写入 session_index.jsonl 失败；原文件未被主动覆盖，可从备份目录手动恢复：{error}"
+                ),
+                Some(backup_dir),
+            ));
+        }
         let _ = prune_backups(&home);
         Ok(SessionIndexCleanupResult {
-            pruned_entries: removed_entries,
+            pruned_entries: streamed_removed_entries.unwrap_or(0),
             backup_dir: Some(backup_dir),
         })
     })();
@@ -2216,10 +2422,8 @@ pub fn remove_session_index_entry(
     let original_text = String::from_utf8(original_bytes.clone())?;
     let plan = SessionIndexPlan {
         path,
-        snapshot_sha256: sha256_hex(&original_bytes),
         original_bytes,
         original_text,
-        candidates: Vec::new(),
     };
     let selected_ids = HashSet::from([thread_id.to_string()]);
     let (next_text, removed_entries) = filtered_session_index_text(&plan, &selected_ids);
@@ -2318,13 +2522,19 @@ fn cleanup_apply_error(
 fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
     let mut ids = HashSet::new();
     for path in rollout_files(home)? {
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
+        let file = match File::open(&path) {
+            Ok(file) => file,
             Err(error) if is_locked_io_error(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        for segment in text.split_inclusive('\n') {
-            let (line, _) = split_line_ending(segment);
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let (line, _) = split_line_ending(&line);
             let Ok(record) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
@@ -2419,6 +2629,43 @@ fn create_backup(
     target_provider: &str,
     changes: &[SessionChange],
 ) -> anyhow::Result<PathBuf> {
+    create_backup_with_session_meta_lines(
+        home,
+        target_provider,
+        changes.len(),
+        changes.iter().map(|change| {
+            (
+                change.path.as_path(),
+                change.original_session_meta_lines.as_slice(),
+            )
+        }),
+    )
+}
+
+fn create_bulk_backup(
+    home: &Path,
+    target_provider: &str,
+    rewrite_plans: &[BulkSessionRewritePlan],
+) -> anyhow::Result<PathBuf> {
+    create_backup_with_session_meta_lines(
+        home,
+        target_provider,
+        rewrite_plans.len(),
+        rewrite_plans.iter().map(|plan| {
+            (
+                plan.path.as_path(),
+                plan.original_session_meta_lines.as_slice(),
+            )
+        }),
+    )
+}
+
+fn create_backup_with_session_meta_lines<'a>(
+    home: &Path,
+    target_provider: &str,
+    changed_session_files: usize,
+    entries: impl IntoIterator<Item = (&'a Path, &'a [String])>,
+) -> anyhow::Result<PathBuf> {
     let backup_root = home.join("backups_state/provider-sync");
     let mut backup_dir = backup_root.join(timestamp_name());
     let mut suffix = 0;
@@ -2453,19 +2700,7 @@ fn create_backup(
             db_files.push(relative.to_string_lossy().replace('\\', "/"));
         }
     }
-    let manifest = changes
-        .iter()
-        .map(|change| {
-            json!({
-                "path": change.path.to_string_lossy(),
-                "originalSessionMetaLines": change.original_session_meta_lines,
-            })
-        })
-        .collect::<Vec<_>>();
-    fs::write(
-        backup_dir.join("session-meta-backup.json"),
-        serde_json::to_string_pretty(&manifest)?,
-    )?;
+    write_session_meta_backup(&backup_dir.join("session-meta-backup.json"), entries)?;
     fs::write(
         backup_dir.join("metadata.json"),
         serde_json::to_string_pretty(&json!({
@@ -2475,16 +2710,371 @@ fn create_backup(
             "targetProvider": target_provider,
             "createdAt": chrono::Utc::now().to_rfc3339(),
             "dbFiles": db_files,
-            "changedSessionFiles": changes.len(),
+            "changedSessionFiles": changed_session_files,
             "managedBy": "Codex++ provider sync"
         }))?,
     )?;
     Ok(backup_dir)
 }
 
+fn write_session_meta_backup<'a>(
+    path: &Path,
+    entries: impl IntoIterator<Item = (&'a Path, &'a [String])>,
+) -> anyhow::Result<()> {
+    let mut writer = BufWriter::new(File::create(path)?);
+    writer.write_all(b"[\n")?;
+    let mut first = true;
+    for (entry_path, original_session_meta_lines) in entries {
+        if !first {
+            writer.write_all(b",\n")?;
+        }
+        first = false;
+        let entry = SessionMetaBackupEntry {
+            path: entry_path.to_string_lossy().to_string(),
+            original_session_meta_lines,
+        };
+        let encoded = serde_json::to_string_pretty(&entry)?;
+        for line in encoded.lines() {
+            writer.write_all(b"  ")?;
+            writer.write_all(line.as_bytes())?;
+            writer.write_all(b"\n")?;
+        }
+    }
+    writer.write_all(b"]\n")?;
+    writer.flush()?;
+    Ok(())
+}
+
+const BULK_SESSION_SOURCE_CHANGED_ERROR: &str =
+    "rollout changed while provider metadata was being written";
+
+struct HashingWriter<W> {
+    inner: W,
+    hasher: Sha256,
+}
+
+impl<W> HashingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+        }
+    }
+
+    fn sha256_hex(&self) -> String {
+        format!("{:x}", self.hasher.clone().finalize())
+    }
+}
+
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buffer)?;
+        self.hasher.update(&buffer[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn apply_bulk_session_rewrite_plans(
+    rewrite_plans: &[BulkSessionRewritePlan],
+    target_provider: &str,
+    total_rollout_files: usize,
+    scanned_skipped_rollout_files: usize,
+    report_progress: &mut dyn FnMut(ProviderSyncProgress),
+) -> anyhow::Result<AppliedBulkSessionRewrites> {
+    let mut applied = AppliedBulkSessionRewrites::default();
+    report_provider_sync_progress(
+        report_progress,
+        ProviderSyncProgressPhase::Rewriting,
+        total_rollout_files,
+        total_rollout_files,
+        rewrite_plans.len(),
+        0,
+        scanned_skipped_rollout_files,
+    );
+
+    for (index, plan) in rewrite_plans.iter().enumerate() {
+        match rewrite_bulk_session_plan(plan, target_provider) {
+            Ok(Some(rewritten_sha256)) => {
+                restore_file_mtime(&plan.path, plan.original_mtime);
+                applied.changes.push(AppliedBulkSessionRewrite {
+                    plan: plan.clone(),
+                    rewritten_sha256,
+                });
+            }
+            Ok(None) => applied.skipped_locked_rollout_files.push(plan.path.clone()),
+            Err(error) if is_locked_anyhow_error(&error) => {
+                applied.skipped_locked_rollout_files.push(plan.path.clone());
+            }
+            Err(error) => {
+                if !applied.changes.is_empty() {
+                    report_provider_sync_progress(
+                        report_progress,
+                        ProviderSyncProgressPhase::RollingBack,
+                        total_rollout_files,
+                        total_rollout_files,
+                        rewrite_plans.len(),
+                        applied.changes.len(),
+                        scanned_skipped_rollout_files
+                            + applied.skipped_locked_rollout_files.len(),
+                    );
+                }
+                if let Err(restore_error) = restore_bulk_session_rewrites(&applied.changes) {
+                    return Err(anyhow::anyhow!(
+                        "{error}; rollout rollback failed: {restore_error}"
+                    ));
+                }
+                return Err(error);
+            }
+        }
+        report_bulk_rewrite_progress(
+            report_progress,
+            total_rollout_files,
+            rewrite_plans.len(),
+            index + 1,
+            applied.changes.len(),
+            scanned_skipped_rollout_files + applied.skipped_locked_rollout_files.len(),
+        );
+    }
+    Ok(applied)
+}
+
+fn report_bulk_rewrite_progress(
+    report_progress: &mut dyn FnMut(ProviderSyncProgress),
+    total_rollout_files: usize,
+    planned_rewrite_files: usize,
+    completed_rewrite_files: usize,
+    applied_rewrite_files: usize,
+    skipped_locked_rollout_files: usize,
+) {
+    if completed_rewrite_files == 1
+        || completed_rewrite_files == planned_rewrite_files
+        || completed_rewrite_files % PROVIDER_SYNC_PROGRESS_INTERVAL == 0
+    {
+        report_provider_sync_progress(
+            report_progress,
+            ProviderSyncProgressPhase::Rewriting,
+            total_rollout_files,
+            total_rollout_files,
+            planned_rewrite_files,
+            applied_rewrite_files,
+            skipped_locked_rollout_files,
+        );
+    }
+}
+
+fn rewrite_bulk_session_plan(
+    plan: &BulkSessionRewritePlan,
+    target_provider: &str,
+) -> anyhow::Result<Option<String>> {
+    if sha256_file(&plan.path)? != plan.original_sha256 {
+        return Ok(None);
+    }
+
+    let mut rewritten_sha256 = None;
+    let write_result = codex_plus_core::settings::atomic_write_with(&plan.path, |file| {
+        let mut writer = HashingWriter::new(BufWriter::new(file));
+        let source_sha256 = stream_rewrite_rollout_session_meta_providers(
+            &plan.path,
+            target_provider,
+            &mut writer,
+        )?;
+        writer.flush()?;
+        if source_sha256 != plan.original_sha256 || sha256_file(&plan.path)? != plan.original_sha256
+        {
+            return Err(std::io::Error::other(BULK_SESSION_SOURCE_CHANGED_ERROR));
+        }
+        rewritten_sha256 = Some(writer.sha256_hex());
+        Ok(())
+    });
+    match write_result {
+        Ok(()) => Ok(rewritten_sha256),
+        Err(error) if error_chain_contains(&error, BULK_SESSION_SOURCE_CHANGED_ERROR) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn stream_rewrite_rollout_session_meta_providers<W: Write>(
+    path: &Path,
+    target_provider: &str,
+    writer: &mut W,
+) -> std::io::Result<String> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut hasher = Sha256::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        hasher.update(line.as_bytes());
+        let (record_line, line_ending) = split_line_ending(&line);
+        let mut rewritten = false;
+        if !record_line.trim().is_empty()
+            && let Ok(mut record) = serde_json::from_str::<Value>(record_line)
+            && record.get("type").and_then(Value::as_str) == Some("session_meta")
+            && let Some(payload) = record.get_mut("payload").and_then(Value::as_object_mut)
+            && payload.get("model_provider").and_then(Value::as_str) != Some(target_provider)
+        {
+            payload.insert("model_provider".to_string(), json!(target_provider));
+            serde_json::to_writer(&mut *writer, &record).map_err(std::io::Error::other)?;
+            writer.write_all(line_ending.as_bytes())?;
+            rewritten = true;
+        }
+        if !rewritten {
+            writer.write_all(line.as_bytes())?;
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn restore_bulk_session_rewrites(changes: &[AppliedBulkSessionRewrite]) -> anyhow::Result<()> {
+    let mut restore_errors = Vec::new();
+    for change in changes.iter().rev() {
+        if let Err(error) = restore_bulk_session_rewrite(change) {
+            restore_errors.push(format!("{}: {error:#}", change.plan.path.display()));
+        }
+    }
+    if !restore_errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "failed to restore {} rollout file(s): {}",
+            restore_errors.len(),
+            restore_errors.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+fn restore_bulk_session_rewrite(change: &AppliedBulkSessionRewrite) -> anyhow::Result<()> {
+    if sha256_file(&change.plan.path)? != change.rewritten_sha256 {
+        return Err(anyhow::anyhow!(
+            "rollout changed before rollback: {}",
+            change.plan.path.display()
+        ));
+    }
+
+    codex_plus_core::settings::atomic_write_with(&change.plan.path, |file| {
+        let mut writer = HashingWriter::new(BufWriter::new(file));
+        let source_sha256 = stream_restore_rollout_session_meta_lines(
+            &change.plan.path,
+            &change.plan.original_session_meta_lines,
+            &mut writer,
+        )?;
+        writer.flush()?;
+        if source_sha256 != change.rewritten_sha256
+            || sha256_file(&change.plan.path)? != change.rewritten_sha256
+        {
+            return Err(std::io::Error::other(BULK_SESSION_SOURCE_CHANGED_ERROR));
+        }
+        if writer.sha256_hex() != change.plan.original_sha256 {
+            return Err(std::io::Error::other("rollout rollback hash mismatch"));
+        }
+        Ok(())
+    })?;
+    restore_file_mtime(&change.plan.path, change.plan.original_mtime);
+    Ok(())
+}
+
+fn stream_restore_rollout_session_meta_lines<W: Write>(
+    path: &Path,
+    original_session_meta_lines: &[String],
+    writer: &mut W,
+) -> std::io::Result<String> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut hasher = Sha256::new();
+    let mut originals = original_session_meta_lines.iter();
+    let mut restored_session_meta_lines = 0usize;
+
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        hasher.update(line.as_bytes());
+        let (record_line, line_ending) = split_line_ending(&line);
+        let valid_session_meta = !record_line.trim().is_empty()
+            && serde_json::from_str::<Value>(record_line)
+                .ok()
+                .is_some_and(|record| {
+                    record.get("type").and_then(Value::as_str) == Some("session_meta")
+                        && record.get("payload").and_then(Value::as_object).is_some()
+                });
+        if valid_session_meta {
+            let Some(original_line) = originals.next() else {
+                return Err(std::io::Error::other(
+                    "rollout session metadata count changed before rollback",
+                ));
+            };
+            writer.write_all(original_line.as_bytes())?;
+            writer.write_all(line_ending.as_bytes())?;
+            restored_session_meta_lines += 1;
+        } else {
+            writer.write_all(line.as_bytes())?;
+        }
+    }
+    if originals.next().is_some()
+        || restored_session_meta_lines != original_session_meta_lines.len()
+    {
+        return Err(std::io::Error::other(
+            "rollout session metadata count changed before rollback",
+        ));
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut hasher = Sha256::new();
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn is_locked_anyhow_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(is_locked_io_error)
+        || is_windows_sharing_anyhow_error(error)
+}
+
+#[cfg(windows)]
+fn is_windows_sharing_anyhow_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        message.contains("os error 32")
+            || message.contains("os error 33")
+            || message.contains("0x80070020")
+            || message.contains("0x80070021")
+    })
+}
+
+#[cfg(not(windows))]
+fn is_windows_sharing_anyhow_error(_: &anyhow::Error) -> bool {
+    false
+}
+
+fn error_chain_contains(error: &anyhow::Error, needle: &str) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains(needle))
+}
+
 fn create_session_index_cleanup_backup(
     home: &Path,
-    plan: &SessionIndexPlan,
+    plan: &SessionIndexCleanupPlan,
     removed_entries: usize,
 ) -> Result<PathBuf, SessionIndexCleanupApplyError> {
     let backup_root = home.join("backups_state/provider-sync");
@@ -2495,8 +3085,15 @@ fn create_session_index_cleanup_backup(
         backup_dir = backup_root.join(format!("{}-{suffix}", timestamp_name()));
     }
     fs::create_dir_all(&backup_dir).map_err(|error| cleanup_apply_error(error, None))?;
-    fs::write(backup_dir.join("session_index.jsonl"), &plan.original_bytes)
+    let backup_index_path = backup_dir.join("session_index.jsonl");
+    let copied_sha256 = copy_file_with_sha256(&plan.path, &backup_index_path)
         .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
+    if copied_sha256 != plan.snapshot_sha256 {
+        return Err(cleanup_apply_error(
+            "session_index.jsonl 在写入前再次发生变化；未覆盖 Codex 新内容，请重新预览",
+            Some(backup_dir),
+        ));
+    }
     let metadata = serde_json::to_string_pretty(&json!({
         "version": 1,
         "namespace": "provider-sync-session-index-cleanup",
@@ -2510,6 +3107,60 @@ fn create_session_index_cleanup_backup(
     fs::write(backup_dir.join("metadata.json"), metadata)
         .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
     Ok(backup_dir)
+}
+
+const SESSION_INDEX_SNAPSHOT_CHANGED_ERROR: &str =
+    "session index changed while cleanup was being written";
+
+fn stream_filtered_session_index<W: Write>(
+    path: &Path,
+    expected_snapshot_sha256: &str,
+    selected_ids: &HashSet<String>,
+    writer: &mut W,
+) -> std::io::Result<usize> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut hasher = Sha256::new();
+    let mut removed_entries = 0usize;
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        hasher.update(line.as_bytes());
+        let (record_line, _) = split_line_ending(&line);
+        let remove = known_session_index_candidate(record_line)
+            .is_some_and(|candidate| selected_ids.contains(&candidate.id));
+        if remove {
+            removed_entries += 1;
+        } else {
+            writer.write_all(line.as_bytes())?;
+        }
+    }
+    if format!("{:x}", hasher.finalize()) != expected_snapshot_sha256
+        || sha256_file(path)? != expected_snapshot_sha256
+    {
+        return Err(std::io::Error::other(SESSION_INDEX_SNAPSHOT_CHANGED_ERROR));
+    }
+    Ok(removed_entries)
+}
+
+fn copy_file_with_sha256(source: &Path, destination: &Path) -> std::io::Result<String> {
+    let mut reader = BufReader::new(File::open(source)?);
+    let mut writer = BufWriter::new(File::create(destination)?);
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut hasher = Sha256::new();
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        writer.write_all(&buffer[..read])?;
+    }
+    writer.flush()?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSessionChanges> {
@@ -2539,19 +3190,6 @@ fn apply_session_changes(changes: &[SessionChange]) -> anyhow::Result<AppliedSes
         applied.changes.push(change.clone());
     }
     Ok(applied)
-}
-
-fn restore_session_changes(changes: &[SessionChange]) -> anyhow::Result<()> {
-    for change in changes {
-        if replace_session_text_if_unchanged(
-            &change.path,
-            &change.next_text,
-            &change.original_text,
-        )? {
-            restore_file_mtime(&change.path, change.original_mtime);
-        }
-    }
-    Ok(())
 }
 
 fn replace_session_text_if_unchanged(
@@ -3860,14 +4498,23 @@ fn timestamp_expr(columns: &HashSet<String>, ms_column: &str, seconds_column: &s
     }
 }
 
-fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
-    if !path.exists() {
-        return Ok(Map::new());
-    }
-    Ok(serde_json::from_str::<Value>(&fs::read_to_string(path)?)?
+fn global_state_snapshot(path: &Path) -> anyhow::Result<(Vec<u8>, Map<String, Value>)> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), Map::new()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let state = serde_json::from_slice::<Value>(&bytes)?
         .as_object()
         .cloned()
-        .unwrap_or_default())
+        .unwrap_or_default();
+    Ok((bytes, state))
+}
+
+fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
+    Ok(global_state_snapshot(path)?.1)
 }
 
 fn load_projectless_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
@@ -3967,7 +4614,7 @@ fn count_global_state_updates(path: &Path) -> anyhow::Result<usize> {
 }
 
 fn apply_global_state_update(path: &Path) -> anyhow::Result<usize> {
-    let mut state = load_global_state(path)?;
+    let (original_bytes, mut state) = global_state_snapshot(path)?;
     let next = normalized_global_state(&state);
     let count = next
         .iter()
@@ -3977,13 +4624,32 @@ fn apply_global_state_update(path: &Path) -> anyhow::Result<usize> {
         for (key, value) in next {
             state.insert(key, value);
         }
-        let text = serde_json::to_string_pretty(&Value::Object(state))?;
-        fs::write(path, &text)?;
-        if let Some(parent) = path.parent() {
-            fs::write(parent.join(".codex-global-state.json.bak"), text)?;
-        }
+        write_global_state_if_unchanged(path, &original_bytes, &state)?;
     }
     Ok(count)
+}
+
+const GLOBAL_STATE_SOURCE_CHANGED_ERROR: &str =
+    "global state changed while provider sync was being written";
+
+fn write_global_state_if_unchanged(
+    path: &Path,
+    original_bytes: &[u8],
+    state: &Map<String, Value>,
+) -> anyhow::Result<()> {
+    // 会话删除/撤销也会更新此文件；不得用过期的 provider-sync 快照覆盖新侧边栏条目。
+    if global_state_snapshot(path)?.0 != original_bytes {
+        anyhow::bail!(GLOBAL_STATE_SOURCE_CHANGED_ERROR);
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(state.clone()))?;
+    codex_plus_core::settings::atomic_write(path, text.as_bytes())?;
+    if let Some(parent) = path.parent() {
+        codex_plus_core::settings::atomic_write(
+            &parent.join(".codex-global-state.json.bak"),
+            text.as_bytes(),
+        )?;
+    }
+    Ok(())
 }
 
 fn path_array(value: &Value) -> Vec<String> {
@@ -4095,6 +4761,109 @@ mod non_root_agent_tests {
         assert!(!marks_non_root(r#"{"origin":"subagent"}"#));
         assert!(!marks_non_root(r#"{"sub_agent":"#));
         assert!(!marks_non_root("cli"));
+    }
+}
+
+#[cfg(test)]
+mod rollback_tests {
+    use super::*;
+
+    #[test]
+    fn rollback_hash_mismatch_keeps_rewritten_rollout_intact() {
+        let temp = tempfile::tempdir().unwrap();
+        let rollout = temp.path().join("rollout.jsonl");
+        let original_meta =
+            r#"{"type":"session_meta","payload":{"id":"thread-1","model_provider":"openai"}}"#;
+        let rewritten_meta =
+            r#"{"type":"session_meta","payload":{"id":"thread-1","model_provider":"apigather"}}"#;
+        let incorrect_meta =
+            r#"{"type":"session_meta","payload":{"id":"thread-1","model_provider":"incorrect"}}"#;
+        let event = r#"{"type":"event_msg","payload":{"type":"user_message"}}"#;
+        let original = format!("{original_meta}\n{event}\n");
+        let rewritten = format!("{rewritten_meta}\n{event}\n");
+        fs::write(&rollout, original).unwrap();
+        let original_sha256 = sha256_file(&rollout).unwrap();
+        fs::write(&rollout, &rewritten).unwrap();
+        let rewritten_sha256 = sha256_file(&rollout).unwrap();
+        let change = AppliedBulkSessionRewrite {
+            plan: BulkSessionRewritePlan {
+                path: rollout.clone(),
+                original_sha256,
+                original_mtime: None,
+                original_session_meta_lines: vec![incorrect_meta.to_string()],
+            },
+            rewritten_sha256,
+        };
+
+        let error = restore_bulk_session_rewrite(&change).unwrap_err();
+
+        assert!(error
+            .chain()
+            .any(|cause| cause.to_string().contains("rollout rollback hash mismatch")));
+        assert_eq!(fs::read(&rollout).unwrap(), rewritten.into_bytes());
+    }
+}
+
+#[cfg(test)]
+mod global_state_tests {
+    use super::*;
+
+    #[test]
+    fn provider_sync_global_state_update_preserves_thread_sidebar_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".codex-global-state.json");
+        let original = json!({
+            "electron-saved-workspace-roots": ["\\\\?\\C:\\workspace"],
+            "projectless-thread-ids": ["thread-1"],
+            "thread-workspace-root-hints": {"thread-1": "C:/keep"},
+            "electron-persisted-atom-state": {
+                "thread-client-id-v1:thread-1": {"title": "keep"}
+            }
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+
+        assert_eq!(apply_global_state_update(&path).unwrap(), 1);
+
+        let updated: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(updated["projectless-thread-ids"], original["projectless-thread-ids"]);
+        assert_eq!(
+            updated["thread-workspace-root-hints"],
+            original["thread-workspace-root-hints"]
+        );
+        assert_eq!(
+            updated["electron-persisted-atom-state"],
+            original["electron-persisted-atom-state"]
+        );
+    }
+
+    #[test]
+    fn global_state_write_refuses_to_overwrite_newer_sidebar_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".codex-global-state.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "electron-saved-workspace-roots": ["C:/old"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (original_bytes, mut state) = global_state_snapshot(&path).unwrap();
+        state.insert(
+            "electron-saved-workspace-roots".to_string(),
+            json!(["C:/normalized"]),
+        );
+        let newer_sidebar_state = json!({
+            "projectless-thread-ids": ["thread-1"],
+            "thread-workspace-root-hints": {"thread-1": "C:/keep"}
+        });
+        let newer_sidebar_bytes = serde_json::to_vec(&newer_sidebar_state).unwrap();
+        fs::write(&path, &newer_sidebar_bytes).unwrap();
+
+        let error = write_global_state_if_unchanged(&path, &original_bytes, &state).unwrap_err();
+
+        assert!(error.to_string().contains(GLOBAL_STATE_SOURCE_CHANGED_ERROR));
+        assert_eq!(fs::read(&path).unwrap(), newer_sidebar_bytes);
     }
 }
 
