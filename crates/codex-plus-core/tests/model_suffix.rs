@@ -168,6 +168,52 @@ fn build_catalog_json_preserves_template_responses_lite_behavior() {
 }
 
 #[test]
+fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
+    use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
+
+    assert!(requires_bundled_metadata_catalog("gpt-6-astra"));
+    assert!(!requires_bundled_metadata_catalog("gpt-6-astra-custom"));
+    assert!(model_ui_metadata("gpt-6-astra-custom").is_none());
+    let entries =
+        collect_catalog_entries("gpt-6-astra", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let model = &catalog["models"][0];
+    let metadata = model_ui_metadata("gpt-6-astra").unwrap();
+    let expected = vec!["low", "medium", "high", "xhigh", "max", "ultra"];
+    for (levels, key) in [
+        (&model["supported_reasoning_levels"], "effort"),
+        (&metadata["supportedReasoningEfforts"], "reasoningEffort"),
+    ] {
+        let efforts: Vec<_> = levels
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level[key].as_str().unwrap())
+            .collect();
+        assert_eq!(efforts, expected);
+    }
+    assert_eq!(model["display_name"], "GPT-6-Astra");
+    assert_eq!(metadata["displayName"], model["display_name"]);
+    assert_eq!(model["default_reasoning_level"], "medium");
+    assert_eq!(metadata["defaultReasoningEffort"], "medium");
+    assert_eq!(model["context_window"], 272_000);
+    assert_eq!(model["max_context_window"], 272_000);
+    assert_eq!(model["supports_search_tool"], true);
+    assert_eq!(model["supports_image_detail_original"], true);
+    assert_eq!(model["use_responses_lite"], false);
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(metadata["additionalSpeedTiers"], model["additional_speed_tiers"]);
+    assert_eq!(model["service_tiers"][0]["id"], "priority");
+    assert_eq!(model["service_tiers"][0]["name"], "Fast");
+    assert_eq!(metadata["serviceTiers"], model["service_tiers"]);
+
+    let overridden: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();
+    assert_eq!(overridden["models"][0]["context_window"], 200_000);
+}
+
+#[test]
 fn model_ui_metadata_exposes_fast_service_tier_capability() {
     let metadata = model_ui_metadata("gpt-5.6-sol").expect("Sol metadata should exist");
 
