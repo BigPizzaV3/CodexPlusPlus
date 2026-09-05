@@ -202,8 +202,11 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
     assert_eq!(model["supports_search_tool"], true);
     assert_eq!(model["supports_image_detail_original"], true);
     assert_eq!(model["use_responses_lite"], false);
-    assert_eq!(model["additional_speed_tiers"], serde_json::json!([]));
-    assert_eq!(metadata["serviceTiers"], serde_json::json!([]));
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(metadata["additionalSpeedTiers"], model["additional_speed_tiers"]);
+    assert_eq!(model["service_tiers"][0]["id"], "priority");
+    assert_eq!(model["service_tiers"][0]["name"], "Fast");
+    assert_eq!(metadata["serviceTiers"], model["service_tiers"]);
 
     let overridden: serde_json::Value =
         serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();

@@ -4297,6 +4297,8 @@ base_url = "https://relay.example/v1"
     assert_eq!(astra["slug"], "gpt-6-astra");
     assert_eq!(astra["context_window"], 272_000);
     assert_eq!(astra["use_responses_lite"], false);
+    assert_eq!(astra["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(astra["service_tiers"][0]["id"], "priority");
     let efforts: Vec<_> = astra["supported_reasoning_levels"]
         .as_array()
         .unwrap()
