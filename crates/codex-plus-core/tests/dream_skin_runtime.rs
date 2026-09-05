@@ -1,6 +1,7 @@
 use codex_plus_core::dream_skin_runtime::{
     DreamSkinRuntimeStatus, DreamSkinState, apply_dream_skin_live, macos_arch_name,
-    parse_renderer_verification, windows_app_path_matches_registered_root,
+    parse_renderer_verification, renderer_verification_script,
+    windows_app_path_matches_registered_root,
 };
 use std::path::Path;
 
@@ -120,10 +121,139 @@ fn verification_accepts_target_project_live_contract() {
 }
 
 #[test]
-fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
+fn adopted_runtime_requires_a_visible_composer_on_home_and_thread_routes() {
+    for home_route in [true, false] {
+        for composer_visible in [true, false] {
+            let result = parse_renderer_verification(serde_json::json!({
+                "installed": true,
+                "version": "codex-plus:windows:dream-skin:r24-home-composer-rounded",
+                "stylePresent": true,
+                "chromePresent": false,
+                "decorationSafe": true,
+                "homeRoute": home_route,
+                "homePresent": home_route,
+                "hero": { "visible": home_route },
+                "visibleCardCount": if home_route { 4 } else { 0 },
+                "composer": { "visible": composer_visible },
+                "sidebar": { "visible": true },
+                "documentOverflow": { "x": false, "y": false }
+            }))
+            .unwrap();
+
+            assert_eq!(
+                result.pass, composer_visible,
+                "home_route={home_route}, composer_visible={composer_visible}: {result:?}"
+            );
+            let composer_check = result
+                .checks
+                .iter()
+                .find(|check| check.id == "composer")
+                .expect("composer verification must not be skipped");
+            assert_eq!(
+                composer_check.level.as_str(),
+                if composer_visible { "pass" } else { "fail" }
+            );
+        }
+    }
+}
+
+#[test]
+fn bundled_skin_runtimes_cover_the_current_selector_contract() {
     for relative_path in [
         "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
         "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative_path);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"));
+        assert!(
+            source.contains("codex-dream-skin-selectors/1"),
+            "missing selector contract in {relative_path}"
+        );
+        assert!(
+            source.contains("_MainContentSurface_"),
+            "missing modular main surface in {relative_path}"
+        );
+        assert!(
+            source.contains("_ComposerLayoutRoot_"),
+            "missing modern composer root in {relative_path}"
+        );
+        assert!(
+            source.contains("data-ds-part"),
+            "missing public theme part bridge in {relative_path}"
+        );
+    }
+
+    for relative_path in [
+        "assets/inject/upstream/dream-skin/windows/dream-skin.css",
+        "assets/inject/upstream/dream-skin/macos/dream-skin.css",
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative_path);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {relative_path}: {error}"));
+        assert!(
+            source.contains("_MainContentTopFade_"),
+            "missing modular top fade in {relative_path}"
+        );
+        assert!(
+            source.contains("_ComposerLayoutBody_"),
+            "missing modern composer body in {relative_path}"
+        );
+        assert!(
+            source.contains("data-markdown-table=\"true\""),
+            "missing modern markdown table contract in {relative_path}"
+        );
+    }
+}
+
+#[test]
+fn verification_accepts_modern_adopted_runtime_without_decorative_chrome() {
+    let result = parse_renderer_verification(serde_json::json!({
+        "installed": true,
+        "version": "codex-plus:windows:dream-skin:r24-home-composer-rounded",
+        "stylePresent": true,
+        "chromePresent": false,
+        "chromePointerEvents": null,
+        "decorationSafe": true,
+        "homeRoute": false,
+        "homePresent": false,
+        "visibleCardCount": 0,
+        "projectButton": null,
+        "composer": { "visible": true },
+        "sidebar": { "visible": true },
+        "documentOverflow": { "x": false, "y": false }
+    }))
+    .unwrap();
+
+    assert_eq!(result.state, DreamSkinState::Pass);
+    assert!(result.pass);
+    assert!(
+        result
+            .checks
+            .iter()
+            .any(|check| check.id == "chrome" && check.level.as_str() == "pass")
+    );
+}
+
+#[test]
+fn verifier_queries_the_modern_dream_skin_contract() {
+    let script = renderer_verification_script();
+
+    assert!(script.contains("data-dream-skin"));
+    assert!(script.contains("data-ds-part=\"home\""));
+    assert!(script.contains("data-ds-part=\"composer\""));
+    assert!(script.contains("_ComposerLayoutRoot_"));
+    assert!(script.contains("adoptedStyleSheets"));
+    assert!(script.contains("decorationSafe"));
+}
+
+#[test]
+fn other_bundled_skin_runtimes_keep_their_existing_layout_contract() {
+    for relative_path in [
         "assets/inject/upstream/cidala-tiger/windows/renderer-inject.js",
         "assets/inject/upstream/cidala-tiger/macos/renderer-inject.js",
         "assets/inject/upstream/snow-skin/renderer-inject.js",
@@ -144,8 +274,6 @@ fn bundled_skin_runtimes_gate_structural_home_layout_on_classic_chrome() {
     }
 
     for relative_path in [
-        "assets/inject/upstream/dream-skin/windows/dream-skin.css",
-        "assets/inject/upstream/dream-skin/macos/dream-skin.css",
         "assets/inject/upstream/cidala-tiger/windows/dream-skin.css",
         "assets/inject/upstream/cidala-tiger/macos/dream-skin.css",
         "assets/inject/upstream/snow-skin/dream-skin.css",
