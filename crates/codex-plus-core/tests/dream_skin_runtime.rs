@@ -121,6 +121,43 @@ fn verification_accepts_target_project_live_contract() {
 }
 
 #[test]
+fn adopted_runtime_requires_a_visible_composer_on_home_and_thread_routes() {
+    for home_route in [true, false] {
+        for composer_visible in [true, false] {
+            let result = parse_renderer_verification(serde_json::json!({
+                "installed": true,
+                "version": "codex-plus:windows:dream-skin:r24-home-composer-rounded",
+                "stylePresent": true,
+                "chromePresent": false,
+                "decorationSafe": true,
+                "homeRoute": home_route,
+                "homePresent": home_route,
+                "hero": { "visible": home_route },
+                "visibleCardCount": if home_route { 4 } else { 0 },
+                "composer": { "visible": composer_visible },
+                "sidebar": { "visible": true },
+                "documentOverflow": { "x": false, "y": false }
+            }))
+            .unwrap();
+
+            assert_eq!(
+                result.pass, composer_visible,
+                "home_route={home_route}, composer_visible={composer_visible}: {result:?}"
+            );
+            let composer_check = result
+                .checks
+                .iter()
+                .find(|check| check.id == "composer")
+                .expect("composer verification must not be skipped");
+            assert_eq!(
+                composer_check.level.as_str(),
+                if composer_visible { "pass" } else { "fail" }
+            );
+        }
+    }
+}
+
+#[test]
 fn bundled_skin_runtimes_cover_the_current_selector_contract() {
     for relative_path in [
         "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
