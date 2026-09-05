@@ -4498,14 +4498,23 @@ fn timestamp_expr(columns: &HashSet<String>, ms_column: &str, seconds_column: &s
     }
 }
 
-fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
-    if !path.exists() {
-        return Ok(Map::new());
-    }
-    Ok(serde_json::from_str::<Value>(&fs::read_to_string(path)?)?
+fn global_state_snapshot(path: &Path) -> anyhow::Result<(Vec<u8>, Map<String, Value>)> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), Map::new()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let state = serde_json::from_slice::<Value>(&bytes)?
         .as_object()
         .cloned()
-        .unwrap_or_default())
+        .unwrap_or_default();
+    Ok((bytes, state))
+}
+
+fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
+    Ok(global_state_snapshot(path)?.1)
 }
 
 fn load_projectless_thread_ids(path: &Path) -> anyhow::Result<HashSet<String>> {
@@ -4605,7 +4614,7 @@ fn count_global_state_updates(path: &Path) -> anyhow::Result<usize> {
 }
 
 fn apply_global_state_update(path: &Path) -> anyhow::Result<usize> {
-    let mut state = load_global_state(path)?;
+    let (original_bytes, mut state) = global_state_snapshot(path)?;
     let next = normalized_global_state(&state);
     let count = next
         .iter()
@@ -4615,13 +4624,32 @@ fn apply_global_state_update(path: &Path) -> anyhow::Result<usize> {
         for (key, value) in next {
             state.insert(key, value);
         }
-        let text = serde_json::to_string_pretty(&Value::Object(state))?;
-        fs::write(path, &text)?;
-        if let Some(parent) = path.parent() {
-            fs::write(parent.join(".codex-global-state.json.bak"), text)?;
-        }
+        write_global_state_if_unchanged(path, &original_bytes, &state)?;
     }
     Ok(count)
+}
+
+const GLOBAL_STATE_SOURCE_CHANGED_ERROR: &str =
+    "global state changed while provider sync was being written";
+
+fn write_global_state_if_unchanged(
+    path: &Path,
+    original_bytes: &[u8],
+    state: &Map<String, Value>,
+) -> anyhow::Result<()> {
+    // 会话删除/撤销也会更新此文件；不得用过期的 provider-sync 快照覆盖新侧边栏条目。
+    if global_state_snapshot(path)?.0 != original_bytes {
+        anyhow::bail!(GLOBAL_STATE_SOURCE_CHANGED_ERROR);
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(state.clone()))?;
+    codex_plus_core::settings::atomic_write(path, text.as_bytes())?;
+    if let Some(parent) = path.parent() {
+        codex_plus_core::settings::atomic_write(
+            &parent.join(".codex-global-state.json.bak"),
+            text.as_bytes(),
+        )?;
+    }
+    Ok(())
 }
 
 fn path_array(value: &Value) -> Vec<String> {
@@ -4773,6 +4801,69 @@ mod rollback_tests {
             .chain()
             .any(|cause| cause.to_string().contains("rollout rollback hash mismatch")));
         assert_eq!(fs::read(&rollout).unwrap(), rewritten.into_bytes());
+    }
+}
+
+#[cfg(test)]
+mod global_state_tests {
+    use super::*;
+
+    #[test]
+    fn provider_sync_global_state_update_preserves_thread_sidebar_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".codex-global-state.json");
+        let original = json!({
+            "electron-saved-workspace-roots": ["\\\\?\\C:\\workspace"],
+            "projectless-thread-ids": ["thread-1"],
+            "thread-workspace-root-hints": {"thread-1": "C:/keep"},
+            "electron-persisted-atom-state": {
+                "thread-client-id-v1:thread-1": {"title": "keep"}
+            }
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+
+        assert_eq!(apply_global_state_update(&path).unwrap(), 1);
+
+        let updated: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(updated["projectless-thread-ids"], original["projectless-thread-ids"]);
+        assert_eq!(
+            updated["thread-workspace-root-hints"],
+            original["thread-workspace-root-hints"]
+        );
+        assert_eq!(
+            updated["electron-persisted-atom-state"],
+            original["electron-persisted-atom-state"]
+        );
+    }
+
+    #[test]
+    fn global_state_write_refuses_to_overwrite_newer_sidebar_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".codex-global-state.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "electron-saved-workspace-roots": ["C:/old"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (original_bytes, mut state) = global_state_snapshot(&path).unwrap();
+        state.insert(
+            "electron-saved-workspace-roots".to_string(),
+            json!(["C:/normalized"]),
+        );
+        let newer_sidebar_state = json!({
+            "projectless-thread-ids": ["thread-1"],
+            "thread-workspace-root-hints": {"thread-1": "C:/keep"}
+        });
+        let newer_sidebar_bytes = serde_json::to_vec(&newer_sidebar_state).unwrap();
+        fs::write(&path, &newer_sidebar_bytes).unwrap();
+
+        let error = write_global_state_if_unchanged(&path, &original_bytes, &state).unwrap_err();
+
+        assert!(error.to_string().contains(GLOBAL_STATE_SOURCE_CHANGED_ERROR));
+        assert_eq!(fs::read(&path).unwrap(), newer_sidebar_bytes);
     }
 }
 
