@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "slug": "gpt-6-astra",
+      "display_name": "GPT-6-Astra",
+      "description": "GPT-6 Astra",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
+        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
+        { "effort": "ultra", "description": "Ultra reasoning depth for the most demanding problems" }
+      ],
+      "context_window": 272000,
+      "max_context_window": 272000,
+      "effective_context_window_percent": 100,
+      "additional_speed_tiers": [],
+      "service_tiers": [],
+      "supports_reasoning_summaries": true,
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "supports_image_detail_original": true,
+      "input_modalities": ["text", "image"],
+      "supports_search_tool": true,
+      "use_responses_lite": false
+    }
+  ]
+}
