@@ -461,6 +461,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
+ "toml 0.8.2",
  "uuid",
 ]
 
