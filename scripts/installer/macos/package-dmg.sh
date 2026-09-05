@@ -212,7 +212,23 @@ cleanup_dmg_work_dir() {
 
 trap cleanup_dmg_work_dir EXIT
 
-hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDRW "$DMG_WORK_PATH"
+DMG_CREATED=false
+for attempt in 1 2 3 4 5; do
+  if hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDRW "$DMG_WORK_PATH"; then
+    DMG_CREATED=true
+    break
+  fi
+
+  rm -f "$DMG_WORK_PATH"
+  if [ "$attempt" -lt 5 ]; then
+    sleep "$((attempt * 2))"
+  fi
+done
+
+if [ "$DMG_CREATED" != true ]; then
+  echo "error: failed to create writable DMG after 5 attempts" >&2
+  exit 1
+fi
 
 MOUNT_OUTPUT="$(hdiutil attach "$DMG_WORK_PATH" -readwrite -noverify -noautoopen -nobrowse)"
 MOUNT_DEVICE="$(printf '%s\n' "$MOUNT_OUTPUT" | awk '/^\/dev\/disk/ {print $1; exit}')"
