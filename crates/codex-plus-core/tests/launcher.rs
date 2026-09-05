@@ -1249,9 +1249,9 @@ async fn a_permanently_busy_protocol_proxy_port_reports_what_the_user_should_do(
     );
 }
 
-/// 普通 helper 端口在上面已经挑过空闲的了，占用说明是别的问题，不该白等六秒。
+/// macOS 允许端口释放竞态的六秒重试；其他平台的浮动端口仍立即失败。
 #[tokio::test]
-async fn a_busy_floating_helper_port_fails_immediately_without_waiting() {
+async fn a_busy_floating_helper_port_respects_the_platform_retry_budget() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -1279,7 +1279,14 @@ async fn a_busy_floating_helper_port_fails_immediately_without_waiting() {
             .iter()
             .filter(|event| event.starts_with("start-helper-busy:"))
             .count(),
-        1
+        if cfg!(target_os = "macos") { 31 } else { 1 }
+    );
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("launch:"))
     );
 }
 
