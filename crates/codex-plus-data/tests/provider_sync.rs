@@ -4,7 +4,7 @@ use codex_plus_data::{
     remote_control_session_recovery_candidate_exists, run_provider_sync,
     run_provider_sync_with_target,
     run_remote_control_session_catalog_recovery_for_thread_with_target,
-    run_remote_control_session_finalization_for_thread_with_target,
+    run_remote_control_session_finalization_for_thread_with_target, validate_provider_sync_target,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -54,6 +54,29 @@ fn write_rollout(path: &Path, provider: &str, thread_id: &str, cwd: &str) {
     });
     let event = json!({"type": "event_msg", "payload": {"type": "user_message"}});
     fs::write(path, format!("{first}\n{event}\n")).unwrap();
+}
+
+fn write_provider_config(home: &Path, current_provider: &str) {
+    write_provider_config_with_tables(home, current_provider, &[]);
+}
+
+fn write_provider_config_with_tables(
+    home: &Path,
+    current_provider: &str,
+    additional_providers: &[&str],
+) {
+    let mut providers = vec![current_provider];
+    providers.extend_from_slice(additional_providers);
+    providers.sort_unstable();
+    providers.dedup();
+
+    let mut config = format!("model_provider = {current_provider:?}\n");
+    for provider in providers {
+        config.push_str(&format!(
+            "\n[model_providers.{provider:?}]\nname = {provider:?}\n"
+        ));
+    }
+    fs::write(home.join("config.toml"), config).unwrap();
 }
 
 fn write_catalog_rollout(path: &Path) {
@@ -337,7 +360,7 @@ fn provider_sync_targets_default_to_codex_home_env() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("custom-codex-home");
     fs::create_dir_all(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
     let _guard = CodexHomeEnvGuard::set(&home);
 
     let targets = load_provider_sync_targets(None);
@@ -407,7 +430,16 @@ name = "apigather"
         .find(|target| target.id == "custom")
         .unwrap();
     assert!(custom.is_current_provider);
+    assert!(custom.is_resolvable);
+    assert!(custom.unavailable_reason.is_none());
     assert!(custom.sources.contains(&ProviderSyncTargetSource::Config));
+    let apigather = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "apigather")
+        .unwrap();
+    assert!(apigather.is_resolvable);
+    assert!(apigather.unavailable_reason.is_none());
     let openai = targets
         .targets
         .iter()
@@ -416,12 +448,208 @@ name = "apigather"
     assert!(openai.sources.contains(&ProviderSyncTargetSource::Config));
     assert!(openai.sources.contains(&ProviderSyncTargetSource::Rollout));
     assert!(openai.sources.contains(&ProviderSyncTargetSource::Sqlite));
+    assert!(openai.is_resolvable);
+    assert!(openai.unavailable_reason.is_none());
     let legacy = targets
         .targets
         .iter()
         .find(|target| target.id == "legacy-provider")
         .unwrap();
     assert_eq!(legacy.sources, vec![ProviderSyncTargetSource::Rollout]);
+    assert!(!legacy.is_resolvable);
+    assert!(legacy.unavailable_reason.is_some());
+    let sqlite_only = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "sqlite-provider")
+        .unwrap();
+    assert!(!sqlite_only.is_resolvable);
+    assert!(sqlite_only.unavailable_reason.is_some());
+}
+
+#[test]
+fn provider_sync_resolves_exact_generic_provider_ids_case_sensitively() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    write_provider_config_with_tables(
+        &home,
+        "relay-alpha",
+        &["relay-beta", "relay.alpha", "relay/prod", "中转甲"],
+    );
+    write_rollout(
+        &home.join("sessions/rollout-history-only.jsonl"),
+        "RELAY-ALPHA",
+        "thread-history",
+        "C:/workspace",
+    );
+
+    assert_eq!(
+        validate_provider_sync_target(Some(&home), None).unwrap(),
+        "relay-alpha"
+    );
+    assert_eq!(
+        validate_provider_sync_target(Some(&home), Some("relay-beta")).unwrap(),
+        "relay-beta"
+    );
+    assert_eq!(
+        validate_provider_sync_target(Some(&home), Some("relay.alpha")).unwrap(),
+        "relay.alpha"
+    );
+    assert!(validate_provider_sync_target(Some(&home), Some("RELAY-ALPHA")).is_err());
+
+    let targets = load_provider_sync_targets(Some(&home));
+    let current = targets.targets.first().unwrap();
+    assert_eq!(current.id, "relay-alpha");
+    assert!(current.is_current_provider);
+    assert!(current.is_resolvable);
+    for provider in ["relay-beta", "relay.alpha", "relay/prod", "中转甲"] {
+        assert_eq!(
+            validate_provider_sync_target(Some(&home), Some(provider)).unwrap(),
+            provider
+        );
+        let target = targets
+            .targets
+            .iter()
+            .find(|target| target.id == provider)
+            .unwrap();
+        assert!(target.is_resolvable, "{provider}");
+        assert!(target.unavailable_reason.is_none(), "{provider}");
+    }
+    let history_only = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "RELAY-ALPHA")
+        .unwrap();
+    assert!(!history_only.is_resolvable);
+    assert!(history_only.unavailable_reason.is_some());
+}
+
+#[test]
+fn provider_sync_requires_an_exact_live_table_before_writing_history() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "model_provider = \"relay-alpha\"\n\n[model_providers]\nrelay-beta = \"not-a-table\"\n",
+    )
+    .unwrap();
+    let rollout = home.join("sessions/rollout-exact-target.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let original_rollout = fs::read_to_string(&rollout).unwrap();
+
+    assert!(validate_provider_sync_target(Some(&home), None).is_err());
+    assert!(validate_provider_sync_target(Some(&home), Some("relay-beta")).is_err());
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(result.message.contains("not resolvable"));
+    assert!(result.backup_dir.is_none());
+    assert_eq!(fs::read_to_string(rollout).unwrap(), original_rollout);
+    assert!(!home.join("backups_state/provider-sync").exists());
+}
+
+#[test]
+fn provider_sync_treats_openai_as_builtin_in_a_valid_live_config() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("config.toml"), "# use the built-in provider\n").unwrap();
+
+    assert_eq!(
+        validate_provider_sync_target(Some(&home), None).unwrap(),
+        "openai"
+    );
+    let targets = load_provider_sync_targets(Some(&home));
+    let openai = targets
+        .targets
+        .iter()
+        .find(|target| target.id == "openai")
+        .unwrap();
+    assert!(openai.is_current_provider);
+    assert!(openai.is_resolvable);
+}
+
+#[test]
+fn provider_sync_follows_external_switches_without_changing_config_or_auth() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    let rollout = home.join("sessions/rollout-switch.jsonl");
+    write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
+    let original_body = fs::read_to_string(&rollout)
+        .unwrap()
+        .split_once('\n')
+        .unwrap()
+        .1
+        .to_string();
+    let db_path = home.join("state_5.sqlite");
+    create_state_db(&db_path);
+    let auth = b"{\"OPENAI_API_KEY\":\"fixture-only\"}\n";
+    fs::write(home.join("auth.json"), auth).unwrap();
+
+    for provider in ["relay-alpha", "relay-beta", "relay-alpha", "openai"] {
+        // Model an external switcher replacing config before repair starts.
+        if provider == "openai" {
+            fs::write(home.join("config.toml"), "# built-in provider\n").unwrap();
+        } else {
+            write_provider_config(&home, provider);
+        }
+        let config = fs::read(home.join("config.toml")).unwrap();
+        let result = run_provider_sync(Some(&home));
+        assert_eq!(
+            result.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            result.message
+        );
+        assert_eq!(result.target_provider, provider);
+        assert_eq!(fs::read(home.join("config.toml")).unwrap(), config);
+        assert_eq!(fs::read(home.join("auth.json")).unwrap(), auth);
+        let text = fs::read_to_string(&rollout).unwrap();
+        let (meta, body) = text.split_once('\n').unwrap();
+        assert_eq!(body, original_body);
+        let meta: serde_json::Value = serde_json::from_str(meta).unwrap();
+        assert_eq!(meta["payload"]["model_provider"], provider);
+        let db = Connection::open(&db_path).unwrap();
+        let actual: String = db
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actual, provider);
+    }
+}
+
+#[test]
+fn provider_sync_rejects_missing_or_malformed_config_without_writes_or_secret_errors() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    let rollout = home.join("sessions/rollout-invalid-config.jsonl");
+    write_rollout(&rollout, "relay-alpha", "thread-1", "C:/workspace");
+    let original = fs::read(&rollout).unwrap();
+    let missing = run_provider_sync(Some(&home));
+    assert_eq!(missing.status, ProviderSyncStatus::Skipped);
+    assert_eq!(load_provider_sync_targets(Some(&home)).current_provider, "");
+    let config = "model_provider = \"relay-alpha\"\nsecret = \"fixture-private-token\"\nbroken = [";
+    fs::write(home.join("config.toml"), config).unwrap();
+    let result = run_provider_sync(Some(&home));
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(!result.message.contains("fixture-private-token"));
+    assert!(
+        load_provider_sync_targets(Some(&home))
+            .targets
+            .iter()
+            .all(|target| !target.is_resolvable)
+    );
+    assert_eq!(fs::read(&rollout).unwrap(), original);
+    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), config);
+    assert!(!home.join("backups_state/provider-sync").exists());
+    assert!(!home.join("tmp/provider-sync.lock").exists());
 }
 
 #[test]
@@ -477,7 +705,7 @@ fn provider_sync_rewrites_all_session_meta_model_providers() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/2026/rollout-multi-meta.jsonl");
     write_rollout_with_providers(
         &rollout,
@@ -513,7 +741,7 @@ fn provider_sync_ignores_spawned_subagent_threads() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let parent_rollout = home.join("sessions/2026/rollout-parent.jsonl");
     let child_rollout = home.join("sessions/2026/rollout-child.jsonl");
     write_rollout(&parent_rollout, "openai", "parent", "C:/workspace");
@@ -579,7 +807,7 @@ fn provider_sync_preserves_marked_subagents_and_explicit_user_priority() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
 
     let structured_rollout = home.join("sessions/2026/rollout-structured-child.jsonl");
     let rollout_child = home.join("sessions/2026/rollout-source-child.jsonl");
@@ -713,7 +941,7 @@ fn provider_sync_target_discovery_reads_all_session_meta_providers() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
     write_rollout_with_providers(
         &home.join("sessions/2026/rollout-multi-meta.jsonl"),
         &["openai", "ccx", "CodexPlusPlus"],
@@ -738,7 +966,7 @@ fn provider_sync_updates_rollout_sqlite_visibility_and_creates_backup() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/2026/rollout-abc.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     create_state_db(&home.join("state_5.sqlite"));
@@ -790,7 +1018,7 @@ fn provider_sync_updates_new_codex_sqlite_directory_db() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/2026/rollout-abc.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     let db_path = sqlite_dir.join("codex-dev.db");
@@ -828,7 +1056,7 @@ fn provider_sync_updates_and_discovers_local_thread_catalog() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let db_path = sqlite_dir.join("codex-dev.db");
     create_local_thread_catalog_db(&db_path, &[("thread-1", "openai"), ("thread-2", "custom")]);
 
@@ -865,7 +1093,7 @@ fn provider_sync_repairs_missing_local_thread_catalog_rows_from_threads() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let state_db = home.join("state_5.sqlite");
     let db = Connection::open(&state_db).unwrap();
     db.execute(
@@ -952,7 +1180,7 @@ fn provider_sync_audits_catalog_only_sessions_without_claiming_recovery() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
 
     let state_db = home.join("state_5.sqlite");
     create_state_db_with_providers(&state_db, &[("canonical", "openai", 0)]);
@@ -1009,7 +1237,7 @@ fn provider_sync_continues_when_repair_audit_backup_root_is_not_directory() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     create_state_db_with_providers(&home.join("state_5.sqlite"), &[]);
     create_local_thread_catalog_db(
         &sqlite_dir.join("codex-dev.db"),
@@ -1041,7 +1269,7 @@ fn provider_sync_repair_audit_skips_cyclic_backup_symlinks() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     create_state_db_with_providers(&home.join("state_5.sqlite"), &[]);
     create_local_thread_catalog_db(
         &sqlite_dir.join("codex-dev.db"),
@@ -1065,7 +1293,7 @@ fn provider_sync_catalogs_user_threads_but_skips_subagents() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
 
     let state_db = home.join("state_5.sqlite");
     let db = Connection::open(&state_db).unwrap();
@@ -1235,7 +1463,7 @@ fn provider_sync_prunes_existing_local_subagent_catalog_rows() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
 
     let state_db = home.join("state_5.sqlite");
     let db = Connection::open(&state_db).unwrap();
@@ -1414,7 +1642,7 @@ fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
 
     let rollout_dir = home.join("sessions");
     let state_db = home.join("state_5.sqlite");
@@ -1620,7 +1848,7 @@ fn remote_control_catalog_recovery_for_thread_does_not_touch_other_candidates() 
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
 
     let state_db = home.join("state_5.sqlite");
     let db = Connection::open(&state_db).unwrap();
@@ -1704,7 +1932,7 @@ fn remote_control_catalog_recovery_does_not_insert_subagent() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
 
     let state_db = home.join("state_5.sqlite");
     let db = Connection::open(&state_db).unwrap();
@@ -1797,7 +2025,7 @@ fn remote_control_catalog_recovery_for_thread_only_repairs_the_local_catalog_hos
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
     let rollout = home.join("sessions/rollout-mobile.jsonl");
     write_rollout(&rollout, "openai", "mobile", "C:/workspace");
     create_state_db_with_providers(&home.join("state_5.sqlite"), &[("mobile", "openai", 0)]);
@@ -2072,7 +2300,7 @@ fn remote_control_finalization_defers_when_rollout_changes_after_collection() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
     let rollout = home.join("sessions/rollout-mobile.jsonl");
     write_rollout(&rollout, "openai", "mobile", "C:/workspace");
     let state_db = home.join("state_5.sqlite");
@@ -2158,7 +2386,7 @@ fn remote_control_finalization_retries_after_catalog_only_partial_commit() {
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
     let rollout = home.join("sessions/rollout-mobile.jsonl");
     write_rollout(&rollout, "openai", "mobile", "C:/workspace");
     let state_db = home.join("state_5.sqlite");
@@ -2236,7 +2464,7 @@ fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() 
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     write_rollout(
         &home.join("sessions/rollout-backup.jsonl"),
         "openai",
@@ -2272,7 +2500,8 @@ fn provider_sync_explicit_target_overrides_config_without_switching_config() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config_with_tables(&home, "apigather", &["custom"]);
+    let original_config = fs::read_to_string(home.join("config.toml")).unwrap();
     let rollout = home.join("sessions/2026/rollout-target.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     create_state_db(&home.join("state_5.sqlite"));
@@ -2283,7 +2512,7 @@ fn provider_sync_explicit_target_overrides_config_without_switching_config() {
     assert_eq!(result.target_provider, "custom");
     assert_eq!(
         fs::read_to_string(home.join("config.toml")).unwrap(),
-        "model_provider = \"apigather\"\n"
+        original_config
     );
     let first: serde_json::Value = serde_json::from_str(
         fs::read_to_string(&rollout)
@@ -2310,7 +2539,7 @@ fn provider_sync_rejects_invalid_explicit_target_before_writes() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/rollout-invalid-target.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     let original = fs::read_to_string(&rollout).unwrap();
@@ -2328,7 +2557,7 @@ fn provider_sync_repairs_sqlite_when_rollout_provider_matches_and_normalizes_pat
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     write_rollout(
         &home.join("archived_sessions/rollout-current.jsonl"),
         "apigather",
@@ -2383,7 +2612,7 @@ fn provider_sync_does_not_restore_cwd_for_projectless_threads() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     write_rollout(
         &home.join("sessions/rollout-projectless.jsonl"),
         "apigather",
@@ -2418,7 +2647,7 @@ fn provider_sync_normalizes_open_in_target_preferences_per_path() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     write_rollout(
         &home.join("sessions/rollout-current.jsonl"),
         "apigather",
@@ -2461,7 +2690,7 @@ fn provider_sync_restores_rollout_first_line_when_later_step_fails() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/rollout-needs-rewrite.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     let original_first_line = fs::read_to_string(&rollout)
@@ -2506,7 +2735,7 @@ fn provider_sync_rolls_back_sqlite_provider_update_when_later_update_fails() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     write_rollout(
         &home.join("sessions/rollout-current.jsonl"),
         "apigather",
@@ -2556,7 +2785,7 @@ fn provider_sync_restores_global_state_when_later_step_fails() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     write_rollout(
         &home.join("sessions/rollout-current.jsonl"),
         "apigather",
@@ -2594,7 +2823,7 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
     fs::create_dir_all(home.join("tmp/provider-sync.lock")).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let result = run_provider_sync(Some(&home));
     assert_eq!(result.status, ProviderSyncStatus::Skipped);
     assert!(result.message.to_lowercase().contains("lock"));
@@ -2632,7 +2861,7 @@ fn provider_sync_recovers_lock_owned_by_dead_process() {
     let home = tmp.path().join(".codex");
     let lock_dir = home.join("tmp/provider-sync.lock");
     fs::create_dir_all(&lock_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     fs::write(
         lock_dir.join("owner.json"),
         json!({"pid": u32::MAX, "startedAt": 1234}).to_string(),
@@ -2660,7 +2889,7 @@ fn provider_sync_preserves_lock_owned_by_live_process() {
     let home = tmp.path().join(".codex");
     let lock_dir = home.join("tmp/provider-sync.lock");
     fs::create_dir_all(&lock_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     fs::write(
         lock_dir.join("owner.json"),
         json!({"pid": std::process::id(), "startedAt": 1234}).to_string(),
@@ -2680,7 +2909,7 @@ fn provider_sync_preserves_lock_with_malformed_owner() {
     let home = tmp.path().join(".codex");
     let lock_dir = home.join("tmp/provider-sync.lock");
     fs::create_dir_all(&lock_dir).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     fs::write(lock_dir.join("owner.json"), "{not-json").unwrap();
 
     let result = run_provider_sync(Some(&home));
@@ -2695,7 +2924,7 @@ fn provider_sync_preserves_rollout_mtime() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/2026/rollout-mtime.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
 
@@ -2728,7 +2957,7 @@ fn provider_sync_never_prunes_unconfirmed_or_delayed_index_entries() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+    write_provider_config(&home, "custom");
     let stale_id = "019f4e36-490e-7ae0-8e78-a8b3ab33a428";
     let original_index = format!("{}\n", session_index_line(stale_id, "可能仍在云端同步"));
     fs::write(home.join("session_index.jsonl"), &original_index).unwrap();

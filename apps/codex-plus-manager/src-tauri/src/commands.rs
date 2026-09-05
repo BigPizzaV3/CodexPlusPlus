@@ -2944,7 +2944,7 @@ pub async fn load_provider_sync_targets() -> CommandResult<Value> {
                     }
                 })
                 .collect::<Vec<_>>();
-            merge_manual_provider_sync_targets(&mut targets, &manual, &settings);
+            merge_manual_provider_sync_targets(&mut targets, &manual, &settings, None);
             ok(
                 "Provider 同步目标已加载。",
                 serde_json::to_value(targets).unwrap_or_else(|_| json!({})),
@@ -2958,6 +2958,7 @@ fn merge_manual_provider_sync_targets(
     targets: &mut codex_plus_data::ProviderSyncTargetList,
     manual: &[String],
     settings: &BackendSettings,
+    codex_home: Option<&Path>,
 ) {
     for id in manual {
         if let Some(existing) = targets.targets.iter_mut().find(|target| target.id == *id) {
@@ -2973,6 +2974,11 @@ fn merge_manual_provider_sync_targets(
             existing.is_manual = settings.provider_sync_manual_providers.contains(id);
             existing.is_saved = settings.provider_sync_saved_providers.contains(id);
         } else {
+            let (is_resolvable, unavailable_reason) =
+                match codex_plus_data::validate_provider_sync_target(codex_home, Some(id)) {
+                    Ok(_) => (true, None),
+                    Err(reason) => (false, Some(reason)),
+                };
             targets
                 .targets
                 .push(codex_plus_data::ProviderSyncTargetOption {
@@ -2981,6 +2987,8 @@ fn merge_manual_provider_sync_targets(
                     is_current_provider: *id == targets.current_provider,
                     is_manual: settings.provider_sync_manual_providers.contains(id),
                     is_saved: settings.provider_sync_saved_providers.contains(id),
+                    is_resolvable,
+                    unavailable_reason,
                 });
         }
     }
@@ -3056,6 +3064,21 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let target_for_validation = target_provider.clone();
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::validate_provider_sync_target(None, target_for_validation.as_deref())
+    })
+    .await
+    {
+        // Keep None as "use current" so the sync reads the live selection again.
+        Ok(Ok(_)) => {}
+        Ok(Err(message)) => return provider_sync_preflight_failure(&message),
+        Err(error) => {
+            return provider_sync_preflight_failure(&format!(
+                "provider target validation task failed: {error}"
+            ));
+        }
+    };
     let target_for_settings = target_provider.clone();
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
@@ -3098,6 +3121,17 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
             failed(&format!("供应商同步失败：{error}"), json!({}))
         }
     }
+}
+
+fn provider_sync_preflight_failure(message: &str) -> CommandResult<Value> {
+    failed(
+        &format!("供应商同步未执行：{message}"),
+        json!({
+            "syncStatus": "skipped",
+            "targetProvider": "",
+            "syncMessage": message,
+        }),
+    )
 }
 
 fn is_success_sync_status(status: &codex_plus_data::ProviderSyncStatus) -> bool {
@@ -6225,6 +6259,55 @@ mod tests {
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("Provider sync lock exists"));
         assert_eq!(result.payload["syncStatus"], "skipped");
+    }
+
+    #[test]
+    fn provider_sync_preflight_failure_is_structured_as_skipped() {
+        let result = provider_sync_preflight_failure("target is not resolvable");
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.payload["syncStatus"], "skipped");
+        assert_eq!(result.payload["targetProvider"], "");
+        assert_eq!(result.payload["syncMessage"], "target is not resolvable");
+    }
+
+    #[test]
+    fn manual_provider_sync_targets_keep_unresolvable_history_visible() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            r#"model_provider = "relay-live"
+
+[model_providers.relay-live]
+base_url = "https://example.invalid/v1"
+"#,
+        )
+        .unwrap();
+        let mut settings = BackendSettings::default();
+        settings.provider_sync_manual_providers =
+            vec!["relay-live".to_string(), "relay-history".to_string()];
+        let manual = settings.provider_sync_manual_providers.clone();
+        let mut targets = codex_plus_data::ProviderSyncTargetList {
+            current_provider: "relay-live".to_string(),
+            targets: Vec::new(),
+        };
+
+        merge_manual_provider_sync_targets(&mut targets, &manual, &settings, Some(temp.path()));
+
+        let live = targets
+            .targets
+            .iter()
+            .find(|target| target.id == "relay-live")
+            .unwrap();
+        assert!(live.is_resolvable);
+        assert!(live.unavailable_reason.is_none());
+        let history = targets
+            .targets
+            .iter()
+            .find(|target| target.id == "relay-history")
+            .unwrap();
+        assert!(!history.is_resolvable);
+        assert!(history.unavailable_reason.is_some());
     }
 
     #[test]
