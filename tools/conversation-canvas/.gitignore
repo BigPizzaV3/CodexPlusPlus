@@ -1,0 +1,7 @@
+node_modules/
+data/
+backups/
+*.log
+.env
+.env.*
+*.local.json
