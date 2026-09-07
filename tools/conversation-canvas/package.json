@@ -1,0 +1,15 @@
+{
+  "name": "codex-plus-conversation-canvas",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node build-userscript.mjs",
+    "test": "node --test model.test.mjs bridge-data.test.mjs organize.test.mjs native-history.test.mjs long-organizer.test.mjs external-api.test.mjs tree.test.mjs context-lookup.test.mjs tree-canvas.test.mjs distribution.test.mjs",
+    "dev": "node dev/embedding-harness.mjs"
+  }
+}

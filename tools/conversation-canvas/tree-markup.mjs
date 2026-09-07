@@ -1,0 +1,10 @@
+import {visibleTreeRows} from './model.mjs';
+
+export function treeMarkup(nodes,currentNodeId,collapsed=new Set(),selected=null,options={}){
+  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const view=visibleTreeRows(nodes,currentNodeId,collapsed),offset=options.offset||0,pendingOffset=options.pendingOffset||0;
+  const card=n=>`<button class="node ${selected===n.id?'selected':''} ${n.id===currentNodeId?'current':''}" data-node="${esc(n.id)}"><small>${esc(n.status)} · ${n.summaryKind==='原文摘录'?'原文摘录':'模型归纳'}${n.id===currentNodeId?' · 当前推进':''}</small><strong>${esc(n.title)}</strong><p>${esc(n.summary)}</p></button>`;
+  const tree=view.rows.length?`<ul class="task-tree" aria-label="模型识别的任务树">${view.rows.slice(offset,offset+100).map(({node:n,depth,childCount,active})=>`<li class="task-branch ${active?'active-path':''}" style="margin-left:${Math.min(depth,8)*14}px"><div class="tree-row">${childCount?`<button class="tree-toggle" data-collapse="${esc(n.id)}" aria-label="${collapsed.has(n.id)?'展开':'收起'} ${esc(n.title)}" aria-expanded="${!collapsed.has(n.id)}">${collapsed.has(n.id)?'▸':'▾'}</button>`:'<span class="tree-leaf" aria-hidden="true">·</span>'}${card(n)}</div>${depth>8?`<small>第 ${depth+1} 层 · 详情中可查看完整路径</small>`:''}</li>`).join('')}</ul>`:'<p class="note">点击「整理脉络」，由 Codex 识别目标、方案与多层尝试。</p>';
+  const pending=view.pending.length?`<details class="pending-messages" ${options.pendingOpen?'open':''}><summary>待整理消息 · ${view.pending.length} 条</summary><p class="note">任务归属将在下一次整理时识别。</p><div class="pending-list">${view.pending.slice(pendingOffset,pendingOffset+20).map(card).join('')}</div><div class="tree-actions"><button data-pending-page="${Math.max(0,pendingOffset-20)}" ${pendingOffset===0?'disabled':''}>前 20 条</button><span>${pendingOffset+1}–${Math.min(pendingOffset+20,view.pending.length)}</span><button data-pending-page="${pendingOffset+20}" ${pendingOffset+20>=view.pending.length?'disabled':''}>后 20 条</button></div></details>`:'';
+  return tree+pending;
+}
