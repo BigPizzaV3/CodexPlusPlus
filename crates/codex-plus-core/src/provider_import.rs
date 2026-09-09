@@ -255,10 +255,11 @@ fn relay_mode(value: &str) -> RelayMode {
 }
 
 fn build_config_toml(base_url: &str, api_key: &str, protocol: RelayProtocol) -> String {
-    let wire_api = match protocol {
-        RelayProtocol::Responses => "responses",
-        RelayProtocol::ChatCompletions => "chat",
-    };
+    // Codex 26.901+ 不再支持 wire_api = "chat"（openai/codex discussion #7782），
+    // 写出 "chat" 会导致整份 config.toml 无效并回退默认。Chat Completions 上游
+    // 一律经由本地协议代理转换，对 Codex 始终暴露 "responses"。
+    let _ = protocol;
+    let wire_api = "responses";
     [
         "model_provider = \"CodexPlusPlus\"".to_string(),
         String::new(),

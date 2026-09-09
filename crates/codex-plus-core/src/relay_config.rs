@@ -2911,14 +2911,11 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["name"] = toml_edit::value(transport_provider_id.as_str());
     }
-    if provider
-        .get("wire_api")
-        .and_then(Item::as_str)
-        .map(str::trim)
-        .is_none_or(str::is_empty)
-    {
-        provider["wire_api"] = toml_edit::value("responses");
-    }
+    // Codex 26.901 起不再支持 `wire_api = "chat"`（见 openai/codex discussion #7782），
+    // 一旦出现会导致整份 config.toml 被判为无效并回退内置默认模型。
+    // Chat Completions 上游由本地协议代理（protocol_proxy）负责 responses→chat 转换，
+    // 因此对 Codex 暴露的 wire_api 必须恒为 "responses"。
+    provider["wire_api"] = toml_edit::value("responses");
     if profile.relay_mode != crate::settings::RelayMode::PureApi
         && provider
             .get("requires_openai_auth")
