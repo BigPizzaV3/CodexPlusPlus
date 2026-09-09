@@ -1901,13 +1901,15 @@ fn apply_model_catalog_to_config(
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
-    // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
-    // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
+    // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）。
+    // Codex++ 管理的 catalog 必须随当前 profile 切换；否则前一个供应商的模型列表会残留。
     // cc-switch 的固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
     // 切换到 Codex++ profile 时应接管，否则旧 catalog 会继续覆盖本 profile 的模型元数据。
     if let Some(existing) = root_key_string(&config_text, "model_catalog_json") {
         if existing != catalog_relative {
-            if is_cc_switch_model_catalog(&existing) {
+            if is_codex_plus_managed_model_catalog(home, &existing)
+                || is_cc_switch_model_catalog(&existing)
+            {
                 config_text = remove_root_key(&config_text, "model_catalog_json");
             } else {
                 if has_per_model_overrides {
