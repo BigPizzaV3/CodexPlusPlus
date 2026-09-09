@@ -6831,6 +6831,7 @@ base_url = "https://example.invalid/v1"
                 session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
+                routes: Vec::new(),
             }],
             ..BackendSettings::default()
         };

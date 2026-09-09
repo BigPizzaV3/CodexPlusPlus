@@ -597,8 +597,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     {
         request_json["model"] = Value::String(route.upstream_model.clone());
     }
+    let model = (!source_model.trim().is_empty()).then(|| source_model.clone());
     let context = RotationContext {
         conversation_id: conversation_id_from_responses_request(&request_json),
+        model,
     };
     let (relay, relays) = if let Some(route) = &model_route {
         (route.relay.clone(), vec![route.relay.clone()])
@@ -617,8 +619,14 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     let relay_count = relays.len();
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
-        let (endpoint, upstream_body, wire_api) =
-            upstream_request_parts(&relay, request_json.clone(), request_path).await?;
+        let model_override = aggregate_upstream_model_override(&settings, &relay);
+        let (endpoint, upstream_body, wire_api) = upstream_request_parts(
+            &relay,
+            request_json.clone(),
+            request_path,
+            model_override.as_deref(),
+        )
+        .await?;
         let has_more_candidates = attempt + 1 < relay_count;
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -785,6 +793,16 @@ fn select_model_route(
         source_model: model.to_string(),
         upstream_model,
     }))
+}
+
+fn aggregate_upstream_model_override(
+    settings: &crate::settings::BackendSettings,
+    relay: &crate::settings::RelayProfile,
+) -> Option<String> {
+    settings.active_aggregate_relay_profile()?;
+    let model = crate::relay_config::relay_profile_model(relay);
+    let model = model.trim();
+    (!model.is_empty()).then(|| model.to_string())
 }
 
 pub async fn open_models_proxy_request(
@@ -1063,12 +1081,19 @@ pub async fn open_chat_completions_proxy_request(
 
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
-    request_json: Value,
+    mut request_json: Value,
     request_path: &str,
+    model_override: Option<&str>,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
     let compact = is_responses_compact_proxy_path(request_path);
     if compact && relay.protocol == RelayProtocol::ChatCompletions {
         anyhow::bail!("Chat Completions 协议暂不支持 Responses compact 请求");
+    }
+    if let Some(model) = model_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        request_json["model"] = json!(model);
     }
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,

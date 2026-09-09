@@ -955,8 +955,33 @@ fn apply_aggregate_relay_points_codex_to_local_responses_proxy_without_snapshot(
 
     assert!(result.configured);
     assert!(updated.contains(r#"wire_api = "responses""#));
+    assert!(updated.contains("requires_openai_auth = false"));
     assert!(updated.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
     assert!(updated.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
+}
+
+#[test]
+fn relay_config_status_treats_aggregate_provider_as_configured_without_openai_auth() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "http://127.0.0.1:57321/v1"
+experimental_bearer_token = "codex-plus-aggregate"
+"#,
+    )
+    .unwrap();
+
+    let status = relay_config_status_from_home(temp.path());
+
+    assert!(status.configured);
+    assert!(!status.requires_openai_auth);
+    assert!(status.has_bearer_token);
 }
 
 #[test]
