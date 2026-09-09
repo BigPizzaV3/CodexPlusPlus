@@ -498,6 +498,136 @@ fn delete_codex_thread_sqlite_dir_layout_removes_session_index_entry_and_undo_re
 /// 三种 schema 里原先只有 delete_codex_thread 清了索引，这条覆盖 generic
 /// sessions 那条路径。
 #[test]
+fn delete_codex_thread_clears_sidebar_global_state_and_catalog_cache() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    let rollout = home.join("sessions/rollout-t1.jsonl");
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    fs::write(&rollout, "{}\n").unwrap();
+    let state_db = home.join("state_5.sqlite");
+    create_codex_thread_db(&state_db, &rollout);
+    let keep_id = "keep";
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "projectless-thread-ids": ["local:t1", "t1", keep_id],
+            "thread-projectless-output-directories": {"t1": "C:/out", "keep": "C:/keep"},
+            "thread-workspace-root-hints": {"local:t1": "C:/workspace", "keep": "C:/keep"},
+            "thread-writable-roots": {"t1": ["C:/work"], "keep": ["C:/keep"]},
+            "electron-persisted-atom-state": {
+                "thread-client-id-v1:t1": "client",
+                "thread-reference-capability:local%3At1": "capability",
+                "thread-client-id-v1:keep": "keep-client",
+                "sidebar-width": 296
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        home.join("session_index.jsonl"),
+        "{\"id\":\"t1\"}\n{\"id\":\"keep\"}\n",
+    )
+    .unwrap();
+    let catalog_db = Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
+    catalog_db
+        .execute("CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY)", [])
+        .unwrap();
+    catalog_db
+        .execute("CREATE TABLE thread_timeline_ledger (thread_id TEXT)", [])
+        .unwrap();
+    catalog_db
+        .execute("CREATE TABLE local_thread_catalog_scan_entries (thread_id TEXT)", [])
+        .unwrap();
+    catalog_db
+        .execute("INSERT INTO local_thread_catalog VALUES ('t1'), ('keep')", [])
+        .unwrap();
+    catalog_db
+        .execute("INSERT INTO thread_timeline_ledger VALUES ('t1'), ('keep')", [])
+        .unwrap();
+    catalog_db
+        .execute("INSERT INTO local_thread_catalog_scan_entries VALUES ('t1'), ('keep')", [])
+        .unwrap();
+    drop(catalog_db);
+
+    let deleted = SQLiteStorageAdapter::new(
+        &state_db,
+        BackupStore::new(tmp.path().join("backups")),
+    )
+    .with_codex_home(&home)
+    .delete_local(&session("local:t1", "Codex Thread"));
+    assert_eq!(deleted.status, DeleteStatus::LocalDeleted);
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["projectless-thread-ids"], json!([keep_id]));
+    assert!(state["thread-projectless-output-directories"].get("t1").is_none());
+    assert!(state["thread-workspace-root-hints"].get("local:t1").is_none());
+    assert!(state["thread-writable-roots"].get("t1").is_none());
+    assert!(state["electron-persisted-atom-state"]
+        .get("thread-client-id-v1:t1")
+        .is_none());
+    assert!(state["electron-persisted-atom-state"]
+        .get("thread-client-id-v1:keep")
+        .is_some());
+    let catalog_db = Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
+    for table in [
+        "local_thread_catalog",
+        "thread_timeline_ledger",
+        "local_thread_catalog_scan_entries",
+    ] {
+        let count: i64 = catalog_db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+
+    let restored = SQLiteStorageAdapter::new(
+        &state_db,
+        BackupStore::new(tmp.path().join("backups")),
+    )
+    .with_codex_home(&home)
+    .undo(deleted.undo_token.as_deref().unwrap());
+    assert_eq!(restored.status, DeleteStatus::Undone);
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        state["projectless-thread-ids"],
+        json!([keep_id, "local:t1", "t1"])
+    );
+    assert_eq!(
+        state["thread-projectless-output-directories"]["t1"],
+        "C:/out"
+    );
+    assert_eq!(
+        state["electron-persisted-atom-state"]["thread-client-id-v1:t1"],
+        "client"
+    );
+    let catalog_db = Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
+    for table in [
+        "local_thread_catalog",
+        "thread_timeline_ledger",
+        "local_thread_catalog_scan_entries",
+    ] {
+        let count: i64 = catalog_db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "{table}");
+    }
+}
+
+#[test]
 fn delete_local_clears_the_session_index_for_generic_sessions() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("codex-home");
