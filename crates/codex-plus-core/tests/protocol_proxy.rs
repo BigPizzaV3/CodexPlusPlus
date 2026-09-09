@@ -16,7 +16,7 @@ use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
     RelayMode, RelayModelRoute, RelayProfile, RelayProtocol, RelaySessionProvider,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -24,6 +24,21 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn contains_problematic_local_ref_siblings(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(contains_problematic_local_ref_siblings),
+        Value::Object(object) => {
+            let has_local_ref_siblings = object.len() > 1
+                && object
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reference| reference.starts_with("#/$defs/"));
+            has_local_ref_siblings || object.values().any(contains_problematic_local_ref_siblings)
+        }
+        _ => false,
+    }
+}
 
 #[test]
 fn responses_request_converts_to_chat_completions() {
@@ -740,6 +755,334 @@ fn responses_request_drops_tool_controls_when_no_chat_tools_survive() {
     assert!(converted.get("tools").is_none());
     assert!(converted.get("tool_choice").is_none());
     assert!(converted.get("parallel_tool_calls").is_none());
+}
+
+#[test]
+fn responses_request_to_chat_inlines_ref_siblings_in_tool_defs() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "automation_update",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "targetThreadId": {
+                        "$ref": "#/$defs/__schema20"
+                    }
+                },
+                "$defs": {
+                    "__schema2": {
+                        "type": "string"
+                    },
+                    "__schema20": {
+                        "$ref": "#/$defs/__schema2",
+                        "type": "string",
+                        "format": "uuid",
+                        "minLength": 1
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    let schema20 = &parameters["$defs"]["__schema20"];
+    assert!(schema20.get("$ref").is_none());
+    assert_eq!(schema20["type"], "string");
+    assert_eq!(schema20["format"], "uuid");
+    assert_eq!(schema20["minLength"], 1);
+    assert!(!contains_problematic_local_ref_siblings(parameters));
+    assert_eq!(
+        parameters["properties"]["targetThreadId"]["$ref"],
+        "#/$defs/__schema20"
+    );
+}
+
+#[test]
+fn invalid_defs_container_does_not_panic() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id",
+                        "description": "foo"
+                    }
+                },
+                "$defs": "invalid"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/id",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn non_object_local_ref_target_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id",
+                        "description": "foo"
+                    }
+                },
+                "$defs": {
+                    "id": "invalid"
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/id",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn nested_ref_is_normalized_through_properties_and_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/foo",
+                            "description": "nested"
+                        }
+                    }
+                },
+                "$defs": {
+                    "foo": {
+                        "type": "string"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let nested = &converted["tools"][0]["function"]["parameters"]["properties"]["items"]["items"];
+    assert!(nested.get("$ref").is_none());
+    assert_eq!(nested["type"], "string");
+    assert_eq!(nested["description"], "nested");
+}
+
+#[test]
+fn cyclic_ref_alias_does_not_recurse_forever() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cycle": {
+                        "$ref": "#/$defs/a",
+                        "description": "cycle"
+                    }
+                },
+                "$defs": {
+                    "a": {
+                        "$ref": "#/$defs/b"
+                    },
+                    "b": {
+                        "$ref": "#/$defs/a"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let cycle = &converted["tools"][0]["function"]["parameters"]["properties"]["cycle"];
+    assert_eq!(cycle["$ref"], "#/$defs/a");
+    assert_eq!(cycle["description"], "cycle");
+}
+
+#[test]
+fn external_ref_is_not_inlined() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "https://example.com/schema.json",
+                        "description": "foo"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "https://example.com/schema.json",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn unknown_local_ref_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/not_exists",
+                        "description": "foo"
+                    }
+                },
+                "$defs": {}
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/not_exists",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn bare_top_level_ref_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "$ref": "#/$defs/lookup"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"],
+        json!({ "$ref": "#/$defs/lookup" })
+    );
+}
+
+#[test]
+fn bare_local_ref_without_siblings_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id"
+                    }
+                },
+                "$defs": {
+                    "id": {
+                        "type": "string"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({ "$ref": "#/$defs/id" })
+    );
+}
+
+#[test]
+fn responses_request_to_chat_resolves_ref_alias_before_merging_siblings() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/alias",
+                        "format": "uuid"
+                    }
+                },
+                "$defs": {
+                    "concrete": {
+                        "type": "string",
+                        "format": "hostname"
+                    },
+                    "alias": {
+                        "$ref": "#/$defs/concrete"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    let id = &parameters["properties"]["id"];
+    assert!(id.get("$ref").is_none());
+    assert_eq!(id["type"], "string");
+    assert_eq!(id["format"], "uuid");
+    assert_eq!(parameters["$defs"]["alias"]["$ref"], "#/$defs/concrete");
 }
 
 #[test]
