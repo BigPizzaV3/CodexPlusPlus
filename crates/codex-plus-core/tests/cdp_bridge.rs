@@ -841,10 +841,75 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("bridgeWithBackendTimeout"));
+    assert!(script.contains("AbortController"));
+    assert!(script.contains("recordCodexPlusBridgeSuccess"));
+    assert!(script.contains("lastSuccessAt"));
+    assert!(script.contains("codexPlusBackendCheckInFlight"));
+    assert!(script.contains("CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3"));
+    assert!(script.contains("codexPlusBackendGeneration !== window.__codexPlusBackendGeneration"));
+    assert!(script.contains("__codexPlusBackendHeartbeatGeneration"));
+    assert!(script.contains("clearInterval(window.__codexPlusBackendHeartbeat)"));
+    assert!(!script.contains("await withBackendTimeout(postJson(\"/backend/status\", {}))"));
     assert!(script.contains("backend_bridge_timeout"));
     assert!(!script.contains("/backend/repair"));
     assert!(script.contains("backend_status_bridge_failed_http_fallback_ok"));
     assert!(script.contains("backend_status_bridge_and_http_failed"));
+}
+
+#[test]
+fn injection_script_keeps_one_backend_heartbeat_per_generation() {
+    let script = assets::injection_script(57321);
+    let start = script
+        .find("function scheduleBackendHeartbeat()")
+        .expect("backend heartbeat scheduler should exist");
+    let end = script[start..]
+        .find("\n  function userScriptStatusLabel")
+        .map(|offset| start + offset)
+        .expect("backend heartbeat scheduler should have an end marker");
+    let scheduler = &script[start..end];
+    let scheduler_json = serde_json::to_string(scheduler).expect("scheduler should serialize");
+    let harness = format!(
+        r#"
+const vm = require("node:vm");
+const source = {scheduler};
+const runCase = (generation, heartbeat, heartbeatGeneration, expected) => {{
+  let timers = 0;
+  let clears = 0;
+  let checks = 0;
+  const context = {{
+    window: {{
+      __codexPlusBackendGeneration: generation,
+      __codexPlusBackendHeartbeat: heartbeat,
+      __codexPlusBackendHeartbeatGeneration: heartbeatGeneration,
+    }},
+    codexPlusBackendGeneration: generation,
+    setInterval: () => ++timers,
+    clearInterval: () => ++clears,
+    checkBackendStatus: () => ++checks,
+  }};
+  vm.runInNewContext(source + "\nthis.run = scheduleBackendHeartbeat;", context);
+  context.run();
+  context.run();
+  const actual = {{ timers, clears, checks }};
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) process.exit(1);
+}};
+runCase(1, null, null, {{ timers: 1, clears: 0, checks: 1 }});
+runCase(1, 99, 1, {{ timers: 0, clears: 0, checks: 0 }});
+runCase(2, 99, 1, {{ timers: 1, clears: 1, checks: 1 }});
+"#,
+        scheduler = scheduler_json
+    );
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(harness)
+        .output()
+        .expect("node should run heartbeat scheduler harness");
+    assert!(
+        output.status.success(),
+        "heartbeat scheduler harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -4202,13 +4267,49 @@ fn runtime_evaluate_params_can_await_promise_for_bridge_health_checks() {
 }
 
 #[test]
-fn bridge_health_check_script_uses_real_backend_round_trip() {
+fn bridge_health_check_script_uses_persisted_real_probe_result() {
     let script = bridge::bridge_health_check_script();
 
     assert!(script.contains("__codexSessionDeleteBridge"));
-    assert!(script.contains("/backend/status"));
-    assert!(script.contains("Promise.race"));
-    assert!(script.contains("setTimeout"));
+    assert!(script.contains("__codexPlusBridgeHealth"));
+    assert!(script.contains("lastSuccessAt"));
+    assert!(script.contains("lastInjectionAt"));
+    assert!(!script.contains("/backend/status"));
+}
+
+#[test]
+fn bridge_health_check_script_rejects_stale_bridge_after_failed_requests() {
+    let script = serde_json::to_string(bridge::bridge_health_check_script())
+        .expect("health script should serialize");
+    let harness = format!(
+        r#"
+const vm = require("node:vm");
+const source = {script};
+const bridge = () => Promise.resolve({{ status: "failed" }});
+const run = (health, hasBridge = true) => vm.runInNewContext(source, {{
+  window: {{ __codexSessionDeleteBridge: hasBridge ? bridge : null, __codexPlusBridgeHealth: health }},
+}});
+const now = Date.now();
+if (run({{ lastInjectionAt: 0, lastSuccessAt: 1 }}) !== false) process.exit(1);
+if (run({{ lastInjectionAt: 0, lastSuccessAt: now }}) !== true) process.exit(2);
+if (run({{ lastInjectionAt: now, lastSuccessAt: 0 }}) !== true) process.exit(3);
+if (run({{ lastInjectionAt: now - 6000, lastSuccessAt: 0 }}) !== false) process.exit(4);
+if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000 }}) !== false) process.exit(5);
+if (run({{ lastInjectionAt: now, lastSuccessAt: now }}, false) !== false) process.exit(6);
+"#,
+        script = script
+    );
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(harness)
+        .output()
+        .expect("node should run bridge health harness");
+    assert!(
+        output.status.success(),
+        "bridge health harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
