@@ -120,9 +120,21 @@ pub fn build_macos_app_bundle(options: &InstallOptions, manager: bool) -> MacosA
 
 pub fn remove_owned_data() -> std::io::Result<()> {
     let dir = crate::paths::default_app_state_dir();
-    if dir.exists() {
-        std::fs::remove_dir_all(dir)?;
+    if !dir.exists() {
+        return Ok(());
     }
+    // 卸载流程会递归删除，路径来自环境/推导，先过一道"不许删 CODEX_HOME 及其祖先"
+    // 的兜底（#2146）。守卫只在这条路径确实指向 home 时才会拒绝，正常卸载不受影响。
+    if let Err(error) = crate::codex_home::ensure_safe_recursive_removal(
+        &dir,
+        &crate::codex_home::default_codex_home_dir(),
+    ) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            error.to_string(),
+        ));
+    }
+    std::fs::remove_dir_all(dir)?;
     Ok(())
 }
 

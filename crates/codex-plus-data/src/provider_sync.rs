@@ -4753,6 +4753,13 @@ fn prune_backups(home: &Path) -> anyhow::Result<()> {
     }
     managed.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
     for path in managed.into_iter().skip(BACKUP_KEEP_COUNT) {
+        // `home` 来自调用方（可能是被解析坏的环境变量）。正常情况下 `path` 一定是
+        // `home/backups_state/provider-sync` 的子目录，但删除不可逆，所以这里不靠
+        // "正常情况"，逐个确认它确实是该 root 的直接子项再删（#2146）。
+        let is_owned_child = path.parent().is_some_and(|parent| parent == root.as_path());
+        if !is_owned_child {
+            continue;
+        }
         let _ = fs::remove_dir_all(path);
     }
     Ok(())
