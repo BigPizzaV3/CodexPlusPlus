@@ -1896,7 +1896,12 @@ fn apply_model_catalog_to_config(
         || entries
             .iter()
             .any(|entry| entry.suffix_window.is_some() || entry.auto_compact_percent.is_some());
-    let custom_responses = custom_responses_provider(&config_text);
+    // custom_responses_provider(&config_text) 读取的是生成后 config 里的 wire_api；
+    // 自对 Codex 恒写 "responses" 起，该信号已失真（chat 上游也会读到 responses）。
+    // catalog 是否按 Responses 语义生成取决于真实上游协议，只能由 profile.protocol 判定。
+    let custom_responses = profile.protocol == RelayProtocol::Responses
+        && active_provider_id(&parse_toml_document(&config_text)?)
+            .is_some_and(|provider_id| is_custom_provider_id(&provider_id));
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
@@ -2191,25 +2196,6 @@ fn uses_official_deepseek_responses_for_config(profile: &RelayProfile, config_te
     }
 
     uses_official_deepseek_responses(profile)
-}
-
-fn custom_responses_provider(config_text: &str) -> bool {
-    let Ok(doc) = parse_toml_document(config_text) else {
-        return false;
-    };
-    let Some(provider_id) = active_provider_id(&doc) else {
-        return false;
-    };
-    if !is_custom_provider_id(&provider_id) {
-        return false;
-    }
-    doc.get("model_providers")
-        .and_then(Item::as_table)
-        .and_then(|providers| providers.get(&provider_id))
-        .and_then(Item::as_table_like)
-        .and_then(|provider| provider.get("wire_api"))
-        .and_then(Item::as_str)
-        .is_some_and(|wire_api| wire_api.trim().eq_ignore_ascii_case("responses"))
 }
 
 fn copy_standard_responses_catalog(
@@ -2911,14 +2897,11 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["name"] = toml_edit::value(transport_provider_id.as_str());
     }
-    if provider
-        .get("wire_api")
-        .and_then(Item::as_str)
-        .map(str::trim)
-        .is_none_or(str::is_empty)
-    {
-        provider["wire_api"] = toml_edit::value("responses");
-    }
+    // Codex 26.901 起不再支持 `wire_api = "chat"`（见 openai/codex discussion #7782），
+    // 一旦出现会导致整份 config.toml 被判为无效并回退内置默认模型。
+    // Chat Completions 上游由本地协议代理（protocol_proxy）负责 responses→chat 转换，
+    // 因此对 Codex 暴露的 wire_api 必须恒为 "responses"。
+    provider["wire_api"] = toml_edit::value("responses");
     if profile.relay_mode != crate::settings::RelayMode::PureApi
         && provider
             .get("requires_openai_auth")
