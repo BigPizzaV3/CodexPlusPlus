@@ -332,6 +332,7 @@ export type RelayProfile = {
   userAgent: string;
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
+  noAuth: boolean;
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
   aggregate?: RelayAggregateConfig | null;
@@ -1023,6 +1024,7 @@ const defaultSettings: BackendSettings = {
       vlmBaseUrl: "",
       userAgent: "",
       sub2apiEnabled: false,
+      noAuth: false,
       sub2apiMultiplier: "",
       standardOpenaiProtocol: false,
     },
@@ -10255,6 +10257,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             vlmBaseUrl: "",
             userAgent: "",
             sub2apiEnabled: false,
+            noAuth: false,
             sub2apiMultiplier: "",
             standardOpenaiProtocol: false,
           },
@@ -10355,6 +10358,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         modelMetadata: "",
         modelRoutes: [],
         sub2apiEnabled: false,
+        noAuth: false,
         sub2apiMultiplier: "",
         standardOpenaiProtocol: false,
       },
@@ -10390,8 +10394,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelMetadata: profile.modelMetadata || "",
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
-    sub2apiEnabled: noAuth ? false : profile.sub2apiEnabled === true,
-    sub2apiMultiplier: !noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
+    sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
+    sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
@@ -11197,6 +11201,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     vlmBaseUrl: "",
     userAgent: "",
     sub2apiEnabled: false,
+    noAuth: false,
     sub2apiMultiplier: "",
     modelRoutes: [],
     standardOpenaiProtocol: false,
@@ -11239,6 +11244,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       vlmBaseUrl: "",
       userAgent: "",
       sub2apiEnabled: false,
+      noAuth: false,
       sub2apiMultiplier: "",
       modelRoutes: [],
       standardOpenaiProtocol: false,
@@ -11369,6 +11375,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     configContents: "",
     authContents: "",
     sub2apiEnabled: false,
+    noAuth: false,
     sub2apiMultiplier: "",
     standardOpenaiProtocol: false,
     aggregate,
