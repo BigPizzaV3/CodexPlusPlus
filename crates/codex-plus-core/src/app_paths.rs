@@ -491,7 +491,54 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     if publisher_id.is_empty() {
         return None;
     }
-    Some(format!("{}_{publisher_id}!{}", spec.identity, spec.app_id))
+    // 新版 ChatGPT-Desktop 可能改变包内 Application Id（参见 #2148 的 0x80270254 报错），
+    // 这里优先读取真实 manifest，读取失败再回退到历史硬编码值。
+    let app_id = packaged_manifest_app_id(app_dir).unwrap_or_else(|| spec.app_id.to_string());
+    Some(format!("{}_{publisher_id}!{app_id}", spec.identity))
+}
+
+fn packaged_manifest_app_id(app_dir: &Path) -> Option<String> {
+    let package_dir = if app_dir
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("app"))
+    {
+        app_dir.parent()?
+    } else {
+        app_dir
+    };
+    let manifest = std::fs::read_to_string(package_dir.join("AppxManifest.xml")).ok()?;
+    manifest_first_application_id(&manifest)
+}
+
+// AppxManifest.xml 中第一个 <Application> 节点的 Id，即 AUMID 感叹号后的部分。
+fn manifest_first_application_id(manifest: &str) -> Option<String> {
+    let mut rest = manifest;
+    while let Some(pos) = rest.find("<Application") {
+        rest = &rest[pos + "<Application".len()..];
+        // 跳过 <Applications> 等容器节点，只处理 <Application ...>。
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let tag_end = rest.find('>')?;
+        if let Some(id) = xml_attribute_value(&rest[..tag_end], "Id") {
+            return Some(id);
+        }
+        rest = &rest[tag_end..];
+    }
+    None
+}
+
+fn xml_attribute_value(tag: &str, name: &str) -> Option<String> {
+    for segment in tag.split_whitespace() {
+        let Some((attr, value)) = segment.split_once('=') else {
+            continue;
+        };
+        if attr != name {
+            continue;
+        }
+        return Some(value.trim_matches('"').trim_matches('\'').to_string());
+    }
+    None
 }
 
 fn package_name_from_app_dir(app_dir: &Path) -> Option<String> {
