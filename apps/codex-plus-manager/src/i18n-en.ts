@@ -346,6 +346,14 @@ export const EN_PLAIN: Record<string, string> = {
   "留空则不改动 Grok 里已有的 Key": "Leave blank to keep the key already in Grok",
   "每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。保存后点「应用到 Grok」生效。":
     "One model per line; a [1M] / [200K] suffix declares its context window. Saving only stores the provider — click Apply to Grok to write it.",
+  "每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。改完点「保存此供应商」，再点「应用到 Grok」生效。":
+    "One model per line; a [1M] / [200K] suffix declares its context window. Click Save provider first, then Apply to Grok to write it.",
+  "保存此供应商": "Save provider",
+  "没有需要保存的修改": "No changes to save",
+  "请先保存当前修改": "Save your changes first",
+  "请先保存当前供应商，再应用到 Grok。": "Save the current provider before applying it to Grok.",
+  "已保存": "Saved",
+  "有未保存修改。": "Unsaved changes.",
   "Grok 当前配置": "Grok's current config",
   "读取 ~/.grok/config.toml": "Reading ~/.grok/config.toml",
   "未设置": "Not set",
@@ -1145,6 +1153,7 @@ export const EN_TEMPLATE: Record<string, string> = {
     "Provider configuration for {0} is not wired up yet, so switching would only show an empty list.",
   "已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。":
     "Added provider \"{0}\"; fill in its model list and click Apply to Grok.",
+  "供应商「{0}」已保存。": "Provider \"{0}\" saved.",
   "CLI：{0}": "CLI: {0}",
   "默认模型：{0}": "Default model: {0}",
   "全局端点：{0}": "Global endpoint: {0}",

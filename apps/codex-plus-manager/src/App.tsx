@@ -3485,12 +3485,7 @@ export function App() {
             <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
           ) : null}
           {route === "grok" ? (
-            <GrokScreen
-              settings={settings}
-              form={settingsForm}
-              onFormChange={setSettingsForm}
-              actions={actions}
-            />
+            <GrokScreen settings={settings} form={settingsForm} actions={actions} />
           ) : null}
           {route === "sessions" ? (
             <SessionsScreen
@@ -9498,36 +9493,51 @@ function newGrokProfileDraft(): RelayProfile {
 function GrokScreen({
   settings,
   form,
-  onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   form: BackendSettings;
-  onFormChange: (next: BackendSettings) => void;
   actions: {
-    refreshCurrent: () => void;
+    saveSettingsValue: (next: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
     showMessage: (title: string, message: string, status?: Status) => Promise<void>;
+    refreshCurrent: () => void;
   };
 }) {
   const [result, setResult] = useState<GrokProvidersResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  // 编辑区走本地草稿 + 显式保存，跟 Codex 供应商页一致。
+  // 直接在 onChange 里写盘的话，敲一个 Base URL 会触发几十次全量 save_settings。
+  const [draft, setDraft] = useState<RelayProfile | null>(null);
 
   const shard = form.tools?.grok;
   const profiles = shard?.relayProfiles?.length ? shard.relayProfiles : [];
   const activeId = shard?.activeRelayId || "";
+  const activeProfile = profiles.find((profile) => profile.id === activeId);
+
+  // 切换选中的供应商（或外部刷新）时，把草稿重置成磁盘上的值。
+  useEffect(() => {
+    setDraft(activeProfile ? { ...activeProfile } : null);
+    // 只在选中的供应商变化时重置，不要在每次 profiles 数组变化时打断编辑。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProfile?.id, activeProfile?.name, activeProfile?.upstreamBaseUrl, activeProfile?.apiKey, activeProfile?.modelList]);
+
+  const draftDirty = Boolean(
+    draft
+      && activeProfile
+      && (draft.name !== activeProfile.name
+        || draft.upstreamBaseUrl !== activeProfile.upstreamBaseUrl
+        || draft.apiKey !== activeProfile.apiKey
+        || draft.modelList !== activeProfile.modelList),
+  );
 
   const refresh = async () => {
     setLoading(true);
     try {
       const loaded = await invoke<GrokProvidersResult>("load_grok_providers");
       setResult(loaded);
-      // 第一次打开时把后端分片读进表单，让后续编辑有可写入的目标。
-      const loadedShard = settings?.settings.tools?.grok;
-      if (!form.tools?.grok && loadedShard) {
-        onFormChange({ ...form, tools: { ...form.tools, grok: loadedShard } });
-      }
     } catch (error) {
       await actions.showMessage(t("调用失败"), String(error), "failed");
     } finally {
@@ -9541,7 +9551,12 @@ function GrokScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const writeShard = async (nextProfiles: RelayProfile[], nextActiveId: string) => {
+  /// 唯一真正落盘的地方。结构性操作（新增/删除/切换选中）用它，
+  /// 编辑区则攒够了再调一次。
+  const writeShard = async (
+    nextProfiles: RelayProfile[],
+    nextActiveId: string,
+  ): Promise<boolean> => {
     const next: BackendSettings = {
       ...form,
       activeTool: "grok",
@@ -9554,22 +9569,35 @@ function GrokScreen({
         },
       },
     };
-    onFormChange(next);
-    await invoke("save_settings", { settings: next });
+    // saveSettingsValue 会把结果写回 settings / settingsForm，所以这里不需要
+    // 自己先 setState（那反而会跟服务端归一化后的结果打架）。
+    const saved = await actions.saveSettingsValue(next, true);
+    if (!saved) return false;
     await refresh();
+    return true;
   };
 
   const addProfile = async () => {
-    const draft = newGrokProfileDraft();
-    await writeShard([...profiles, draft], activeId || draft.id);
-    await actions.showMessage(t("已新增"), tf("已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。", [draft.name]), "ok");
+    const fresh = newGrokProfileDraft();
+    const ok = await writeShard([...profiles, fresh], fresh.id);
+    if (!ok) return;
+    // 新增后直接把草稿铺好，用户马上就能填。
+    setDraft({ ...fresh });
+    await actions.showMessage(t("已新增"), tf("已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。", [fresh.name]), "ok");
   };
 
-  const updateProfile = async (id: string, patch: Partial<RelayProfile>) => {
-    await writeShard(
-      profiles.map((profile) => (profile.id === id ? { ...profile, ...patch } : profile)),
-      activeId,
-    );
+  const saveDraft = async () => {
+    if (!draft || !activeProfile || saving) return;
+    setSaving(true);
+    try {
+      const ok = await writeShard(
+        profiles.map((profile) => (profile.id === draft.id ? { ...profile, ...draft } : profile)),
+        activeId,
+      );
+      if (ok) await actions.showMessage(t("已保存"), tf("供应商「{0}」已保存。", [draft.name]), "ok");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const removeProfile = async (id: string) => {
@@ -9577,10 +9605,26 @@ function GrokScreen({
     await writeShard(rest, activeId === id ? (rest[0]?.id ?? "") : activeId);
   };
 
+  const selectProfile = async (id: string) => {
+    if (id === activeId) return;
+    await writeShard(profiles, id);
+  };
+
   const applyToGrok = async () => {
+    if (draftDirty) {
+      await actions.showMessage(t("有未保存修改"), t("请先保存当前供应商，再应用到 Grok。"), "failed");
+      setConfirming(false);
+      return;
+    }
     setApplying(true);
     try {
-      const applied = await invoke<GrokProvidersResult>("apply_grok_relay_profile", { settings: form });
+      // 只把 Grok 分片交给后端，避免整份 settings 被当成「本次改动」写回去。
+      const applied = await invoke<GrokProvidersResult>("apply_grok_relay_profile", {
+        settings: {
+          ...form,
+          tools: { ...form.tools, grok: { ...shard, activeRelayId: activeId } },
+        },
+      });
       setConfirming(false);
       if (applied.status === "ok") {
         await actions.showMessage(t("已应用"), applied.message, "ok");
@@ -9596,7 +9640,6 @@ function GrokScreen({
   };
 
   const live = result?.live;
-  const activeProfile = profiles.find((profile) => profile.id === activeId);
 
   return (
     <>
@@ -9615,9 +9658,24 @@ function GrokScreen({
             {t("新增供应商")}
           </Button>
           <Button
-            disabled={!activeProfile || applying}
+            disabled={saving || !draftDirty}
+            onClick={() => void saveDraft()}
+            title={draftDirty ? undefined : t("没有需要保存的修改")}
+            variant="outline"
+          >
+            <Save className="h-4 w-4" />
+            {saving ? t("保存中") : t("保存此供应商")}
+          </Button>
+          <Button
+            disabled={!activeProfile || applying || draftDirty}
             onClick={() => setConfirming(true)}
-            title={activeProfile ? undefined : t("请先选择一个供应商")}
+            title={
+              !activeProfile
+                ? t("请先选择一个供应商")
+                : draftDirty
+                  ? t("请先保存当前修改")
+                  : undefined
+            }
           >
             <Play className="h-4 w-4" />
             {applying ? t("应用中") : t("应用到 Grok")}
@@ -9636,7 +9694,7 @@ function GrokScreen({
                 <div className={`grok-provider-row ${selected ? "active" : ""}`} key={profile.id}>
                   <button
                     className="grok-provider-pick"
-                    onClick={() => void writeShard(profiles, profile.id)}
+                    onClick={() => void selectProfile(profile.id)}
                     type="button"
                   >
                     <span className="grok-provider-name">{profile.name}</span>
@@ -9657,40 +9715,41 @@ function GrokScreen({
           </div>
         )}
 
-        {activeProfile ? (
+        {draft ? (
           <div className="grok-provider-editor">
             <Field label={t("名称")}>
               <Input
-                onChange={(event) => void updateProfile(activeProfile.id, { name: event.currentTarget.value })}
-                value={activeProfile.name}
+                onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value })}
+                value={draft.name}
               />
             </Field>
             <Field label="Base URL">
               <Input
-                onChange={(event) => void updateProfile(activeProfile.id, { upstreamBaseUrl: event.currentTarget.value })}
+                onChange={(event) => setDraft({ ...draft, upstreamBaseUrl: event.currentTarget.value })}
                 placeholder="https://your-endpoint.example/v1"
-                value={activeProfile.upstreamBaseUrl}
+                value={draft.upstreamBaseUrl}
               />
             </Field>
             <Field label="API Key">
               <Input
-                onChange={(event) => void updateProfile(activeProfile.id, { apiKey: event.currentTarget.value })}
+                onChange={(event) => setDraft({ ...draft, apiKey: event.currentTarget.value })}
                 placeholder={t("留空则不改动 Grok 里已有的 Key")}
                 type="password"
-                value={activeProfile.apiKey}
+                value={draft.apiKey}
               />
             </Field>
             <Field label={t("模型列表")}>
               <Textarea
-                onChange={(event) => void updateProfile(activeProfile.id, { modelList: event.currentTarget.value })}
+                onChange={(event) => setDraft({ ...draft, modelList: event.currentTarget.value })}
                 placeholder={"grok-4.5[1M]\ngrok-4.1-fast"}
                 rows={4}
-                value={activeProfile.modelList}
+                value={draft.modelList}
               />
             </Field>
             <p className="muted-line">
-              {t("每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。保存后点「应用到 Grok」生效。")}
+              {t("每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。改完点「保存此供应商」，再点「应用到 Grok」生效。")}
             </p>
+            {draftDirty ? <p className="muted-line">{t("有未保存修改。")}</p> : null}
           </div>
         ) : null}
       </Panel>
