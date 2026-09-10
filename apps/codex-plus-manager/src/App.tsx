@@ -938,9 +938,10 @@ type Theme = "dark" | "light";
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
 
-const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
+const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string }> = [
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
-  { id: "relay", label: t("供应商配置"), icon: KeyRound },
+  { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
+  { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
   { id: "context", label: t("MCP&插件"), icon: Network },
   { id: "weixin", label: t("微信连接"), icon: ScanLine },
@@ -958,7 +959,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
   {
     label: t("工作区"),
-    routes: ["overview", "relay", "sessions", "context"],
+    routes: ["overview", "relay", "grok", "sessions", "context"],
   },
   {
     label: t("扩展"),
@@ -1210,6 +1211,11 @@ export function App() {
     setActiveTool(toolId);
     const next = { ...settingsForm, activeTool: toolId };
     setSettingsForm(next);
+    // 供应商页是跟着工具走的，切工具后如果当前页不属于新工具就跳到它自己的页。
+    const currentRoute = routes.find((candidate) => candidate.id === route);
+    if (currentRoute?.tool && currentRoute.tool !== toolId) {
+      setRoute(toolId === "grok" ? "grok" : "relay");
+    }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
       setSettings(result);
@@ -2038,6 +2044,7 @@ export function App() {
       await refreshCcsProviders(true);
     }
     if (next === "relayEnvironment") await refreshRelayEnvironment(true);
+    if (next === "grok") await refreshSettings(true);
     if (next === "sessions") {
       await refreshSettings(true);
       await refreshLocalSessions(true);
@@ -3379,6 +3386,9 @@ export function App() {
               {section.routes.map((routeId) => {
                 const item = routes.find((candidate) => candidate.id === routeId);
                 if (!item) return null;
+                // 供应商页是跟着顶栏工具走的：聚焦 Codex 时只显示「供应商配置」，
+                // 聚焦 Grok 时只显示「Grok 配置」。
+                if (item.tool && item.tool !== activeTool) return null;
                 const Icon = item.icon;
                 return (
                   <button
@@ -3457,6 +3467,14 @@ export function App() {
           ) : null}
           {route === "relayEnvironment" ? (
             <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
+          ) : null}
+          {route === "grok" ? (
+            <GrokScreen
+              settings={settings}
+              form={settingsForm}
+              onFormChange={setSettingsForm}
+              actions={actions}
+            />
           ) : null}
           {route === "sessions" ? (
             <SessionsScreen
@@ -9418,6 +9436,282 @@ function CardHead({ title, detail }: { title: string; detail: string }) {
 
 function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`toolbar ${className}`.trim()}>{children}</div>;
+}
+
+type GrokProvidersResult = CommandResult<{
+  profiles: RelayProfile[];
+  activeRelayId: string;
+  live: {
+    grokHome: string;
+    configPath: string;
+    configExists: boolean;
+    cliPath: string | null;
+    cliInstalled: boolean;
+    revision: string;
+    defaultModel: string;
+    modelsBaseUrl: string;
+    models: Array<{ alias: string; model: string; baseUrl: string; contextWindow: number | null; apiKeyConfigured: boolean }>;
+  };
+  liveProfile: RelayProfile;
+}>;
+
+function newGrokProfileDraft(): RelayProfile {
+  return {
+    ...defaultSettings.relayProfiles[0],
+    id: `grok-${Date.now().toString(36)}`,
+    name: t("新建 Grok 供应商"),
+    modelList: "",
+    upstreamBaseUrl: "",
+    baseUrl: "",
+    apiKey: "",
+    protocol: "chatCompletions",
+    relayMode: "pureApi",
+    configContents: "",
+    authContents: "",
+  };
+}
+
+/**
+ * Grok 分区的供应商管理。
+ *
+ * 映射约定是「一个供应商 = 一个 base_url」：应用到 Grok 时，这个供应商的模型
+ * 列表会整体替换 `~/.grok/config.toml` 里所有受管的 `[model.*]` 表，未管理字段
+ * （`[ui]`、`[models].web_search` 等）保留。所以「应用到 Grok」是需要确认的
+ * 破坏性操作，这里显式二次确认。
+ */
+function GrokScreen({
+  settings,
+  form,
+  onFormChange,
+  actions,
+}: {
+  settings: SettingsResult | null;
+  form: BackendSettings;
+  onFormChange: (next: BackendSettings) => void;
+  actions: {
+    refreshCurrent: () => void;
+    showMessage: (title: string, message: string, status?: Status) => Promise<void>;
+  };
+}) {
+  const [result, setResult] = useState<GrokProvidersResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  const shard = form.tools?.grok;
+  const profiles = shard?.relayProfiles?.length ? shard.relayProfiles : [];
+  const activeId = shard?.activeRelayId || "";
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const loaded = await invoke<GrokProvidersResult>("load_grok_providers");
+      setResult(loaded);
+      // 第一次打开时把后端分片读进表单，让后续编辑有可写入的目标。
+      const loadedShard = settings?.settings.tools?.grok;
+      if (!form.tools?.grok && loadedShard) {
+        onFormChange({ ...form, tools: { ...form.tools, grok: loadedShard } });
+      }
+    } catch (error) {
+      await actions.showMessage(t("调用失败"), String(error), "failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    // 只在进入本页时拉一次；后续状态由本页自己的操作维护。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const writeShard = async (nextProfiles: RelayProfile[], nextActiveId: string) => {
+    const next: BackendSettings = {
+      ...form,
+      activeTool: "grok",
+      tools: {
+        ...form.tools,
+        grok: {
+          ...shard,
+          relayProfiles: nextProfiles,
+          activeRelayId: nextActiveId,
+        },
+      },
+    };
+    onFormChange(next);
+    await invoke("save_settings", { settings: next });
+    await refresh();
+  };
+
+  const addProfile = async () => {
+    const draft = newGrokProfileDraft();
+    await writeShard([...profiles, draft], activeId || draft.id);
+    await actions.showMessage(t("已新增"), tf("已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。", [draft.name]), "ok");
+  };
+
+  const updateProfile = async (id: string, patch: Partial<RelayProfile>) => {
+    await writeShard(
+      profiles.map((profile) => (profile.id === id ? { ...profile, ...patch } : profile)),
+      activeId,
+    );
+  };
+
+  const removeProfile = async (id: string) => {
+    const rest = profiles.filter((profile) => profile.id !== id);
+    await writeShard(rest, activeId === id ? (rest[0]?.id ?? "") : activeId);
+  };
+
+  const applyToGrok = async () => {
+    setApplying(true);
+    try {
+      const applied = await invoke<GrokProvidersResult>("apply_grok_relay_profile", { settings: form });
+      setConfirming(false);
+      if (applied.status === "ok") {
+        await actions.showMessage(t("已应用"), applied.message, "ok");
+      } else {
+        await actions.showMessage(t("应用失败"), applied.message, "failed");
+      }
+      await refresh();
+    } catch (error) {
+      await actions.showMessage(t("调用失败"), String(error), "failed");
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const live = result?.live;
+  const activeProfile = profiles.find((profile) => profile.id === activeId);
+
+  return (
+    <>
+      <Panel>
+        <CardHead
+          title={t("Grok 供应商")}
+          detail={t("每个供应商对应一套 Base URL + API Key + 模型列表；「应用到 Grok」会把它写进 ~/.grok/config.toml。")}
+        />
+        <div className="toolbar">
+          <Button disabled={loading} onClick={() => void refresh()} variant="outline">
+            <RefreshCw className="h-4 w-4" />
+            {loading ? t("刷新中") : t("刷新")}
+          </Button>
+          <Button onClick={() => void addProfile()} variant="outline">
+            <Plus className="h-4 w-4" />
+            {t("新增供应商")}
+          </Button>
+          <Button
+            disabled={!activeProfile || applying}
+            onClick={() => setConfirming(true)}
+            title={activeProfile ? undefined : t("请先选择一个供应商")}
+          >
+            <Play className="h-4 w-4" />
+            {applying ? t("应用中") : t("应用到 Grok")}
+          </Button>
+        </div>
+
+        {profiles.length === 0 ? (
+          <p className="muted-line">
+            {t("Grok 还没有配置供应商。新增一个，填好 Base URL、API Key 和模型列表，再点「应用到 Grok」。")}
+          </p>
+        ) : (
+          <div className="grok-provider-list">
+            {profiles.map((profile) => {
+              const selected = profile.id === activeId;
+              return (
+                <div className={`grok-provider-row ${selected ? "active" : ""}`} key={profile.id}>
+                  <button
+                    className="grok-provider-pick"
+                    onClick={() => void writeShard(profiles, profile.id)}
+                    type="button"
+                  >
+                    <span className="grok-provider-name">{profile.name}</span>
+                    <span className="grok-provider-url">
+                      {profile.upstreamBaseUrl || profile.baseUrl || t("未填写 Base URL")}
+                    </span>
+                  </button>
+                  <span className="grok-provider-models">
+                    {tf("{0} 个模型", [String(profile.modelList.split(/[\r\n,]+/).filter((line) => line.trim()).length)])}
+                  </span>
+                  {selected ? <UiBadge variant="secondary">{t("使用中")}</UiBadge> : null}
+                  <Button onClick={() => void removeProfile(profile.id)} size="icon" title={t("删除供应商")} variant="outline">
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {activeProfile ? (
+          <div className="grok-provider-editor">
+            <Field label={t("名称")}>
+              <Input
+                onChange={(event) => void updateProfile(activeProfile.id, { name: event.currentTarget.value })}
+                value={activeProfile.name}
+              />
+            </Field>
+            <Field label="Base URL">
+              <Input
+                onChange={(event) => void updateProfile(activeProfile.id, { upstreamBaseUrl: event.currentTarget.value })}
+                placeholder="https://your-endpoint.example/v1"
+                value={activeProfile.upstreamBaseUrl}
+              />
+            </Field>
+            <Field label="API Key">
+              <Input
+                onChange={(event) => void updateProfile(activeProfile.id, { apiKey: event.currentTarget.value })}
+                placeholder={t("留空则不改动 Grok 里已有的 Key")}
+                type="password"
+                value={activeProfile.apiKey}
+              />
+            </Field>
+            <Field label={t("模型列表")}>
+              <Textarea
+                onChange={(event) => void updateProfile(activeProfile.id, { modelList: event.currentTarget.value })}
+                placeholder={"grok-4.5[1M]\ngrok-4.1-fast"}
+                rows={4}
+                value={activeProfile.modelList}
+              />
+            </Field>
+            <p className="muted-line">
+              {t("每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。保存后点「应用到 Grok」生效。")}
+            </p>
+          </div>
+        ) : null}
+      </Panel>
+
+      <Panel>
+        <CardHead
+          title={t("Grok 当前配置")}
+          detail={live?.configPath || t("读取 ~/.grok/config.toml")}
+        />
+        {live ? (
+          <ul className="grok-live-list">
+            <li>{tf("CLI：{0}", [live.cliInstalled ? (live.cliPath || t("已安装")) : t("未检测到")])}</li>
+            <li>{tf("默认模型：{0}", [live.defaultModel || t("未设置")])}</li>
+            <li>{tf("全局端点：{0}", [live.modelsBaseUrl || t("未设置")])}</li>
+            <li>{tf("受管模型：{0}", [live.models.map((model) => model.alias).join("、") || t("无")])}</li>
+          </ul>
+        ) : (
+          <p className="muted-line">{t("尚未读取。")}</p>
+        )}
+      </Panel>
+
+      {confirming ? (
+        <ConfirmDialog
+          confirm={{            title: t("应用到 Grok？"),
+            message: tf(
+              "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。",
+              [activeProfile?.name || ""],
+            ),
+            confirmText: applying ? t("应用中") : t("确认应用"),
+            cancelText: t("取消"),
+          }}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => void applyToGrok()}
+        />
+      ) : null}
+    </>
+  );
 }
 
 /**

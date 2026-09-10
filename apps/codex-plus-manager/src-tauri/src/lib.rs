@@ -76,6 +76,8 @@ pub fn run() {
             commands::test_vlm,
             commands::load_grok_config,
             commands::save_grok_config,
+            commands::load_grok_providers,
+            commands::apply_grok_relay_profile,
             commands::weixin_connect_qr_start,
             commands::weixin_connect_qr_status,
             commands::weixin_connect_status,
