@@ -1916,6 +1916,11 @@ fn apply_model_catalog_to_config(
                 || is_cc_switch_model_catalog(&existing)
             {
                 config_text = remove_root_key(&config_text, "model_catalog_json");
+            } else if model_catalog_pointer_has_unexpanded_variable(&existing) {
+                // `%userprofile%\.codex\codex-models.json` 这类指针 codex 不展开变量，
+                // 在任何机器上都读不到，留着会让 codex 拒绝加载整份 config.toml
+                // （#2123）。去掉它不会比现在更差——这份 catalog 反正从未生效过。
+                config_text = remove_root_key(&config_text, "model_catalog_json");
             } else {
                 if has_per_model_overrides {
                     anyhow::bail!(
@@ -2314,6 +2319,22 @@ fn sanitize_catalog_filename(id: &str) -> String {
             }
         })
         .collect()
+}
+
+/// 这条 `model_catalog_json` 指针是否**在任何平台、任何机器上都打不开**。
+///
+/// codex 核心对读不到的 catalog 不是降级处理，而是直接拒绝加载**整份** config.toml
+/// （`os error 3`），用户侧表现为"无法加载 config.toml，因此此对话串无法继续"，
+/// 报错信息和真正的故障点毫无关系，极难自诊。所以这种指针绝不能落盘。
+///
+/// 这里只认定**未展开的 shell 变量**这一种形态：codex 自己不做变量展开，所以
+/// `%userprofile%\.codex\...` 在任何机器上都不存在，判定是确定的、不会误伤。
+/// 其余"文件恰好不存在"的路径不做处理——那可能是挂载盘未就绪、或用户自己
+/// 删掉了 catalog 但还想留着手改，按既有语义交给上层保护逻辑（#2123 建议的
+/// "保存前校验并提示"是另一个更大的改动，不在本次范围）。
+fn model_catalog_pointer_has_unexpanded_variable(pointer: &str) -> bool {
+    let pointer = pointer.trim();
+    !pointer.is_empty() && (pointer.contains('%') || pointer.contains('$'))
 }
 
 fn sync_context_limits_from_config(profile: &mut RelayProfile, config_text: &str) {

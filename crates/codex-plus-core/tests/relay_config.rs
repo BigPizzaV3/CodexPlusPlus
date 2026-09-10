@@ -4330,7 +4330,10 @@ base_url = "https://relay.example/v1"
         .iter()
         .map(|level| level["effort"].as_str().unwrap())
         .collect();
-    assert_eq!(efforts, vec!["low", "medium", "high", "xhigh", "max", "ultra"]);
+    assert_eq!(
+        efforts,
+        vec!["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
 }
 
 #[test]
@@ -4889,7 +4892,10 @@ experimental_bearer_token = "sk-new"
     assert_eq!(copied["models"][0]["max_context_window"], 1_000_000);
 
     let config_value: toml::Value = toml::from_str(&config).unwrap();
-    assert_eq!(config_value["model_context_window"].as_integer(), Some(1_000_000));
+    assert_eq!(
+        config_value["model_context_window"].as_integer(),
+        Some(1_000_000)
+    );
     assert_eq!(
         config_value["model_auto_compact_token_limit"].as_integer(),
         Some(900_000)
@@ -5115,15 +5121,11 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(
-        r#"model_catalog_json = "model-catalogs/relay-fusheng.json""#
-    ));
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-fusheng.json""#));
     assert!(!config.contains("model-catalogs/relay-a6.json"));
 
-    let catalog = std::fs::read_to_string(
-        temp.path().join("model-catalogs/relay-fusheng.json"),
-    )
-    .unwrap();
+    let catalog =
+        std::fs::read_to_string(temp.path().join("model-catalogs/relay-fusheng.json")).unwrap();
     assert!(catalog.contains(r#""slug": "gpt-5.6-sol""#));
     assert!(catalog.contains(r#""slug": "gpt-5.6-terra""#));
     assert!(catalog.contains(r#""slug": "gpt-6-astra""#));
@@ -5450,4 +5452,77 @@ experimental_bearer_token = "sk-new"
     assert_eq!(model["visibility"], "hidden");
     assert_eq!(model["supported_in_api"], false);
     assert_eq!(model["use_responses_lite"], true);
+}
+
+/// #2123：profile 的 configContents 里残留 `%userprofile%\.codex\codex-models.json`
+/// 这种旧指针。codex 核心不展开变量，文件在任何机器上都不存在，加载时以
+/// `os error 3` 拒绝**整份** config.toml —— 用户看到的是"无法加载 config.toml，
+/// 因此此对话串无法继续"，和真正的故障点毫无关系，极难自诊。
+#[test]
+fn apply_relay_profile_drops_catalog_pointer_with_unexpanded_variable() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+model_catalog_json = '%userprofile%\.codex\codex-models.json'
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        !config.contains("model_catalog_json"),
+        "未展开变量的 catalog 指针必须被去掉，否则整份配置加载失败：{config}"
+    );
+    // 去掉指针不能连带破坏其余内容
+    config
+        .parse::<toml::Table>()
+        .expect("写出的 config.toml 必须是合法 TOML");
+    assert!(config.contains("model_provider = \"custom\""));
+}
+
+/// 收窄的边界：**只**认未展开变量这一种。普通的相对/绝对路径即使当前读不到，
+/// 也仍然按既有语义保留（用户在挂载盘、或自己删了 catalog 但想留着手改）。
+#[test]
+fn apply_relay_profile_keeps_plain_catalog_pointer_even_if_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+model_catalog_json = "/mnt/external/catalog.json"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        config.contains("/mnt/external/catalog.json"),
+        "普通路径不属于本次修复范围，必须原样保留：{config}"
+    );
 }
