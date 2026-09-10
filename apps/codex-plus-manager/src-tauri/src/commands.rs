@@ -500,6 +500,117 @@ pub struct StartupPayload {
     pub show_update: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrokProvidersPayload {
+    /// Grok 分区里已保存的供应商（存在 settings.json 的 tools.grok）。
+    pub profiles: Vec<RelayProfile>,
+    pub active_relay_id: String,
+    /// 磁盘上 Grok config.toml 的现状，用来展示「Grok 现在连的是谁」。
+    pub live: codex_plus_core::grok_config::GrokConfigPayload,
+    /// 把磁盘现状按供应商语义反推出来的 profile，供 UI 比对。
+    pub live_profile: RelayProfile,
+}
+
+/// 读取 Grok 侧的供应商列表 + 磁盘现状。
+#[tauri::command]
+pub fn load_grok_providers() -> CommandResult<GrokProvidersPayload> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let shard = settings.tool_config(&codex_plus_core::tools::ToolId::Grok);
+
+    match codex_plus_core::tools::grok::load_grok_state() {
+        Ok(live) => {
+            let live_profile = codex_plus_core::tools::grok::read_grok_profile_from_config(&live);
+            ok(
+                "Grok 供应商配置已加载。",
+                GrokProvidersPayload {
+                    profiles: shard.relay_profiles,
+                    active_relay_id: shard.active_relay_id,
+                    live,
+                    live_profile,
+                },
+            )
+        }
+        Err(error) => failed(
+            &format!("读取 Grok 配置失败：{error}"),
+            GrokProvidersPayload {
+                profiles: shard.relay_profiles,
+                active_relay_id: shard.active_relay_id,
+                live: empty_grok_config_payload(),
+                live_profile: RelayProfile::default(),
+            },
+        ),
+    }
+}
+
+/// 把 Grok 分区里当前选中的供应商写进 `~/.grok/config.toml`。
+///
+/// 这是**破坏性**操作：Grok 里所有受管的 `[model.*]` 表会被这个供应商的模型
+/// 列表整体替换（`[ui]` / `[models].web_search` 等未管理字段保留）。前端必须先
+/// 让用户确认，所以这里不做隐式调用。
+#[tauri::command]
+pub fn apply_grok_relay_profile(settings: BackendSettings) -> CommandResult<GrokProvidersPayload> {
+    let store = SettingsStore::default();
+    let mut next = settings;
+    let shard = next.tool_config(&codex_plus_core::tools::ToolId::Grok);
+    let Some(profile) = codex_plus_core::tools::grok::active_grok_profile(&shard) else {
+        return failed(
+            "Grok 还没有配置任何供应商。",
+            GrokProvidersPayload {
+                profiles: shard.relay_profiles,
+                active_relay_id: shard.active_relay_id,
+                live: empty_grok_config_payload(),
+                live_profile: RelayProfile::default(),
+            },
+        );
+    };
+
+    let backup_root = codex_plus_core::paths::default_app_state_dir().join("backups");
+    let live = match codex_plus_core::tools::grok::apply_profile_to_grok(&profile, &backup_root) {
+        Ok(live) => live,
+        Err(error) => {
+            return failed(
+                &format!("应用 Grok 供应商失败：{error}"),
+                GrokProvidersPayload {
+                    profiles: shard.relay_profiles,
+                    active_relay_id: shard.active_relay_id,
+                    live: codex_plus_core::tools::grok::load_grok_state()
+                        .unwrap_or_else(|_| empty_grok_config_payload()),
+                    live_profile: RelayProfile::default(),
+                },
+            );
+        }
+    };
+
+    // 先写盘再保存设置：写 config.toml 失败时不该留下「设置里说切了、磁盘上没切」
+    // 的不一致状态。
+    let mut saved_shard = shard.clone();
+    saved_shard.active_relay_id = profile.id.clone();
+    next.set_tool_config(&codex_plus_core::tools::ToolId::Grok, saved_shard);
+    if let Err(error) = store.save(&next) {
+        return failed(
+            &format!("Grok 配置已写入，但保存供应商设置失败：{error}"),
+            GrokProvidersPayload {
+                profiles: shard.relay_profiles,
+                active_relay_id: shard.active_relay_id,
+                live: live.clone(),
+                live_profile: codex_plus_core::tools::grok::read_grok_profile_from_config(&live),
+            },
+        );
+    }
+
+    let live_profile = codex_plus_core::tools::grok::read_grok_profile_from_config(&live);
+    ok(
+        &format!("已把供应商「{}」应用到 Grok。", profile.name),
+        GrokProvidersPayload {
+            profiles: shard.relay_profiles,
+            active_relay_id: profile.id,
+            live,
+            live_profile,
+        },
+    )
+}
+
 #[tauri::command]
 pub fn load_grok_config() -> CommandResult<codex_plus_core::grok_config::GrokConfigPayload> {
     match codex_plus_core::grok_config::load_grok_config() {
@@ -6174,10 +6285,15 @@ fn default_log_lines() -> usize {
 mod tests {
     use super::*;
 
-    static CODEX_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 进程级全局状态的测试锁。
+    ///
+    /// 不止保护 `CODEX_HOME`：`paths::set_settings_path_for_tests`、
+    /// `GROK_HOME` 同样是进程级的，两个测试并行跑就会互相把对方的值冲掉
+    /// （表现为「单独跑过、全量跑挂」）。凡是动这几样的测试都必须先拿这把锁。
+    static GLOBAL_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn lock_codex_home_for_test() -> std::sync::MutexGuard<'static, ()> {
-        CODEX_HOME_TEST_LOCK
+        GLOBAL_STATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -7483,7 +7599,8 @@ enabled = true
     }
 
     #[test]
-    fn list_tools_reports_codex_as_switchable_and_grok_as_pending() {
+    fn list_tools_reports_each_tool_with_its_own_provider_state() {
+        let _guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
         let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
@@ -7496,6 +7613,21 @@ enabled = true
                 relay_mode: codex_plus_core::settings::RelayMode::PureApi,
                 ..RelayProfile::default()
             }],
+            active_tool: codex_plus_core::tools::ToolId::Grok,
+            tools: [(
+                codex_plus_core::tools::ToolId::Grok,
+                codex_plus_core::tools::ToolConfig {
+                    relay_profiles: vec![RelayProfile {
+                        id: "grok-a".to_string(),
+                        name: "Grok 供应商".to_string(),
+                        ..RelayProfile::default()
+                    }],
+                    active_relay_id: "grok-a".to_string(),
+                    ..codex_plus_core::tools::ToolConfig::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
             ..BackendSettings::default()
         };
         SettingsStore::default().save(&settings).unwrap();
@@ -7504,7 +7636,8 @@ enabled = true
         codex_plus_core::paths::set_settings_path_for_tests(previous);
 
         assert_eq!(result.status, "ok");
-        assert_eq!(result.payload.active_tool, "codex");
+        assert_eq!(result.payload.active_tool, "grok");
+
         let codex = result
             .payload
             .tools
@@ -7512,24 +7645,120 @@ enabled = true
             .find(|tool| tool.id == "codex")
             .expect("codex 必须在工具列表里");
         assert!(codex.switchable);
-        assert!(codex.active);
+        assert!(!codex.active);
         assert_eq!(codex.active_relay_name.as_deref(), Some("供应商 A"));
         assert_eq!(codex.relay_count, 1);
 
-        // Grok 已经登记但还没接入供应商写盘，UI 上必须显示为不可切。
+        // 两个工具各读各的分片，互不串 —— 这是分区的核心契约。
         let grok = result
             .payload
             .tools
             .iter()
             .find(|tool| tool.id == "grok")
             .expect("grok 必须在工具列表里");
-        assert!(!grok.switchable);
-        assert!(!grok.active);
+        assert!(grok.switchable);
+        assert!(grok.active);
+        assert_eq!(grok.active_relay_name.as_deref(), Some("Grok 供应商"));
+        assert_eq!(grok.relay_count, 1);
         assert!(grok.home_dir.ends_with(".grok"));
+    }
+
+    /// 走一遍真实的命令链路：Grok 分区里配一个供应商 → apply 写进 config.toml。
+    ///
+    /// 全程用临时的 `GROK_HOME` / settings 路径，不碰用户真实的 ~/.grok。
+    #[test]
+    fn apply_grok_relay_profile_writes_the_selected_provider_to_disk() {
+        let _guard = lock_codex_home_for_test();
+        let previous_grok_home = std::env::var_os("GROK_HOME");
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings =
+            codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
+        let grok_home = temp.path().join("grok-home");
+        std::fs::create_dir_all(&grok_home).unwrap();
+        // 用户已有配置：未管理字段必须活下来。
+        std::fs::write(
+            grok_home.join("config.toml"),
+            "[ui]\nyolo = false\n\n[models]\nweb_search = \"search-model\"\n",
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("GROK_HOME", &grok_home);
+        }
+
+        let settings = BackendSettings {
+            active_tool: codex_plus_core::tools::ToolId::Grok,
+            tools: [(
+                codex_plus_core::tools::ToolId::Grok,
+                codex_plus_core::tools::ToolConfig {
+                    relay_profiles: vec![RelayProfile {
+                        id: "vendor-a".to_string(),
+                        name: "供应商 A".to_string(),
+                        relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                        upstream_base_url: "https://vendor-a.example/v1".to_string(),
+                        api_key: "sk-vendor-a".to_string(),
+                        model_list: "grok-4.5[1M]\ngrok-4.1-fast".to_string(),
+                        ..RelayProfile::default()
+                    }],
+                    active_relay_id: "vendor-a".to_string(),
+                    ..codex_plus_core::tools::ToolConfig::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..BackendSettings::default()
+        };
+
+        let result = apply_grok_relay_profile(settings);
+        codex_plus_core::paths::set_settings_path_for_tests(previous_settings);
+        let written = std::fs::read_to_string(grok_home.join("config.toml"));
+        unsafe {
+            match previous_grok_home {
+                Some(value) => std::env::set_var("GROK_HOME", value),
+                None => std::env::remove_var("GROK_HOME"),
+            }
+        }
+        let written = written.unwrap();
+
+        assert_eq!(result.status, "ok");
+        assert!(
+            written.contains("[model.\"grok-4.5\"]"),
+            "实际写出：\n{written}"
+        );
+        assert!(written.contains("base_url = \"https://vendor-a.example/v1\""));
+        assert!(written.contains("api_key = \"sk-vendor-a\""));
+        assert!(written.contains("context_window = 1000000"));
+        // 未管理字段原样保留。
+        assert!(written.contains("[ui]"));
+        assert!(written.contains("web_search = \"search-model\""));
+    }
+
+    /// 还没填模型列表的供应商不允许应用。
+    ///
+    /// 这里用默认的 Grok 分区：它带着一个默认 profile，但 `model_list` 是空的。
+    /// 应用它会把 Grok 里所有受管的 `[model.*]` 表清空，所以必须被拦下来。
+    #[test]
+    fn apply_grok_relay_profile_rejects_a_provider_without_models() {
+        let _guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings =
+            codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
+
+        let result = apply_grok_relay_profile(BackendSettings::default());
+        codex_plus_core::paths::set_settings_path_for_tests(previous_settings);
+
+        assert_eq!(result.status, "failed");
+        assert!(
+            result.message.contains("没有配置模型列表"),
+            "实际消息：{}",
+            result.message
+        );
     }
 
     #[test]
     fn reset_image_overlay_settings_preserves_supplier_settings() {
+        let _guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
         let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
