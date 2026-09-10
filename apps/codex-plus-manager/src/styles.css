@@ -552,50 +552,49 @@ body {
   color: hsl(var(--brand-accent));
 }
 
+/* 概览的赞助商区：一个赞助商就占满一行，两个就并排。
+   卡片内部沿用 .jojocode-overview-layout 的「左信息 / 右标签区」结构，
+   所以窄卡片时标签区要能收缩，不能把卡片撑出去。 */
+.sponsor-board {
+  display: grid;
+  gap: 12px;
+}
+
+.sponsor-board.is-multi {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sponsor-board > .panel {
+  min-width: 0;
+}
+
+/* 并排时每个赞助商只分到一半宽度，长标签会把卡片顶出边界。
+   让标签区换行、按钮独占一行，而不是横向撑开。 */
+.sponsor-board.is-multi .jojocode-overview-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sponsor-board.is-multi .jojocode-overview-side {
+  justify-items: start;
+}
+
+.sponsor-board.is-multi .jojocode-model-tags {
+  justify-content: flex-start;
+  max-width: none;
+}
+
+@media (max-width: 1100px) {
+  .sponsor-board.is-multi {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* 赞助商自带 logo 时用它替换默认的 Network 图标，尺寸对齐避免布局跳动。 */
 .sponsor-logo {
   width: 42px;
   height: 42px;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
-  background: hsl(var(--background));
-  object-fit: contain;
-}
-
-/* 首位之外的赞助商在概览里收成一条横排 chip。 */
-.sponsor-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid hsl(var(--border) / 0.6);
-}
-
-.sponsor-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px 5px 5px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 999px;
-  background: hsl(var(--background) / 0.5);
-  color: hsl(var(--foreground));
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  transition: border-color 140ms ease, background-color 140ms ease;
-}
-
-.sponsor-chip:hover {
-  border-color: hsl(var(--ring));
-  background: hsl(var(--accent));
-}
-
-.sponsor-chip-logo {
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
   background: hsl(var(--background));
   object-fit: contain;
 }

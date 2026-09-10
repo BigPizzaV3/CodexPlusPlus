@@ -4244,61 +4244,55 @@ function WeixinConnectScreen({
 ///
 /// 数据优先级：广告源里的 sponsor 条目 → 本地内置的兜底条目。本地兜底保证
 /// 断网或广告源没加载时这块不会空着。
+/// 概览页最多展示的赞助商数量。
+///
+/// 一个就显示一个、两个就显示两个，不堆成一排小 chip —— 概览是给人一眼看完
+/// 的，赞助商多的时候应该去「项目赞助商」页看全量。
+const OVERVIEW_SPONSOR_LIMIT = 2;
+
 function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
   const sponsors = (ads?.ads ?? []).filter((ad) => ad.type === "sponsor" && !isExpiredAd(ad));
   // 广告源还没回来时用内置条目，避免首屏闪一下空白。
-  const featured = sponsors.length ? sponsors : BUILTIN_SPONSORS;
-  const [primary, ...rest] = featured;
+  const featured = (sponsors.length ? sponsors : BUILTIN_SPONSORS).slice(0, OVERVIEW_SPONSOR_LIMIT);
 
   return (
-    <Panel className="jojocode-overview">
-      <CardContent>
-        <div className="jojocode-overview-layout">
-          <div className="jojocode-overview-main">
-            {primary.image ? (
-              <img alt="" className="sponsor-logo" src={primary.image} />
-            ) : (
-              <div className="jojocode-overview-mark">
-                <Network className="h-5 w-5" />
+    <div className={`sponsor-board ${featured.length > 1 ? "is-multi" : ""}`}>
+      {featured.map((ad) => (
+        <Panel className="jojocode-overview" key={ad.id || ad.title}>
+          <CardContent>
+            <div className="jojocode-overview-layout">
+              <div className="jojocode-overview-main">
+                {ad.image ? (
+                  <img alt="" className="sponsor-logo" src={ad.image} />
+                ) : (
+                  <div className="jojocode-overview-mark">
+                    <Network className="h-5 w-5" />
+                  </div>
+                )}
+                <div>
+                  <span className="eyebrow">{t("项目赞助商")}</span>
+                  <h2>{formatAdTitle(ad.title)}</h2>
+                  <p>{ad.description}</p>
+                </div>
               </div>
-            )}
-            <div>
-              <span className="eyebrow">{t("项目赞助商")}</span>
-              <h2>{formatAdTitle(primary.title)}</h2>
-              <p>{primary.description}</p>
+              <div className="jojocode-overview-side">
+                {ad.highlights?.length ? (
+                  <div className="jojocode-model-tags">
+                    {ad.highlights.map((item) => (
+                      <span key={item}>{item}</span>
+                    ))}
+                  </div>
+                ) : null}
+                <Button onClick={() => void actions.openExternalUrl(ad.url)}>
+                  <ExternalLink className="h-4 w-4" />
+                  {t("打开赞助商")}
+                </Button>
+              </div>
             </div>
-          </div>
-          <div className="jojocode-overview-side">
-            {primary.highlights?.length ? (
-              <div className="jojocode-model-tags">
-                {primary.highlights.map((item) => (
-                  <span key={item}>{item}</span>
-                ))}
-              </div>
-            ) : null}
-            <Button onClick={() => void actions.openExternalUrl(primary.url)}>
-              <ExternalLink className="h-4 w-4" />
-              {t("打开赞助商")}
-            </Button>
-          </div>
-        </div>
-        {rest.length ? (
-          <div className="sponsor-strip">
-            {rest.map((ad) => (
-              <button
-                className="sponsor-chip"
-                key={ad.id || ad.title}
-                onClick={() => void actions.openExternalUrl(ad.url)}
-                type="button"
-              >
-                {ad.image ? <img alt="" className="sponsor-chip-logo" src={ad.image} /> : null}
-                <span>{formatAdTitle(ad.title)}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </CardContent>
-    </Panel>
+          </CardContent>
+        </Panel>
+      ))}
+    </div>
   );
 }
 
