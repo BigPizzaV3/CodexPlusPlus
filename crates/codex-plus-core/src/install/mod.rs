@@ -10,6 +10,7 @@ pub mod windows;
 pub const SILENT_NAME: &str = "Codex++";
 pub const MANAGER_NAME: &str = "Codex++ 管理工具";
 pub const SILENT_BINARY: &str = "codex-plus-plus";
+pub const MACOS_SILENT_EXECUTABLE: &str = "CodexPlusPlus";
 pub const MANAGER_BINARY: &str = "codex-plus-plus-manager";
 pub const SILENT_BUNDLE_ID: &str = "com.bigpizzav3.codexplusplus";
 pub const MANAGER_BUNDLE_ID: &str = "com.bigpizzav3.codexplusplus.manager";
@@ -291,6 +292,24 @@ where
         .spawn()
         .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", path.to_string_lossy()))?;
     Ok(path.to_string_lossy().to_string())
+}
+
+pub fn open_or_activate_manager() -> anyhow::Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        if let Some(bundle_id) = macos_companion_bundle_identifier_from_exe(&exe, MANAGER_BINARY) {
+            let activated = Command::new("/usr/bin/open")
+                .args(["-b", bundle_id])
+                .status()
+                .is_ok_and(|status| status.success());
+            if activated {
+                return Ok(format!("bundle:{bundle_id}"));
+            }
+        }
+    }
+
+    spawn_companion(MANAGER_BINARY, std::iter::empty::<&str>())
 }
 
 pub fn macos_companion_bundle_identifier_from_exe(

@@ -66,6 +66,21 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub model_windows: String,
+    /// 每模型自动压缩百分比（JSON map: slug -> 百分比字符串，如 "90" 或 "90%"）。
+    /// 为空时保持 Codex 原有的默认自动压缩行为，不向 catalog 写入覆盖值。
+    #[serde(
+        rename = "modelAutoCompact",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub model_auto_compact: String,
+    /// 每模型元数据覆盖（JSON map: slug -> 字段覆盖）。
+    #[serde(
+        rename = "modelMetadata",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub model_metadata: String,
     #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
     pub model_vlm: String,
     #[serde(
@@ -129,6 +144,20 @@ pub struct AggregateRelayMember {
     pub weight: u32,
 }
 
+/// 聚合供应商按模型名路由规则：model 匹配 pattern 时转发到指定成员
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateRelayRoute {
+    /// 模型匹配模式，如 "deepseek-*" / "gpt-*" / "*"；仅支持 * 通配符
+    pub pattern: String,
+    /// 目标聚合成员 relayId（必须是本聚合 members 之一）
+    #[serde(rename = "relayId")]
+    pub relay_id: String,
+    /// 数字越大越优先，缺省 0；同 priority 按数组顺序（稳定优先）
+    #[serde(default)]
+    pub priority: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RelaySessionProvider {
@@ -157,6 +186,8 @@ pub struct AggregateRelayProfile {
     pub strategy: AggregateRelayStrategy,
     #[serde(default)]
     pub members: Vec<AggregateRelayMember>,
+    #[serde(default)]
+    pub routes: Vec<AggregateRelayRoute>,
 }
 
 impl Default for RelayProfile {
@@ -182,6 +213,8 @@ impl Default for RelayProfile {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            model_auto_compact: String::new(),
+            model_metadata: String::new(),
             model_vlm: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
@@ -413,6 +446,14 @@ pub struct BackendSettings {
     pub codex_app_pet_real_mouse_look: bool,
     #[serde(rename = "codexAppStepwiseEnabled", default)]
     pub codex_app_stepwise_enabled: bool,
+    #[serde(
+        rename = "codexAppStepwiseGenerationMode",
+        default = "default_stepwise_generation_mode",
+        deserialize_with = "deserialize_stepwise_generation_mode"
+    )]
+    pub codex_app_stepwise_generation_mode: String,
+    #[serde(rename = "codexAppAnswerOutlineEnabled", default)]
+    pub codex_app_answer_outline_enabled: bool,
     #[serde(rename = "codexAppStepwiseDirectSend", default)]
     pub codex_app_stepwise_direct_send: bool,
     #[serde(rename = "codexAppStepwiseBaseUrl", default)]
@@ -569,6 +610,8 @@ impl Default for BackendSettings {
             codex_app_service_tier_controls: false,
             codex_app_pet_real_mouse_look: false,
             codex_app_stepwise_enabled: false,
+            codex_app_stepwise_generation_mode: default_stepwise_generation_mode(),
+            codex_app_answer_outline_enabled: false,
             codex_app_stepwise_direct_send: false,
             codex_app_stepwise_base_url: String::new(),
             codex_app_stepwise_api_key: String::new(),
@@ -649,6 +692,8 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 model_windows: String::new(),
+                model_auto_compact: String::new(),
+                model_metadata: String::new(),
                 model_vlm: String::new(),
                 vlm_api_key: String::new(),
                 vlm_model: String::new(),
@@ -701,6 +746,8 @@ impl BackendSettings {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            model_auto_compact: String::new(),
+            model_metadata: String::new(),
             model_vlm: String::new(),
             vlm_api_key: String::new(),
             vlm_model: String::new(),
@@ -759,11 +806,15 @@ impl BackendSettings {
         }
     }
 
-    pub fn active_relay_uses_protocol_proxy(&self) -> bool {
+    pub fn active_relay_transport_uses_protocol_proxy(&self) -> bool {
         self.active_aggregate_relay_profile().is_some()
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
             || self.active_relay_profile().has_model_routes()
             || self.active_relay_profile().uses_no_auth()
+    }
+
+    pub fn active_relay_uses_protocol_proxy(&self) -> bool {
+        self.active_relay_transport_uses_protocol_proxy()
             || self.active_relay_session_provider() == RelaySessionProvider::Openai
     }
 }
@@ -785,8 +836,19 @@ pub fn normalize_stepwise_protocol(value: &str) -> String {
     }
 }
 
+pub fn default_stepwise_generation_mode() -> String {
+    "auto".to_string()
+}
+
+pub fn normalize_stepwise_generation_mode(value: &str) -> String {
+    match value.trim() {
+        "manual" => "manual".to_string(),
+        _ => default_stepwise_generation_mode(),
+    }
+}
+
 pub fn default_stepwise_max_items() -> u8 {
-    6
+    4
 }
 
 pub fn default_stepwise_max_input_chars() -> u32 {
@@ -924,7 +986,7 @@ fn normalize_dream_skin_theme(value: &str) -> String {
 }
 
 pub fn clamp_stepwise_max_items(value: u8) -> u8 {
-    value.min(default_stepwise_max_items())
+    value.min(6)
 }
 
 pub fn clamp_stepwise_max_input_chars(value: u32) -> u32 {
@@ -988,6 +1050,15 @@ where
     Ok(Option::<String>::deserialize(deserializer)?
         .map(|value| normalize_stepwise_protocol(&value))
         .unwrap_or_else(default_stepwise_protocol))
+}
+
+fn deserialize_stepwise_generation_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_stepwise_generation_mode(&value))
+        .unwrap_or_else(default_stepwise_generation_mode))
 }
 
 fn deserialize_image_overlay_opacity<'de, D>(deserializer: D) -> Result<u8, D::Error>
@@ -1211,6 +1282,16 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
+    if let Some(value) = source
+        .get("codexAppStepwiseGenerationMode")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppStepwiseGenerationMode".to_string(),
+            Value::String(normalize_stepwise_generation_mode(value)),
+        );
+    }
+    merge_bool_setting(target, source, "codexAppAnswerOutlineEnabled");
     merge_bool_setting(target, source, "codexAppStepwiseDirectSend");
     if let Some(value) = source
         .get("codexAppStepwiseBaseUrl")
@@ -1595,6 +1676,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         };
     settings.codex_app_stepwise_protocol =
         normalize_stepwise_protocol(&settings.codex_app_stepwise_protocol);
+    settings.codex_app_stepwise_generation_mode =
+        normalize_stepwise_generation_mode(&settings.codex_app_stepwise_generation_mode);
     settings.codex_app_stepwise_model = settings.codex_app_stepwise_model.trim().to_string();
     settings.weixin_connect_base_url = settings
         .weixin_connect_base_url
@@ -1799,6 +1882,8 @@ mod tests {
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
         assert!(!settings.codex_app_stepwise_enabled);
+        assert_eq!(settings.codex_app_stepwise_generation_mode, "auto");
+        assert!(!settings.codex_app_answer_outline_enabled);
         assert!(!settings.codex_app_stepwise_direct_send);
         assert!(settings.codex_app_stepwise_base_url.is_empty());
         assert!(settings.codex_app_stepwise_api_key.is_empty());
@@ -1808,7 +1893,7 @@ mod tests {
         );
         assert_eq!(settings.codex_app_stepwise_protocol, "chat_completions");
         assert!(settings.codex_app_stepwise_model.is_empty());
-        assert_eq!(settings.codex_app_stepwise_max_items, 6);
+        assert_eq!(settings.codex_app_stepwise_max_items, 4);
         assert_eq!(settings.codex_app_stepwise_max_input_chars, 6000);
         assert_eq!(settings.codex_app_stepwise_max_output_tokens, 500);
         assert_eq!(settings.codex_app_stepwise_timeout_ms, 8000);
@@ -1844,6 +1929,34 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(invalid.codex_app_stepwise_protocol, "chat_completions");
+    }
+
+    #[test]
+    fn settings_deserialize_defaults_stepwise_ui_settings() {
+        let defaults: BackendSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.codex_app_stepwise_generation_mode, "auto");
+        assert!(!defaults.codex_app_answer_outline_enabled);
+
+        let explicitly_enabled: BackendSettings = serde_json::from_value(json!({
+            "codexAppAnswerOutlineEnabled": true
+        }))
+        .unwrap();
+        assert!(explicitly_enabled.codex_app_answer_outline_enabled);
+    }
+
+    #[test]
+    fn settings_deserialize_normalizes_stepwise_generation_mode() {
+        let manual: BackendSettings = serde_json::from_value(json!({
+            "codexAppStepwiseGenerationMode": " manual "
+        }))
+        .unwrap();
+        assert_eq!(manual.codex_app_stepwise_generation_mode, "manual");
+
+        let invalid: BackendSettings = serde_json::from_value(json!({
+            "codexAppStepwiseGenerationMode": "unsupported"
+        }))
+        .unwrap();
+        assert_eq!(invalid.codex_app_stepwise_generation_mode, "auto");
     }
 
     #[test]
@@ -1925,6 +2038,7 @@ mod tests {
         assert!(profile.auto_compact_limit.is_empty());
         assert_eq!(profile.model_insert_mode, RelayModelInsertMode::Patch);
         assert!(profile.model_list.is_empty());
+        assert!(profile.model_auto_compact.is_empty());
         assert!(profile.model_routes.is_empty());
         assert!(!profile.has_model_routes());
     }
@@ -1942,6 +2056,42 @@ mod tests {
         };
 
         assert!(settings.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn relay_profile_model_auto_compact_is_opt_in_and_round_trips() {
+        let profile = RelayProfile::default();
+        let serialized = serde_json::to_value(&profile).unwrap();
+        assert!(serialized.get("modelAutoCompact").is_none());
+
+        let profile: RelayProfile = serde_json::from_value(serde_json::json!({
+            "id": "relay",
+            "name": "Relay",
+            "modelAutoCompact": "{\"gpt-5.6-sol\":\"84.329412%\"}"
+        }))
+        .unwrap();
+        assert_eq!(
+            profile.model_auto_compact,
+            r#"{"gpt-5.6-sol":"84.329412%"}"#
+        );
+    }
+
+    #[test]
+    fn relay_profile_model_metadata_is_opt_in_and_round_trips() {
+        let profile = RelayProfile::default();
+        let serialized = serde_json::to_value(&profile).unwrap();
+        assert!(serialized.get("modelMetadata").is_none());
+
+        let profile: RelayProfile = serde_json::from_value(serde_json::json!({
+            "id": "relay",
+            "name": "Relay",
+            "modelMetadata": "{\"gpt-5.6-sol\":{\"supports_search_tool\":true}}"
+        }))
+        .unwrap();
+        assert_eq!(
+            profile.model_metadata,
+            r#"{"gpt-5.6-sol":{"supports_search_tool":true}}"#
+        );
     }
 
     #[test]
@@ -2379,13 +2529,14 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
-    fn settings_store_persists_and_normalizes_stepwise_protocol() {
+    fn settings_store_persists_and_normalizes_stepwise_protocol_and_generation_mode() {
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
 
         let updated = store
             .update(json!({
-                "codexAppStepwiseProtocol": "responses"
+                "codexAppStepwiseProtocol": "responses",
+                "codexAppStepwiseGenerationMode": " manual "
             }))
             .unwrap();
         assert_eq!(updated.codex_app_stepwise_protocol, "responses");
@@ -2393,16 +2544,24 @@ experimental_bearer_token = "sk-existing""#
             store.load().unwrap().codex_app_stepwise_protocol,
             "responses"
         );
+        assert_eq!(updated.codex_app_stepwise_generation_mode, "manual");
+        assert_eq!(
+            store.load().unwrap().codex_app_stepwise_generation_mode,
+            "manual"
+        );
 
         let invalid = store
             .update(json!({
-                "codexAppStepwiseProtocol": "not-a-protocol"
+                "codexAppStepwiseProtocol": "not-a-protocol",
+                "codexAppStepwiseGenerationMode": "not-a-mode"
             }))
             .unwrap();
         assert_eq!(invalid.codex_app_stepwise_protocol, "chat_completions");
+        assert_eq!(invalid.codex_app_stepwise_generation_mode, "auto");
         let saved: Value =
             serde_json::from_str(&std::fs::read_to_string(store.path).unwrap()).unwrap();
         assert_eq!(saved["codexAppStepwiseProtocol"], "chat_completions");
+        assert_eq!(saved["codexAppStepwiseGenerationMode"], "auto");
     }
 
     #[test]
@@ -2444,6 +2603,7 @@ experimental_bearer_token = "sk-existing""#
                         weight: 3,
                     },
                 ],
+                routes: Vec::new(),
             }],
             active_aggregate_relay_id: "agg".to_string(),
             ..BackendSettings::default()
@@ -2643,6 +2803,8 @@ experimental_bearer_token = "sk-existing""#
         let updated = store
             .update(json!({
                 "codexAppStepwiseEnabled": true,
+                "codexAppStepwiseGenerationMode": "manual",
+                "codexAppAnswerOutlineEnabled": false,
                 "codexAppStepwiseDirectSend": true,
                 "codexAppStepwiseBaseUrl": "https://api.example.test/v1/",
                 "codexAppStepwiseApiKey": " sk-stepwise ",
@@ -2656,6 +2818,8 @@ experimental_bearer_token = "sk-existing""#
             .unwrap();
 
         assert!(updated.codex_app_stepwise_enabled);
+        assert_eq!(updated.codex_app_stepwise_generation_mode, "manual");
+        assert!(!updated.codex_app_answer_outline_enabled);
         assert!(updated.codex_app_stepwise_direct_send);
         assert_eq!(
             updated.codex_app_stepwise_base_url,

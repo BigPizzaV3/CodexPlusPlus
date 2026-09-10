@@ -6,11 +6,12 @@
 use codex_plus_core::model_suffix::{
     build_model_catalog_json, collect_catalog_entries, migrate_model_list_with_suffixes,
 };
+use std::collections::HashMap;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let raw_list = args.join("\n");
     let (model_list, model_windows) = migrate_model_list_with_suffixes(&raw_list);
-    let entries = collect_catalog_entries(&model_list, &model_windows, "");
+    let entries = collect_catalog_entries(&model_list, &model_windows, &HashMap::new(), "");
     print!("{}", build_model_catalog_json(&entries, None));
 }

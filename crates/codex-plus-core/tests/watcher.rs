@@ -1,8 +1,8 @@
 use codex_plus_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    process_id_is_running, process_ids_still_running, should_recover_stale_launcher,
-    watcher_disabled_flag,
+    macos_launcher_process_names, process_id_is_running, process_ids_still_running,
+    should_recover_stale_launcher, watcher_disabled_flag,
 };
 
 #[cfg(windows)]
@@ -125,6 +125,14 @@ fn launcher_process_filter_protects_current_process_ancestry() {
     ];
 
     assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
+}
+
+#[test]
+fn macos_launcher_process_names_cover_development_and_packaged_binaries() {
+    assert_eq!(
+        macos_launcher_process_names(),
+        ["codex-plus-plus", "CodexPlusPlus"]
+    );
 }
 
 #[test]

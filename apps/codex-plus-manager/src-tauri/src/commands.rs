@@ -563,6 +563,13 @@ pub fn startup_options() -> CommandResult<StartupPayload> {
     )
 }
 
+#[tauri::command]
+pub fn consume_pending_manager_navigation()
+-> Result<Option<codex_plus_core::manager_navigation::ManagerNavigationIntent>, String> {
+    codex_plus_core::manager_navigation::consume_pending_manager_navigation()
+        .map_err(|error| error.to_string())
+}
+
 pub fn startup_should_show_update() -> bool {
     should_show_update(
         std::env::args(),
@@ -2937,7 +2944,7 @@ pub async fn load_provider_sync_targets() -> CommandResult<Value> {
                     }
                 })
                 .collect::<Vec<_>>();
-            merge_manual_provider_sync_targets(&mut targets, &manual, &settings);
+            merge_manual_provider_sync_targets(&mut targets, &manual, &settings, None);
             ok(
                 "Provider 同步目标已加载。",
                 serde_json::to_value(targets).unwrap_or_else(|_| json!({})),
@@ -2951,6 +2958,7 @@ fn merge_manual_provider_sync_targets(
     targets: &mut codex_plus_data::ProviderSyncTargetList,
     manual: &[String],
     settings: &BackendSettings,
+    codex_home: Option<&Path>,
 ) {
     for id in manual {
         if let Some(existing) = targets.targets.iter_mut().find(|target| target.id == *id) {
@@ -2966,6 +2974,11 @@ fn merge_manual_provider_sync_targets(
             existing.is_manual = settings.provider_sync_manual_providers.contains(id);
             existing.is_saved = settings.provider_sync_saved_providers.contains(id);
         } else {
+            let (is_resolvable, unavailable_reason) =
+                match codex_plus_data::validate_provider_sync_target(codex_home, Some(id)) {
+                    Ok(_) => (true, None),
+                    Err(reason) => (false, Some(reason)),
+                };
             targets
                 .targets
                 .push(codex_plus_data::ProviderSyncTargetOption {
@@ -2974,6 +2987,8 @@ fn merge_manual_provider_sync_targets(
                     is_current_provider: *id == targets.current_provider,
                     is_manual: settings.provider_sync_manual_providers.contains(id),
                     is_saved: settings.provider_sync_saved_providers.contains(id),
+                    is_resolvable,
+                    unavailable_reason,
                 });
         }
     }
@@ -3049,6 +3064,21 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let target_for_validation = target_provider.clone();
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::validate_provider_sync_target(None, target_for_validation.as_deref())
+    })
+    .await
+    {
+        // Keep None as "use current" so the sync reads the live selection again.
+        Ok(Ok(_)) => {}
+        Ok(Err(message)) => return provider_sync_preflight_failure(&message),
+        Err(error) => {
+            return provider_sync_preflight_failure(&format!(
+                "provider target validation task failed: {error}"
+            ));
+        }
+    };
     let target_for_settings = target_provider.clone();
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
@@ -3091,6 +3121,17 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
             failed(&format!("供应商同步失败：{error}"), json!({}))
         }
     }
+}
+
+fn provider_sync_preflight_failure(message: &str) -> CommandResult<Value> {
+    failed(
+        &format!("供应商同步未执行：{message}"),
+        json!({
+            "syncStatus": "skipped",
+            "targetProvider": "",
+            "syncMessage": message,
+        }),
+    )
 }
 
 fn is_success_sync_status(status: &codex_plus_data::ProviderSyncStatus) -> bool {
@@ -5510,6 +5551,7 @@ fn relay_switch_mutex() -> &'static Mutex<()> {
 fn empty_context_entries() -> codex_plus_core::relay_config::CodexContextEntries {
     codex_plus_core::relay_config::CodexContextEntries {
         mcp_servers: Vec::new(),
+        skills: Vec::new(),
         plugins: Vec::new(),
     }
 }
@@ -5894,6 +5936,95 @@ fn shortcut_state(shortcut: install::ShortcutState) -> PathState {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestVlmRequest {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+    pub image_data_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestVlmResult {
+    pub vlm_status: String,
+    pub http_code: Option<u16>,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+    pub description: Option<String>,
+    pub model: String,
+    pub raw_request: Option<String>,
+    pub raw_response: Option<String>,
+}
+
+/// 用表单当前 VLM 配置 + 用户上传图片（data URL）测试 VLM 可用性。
+/// 用表单当前值（未保存亦可）；失败也返回结构化 payload 供前端渲染诊断。
+#[tauri::command]
+pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
+    // 加固 spec §4.1 第二道门：前端校验可被绕过（IPC 直调），类型与大小在
+    // 信任边界重新校验；非法输入不发起网络请求。
+    if let Err(reason) = codex_plus_core::vision::validate_image_data_url(&request.image_data_url) {
+        return failed(
+            "VLM 测试失败：invalid_image",
+            TestVlmResult {
+                vlm_status: "invalid_image".to_string(),
+                http_code: None,
+                duration_ms: 0,
+                error: Some(reason),
+                description: None,
+                model: request.model,
+                raw_request: None,
+                raw_response: None,
+            },
+        );
+    }
+    let config = codex_plus_core::vision::VlmConfig {
+        api_key: request.api_key,
+        model: request.model.clone(),
+        base_url: request.base_url,
+    };
+    let client = match codex_plus_core::http_client::vlm_http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            return failed(
+                &format!("VLM HTTP 客户端构建失败：{e}"),
+                TestVlmResult {
+                    vlm_status: "client_error".to_string(),
+                    http_code: None,
+                    duration_ms: 0,
+                    // 加固 spec §4.2：client_error 路径同样过脱敏，全仓库一条规则
+                    error: Some(codex_plus_core::vision::redact_secrets(
+                        &e.to_string(),
+                        &config.api_key,
+                    )),
+                    description: None,
+                    model: request.model,
+                    raw_request: None,
+                    raw_response: None,
+                },
+            );
+        }
+    };
+    let outcome =
+        codex_plus_core::vision::test_vlm_once(&config, &request.image_data_url, &client).await;
+    let result = TestVlmResult {
+        vlm_status: outcome.status.clone(),
+        http_code: outcome.http_code,
+        duration_ms: outcome.duration_ms,
+        error: outcome.error,
+        description: outcome.text,
+        model: request.model,
+        raw_request: outcome.raw_request,
+        raw_response: outcome.raw_response,
+    };
+    if outcome.status == "ok" {
+        ok("VLM 测试成功。", result)
+    } else {
+        failed(&format!("VLM 测试失败：{}", outcome.status), result)
+    }
+}
+
 fn ok<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     CommandResult {
         status: "ok".to_string(),
@@ -6128,6 +6259,55 @@ mod tests {
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("Provider sync lock exists"));
         assert_eq!(result.payload["syncStatus"], "skipped");
+    }
+
+    #[test]
+    fn provider_sync_preflight_failure_is_structured_as_skipped() {
+        let result = provider_sync_preflight_failure("target is not resolvable");
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.payload["syncStatus"], "skipped");
+        assert_eq!(result.payload["targetProvider"], "");
+        assert_eq!(result.payload["syncMessage"], "target is not resolvable");
+    }
+
+    #[test]
+    fn manual_provider_sync_targets_keep_unresolvable_history_visible() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            r#"model_provider = "relay-live"
+
+[model_providers.relay-live]
+base_url = "https://example.invalid/v1"
+"#,
+        )
+        .unwrap();
+        let mut settings = BackendSettings::default();
+        settings.provider_sync_manual_providers =
+            vec!["relay-live".to_string(), "relay-history".to_string()];
+        let manual = settings.provider_sync_manual_providers.clone();
+        let mut targets = codex_plus_data::ProviderSyncTargetList {
+            current_provider: "relay-live".to_string(),
+            targets: Vec::new(),
+        };
+
+        merge_manual_provider_sync_targets(&mut targets, &manual, &settings, Some(temp.path()));
+
+        let live = targets
+            .targets
+            .iter()
+            .find(|target| target.id == "relay-live")
+            .unwrap();
+        assert!(live.is_resolvable);
+        assert!(live.unavailable_reason.is_none());
+        let history = targets
+            .targets
+            .iter()
+            .find(|target| target.id == "relay-history")
+            .unwrap();
+        assert!(!history.is_resolvable);
+        assert!(history.unavailable_reason.is_some());
     }
 
     #[test]
@@ -6651,6 +6831,7 @@ mod tests {
                 session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
+                routes: Vec::new(),
             }],
             ..BackendSettings::default()
         };

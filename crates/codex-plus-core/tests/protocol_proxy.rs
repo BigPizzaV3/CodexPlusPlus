@@ -1,10 +1,12 @@
 use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
-    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
+    chat_sse_to_responses_sse_with_request, image_edits_url, image_generations_url,
+    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
+    is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
     is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
-    open_chat_completions_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    open_chat_completions_proxy_request, open_image_edits_proxy_request,
+    open_image_generations_proxy_request, open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
     open_responses_proxy_request_with_settings_for_path, responses_compact_url,
     responses_error_from_upstream, responses_to_chat_completions,
@@ -16,7 +18,7 @@ use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
     RelayMode, RelayModelRoute, RelayProfile, RelayProtocol, RelaySessionProvider,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,21 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn contains_problematic_local_ref_siblings(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(contains_problematic_local_ref_siblings),
+        Value::Object(object) => {
+            let has_local_ref_siblings = object.len() > 1
+                && object
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reference| reference.starts_with("#/$defs/"));
+            has_local_ref_siblings || object.values().any(contains_problematic_local_ref_siblings)
+        }
+        _ => false,
+    }
+}
 
 #[test]
 fn responses_request_converts_to_chat_completions() {
@@ -148,6 +165,25 @@ fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
     ] {
         assert!(is_audio_transcriptions_proxy_path(path), "{path}");
     }
+
+    for path in [
+        "/images/generations",
+        "/v1/images/generations",
+        "/v1/v1/images/generations",
+        "/codex/v1/images/generations",
+    ] {
+        assert!(is_image_generations_proxy_path(path), "{path}");
+    }
+    for path in [
+        "/images/edits",
+        "/v1/images/edits",
+        "/v1/v1/images/edits",
+        "/codex/v1/images/edits",
+    ] {
+        assert!(is_image_edits_proxy_path(path), "{path}");
+    }
+    assert!(!is_image_generations_proxy_path("/images/unknown"));
+    assert!(!is_image_edits_proxy_path("/images/generation"));
 }
 
 #[test]
@@ -740,6 +776,334 @@ fn responses_request_drops_tool_controls_when_no_chat_tools_survive() {
     assert!(converted.get("tools").is_none());
     assert!(converted.get("tool_choice").is_none());
     assert!(converted.get("parallel_tool_calls").is_none());
+}
+
+#[test]
+fn responses_request_to_chat_inlines_ref_siblings_in_tool_defs() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "automation_update",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "targetThreadId": {
+                        "$ref": "#/$defs/__schema20"
+                    }
+                },
+                "$defs": {
+                    "__schema2": {
+                        "type": "string"
+                    },
+                    "__schema20": {
+                        "$ref": "#/$defs/__schema2",
+                        "type": "string",
+                        "format": "uuid",
+                        "minLength": 1
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    let schema20 = &parameters["$defs"]["__schema20"];
+    assert!(schema20.get("$ref").is_none());
+    assert_eq!(schema20["type"], "string");
+    assert_eq!(schema20["format"], "uuid");
+    assert_eq!(schema20["minLength"], 1);
+    assert!(!contains_problematic_local_ref_siblings(parameters));
+    assert_eq!(
+        parameters["properties"]["targetThreadId"]["$ref"],
+        "#/$defs/__schema20"
+    );
+}
+
+#[test]
+fn invalid_defs_container_does_not_panic() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id",
+                        "description": "foo"
+                    }
+                },
+                "$defs": "invalid"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/id",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn non_object_local_ref_target_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id",
+                        "description": "foo"
+                    }
+                },
+                "$defs": {
+                    "id": "invalid"
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/id",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn nested_ref_is_normalized_through_properties_and_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/$defs/foo",
+                            "description": "nested"
+                        }
+                    }
+                },
+                "$defs": {
+                    "foo": {
+                        "type": "string"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let nested = &converted["tools"][0]["function"]["parameters"]["properties"]["items"]["items"];
+    assert!(nested.get("$ref").is_none());
+    assert_eq!(nested["type"], "string");
+    assert_eq!(nested["description"], "nested");
+}
+
+#[test]
+fn cyclic_ref_alias_does_not_recurse_forever() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cycle": {
+                        "$ref": "#/$defs/a",
+                        "description": "cycle"
+                    }
+                },
+                "$defs": {
+                    "a": {
+                        "$ref": "#/$defs/b"
+                    },
+                    "b": {
+                        "$ref": "#/$defs/a"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let cycle = &converted["tools"][0]["function"]["parameters"]["properties"]["cycle"];
+    assert_eq!(cycle["$ref"], "#/$defs/a");
+    assert_eq!(cycle["description"], "cycle");
+}
+
+#[test]
+fn external_ref_is_not_inlined() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "https://example.com/schema.json",
+                        "description": "foo"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "https://example.com/schema.json",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn unknown_local_ref_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/not_exists",
+                        "description": "foo"
+                    }
+                },
+                "$defs": {}
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({
+            "$ref": "#/$defs/not_exists",
+            "description": "foo"
+        })
+    );
+}
+
+#[test]
+fn bare_top_level_ref_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "$ref": "#/$defs/lookup"
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"],
+        json!({ "$ref": "#/$defs/lookup" })
+    );
+}
+
+#[test]
+fn bare_local_ref_without_siblings_is_preserved() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/id"
+                    }
+                },
+                "$defs": {
+                    "id": {
+                        "type": "string"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["tools"][0]["function"]["parameters"]["properties"]["id"],
+        json!({ "$ref": "#/$defs/id" })
+    );
+}
+
+#[test]
+fn responses_request_to_chat_resolves_ref_alias_before_merging_siblings() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "k3",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "$ref": "#/$defs/alias",
+                        "format": "uuid"
+                    }
+                },
+                "$defs": {
+                    "concrete": {
+                        "type": "string",
+                        "format": "hostname"
+                    },
+                    "alias": {
+                        "$ref": "#/$defs/concrete"
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    let id = &parameters["properties"]["id"];
+    assert!(id.get("$ref").is_none());
+    assert_eq!(id["type"], "string");
+    assert_eq!(id["format"], "uuid");
+    assert_eq!(parameters["$defs"]["alias"]["$ref"], "#/$defs/concrete");
 }
 
 #[test]
@@ -1731,6 +2095,41 @@ fn audio_transcriptions_url_normalizes_common_base_urls() {
 }
 
 #[test]
+fn image_urls_normalize_common_base_urls() {
+    for base in [
+        "https://api.example.test",
+        "https://api.example.test/",
+        "https://api.example.test/v1",
+        "https://api.example.test/v1/",
+    ] {
+        assert_eq!(
+            image_generations_url(base),
+            "https://api.example.test/v1/images/generations"
+        );
+        assert_eq!(
+            image_edits_url(base),
+            "https://api.example.test/v1/images/edits"
+        );
+    }
+    assert_eq!(
+        image_generations_url("https://api.example.test/v1/images/generations"),
+        "https://api.example.test/v1/images/generations"
+    );
+    assert_eq!(
+        image_edits_url("https://api.example.test/v1/images/edits"),
+        "https://api.example.test/v1/images/edits"
+    );
+    assert_eq!(
+        image_generations_url("https://api.example.test/openai"),
+        "https://api.example.test/openai/images/generations"
+    );
+    assert_eq!(
+        image_generations_url("https://api.example.test/v1/v1"),
+        "https://api.example.test/v1/images/generations"
+    );
+}
+
+#[test]
 fn models_url_normalizes_common_base_urls() {
     assert_eq!(
         models_url("https://api.example.test"),
@@ -2136,6 +2535,80 @@ async fn aggregate_stream_request_sends_sse_accept_header() {
     fallback_server.abort();
 }
 
+#[tokio::test]
+async fn aggregate_proxy_rewrites_requested_model_to_selected_member_default_model() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let fallback = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let fallback_addr = fallback.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let request = String::from_utf8_lossy(&buffer);
+            let Some((headers, body)) = request.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if body.as_bytes().len() >= content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&buffer).to_string();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        request
+    });
+    let fallback_server = tokio::spawn(respond_once(
+        fallback,
+        "HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_2\",\"object\":\"response\"}",
+    ));
+    let mut settings = aggregate_proxy_settings(
+        "rewrite-model",
+        format!("http://{addr}/v1"),
+        format!("http://{fallback_addr}/v1"),
+    );
+    settings.relay_profiles[0].model = "deepseek-v4-pro".to_string();
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.4","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+    let (_, body) = request.split_once("\r\n\r\n").unwrap();
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+
+    assert_eq!(result.status_code, 200);
+    assert_eq!(body["model"], "deepseek-v4-pro");
+    fallback_server.abort();
+}
+
 async fn respond_once(listener: tokio::net::TcpListener, response: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let mut buffer = [0; 1024];
@@ -2279,6 +2752,7 @@ fn aggregate_proxy_settings(
                     weight: 1,
                 },
             ],
+            routes: Vec::new(),
         }],
         ..BackendSettings::default()
     }
@@ -2352,6 +2826,101 @@ async fn audio_transcriptions_proxy_forwards_multipart_body() {
     );
     assert!(request.contains("gpt-4o-mini-transcribe"));
     assert!(request.contains("abc"));
+}
+
+#[tokio::test]
+async fn image_generations_proxy_forwards_json_and_upstream_error() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_async_http_request(&mut stream).await;
+        let body = br#"{"error":{"message":"rate limited"}}"#;
+        let response = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        request
+    });
+    write_image_relay_settings(temp.path(), &format!("http://{addr}/v1"));
+    let body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
+    let upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 429);
+    assert_eq!(upstream.content_type, "application/problem+json");
+    assert_eq!(
+        upstream.response.bytes().await.unwrap().as_ref(),
+        br#"{"error":{"message":"rate limited"}}"#
+    );
+    let request = server.await.unwrap();
+    let header_end = find_http_header_end(&request).unwrap();
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    assert!(headers.starts_with("POST /v1/images/generations HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer ")
+    );
+    assert_eq!(&request[header_end + 4..], body);
+}
+
+#[tokio::test]
+async fn image_edits_proxy_preserves_multipart_body_and_content_type() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_async_http_request(&mut stream).await;
+        let body = br#"{"error":{"message":"invalid image"}}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        request
+    });
+    write_image_relay_settings(temp.path(), &format!("http://{addr}/v1/"));
+    let boundary = "codex-image-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nmake it blue\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x00, 0xff]);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    let upstream = open_image_edits_proxy_request(&body, &content_type, None)
+        .await
+        .unwrap();
+    assert_eq!(upstream.status_code, 400);
+    let request = server.await.unwrap();
+    let header_end = find_http_header_end(&request).unwrap();
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    assert!(headers.starts_with("POST /v1/images/edits HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: multipart/form-data; boundary=codex-image-boundary")
+    );
+    assert_eq!(&request[header_end + 4..], body.as_slice());
 }
 
 #[tokio::test]
@@ -2513,6 +3082,26 @@ fn write_chat_relay_settings(settings_dir: &Path, base_url: &str, user_agent: &s
     .unwrap();
 }
 
+fn write_image_relay_settings(settings_dir: &Path, upstream_base_url: &str) {
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "images",
+            "name": "Images",
+            "baseUrl": upstream_base_url,
+            "upstreamBaseUrl": upstream_base_url,
+            "apiKey": "sk-test",
+            "protocol": "responses",
+            "relayMode": "mixedApi"
+        }],
+        "activeRelayId": "images"
+    });
+    std::fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
 fn write_no_auth_relay_settings(settings_dir: &Path, base_url: &str, protocol: &str) {
     let settings = json!({
         "relayProfiles": [{
@@ -2554,6 +3143,41 @@ impl Drop for SettingsPathGuard {
     fn drop(&mut self) {
         codex_plus_core::paths::set_settings_path_for_tests(self.previous.take());
     }
+}
+
+fn find_http_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+async fn read_async_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut expected_len = None;
+    loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert!(read > 0, "upstream request ended before body completed");
+        request.extend_from_slice(&buffer[..read]);
+        if expected_len.is_none()
+            && let Some(header_end) = find_http_header_end(&request)
+        {
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            expected_len = Some(header_end + 4 + content_length);
+        }
+        if expected_len.is_some_and(|length| request.len() >= length) {
+            break;
+        }
+    }
+    request
 }
 
 struct ChatServer {

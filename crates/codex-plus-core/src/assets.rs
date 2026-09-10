@@ -47,12 +47,30 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const STEPWISE_SCRIPT: &str = concat!(
     "(() => {\n",
-    include_str!("../../../assets/inject/floating-panel/core/index.js"),
+    include_str!("../../../assets/inject/floating-panel/runtime/state.js"),
+    include_str!("../../../assets/inject/floating-panel/core/appearance-runtime.js"),
+    include_str!("../../../assets/inject/floating-panel/runtime/dom.js"),
+    include_str!("../../../assets/inject/floating-panel/runtime/bridge-client.js"),
+    include_str!("../../../assets/inject/floating-panel/runtime/answer-context.js"),
+    include_str!("../../../assets/inject/floating-panel/stepwise/suggestions.js"),
+    include_str!("../../../assets/inject/floating-panel/stepwise/generation.js"),
+    include_str!("../../../assets/inject/floating-panel/runtime/lifecycle.js"),
+    include_str!("../../../assets/inject/floating-panel/runtime/settings.js"),
+    include_str!("../../../assets/inject/floating-panel/core/appearance.js"),
+    include_str!("../../../assets/inject/floating-panel/core/host.js"),
+    include_str!("../../../assets/inject/floating-panel/core/geometry.js"),
+    include_str!("../../../assets/inject/floating-panel/core/interaction.js"),
+    include_str!("../../../assets/inject/floating-panel/core/views.js"),
+    include_str!("../../../assets/inject/floating-panel/outline/parser.js"),
+    include_str!("../../../assets/inject/floating-panel/outline/navigation.js"),
+    include_str!("../../../assets/inject/floating-panel/outline/feature.js"),
+    include_str!("../../../assets/inject/floating-panel/outline/view.js"),
+    include_str!("../../../assets/inject/floating-panel/core/scroll-state.js"),
     include_str!("../../../assets/inject/floating-panel-inject.js"),
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "20-modern-main-surface";
+const DREAM_SKIN_RENDERER_REVISION: &str = "24-home-composer-rounded";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -179,7 +197,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
     });
     let skin_api_bootstrap = dream_skin_skin_api_bootstrap_script(&theme);
     payload = format!(
-        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n  state.observer?.disconnect?.();\n  if (state.timer) clearInterval(state.timer);\n  state.observer = null;\n  state.timer = null;\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
+        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
         art_assignment.unwrap_or_default(),
         serde_json::to_string(&dream_skin_art_content_signature(settings)).unwrap(),
         theme,
@@ -409,11 +427,12 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let force_chinese_locale = force_chinese_locale_config(settings);
     let fast_startup = fast_startup_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
-    let stepwise_runtime = if settings.codex_app_stepwise_enabled {
-        stepwise_script()
-    } else {
-        ""
-    };
+    let stepwise_runtime =
+        if settings.codex_app_stepwise_enabled || settings.codex_app_answer_outline_enabled {
+            stepwise_script()
+        } else {
+            ""
+        };
     format!(
         "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),

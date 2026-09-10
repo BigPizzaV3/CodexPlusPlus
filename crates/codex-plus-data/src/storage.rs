@@ -66,6 +66,20 @@ pub fn delete_local_from_paths(
                     format!("{}；session_index.jsonl 清理失败：{error}", result.message);
             }
         }
+        match crate::provider_sync::remove_thread_sidebar_references(home, &thread_id) {
+            Ok(cleanup) if cleanup.global_state_entries_removed > 0
+                || cleanup.catalog_rows_removed > 0 =>
+            {
+                if matches!(result.status, DeleteStatus::Failed) {
+                    result.status = DeleteStatus::LocalDeleted;
+                    result.message = "已清理侧边栏索引".to_string();
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                result.message = format!("{}；侧边栏索引清理失败：{error}", result.message);
+            }
+        }
     }
     result
 }
@@ -202,6 +216,11 @@ impl SQLiteStorageAdapter {
             if let Err(error) = crate::provider_sync::remove_session_index_entry(home, &thread_id) {
                 result.message =
                     format!("{}；session_index.jsonl 清理失败：{error}", result.message);
+            }
+            if let Err(error) =
+                crate::provider_sync::remove_thread_sidebar_references(home, &thread_id)
+            {
+                result.message = format!("{}；侧边栏索引清理失败：{error}", result.message);
             }
         }
         result
@@ -462,10 +481,14 @@ impl SQLiteStorageAdapter {
         } else {
             Vec::new()
         };
+        let mut tables = Map::new();
+        tables.insert("sessions".to_string(), Value::Array(sessions));
+        tables.insert("messages".to_string(), Value::Array(messages));
+        self.add_thread_sidebar_backups(&mut tables, &session.session_id)?;
         let token = self.backup_store.write_backup(
             &session.session_id,
             &self.db_path,
-            json!({"sessions": sessions, "messages": messages}),
+            Value::Object(tables),
         )?;
         let backup_path = self.backup_store.path_for(&token);
         let delete_result = (|| -> anyhow::Result<()> {
@@ -545,24 +568,7 @@ impl SQLiteStorageAdapter {
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
         }
-        let session_index_lines = self
-            .codex_home
-            .as_deref()
-            .and_then(|home| {
-                crate::provider_sync::session_index_lines_for_thread(home, &thread_id).ok()
-            })
-            .unwrap_or_default();
-        if !session_index_lines.is_empty() {
-            tables.insert(
-                "__session_index".to_string(),
-                Value::Array(
-                    session_index_lines
-                        .iter()
-                        .map(|line| Value::String(line.clone()))
-                        .collect(),
-                ),
-            );
-        }
+        self.add_thread_sidebar_backups(&mut tables, &thread_id)?;
         let token =
             self.backup_store
                 .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
@@ -636,6 +642,29 @@ impl SQLiteStorageAdapter {
         Ok(result)
     }
 
+    fn add_thread_sidebar_backups(
+        &self,
+        tables: &mut Map<String, Value>,
+        thread_id: &str,
+    ) -> anyhow::Result<()> {
+        let Some(home) = self.codex_home.as_deref() else {
+            return Ok(());
+        };
+        let session_index_lines =
+            crate::provider_sync::session_index_lines_for_thread(home, thread_id)?;
+        if !session_index_lines.is_empty() {
+            tables.insert(
+                "__session_index".to_string(),
+                Value::Array(session_index_lines.into_iter().map(Value::String).collect()),
+            );
+        }
+        tables.insert(
+            "__sidebar".to_string(),
+            crate::provider_sync::snapshot_thread_sidebar_references(home, thread_id)?,
+        );
+        Ok(())
+    }
+
     fn delete_codex_automation_run(
         &self,
         db: &mut Connection,
@@ -657,6 +686,7 @@ impl SQLiteStorageAdapter {
             "thread_id = ?1",
             &[&thread_id],
         )?;
+        self.add_thread_sidebar_backups(&mut tables, &thread_id)?;
         if tables.values().all(|rows| {
             rows.as_array()
                 .map(|items| items.is_empty())
@@ -873,6 +903,11 @@ fn restore_backups(
         detect_restore_conflicts(&db, tables)?;
         detect_file_restore_conflicts(tables)?;
         preflight_restore_rows(&db, tables)?;
+        if let Some(sidebar) = tables.get("__sidebar") {
+            let home = codex_home
+                .ok_or_else(|| anyhow::anyhow!("sidebar restore requires a Codex home"))?;
+            crate::provider_sync::validate_thread_sidebar_snapshot(home, sidebar)?;
+        }
     }
 
     for backup in backups {
@@ -910,6 +945,11 @@ fn restore_backups(
                 if let Some(home) = codex_home {
                     let _ = crate::provider_sync::restore_session_index_entries(home, &lines);
                 }
+            }
+        }
+        if let Some(sidebar) = tables.get("__sidebar") {
+            if let Some(home) = codex_home {
+                let _ = crate::provider_sync::restore_thread_sidebar_references(home, sidebar)?;
             }
         }
     }
@@ -990,7 +1030,7 @@ fn schema_kind(db: &Connection) -> anyhow::Result<Option<SchemaKind>> {
     Ok(None)
 }
 
-fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
+pub(crate) fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
     Ok(db
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -1014,7 +1054,11 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn select_dicts(db: &Connection, sql: &str, params: &[&dyn ToSql]) -> anyhow::Result<Vec<Value>> {
+pub(crate) fn select_dicts(
+    db: &Connection,
+    sql: &str,
+    params: &[&dyn ToSql],
+) -> anyhow::Result<Vec<Value>> {
     let mut stmt = db.prepare(sql)?;
     let columns: Vec<String> = stmt
         .column_names()
@@ -1045,6 +1089,7 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "inbox_items",
         "__files",
         "__session_index",
+        "__sidebar",
     ];
     for table in tables.keys() {
         if !allowed.contains(&table.as_str()) {
@@ -1285,7 +1330,7 @@ fn sql_value_to_json(value: ValueRef<'_>) -> Value {
     }
 }
 
-fn json_to_sql_value(value: &Value) -> SqlValue {
+pub(crate) fn json_to_sql_value(value: &Value) -> SqlValue {
     match value {
         Value::Null => SqlValue::Null,
         Value::Bool(value) => SqlValue::Integer(i64::from(*value)),

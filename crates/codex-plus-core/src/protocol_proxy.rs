@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use anyhow::Context;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
@@ -17,6 +17,7 @@ pub const NO_AUTH_PROXY_BEARER_TOKEN: &str = "codex-plus-no-auth";
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -301,6 +302,8 @@ pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
     AudioTranscriptions,
+    ImageGenerations,
+    ImageEdits,
 }
 
 #[derive(Debug, Clone)]
@@ -513,6 +516,25 @@ pub fn is_audio_transcriptions_proxy_path(path: &str) -> bool {
     )
 }
 
+pub fn is_image_generations_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/images/generations"
+            | "/v1/images/generations"
+            | "/v1/v1/images/generations"
+            | "/codex/v1/images/generations"
+    )
+}
+
+pub fn is_image_edits_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/images/edits" | "/v1/images/edits" | "/v1/v1/images/edits" | "/codex/v1/images/edits"
+    )
+}
+
 pub async fn open_responses_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
@@ -575,8 +597,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     {
         request_json["model"] = Value::String(route.upstream_model.clone());
     }
+    let model = (!source_model.trim().is_empty()).then(|| source_model.clone());
     let context = RotationContext {
         conversation_id: conversation_id_from_responses_request(&request_json),
+        model,
     };
     let (relay, relays) = if let Some(route) = &model_route {
         (route.relay.clone(), vec![route.relay.clone()])
@@ -595,8 +619,14 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     let relay_count = relays.len();
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
-        let (endpoint, upstream_body, wire_api) =
-            upstream_request_parts(&relay, request_json.clone(), request_path).await?;
+        let model_override = aggregate_upstream_model_override(&settings, &relay);
+        let (endpoint, upstream_body, wire_api) = upstream_request_parts(
+            &relay,
+            request_json.clone(),
+            request_path,
+            model_override.as_deref(),
+        )
+        .await?;
         let has_more_candidates = attempt + 1 < relay_count;
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -765,6 +795,16 @@ fn select_model_route(
     }))
 }
 
+fn aggregate_upstream_model_override(
+    settings: &crate::settings::BackendSettings,
+    relay: &crate::settings::RelayProfile,
+) -> Option<String> {
+    settings.active_aggregate_relay_profile()?;
+    let model = crate::relay_config::relay_profile_model(relay);
+    let model = model.trim();
+    (!model.is_empty()).then(|| model.to_string())
+}
+
 pub async fn open_models_proxy_request(
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
@@ -854,6 +894,137 @@ pub async fn open_audio_transcriptions_proxy_request(
     })
 }
 
+pub async fn open_image_generations_proxy_request(
+    body: &[u8],
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    open_image_proxy_request(
+        body,
+        "application/json",
+        original_user_agent,
+        ImageProxyEndpoint::Generations,
+    )
+    .await
+}
+
+pub async fn open_image_edits_proxy_request(
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    open_image_proxy_request(
+        body,
+        content_type,
+        original_user_agent,
+        ImageProxyEndpoint::Edits,
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ImageProxyEndpoint {
+    Generations,
+    Edits,
+}
+
+impl ImageProxyEndpoint {
+    fn url(self, base_url: &str) -> String {
+        match self {
+            Self::Generations => image_generations_url(base_url),
+            Self::Edits => image_edits_url(base_url),
+        }
+    }
+
+    fn wire_api(self) -> UpstreamWireApi {
+        match self {
+            Self::Generations => UpstreamWireApi::ImageGenerations,
+            Self::Edits => UpstreamWireApi::ImageEdits,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Generations => "image_generations",
+            Self::Edits => "image_edits",
+        }
+    }
+}
+
+async fn open_image_proxy_request(
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+    endpoint_kind: ImageProxyEndpoint,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    let base_url = if relay.upstream_base_url.trim().is_empty() {
+        crate::relay_config::relay_profile_base_url(&relay)
+    } else {
+        relay.upstream_base_url.trim().to_string()
+    };
+    if is_local_protocol_proxy_base_url(&base_url) {
+        anyhow::bail!("图片上游 Base URL 不能指向本地协议代理");
+    }
+    if base_url.trim().is_empty() {
+        anyhow::bail!("图片上游 Base URL 不能为空");
+    }
+    if relay.api_key.trim().is_empty() && !relay.uses_no_auth() {
+        anyhow::bail!("图片上游 Key 不能为空");
+    }
+    let content_type = content_type.trim();
+    let content_type = if content_type.is_empty() {
+        match endpoint_kind {
+            ImageProxyEndpoint::Generations => "application/json",
+            ImageProxyEndpoint::Edits => {
+                anyhow::bail!("图片 edits 请求缺少 Content-Type");
+            }
+        }
+    } else {
+        content_type
+    };
+    let endpoint = endpoint_kind.url(&base_url);
+    let wire_api = endpoint_kind.wire_api();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.image_request",
+        json!({
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "endpoint": endpoint,
+            "wireApi": wire_api,
+            "bodyBytes": body.len(),
+            "endpointKind": endpoint_kind.name()
+        }),
+    );
+    let request = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?
+    .post(endpoint)
+    .header(reqwest::header::CONTENT_TYPE, content_type)
+    .body(body.to_vec());
+    let upstream = send_upstream_request_with_header_timeout(
+        with_relay_auth(request, &relay),
+        UPSTREAM_IMAGE_HEADER_TIMEOUT,
+    )
+    .await?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json; charset=utf-8")
+        .to_string();
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        is_stream: false,
+        content_type,
+        wire_api,
+        response: upstream,
+    })
+}
+
 fn response_header_timeout(is_stream: bool) -> Duration {
     if is_stream {
         UPSTREAM_STREAM_HEADER_TIMEOUT
@@ -910,12 +1081,19 @@ pub async fn open_chat_completions_proxy_request(
 
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
-    request_json: Value,
+    mut request_json: Value,
     request_path: &str,
+    model_override: Option<&str>,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
     let compact = is_responses_compact_proxy_path(request_path);
     if compact && relay.protocol == RelayProtocol::ChatCompletions {
         anyhow::bail!("Chat Completions 协议暂不支持 Responses compact 请求");
+    }
+    if let Some(model) = model_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        request_json["model"] = json!(model);
     }
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
@@ -1173,6 +1351,85 @@ pub fn audio_transcriptions_url(base_url: &str) -> String {
         url = url.replace("/v1/v1", "/v1");
     }
     url
+}
+
+pub fn image_generations_url(base_url: &str) -> String {
+    image_endpoint_url(base_url, "generations")
+}
+
+pub fn image_edits_url(base_url: &str) -> String {
+    image_endpoint_url(base_url, "edits")
+}
+
+fn image_endpoint_url(base_url: &str, endpoint: &str) -> String {
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    if base
+        .to_ascii_lowercase()
+        .ends_with(&format!("/images/{endpoint}"))
+    {
+        return base.to_string();
+    }
+    let origin_only = base
+        .split_once("://")
+        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
+    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
+        format!("{base}/images/{endpoint}")
+    } else {
+        format!("{base}/v1/images/{endpoint}")
+    };
+    while url.contains("/v1/v1") {
+        url = url.replace("/v1/v1", "/v1");
+    }
+    url
+}
+
+fn is_local_protocol_proxy_base_url(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    if !url.scheme().eq_ignore_ascii_case("http") || url.port() != Some(DEFAULT_PROTOCOL_PROXY_PORT)
+    {
+        return false;
+    }
+    matches!(
+        url.host_str(),
+        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
+    )
+}
+
+#[cfg(test)]
+mod image_proxy_tests {
+    use super::UPSTREAM_IMAGE_HEADER_TIMEOUT;
+    use super::is_local_protocol_proxy_base_url;
+    use std::time::Duration;
+
+    #[test]
+    fn image_requests_allow_ten_minutes_for_response_headers() {
+        assert_eq!(UPSTREAM_IMAGE_HEADER_TIMEOUT, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn local_protocol_proxy_detection_covers_common_loopback_forms() {
+        for base_url in [
+            "http://127.0.0.1:57321",
+            "http://127.0.0.1:57321/",
+            "http://127.0.0.1:57321/v1",
+            "http://localhost:57321/v1/",
+            "http://[::1]:57321/v1",
+        ] {
+            assert!(is_local_protocol_proxy_base_url(base_url), "{base_url}");
+        }
+
+        for base_url in [
+            "https://127.0.0.1:57321/v1",
+            "http://127.0.0.1:57322/v1",
+            "http://api.example.test:57321/v1",
+            "not-a-url",
+        ] {
+            assert!(!is_local_protocol_proxy_base_url(base_url), "{base_url}");
+        }
+    }
 }
 
 pub fn models_url(base_url: &str) -> String {
@@ -3107,16 +3364,120 @@ fn normalize_chat_tool_parameters(parameters: &Value) -> Value {
     } else {
         json!({})
     };
-    if normalized.get("type").is_none() {
-        normalized["type"] = json!("object");
+    // 裸 `$ref` 已经是完整 schema，补默认字段会人为制造 sibling。
+    let is_bare_ref = normalized
+        .as_object()
+        .is_some_and(|object| object.len() == 1 && object.contains_key("$ref"));
+    if !is_bare_ref {
+        if normalized.get("type").is_none() {
+            normalized["type"] = json!("object");
+        }
+        if normalized.get("properties").is_none() {
+            normalized["properties"] = json!({});
+        }
+        if normalized.get("required").is_none() {
+            normalized["required"] = json!([]);
+        }
     }
-    if normalized.get("properties").is_none() {
-        normalized["properties"] = json!({});
+    inline_ref_siblings(&normalized)
+}
+
+fn inline_ref_siblings(root: &Value) -> Value {
+    let defs = root.get("$defs").and_then(Value::as_object);
+    let mut resolving = Vec::new();
+    normalize_schema_value(root, defs, &mut resolving).unwrap_or_else(|_| root.clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalRefNormalizationError {
+    Cycle,
+}
+
+fn normalize_schema_value(
+    node: &Value,
+    defs: Option<&Map<String, Value>>,
+    resolving: &mut Vec<String>,
+) -> Result<Value, LocalRefNormalizationError> {
+    match node {
+        Value::Array(items) => Ok(Value::Array(
+            items
+                .iter()
+                .map(|item| normalize_schema_value(item, defs, resolving))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        Value::Object(object) => normalize_schema_object(object, defs, resolving),
+        _ => Ok(node.clone()),
     }
-    if normalized.get("required").is_none() {
-        normalized["required"] = json!([]);
+}
+
+fn normalize_schema_object(
+    object: &Map<String, Value>,
+    defs: Option<&Map<String, Value>>,
+    resolving: &mut Vec<String>,
+) -> Result<Value, LocalRefNormalizationError> {
+    if object.len() > 1
+        && let Some(reference) = object.get("$ref").and_then(Value::as_str)
+        && let Some(name) = local_definition_name(reference)
+    {
+        match resolve_local_definition(name, defs, resolving)? {
+            Some(Value::Object(mut merged)) if merged.get("$ref").is_none() => {
+                for (key, value) in object {
+                    if key != "$ref" {
+                        merged.insert(key.clone(), normalize_schema_value(value, defs, resolving)?);
+                    }
+                }
+                return Ok(Value::Object(merged));
+            }
+            Some(_) | None => {}
+        }
     }
-    normalized
+
+    let mut normalized = Map::new();
+    for (key, value) in object {
+        normalized.insert(key.clone(), normalize_schema_value(value, defs, resolving)?);
+    }
+    Ok(Value::Object(normalized))
+}
+
+fn resolve_local_definition(
+    name: &str,
+    defs: Option<&Map<String, Value>>,
+    resolving: &mut Vec<String>,
+) -> Result<Option<Value>, LocalRefNormalizationError> {
+    let Some(defs) = defs else {
+        return Ok(None);
+    };
+    let Some(target) = defs.get(name) else {
+        return Ok(None);
+    };
+    if resolving.iter().any(|current| current == name) {
+        return Err(LocalRefNormalizationError::Cycle);
+    }
+
+    resolving.push(name.to_string());
+    let resolved = if let Some(alias) = bare_local_ref_name(target) {
+        resolve_local_definition(alias, Some(defs), resolving)
+    } else {
+        normalize_schema_value(target, Some(defs), resolving).map(Some)
+    };
+    resolving.pop();
+    resolved
+}
+
+fn bare_local_ref_name(node: &Value) -> Option<&str> {
+    let object = node.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    local_definition_name(object.get("$ref")?.as_str()?)
+}
+
+fn local_definition_name(reference: &str) -> Option<&str> {
+    let name = reference.strip_prefix("#/$defs/")?;
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(name)
 }
 
 fn generic_custom_proxy_tool(name: &str, description: &str) -> Value {

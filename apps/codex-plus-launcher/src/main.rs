@@ -73,11 +73,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn launcher_main(
-    args: Vec<String>,
-    helper_only: bool,
-    options: LaunchOptions,
-) -> Result<()> {
+async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOptions) -> Result<()> {
     if helper_only {
         let hooks = LauncherHooks::default();
         hooks.start_helper(options.helper_port).await?;
@@ -132,13 +128,15 @@ fn acquire_single_instance_guard_with_retry(
             }
             Ok(Some(guard))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AddrInUse
+            ) =>
+        {
             log_launcher_already_running(debug_port);
-            Ok(None)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-            log_launcher_already_running(debug_port);
-            if allow_stale_recovery && should_recover_stale_launcher(debug_port) {
+            let stale = allow_stale_recovery && should_recover_stale_launcher(debug_port);
+            if should_retry_stale_launcher_guard(error.kind(), allow_stale_recovery, stale) {
                 codex_plus_core::watcher::stop_launcher_processes();
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 return acquire_single_instance_guard_with_retry(debug_port, false);
@@ -154,6 +152,19 @@ fn acquire_single_instance_guard_with_retry(
             })
             .map(Some),
     }
+}
+
+fn should_retry_stale_launcher_guard(
+    error_kind: std::io::ErrorKind,
+    allow_stale_recovery: bool,
+    stale_launcher: bool,
+) -> bool {
+    allow_stale_recovery
+        && stale_launcher
+        && matches!(
+            error_kind,
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AddrInUse
+        )
 }
 
 fn try_acquire_single_instance_guard() -> std::io::Result<codex_plus_core::ports::LoopbackPortGuard>
@@ -192,7 +203,6 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
     let hooks = LauncherHooks::default();
-    let helper_port = hooks.select_helper_port(options.helper_port);
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let has_pending_recovery = hooks.has_pending_remote_control_session_recoveries();
@@ -218,9 +228,6 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             &settings.codex_extra_args,
         )
         .await;
-    if settings.enhancements_enabled {
-        hooks.start_helper(helper_port).await?;
-    }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
     #[cfg(windows)]
     let activated = process_ids
@@ -229,31 +236,18 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
         .any(codex_plus_core::windows_activate_process_window);
     #[cfg(not(windows))]
     let activated = false;
-    let injection_ready = if settings.enhancements_enabled {
-        hooks
-            .ensure_injection(options.debug_port, helper_port, &app_dir)
-            .await
-    } else {
-        false
-    };
-    if injection_ready {
-        hooks
-            .start_bridge_watchdog(options.debug_port, helper_port)
-            .await?;
-        hooks.write_status("running").await;
-    } else if settings.enhancements_enabled {
-        hooks.write_status("running_degraded").await;
-    }
+    let helper_available = !settings.enhancements_enabled
+        || codex_plus_core::ports::can_connect_loopback_port(options.helper_port);
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "launcher.activate_existing_codex",
         json!({
             "app_dir": app_dir.to_string_lossy(),
             "debug_port": options.debug_port,
-            "helper_port": helper_port,
+            "helper_port": options.helper_port,
             "requested_helper_port": options.helper_port,
             "process_ids": process_ids,
             "activated": activated,
-            "injection_ready": injection_ready,
+            "helper_available": helper_available,
             "launch_ok": launch_result.is_ok(),
             "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
         }),
@@ -361,10 +355,10 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
+        let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
             .await
             .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        Ok(())
+        require_completed_provider_sync(&result.status, &result.message)
     }
 
     fn has_pending_remote_control_session_recoveries(&self) -> bool {
@@ -513,6 +507,15 @@ impl LaunchHooks for LauncherHooks {
         self.core.apply_active_relay_profile(settings).await
     }
 
+    async fn ensure_active_protocol_proxy_config(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core
+            .ensure_active_protocol_proxy_config(settings)
+            .await
+    }
+
     async fn ensure_plugin_marketplace_config(
         &self,
         settings: &codex_plus_core::settings::BackendSettings,
@@ -602,6 +605,16 @@ impl LaunchHooks for LauncherHooks {
     async fn terminate_codex(&self, launch: &codex_plus_core::launcher::CodexLaunch) {
         self.core.terminate_codex(launch).await;
     }
+}
+
+fn require_completed_provider_sync(
+    status: &codex_plus_data::ProviderSyncStatus,
+    message: &str,
+) -> anyhow::Result<()> {
+    if *status == codex_plus_data::ProviderSyncStatus::Synced {
+        return Ok(());
+    }
+    anyhow::bail!("provider sync did not complete ({status:?}): {message}")
 }
 
 #[derive(Debug, Clone)]
@@ -863,27 +876,46 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         }))
     }
 
-    async fn open_manager(&self) -> anyhow::Result<Value> {
-        let target = codex_plus_core::install::spawn_companion(
-            codex_plus_core::install::MANAGER_BINARY,
-            std::iter::empty::<&str>(),
-        )
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+    async fn open_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        let navigation =
+            codex_plus_core::manager_navigation::save_pending_manager_navigation_from_payload(
+                &payload,
+            )?;
+        let target = codex_plus_core::install::open_or_activate_manager()
+            .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+            .map_err(|error| {
+                codex_plus_core::manager_navigation::rollback_pending_manager_navigation_after_launch_failure(
+                    navigation.as_ref(),
+                    error,
+                )
+            })?;
         Ok(json!({
             "status": "ok",
-            "path": target
+            "path": target,
+            "navigation": navigation
         }))
     }
 
-    async fn open_transient_manager(&self) -> anyhow::Result<Value> {
+    async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
+        let navigation =
+            codex_plus_core::manager_navigation::save_pending_manager_navigation_from_payload(
+                &payload,
+            )?;
         let target = codex_plus_core::install::spawn_companion(
             codex_plus_core::install::MANAGER_BINARY,
             ["--transient"],
         )
-        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))?;
+        .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+        .map_err(|error| {
+            codex_plus_core::manager_navigation::rollback_pending_manager_navigation_after_launch_failure(
+                navigation.as_ref(),
+                error,
+            )
+        })?;
         Ok(json!({
             "status": "ok",
-            "path": target
+            "path": target,
+            "navigation": navigation
         }))
     }
 
@@ -1115,6 +1147,26 @@ mod tests {
     }
 
     #[test]
+    fn launcher_accepts_only_a_completed_provider_sync() {
+        assert!(
+            require_completed_provider_sync(
+                &codex_plus_data::ProviderSyncStatus::Synced,
+                "Provider sync complete",
+            )
+            .is_ok()
+        );
+
+        for status in [
+            codex_plus_data::ProviderSyncStatus::Disabled,
+            codex_plus_data::ProviderSyncStatus::Skipped,
+        ] {
+            let error = require_completed_provider_sync(&status, "target is unresolved")
+                .expect_err("an incomplete provider sync must stop launch");
+            assert!(error.to_string().contains("target is unresolved"));
+        }
+    }
+
+    #[test]
     fn launcher_uses_single_instance_guard_before_launching() {
         let source = include_str!("main.rs");
 
@@ -1123,6 +1175,30 @@ mod tests {
         assert!(source.contains("launcher.already_running"));
         assert!(source.contains("Existing Codex instance activated"));
         assert!(source.contains("status: \"failed\".to_string()"));
+    }
+
+    #[test]
+    fn stale_launcher_recovery_covers_port_and_fallback_lock_conflicts() {
+        assert!(should_retry_stale_launcher_guard(
+            std::io::ErrorKind::WouldBlock,
+            true,
+            true
+        ));
+        assert!(should_retry_stale_launcher_guard(
+            std::io::ErrorKind::AddrInUse,
+            true,
+            true
+        ));
+        assert!(!should_retry_stale_launcher_guard(
+            std::io::ErrorKind::WouldBlock,
+            false,
+            true
+        ));
+        assert!(!should_retry_stale_launcher_guard(
+            std::io::ErrorKind::PermissionDenied,
+            true,
+            true
+        ));
     }
 
     #[test]
@@ -1147,6 +1223,24 @@ mod tests {
         assert!(
             body[recovery..launch].contains("hooks.run_remote_control_session_recovery().await?")
         );
+    }
+
+    #[test]
+    fn existing_launcher_path_reuses_the_primary_launcher_runtime() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("existing launcher activation function");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after existing launcher activation");
+        let body = &source[start..end];
+
+        assert!(!body.contains("hooks.start_helper"));
+        assert!(!body.contains("hooks.ensure_injection"));
+        assert!(!body.contains("hooks.start_bridge_watchdog"));
+        assert!(body.contains("can_connect_loopback_port(options.helper_port)"));
     }
 
     #[test]
@@ -1197,6 +1291,7 @@ mod tests {
     #[test]
     fn launcher_hooks_forward_runtime_watchdog_and_marketplace_methods() {
         let source = include_str!("main.rs");
+        let compact_source = source.split_whitespace().collect::<String>();
 
         assert!(source.contains("async fn start_bridge_watchdog"));
         assert!(source.contains("self.watchdog_bridge_context()?"));
@@ -1204,6 +1299,11 @@ mod tests {
         assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
         assert!(source.contains("async fn ensure_plugin_marketplace_config"));
         assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
+        assert!(source.contains("async fn ensure_active_protocol_proxy_config"));
+        assert!(
+            compact_source
+                .contains("self.core.ensure_active_protocol_proxy_config(settings).await")
+        );
     }
 
     #[tokio::test]

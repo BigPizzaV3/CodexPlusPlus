@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
 const TRAY_ID: &str = "codex_plus_tray";
 
@@ -14,6 +14,7 @@ const TRAY_MENU_SHOW: &str = "tray_show_main";
 const TRAY_MENU_DREAM_SKIN_APPLY: &str = "tray_apply_dream_skin";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
 const DREAM_SKIN_DEBUG_PORT: u16 = 9229;
+const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
 
 pub fn run() {
     install_panic_logger();
@@ -65,11 +66,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::backend_version,
             commands::startup_options,
+            commands::consume_pending_manager_navigation,
             commands::load_overview,
             commands::launch_codex_plus,
             commands::restart_codex_plus,
             commands::load_settings,
             commands::save_settings,
+            commands::test_vlm,
             commands::load_grok_config,
             commands::save_grok_config,
             commands::weixin_connect_qr_start,
@@ -313,12 +316,16 @@ fn register_main_window_events<R: tauri::Runtime>(
     let minimized_window = event_window.clone();
     let close_event_window = event_window.clone();
     let close_event_app = event_window.app_handle().clone();
+    let focus_event_window = event_window.clone();
 
     event_window.on_window_event(move |event| match event {
         WindowEvent::Resized(_) => {
             if matches!(minimized_window.is_minimized(), Ok(true)) {
                 let _ = minimized_window.hide();
             }
+        }
+        WindowEvent::Focused(true) => {
+            let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
         }
         WindowEvent::CloseRequested { api, .. } => {
             if APP_EXITING.load(Ordering::SeqCst) {

@@ -21,6 +21,7 @@ use crate::status::{LaunchStatus, StatusStore};
 
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
+const BRIDGE_HEALTH_FAILURE_THRESHOLD: u8 = 2;
 const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 5_000;
 const MACOS_DEBUG_TAKEOVER_INTERVAL_MS: u64 = 100;
 
@@ -171,6 +172,12 @@ pub trait LaunchHooks: Send + Sync {
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
+    async fn ensure_active_protocol_proxy_config(
+        &self,
+        _settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn ensure_plugin_marketplace_config(
         &self,
         _settings: &BackendSettings,
@@ -312,6 +319,14 @@ where
     }
 }
 
+fn helper_bind_retry_timeout_ms(protocol_proxy_enabled: bool, is_macos: bool) -> u64 {
+    if protocol_proxy_enabled || is_macos {
+        HELPER_BIND_RETRY_TIMEOUT_MS
+    } else {
+        0
+    }
+}
+
 pub async fn launch_and_inject_with_hooks<H>(
     options: LaunchOptions,
     hooks: H,
@@ -387,15 +402,13 @@ where
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
             || remote_control_provider_proxy_enabled(&settings);
         if protocol_proxy_enabled {
+            hooks.ensure_active_protocol_proxy_config(&settings).await?;
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
-            // 只有被固定成协议代理端口时才需要等：普通 helper 端口上面已经挑过空闲的了。
-            let bind_retry_timeout_ms = if protocol_proxy_enabled {
-                HELPER_BIND_RETRY_TIMEOUT_MS
-            } else {
-                0
-            };
+            // macOS 重启时旧 launcher 的 socket 释放可能稍晚于进程退出。
+            let bind_retry_timeout_ms =
+                helper_bind_retry_timeout_ms(protocol_proxy_enabled, cfg!(target_os = "macos"));
             start_helper_waiting_for_busy_port(
                 || hooks.start_helper(helper_port),
                 bind_retry_timeout_ms,
@@ -685,6 +698,15 @@ impl LaunchHooks for DefaultLaunchHooks {
         Ok(())
     }
 
+    async fn ensure_active_protocol_proxy_config(
+        &self,
+        settings: &BackendSettings,
+    ) -> anyhow::Result<()> {
+        let home = crate::relay_config::default_codex_home_dir();
+        crate::relay_config::ensure_active_protocol_proxy_config_in_home(&home, settings)?;
+        Ok(())
+    }
+
     async fn ensure_plugin_marketplace_config(
         &self,
         settings: &BackendSettings,
@@ -923,6 +945,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             #[cfg(windows)]
             let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
             let mut observed_browser_id: Option<String> = None;
+            let mut bridge_health_failures = 0u8;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
@@ -947,6 +970,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                                 helper_port,
                                 identity_changed,
                                 bridge_reinjector.clone(),
+                                &mut bridge_health_failures,
                             ),
                         );
                         record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
@@ -1108,6 +1132,35 @@ async fn handle_helper_connection(
 
     if crate::protocol_proxy::is_audio_transcriptions_proxy_path(path) && method == "POST" {
         return handle_audio_transcriptions_proxy_connection(
+            &mut stream,
+            &request.body,
+            request_content_type.as_deref(),
+            request_user_agent.as_deref(),
+            method,
+            path,
+            remote_addr_text,
+        )
+        .await;
+    }
+    if (crate::protocol_proxy::is_image_generations_proxy_path(path)
+        || crate::protocol_proxy::is_image_edits_proxy_path(path))
+        && method == "OPTIONS"
+    {
+        write_http_response(
+            &mut stream,
+            "204 No Content",
+            "application/json; charset=utf-8",
+            &[],
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if (crate::protocol_proxy::is_image_generations_proxy_path(path)
+        || crate::protocol_proxy::is_image_edits_proxy_path(path))
+        && method == "POST"
+    {
+        return handle_image_proxy_connection(
             &mut stream,
             &request.body,
             request_content_type.as_deref(),
@@ -1727,6 +1780,78 @@ async fn handle_audio_transcriptions_proxy_connection(
             "helper.audio_transcriptions_proxy_ok"
         } else {
             "helper.audio_transcriptions_proxy_upstream_error"
+        },
+        method,
+        path,
+        &status,
+        remote_addr_text,
+    );
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn handle_image_proxy_connection(
+    stream: &mut tokio::net::TcpStream,
+    request_body: &[u8],
+    request_content_type: Option<&str>,
+    request_user_agent: Option<&str>,
+    method: &str,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    let upstream = if crate::protocol_proxy::is_image_generations_proxy_path(path) {
+        crate::protocol_proxy::open_image_generations_proxy_request(
+            request_body,
+            request_user_agent,
+        )
+        .await
+    } else {
+        crate::protocol_proxy::open_image_edits_proxy_request(
+            request_body,
+            request_content_type.unwrap_or_default(),
+            request_user_agent,
+        )
+        .await
+    };
+    let upstream = match upstream {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": error.to_string()
+            }))?;
+            write_http_response(
+                stream,
+                "502 Bad Gateway",
+                "application/json; charset=utf-8",
+                &body,
+            )
+            .await?;
+            log_helper_response(
+                "helper.image_proxy_failed",
+                method,
+                path,
+                "502 Bad Gateway",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
+    let status = upstream.response.status().to_string();
+    let is_success = upstream.response.status().is_success();
+    let content_type = if upstream.content_type.is_empty() {
+        "application/json; charset=utf-8".to_string()
+    } else {
+        upstream.content_type.clone()
+    };
+    let body = upstream.response.bytes().await?.to_vec();
+    write_http_response(stream, &status, &content_type, &body).await?;
+    log_helper_response(
+        if is_success {
+            "helper.image_proxy_ok"
+        } else {
+            "helper.image_proxy_upstream_error"
         },
         method,
         path,
@@ -2403,7 +2528,10 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-    check_and_reinject_bridge_inner(debug_port, helper_port, false, None).await
+    // This one-shot entry point preserves its historical immediate-repair behavior.
+    let mut health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD.saturating_sub(1);
+    check_and_reinject_bridge_inner(debug_port, helper_port, false, None, &mut health_failures)
+        .await
 }
 
 pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
@@ -2418,17 +2546,39 @@ fn should_probe_launcher_cdp(is_windows: bool, has_codex_process: bool) -> bool 
     is_windows && !has_codex_process
 }
 
+fn should_reinject_after_health_result(
+    healthy: Option<bool>,
+    browser_identity_changed: bool,
+    health_failures: &mut u8,
+) -> bool {
+    let Some(healthy) = healthy else {
+        *health_failures = 0;
+        return false;
+    };
+    if healthy {
+        *health_failures = 0;
+        return false;
+    }
+    if browser_identity_changed {
+        *health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD;
+    } else {
+        *health_failures = health_failures.saturating_add(1);
+    }
+    *health_failures >= BRIDGE_HEALTH_FAILURE_THRESHOLD
+}
+
 async fn check_and_reinject_bridge_inner(
     debug_port: u16,
     helper_port: u16,
     browser_identity_changed: bool,
     bridge_reinjector: Option<BridgeReinjector>,
+    health_failures: &mut u8,
 ) -> bool {
     let healthy = if browser_identity_changed {
-        false
+        Some(false)
     } else {
         match bridge_health_ok(debug_port).await {
-            Ok(healthy) => healthy,
+            Ok(healthy) => Some(healthy),
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "bridge.health_check_failed",
@@ -2438,11 +2588,15 @@ async fn check_and_reinject_bridge_inner(
                         "message": error.to_string()
                     }),
                 );
-                false
+                // A CDP timeout only means that the renderer did not answer
+                // this probe in time. The bridge heartbeat is the source of
+                // truth for actual availability; do not reinject on an
+                // indeterminate CDP result or a busy page will cause churn.
+                None
             }
         }
     };
-    if healthy {
+    if !should_reinject_after_health_result(healthy, browser_identity_changed, health_failures) {
         return false;
     }
 
@@ -2451,7 +2605,8 @@ async fn check_and_reinject_bridge_inner(
         serde_json::json!({
             "debug_port": debug_port,
             "helper_port": helper_port,
-            "browser_identity_changed": browser_identity_changed
+            "browser_identity_changed": browser_identity_changed,
+            "consecutive_health_failures": *health_failures
         }),
     );
     let default_reinjector: BridgeReinjector =
@@ -2466,6 +2621,7 @@ async fn check_and_reinject_bridge_inner(
                     "helper_port": helper_port
                 }),
             );
+            *health_failures = 0;
             true
         }
         Err(error) => {
@@ -3105,6 +3261,55 @@ mod tests {
         assert!(!should_probe_launcher_cdp(false, false));
     }
 
+    #[test]
+    fn bridge_health_failures_reinject_only_after_consecutive_unhealthy_results() {
+        let mut failures = 0;
+        assert!(!should_reinject_after_health_result(
+            Some(false),
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, 1);
+        assert!(should_reinject_after_health_result(
+            Some(false),
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, BRIDGE_HEALTH_FAILURE_THRESHOLD);
+        assert!(!should_reinject_after_health_result(
+            Some(true),
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, 0);
+
+        failures = 1;
+        assert!(!should_reinject_after_health_result(
+            None,
+            false,
+            &mut failures
+        ));
+        assert_eq!(failures, 0);
+        assert!(should_reinject_after_health_result(
+            Some(false),
+            true,
+            &mut failures
+        ));
+    }
+
+    #[test]
+    fn helper_bind_retry_covers_fixed_proxy_ports_and_macos_restarts() {
+        assert_eq!(
+            helper_bind_retry_timeout_ms(true, false),
+            HELPER_BIND_RETRY_TIMEOUT_MS
+        );
+        assert_eq!(
+            helper_bind_retry_timeout_ms(false, true),
+            HELPER_BIND_RETRY_TIMEOUT_MS
+        );
+        assert_eq!(helper_bind_retry_timeout_ms(false, false), 0);
+    }
+
     #[tokio::test]
     async fn bridge_reinjector_prefers_launcher_callback() {
         let launcher_calls = Arc::new(AtomicUsize::new(0));
@@ -3251,6 +3456,75 @@ mod tests {
         .await;
 
         assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 426 Upgrade Required"));
+    }
+
+    #[tokio::test]
+    async fn helper_keeps_unknown_image_path_as_not_found() {
+        let response = send_raw_helper_request(
+            b"POST /v1/images/unknown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .await;
+
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 404 Not Found"));
+        assert!(response.contains("未知后端路径"));
+    }
+
+    #[tokio::test]
+    async fn helper_proxies_image_generation_upstream_error_response() {
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings_path =
+            crate::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let settings = serde_json::json!({
+            "relayProfiles": [{
+                "id": "images",
+                "name": "Images",
+                "baseUrl": format!("http://{upstream_addr}/v1"),
+                "upstreamBaseUrl": format!("http://{upstream_addr}/v1"),
+                "apiKey": "sk-test",
+                "protocol": "responses",
+                "relayMode": "mixedApi"
+            }],
+            "activeRelayId": "images"
+        });
+        std::fs::write(settings_path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await.unwrap();
+            let body = br#"{"error":{"message":"rate limited"}}"#;
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            request
+        });
+        let request_body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
+        let headers = format!(
+            "POST /v1/images/generations HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            request_body.len()
+        );
+        let mut request = headers.into_bytes();
+        request.extend_from_slice(request_body);
+
+        let response = send_raw_helper_request(&request).await;
+
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(response_text.starts_with("HTTP/1.1 429 Too Many Requests"));
+        assert!(response_text.contains("Content-Type: application/problem+json"));
+        assert!(response.ends_with(br#"{"error":{"message":"rate limited"}}"#));
+        let upstream_request = upstream.await.unwrap();
+        let request_line = String::from_utf8_lossy(&upstream_request.headers);
+        assert!(request_line.starts_with("POST /v1/images/generations HTTP/1.1"));
+        assert_eq!(upstream_request.body, request_body);
+        crate::paths::set_settings_path_for_tests(previous_settings_path);
     }
 
     #[test]
