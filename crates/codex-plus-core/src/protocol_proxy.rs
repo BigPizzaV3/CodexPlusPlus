@@ -1100,7 +1100,7 @@ async fn upstream_request_parts(
         RelayProtocol::ChatCompletions => responses_to_chat_completions(request_json)?,
     };
     if relay.protocol == RelayProtocol::Responses {
-        normalize_responses_custom_tool_call_ids(&mut body);
+        normalize_responses_item_ids(&mut body);
     }
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
@@ -1490,6 +1490,15 @@ pub fn response_id_from_chat_id(id: Option<&str>) -> String {
     }
 }
 
+/// `resp_xxx` → `xxx`。message item 的 id 必须以 `msg_` 开头，
+/// 直接拼在 `response_id` 后面会得到上游拒收的 `resp_xxx_msg`（#1431）。
+fn response_id_body(response_id: &str) -> &str {
+    response_id
+        .strip_prefix("resp_")
+        .filter(|value| !value.is_empty())
+        .unwrap_or(response_id)
+}
+
 fn push_sse(output: &mut String, event: &str, data: Value) {
     output.push_str("event: ");
     output.push_str(event);
@@ -1796,7 +1805,7 @@ impl ChatSseState {
     fn push_text_delta_into(&mut self, delta: &str, output: &mut String) {
         if !self.text.added {
             let output_index = self.next_output_index();
-            let item_id = format!("{}_msg", self.response_id);
+            let item_id = format!("msg_{}", response_id_body(&self.response_id));
             self.text.output_index = Some(output_index);
             self.text.item_id = item_id.clone();
             self.text.added = true;
@@ -2333,36 +2342,88 @@ fn truncate_error_preview(input: &str) -> String {
     input.chars().take(ERROR_BODY_PREVIEW_LIMIT).collect()
 }
 
-fn normalize_responses_custom_tool_call_ids(body: &mut Value) {
+/// Responses 协议要求每个 input item 的 `id` 前缀与它的 `type` 对应，
+/// 例如 `message` 必须是 `msg_`、`function_call` 必须是 `fc_`。
+/// 前缀不匹配时上游直接以 `[ApiIdParam] [input[N].id] [invalid_id_prefix]` 拒绝**整份**请求，
+/// 于是这段历史被反复重放、会话永久不可用（#1431 / #1781 / #1796）。
+///
+/// 前缀表取自 Codex 自己的 rollout 记录（`~/.codex/sessions/**/rollout-*.jsonl`），
+/// 不是猜测：`message`/`reasoning`/`custom_tool_call`/`custom_tool_call_output`/
+/// `function_call`/`function_call_output` 分别对应 msg_/rs_/ctc_/ctco_/fc_/fco_。
+const RESPONSES_ITEM_ID_PREFIXES: &[(&str, &str)] = &[
+    ("message", "msg_"),
+    ("reasoning", "rs_"),
+    ("function_call", "fc_"),
+    ("function_call_output", "fco_"),
+    ("custom_tool_call", "ctc_"),
+    ("custom_tool_call_output", "ctco_"),
+];
+
+/// 供集成测试直接验证前缀归一结果：`upstream_request_parts` 需要真实网络，
+/// 用它测不方便。
+#[doc(hidden)]
+pub fn normalize_responses_item_ids_for_test(body: &mut Value) {
+    normalize_responses_item_ids(body);
+}
+
+/// 出站前把所有已知 item 的 id 前缀修正到与 `type` 一致。
+///
+/// 只认前缀表里的类型，未知类型原样通过——宁可放过，也不要把看不出类型语义的 id 改坏。
+fn normalize_responses_item_ids(body: &mut Value) {
     let Some(input) = body.get_mut("input") else {
         return;
     };
     match input {
         Value::Array(items) => {
             for item in items {
-                normalize_custom_tool_call_item_id(item);
+                normalize_responses_item_id(item);
             }
         }
-        Value::Object(_) => normalize_custom_tool_call_item_id(input),
+        Value::Object(_) => normalize_responses_item_id(input),
         _ => {}
     }
 }
 
-fn normalize_custom_tool_call_item_id(item: &mut Value) {
-    if item.get("type").and_then(Value::as_str) != Some("custom_tool_call") {
+fn normalize_responses_item_id(item: &mut Value) {
+    let Some(item_type) = item.get("type").and_then(Value::as_str) else {
         return;
-    }
+    };
+    let Some((_, prefix)) = RESPONSES_ITEM_ID_PREFIXES
+        .iter()
+        .find(|(kind, _)| *kind == item_type)
+    else {
+        return;
+    };
     let Some(id) = item.get("id").and_then(Value::as_str) else {
         return;
     };
-    if id.starts_with("ctc_") {
+    // 只有「前缀 + 非空后缀」才算已经合规。id 恰好等于前缀本身（`fc_`）是空壳，
+    // 放它过去会直接触发上游的 invalid_id_prefix，所以落到下面按 call_id 重建。
+    if id.len() > prefix.len() && id.starts_with(prefix) {
         return;
     }
-    let suffix = id
-        .strip_prefix("fc_")
-        .or_else(|| id.strip_prefix("item_"))
+    // 剥掉 id 上现有的前缀再换新的。取**最长**匹配：`fc_` 是 `fco_` 的前缀，
+    // 先撞上短的会把 `fco_call_a` 剥成 `call_a` 再换成 `fc_call_a`，
+    // 把 function_call_output 错改成 function_call。
+    // `item_` 是历史版本 Codex++ 自己造的前缀；`resp_` 来自历史版本把 message
+    // item 命名成 `{response_id}_msg`（#1431 / #1781），都要一并剥掉。
+    let suffix = ["item_", "resp_"]
+        .into_iter()
+        .chain(RESPONSES_ITEM_ID_PREFIXES.iter().map(|(_, known)| *known))
+        .filter_map(|known| id.strip_prefix(known).map(|rest| (known.len(), rest)))
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, rest)| rest)
         .unwrap_or(id);
-    item["id"] = json!(format!("ctc_{suffix}"));
+    // 剥完是空串说明 id 恰好只由某个前缀组成，退回 call_id，再退回原 id。
+    let suffix = if suffix.is_empty() {
+        item.get("call_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id)
+    } else {
+        suffix
+    };
+    item["id"] = json!(format!("{prefix}{suffix}"));
 }
 
 fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
@@ -3842,7 +3903,7 @@ fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> O
     }
 
     Some(json!({
-        "id": format!("{response_id}_msg"),
+        "id": format!("msg_{}", response_id_body(response_id)),
         "type": "message",
         "status": "completed",
         "role": "assistant",
