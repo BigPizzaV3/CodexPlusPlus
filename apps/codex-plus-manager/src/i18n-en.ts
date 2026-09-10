@@ -28,8 +28,6 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 意外停止": "Codex stopped unexpectedly",
   "Codex 版本": "Codex version",
   "Codex CLI 路径": "Codex CLI path",
-  "JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。":
-    "JOJO Code provides a stable, competitively priced API relay supporting the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2 and other models plus image capabilities.",
   "Codex++ 导入": "Codex++ import",
   "Codex++ 版本": "Codex++ version",
   "Codex-Dream-Skin 风格主题和换图": "Codex-Dream-Skin style themes and image replacement",
@@ -349,6 +347,21 @@ export const EN_PLAIN: Record<string, string> = {
   "请先保存当前修改": "Save your changes first",
   "请先保存当前供应商，再应用到 Grok。": "Save the current provider before applying it to Grok.",
   "已保存": "Saved",
+  "工具": "Tool",
+  "配置目录": "Config directory",
+  "配置切换": "Config switching",
+  "已接入，可在该工具页切换供应商。": "Wired up — switch providers on that tool's own page.",
+  "尚未接入配置切换。": "Config switching is not wired up yet.",
+  "该工具由它自己的页签管理": "This tool is managed on its own tab",
+  "打开赞助商": "Open sponsor",
+  "赞助本项目的中转服务商": "Relay services sponsoring this project",
+  "内容来自 BigPizzaV3/Ad-List，赞助商推荐见「项目赞助商」页。":
+    "Content comes from BigPizzaV3/Ad-List; sponsors are listed on the Project sponsors page.",
+  "内容来自 BigPizzaV3/Ad-List，与概览页展示的是同一份数据。":
+    "Content comes from BigPizzaV3/Ad-List — the same data shown on the overview page.",
+  "刷新赞助商": "Refresh sponsors",
+  "全部赞助商": "All sponsors",
+  "普通推荐内容": "General recommendations",
   "有未保存修改。": "Unsaved changes.",
   "每个供应商对应一套 Base URL + API Key + 模型列表。":
     "Each provider is one Base URL + API key + model list.",
@@ -414,8 +427,6 @@ export const EN_PLAIN: Record<string, string> = {
   "关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。":
     "When off, this tool won't write Codex's config.toml / auth.json on manual switches; it never auto-modifies these files when launching Codex.",
   "兼容增强": "Compatible enhancement",
-  "内容来自 BigPizzaV3/Ad-List，分为赞助商推荐和普通推荐。":
-    "Content comes from BigPizzaV3/Ad-List, split into sponsor recommendations and regular recommendations.",
   "内置": "Built-in",
   "内置、手动和市场安装脚本；可在这里启停或删除用户脚本": "Built-in, manual and marketplace-installed scripts; enable, disable or delete user scripts here",
   "内置和用户自定义脚本清单": "Built-in and user-defined script inventory",
@@ -611,9 +622,8 @@ export const EN_PLAIN: Record<string, string> = {
   "手动刷新": "Manual refresh",
   "手动启动": "Manual launch",
   "打开": "Open",
-  "打开 JOJO Code": "Open JOJO Code",
-  "打开关于": "Open About",
   "打开链接": "Open link",
+  "打开关于": "Open About",
   "打开项目主页": "Open project homepage",
   "扩展项": "entry",
   "批量删除会话": "Bulk delete sessions",
@@ -910,8 +920,6 @@ export const EN_PLAIN: Record<string, string> = {
   "读取 ~/.cc-switch/cc-switch.db": "Reading ~/.cc-switch/cc-switch.db",
   "调用失败": "Call failed",
   "资源": "Asset",
-  "赞助商推荐": "Sponsor recommendations",
-  "赞助商推荐与普通推荐": "Sponsor and regular recommendations",
   "输入中转服务的 API Key": "Enter the relay service API Key",
   "运行中": "Running",
   "返回列表": "Back to list",
@@ -1160,6 +1168,10 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0}｜{1}｜供应商配置尚未接入": "{0} | {1} | provider configuration not wired up yet",
   "{0} 的供应商配置还没接入，切过去只会显示空列表。":
     "Provider configuration for {0} is not wired up yet, so switching would only show an empty list.",
+  "共 {0} 家赞助商": "{0} sponsor(s) in total",
+  "{0} 家": "{0} sponsor(s)",
+  "{0} 状态": "{0} status",
+  "{0} 个已保存": "{0} saved",
   "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。":
     "Every model table managed by Codex++ in Grok will be replaced wholesale by the model list of provider \"{0}\" (unmanaged fields such as [ui] and web_search are kept). The previous config is backed up first.",
   "已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。":

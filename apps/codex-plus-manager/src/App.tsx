@@ -932,7 +932,7 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   grok: Blocks,
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "sponsors" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -948,7 +948,8 @@ const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
  * 新增页面时**必须**想清楚归属：默认可见会让 Codex 专属功能在 Grok 下露出来。
  */
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string }> = [
-  { id: "overview", label: t("概览"), icon: LayoutDashboard, tool: "codex" },
+  // 概览在两个工具下都可见：它承载共用的项目赞助商区块，以及各自的状态。
+  { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
@@ -958,7 +959,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette, tool: "codex" },
   { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink, tool: "codex" },
   { id: "userScripts", label: t("脚本市场"), icon: FileCode2, tool: "codex" },
-  { id: "recommendations", label: t("推荐内容"), icon: ExternalLink, tool: "codex" },
+  { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
+  { id: "sponsors", label: t("项目赞助商"), icon: Star },
   { id: "maintenance", label: t("安装维护"), icon: Wrench, tool: "codex" },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
@@ -976,7 +978,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("系统"),
-    routes: ["recommendations", "maintenance", "about", "settings"],
+    routes: ["recommendations", "sponsors", "maintenance", "about", "settings"],
     placement: "bottom",
   },
 ];
@@ -2088,6 +2090,7 @@ export function App() {
       await refreshUserScriptInventory();
     }
     if (next === "recommendations") await refreshAds(true);
+    if (next === "sponsors") await refreshAds(true);
     if (next === "about") {
       await refreshOverview(true);
       await refreshLogs(true);
@@ -2971,6 +2974,9 @@ export function App() {
         void checkUpdate(true);
       }
       await refreshOverview(true);
+      // 概览页的赞助商区块要显示真实广告源内容，所以启动就拉一次，
+      // 不要等到用户点进「推荐内容」才加载。
+      await refreshAds(true);
       await refreshTools(true);
       if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
@@ -3470,6 +3476,9 @@ export function App() {
             <OverviewScreen
               overview={overview}
               pluginMarketplaceProgress={pluginMarketplaceProgress}
+              ads={ads}
+              activeTool={activeTool}
+              toolEntries={toolEntries}
               actions={actions}
             />
           ) : null}
@@ -3561,6 +3570,7 @@ export function App() {
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
+          {route === "sponsors" ? <SponsorsScreen ads={ads} actions={actions} /> : null}
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
@@ -4227,106 +4237,204 @@ function WeixinConnectScreen({
   );
 }
 
+/// 项目赞助商区块。
+///
+/// 概览页和推荐内容页共用同一份数据、同一个渲染，所以两处看到的赞助商是
+/// 一致的 —— 以前概览页把赞助商内容硬编码在 JSX 里，跟推荐内容页各说各话。
+///
+/// 数据优先级：广告源里的 sponsor 条目 → 本地内置的兜底条目。本地兜底保证
+/// 断网或广告源没加载时这块不会空着。
+function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
+  const sponsors = (ads?.ads ?? []).filter((ad) => ad.type === "sponsor" && !isExpiredAd(ad));
+  // 广告源还没回来时用内置条目，避免首屏闪一下空白。
+  const featured = sponsors.length ? sponsors : BUILTIN_SPONSORS;
+  const [primary, ...rest] = featured;
+
+  return (
+    <Panel className="jojocode-overview">
+      <CardContent>
+        <div className="jojocode-overview-layout">
+          <div className="jojocode-overview-main">
+            {primary.image ? (
+              <img alt="" className="sponsor-logo" src={primary.image} />
+            ) : (
+              <div className="jojocode-overview-mark">
+                <Network className="h-5 w-5" />
+              </div>
+            )}
+            <div>
+              <span className="eyebrow">{t("项目赞助商")}</span>
+              <h2>{formatAdTitle(primary.title)}</h2>
+              <p>{primary.description}</p>
+            </div>
+          </div>
+          <div className="jojocode-overview-side">
+            {primary.highlights?.length ? (
+              <div className="jojocode-model-tags">
+                {primary.highlights.map((item) => (
+                  <span key={item}>{item}</span>
+                ))}
+              </div>
+            ) : null}
+            <Button onClick={() => void actions.openExternalUrl(primary.url)}>
+              <ExternalLink className="h-4 w-4" />
+              {t("打开赞助商")}
+            </Button>
+          </div>
+        </div>
+        {rest.length ? (
+          <div className="sponsor-strip">
+            {rest.map((ad) => (
+              <button
+                className="sponsor-chip"
+                key={ad.id || ad.title}
+                onClick={() => void actions.openExternalUrl(ad.url)}
+                type="button"
+              >
+                {ad.image ? <img alt="" className="sponsor-chip-logo" src={ad.image} /> : null}
+                <span>{formatAdTitle(ad.title)}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </CardContent>
+    </Panel>
+  );
+}
+
+/// 广告源加载不出来时的兜底赞助商，内容与 assets/adlist.json 的 top_ad 一致。
+const BUILTIN_SPONSORS: AdItem[] = [
+  {
+    id: "jojocode-overview",
+    type: "sponsor",
+    title: "JOJO Code",
+    description:
+      "JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。",
+    url: "https://jojocode.com/",
+    highlights: [
+      "GPT-5.6 全系列",
+      "Fable 5",
+      "Sonnet 5",
+      "GPT-5.5",
+      "GPT-5.4",
+      "Opus 4.8",
+      "Opus 4.7",
+      "gpt-image-2",
+    ],
+  },
+];
+
 function OverviewScreen({
   overview,
   pluginMarketplaceProgress,
+  ads,
+  activeTool,
+  toolEntries,
   actions,
 }: {
   overview: OverviewResult | null;
   pluginMarketplaceProgress: TaskProgress;
+  ads: AdsResult | null;
+  activeTool: ToolId;
+  toolEntries: ToolEntry[];
   actions: Actions;
 }) {
   const health = healthItems(overview);
+  const tool = toolEntries.find((entry) => entry.id === activeTool);
   return (
     <>
-      <Panel className="jojocode-overview">
-        <CardContent>
-          <div className="jojocode-overview-layout">
-            <div className="jojocode-overview-main">
-              <div className="jojocode-overview-mark">
-                <Network className="h-5 w-5" />
-              </div>
-              <div>
-                <span className="eyebrow">{t("项目赞助商")}</span>
-                <h2>JOJO Code</h2>
-                <p>
-                  {t("JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
-                </p>
-              </div>
-            </div>
-            <div className="jojocode-overview-side">
-              <div className="jojocode-model-tags">
-                <span>GPT-5.6 全系列</span>
-                <span>Fable 5</span>
-                <span>Sonnet 5</span>
-                <span>GPT-5.5</span>
-                <span>GPT-5.4</span>
-                <span>Opus 4.8</span>
-                <span>Opus 4.7</span>
-                <span>gpt-image-2</span>
-              </div>
-              <Button onClick={() => void actions.openExternalUrl("https://jojocode.com/")}>
-                <ExternalLink className="h-4 w-4" />
-                {t("打开 JOJO Code")}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
-        <CardContent>
-          <div className="health-grid">
-            <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
-              {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-              <div>
-                <strong>{t("Codex 版本")}</strong>
-                <span>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
-              </div>
-              <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
-            </div>
-            {health.map((item) => (
-              <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
-                {item.ok ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-                <div>
-                  <strong>{item.title}</strong>
-                  <span>{item.detail}</span>
+      {/* 赞助商区块两个工具下都显示，且与「项目赞助商」页共用同一份数据。 */}
+      <SponsorBoard ads={ads} actions={actions} />
+      {activeTool === "codex" ? (
+        <>
+          <Panel>
+            <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
+            <CardContent>
+              <div className="health-grid">
+                <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
+                  {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+                  <div>
+                    <strong>{t("Codex 版本")}</strong>
+                    <span>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
+                  </div>
+                  <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
                 </div>
-                <Badge status={item.status} />
+                {health.map((item) => (
+                  <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
+                    {item.ok ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+                    <div>
+                      <strong>{item.title}</strong>
+                      <span>{item.detail}</span>
+                    </div>
+                    <Badge status={item.status} />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.checkHealth()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("检查")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
-              <Wrench className="h-4 w-4" />
-              {t("修复入口")}
-            </Button>
-            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
-              {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
-            </Button>
-          </Toolbar>
-          <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("最近启动")} detail={overview?.logs_path ?? t("暂无状态文件")} />
-        <CardContent>
-          <LatestLaunch status={overview?.latest_launch ?? null} />
-          <Toolbar>
-            <Button onClick={() => void actions.launch()}>
-              <Rocket className="h-4 w-4" />
-              {t("启动 Codex++")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.goLogs()}>
-              {t("打开关于")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
+              <Toolbar>
+                <Button onClick={() => void actions.checkHealth()}>
+                  <RefreshCw className="h-4 w-4" />
+                  {t("检查")}
+                </Button>
+                <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
+                  <Wrench className="h-4 w-4" />
+                  {t("修复入口")}
+                </Button>
+                <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
+                  {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
+                </Button>
+              </Toolbar>
+              <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
+            </CardContent>
+          </Panel>
+          <Panel>
+            <CardHead title={t("最近启动")} detail={overview?.logs_path ?? t("暂无状态文件")} />
+            <CardContent>
+              <LatestLaunch status={overview?.latest_launch ?? null} />
+              <Toolbar>
+                <Button onClick={() => void actions.launch()}>
+                  <Rocket className="h-4 w-4" />
+                  {t("启动 Codex++")}
+                </Button>
+                <Button variant="secondary" onClick={() => void actions.goLogs()}>
+                  {t("打开关于")}
+                </Button>
+              </Toolbar>
+            </CardContent>
+          </Panel>
+        </>
+      ) : (
+        <Panel>
+          <CardHead title={tf("{0} 状态", [tool?.name ?? t("工具")])} detail={t("该工具由它自己的页签管理")} />
+          <CardContent>
+            <div className="health-grid">
+              <div className={`health-item ${tool?.switchable ? "ok" : "needs-fix"}`}>
+                {tool?.switchable ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+                <div>
+                  <strong>{t("配置切换")}</strong>
+                  <span>{tool?.switchable ? t("已接入，可在该工具页切换供应商。") : t("尚未接入配置切换。")}</span>
+                </div>
+                <Badge status={tool?.switchable ? "ok" : "not_checked"} />
+              </div>
+              <div className={`health-item ${tool?.relayCount ? "ok" : "needs-fix"}`}>
+                {tool?.relayCount ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+                <div>
+                  <strong>{t("供应商")}</strong>
+                  <span>{tf("{0} 个已保存", [String(tool?.relayCount ?? 0)])}</span>
+                </div>
+                <Badge status={tool?.relayCount ? "ok" : "not_checked"} />
+              </div>
+              <div className="health-item ok">
+                <CheckCircle2 className="h-4 w-4" />
+                <div>
+                  <strong>{t("配置目录")}</strong>
+                  <span>{tool?.homeDir || t("未配置目录")}</span>
+                </div>
+                <Badge status="ok" />
+              </div>
+            </div>
+          </CardContent>
+        </Panel>
+      )}
     </>
   );
 }
@@ -6300,9 +6408,12 @@ function SessionsScreen({
   );
 }
 
+/// 推荐内容页：只放普通推荐。
+///
+/// 赞助商挪到了「项目赞助商」页，两处共用同一份广告源（见 `SponsorBoard`），
+/// 所以这里不再重复列一遍赞助商。
 function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
   const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
-  const sponsors = items.filter((ad) => ad.type === "sponsor");
   const normal = items.filter((ad) => ad.type === "normal");
   return (
     <>
@@ -6312,7 +6423,7 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
           <div className="recommend-hero">
             <div>
               <strong>{ads ? tf("已加载 {0} 条推荐", [items.length]) : t("尚未加载推荐内容")}</strong>
-              <span>{t("内容来自 BigPizzaV3/Ad-List，分为赞助商推荐和普通推荐。")}</span>
+              <span>{t("内容来自 BigPizzaV3/Ad-List，赞助商推荐见「项目赞助商」页。")}</span>
             </div>
             <Button onClick={() => void actions.refreshAds()}>
               <RefreshCw className="h-4 w-4" />
@@ -6322,15 +6433,39 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("赞助商推荐")} detail={tf("{0} 条", [sponsors.length])} />
-        <CardContent>
-          <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
-        </CardContent>
-      </Panel>
-      <Panel>
         <CardHead title={t("普通推荐")} detail={tf("{0} 条", [normal.length])} />
         <CardContent>
           <AdGrid actions={actions} ads={normal} empty={t("暂无普通推荐。")} />
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+/// 项目赞助商页。与概览页的赞助商区块共享同一份数据与渲染。
+function SponsorsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
+  const sponsors = (ads?.ads ?? []).filter((ad) => ad.type === "sponsor" && !isExpiredAd(ad));
+  return (
+    <>
+      <Panel>
+        <CardHead title={t("项目赞助商")} detail={t("赞助本项目的中转服务商")} />
+        <CardContent>
+          <div className="recommend-hero">
+            <div>
+              <strong>{tf("共 {0} 家赞助商", [sponsors.length])}</strong>
+              <span>{t("内容来自 BigPizzaV3/Ad-List，与概览页展示的是同一份数据。")}</span>
+            </div>
+            <Button onClick={() => void actions.refreshAds()}>
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新赞助商")}
+            </Button>
+          </div>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("全部赞助商")} detail={tf("{0} 家", [sponsors.length])} />
+        <CardContent>
+          <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
         </CardContent>
       </Panel>
     </>
@@ -10073,7 +10208,8 @@ function routeSubtitle(route: Route) {
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
     zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
     userScripts: t("内置和用户自定义脚本清单"),
-    recommendations: t("赞助商推荐与普通推荐"),
+    recommendations: t("普通推荐内容"),
+    sponsors: t("赞助本项目的中转服务商"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),

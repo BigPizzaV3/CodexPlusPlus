@@ -409,6 +409,8 @@ body {
   background: hsl(var(--shell-bg));
   animation: topbar-enter var(--motion-normal) var(--motion-ease) both;
 }
+/* 注意：下面是 .topbar 的第二处定义，会覆盖上面这条（同优先级、源码更靠后）。
+   两处并存是历史遗留，实际生效的是下面那条 grid 布局。 */
 
 .topbar h1 {
   margin: 0;
@@ -548,6 +550,54 @@ body {
   border-radius: 8px;
   background: hsl(var(--brand-accent) / 0.16);
   color: hsl(var(--brand-accent));
+}
+
+/* 赞助商自带 logo 时用它替换默认的 Network 图标，尺寸对齐避免布局跳动。 */
+.sponsor-logo {
+  width: 42px;
+  height: 42px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  object-fit: contain;
+}
+
+/* 首位之外的赞助商在概览里收成一条横排 chip。 */
+.sponsor-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+
+.sponsor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 5px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--background) / 0.5);
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.sponsor-chip:hover {
+  border-color: hsl(var(--ring));
+  background: hsl(var(--accent));
+}
+
+.sponsor-chip-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: hsl(var(--background));
+  object-fit: contain;
 }
 
 .jojocode-overview h2 {
@@ -5373,6 +5423,20 @@ select {
   animation-duration: 150ms;
 }
 
+/* 顶栏三栏：标题（占满剩余空间）｜工具切换条（居中固定）｜右侧操作。
+   不能再用 space-between —— 标题从「概览」到「中转站环境配置检测」宽度差
+   好几倍，中间那块会跟着左右飘。给标题和右侧都设固定基准，切换条用
+   1fr / auto / 1fr 夹在正中间。 */
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.topbar > :first-child {
+  min-width: 0;
+}
+
 .topbar h1 {
   font-size: 17px;
   font-weight: 620;
@@ -5395,8 +5459,8 @@ select {
 .tool-switcher {
   display: flex;
   align-items: center;
+  justify-self: center;
   gap: 4px;
-  flex: 0 1 auto;
   min-width: 0;
   padding: 4px;
   border: 1px solid hsl(var(--border));
@@ -5595,8 +5659,10 @@ select {
 }
 
 .topbar-actions {
+  display: flex;
+  justify-content: flex-end;
   gap: 6px;
-  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .screen {
