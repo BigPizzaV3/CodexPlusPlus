@@ -4786,6 +4786,9 @@ fn apply_custom_chat_profile_preserves_generated_catalog_lite_behavior() {
         id: "relay-gpt56-chat".to_string(),
         model: "gpt-5.6-sol".to_string(),
         relay_mode: RelayMode::PureApi,
+        // 恒写 wire_api="responses" 后，生成 config 不再携带真实上游协议；
+        // catalog 的 Lite 判定改由 profile.protocol 驱动，故此处必须显式声明 Chat。
+        protocol: RelayProtocol::ChatCompletions,
         config_contents: r#"model = "gpt-5.6-sol"
 model_provider = "custom"
 
