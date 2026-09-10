@@ -371,22 +371,44 @@ impl SkillsManager {
         result?;
 
         let destination = self.source_dir.join(&skill.id);
-        if destination.exists() {
-            // 更新场景：先撤掉旧的，再把暂存目录顶上去。
-            std::fs::remove_dir_all(&destination)
-                .with_context(|| format!("移除旧 skill 目录失败：{}", destination.display()))?;
-        }
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建目录失败：{}", parent.display()))?;
         }
-        std::fs::rename(&staging, &destination).with_context(|| {
-            format!(
-                "移动 skill 到 {} 失败（暂存目录 {}）",
-                destination.display(),
-                staging.display()
-            )
-        })?;
+        // 更新场景不能"先删旧的、再把新的顶上去"：`rename` 会因为跨设备、权限或
+        // 杀软占用而失败，那时旧 skill 已经被删掉、新目录还在 staging，用户**没有
+        // 任何恢复路径**。改成先把旧目录挪到备份名再顶新的，失败时挪回来——与
+        // `plugin_marketplace::replace_directory` 用的是同一套做法。
+        let previous = destination.with_file_name(format!("{}.previous-codex-plus", skill.id));
+        if previous.exists() {
+            let _ = std::fs::remove_dir_all(&previous);
+        }
+        let had_previous = destination.exists();
+        if had_previous {
+            std::fs::rename(&destination, &previous).with_context(|| {
+                format!(
+                    "把旧 skill 挪到 {} 失败：{}",
+                    previous.display(),
+                    destination.display()
+                )
+            })?;
+        }
+        if let Err(error) = std::fs::rename(&staging, &destination) {
+            if had_previous {
+                // 顶替失败，把旧的放回原位，让用户至少回到操作前的状态。
+                let _ = std::fs::rename(&previous, &destination);
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "移动 skill 到 {} 失败（暂存目录 {}）",
+                    destination.display(),
+                    staging.display()
+                )
+            });
+        }
+        if previous.exists() {
+            let _ = std::fs::remove_dir_all(&previous);
+        }
 
         let _guard = self.state_lock.lock().unwrap();
         let mut state = self.load_state_unlocked();
@@ -1373,6 +1395,14 @@ mod tests {
         assert_eq!(state.installed["alpha"].content_hash, "hash-2");
         // 旧版本残留的文件必须被清掉，不能和新版本混在一起
         assert!(!manager.source_dir().join("alpha").join("old.txt").exists());
+        // 顶替成功后不能把过渡用的备份目录留在原地
+        assert!(
+            !manager
+                .source_dir()
+                .join("alpha.previous-codex-plus")
+                .exists(),
+            "顶替完成后不该残留 .previous-codex-plus"
+        );
     }
 
     #[test]
