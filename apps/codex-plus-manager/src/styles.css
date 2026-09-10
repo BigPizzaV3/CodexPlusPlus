@@ -573,7 +573,7 @@ body {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
-  max-width: 390px;
+  max-width: 460px;
 }
 
 .jojocode-model-tags span {
@@ -3287,16 +3287,17 @@ body {
 
 .ad-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 10px;
+  align-items: start;
 }
 
 .ad-card {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto auto auto;
   gap: 10px;
-  align-content: space-between;
-  min-height: 280px;
+  /* 不再用固定 min-height + space-between：内容多的卡片会被压扁，
+     内容少的则留一大片空白。让每张卡按自己的内容撑开。 */
   width: 100%;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
@@ -3335,18 +3336,12 @@ body {
   display: block;
   margin-bottom: 5px;
   font-size: 15px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
 }
 
 .ad-card p {
-  display: -webkit-box;
   margin: 0;
-  overflow: hidden;
   color: hsl(var(--muted-foreground));
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
   line-height: 1.5;
 }
 
@@ -3354,8 +3349,6 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  max-height: 54px;
-  overflow: hidden;
 }
 
 .ad-tags span {
@@ -5465,21 +5458,56 @@ select {
 
 /* ── Grok 供应商页 ──────────────────────────────────────────── */
 
+/* `.panel-head` 默认是 title 左、detail 右的横排；Grok 这两块说明文字长，
+   挤在右边缘会连成一片。这里让它们上下排。 */
+.grok-panel .panel-head {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.grok-panel .panel-head p {
+  line-height: 1.5;
+}
+
+.grok-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 18px 16px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 10px;
+  color: hsl(var(--muted-foreground));
+}
+
+.grok-empty strong {
+  display: block;
+  margin-bottom: 3px;
+  color: hsl(var(--foreground));
+  font-size: 13.5px;
+}
+
+.grok-empty span {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
 .grok-provider-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 12px 0;
+  margin-top: 12px;
 }
 
 .grok-provider-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid hsl(var(--border));
   border-radius: 10px;
-  background: hsl(var(--card) / 0.5);
+  background: hsl(var(--background) / 0.5);
 }
 
 .grok-provider-row.active {
@@ -5490,7 +5518,7 @@ select {
 .grok-provider-pick {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   flex: 1 1 auto;
   min-width: 0;
   border: none;
@@ -5502,11 +5530,20 @@ select {
 }
 
 .grok-provider-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   font-weight: 560;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.grok-provider-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.2);
+  color: hsl(var(--primary-foreground));
+  font-size: 10.5px;
+  font-weight: 500;
 }
 
 .grok-provider-url,
@@ -5524,19 +5561,36 @@ select {
 
 .grok-provider-editor {
   display: grid;
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid hsl(var(--border));
+  gap: 12px;
+  margin-top: 14px;
 }
 
-.grok-live-list {
+.grok-live-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.grok-live-item {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  margin: 10px 0 0;
-  padding: 0;
-  list-style: none;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border) / 0.7);
+  border-radius: 8px;
+  background: hsl(var(--background) / 0.5);
+}
+
+.grok-live-label {
   color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.grok-live-value {
   font-size: 12.5px;
+  line-height: 1.45;
   word-break: break-all;
 }
 

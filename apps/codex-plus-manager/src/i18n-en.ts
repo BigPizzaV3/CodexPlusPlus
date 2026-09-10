@@ -340,12 +340,8 @@ export const EN_PLAIN: Record<string, string> = {
   "新建 Grok 供应商": "New Grok provider",
   "新增供应商": "Add provider",
   "请先选择一个供应商": "Select a provider first",
-  "Grok 还没有配置供应商。新增一个，填好 Base URL、API Key 和模型列表，再点「应用到 Grok」。":
-    "No Grok provider configured yet. Add one, fill in the Base URL, API key and model list, then click Apply to Grok.",
   "未填写 Base URL": "No Base URL yet",
   "留空则不改动 Grok 里已有的 Key": "Leave blank to keep the key already in Grok",
-  "每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。保存后点「应用到 Grok」生效。":
-    "One model per line; a [1M] / [200K] suffix declares its context window. Saving only stores the provider — click Apply to Grok to write it.",
   "每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。改完点「保存此供应商」，再点「应用到 Grok」生效。":
     "One model per line; a [1M] / [200K] suffix declares its context window. Click Save provider first, then Apply to Grok to write it.",
   "保存此供应商": "Save provider",
@@ -354,6 +350,19 @@ export const EN_PLAIN: Record<string, string> = {
   "请先保存当前供应商，再应用到 Grok。": "Save the current provider before applying it to Grok.",
   "已保存": "Saved",
   "有未保存修改。": "Unsaved changes.",
+  "每个供应商对应一套 Base URL + API Key + 模型列表。":
+    "Each provider is one Base URL + API key + model list.",
+  "还没有 Grok 供应商": "No Grok provider yet",
+  "点「新增供应商」，填好 Base URL、API Key 和模型列表，再点「应用到 Grok」。":
+    "Click Add provider, fill in the Base URL, API key and model list, then click Apply to Grok.",
+  "编辑供应商": "Edit provider",
+  "每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。":
+    "One model per line; a [1M] / [200K] suffix declares its context window.",
+  "改完点「保存此供应商」，再点「应用到 Grok」生效。":
+    "When done, click Save provider, then Apply to Grok to write it.",
+  "CLI": "CLI",
+  "全局端点": "Global endpoint",
+  "受管模型": "Managed models",
   "Grok 当前配置": "Grok's current config",
   "读取 ~/.grok/config.toml": "Reading ~/.grok/config.toml",
   "未设置": "Not set",
@@ -1151,15 +1160,11 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0}｜{1}｜供应商配置尚未接入": "{0} | {1} | provider configuration not wired up yet",
   "{0} 的供应商配置还没接入，切过去只会显示空列表。":
     "Provider configuration for {0} is not wired up yet, so switching would only show an empty list.",
+  "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。":
+    "Every model table managed by Codex++ in Grok will be replaced wholesale by the model list of provider \"{0}\" (unmanaged fields such as [ui] and web_search are kept). The previous config is backed up first.",
   "已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。":
     "Added provider \"{0}\"; fill in its model list and click Apply to Grok.",
   "供应商「{0}」已保存。": "Provider \"{0}\" saved.",
-  "CLI：{0}": "CLI: {0}",
-  "默认模型：{0}": "Default model: {0}",
-  "全局端点：{0}": "Global endpoint: {0}",
-  "受管模型：{0}": "Managed models: {0}",
-  "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。":
-    "Every model table managed by Codex++ in Grok will be replaced wholesale by the model list of provider \"{0}\" (unmanaged fields such as [ui] and web_search are kept). The previous config is backed up first.",
   "删除 Grok 模型「{0}」？": "Delete Grok model \"{0}\"?",
   "模型「{0}」的上下文窗口必须是大于 0 的整数。": "The context window for model \"{0}\" must be a positive integer.",
   "作者：{0} · {1}": "Author: {0} · {1}",

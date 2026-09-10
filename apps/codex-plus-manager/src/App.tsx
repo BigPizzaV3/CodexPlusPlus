@@ -3454,10 +3454,12 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
-              <Rocket className="h-4 w-4" />
-              {t("重启 Codex++")}
-            </Button>
+            {activeTool === "codex" ? (
+              <Button onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
+                <Rocket className="h-4 w-4" />
+                {t("重启 Codex++")}
+              </Button>
+            ) : null}
             <Button onClick={() => void actions.refreshCurrent()} size="icon" title={t("刷新当前页面")} variant="outline">
               <RefreshCw className="h-4 w-4" />
             </Button>
@@ -9643,132 +9645,164 @@ function GrokScreen({
 
   return (
     <>
-      <Panel>
+      <Panel className="grok-panel">
         <CardHead
           title={t("Grok 供应商")}
-          detail={t("每个供应商对应一套 Base URL + API Key + 模型列表；「应用到 Grok」会把它写进 ~/.grok/config.toml。")}
+          detail={t("每个供应商对应一套 Base URL + API Key + 模型列表。")}
         />
-        <div className="toolbar">
-          <Button disabled={loading} onClick={() => void refresh()} variant="outline">
-            <RefreshCw className="h-4 w-4" />
-            {loading ? t("刷新中") : t("刷新")}
-          </Button>
-          <Button onClick={() => void addProfile()} variant="outline">
-            <Plus className="h-4 w-4" />
-            {t("新增供应商")}
-          </Button>
-          <Button
-            disabled={saving || !draftDirty}
-            onClick={() => void saveDraft()}
-            title={draftDirty ? undefined : t("没有需要保存的修改")}
-            variant="outline"
-          >
-            <Save className="h-4 w-4" />
-            {saving ? t("保存中") : t("保存此供应商")}
-          </Button>
-          <Button
-            disabled={!activeProfile || applying || draftDirty}
-            onClick={() => setConfirming(true)}
-            title={
-              !activeProfile
-                ? t("请先选择一个供应商")
-                : draftDirty
-                  ? t("请先保存当前修改")
-                  : undefined
-            }
-          >
-            <Play className="h-4 w-4" />
-            {applying ? t("应用中") : t("应用到 Grok")}
-          </Button>
-        </div>
-
-        {profiles.length === 0 ? (
-          <p className="muted-line">
-            {t("Grok 还没有配置供应商。新增一个，填好 Base URL、API Key 和模型列表，再点「应用到 Grok」。")}
-          </p>
-        ) : (
-          <div className="grok-provider-list">
-            {profiles.map((profile) => {
-              const selected = profile.id === activeId;
-              return (
-                <div className={`grok-provider-row ${selected ? "active" : ""}`} key={profile.id}>
-                  <button
-                    className="grok-provider-pick"
-                    onClick={() => void selectProfile(profile.id)}
-                    type="button"
-                  >
-                    <span className="grok-provider-name">{profile.name}</span>
-                    <span className="grok-provider-url">
-                      {profile.upstreamBaseUrl || profile.baseUrl || t("未填写 Base URL")}
-                    </span>
-                  </button>
-                  <span className="grok-provider-models">
-                    {tf("{0} 个模型", [String(profile.modelList.split(/[\r\n,]+/).filter((line) => line.trim()).length)])}
-                  </span>
-                  {selected ? <UiBadge variant="secondary">{t("使用中")}</UiBadge> : null}
-                  <Button onClick={() => void removeProfile(profile.id)} size="icon" title={t("删除供应商")} variant="outline">
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              );
-            })}
+        <CardContent>
+          <div className="toolbar">
+            <Button disabled={loading} onClick={() => void refresh()} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              {loading ? t("刷新中") : t("刷新")}
+            </Button>
+            <Button onClick={() => void addProfile()} variant="outline">
+              <Plus className="h-4 w-4" />
+              {t("新增供应商")}
+            </Button>
+            <Button
+              disabled={saving || !draftDirty}
+              onClick={() => void saveDraft()}
+              title={draftDirty ? undefined : t("没有需要保存的修改")}
+              variant="outline"
+            >
+              <Save className="h-4 w-4" />
+              {saving ? t("保存中") : t("保存此供应商")}
+            </Button>
+            <Button
+              disabled={!activeProfile || applying || draftDirty}
+              onClick={() => setConfirming(true)}
+              title={
+                !activeProfile
+                  ? t("请先选择一个供应商")
+                  : draftDirty
+                    ? t("请先保存当前修改")
+                    : undefined
+              }
+            >
+              <Play className="h-4 w-4" />
+              {applying ? t("应用中") : t("应用到 Grok")}
+            </Button>
           </div>
-        )}
 
-        {draft ? (
-          <div className="grok-provider-editor">
-            <Field label={t("名称")}>
-              <Input
-                onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value })}
-                value={draft.name}
-              />
-            </Field>
-            <Field label="Base URL">
-              <Input
-                onChange={(event) => setDraft({ ...draft, upstreamBaseUrl: event.currentTarget.value })}
-                placeholder="https://your-endpoint.example/v1"
-                value={draft.upstreamBaseUrl}
-              />
-            </Field>
-            <Field label="API Key">
-              <Input
-                onChange={(event) => setDraft({ ...draft, apiKey: event.currentTarget.value })}
-                placeholder={t("留空则不改动 Grok 里已有的 Key")}
-                type="password"
-                value={draft.apiKey}
-              />
-            </Field>
-            <Field label={t("模型列表")}>
-              <Textarea
-                onChange={(event) => setDraft({ ...draft, modelList: event.currentTarget.value })}
-                placeholder={"grok-4.5[1M]\ngrok-4.1-fast"}
-                rows={4}
-                value={draft.modelList}
-              />
-            </Field>
-            <p className="muted-line">
-              {t("每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。改完点「保存此供应商」，再点「应用到 Grok」生效。")}
-            </p>
-            {draftDirty ? <p className="muted-line">{t("有未保存修改。")}</p> : null}
-          </div>
-        ) : null}
+          {profiles.length === 0 ? (
+            <div className="grok-empty">
+              <Blocks className="h-5 w-5" aria-hidden="true" />
+              <div>
+                <strong>{t("还没有 Grok 供应商")}</strong>
+                <span>{t("点「新增供应商」，填好 Base URL、API Key 和模型列表，再点「应用到 Grok」。")}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="grok-provider-list">
+              {profiles.map((profile) => {
+                const selected = profile.id === activeId;
+                const modelCount = profile.modelList.split(/[\r\n,]+/).filter((line) => line.trim()).length;
+                const endpoint = profile.upstreamBaseUrl || profile.baseUrl;
+                return (
+                  <div className={`grok-provider-row ${selected ? "active" : ""}`} key={profile.id}>
+                    <button
+                      className="grok-provider-pick"
+                      onClick={() => void selectProfile(profile.id)}
+                      type="button"
+                    >
+                      <span className="grok-provider-name">
+                        {profile.name}
+                        {selected ? <span className="grok-provider-badge">{t("使用中")}</span> : null}
+                      </span>
+                      <span className="grok-provider-url">
+                        {endpoint || t("未填写 Base URL")}
+                      </span>
+                    </button>
+                    <span className="grok-provider-models">{tf("{0} 个模型", [String(modelCount)])}</span>
+                    <Button
+                      onClick={() => void removeProfile(profile.id)}
+                      size="icon"
+                      title={t("删除供应商")}
+                      variant="outline"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
       </Panel>
 
-      <Panel>
-        <CardHead
-          title={t("Grok 当前配置")}
-          detail={live?.configPath || t("读取 ~/.grok/config.toml")}
-        />
-        {live ? (
-          <ul className="grok-live-list">
-            <li>{tf("CLI：{0}", [live.cliInstalled ? (live.cliPath || t("已安装")) : t("未检测到")])}</li>
-            <li>{tf("默认模型：{0}", [live.defaultModel || t("未设置")])}</li>
-            <li>{tf("全局端点：{0}", [live.modelsBaseUrl || t("未设置")])}</li>
-            <li>{tf("受管模型：{0}", [live.models.map((model) => model.alias).join("、") || t("无")])}</li>
-          </ul>
-        ) : (
-          <p className="muted-line">{t("尚未读取。")}</p>
-        )}
+      {draft ? (
+        <Panel className="grok-panel">
+          <CardHead title={t("编辑供应商")} detail={draft.name} />
+          <CardContent>
+            <div className="grok-provider-editor">
+              <Field label={t("名称")}>
+                <Input
+                  onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value })}
+                  value={draft.name}
+                />
+              </Field>
+              <Field label="Base URL">
+                <Input
+                  onChange={(event) => setDraft({ ...draft, upstreamBaseUrl: event.currentTarget.value })}
+                  placeholder="https://your-endpoint.example/v1"
+                  value={draft.upstreamBaseUrl}
+                />
+              </Field>
+              <Field label="API Key">
+                <Input
+                  onChange={(event) => setDraft({ ...draft, apiKey: event.currentTarget.value })}
+                  placeholder={t("留空则不改动 Grok 里已有的 Key")}
+                  type="password"
+                  value={draft.apiKey}
+                />
+              </Field>
+              <Field label={t("模型列表")}>
+                <Textarea
+                  onChange={(event) => setDraft({ ...draft, modelList: event.currentTarget.value })}
+                  placeholder={"grok-4.5[1M]\ngrok-4.1-fast"}
+                  rows={4}
+                  value={draft.modelList}
+                />
+              </Field>
+            </div>
+            <p className="muted-line">
+              {t("每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。")}
+              {" "}
+              {t("改完点「保存此供应商」，再点「应用到 Grok」生效。")}
+            </p>
+          </CardContent>
+        </Panel>
+      ) : null}
+
+      <Panel className="grok-panel">
+        <CardHead title={t("Grok 当前配置")} detail={live?.configPath || t("读取 ~/.grok/config.toml")} />
+        <CardContent>
+          {live ? (
+            <div className="grok-live-grid">
+              <div className="grok-live-item">
+                <span className="grok-live-label">{t("CLI")}</span>
+                <span className="grok-live-value">{live.cliPath || t("未检测到")}</span>
+              </div>
+              <div className="grok-live-item">
+                <span className="grok-live-label">{t("默认模型")}</span>
+                <span className="grok-live-value">{live.defaultModel || t("未设置")}</span>
+              </div>
+              <div className="grok-live-item">
+                <span className="grok-live-label">{t("全局端点")}</span>
+                <span className="grok-live-value">{live.modelsBaseUrl || t("未设置")}</span>
+              </div>
+              <div className="grok-live-item">
+                <span className="grok-live-label">{t("受管模型")}</span>
+                <span className="grok-live-value">
+                  {live.models.length ? live.models.map((model) => model.alias).join("、") : t("无")}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <p className="muted-line">{t("尚未读取。")}</p>
+          )}
+        </CardContent>
       </Panel>
 
       {confirming ? (
@@ -10006,8 +10040,13 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
   );
 }
 
+/// 广告标题原样展示。
+///
+/// 以前这里会在 `｜` / `|` 处截断，把「火山引擎｜方舟 Agent Plan」显示成
+/// 「火山引擎」—— 后半段是作者写的产品名，不该被我们悄悄丢掉。既然卡片
+/// 已经改成按内容自适应高度，就不再需要在标题上省这一点空间。
 function formatAdTitle(title: string) {
-  return title.split(/[｜|]/, 1)[0].trim() || title;
+  return title.trim() || title;
 }
 
 function isExpiredAd(ad: AdItem) {
