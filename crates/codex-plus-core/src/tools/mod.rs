@@ -5,6 +5,10 @@
 //! 本模块负责把它镜像进 `settings.json` 的 `tools.codex` 分片，同时为后续工具
 //! （Grok / Claude Code / …）预留同名分片。迁移是纯增量的 —— 扁平字段不删、
 //! 不改名、继续序列化，所以老版本管理器读新文件照常工作。
+//!
+//! 每个工具的写盘适配放各自的子模块，见 [`grok`]。
+
+pub mod grok;
 
 use std::path::PathBuf;
 
@@ -135,10 +139,9 @@ pub fn tool_home_dir(id: &ToolId) -> PathBuf {
     }
 }
 
-/// 该工具的 profile 是否已经能真正写盘并切换。Grok 目前只有
-/// `grok_config.rs` 的模型列表读写，还没接进 RelayProfile 体系。
+/// 该工具的 profile 是否已经能真正写盘并切换。
 pub fn tool_is_switchable(id: &ToolId) -> bool {
-    matches!(id, ToolId::Codex)
+    matches!(id, ToolId::Codex | ToolId::Grok)
 }
 
 pub fn tool_specs() -> Vec<ToolSpec> {
@@ -311,8 +314,7 @@ mod tests {
         assert_eq!(specs[0].name, TOOL_CODEX_NAME);
         assert!(specs[0].switchable);
         assert_eq!(specs[1].id, ToolId::Grok);
-        // Grok 还没接入 profile 写盘，UI 上必须显示为不可切。
-        assert!(!specs[1].switchable);
+        assert!(specs[1].switchable);
         assert!(specs.iter().all(|spec| !spec.home_dir.is_empty()));
     }
 }
