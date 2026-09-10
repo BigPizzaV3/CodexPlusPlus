@@ -354,6 +354,15 @@ export const EN_PLAIN: Record<string, string> = {
   "尚未接入配置切换。": "Config switching is not wired up yet.",
   "该工具由它自己的页签管理": "This tool is managed on its own tab",
   "打开推荐内容": "Open recommendation",
+  "Codex 供应商设置": "Codex provider settings",
+  "只作用于 Codex 供应商的配置": "Applies only to Codex providers",
+  "「测试供应商」按钮用这个模型发起一次真实请求，用于判断 Key 与端点是否可用。":
+    "The Test provider button sends one real request with this model to check that the key and endpoint work.",
+  "Codex 图片覆盖层": "Codex image overlay",
+  "在当前 Codex 会话上叠加一张背景图": "Overlay a background image on the current Codex session",
+  "这个工具目前没有独立设置项": "This tool has no settings of its own yet",
+  "该工具的配置在它自己的页签里管理；上面的基础设置对所有工具通用。":
+    "This tool is configured on its own tab; the basic settings above apply to every tool.",
   "赞助商推荐": "Sponsor recommendations",
   "内容来自 BigPizzaV3/Ad-List，含置顶推荐与普通推荐。":
     "Content comes from BigPizzaV3/Ad-List, including the pinned and regular recommendations.",
@@ -1164,6 +1173,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0} 的供应商配置还没接入，切过去只会显示空列表。":
     "Provider configuration for {0} is not wired up yet, so switching would only show an empty list.",
   "{0} 状态": "{0} status",
+  "{0} 设置": "{0} settings",
   "{0} 个已保存": "{0} saved",
   "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。":
     "Every model table managed by Codex++ in Grok will be replaced wholesale by the model list of provider \"{0}\" (unmanaged fields such as [ui] and web_search are kept). The previous config is backed up first.",
