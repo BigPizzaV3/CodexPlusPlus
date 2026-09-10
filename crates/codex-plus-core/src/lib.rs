@@ -47,6 +47,7 @@ pub mod skills;
 pub mod status;
 pub mod stepwise;
 pub mod sub2api;
+pub mod tools;
 pub mod update;
 pub mod upstream_worktree;
 pub mod user_scripts;

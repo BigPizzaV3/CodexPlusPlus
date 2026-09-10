@@ -543,6 +543,65 @@ fn empty_grok_config_payload() -> codex_plus_core::grok_config::GrokConfigPayloa
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolEntry {
+    /// 工具的稳定标识，如 `codex` / `grok`。
+    pub id: String,
+    pub name: String,
+    /// 该工具的配置根目录，UI 上作为副标题展示。
+    pub home_dir: String,
+    /// 供应商 profile 的写盘能力是否已接好；未接好的工具在 UI 上显示为不可切。
+    pub switchable: bool,
+    pub active: bool,
+    /// 该工具当前选中的供应商名，没配置时为 None。
+    pub active_relay_name: Option<String>,
+    /// 该工具名下已保存的供应商数量。
+    pub relay_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsPayload {
+    pub tools: Vec<ToolEntry>,
+    pub active_tool: String,
+}
+
+/// 列出所有已注册的工具及其当前状态，供顶栏切换条渲染。
+///
+/// 注意：这里只读，不写盘。切换「当前聚焦的工具」由 save_settings 负责，
+/// 因为那只是 UI 状态，不该触发任何配置文件写入。
+#[tauri::command]
+pub fn list_tools() -> CommandResult<ToolsPayload> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let tools = codex_plus_core::tools::tool_specs()
+        .into_iter()
+        .map(|spec| {
+            let config = settings.tool_config(&spec.id);
+            let active_relay_name = config
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == config.active_relay_id)
+                .map(|profile| profile.name.clone());
+            ToolEntry {
+                id: spec.id.as_str().to_string(),
+                name: spec.name,
+                home_dir: spec.home_dir,
+                switchable: spec.switchable,
+                active: settings.active_tool == spec.id,
+                active_relay_name,
+                relay_count: config.relay_profiles.len(),
+            }
+        })
+        .collect();
+
+    let payload = ToolsPayload {
+        tools,
+        active_tool: settings.active_tool.as_str().to_string(),
+    };
+    ok("工具列表已加载。", payload)
+}
+
 #[tauri::command]
 pub fn backend_version() -> CommandResult<VersionPayload> {
     ok(
@@ -7421,6 +7480,52 @@ enabled = true
             normalized.launch_mode,
             codex_plus_core::settings::LaunchMode::Relay
         );
+    }
+
+    #[test]
+    fn list_tools_reports_codex_as_switchable_and_grok_as_pending() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
+
+        let settings = BackendSettings {
+            active_relay_id: "supplier-a".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "supplier-a".to_string(),
+                name: "供应商 A".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        SettingsStore::default().save(&settings).unwrap();
+
+        let result = list_tools();
+        codex_plus_core::paths::set_settings_path_for_tests(previous);
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.active_tool, "codex");
+        let codex = result
+            .payload
+            .tools
+            .iter()
+            .find(|tool| tool.id == "codex")
+            .expect("codex 必须在工具列表里");
+        assert!(codex.switchable);
+        assert!(codex.active);
+        assert_eq!(codex.active_relay_name.as_deref(), Some("供应商 A"));
+        assert_eq!(codex.relay_count, 1);
+
+        // Grok 已经登记但还没接入供应商写盘，UI 上必须显示为不可切。
+        let grok = result
+            .payload
+            .tools
+            .iter()
+            .find(|tool| tool.id == "grok")
+            .expect("grok 必须在工具列表里");
+        assert!(!grok.switchable);
+        assert!(!grok.active);
+        assert!(grok.home_dir.ends_with(".grok"));
     }
 
     #[test]

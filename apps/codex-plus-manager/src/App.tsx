@@ -21,6 +21,8 @@ import {
   ArrowLeft,
   ArrowRight,
   Bell,
+  Blocks,
+  Bot,
   CheckCircle2,
   ChevronDown,
   Camera,
@@ -295,6 +297,38 @@ type BackendSettings = {
   relayContextConfigContents: string;
   activeRelayId: string;
   relayTestModel: string;
+  /** 按工具分区的配置镜像，键为工具 id（codex / grok / …）。 */
+  tools?: Record<string, ToolShard>;
+  /** 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
+  activeTool?: string;
+};
+
+/** settings.json 里单个工具的配置分片。Codex 分片由后端从扁平字段镜像生成。 */
+type ToolShard = {
+  relayProfiles?: RelayProfile[];
+  activeRelayId?: string;
+  aggregateRelayProfiles?: AggregateRelayProfile[];
+  activeAggregateRelayId?: string;
+  relayCommonConfigContents?: string;
+  relayContextConfigContents?: string;
+  relayTestModel?: string;
+};
+
+type ToolEntry = {
+  id: string;
+  name: string;
+  homeDir: string;
+  switchable: boolean;
+  active: boolean;
+  activeRelayName: string | null;
+  relayCount: number;
+};
+
+type ToolsResult = {
+  status: string;
+  message: string;
+  tools: ToolEntry[];
+  activeTool: string;
 };
 
 type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
@@ -889,6 +923,15 @@ type ManagerNavigationIntent = {
   section?: "stepwise";
 };
 
+/** 顶栏工具切换条的工具标识。后端 `list_tools` 返回同名字符串。 */
+type ToolId = string;
+
+/** 各工具在顶栏切换条上的图标；未登记的工具用通用图标兜底。 */
+const TOOL_ICONS: Record<string, LucideIcon> = {
+  codex: Bot,
+  grok: Blocks,
+};
+
 type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
@@ -1031,6 +1074,8 @@ const defaultSettings: BackendSettings = {
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
   relayTestModel: "gpt-5.4-mini",
+  tools: {},
+  activeTool: "codex",
 };
 
 export function App() {
@@ -1093,6 +1138,10 @@ export function App() {
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
+  // 顶栏工具切换条的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
+  // 同时开着时才不会各说各话。
+  const [toolEntries, setToolEntries] = useState<ToolEntry[]>([]);
+  const [activeTool, setActiveTool] = useState<ToolId>("codex");
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
     active: false,
     percent: 0,
@@ -1139,6 +1188,39 @@ export function App() {
     }
   };
 
+  const refreshTools = async (silent = true) => {
+    const result = await run(() => call<ToolsResult>("list_tools"));
+    if (result) {
+      setToolEntries(result.tools ?? []);
+      setActiveTool(result.activeTool || "codex");
+      if (!silent) showResultNotice(t("工具列表"), result, { silentSuccess: true });
+    }
+    return result;
+  };
+
+  /// 切换顶栏聚焦的工具。纯 UI 状态：写回 settings.json 的 `activeTool`，
+  /// 不触发任何供应商配置写入 —— 切工具 ≠ 切供应商。
+  const switchTool = async (toolId: ToolId) => {
+    if (toolId === activeTool) return;
+    const target = toolEntries.find((tool) => tool.id === toolId);
+    if (target && !target.switchable) {
+      showNotice(t("该工具暂不可切换"), tf("{0} 的供应商配置还没接入，切过去只会显示空列表。", [target.name]), "failed");
+      return;
+    }
+    setActiveTool(toolId);
+    const next = { ...settingsForm, activeTool: toolId };
+    setSettingsForm(next);
+    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+    } else {
+      // 写盘失败就回滚 UI，别让顶栏显示一个没保存的状态。
+      setActiveTool(activeTool);
+      void refreshSettings(true);
+    }
+  };
+
   const refreshOverview = async (silent = false) => {
     const result = await run(() => call<OverviewResult>("load_overview"));
     if (result) {
@@ -1160,6 +1242,8 @@ export function App() {
       setSettings(result);
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
+      // 顶栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
+      setActiveTool(normalized.activeTool || "codex");
       setLaunchForm((current) => ({
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",
@@ -2871,6 +2955,7 @@ export function App() {
         void checkUpdate(true);
       }
       await refreshOverview(true);
+      await refreshTools(true);
       if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
       await refreshEnvConflicts(true);
@@ -3321,6 +3406,11 @@ export function App() {
             <h1>{routeTitle(route)}</h1>
             <p>{routeSubtitle(route)}</p>
           </div>
+          <ToolSwitcher
+            tools={toolEntries}
+            activeTool={activeTool}
+            onSelect={(toolId) => void switchTool(toolId)}
+          />
           <div className="topbar-actions">
             <Button
               onClick={() => toggleLanguage()}
@@ -9328,6 +9418,52 @@ function CardHead({ title, detail }: { title: string; detail: string }) {
 
 function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`toolbar ${className}`.trim()}>{children}</div>;
+}
+
+/**
+ * 顶栏的工具切换条：一排工具图标，点击切换当前聚焦的工具。
+ *
+ * 这里的「工具」指 Codex / Grok / 后续接入的 CLI，每个工具在自己的供应商
+ * 分区里，互相不串配置。未接入写盘能力的工具仍然展示（让用户知道后面会支持），
+ * 但按钮禁用。
+ */
+function ToolSwitcher({
+  tools,
+  activeTool,
+  onSelect,
+}: {
+  tools: ToolEntry[];
+  activeTool: ToolId;
+  onSelect: (toolId: ToolId) => void;
+}) {
+  if (tools.length === 0) return null;
+  return (
+    <div className="tool-switcher" role="tablist" aria-label={t("工具切换")}>
+      {tools.map((tool) => {
+        const Icon = TOOL_ICONS[tool.id] ?? CircleArrowUp;
+        const selected = tool.id === activeTool;
+        const title = tool.switchable
+          ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
+          : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
+        return (
+          <button
+            aria-selected={selected}
+            className={`tool-chip ${selected ? "active" : ""}`}
+            disabled={!tool.switchable}
+            key={tool.id}
+            onClick={() => onSelect(tool.id)}
+            role="tab"
+            title={title}
+            type="button"
+          >
+            <Icon aria-hidden="true" className="tool-chip-icon" />
+            <span className="tool-chip-name">{tool.name}</span>
+            {!tool.switchable ? <span className="tool-chip-note">{t("待接入")}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {

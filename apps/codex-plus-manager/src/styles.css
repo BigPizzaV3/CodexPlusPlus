@@ -423,6 +423,7 @@ body {
 .topbar-actions {
   display: flex;
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 .screen {
@@ -5398,6 +5399,70 @@ select {
   max-width: 620px;
 }
 
+.tool-switcher {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.6);
+}
+
+.tool-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.tool-chip:hover:not(:disabled) {
+  background: hsl(var(--accent) / 0.6);
+  color: hsl(var(--foreground));
+}
+
+.tool-chip.active {
+  border-color: hsl(var(--primary) / 0.45);
+  background: hsl(var(--primary) / 0.16);
+  color: hsl(var(--foreground));
+}
+
+.tool-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.tool-chip-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.tool-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-chip-note {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.8);
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+}
+
 .topbar-actions {
   gap: 6px;
   flex: 0 0 auto;
@@ -6019,6 +6084,13 @@ select {
 
   .topbar p {
     display: none;
+  }
+
+  /* 窄屏下顶栏是 flex 横排，工具切换条塞不下三列，单独换行铺满。 */
+  .tool-switcher {
+    order: 3;
+    flex: 1 0 100%;
+    overflow-x: auto;
   }
 
   .topbar-actions {
