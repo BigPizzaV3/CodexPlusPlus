@@ -938,22 +938,31 @@ type Theme = "dark" | "light";
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
 
+/**
+ * 导航项归属。
+ *
+ * - `"codex"` / `"grok"`：这一页只属于某个工具，切到别的工具时隐藏。
+ *   绝大部分功能（会话、MCP、皮肤、脚本市场、安装维护…）都是 Codex 专属的。
+ * - 不写 `tool`：与工具无关的应用级页面（设置、关于），任何工具下都显示。
+ *
+ * 新增页面时**必须**想清楚归属：默认可见会让 Codex 专属功能在 Grok 下露出来。
+ */
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string }> = [
-  { id: "overview", label: t("概览"), icon: LayoutDashboard },
+  { id: "overview", label: t("概览"), icon: LayoutDashboard, tool: "codex" },
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
-  { id: "sessions", label: t("会话管理"), icon: MessageCircle },
-  { id: "context", label: t("MCP&插件"), icon: Network },
-  { id: "weixin", label: t("微信连接"), icon: ScanLine },
-  { id: "enhance", label: t("Codex增强"), icon: Hammer },
-  { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
-  { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink },
-  { id: "userScripts", label: t("脚本市场"), icon: FileCode2 },
-  { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
-  { id: "maintenance", label: t("安装维护"), icon: Wrench },
+  { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
+  { id: "context", label: t("MCP&插件"), icon: Network, tool: "codex" },
+  { id: "weixin", label: t("微信连接"), icon: ScanLine, tool: "codex" },
+  { id: "enhance", label: t("Codex增强"), icon: Hammer, tool: "codex" },
+  { id: "dreamSkin", label: t("皮肤管理"), icon: Palette, tool: "codex" },
+  { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink, tool: "codex" },
+  { id: "userScripts", label: t("脚本市场"), icon: FileCode2, tool: "codex" },
+  { id: "recommendations", label: t("推荐内容"), icon: ExternalLink, tool: "codex" },
+  { id: "maintenance", label: t("安装维护"), icon: Wrench, tool: "codex" },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
-  { id: "relayEnvironment", label: t("中转站环境配置检测"), icon: ShieldCheck },
+  { id: "relayEnvironment", label: t("中转站环境配置检测"), icon: ShieldCheck, tool: "codex" },
 ];
 
 const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
@@ -3380,15 +3389,21 @@ export function App() {
           </div>
         </div>
         <nav className="nav" aria-label={t("主导航")}>
-          {navigationSections.map((section) => (
+          {navigationSections.map((section) => {
+            // 按当前工具过滤：只留下属于这个工具、或与工具无关的页面。
+            const visibleRoutes = section.routes.filter((routeId) => {
+              const item = routes.find((candidate) => candidate.id === routeId);
+              if (!item) return false;
+              return !item.tool || item.tool === activeTool;
+            });
+            // 整节都被过滤掉时不渲染标题，免得 Grok 下出现一个空的分组标签。
+            if (visibleRoutes.length === 0) return null;
+            return (
             <div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
               <div className="nav-section-label">{section.label}</div>
-              {section.routes.map((routeId) => {
+              {visibleRoutes.map((routeId) => {
                 const item = routes.find((candidate) => candidate.id === routeId);
                 if (!item) return null;
-                // 供应商页是跟着顶栏工具走的：聚焦 Codex 时只显示「供应商配置」，
-                // 聚焦 Grok 时只显示「Grok 配置」。
-                if (item.tool && item.tool !== activeTool) return null;
                 const Icon = item.icon;
                 return (
                   <button
@@ -3407,7 +3422,8 @@ export function App() {
                 );
               })}
             </div>
-          ))}
+            );
+          })}
         </nav>
       </aside>
       <main className="workspace">
