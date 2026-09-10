@@ -182,6 +182,7 @@ type LaunchStatus = {
   debug_port: number | null;
   helper_port: number | null;
   codex_app: string | null;
+  aumid: string | null;
 };
 
 type OverviewResult = CommandResult<{
@@ -9435,6 +9436,7 @@ function LatestLaunch({ status }: { status: LaunchStatus | null }) {
       <Metric label="Debug" value={String(status.debug_port ?? "-")} />
       <Metric label="Helper" value={String(status.helper_port ?? "-")} />
       <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
+      {status.aumid && <Metric label="AUMID" value={status.aumid} />}
     </div>
   );
 }

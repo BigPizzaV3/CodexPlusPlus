@@ -829,23 +829,38 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
-                let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                apply_codexplusplus_window_icon_after_launch(process_id);
-                if let Some(inspector_port) = native_menu_inspector_port {
-                    start_native_menu_localizer(inspector_port);
+                match activate_packaged_app(app_user_model_id, arguments).await {
+                    Ok(process_id) => {
+                        apply_codexplusplus_window_icon_after_launch(process_id);
+                        if let Some(inspector_port) = native_menu_inspector_port {
+                            start_native_menu_localizer(inspector_port);
+                        }
+                        return Ok(match activation {
+                            CodexLaunch::PackagedActivation {
+                                app_user_model_id,
+                                arguments,
+                                ..
+                            } => CodexLaunch::PackagedActivation {
+                                app_user_model_id,
+                                arguments,
+                                process_id: Some(process_id),
+                            },
+                            CodexLaunch::Process { .. } => unreachable!(),
+                        });
+                    }
+                    Err(error) => {
+                        // AUMID 激活失败（例如清单 Application Id 变化）时回退到
+                        // 直接执行应用，避免整份配置无法启动。
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.packaged_activation_fallback",
+                            serde_json::json!({
+                                "app_user_model_id": app_user_model_id,
+                                "app_dir": app_dir,
+                                "error": error.to_string()
+                            }),
+                        );
+                    }
                 }
-                return Ok(match activation {
-                    CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        ..
-                    } => CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        process_id: Some(process_id),
-                    },
-                    CodexLaunch::Process { .. } => unreachable!(),
-                });
             }
         }
 
@@ -3131,6 +3146,7 @@ fn launch_status(
         debug_port: Some(debug_port),
         helper_port: Some(helper_port),
         codex_app: Some(app_dir.to_string_lossy().to_string()),
+        aumid: crate::app_paths::packaged_app_user_model_id(app_dir),
     }
 }
 
