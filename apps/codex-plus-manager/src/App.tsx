@@ -822,6 +822,8 @@ type AdItem = {
 type AdsResult = CommandResult<{
   version: number;
   ads: AdItem[];
+  /// 置顶赞助位。单独售卖，不参与 ads 的排序与数量上限。
+  topAd?: AdItem;
 }>;
 
 type ScriptMarketItem = {
@@ -932,7 +934,7 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   grok: Blocks,
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "sponsors" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -948,7 +950,7 @@ const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
  * 新增页面时**必须**想清楚归属：默认可见会让 Codex 专属功能在 Grok 下露出来。
  */
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string }> = [
-  // 概览在两个工具下都可见：它承载共用的项目赞助商区块，以及各自的状态。
+  // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
@@ -960,7 +962,6 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink, tool: "codex" },
   { id: "userScripts", label: t("脚本市场"), icon: FileCode2, tool: "codex" },
   { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
-  { id: "sponsors", label: t("项目赞助商"), icon: Star },
   { id: "maintenance", label: t("安装维护"), icon: Wrench, tool: "codex" },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
@@ -978,7 +979,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("系统"),
-    routes: ["recommendations", "sponsors", "maintenance", "about", "settings"],
+    routes: ["recommendations", "maintenance", "about", "settings"],
     placement: "bottom",
   },
 ];
@@ -2090,7 +2091,6 @@ export function App() {
       await refreshUserScriptInventory();
     }
     if (next === "recommendations") await refreshAds(true);
-    if (next === "sponsors") await refreshAds(true);
     if (next === "about") {
       await refreshOverview(true);
       await refreshLogs(true);
@@ -3570,7 +3570,6 @@ export function App() {
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
-          {route === "sponsors" ? <SponsorsScreen ads={ads} actions={actions} /> : null}
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
@@ -4237,26 +4236,24 @@ function WeixinConnectScreen({
   );
 }
 
-/// 项目赞助商区块。
+/// 概览页的置顶推荐位。
 ///
 /// 概览页和推荐内容页共用同一份数据、同一个渲染，所以两处看到的赞助商是
 /// 一致的 —— 以前概览页把赞助商内容硬编码在 JSX 里，跟推荐内容页各说各话。
 ///
 /// 数据优先级：广告源里的 sponsor 条目 → 本地内置的兜底条目。本地兜底保证
 /// 断网或广告源没加载时这块不会空着。
-/// 概览页最多展示的赞助商数量。
+/// 概览页置顶赞助位。
 ///
-/// 一个就显示一个、两个就显示两个，不堆成一排小 chip —— 概览是给人一眼看完
-/// 的，赞助商多的时候应该去「项目赞助商」页看全量。
-const OVERVIEW_SPONSOR_LIMIT = 2;
-
+/// 这个位置**不来自推荐池** —— `topAd` 是单独售卖的贵价位置，由广告源里的
+/// `top_ad` 字段单独指定，不参与 `ads` 数组的排序，也不会被推荐列表的
+/// 数量上限影响。没有 `topAd` 时才退回内置兜底。
 function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const sponsors = (ads?.ads ?? []).filter((ad) => ad.type === "sponsor" && !isExpiredAd(ad));
-  // 广告源还没回来时用内置条目，避免首屏闪一下空白。
-  const featured = (sponsors.length ? sponsors : BUILTIN_SPONSORS).slice(0, OVERVIEW_SPONSOR_LIMIT);
+  const topAd = ads?.topAd;
+  const featured: AdItem[] = topAd && !isExpiredAd(topAd) ? [topAd] : [];
 
   return (
-    <div className={`sponsor-board ${featured.length > 1 ? "is-multi" : ""}`}>
+    <div className="sponsor-board">
       {featured.map((ad) => (
         <Panel className="jojocode-overview" key={ad.id || ad.title}>
           <CardContent>
@@ -4270,7 +4267,7 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
                   </div>
                 )}
                 <div>
-                  <span className="eyebrow">{t("项目赞助商")}</span>
+                  <span className="eyebrow">{t("推荐内容")}</span>
                   <h2>{formatAdTitle(ad.title)}</h2>
                   <p>{ad.description}</p>
                 </div>
@@ -4285,7 +4282,7 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
                 ) : null}
                 <Button onClick={() => void actions.openExternalUrl(ad.url)}>
                   <ExternalLink className="h-4 w-4" />
-                  {t("打开赞助商")}
+                  {t("打开推荐内容")}
                 </Button>
               </div>
             </div>
@@ -4295,28 +4292,6 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
     </div>
   );
 }
-
-/// 广告源加载不出来时的兜底赞助商，内容与 assets/adlist.json 的 top_ad 一致。
-const BUILTIN_SPONSORS: AdItem[] = [
-  {
-    id: "jojocode-overview",
-    type: "sponsor",
-    title: "JOJO Code",
-    description:
-      "JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。",
-    url: "https://jojocode.com/",
-    highlights: [
-      "GPT-5.6 全系列",
-      "Fable 5",
-      "Sonnet 5",
-      "GPT-5.5",
-      "GPT-5.4",
-      "Opus 4.8",
-      "Opus 4.7",
-      "gpt-image-2",
-    ],
-  },
-];
 
 function OverviewScreen({
   overview,
@@ -4337,7 +4312,7 @@ function OverviewScreen({
   const tool = toolEntries.find((entry) => entry.id === activeTool);
   return (
     <>
-      {/* 赞助商区块两个工具下都显示，且与「项目赞助商」页共用同一份数据。 */}
+      {/* 置顶推荐位两个工具下都显示，内容与「推荐内容」页同源。 */}
       <SponsorBoard ads={ads} actions={actions} />
       {activeTool === "codex" ? (
         <>
@@ -6402,13 +6377,19 @@ function SessionsScreen({
   );
 }
 
-/// 推荐内容页：只放普通推荐。
+/// 推荐内容页：列出广告源里的全部推荐（含 sponsor 与 normal）。
 ///
-/// 赞助商挪到了「项目赞助商」页，两处共用同一份广告源（见 `SponsorBoard`），
-/// 所以这里不再重复列一遍赞助商。
+/// 概览页那个置顶位是单独的贵价位置（`topAd` 字段），不从这里取，
+/// 所以两处不会重复展示同一条。
 function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
   const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
-  const normal = items.filter((ad) => ad.type === "normal");
+  // 置顶位排在最前，并从列表里去掉重复的一条 —— 它本来就不在 ads 池里，
+  // 这里再按 id 去一次重，防止广告源两边都写了同一条时重复渲染。
+  const topAd = ads?.topAd && !isExpiredAd(ads.topAd) ? ads.topAd : null;
+  const pool = topAd ? items.filter((ad) => ad.id !== topAd.id) : items;
+  const ordered = topAd ? [topAd, ...pool] : pool;
+  const sponsors = ordered.filter((ad) => ad.type === "sponsor");
+  const normal = ordered.filter((ad) => ad.type === "normal");
   return (
     <>
       <Panel>
@@ -6416,8 +6397,8 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
         <CardContent>
           <div className="recommend-hero">
             <div>
-              <strong>{ads ? tf("已加载 {0} 条推荐", [items.length]) : t("尚未加载推荐内容")}</strong>
-              <span>{t("内容来自 BigPizzaV3/Ad-List，赞助商推荐见「项目赞助商」页。")}</span>
+              <strong>{ads ? tf("已加载 {0} 条推荐", [ordered.length]) : t("尚未加载推荐内容")}</strong>
+              <span>{t("内容来自 BigPizzaV3/Ad-List，含置顶推荐与普通推荐。")}</span>
             </div>
             <Button onClick={() => void actions.refreshAds()}>
               <RefreshCw className="h-4 w-4" />
@@ -6426,40 +6407,18 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
           </div>
         </CardContent>
       </Panel>
+      {sponsors.length ? (
+        <Panel>
+          <CardHead title={t("赞助商推荐")} detail={tf("{0} 条", [sponsors.length])} />
+          <CardContent>
+            <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
+          </CardContent>
+        </Panel>
+      ) : null}
       <Panel>
         <CardHead title={t("普通推荐")} detail={tf("{0} 条", [normal.length])} />
         <CardContent>
           <AdGrid actions={actions} ads={normal} empty={t("暂无普通推荐。")} />
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
-/// 项目赞助商页。与概览页的赞助商区块共享同一份数据与渲染。
-function SponsorsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const sponsors = (ads?.ads ?? []).filter((ad) => ad.type === "sponsor" && !isExpiredAd(ad));
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("项目赞助商")} detail={t("赞助本项目的中转服务商")} />
-        <CardContent>
-          <div className="recommend-hero">
-            <div>
-              <strong>{tf("共 {0} 家赞助商", [sponsors.length])}</strong>
-              <span>{t("内容来自 BigPizzaV3/Ad-List，与概览页展示的是同一份数据。")}</span>
-            </div>
-            <Button onClick={() => void actions.refreshAds()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新赞助商")}
-            </Button>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("全部赞助商")} detail={tf("{0} 家", [sponsors.length])} />
-        <CardContent>
-          <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
         </CardContent>
       </Panel>
     </>
@@ -10203,7 +10162,6 @@ function routeSubtitle(route: Route) {
     zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
     userScripts: t("内置和用户自定义脚本清单"),
     recommendations: t("普通推荐内容"),
-    sponsors: t("赞助本项目的中转服务商"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),

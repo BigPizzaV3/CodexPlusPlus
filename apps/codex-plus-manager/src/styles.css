@@ -552,40 +552,30 @@ body {
   color: hsl(var(--brand-accent));
 }
 
-/* 概览的赞助商区：一个赞助商就占满一行，两个就并排。
-   卡片内部沿用 .jojocode-overview-layout 的「左信息 / 右标签区」结构，
-   所以窄卡片时标签区要能收缩，不能把卡片撑出去。 */
+/* 概览的置顶推荐位。
+   卡片内部沿用 .jojocode-overview-layout 的「左信息 / 右标签区」结构。 */
 .sponsor-board {
   display: grid;
   gap: 12px;
-}
-
-.sponsor-board.is-multi {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .sponsor-board > .panel {
   min-width: 0;
 }
 
-/* 并排时每个赞助商只分到一半宽度，长标签会把卡片顶出边界。
-   让标签区换行、按钮独占一行，而不是横向撑开。 */
-.sponsor-board.is-multi .jojocode-overview-layout {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.sponsor-board.is-multi .jojocode-overview-side {
-  justify-items: start;
-}
-
-.sponsor-board.is-multi .jojocode-model-tags {
-  justify-content: flex-start;
-  max-width: none;
-}
-
+/* 窄屏时「左信息 / 右标签区」并排会挤，改成上下排。 */
 @media (max-width: 1100px) {
-  .sponsor-board.is-multi {
+  .jojocode-overview-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .jojocode-overview-side {
+    justify-items: start;
+  }
+
+  .jojocode-model-tags {
+    justify-content: flex-start;
+    max-width: none;
   }
 }
 

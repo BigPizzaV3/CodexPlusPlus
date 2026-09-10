@@ -14,6 +14,7 @@ const ERGOU_API_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-ergo
 const APIMART_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-apimart.png");
 const FENNO_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-fenno-ai.png");
 const QINIU_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-qiniu-ai.png");
+const JOJOCODE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-jojocode.png");
 const BUILTIN_SPONSOR_EXPIRES_AT: &str = "2026-08-02T23:59:59+08:00";
 const DEEPKEY_SPONSOR_EXPIRES_AT: &str = "2026-08-25T23:59:59+08:00";
 const APIMART_SPONSOR_EXPIRES_AT: &str = "2026-09-27T23:59:59+08:00";
@@ -45,7 +46,33 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
         .collect::<Vec<_>>();
     fill_known_remote_logos(&mut ads);
     append_builtin_sponsors(&mut ads);
-    json!({ "version": version, "ads": ads })
+    // `topAd` 是独立的置顶赞助位，**不参与** `ads` 列表的排序与过期过滤语义。
+    // 它比普通推荐贵，由商务单独指定，所以不能混在推荐池里按数组顺序取。
+    let top_ad = payload
+        .get("top_ad")
+        .or_else(|| payload.get("topAd"))
+        .filter(|value| is_usable_ad(value))
+        .cloned()
+        // 广告源没配置顶位时用内置的贵价赞助位兜底，保证概览这块不空。
+        .or_else(builtin_top_ad);
+    match top_ad {
+        Some(top_ad) => json!({ "version": version, "ads": ads, "topAd": top_ad }),
+        None => json!({ "version": version, "ads": ads }),
+    }
+}
+
+/// 一条广告是否可用（类型、标题、描述、URL 齐全）。
+fn is_usable_ad(ad: &Value) -> bool {
+    let ad_type = ad.get("type").and_then(Value::as_str);
+    let field = |key: &str| {
+        ad.get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    matches!(ad_type, Some("sponsor" | "normal"))
+        && field("title")
+        && field("description")
+        && field("url")
 }
 
 fn fill_known_remote_logos(ads: &mut [Value]) {
@@ -205,6 +232,69 @@ fn builtin_sponsor(
     Value::Object(sponsor)
 }
 
+/// 赞助位是否已过期。
+///
+/// 支持 `2027-06-15T23:59:59+08:00` 和 `2027-06-15` 两种写法；解析不出来时
+/// 按「未过期」处理 —— 宁可多显示一天，也不因为格式问题把付费位吞掉。
+/// 前端也有一份同样的判断，这里是后端侧的兜底。
+fn is_expired_at(expires_at: &str) -> bool {
+    let Some(expiry) = ymd_to_days(expires_at.split('T').next().unwrap_or(expires_at)) else {
+        return false;
+    };
+    let today = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| (duration.as_secs() / 86_400) as i64)
+        .unwrap_or(0);
+    expiry < today
+}
+
+/// `YYYY-MM-DD` → 自 1970-01-01 起的天数（Howard Hinnant 的 days_from_civil）。
+fn ymd_to_days(date: &str) -> Option<i64> {
+    let trimmed = date.trim();
+    let mut parts = trimmed.split('-');
+    let year: i64 = parts.next()?.trim().parse().ok()?;
+    let month: i64 = parts.next()?.trim().parse().ok()?;
+    let day: i64 = parts.next()?.trim().parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
+/// 内置的置顶赞助位（贵价位，单独指定，不参与推荐池排序）。
+///
+/// 有效期由 `JOJOCODE_TOP_AD_EXPIRES_AT` 控制；过期后概览页会自动回落到
+/// 广告源或内置兜底，不会一直挂着一个已经结束的赞助。
+fn builtin_top_ad() -> Option<Value> {
+    let expires_at = "2027-06-15T23:59:59+08:00";
+    if is_expired_at(expires_at) {
+        return None;
+    }
+    Some(json!({
+        "id": "jojocode-top",
+        "type": "sponsor",
+        "title": "JOJO Code",
+        "description": "JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。",
+        "url": "https://jojocode.com/",
+        "image": data_uri("image/png", JOJOCODE_IMAGE),
+        "highlights": [
+            "GPT-5.6 全系列",
+            "Fable 5",
+            "Sonnet 5",
+            "GPT-5.5",
+            "GPT-5.4",
+            "Opus 4.8",
+            "Opus 4.7",
+            "gpt-image-2",
+        ],
+    }))
+}
+
 fn data_uri(mime: &str, bytes: &[u8]) -> String {
     format!("data:{mime};base64,{}", base64_encode(bytes))
 }
@@ -265,4 +355,101 @@ where
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("ad list unavailable")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sponsored(id: &str) -> Value {
+        json!({
+            "id": id,
+            "type": "sponsor",
+            "title": id,
+            "description": "描述",
+            "url": "https://example.com/",
+        })
+    }
+
+    #[test]
+    fn top_ad_is_kept_out_of_the_recommendation_pool() {
+        let normalized = normalize_ad_payload(json!({
+            "version": 1,
+            "ads": [sponsored("pool-a")],
+            "top_ad": sponsored("premium"),
+        }));
+
+        // 贵价置顶位有自己的字段，不能混进 ads 数组参与排序。
+        assert_eq!(normalized["topAd"]["id"], json!("premium"));
+        let pool = normalized["ads"].as_array().unwrap();
+        assert!(
+            !pool.iter().any(|ad| ad["id"] == json!("premium")),
+            "置顶位不应出现在推荐池里"
+        );
+    }
+
+    #[test]
+    fn top_ad_accepts_camel_case() {
+        let camel = normalize_ad_payload(json!({
+            "version": 1,
+            "ads": [],
+            "topAd": sponsored("premium"),
+        }));
+        assert_eq!(camel["topAd"]["id"], json!("premium"));
+    }
+
+    #[test]
+    fn missing_or_unusable_top_ad_falls_back_to_the_builtin_slot() {
+        // 广告源没配顶位、或配了一条缺 url 的残缺条目时，都不该让概览这块空着：
+        // 回落到内置的贵价赞助位。
+        for payload in [
+            json!({ "version": 1, "ads": [] }),
+            json!({
+                "version": 1,
+                "ads": [],
+                "top_ad": { "type": "sponsor", "title": "残缺", "description": "描述" },
+            }),
+        ] {
+            let normalized = normalize_ad_payload(payload);
+            let top = normalized.get("topAd").expect("应当回落到内置置顶位");
+            assert_eq!(top["id"], json!("jojocode-top"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod expiry_tests {
+    use super::*;
+
+    #[test]
+    fn ymd_converts_to_epoch_days() {
+        assert_eq!(ymd_to_days("1970-01-01"), Some(0));
+        assert_eq!(ymd_to_days("1970-01-02"), Some(1));
+        assert_eq!(ymd_to_days("2000-03-01"), Some(11_017));
+    }
+
+    #[test]
+    fn malformed_dates_are_treated_as_not_expired() {
+        // 宁可多显示，也不能因为格式问题把付费位吞掉。
+        for bad in ["", "not-a-date", "2027-13-01", "2027-01-99", "2027"] {
+            assert!(!is_expired_at(bad), "{bad} 不应被判定为过期");
+        }
+    }
+
+    #[test]
+    fn builtin_top_ad_is_available_and_well_formed() {
+        let top = builtin_top_ad().expect("内置置顶位在有效期内应当可用");
+        assert_eq!(top["type"], json!("sponsor"));
+        assert!(
+            top["url"]
+                .as_str()
+                .is_some_and(|u| u.starts_with("https://"))
+        );
+        assert!(
+            top["image"]
+                .as_str()
+                .is_some_and(|i| i.starts_with("data:image/")),
+            "内置 logo 应当内联成 data URI，避免离线时裂图"
+        );
+    }
 }

@@ -353,14 +353,10 @@ export const EN_PLAIN: Record<string, string> = {
   "已接入，可在该工具页切换供应商。": "Wired up — switch providers on that tool's own page.",
   "尚未接入配置切换。": "Config switching is not wired up yet.",
   "该工具由它自己的页签管理": "This tool is managed on its own tab",
-  "打开赞助商": "Open sponsor",
-  "赞助本项目的中转服务商": "Relay services sponsoring this project",
-  "内容来自 BigPizzaV3/Ad-List，赞助商推荐见「项目赞助商」页。":
-    "Content comes from BigPizzaV3/Ad-List; sponsors are listed on the Project sponsors page.",
-  "内容来自 BigPizzaV3/Ad-List，与概览页展示的是同一份数据。":
-    "Content comes from BigPizzaV3/Ad-List — the same data shown on the overview page.",
-  "刷新赞助商": "Refresh sponsors",
-  "全部赞助商": "All sponsors",
+  "打开推荐内容": "Open recommendation",
+  "赞助商推荐": "Sponsor recommendations",
+  "内容来自 BigPizzaV3/Ad-List，含置顶推荐与普通推荐。":
+    "Content comes from BigPizzaV3/Ad-List, including the pinned and regular recommendations.",
   "普通推荐内容": "General recommendations",
   "有未保存修改。": "Unsaved changes.",
   "每个供应商对应一套 Base URL + API Key + 模型列表。":
@@ -532,7 +528,6 @@ export const EN_PLAIN: Record<string, string> = {
   "安装维护": "Install & maintenance",
   "完整增强": "Full enhancement",
   "官方": "Official",
-  "项目赞助商": "Project sponsor",
   "官方混入 API Key": "Official mixed-in API Key",
   "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。":
     "Official mixed API should not store OPENAI_API_KEY in auth.json. Clear this provider's auth.json before switching.",
@@ -1168,8 +1163,6 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0}｜{1}｜供应商配置尚未接入": "{0} | {1} | provider configuration not wired up yet",
   "{0} 的供应商配置还没接入，切过去只会显示空列表。":
     "Provider configuration for {0} is not wired up yet, so switching would only show an empty list.",
-  "共 {0} 家赞助商": "{0} sponsor(s) in total",
-  "{0} 家": "{0} sponsor(s)",
   "{0} 状态": "{0} status",
   "{0} 个已保存": "{0} saved",
   "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。":

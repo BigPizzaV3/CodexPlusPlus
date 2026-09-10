@@ -474,6 +474,10 @@ pub struct WatcherPayload {
 pub struct AdsPayload {
     pub version: u64,
     pub ads: Vec<Value>,
+    /// 置顶赞助位。与 `ads` 是两回事：`top_ad` 是单独售卖的贵价位置，
+    /// 不参与推荐池的排序，概览页只认它。
+    #[serde(rename = "topAd", skip_serializing_if = "Option::is_none")]
+    pub top_ad: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3381,6 +3385,7 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
             AdsPayload {
                 version: 1,
                 ads: Vec::new(),
+                top_ad: None,
             },
         ),
     }
@@ -5783,6 +5788,7 @@ fn ads_payload(payload: Value) -> AdsPayload {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default(),
+        top_ad: payload.get("topAd").cloned(),
     }
 }
 
