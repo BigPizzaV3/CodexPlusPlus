@@ -742,7 +742,7 @@ fn provider_sync_streams_large_rollout_without_losing_non_meta_content() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/2026/rollout-large.jsonl");
     fs::create_dir_all(rollout.parent().unwrap()).unwrap();
     let session_meta = json!({
@@ -782,7 +782,7 @@ fn provider_sync_reports_stream_progress() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     for index in 0..3 {
         write_rollout(
             &home.join(format!("sessions/rollout-progress-{index}.jsonl")),
@@ -820,7 +820,7 @@ fn provider_sync_reports_rollback_when_rewrite_write_fails() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let first_rollout = home.join("sessions/rollout-a.jsonl");
     let blocked_rollout = home.join("sessions/rollout-b.jsonl");
     write_rollout(&first_rollout, "openai", "thread-a", "C:/workspace");
@@ -845,7 +845,7 @@ fn provider_sync_continues_rollback_after_a_conflicted_rollout() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let first_rollout = home.join("sessions/rollout-a.jsonl");
     let conflicted_rollout = home.join("sessions/rollout-b.jsonl");
     write_rollout(&first_rollout, "openai", "thread-a", "C:/workspace");
@@ -902,7 +902,7 @@ fn provider_sync_skips_rollout_locked_after_planning() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/rollout-locked.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     let original_rollout = fs::read(&rollout).unwrap();
@@ -932,7 +932,7 @@ fn provider_sync_skips_rollout_changed_after_scanning() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     let rollout = home.join("sessions/rollout-changed.jsonl");
     write_rollout(&rollout, "openai", "thread-1", "C:/workspace");
     let externally_changed = "{\"type\":\"event_msg\",\"payload\":{\"changed\":true}}\n";
@@ -1232,7 +1232,7 @@ fn provider_sync_writes_empty_session_meta_manifest_for_index_only_updates() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
-    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_provider_config(&home, "apigather");
     write_rollout(
         &home.join("sessions/rollout-current.jsonl"),
         "apigather",

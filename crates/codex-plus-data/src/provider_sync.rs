@@ -840,7 +840,7 @@ pub fn run_provider_sync_with_target(
 pub fn run_provider_sync_with_target_and_progress(
     codex_home: Option<&Path>,
     explicit_target_provider: Option<&str>,
-    mut report_progress: impl FnMut(ProviderSyncProgress),
+    report_progress: impl FnMut(ProviderSyncProgress),
 ) -> ProviderSyncResult {
     let require_stopped_app = codex_home.is_none();
     let home = codex_home
@@ -851,17 +851,20 @@ pub fn run_provider_sync_with_target_and_progress(
         explicit_target_provider,
         require_stopped_app,
         || {},
+        report_progress,
     )
 }
 
-fn run_provider_sync_with_target_in_home<BeforeFirstWrite>(
+fn run_provider_sync_with_target_in_home<BeforeFirstWrite, ReportProgress>(
     home: PathBuf,
     explicit_target_provider: Option<&str>,
     require_stopped_app: bool,
     before_first_write: BeforeFirstWrite,
+    mut report_progress: ReportProgress,
 ) -> ProviderSyncResult
 where
     BeforeFirstWrite: FnOnce(),
+    ReportProgress: FnMut(ProviderSyncProgress),
 {
     if !home.exists() {
         return result(
@@ -5478,9 +5481,15 @@ mod provider_target_snapshot_tests {
         fs::write(&rollout, &original_rollout).unwrap();
         let config_path = home.join("config.toml");
 
-        let result = run_provider_sync_with_target_in_home(home.clone(), None, false, || {
-            write_config(&home, "relay-beta", &["relay-beta"]);
-        });
+        let result = run_provider_sync_with_target_in_home(
+            home.clone(),
+            None,
+            false,
+            || {
+                write_config(&home, "relay-beta", &["relay-beta"]);
+            },
+            |_| {},
+        );
 
         assert_eq!(result.status, ProviderSyncStatus::Skipped);
         assert!(result.message.contains("configuration changed"));
