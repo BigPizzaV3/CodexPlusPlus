@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "xuan_usage": {
+      "title": "Xuan Usage",
+      "description": "Query relay usage through xuan-bridge.",
+      "command": "node",
+      "args": ["./server.mjs"],
+      "cwd": "."
+    }
+  }
+}

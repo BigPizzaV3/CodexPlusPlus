@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "xuan_workspace_search": {
+      "title": "Xuan Workspace Search",
+      "description": "Search approved workspace roots through xuan-bridge.",
+      "command": "node",
+      "args": ["./server.mjs"],
+      "cwd": "."
+    }
+  }
+}

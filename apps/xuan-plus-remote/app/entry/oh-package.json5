@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "轩++远程手机远程入口模块",
+  "main": "",
+  "author": "dyys",
+  "license": "UNLICENSED",
+  "dependencies": {}
+}

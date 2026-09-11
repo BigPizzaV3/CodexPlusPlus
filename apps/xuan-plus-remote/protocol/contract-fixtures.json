@@ -1,0 +1,552 @@
+{
+  "validStartCommand": {
+    "schemaVersion": "1.0",
+    "messageType": "app/command",
+    "messageId": "message_00000001",
+    "environment": "dev",
+    "remoteTaskId": "remote_task_0001",
+    "clientRequestId": "client_req_00001",
+    "expectedStateVersion": 1,
+    "expiresAt": "2026-08-18T00:10:00Z",
+    "commandType": "start_task",
+    "payload": {
+      "text": "读取当前任务状态并给出简短摘要"
+    }
+  },
+  "validSendInputCommand": {
+    "schemaVersion": "1.0",
+    "messageType": "app/command",
+    "messageId": "message_00000002",
+    "environment": "dev",
+    "remoteTaskId": "remote_task_0001",
+    "clientRequestId": "client_req_00002",
+    "expectedStateVersion": 3,
+    "expiresAt": "2026-08-18T00:10:00Z",
+    "commandType": "send_input",
+    "payload": {
+      "text": "继续检查状态"
+    }
+  },
+  "validPauseCommandV12": {
+    "schemaVersion": "1.3",
+    "messageType": "app/command",
+    "messageId": "message_00000005",
+    "environment": "dev",
+    "remoteTaskId": "remote_task_0001",
+    "clientRequestId": "client_req_00005",
+    "expectedStateVersion": 3,
+    "expiresAt": "2026-08-18T00:10:00Z",
+    "commandType": "pause_task",
+    "payload": {}
+  },
+  "invalidStartWithoutText": {
+    "schemaVersion": "1.0",
+    "messageType": "app/command",
+    "messageId": "message_00000003",
+    "environment": "dev",
+    "remoteTaskId": "remote_task_0001",
+    "clientRequestId": "client_req_00003",
+    "expectedStateVersion": 1,
+    "expiresAt": "2026-08-18T00:10:00Z",
+    "commandType": "start_task",
+    "payload": {}
+  },
+  "invalidModelOverride": {
+    "schemaVersion": "1.0",
+    "messageType": "app/command",
+    "messageId": "message_00000004",
+    "environment": "dev",
+    "remoteTaskId": "remote_task_0001",
+    "clientRequestId": "client_req_00004",
+    "expectedStateVersion": 1,
+    "expiresAt": "2026-08-18T00:10:00Z",
+    "commandType": "start_task",
+    "model": "model-from-app",
+    "payload": {
+      "text": "不允许携带模型覆盖"
+    }
+  },
+  "validAppDeviceRegistrationChallenge": {
+    "schemaVersion": "1.5",
+    "messageType": "app/device-registration-challenge",
+    "messageId": "device_challenge_request_01",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:00:00Z",
+    "appDeviceId": "app_device_000001",
+    "deviceKeyAlgorithm": "ed25519",
+    "devicePublicKey": "MCowBQYDK2VwAyEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "validAppDeviceRegistrationChallenged": {
+    "schemaVersion": "1.5",
+    "messageType": "app/device-registration-challenged",
+    "messageId": "device_challenge_response_1",
+    "requestMessageId": "device_challenge_request_01",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:00:01Z",
+    "appDeviceId": "app_device_000001",
+    "challengeId": "device_challenge_0001",
+    "challenge": "challenge_nonce_0001",
+    "expiresAt": "2026-08-18T00:05:00Z"
+  },
+  "validAppDeviceRegistration": {
+    "schemaVersion": "1.5",
+    "messageType": "app/device-register",
+    "messageId": "device_reg_000001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:00:00Z",
+    "appDeviceId": "app_device_000001",
+    "deviceKeyAlgorithm": "ed25519",
+    "devicePublicKey": "MCowBQYDK2VwAyEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "challengeId": "device_challenge_0001",
+    "challenge": "challenge_nonce_0001",
+    "registrationSignature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "pushProvider": "huawei_push_kit",
+    "pushToken": "test-push-token-not-a-secret",
+    "appDisplayName": "开发手机",
+    "appVersion": "0.1.0-dev"
+  },
+  "validAppDeviceRegistered": {
+    "schemaVersion": "1.5",
+    "messageType": "app/device-registered",
+    "messageId": "device_ack_000001",
+    "requestMessageId": "device_reg_000001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:00:01Z",
+    "appDeviceId": "app_device_000001",
+    "deviceKeyId": "device_key_0000001",
+    "registrationState": "registered"
+  },
+  "validPairingRegistration": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/register",
+    "messageId": "pair_register_0001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:00:30Z",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "pairing": {
+      "pairingQrVersion": "2",
+      "environment": "dev",
+      "pairingHandle": "pairing_handle_001"
+    },
+    "pcDisplayName": "开发电脑",
+    "expiresAt": "2026-08-18T00:10:30Z"
+  },
+  "validPairingRegistered": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/registered",
+    "messageId": "pair_ready_000001",
+    "requestMessageId": "pair_register_0001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:00:31Z",
+    "pairingHandle": "pairing_handle_001",
+    "expiresAt": "2026-08-18T00:10:30Z",
+    "registrationState": "ready"
+  },
+  "validPairingConsume": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/consume",
+    "messageId": "pair_consume_001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:01:00Z",
+    "appDeviceId": "app_device_000001",
+    "pairing": {
+      "pairingQrVersion": "2",
+      "environment": "dev",
+      "pairingHandle": "pairing_handle_001"
+    }
+  },
+  "validPairingPending": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/pending",
+    "messageId": "pair_pending_001",
+    "requestMessageId": "pair_consume_001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:01:01Z",
+    "bindingId": "binding_00000001",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "confirmationNonce": "confirm_nonce_0001",
+    "confirmationExpiresAt": "2026-08-18T00:11:00Z",
+    "bindingSummary": {
+      "environment": "dev",
+      "pcDisplayName": "开发电脑",
+      "appDisplayName": "开发手机",
+      "safetyPhrase": "forest-river-lantern",
+      "summaryDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "bindingState": "pending_local_confirmation"
+  },
+  "validBindingConfirmationRequest": {
+    "schemaVersion": "1.5",
+    "messageType": "binding/confirmation-request",
+    "messageId": "confirm_request_1",
+    "requestMessageId": "pair_register_0001",
+    "pcPairingMessageId": "pair_register_0001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:01:01Z",
+    "bindingId": "binding_00000001",
+    "appDeviceId": "app_device_000001",
+    "confirmationNonce": "confirm_nonce_0001",
+    "confirmationExpiresAt": "2026-08-18T00:11:00Z",
+    "bindingSummary": {
+      "environment": "dev",
+      "pcDisplayName": "开发电脑",
+      "appDisplayName": "开发手机",
+      "safetyPhrase": "forest-river-lantern",
+      "summaryDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "validLocalBindingConfirmation": {
+    "schemaVersion": "1.5",
+    "messageType": "binding/local-confirm",
+    "messageId": "local_confirm_001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:01:10Z",
+    "bindingId": "binding_00000001",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "confirmationNonce": "confirm_nonce_0001",
+    "summaryDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "confirmed": true
+  },
+  "validBindingActive": {
+    "schemaVersion": "1.5",
+    "messageType": "binding/active",
+    "messageId": "binding_active_01",
+    "requestMessageId": "local_confirm_001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:01:11Z",
+    "bindingId": "binding_00000001",
+    "appDeviceId": "app_device_000001",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "bindingState": "active",
+    "activatedAt": "2026-08-18T00:01:11Z"
+  },
+  "validBindingRevocation": {
+    "schemaVersion": "1.5",
+    "messageType": "binding/revoke",
+    "messageId": "binding_revoke_01",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:01:20Z",
+    "appDeviceId": "app_device_000001",
+    "bindingId": "binding_00000001"
+  },
+  "validBindingRevoked": {
+    "schemaVersion": "1.5",
+    "messageType": "binding/revoked",
+    "messageId": "binding_revoked_1",
+    "requestMessageId": "binding_revoke_01",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:01:21Z",
+    "bindingId": "binding_00000001",
+    "bindingState": "revoked",
+    "revokedAt": "2026-08-18T00:01:21Z"
+  },
+  "validPcDeviceListQuery": {
+    "schemaVersion": "1.5",
+    "messageType": "app/pc-devices-query",
+    "messageId": "pc_list_query_01",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:02:00Z",
+    "appDeviceId": "app_device_000001",
+    "limit": 20
+  },
+  "validPcDeviceListEmpty": {
+    "schemaVersion": "1.5",
+    "messageType": "app/pc-devices",
+    "messageId": "pc_list_result_1",
+    "requestMessageId": "pc_list_query_01",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:02:01Z",
+    "pcDevices": [],
+    "nextCursor": null
+  },
+  "validTaskListQuery": {
+    "schemaVersion": "1.5",
+    "messageType": "app/task-list-query",
+    "messageId": "task_list_query1",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:02:10Z",
+    "appDeviceId": "app_device_000001",
+    "pcDeviceId": "pc_device_000001",
+    "limit": 20
+  },
+  "validTaskListEmpty": {
+    "schemaVersion": "1.5",
+    "messageType": "app/task-list",
+    "messageId": "task_list_result",
+    "requestMessageId": "task_list_query1",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:02:11Z",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "tasks": [],
+    "nextCursor": null
+  },
+  "validPushRefreshQuery": {
+    "schemaVersion": "1.5",
+    "messageType": "app/push-refresh-query",
+    "messageId": "push_refresh_query_0001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:02:20Z",
+    "appDeviceId": "app_device_000001"
+  },
+  "validPushRefreshResponse": {
+    "schemaVersion": "1.5",
+    "messageType": "app/push-refresh",
+    "messageId": "push_refresh_result_0001",
+    "requestMessageId": "push_refresh_query_0001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:02:21Z",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "remoteTaskId": "remote_task_0001",
+    "terminalStateVersion": 12
+  },
+  "validTaskDetailQuery": {
+    "schemaVersion": "1.5",
+    "messageType": "app/task-query",
+    "messageId": "task_query_00001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:03:00Z",
+    "appDeviceId": "app_device_000001",
+    "remoteTaskId": "remote_task_0001"
+  },
+  "validTaskDetailResponse": {
+    "schemaVersion": "1.5",
+    "messageType": "app/task",
+    "messageId": "task_result_0001",
+    "requestMessageId": "task_query_00001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:03:01Z",
+    "snapshot": {
+      "remoteTaskId": "remote_task_0001",
+      "pcDeviceId": "pc_device_000001",
+      "installationId": "installation_0001",
+      "bindingEpoch": 1,
+      "name": "测试任务",
+      "workspaceName": "隔离工作区",
+      "modelLabel": "gpt-5.6-sol",
+      "taskStatus": "running",
+      "turnStatus": "running",
+      "lastTurnOutcome": "none",
+      "lastReply": null,
+      "lastReplyState": "absent",
+      "lastReplyVersion": null,
+      "lastError": null,
+      "pcObservedAt": "2026-08-18T00:03:00Z",
+      "serverReceivedAt": "2026-08-18T00:03:01Z",
+      "stateVersion": 2,
+      "pcConnectionState": "online"
+    }
+  },
+  "validCommandQuery": {
+    "schemaVersion": "1.5",
+    "messageType": "app/command-query",
+    "messageId": "command_query_01",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:04:00Z",
+    "appDeviceId": "app_device_000001",
+    "commandId": "command_00000001"
+  },
+  "validCommandStatus": {
+    "schemaVersion": "1.5",
+    "messageType": "app/command-status",
+    "messageId": "command_state_01",
+    "requestMessageId": "command_query_01",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:04:01Z",
+    "command": {
+      "commandId": "command_00000001",
+      "clientRequestId": "client_req_00001",
+      "remoteTaskId": "remote_task_0001",
+      "commandType": "start_task",
+      "payloadDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expectedStateVersion": 1,
+      "status": "queued",
+      "createdAt": "2026-08-18T00:00:00Z",
+      "expiresAt": "2026-08-18T00:10:00Z"
+    }
+  },
+  "validCommandAccepted": {
+    "schemaVersion": "1.5",
+    "messageType": "app/command-accepted",
+    "messageId": "command_accept_01",
+    "requestMessageId": "message_00000001",
+    "environment": "dev",
+    "serverReceivedAt": "2026-08-18T00:04:02Z",
+    "command": {
+      "commandId": "command_00000001",
+      "clientRequestId": "client_req_00001",
+      "remoteTaskId": "remote_task_0001",
+      "commandType": "start_task",
+      "payloadDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expectedStateVersion": 1,
+      "status": "queued",
+      "createdAt": "2026-08-18T00:00:00Z",
+      "expiresAt": "2026-08-18T00:10:00Z"
+    }
+  },
+  "invalidPairingQrWithUrl": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/consume",
+    "messageId": "pair_bad_url_0001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:05:00Z",
+    "appDeviceId": "app_device_000001",
+    "pairing": {
+      "pairingQrVersion": "2",
+      "environment": "dev",
+      "pairingHandle": "pairing_handle_001",
+      "url": "https://example.invalid/remote"
+    }
+  },
+  "invalidPairingEnvironmentMismatch": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/consume",
+    "messageId": "pair_bad_env_0001",
+    "environment": "prod",
+    "sentAt": "2026-08-18T00:05:10Z",
+    "appDeviceId": "app_device_000001",
+    "pairing": {
+      "pairingQrVersion": "2",
+      "environment": "dev",
+      "pairingHandle": "pairing_handle_001"
+    }
+  },
+  "invalidPairingQrVersion": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/consume",
+    "messageId": "pair_bad_ver_0001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:05:15Z",
+    "appDeviceId": "app_device_000001",
+    "pairing": {
+      "pairingQrVersion": "1",
+      "environment": "dev",
+      "pairingHandle": "pairing_handle_001"
+    }
+  },
+  "invalidPairingShortCode": {
+    "schemaVersion": "1.5",
+    "messageType": "pairing/consume",
+    "messageId": "pair_bad_code_01",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:05:16Z",
+    "appDeviceId": "app_device_000001",
+    "pairing": {
+      "pairingQrVersion": "2",
+      "environment": "dev",
+      "pairingHandle": "pairing_handle_001"
+    },
+    "shortCode": "ILO00000"
+  },
+  "invalidPairingSummaryMismatch": {
+    "schemaVersion": "1.5",
+    "messageType": "binding/local-confirm",
+    "messageId": "local_bad_sum_001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:05:20Z",
+    "bindingId": "binding_00000001",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "confirmationNonce": "confirm_nonce_0001",
+    "summaryDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "confirmed": true
+  },
+  "invalidTaskQueryWithPath": {
+    "schemaVersion": "1.5",
+    "messageType": "app/task-query",
+    "messageId": "task_bad_path_01",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:05:30Z",
+    "appDeviceId": "app_device_000001",
+    "remoteTaskId": "remote_task_0001",
+    "cwd": "D:\\secret-workspace"
+  },
+  "validLiveReplyStreamQuery": {
+    "schemaVersion": "1.5",
+    "messageType": "app/reply-stream-connect",
+    "messageId": "live_query_000001",
+    "environment": "dev",
+    "sentAt": "2026-08-18T00:06:00Z",
+    "appDeviceId": "app_device_000001"
+  },
+  "validLiveReplySubscription": {
+    "schemaVersion": "1.5",
+    "messageType": "reply-stream/subscription",
+    "messageId": "live_subscribe_001",
+    "environment": "dev",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "remoteTaskId": "remote_task_0001",
+    "active": true,
+    "sentAt": "2026-08-18T00:06:01Z"
+  },
+  "validLiveReplyReset": {
+    "schemaVersion": "1.5",
+    "messageType": "reply-stream/reset",
+    "messageId": "live_reset_000001",
+    "environment": "dev",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "remoteTaskId": "remote_task_0001",
+    "streamId": "reply_stream_0001",
+    "streamSeq": 1,
+    "sentAt": "2026-08-18T00:06:02Z",
+    "serverReceivedAt": "2026-08-18T00:06:02Z",
+    "text": "正在生成🙂"
+  },
+  "validLiveReplyAppend": {
+    "schemaVersion": "1.5",
+    "messageType": "reply-stream/append",
+    "messageId": "live_append_00001",
+    "environment": "dev",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "remoteTaskId": "remote_task_0001",
+    "streamId": "reply_stream_0001",
+    "streamSeq": 2,
+    "sentAt": "2026-08-18T00:06:03Z",
+    "serverReceivedAt": "2026-08-18T00:06:03Z",
+    "text": "，继续"
+  },
+  "validLiveReplyEnd": {
+    "schemaVersion": "1.5",
+    "messageType": "reply-stream/end",
+    "messageId": "live_end_0000001",
+    "environment": "dev",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "remoteTaskId": "remote_task_0001",
+    "streamId": "reply_stream_0001",
+    "streamSeq": 3,
+    "sentAt": "2026-08-18T00:06:04Z",
+    "serverReceivedAt": "2026-08-18T00:06:04Z",
+    "outcome": "completed"
+  },
+  "invalidLiveReplyGap": {
+    "schemaVersion": "1.5",
+    "messageType": "reply-stream/append",
+    "messageId": "live_gap_0000001",
+    "environment": "dev",
+    "pcDeviceId": "pc_device_000001",
+    "installationId": "installation_0001",
+    "bindingEpoch": 1,
+    "remoteTaskId": "remote_task_0001",
+    "streamId": "reply_stream_0001",
+    "streamSeq": 4,
+    "sentAt": "2026-08-18T00:06:03Z",
+    "serverReceivedAt": "2026-08-18T00:06:03Z",
+    "text": "缺口"
+  }
+}

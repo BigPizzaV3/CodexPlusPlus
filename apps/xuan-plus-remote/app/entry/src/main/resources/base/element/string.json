@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "轩++远程手机远程控制开发客户端"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "轩++远程远程控制入口"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "轩++远程"
+    }
+  ]
+}

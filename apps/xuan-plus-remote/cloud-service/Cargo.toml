@@ -1,0 +1,34 @@
+[workspace]
+
+[package]
+name = "xuan-plus-remote-cloud"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+aes-gcm = "0.10"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "original-uri", "query", "tokio", "ws"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+hmac = "0.12"
+jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = true

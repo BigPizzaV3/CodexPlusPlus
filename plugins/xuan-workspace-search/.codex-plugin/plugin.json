@@ -1,0 +1,17 @@
+{
+  "name": "xuan-workspace-search",
+  "version": "0.1.0",
+  "description": "Search approved workspace roots and preview matching files.",
+  "author": { "name": "XuanPlusPlus" },
+  "license": "AGPL-3.0-only",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Xuan Workspace Search",
+    "shortDescription": "Search workspace files safely.",
+    "longDescription": "Search approved workspace roots through the Xuan bridge with bounded results and previews.",
+    "developerName": "XuanPlusPlus",
+    "category": "Developer Tools",
+    "capabilities": ["Read"]
+  }
+}

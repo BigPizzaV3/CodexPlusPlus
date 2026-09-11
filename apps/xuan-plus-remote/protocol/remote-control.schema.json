@@ -1,0 +1,1286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workagents.invalid/contracts/remote-control/1.5/schema.json",
+  "title": "轩++远程远程控制契约",
+  "description": "P0 frozen HTTP/WSS message contract. The invalid host is documentation-only; runtime endpoints are environment configuration and fail closed when absent.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/pcHello" },
+    { "$ref": "#/$defs/pcHeartbeat" },
+    { "$ref": "#/$defs/snapshotUpsert" },
+    { "$ref": "#/$defs/snapshotTombstone" },
+    { "$ref": "#/$defs/syncAck" },
+    { "$ref": "#/$defs/syncRequest" },
+    { "$ref": "#/$defs/commandDispatch" },
+    { "$ref": "#/$defs/commandResult" },
+    { "$ref": "#/$defs/appCommandRequest" },
+    { "$ref": "#/$defs/errorResponse" },
+    { "$ref": "#/$defs/appDeviceRegistrationChallengeRequest" },
+    { "$ref": "#/$defs/appDeviceRegistrationChallengeResponse" },
+    { "$ref": "#/$defs/appDeviceRegistrationRequest" },
+    { "$ref": "#/$defs/appDeviceRegistrationResponse" },
+    { "$ref": "#/$defs/pairingRegistrationRequest" },
+    { "$ref": "#/$defs/pairingRegistrationResponse" },
+    { "$ref": "#/$defs/pairingConsumeRequest" },
+    { "$ref": "#/$defs/pairingPendingResponse" },
+    { "$ref": "#/$defs/bindingConfirmationRequest" },
+    { "$ref": "#/$defs/bindingLocalConfirmation" },
+    { "$ref": "#/$defs/bindingActiveResponse" },
+    { "$ref": "#/$defs/bindingRevocationRequest" },
+    { "$ref": "#/$defs/bindingRevokedResponse" },
+    { "$ref": "#/$defs/pcDeviceListQuery" },
+    { "$ref": "#/$defs/pcDeviceListResponse" },
+    { "$ref": "#/$defs/taskListQuery" },
+    { "$ref": "#/$defs/taskListResponse" },
+    { "$ref": "#/$defs/pushRefreshQuery" },
+    { "$ref": "#/$defs/pushRefreshResponse" },
+    { "$ref": "#/$defs/taskDetailQuery" },
+    { "$ref": "#/$defs/taskDetailResponse" },
+    { "$ref": "#/$defs/commandQuery" },
+    { "$ref": "#/$defs/commandQueryResponse" },
+    { "$ref": "#/$defs/commandAcceptedResponse" },
+    { "$ref": "#/$defs/liveReplyStreamQuery" },
+    { "$ref": "#/$defs/liveReplySubscription" },
+    { "$ref": "#/$defs/liveReplyReset" },
+    { "$ref": "#/$defs/liveReplyAppend" },
+    { "$ref": "#/$defs/liveReplyEnd" }
+  ],
+  "x-contractVersion": "1.5",
+  "x-compatibleVersions": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"],
+  "x-unknownFieldPolicy": {
+    "requests": "reject",
+    "authenticatedControlMessages": "reject",
+    "optionalResponseFields": "ignore",
+    "unknownMessageTypes": "fail-closed"
+  },
+  "x-transport": {
+    "app": ["https", "wss"],
+    "pc": ["wss", "https"],
+    "push": "refresh-only"
+  },
+  "x-appDeviceAuthentication": {
+    "mode": "device-proof-of-possession",
+    "algorithm": "ed25519",
+    "publicKeyFormat": "spki-der-base64url",
+    "signatureFormat": "raw-64-byte-base64url",
+    "requestProof": "method, canonical path, environment, timestamp, nonce and SHA-256 body digest",
+    "requestProofHeaders": [
+      "X-WorkAgents-Device-Key-Id",
+      "X-WorkAgents-Device-Timestamp",
+      "X-WorkAgents-Device-Nonce",
+      "X-WorkAgents-Device-Signature"
+    ],
+    "requestProofCanonicalFormat": "workagents-device-request-v1\\n{UPPERCASE_METHOD}\\n{CANONICAL_PATH}\\n{environment}\\n{RFC3339_TIMESTAMP}\\n{BASE64URL_NONCE}\\n{LOWERCASE_HEX_SHA256_BODY}",
+    "registrationProofCanonicalFormat": "workagents-device-registration-v1\\n{environment}\\n{appDeviceId}\\n{challengeId}\\n{challenge}\\n{LOWERCASE_HEX_SHA256_SPKI_DER}",
+    "maxClockSkewSeconds": 120,
+    "noncePolicy": "single-use",
+    "accountLogin": "forbidden"
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}$",
+      "maxLength": 128,
+      "x-maxUtf8Bytes": 128
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "deviceKeyAlgorithm": {
+      "type": "string",
+      "const": "ed25519"
+    },
+    "devicePublicKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{40,512}$",
+      "maxLength": 512,
+      "x-format": "spki-der-base64url",
+      "x-sensitive": false
+    },
+    "deviceSignature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{86}$",
+      "minLength": 86,
+      "maxLength": 86,
+      "x-format": "raw-64-byte-base64url",
+      "x-sensitive": true
+    },
+    "schemaVersion": {
+      "type": "string",
+      "enum": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"],
+      "x-maxUtf8Bytes": 8
+    },
+    "httpSchemaVersion": {
+      "type": "string",
+      "const": "1.5",
+      "x-maxUtf8Bytes": 8
+    },
+    "environment": {
+      "type": "string",
+      "enum": ["dev", "prod"]
+    },
+    "bindingEpoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "stateVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "x-encoding": "UTC RFC 3339 with timezone"
+    },
+    "messageType": {
+      "type": "string",
+      "enum": [
+        "pc/hello",
+        "pc/heartbeat",
+        "snapshot/upsert",
+        "snapshot/tombstone",
+        "sync/ack",
+        "sync/request",
+        "command/dispatch",
+        "command/result",
+        "app/command",
+        "error",
+        "app/device-registration-challenge",
+        "app/device-registration-challenged",
+        "app/device-register",
+        "app/device-registered",
+        "pairing/register",
+        "pairing/registered",
+        "pairing/consume",
+        "pairing/pending",
+        "binding/confirmation-request",
+        "binding/local-confirm",
+        "binding/active",
+        "binding/revoke",
+        "binding/revoked",
+        "app/pc-devices-query",
+        "app/pc-devices",
+        "app/task-list-query",
+        "app/task-list",
+        "app/push-refresh-query",
+        "app/push-refresh",
+        "app/task-query",
+        "app/task",
+        "app/command-query",
+        "app/command-status",
+        "app/command-accepted",
+        "app/reply-stream-connect",
+        "reply-stream/subscription",
+        "reply-stream/reset",
+        "reply-stream/append",
+        "reply-stream/end"
+      ]
+    },
+    "taskStatus": {
+      "type": "string",
+      "enum": [
+        "created",
+        "queued",
+        "starting",
+        "running",
+        "pausing",
+        "paused",
+        "stopping",
+        "stopped",
+        "failed",
+        "reconciling",
+        "archived"
+      ]
+    },
+    "turnStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "starting",
+        "running",
+        "pausing",
+        "completed",
+        "failed",
+        "interrupted",
+        "stopped",
+        "reconciling"
+      ]
+    },
+    "turnOutcome": {
+      "type": "string",
+      "enum": ["none", "completed", "failed", "interrupted", "stopped", "reconciling"]
+    },
+    "connectionState": {
+      "type": "string",
+      "enum": ["online", "stale", "offline"]
+    },
+    "replyState": {
+      "type": "string",
+      "enum": ["available", "absent", "withheld", "truncated"]
+    },
+    "commandType": {
+      "type": "string",
+      "enum": ["create_task", "start_task", "send_input", "pause_task", "resume_task", "stop_task"]
+    },
+    "commandStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "dispatched",
+        "accepted",
+        "applying",
+        "completed",
+        "rejected",
+        "failed",
+        "expired",
+        "cancelled",
+        "reconciling"
+      ]
+    },
+    "errorCode": {
+      "type": "string",
+      "enum": [
+        "invalid_request",
+        "unsupported_schema_version",
+        "unknown_message_type",
+        "unauthorized",
+        "device_not_bound",
+        "environment_mismatch",
+        "stale_binding_epoch",
+        "stale_installation",
+        "not_found",
+        "pc_offline",
+        "state_conflict",
+        "invalid_command_state",
+        "missing_initial_input",
+        "payload_digest_conflict",
+        "command_expired",
+        "command_not_cancellable",
+        "reconciling",
+        "unsupported_operation",
+        "rate_limited",
+        "not_local_confirmed",
+        "pairing_expired",
+        "pairing_replayed",
+        "invalid_pairing_qr",
+        "pairing_code_invalid",
+        "pairing_summary_mismatch",
+        "device_key_invalid",
+        "device_proof_invalid",
+        "device_challenge_expired",
+        "device_signature_replayed",
+        "storage_unavailable",
+        "internal"
+      ]
+    },
+    "reply": {
+      "type": "object",
+      "required": ["state", "text", "byteLength", "truncated"],
+      "properties": {
+        "state": { "$ref": "#/$defs/replyState" },
+        "text": {
+          "type": ["string", "null"],
+          "x-markdown": "restricted-no-html-no-images-safe-https-links"
+        },
+        "byteLength": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "truncated": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "taskSnapshot": {
+      "type": "object",
+      "required": [
+        "remoteTaskId",
+        "pcDeviceId",
+        "installationId",
+        "bindingEpoch",
+        "name",
+        "workspaceName",
+        "modelLabel",
+        "taskStatus",
+        "turnStatus",
+        "lastTurnOutcome",
+        "lastReply",
+        "lastReplyState",
+        "lastReplyVersion",
+        "lastError",
+        "pcObservedAt",
+        "stateVersion",
+        "pcConnectionState"
+      ],
+      "properties": {
+        "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+        "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+        "installationId": { "$ref": "#/$defs/opaqueId" },
+        "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+        "name": { "type": "string", "maxLength": 256, "x-maxUtf8Bytes": 256 },
+        "workspaceName": { "type": "string", "maxLength": 256, "x-maxUtf8Bytes": 256 },
+        "modelLabel": { "type": "string", "minLength": 1, "maxLength": 256, "x-maxUtf8Bytes": 256 },
+        "taskStatus": { "$ref": "#/$defs/taskStatus" },
+        "turnStatus": { "$ref": "#/$defs/turnStatus" },
+        "lastTurnOutcome": { "$ref": "#/$defs/turnOutcome" },
+        "lastReply": {
+          "oneOf": [
+            { "$ref": "#/$defs/reply" },
+            { "type": "null" }
+          ]
+        },
+        "lastReplyState": { "$ref": "#/$defs/replyState" },
+        "lastReplyVersion": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "lastError": {
+          "type": ["string", "null"],
+          "maxLength": 512,
+          "x-maxUtf8Bytes": 512
+        },
+        "pcObservedAt": { "$ref": "#/$defs/timestamp" },
+        "serverReceivedAt": { "$ref": "#/$defs/timestamp" },
+        "stateVersion": { "$ref": "#/$defs/stateVersion" },
+        "pcConnectionState": { "$ref": "#/$defs/connectionState" }
+      },
+      "additionalProperties": false
+    },
+    "eventBase": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "messageType",
+        "messageId",
+        "eventId",
+        "environment",
+        "pcDeviceId",
+        "installationId",
+        "bindingEpoch",
+        "stateVersion",
+        "sentAt"
+      ],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "messageType": { "$ref": "#/$defs/messageType" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "eventId": { "$ref": "#/$defs/opaqueId" },
+        "causationId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+        "installationId": { "$ref": "#/$defs/opaqueId" },
+        "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+        "stateVersion": { "$ref": "#/$defs/stateVersion" },
+        "sentAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "pcHello": {
+      "allOf": [
+        { "$ref": "#/$defs/eventBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "supportedSchemaVersions", "lastAckEventId", "lastAckStateVersion"],
+          "properties": {
+            "messageType": { "const": "pc/hello" },
+            "supportedSchemaVersions": {
+              "type": "array",
+              "items": { "type": "string", "maxLength": 8 },
+              "minItems": 1,
+              "maxItems": 4,
+              "uniqueItems": true
+            },
+            "lastAckEventId": { "type": ["string", "null"], "maxLength": 128 },
+            "lastAckStateVersion": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "modelConfigSummary": {
+      "type": "object",
+      "required": ["id", "model", "provider"],
+      "properties": {
+        "id": { "$ref": "#/$defs/digest" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "provider": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "pcHeartbeat": {
+      "allOf": [
+        { "$ref": "#/$defs/eventBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pcObservedAt", "modelConfigs"],
+          "properties": {
+            "messageType": { "const": "pc/heartbeat" },
+            "pcObservedAt": { "$ref": "#/$defs/timestamp" },
+            "modelConfigs": { "type": "array", "items": { "$ref": "#/$defs/modelConfigSummary" }, "maxItems": 100 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "snapshotUpsert": {
+      "allOf": [
+        { "$ref": "#/$defs/eventBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "snapshot"],
+          "properties": {
+            "messageType": { "const": "snapshot/upsert" },
+            "terminalPushEligible": { "type": "boolean", "default": false },
+            "snapshot": { "$ref": "#/$defs/taskSnapshot" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "snapshotTombstone": {
+      "allOf": [
+        { "$ref": "#/$defs/eventBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "remoteTaskId", "reason"],
+          "properties": {
+            "messageType": { "const": "snapshot/tombstone" },
+            "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+            "reason": { "type": "string", "enum": ["deleted", "archived", "remote_disabled", "unbound", "installation_reset"] }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "syncAck": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "environment", "pcDeviceId", "installationId", "bindingEpoch", "ackEventId", "ackStateVersion", "serverReceivedAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "messageType": { "const": "sync/ack" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+        "installationId": { "$ref": "#/$defs/opaqueId" },
+        "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+        "ackEventId": { "$ref": "#/$defs/opaqueId" },
+        "ackStateVersion": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "serverReceivedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "syncRequest": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "environment", "pcDeviceId", "installationId", "bindingEpoch", "reason", "sentAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "messageType": { "const": "sync/request" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+        "installationId": { "$ref": "#/$defs/opaqueId" },
+        "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+        "reason": { "type": "string", "enum": ["initial", "reconnect", "gap", "generation_changed", "manual"] },
+        "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+        "sentAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "commandPayloadStart": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 8192, "x-maxUtf8Bytes": 8192 }
+      },
+      "additionalProperties": false
+    },
+    "commandPayloadInput": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 8192, "x-maxUtf8Bytes": 8192 }
+      },
+      "additionalProperties": false
+    },
+    "commandPayloadEmpty": {
+      "type": "object",
+      "maxProperties": 0,
+      "additionalProperties": false
+    },
+    "appCommandBase": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "environment", "remoteTaskId", "clientRequestId", "expectedStateVersion", "expiresAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "messageType": { "const": "app/command" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+        "clientRequestId": { "$ref": "#/$defs/opaqueId" },
+        "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "appCommandRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/appCommandBase" },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["commandType", "payload"],
+              "properties": {
+                "commandType": { "const": "create_task" },
+                "payload": { "$ref": "#/$defs/commandPayloadCreate" }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["commandType", "payload"],
+              "properties": {
+                "commandType": { "const": "start_task" },
+                "payload": { "$ref": "#/$defs/commandPayloadStart" }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["commandType", "payload"],
+              "properties": {
+                "commandType": { "const": "send_input" },
+                "payload": { "$ref": "#/$defs/commandPayloadInput" }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["commandType", "payload"],
+              "properties": {
+                "commandType": { "enum": ["pause_task", "resume_task", "stop_task"] },
+                "payload": { "$ref": "#/$defs/commandPayloadEmpty" }
+              }
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "commandRecord": {
+      "type": "object",
+      "required": ["commandId", "clientRequestId", "remoteTaskId", "commandType", "payloadDigest", "expectedStateVersion", "status", "createdAt", "expiresAt"],
+      "properties": {
+        "commandId": { "$ref": "#/$defs/opaqueId" },
+        "clientRequestId": { "$ref": "#/$defs/opaqueId" },
+        "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+        "commandType": { "$ref": "#/$defs/commandType" },
+        "payloadDigest": { "$ref": "#/$defs/digest" },
+        "expectedStateVersion": { "$ref": "#/$defs/stateVersion" },
+        "status": { "$ref": "#/$defs/commandStatus" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "appliedStateVersion": { "$ref": "#/$defs/stateVersion" },
+        "errorCode": { "$ref": "#/$defs/errorCode" }
+      },
+      "additionalProperties": false
+    },
+    "commandDispatch": {
+      "allOf": [
+        { "$ref": "#/$defs/eventBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "command"],
+          "properties": {
+            "messageType": { "const": "command/dispatch" },
+            "command": { "$ref": "#/$defs/commandRecord" },
+            "payload": {
+              "oneOf": [
+                { "$ref": "#/$defs/commandPayloadCreate" },
+                { "$ref": "#/$defs/commandPayloadStart" },
+                { "$ref": "#/$defs/commandPayloadInput" },
+                { "$ref": "#/$defs/commandPayloadEmpty" }
+              ],
+              "x-sensitive": true,
+              "x-retention": "encrypted-until-terminal-or-expiry"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "commandResult": {
+      "allOf": [
+        { "$ref": "#/$defs/eventBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "command"],
+          "properties": {
+            "messageType": { "const": "command/result" },
+            "command": { "$ref": "#/$defs/commandRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "errorResponse": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "errorCode", "retryable", "serverReceivedAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/schemaVersion" },
+        "messageType": { "const": "error" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "requestMessageId": { "$ref": "#/$defs/opaqueId" },
+        "errorCode": { "$ref": "#/$defs/errorCode" },
+        "retryable": { "type": "boolean" },
+        "message": { "type": "string", "maxLength": 256, "x-maxUtf8Bytes": 256 },
+        "serverReceivedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "commandPayloadCreate": {
+      "type": "object",
+      "required": ["text", "initialText", "modelConfigId"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 60, "x-maxUtf8Bytes": 240 },
+        "initialText": { "type": "string", "minLength": 1, "maxLength": 8192, "x-maxUtf8Bytes": 8192 },
+        "modelConfigId": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "remoteTaskSnapshot": {
+      "allOf": [
+        { "$ref": "#/$defs/taskSnapshot" },
+        { "type": "object", "required": ["serverReceivedAt"] }
+      ]
+    },
+    "httpRequestBase": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "environment", "sentAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/httpSchemaVersion" },
+        "messageType": { "$ref": "#/$defs/messageType" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "sentAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "httpResponseBase": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "requestMessageId", "environment", "serverReceivedAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/httpSchemaVersion" },
+        "messageType": { "$ref": "#/$defs/messageType" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "requestMessageId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "serverReceivedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "x-maxUtf8Bytes": 128,
+      "x-remote-safe-display": true
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "x-maxUtf8Bytes": 256,
+      "x-opaque": true
+    },
+    "pairingQrPayload": {
+      "type": "object",
+      "required": ["pairingQrVersion", "environment", "pairingHandle"],
+      "properties": {
+        "pairingQrVersion": { "type": "string", "const": "2", "x-maxUtf8Bytes": 8 },
+        "environment": { "$ref": "#/$defs/environment" },
+        "pairingHandle": { "$ref": "#/$defs/opaqueId" }
+      },
+      "additionalProperties": false,
+      "x-forbiddenProperties": ["shortCode", "url", "ipAddress", "port", "endpoint", "token", "session"]
+    },
+    "bindingSummary": {
+      "type": "object",
+      "required": ["environment", "pcDisplayName", "appDisplayName", "safetyPhrase", "summaryDigest"],
+      "properties": {
+        "environment": { "$ref": "#/$defs/environment" },
+        "pcDisplayName": { "$ref": "#/$defs/displayName" },
+        "appDisplayName": { "$ref": "#/$defs/displayName" },
+        "safetyPhrase": {
+          "type": "string",
+          "pattern": "^[a-z]{3,16}(?:-[a-z]{3,16}){2}$",
+          "minLength": 11,
+          "maxLength": 50,
+          "x-maxUtf8Bytes": 50,
+          "x-notCredential": true
+        },
+        "summaryDigest": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "appDeviceRegistrationChallengeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/httpRequestBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "appDeviceId", "deviceKeyAlgorithm", "devicePublicKey"],
+          "properties": {
+            "messageType": { "const": "app/device-registration-challenge" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "deviceKeyAlgorithm": { "$ref": "#/$defs/deviceKeyAlgorithm" },
+            "devicePublicKey": { "$ref": "#/$defs/devicePublicKey" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "appDeviceRegistrationChallengeResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "appDeviceId", "challengeId", "challenge", "expiresAt"],
+          "properties": {
+            "messageType": { "const": "app/device-registration-challenged" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "challengeId": { "$ref": "#/$defs/opaqueId" },
+            "challenge": { "$ref": "#/$defs/opaqueId" },
+            "expiresAt": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "appDeviceRegistrationRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/httpRequestBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "appDeviceId", "deviceKeyAlgorithm", "devicePublicKey", "challengeId", "challenge", "registrationSignature", "pushProvider", "pushToken", "appDisplayName", "appVersion"],
+          "properties": {
+            "messageType": { "const": "app/device-register" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "deviceKeyAlgorithm": { "$ref": "#/$defs/deviceKeyAlgorithm" },
+            "devicePublicKey": { "$ref": "#/$defs/devicePublicKey" },
+            "challengeId": { "$ref": "#/$defs/opaqueId" },
+            "challenge": { "$ref": "#/$defs/opaqueId" },
+            "registrationSignature": { "$ref": "#/$defs/deviceSignature" },
+            "pushProvider": { "const": "huawei_push_kit" },
+            "pushToken": { "type": "string", "minLength": 1, "maxLength": 4096, "x-maxUtf8Bytes": 4096, "x-sensitive": true },
+            "appDisplayName": { "$ref": "#/$defs/displayName" },
+            "appVersion": { "type": "string", "minLength": 1, "maxLength": 64, "x-maxUtf8Bytes": 64 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "appDeviceRegistrationResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "appDeviceId", "deviceKeyId", "registrationState"],
+          "properties": {
+            "messageType": { "const": "app/device-registered" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "deviceKeyId": { "$ref": "#/$defs/opaqueId" },
+            "registrationState": { "const": "registered" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "pairingRegistrationRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/httpRequestBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pcDeviceId", "installationId", "pairing", "pcDisplayName", "expiresAt"],
+          "properties": {
+            "messageType": { "const": "pairing/register" },
+            "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "installationId": { "$ref": "#/$defs/opaqueId" },
+            "pairing": { "$ref": "#/$defs/pairingQrPayload" },
+            "pcDisplayName": { "$ref": "#/$defs/displayName" },
+            "expiresAt": { "$ref": "#/$defs/timestamp" }
+          }
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "environment": { "const": "dev" },
+                "pairing": {
+                  "allOf": [
+                    { "$ref": "#/$defs/pairingQrPayload" },
+                    { "type": "object", "properties": { "environment": { "const": "dev" } } }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "environment": { "const": "prod" },
+                "pairing": {
+                  "allOf": [
+                    { "$ref": "#/$defs/pairingQrPayload" },
+                    { "type": "object", "properties": { "environment": { "const": "prod" } } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "pairingRegistrationResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pairingHandle", "expiresAt", "registrationState"],
+          "properties": {
+            "messageType": { "const": "pairing/registered" },
+            "pairingHandle": { "$ref": "#/$defs/opaqueId" },
+            "expiresAt": { "$ref": "#/$defs/timestamp" },
+            "registrationState": { "const": "ready" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "pairingConsumeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/httpRequestBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "appDeviceId", "pairing"],
+          "properties": {
+            "messageType": { "const": "pairing/consume" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "pairing": { "$ref": "#/$defs/pairingQrPayload" }
+          }
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "environment": { "const": "dev" },
+                "pairing": {
+                  "allOf": [
+                    { "$ref": "#/$defs/pairingQrPayload" },
+                    { "type": "object", "properties": { "environment": { "const": "dev" } } }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "environment": { "const": "prod" },
+                "pairing": {
+                  "allOf": [
+                    { "$ref": "#/$defs/pairingQrPayload" },
+                    { "type": "object", "properties": { "environment": { "const": "prod" } } }
+                  ]
+                }
+              }
+            }
+            ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "pairingPendingResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "bindingId", "pcDeviceId", "installationId", "confirmationNonce", "confirmationExpiresAt", "bindingSummary", "bindingState"],
+          "properties": {
+            "messageType": { "const": "pairing/pending" },
+            "bindingId": { "$ref": "#/$defs/opaqueId" },
+            "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "installationId": { "$ref": "#/$defs/opaqueId" },
+            "confirmationNonce": { "$ref": "#/$defs/opaqueId" },
+            "confirmationExpiresAt": { "$ref": "#/$defs/timestamp" },
+            "bindingSummary": { "$ref": "#/$defs/bindingSummary" },
+            "bindingState": { "enum": ["pending_local_confirmation", "active"] }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bindingConfirmationRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pcPairingMessageId", "bindingId", "appDeviceId", "confirmationNonce", "confirmationExpiresAt", "bindingSummary"],
+          "properties": {
+            "messageType": { "const": "binding/confirmation-request" },
+            "pcPairingMessageId": { "$ref": "#/$defs/opaqueId" },
+            "bindingId": { "$ref": "#/$defs/opaqueId" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "confirmationNonce": { "$ref": "#/$defs/opaqueId" },
+            "confirmationExpiresAt": { "$ref": "#/$defs/timestamp" },
+            "bindingSummary": { "$ref": "#/$defs/bindingSummary" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bindingLocalConfirmation": {
+      "allOf": [
+        { "$ref": "#/$defs/httpRequestBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "bindingId", "pcDeviceId", "installationId", "confirmationNonce", "summaryDigest", "confirmed"],
+          "properties": {
+            "messageType": { "const": "binding/local-confirm" },
+            "bindingId": { "$ref": "#/$defs/opaqueId" },
+            "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "installationId": { "$ref": "#/$defs/opaqueId" },
+            "confirmationNonce": { "$ref": "#/$defs/opaqueId" },
+            "summaryDigest": { "$ref": "#/$defs/digest" },
+            "confirmed": { "const": true }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bindingActiveResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "bindingId", "appDeviceId", "pcDeviceId", "installationId", "bindingEpoch", "bindingState", "activatedAt"],
+          "properties": {
+            "messageType": { "const": "binding/active" },
+            "bindingId": { "$ref": "#/$defs/opaqueId" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "installationId": { "$ref": "#/$defs/opaqueId" },
+            "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+            "bindingState": { "const": "active" },
+            "activatedAt": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bindingRevocationRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/httpRequestBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "appDeviceId", "bindingId"],
+          "properties": {
+            "messageType": { "const": "binding/revoke" },
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "bindingId": { "$ref": "#/$defs/opaqueId" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bindingRevokedResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "bindingId", "bindingState", "revokedAt"],
+          "properties": {
+            "messageType": { "const": "binding/revoked" },
+            "bindingId": { "$ref": "#/$defs/opaqueId" },
+            "bindingState": { "const": "revoked" },
+            "revokedAt": { "$ref": "#/$defs/timestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "queryBase": {
+      "allOf": [
+        { "$ref": "#/$defs/httpRequestBase" },
+        {
+          "type": "object",
+          "required": ["appDeviceId"],
+          "properties": {
+            "appDeviceId": { "$ref": "#/$defs/opaqueId" }
+          }
+        }
+      ]
+    },
+    "pcDeviceSummary": {
+      "type": "object",
+      "required": ["bindingId", "pcDeviceId", "installationId", "bindingEpoch", "displayName", "pcConnectionState", "pcObservedAt", "modelConfigs"],
+      "properties": {
+        "bindingId": { "$ref": "#/$defs/opaqueId" },
+        "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+        "installationId": { "$ref": "#/$defs/opaqueId" },
+        "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+        "displayName": { "$ref": "#/$defs/displayName" },
+        "pcConnectionState": { "$ref": "#/$defs/connectionState" },
+        "pcObservedAt": { "$ref": "#/$defs/timestamp" },
+        "modelConfigs": { "type": "array", "items": { "$ref": "#/$defs/modelConfigSummary" }, "maxItems": 100 }
+      },
+      "additionalProperties": false
+    },
+    "pcDeviceListQuery": {
+      "allOf": [
+        { "$ref": "#/$defs/queryBase" },
+        {
+          "type": "object",
+          "required": ["messageType"],
+          "properties": {
+            "messageType": { "const": "app/pc-devices-query" },
+            "cursor": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "pcDeviceListResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pcDevices", "nextCursor"],
+          "properties": {
+            "messageType": { "const": "app/pc-devices" },
+            "pcDevices": { "type": "array", "items": { "$ref": "#/$defs/pcDeviceSummary" }, "maxItems": 100 },
+            "nextCursor": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "taskListQuery": {
+      "allOf": [
+        { "$ref": "#/$defs/queryBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pcDeviceId"],
+          "properties": {
+            "messageType": { "const": "app/task-list-query" },
+            "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "cursor": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "taskListResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pcDeviceId", "installationId", "bindingEpoch", "tasks", "nextCursor"],
+          "properties": {
+            "messageType": { "const": "app/task-list" },
+            "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "installationId": { "$ref": "#/$defs/opaqueId" },
+            "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+            "tasks": { "type": "array", "items": { "$ref": "#/$defs/remoteTaskSnapshot" }, "maxItems": 100 },
+            "nextCursor": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "pushRefreshQuery": {
+      "allOf": [
+        { "$ref": "#/$defs/queryBase" },
+        {
+          "type": "object",
+          "required": ["messageType"],
+          "properties": {
+            "messageType": { "const": "app/push-refresh-query" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "pushRefreshResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "pcDeviceId", "installationId", "bindingEpoch", "remoteTaskId", "terminalStateVersion"],
+          "properties": {
+            "messageType": { "const": "app/push-refresh" },
+            "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+            "installationId": { "$ref": "#/$defs/opaqueId" },
+            "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+            "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+            "terminalStateVersion": { "$ref": "#/$defs/stateVersion" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "taskDetailQuery": {
+      "allOf": [
+        { "$ref": "#/$defs/queryBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "remoteTaskId"],
+          "properties": {
+            "messageType": { "const": "app/task-query" },
+            "remoteTaskId": { "$ref": "#/$defs/opaqueId" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "taskDetailResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "snapshot"],
+          "properties": {
+            "messageType": { "const": "app/task" },
+            "snapshot": { "$ref": "#/$defs/remoteTaskSnapshot" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "commandQuery": {
+      "allOf": [
+        { "$ref": "#/$defs/queryBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "commandId"],
+          "properties": {
+            "messageType": { "const": "app/command-query" },
+            "commandId": { "$ref": "#/$defs/opaqueId" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "commandQueryResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "command"],
+          "properties": {
+            "messageType": { "const": "app/command-status" },
+            "command": { "$ref": "#/$defs/commandRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "commandAcceptedResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/httpResponseBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "command"],
+          "properties": {
+            "messageType": { "const": "app/command-accepted" },
+            "command": { "$ref": "#/$defs/commandRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "liveReplyStreamQuery": {
+      "allOf": [
+        { "$ref": "#/$defs/queryBase" },
+        {
+          "type": "object",
+          "required": ["messageType"],
+          "properties": {
+            "messageType": { "const": "app/reply-stream-connect" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "liveReplySubscription": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "environment", "pcDeviceId", "installationId", "bindingEpoch", "remoteTaskId", "active", "sentAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/httpSchemaVersion" },
+        "messageType": { "const": "reply-stream/subscription" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+        "installationId": { "$ref": "#/$defs/opaqueId" },
+        "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+        "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+        "active": { "type": "boolean" },
+        "sentAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "liveReplyFrameBase": {
+      "type": "object",
+      "required": ["schemaVersion", "messageType", "messageId", "environment", "pcDeviceId", "installationId", "bindingEpoch", "remoteTaskId", "streamId", "streamSeq", "sentAt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/httpSchemaVersion" },
+        "messageType": { "$ref": "#/$defs/messageType" },
+        "messageId": { "$ref": "#/$defs/opaqueId" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "pcDeviceId": { "$ref": "#/$defs/opaqueId" },
+        "installationId": { "$ref": "#/$defs/opaqueId" },
+        "bindingEpoch": { "$ref": "#/$defs/bindingEpoch" },
+        "remoteTaskId": { "$ref": "#/$defs/opaqueId" },
+        "streamId": { "$ref": "#/$defs/opaqueId" },
+        "streamSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "sentAt": { "$ref": "#/$defs/timestamp" },
+        "serverReceivedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "liveReplyReset": {
+      "allOf": [
+        { "$ref": "#/$defs/liveReplyFrameBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "text"],
+          "properties": {
+            "messageType": { "const": "reply-stream/reset" },
+            "text": { "type": "string" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "liveReplyAppend": {
+      "allOf": [
+        { "$ref": "#/$defs/liveReplyFrameBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "text"],
+          "properties": {
+            "messageType": { "const": "reply-stream/append" },
+            "text": { "type": "string" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "liveReplyEnd": {
+      "allOf": [
+        { "$ref": "#/$defs/liveReplyFrameBase" },
+        {
+          "type": "object",
+          "required": ["messageType", "outcome"],
+          "properties": {
+            "messageType": { "const": "reply-stream/end" },
+            "outcome": { "type": "string", "enum": ["completed", "failed", "interrupted", "stopped"] }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

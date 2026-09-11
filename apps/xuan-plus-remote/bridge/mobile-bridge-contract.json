@@ -1,0 +1,16 @@
+{
+  "contractVersion": "1",
+  "endpoints": {
+    "status": { "method": "GET", "path": "/v1/mobile/status" },
+    "pair": { "method": "POST", "path": "/v1/mobile/pair" },
+    "confirm": { "method": "POST", "path": "/v1/mobile/confirm" },
+    "tasks": { "method": "POST", "path": "/v1/mobile/tasks" },
+    "send-input": { "method": "POST", "path": "/v1/mobile/send-input" },
+    "stop": { "method": "POST", "path": "/v1/mobile/stop" }
+  },
+  "security": {
+    "transport": "loopback-or-private-network",
+    "authorization": "bearer-token-optional",
+    "deviceKeysLeaveDevice": false
+  }
+}

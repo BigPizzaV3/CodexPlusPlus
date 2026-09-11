@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.1",
+  "enabled": true,
+  "protocolEnvironment": "dev",
+  "apiBaseUrl": "https://www.meishijiankang.com/workagents-remote/api",
+  "wssUrl": "wss://www.meishijiankang.com/workagents-remote/gateway/v1/gateway/connect",
+  "appWssUrl": "wss://www.meishijiankang.com/workagents-remote/stream/v1/tasks"
+}

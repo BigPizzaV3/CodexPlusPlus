@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "xuan-plus-remote",
+  "version": "1.0.0",
+  "description": "轩++远程 HarmonyOS 远程控制客户端",
+  "dependencies": {},
+  "devDependencies": {}
+}

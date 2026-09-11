@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "xuan_polish": {
+      "title": "Xuan Polish",
+      "description": "Polish a draft prompt through xuan-bridge.",
+      "command": "node",
+      "args": ["./server.mjs"],
+      "cwd": "."
+    }
+  }
+}
