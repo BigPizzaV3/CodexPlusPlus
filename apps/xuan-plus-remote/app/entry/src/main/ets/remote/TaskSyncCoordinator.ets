@@ -4,7 +4,7 @@ import { RemoteApiClient } from './RemoteApiClient';
 import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
 import { PcConnectionState, ReplyState, TaskStatus, TurnStatus, utf8ByteLength } from './RemoteModels';
 
-const CONTRACT_VERSION = '1.5';
+const CONTRACT_VERSION = '2.0';
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
 export interface RemoteReplySnapshot {

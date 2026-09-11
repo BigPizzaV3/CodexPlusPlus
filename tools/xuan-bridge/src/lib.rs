@@ -353,14 +353,15 @@ fn build_usage_url(
     };
     url.set_path(&target_path);
     url.set_query(None);
-    if let (Some(start), Some(end)) = (start_date, end_date) {
-        if !start.trim().is_empty() && !end.trim().is_empty() {
-            url.query_pairs_mut()
-                .append_pair("start_date", start.trim())
-                .append_pair("end_date", end.trim())
-                .append_pair("days", "90")
-                .append_pair("timezone", timezone.unwrap_or("Asia/Shanghai"));
-        }
+    if let (Some(start), Some(end)) = (start_date, end_date)
+        && !start.trim().is_empty()
+        && !end.trim().is_empty()
+    {
+        url.query_pairs_mut()
+            .append_pair("start_date", start.trim())
+            .append_pair("end_date", end.trim())
+            .append_pair("days", "90")
+            .append_pair("timezone", timezone.unwrap_or("Asia/Shanghai"));
     }
     Ok(url)
 }
@@ -601,10 +602,10 @@ fn extract_polished_text(protocol: PolishProtocol, payload: &Value) -> String {
                 for item in output {
                     if let Some(content) = item.get("content").and_then(Value::as_array) {
                         for part in content {
-                            if part.get("type").and_then(Value::as_str) == Some("output_text") {
-                                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                                    parts.push(text.to_string());
-                                }
+                            if part.get("type").and_then(Value::as_str) == Some("output_text")
+                                && let Some(text) = part.get("text").and_then(Value::as_str)
+                            {
+                                parts.push(text.to_string());
                             }
                         }
                     }
@@ -1411,12 +1412,7 @@ pub fn migrate_legacy_settings(input: &Path, output_root: &Path) -> Result<Value
                 let writable = remote_root.join("mobile-remote.sqlite");
                 if !writable.exists() {
                     std::fs::copy(&destination, &writable).map_err(|error| error.to_string())?;
-                    let mut permissions = std::fs::metadata(&writable)
-                        .map_err(|error| error.to_string())?
-                        .permissions();
-                    permissions.set_readonly(false);
-                    std::fs::set_permissions(&writable, permissions)
-                        .map_err(|error| error.to_string())?;
+                    make_file_owner_writable(&writable)?;
                 }
                 remote_database_path = Some(writable);
             }
@@ -1499,6 +1495,27 @@ fn copy_sqlite_snapshot(source: &Path, destination: &Path) -> Result<(), String>
     backup
         .run_to_completion(64, Duration::from_millis(10), None)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+#[allow(clippy::permissions_set_readonly_false)]
+fn make_file_owner_writable(path: &Path) -> Result<(), String> {
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions).map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn make_file_owner_writable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    permissions.set_mode(permissions.mode() | 0o200);
+    std::fs::set_permissions(path, permissions).map_err(|error| error.to_string())
 }
 
 fn migrated_mobile_models(source: &Value) -> Vec<Value> {

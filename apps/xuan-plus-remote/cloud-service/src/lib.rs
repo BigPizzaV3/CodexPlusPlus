@@ -25,8 +25,9 @@ pub use task_sync::*;
 mod push;
 pub use push::*;
 
-pub const CONTRACT_VERSION: &str = "1.5";
-pub const STORAGE_SCHEMA_VERSION: i64 = 7;
+pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CONTRACT_VERSION: &str = "2.0";
+pub const STORAGE_SCHEMA_VERSION: i64 = 8;
 const CHALLENGE_TTL_MINUTES: i64 = 5;
 pub(crate) const REQUEST_CLOCK_SKEW_SECONDS: i64 = 120;
 
@@ -549,14 +550,55 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
     let schema_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| CloudError::StorageUnavailable)?;
-    if schema_version != 0 && schema_version != STORAGE_SCHEMA_VERSION {
+    if schema_version == STORAGE_SCHEMA_VERSION {
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+            .map_err(|_| CloudError::StorageUnavailable)?;
+        let metadata: (String, i64) = connection
+            .query_row(
+                "SELECT contract_version, storage_schema_version
+                 FROM service_metadata WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| CloudError::StorageUnavailable)?;
+        if metadata.0 != CONTRACT_VERSION || metadata.1 != STORAGE_SCHEMA_VERSION {
+            return Err(CloudError::StorageUnavailable);
+        }
+        connection
+            .execute(
+                "UPDATE service_metadata SET service_version = ?1 WHERE singleton = 1",
+                params![SERVICE_VERSION],
+            )
+            .map_err(|_| CloudError::StorageUnavailable)?;
+        return Ok(());
+    }
+    if schema_version != 0 {
+        return Err(CloudError::StorageUnavailable);
+    }
+    let existing_objects: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE name NOT LIKE 'sqlite_%'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| CloudError::StorageUnavailable)?;
+    if existing_objects != 0 {
         return Err(CloudError::StorageUnavailable);
     }
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;
-             CREATE TABLE IF NOT EXISTS app_device_challenges (
+             CREATE TABLE service_metadata (
+               singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+               service_version TEXT NOT NULL,
+               contract_version TEXT NOT NULL,
+               storage_schema_version INTEGER NOT NULL,
+               initialized_at INTEGER NOT NULL
+             );
+             CREATE TABLE app_device_challenges (
                challenge_id TEXT PRIMARY KEY,
                environment TEXT NOT NULL,
                app_device_id TEXT NOT NULL,
@@ -565,7 +607,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                expires_at INTEGER NOT NULL,
                consumed_at INTEGER
              );
-             CREATE TABLE IF NOT EXISTS app_devices (
+             CREATE TABLE app_devices (
                environment TEXT NOT NULL,
                app_device_id TEXT NOT NULL,
                device_key_id TEXT NOT NULL,
@@ -580,7 +622,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                PRIMARY KEY (environment, app_device_id),
                UNIQUE (environment, device_key_id)
              );
-             CREATE TABLE IF NOT EXISTS device_signature_nonces (
+             CREATE TABLE device_signature_nonces (
                environment TEXT NOT NULL,
                device_key_id TEXT NOT NULL,
                nonce_digest TEXT NOT NULL,
@@ -588,7 +630,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                expires_at INTEGER NOT NULL,
                PRIMARY KEY (environment, device_key_id, nonce_digest)
              );
-             CREATE TABLE IF NOT EXISTS pc_devices (
+             CREATE TABLE pc_devices (
                environment TEXT NOT NULL,
                pc_device_id TEXT NOT NULL,
                installation_id TEXT NOT NULL,
@@ -604,7 +646,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                PRIMARY KEY (environment, pc_device_id, installation_id),
                UNIQUE (environment, device_key_id)
              );
-             CREATE TABLE IF NOT EXISTS pc_signature_nonces (
+             CREATE TABLE pc_signature_nonces (
                environment TEXT NOT NULL,
                pc_device_id TEXT NOT NULL,
                installation_id TEXT NOT NULL,
@@ -613,7 +655,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                expires_at INTEGER NOT NULL,
                PRIMARY KEY (environment, pc_device_id, installation_id, nonce_digest)
              );
-             CREATE TABLE IF NOT EXISTS pairings (
+             CREATE TABLE pairings (
                environment TEXT NOT NULL,
                pairing_handle_digest TEXT PRIMARY KEY,
                pc_pairing_message_id TEXT NOT NULL,
@@ -626,7 +668,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                created_at INTEGER NOT NULL,
                UNIQUE (environment, pc_pairing_message_id)
              );
-             CREATE TABLE IF NOT EXISTS bindings (
+             CREATE TABLE bindings (
                environment TEXT NOT NULL,
                binding_id TEXT PRIMARY KEY,
                pc_pairing_message_id TEXT NOT NULL,
@@ -646,12 +688,12 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                activated_at INTEGER,
                revoked_at INTEGER
              );
-             CREATE INDEX IF NOT EXISTS idx_bindings_pending_pc
+             CREATE INDEX idx_bindings_pending_pc
                ON bindings(environment, pc_device_id, installation_id, state, created_at);
-             CREATE UNIQUE INDEX IF NOT EXISTS idx_bindings_active_pair
+             CREATE UNIQUE INDEX idx_bindings_active_pair
                ON bindings(environment, app_device_id, pc_device_id)
                WHERE state = 'active';
-             CREATE TABLE IF NOT EXISTS remote_task_snapshots (
+             CREATE TABLE remote_task_snapshots (
                environment TEXT NOT NULL,
                pc_device_id TEXT NOT NULL,
                installation_id TEXT NOT NULL,
@@ -666,12 +708,12 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                  environment, pc_device_id, installation_id, binding_epoch, remote_task_id
                )
              );
-             CREATE INDEX IF NOT EXISTS idx_remote_task_snapshots_list
+             CREATE INDEX idx_remote_task_snapshots_list
                ON remote_task_snapshots(
                  environment, pc_device_id, installation_id, binding_epoch,
                  tombstoned, state_version DESC
                );
-             CREATE TABLE IF NOT EXISTS remote_commands (
+             CREATE TABLE remote_commands (
                environment TEXT NOT NULL,
                command_id TEXT NOT NULL,
                binding_id TEXT NOT NULL,
@@ -694,12 +736,12 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                PRIMARY KEY(environment, command_id),
                UNIQUE(environment, binding_id, app_device_id, remote_task_id, client_request_id)
              );
-             CREATE INDEX IF NOT EXISTS idx_remote_commands_dispatch
+             CREATE INDEX idx_remote_commands_dispatch
                ON remote_commands(
                  environment, pc_device_id, installation_id, binding_epoch,
                  status, expires_at, created_at
                );
-             CREATE TABLE IF NOT EXISTS push_outbox (
+             CREATE TABLE push_outbox (
                environment TEXT NOT NULL,
                push_id TEXT NOT NULL,
                refresh_ref TEXT NOT NULL,
@@ -728,15 +770,27 @@ fn initialize_schema(connection: &Connection) -> Result<(), CloudError> {
                  binding_epoch, remote_task_id, terminal_state_version
                )
              );
-             CREATE INDEX IF NOT EXISTS idx_push_outbox_dispatch
+             CREATE INDEX idx_push_outbox_dispatch
                ON push_outbox(environment, status, next_attempt_at, lease_until, created_at);",
         )
         .map_err(|_| CloudError::StorageUnavailable)?;
-    if schema_version == 0 {
-        connection
-            .execute_batch(&format!("PRAGMA user_version = {STORAGE_SCHEMA_VERSION};"))
-            .map_err(|_| CloudError::StorageUnavailable)?;
-    }
+    connection
+        .execute(
+            "INSERT INTO service_metadata (
+               singleton, service_version, contract_version,
+               storage_schema_version, initialized_at
+             ) VALUES (1, ?1, ?2, ?3, ?4)",
+            params![
+                SERVICE_VERSION,
+                CONTRACT_VERSION,
+                STORAGE_SCHEMA_VERSION,
+                Utc::now().timestamp()
+            ],
+        )
+        .map_err(|_| CloudError::StorageUnavailable)?;
+    connection
+        .execute_batch(&format!("PRAGMA user_version = {STORAGE_SCHEMA_VERSION};"))
+        .map_err(|_| CloudError::StorageUnavailable)?;
     Ok(())
 }
 
@@ -862,6 +916,69 @@ mod tests {
         URL_SAFE_NO_PAD.encode(der.as_bytes())
     }
 
+    #[test]
+    fn initializes_only_the_current_storage_generation() {
+        let temp = TempDir::new().expect("temp");
+        let database_path = temp.path().join("remote.sqlite3");
+        let _service = CloudService::open(&database_path, Environment::Dev, [7_u8; 32])
+            .expect("current database");
+        let connection = Connection::open(&database_path).expect("open database");
+        let user_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("user version");
+        let metadata: (String, String, i64) = connection
+            .query_row(
+                "SELECT service_version, contract_version, storage_schema_version
+                 FROM service_metadata WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("service metadata");
+        assert_eq!(user_version, STORAGE_SCHEMA_VERSION);
+        assert_eq!(metadata.0, SERVICE_VERSION);
+        assert_eq!(metadata.1, CONTRACT_VERSION);
+        assert_eq!(metadata.2, STORAGE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn refuses_the_previous_storage_generation() {
+        let temp = TempDir::new().expect("temp");
+        let database_path = temp.path().join("remote.sqlite3");
+        let connection = Connection::open(&database_path).expect("open database");
+        connection
+            .execute_batch("PRAGMA user_version = 7;")
+            .expect("mark old schema");
+        drop(connection);
+        assert!(matches!(
+            CloudService::open(&database_path, Environment::Dev, [7_u8; 32]),
+            Err(CloudError::StorageUnavailable)
+        ));
+    }
+
+    #[test]
+    fn refuses_unversioned_existing_tables_without_adopting_them() {
+        let temp = TempDir::new().expect("temp");
+        let database_path = temp.path().join("remote.sqlite3");
+        let connection = Connection::open(&database_path).expect("open database");
+        connection
+            .execute_batch("CREATE TABLE legacy_remote_state (value TEXT NOT NULL);")
+            .expect("legacy table");
+        drop(connection);
+        assert!(matches!(
+            CloudService::open(&database_path, Environment::Dev, [7_u8; 32]),
+            Err(CloudError::StorageUnavailable)
+        ));
+        let connection = Connection::open(&database_path).expect("reopen database");
+        let metadata_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'service_metadata'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata table count");
+        assert_eq!(metadata_tables, 0);
+    }
+
     fn challenge_request(public_key: String) -> DeviceChallengeRequest {
         DeviceChallengeRequest {
             schema_version: CONTRACT_VERSION.into(),
@@ -873,6 +990,19 @@ mod tests {
             device_key_algorithm: "ed25519".into(),
             device_public_key: public_key,
         }
+    }
+
+    #[test]
+    fn previous_protocol_generation_is_rejected() {
+        let temp = TempDir::new().expect("temp");
+        let service = service(&temp);
+        let signing_key = signing_key();
+        let mut request = challenge_request(public_key(&signing_key));
+        request.schema_version = "1.5".into();
+        assert!(matches!(
+            service.create_device_challenge(request, now()),
+            Err(CloudError::InvalidRequest)
+        ));
     }
 
     fn registration_request(

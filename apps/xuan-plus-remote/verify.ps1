@@ -11,13 +11,21 @@ try {
   if ($Check -eq 'Source') {
     $node = (Resolve-Path -LiteralPath $NodePath).Path
     foreach ($entry in @('verify-fork.mjs', 'environment/verify-shared-service-config.mjs',
-      'protocol/verify-contract.mjs', 'protocol/verify-reference-harness.mjs')) {
+      'protocol/verify-contract.mjs', 'protocol/verify-reference-harness.mjs',
+      'bridge/verify-contract.mjs')) {
       $arguments = @((Join-Path $PSScriptRoot $entry))
       & $node @arguments
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
+    foreach ($entry in @('cloud-service/deploy/verify-deploy-contract.ps1',
+      'cloud-service/deploy/verify-upgrade-rollback.ps1')) {
+      & (Join-Path $PSScriptRoot $entry)
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
     $parsePaths = @('app/build-dev.ps1', 'app/install-dev.ps1', 'app/sign-dev.ps1',
-      'app/open-in-deveco.ps1', 'app/clear-signing-cache.ps1', 'verify.ps1')
+      'app/open-in-deveco.ps1', 'app/clear-signing-cache.ps1',
+      'cloud-service/verify-local.ps1', 'cloud-service/deploy/verify-deploy-contract.ps1',
+      'cloud-service/deploy/verify-upgrade-rollback.ps1', 'verify.ps1')
     foreach ($entry in $parsePaths) {
       $tokens = $null
       $parseErrors = $null
@@ -31,6 +39,13 @@ try {
     $arguments = @('test', '--manifest-path', $manifest, '--offline', '--locked')
     & cargo @arguments
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $arguments = @('build', '--manifest-path', $manifest, '--offline', '--locked')
+    & cargo @arguments
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $executable = Join-Path $PSScriptRoot 'cloud-service/target/debug/workagents-remote-cloud.exe'
+    & (Join-Path $PSScriptRoot 'cloud-service/verify-local.ps1') -ExecutablePath $executable
+    & (Join-Path $PSScriptRoot 'cloud-service/deploy/verify-deploy-contract.ps1')
+    & (Join-Path $PSScriptRoot 'cloud-service/deploy/verify-upgrade-rollback.ps1')
   } elseif ($Check -eq 'Hap') {
     $hapName = if ($Signed) { 'entry-default-signed.hap' } else { 'entry-default-unsigned.hap' }
     $hapPath = Join-Path $PSScriptRoot "app/entry/build/default/outputs/default/$hapName"
@@ -47,9 +62,14 @@ try {
       if ($profile.app.bundleName -ne 'com.dyys.workagents.remote.dev') {
         throw 'HAP 的应用标识与独立开发版不一致。'
       }
+      if ($profile.app.versionName -ne '1.0.0' -or $profile.app.versionCode -ne 1000010) {
+        throw 'HAP 的应用版本与 Remote 1.0.0 发布矩阵不一致。'
+      }
       [ordered]@{
         hapIdentityVerified = $true
         bundleName = $profile.app.bundleName
+        versionName = $profile.app.versionName
+        versionCode = $profile.app.versionCode
         signedArtifact = [bool]$Signed
         bytes = (Get-Item -LiteralPath $hapPath).Length
       } | ConvertTo-Json -Compress

@@ -11,7 +11,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use xuan_plus_remote_cloud::{
+use workagents_remote_cloud::{
     decode_token_encryption_key, AppCommandRequest, AppRequestAuthentication,
     BindingLocalConfirmation, BindingRevocationRequest, BindingRevokedResponse, CloudError,
     CloudService, CommandAcceptedResponse, CommandQuery, CommandQueryResponse,
@@ -22,13 +22,21 @@ use xuan_plus_remote_cloud::{
     PairingRegistrationResponse, PcDeviceListQuery, PcDeviceListResponse, PcHeartbeat, PcHello,
     PcRequestAuthentication, PushDispatcher, PushRefreshQuery, PushRefreshResponse,
     SnapshotTombstone, SnapshotUpsert, TaskDetailQuery, TaskDetailResponse, TaskListQuery,
-    TaskListResponse, CONTRACT_VERSION, STORAGE_SCHEMA_VERSION,
+    TaskListResponse, CONTRACT_VERSION, SERVICE_VERSION, STORAGE_SCHEMA_VERSION,
 };
 
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     ok: bool,
     environment: &'static str,
+    service_version: &'static str,
+    contract_version: &'static str,
+    storage_schema_version: i64,
+}
+
+#[derive(Serialize)]
+struct VersionResponse {
+    service_version: &'static str,
     contract_version: &'static str,
     storage_schema_version: i64,
 }
@@ -41,6 +49,18 @@ struct GatewayMessageEnvelope {
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!(
+            "{}",
+            serde_json::to_string(&VersionResponse {
+                service_version: SERVICE_VERSION,
+                contract_version: CONTRACT_VERSION,
+                storage_schema_version: STORAGE_SCHEMA_VERSION,
+            })
+            .expect("serialize version")
+        );
+        return;
+    }
     if let Err(error) = run().await {
         eprintln!("workagents remote cloud failed: {error}");
         std::process::exit(1);
@@ -48,27 +68,27 @@ async fn main() {
 }
 
 async fn run() -> Result<(), String> {
-    let environment = required_env("XUANPLUS_REMOTE_ENVIRONMENT")?;
+    let environment = required_env("WORKAGENTS_REMOTE_ENVIRONMENT")?;
     let environment = Environment::parse(&environment).map_err(|error| error.to_string())?;
-    let listen: SocketAddr = required_env("XUANPLUS_REMOTE_LISTEN")?
+    let listen: SocketAddr = required_env("WORKAGENTS_REMOTE_LISTEN")?
         .parse()
-        .map_err(|_| "XUANPLUS_REMOTE_LISTEN must be an explicit socket address".to_owned())?;
+        .map_err(|_| "WORKAGENTS_REMOTE_LISTEN must be an explicit socket address".to_owned())?;
     if !listen.ip().is_loopback() {
         return Err(
-            "XUANPLUS_REMOTE_LISTEN must use a loopback address behind the configured TLS proxy"
+            "WORKAGENTS_REMOTE_LISTEN must use a loopback address behind the configured TLS proxy"
                 .into(),
         );
     }
-    let database_path = PathBuf::from(required_env("XUANPLUS_REMOTE_DATABASE")?);
+    let database_path = PathBuf::from(required_env("WORKAGENTS_REMOTE_DATABASE")?);
     let encryption_key = decode_token_encryption_key(&required_env(
-        "XUANPLUS_REMOTE_PUSH_TOKEN_KEY",
+        "WORKAGENTS_REMOTE_PUSH_TOKEN_KEY",
     )?)
-    .map_err(|_| "XUANPLUS_REMOTE_PUSH_TOKEN_KEY must be 32 random bytes encoded as base64url without padding".to_owned())?;
+    .map_err(|_| "WORKAGENTS_REMOTE_PUSH_TOKEN_KEY must be 32 random bytes encoded as base64url without padding".to_owned())?;
     let service = CloudService::open(&database_path, environment, encryption_key)
         .map_err(|error| error.to_string())?;
     let push_config = HuaweiPushConfig::from_base64url_service_account(
-        &required_env("XUANPLUS_REMOTE_HUAWEI_PUSH_SEND_URL")?,
-        &required_env("XUANPLUS_REMOTE_HUAWEI_PUSH_SERVICE_ACCOUNT_JSON_B64")?,
+        &required_env("WORKAGENTS_REMOTE_HUAWEI_PUSH_SEND_URL")?,
+        &required_env("WORKAGENTS_REMOTE_HUAWEI_PUSH_SERVICE_ACCOUNT_JSON_B64")?,
     )?;
     let push_dispatcher = PushDispatcher::new(service.clone(), push_config)?;
     tokio::spawn(push_dispatcher.run());
@@ -119,6 +139,7 @@ async fn health(State(service): State<CloudService>) -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
         environment: service.environment().as_str(),
+        service_version: SERVICE_VERSION,
         contract_version: CONTRACT_VERSION,
         storage_schema_version: STORAGE_SCHEMA_VERSION,
     })
@@ -778,10 +799,15 @@ async fn shutdown_signal() {
 #[tokio::test]
 #[ignore = "仅由桌面集成测试在临时目录和回环端口启动"]
 async fn desktop_gateway_test_server() {
-    let listen: SocketAddr = required_env("XUANPLUS_REMOTE_TEST_LISTEN").unwrap().parse().unwrap();
+    let listen: SocketAddr = required_env("WORKAGENTS_REMOTE_TEST_LISTEN")
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(listen.ip().is_loopback());
-    let path = PathBuf::from(required_env("XUANPLUS_REMOTE_TEST_DATABASE").unwrap());
+    let path = PathBuf::from(required_env("WORKAGENTS_REMOTE_TEST_DATABASE").unwrap());
     let service = CloudService::open(&path, Environment::Dev, [47; 32]).unwrap();
     let listener = tokio::net::TcpListener::bind(listen).await.unwrap();
-    axum::serve(listener, gateway_router(service)).await.unwrap();
+    axum::serve(listener, gateway_router(service))
+        .await
+        .unwrap();
 }

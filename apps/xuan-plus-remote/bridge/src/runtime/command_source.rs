@@ -46,7 +46,7 @@ pub(super) async fn execute(request: Value) -> anyhow::Result<Value> {
 }
 
 async fn execute_inner(request: Value) -> anyhow::Result<Value> {
-    let port = crate::status::StatusStore::default()
+    let port = crate::status::StatusStore
         .load_latest()?
         .and_then(|status| status.debug_port)
         .context("桌面命令入口暂不可用")?;
@@ -181,6 +181,7 @@ fn command_source_failure_reason(error: &anyhow::Error) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn request(
     command_type: &str,
     thread_id: &str,

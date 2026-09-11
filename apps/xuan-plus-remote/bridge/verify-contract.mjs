@@ -4,7 +4,12 @@ import path from "node:path";
 
 const root = import.meta.dirname;
 const contract = JSON.parse(fs.readFileSync(path.join(root, "mobile-bridge-contract.json"), "utf8"));
+const mainSource = fs.readFileSync(path.join(root, "src", "main.rs"), "utf8");
 const expected = ["status", "pair", "confirm", "tasks", "send-input", "stop"];
+assert.equal(contract.contractVersion, "2.0");
+assert.equal(contract.bridgeVersion, "1.0.0");
+assert.match(mainSource, /"mobileContractVersion": "2\.0"/);
+assert.match(mainSource, /"remoteProtocolVersion": "2\.0"/);
 assert.deepEqual(Object.keys(contract.endpoints), expected);
 assert.equal(contract.security.deviceKeysLeaveDevice, false);
 assert.equal(contract.security.transport, "loopback-only");

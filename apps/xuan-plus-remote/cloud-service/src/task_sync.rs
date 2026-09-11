@@ -85,7 +85,6 @@ pub struct SnapshotUpsert {
     pub binding_epoch: i64,
     pub state_version: i64,
     pub sent_at: String,
-    #[serde(default)]
     pub terminal_push_eligible: bool,
     pub snapshot: TaskSnapshot,
 }

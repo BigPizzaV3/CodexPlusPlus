@@ -5,7 +5,7 @@ separate from the official CodexPlusPlus workspace. `xuan-bridge` forwards the
 versioned `mobile.*` methods to it through `XUAN_MOBILE_BRIDGE_URL` and an
 optional `XUAN_MOBILE_BRIDGE_TOKEN`.
 
-The adapter owns pairing, DPAPI/HUKS-backed identity, protocol 1.5, task
+The adapter owns pairing, DPAPI/HUKS-backed identity, protocol 2.0, task
 synchronization and cloud transport. The Codex plugin never receives device
 keys, cloud credentials or raw task history.
 
@@ -32,7 +32,7 @@ XUAN_MOBILE_BRIDGE_TOKEN=<local secret>
 Use `XUAN_HOME` to make the bridge read the migrated
 `xuan-plus-remote/mobile-remote.sqlite`. `XUAN_CODEX_DEBUG_PORT` explicitly
 selects an existing official Codex CDP endpoint; otherwise the bridge reads the
-legacy launcher's `latest-status.json` for parallel-run compatibility.
+configured launcher's `latest-status.json` when no explicit debug port is supplied.
 
 Remote create-task model choices come from `mobile.models` in
 `xuan-plugins.json`:
@@ -49,5 +49,5 @@ Remote create-task model choices come from `mobile.models` in
 
 Expected endpoints are `GET /v1/mobile/status` and `POST` endpoints for
 `pair`, `confirm`, `tasks`, `send-input` and `stop`. Keep these endpoints
-backward compatible with the protocol fixtures under `../protocol/` and the
+aligned with the protocol fixtures under `../protocol/` and the current-only
 contract in `mobile-bridge-contract.json`.

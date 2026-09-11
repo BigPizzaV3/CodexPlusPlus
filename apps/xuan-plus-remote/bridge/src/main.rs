@@ -7,7 +7,19 @@ use xuan_plus_remote_bridge::{MobileRemote, RemoteBridgeState, router};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    if std::env::args().nth(1).as_deref() == Some("install-user-script") {
+    let command = std::env::args().nth(1);
+    if command.as_deref() == Some("--version") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "bridgeVersion": env!("CARGO_PKG_VERSION"),
+                "mobileContractVersion": "2.0",
+                "remoteProtocolVersion": "2.0",
+            })
+        );
+        return Ok(());
+    }
+    if command.as_deref() == Some("install-user-script") {
         let destination = std::env::args().nth(2).map(std::path::PathBuf::from);
         let installed =
             xuan_plus_remote_bridge::installer::install_user_script(destination.as_deref())?;

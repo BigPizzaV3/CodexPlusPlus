@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.dyys.workagents.remote.dev",
     "vendor": "dyys",
-    "versionCode": 1000009,
-    "versionName": "0.1.9-dev",
+    "versionCode": 1000010,
+    "versionName": "1.0.0",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

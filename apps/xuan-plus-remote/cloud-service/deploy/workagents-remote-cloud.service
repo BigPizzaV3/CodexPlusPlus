@@ -1,0 +1,26 @@
+[Unit]
+Description=WorkAgents Remote Cloud (development)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=workagents-remote
+Group=workagents-remote
+EnvironmentFile=/etc/workagents-remote/dev.env
+ExecStart=/opt/workagents-remote-dev/workagents-remote-cloud
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+LimitNOFILE=4096
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWriteDirectories=/var/lib/workagents-remote-dev
+MemoryLimit=192M
+
+[Install]
+WantedBy=multi-user.target
+

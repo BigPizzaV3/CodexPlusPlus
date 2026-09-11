@@ -5,7 +5,7 @@ import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
 import { RemoteTaskSnapshot } from './TaskSyncCoordinator';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
-const CONTRACT_VERSION = '1.5';
+const CONTRACT_VERSION = '2.0';
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const COMMAND_TTL_MS = 9 * 60 * 1000;

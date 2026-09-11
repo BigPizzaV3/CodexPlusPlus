@@ -1,0 +1,47 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+fail() {
+  printf '安装失败：%s\n' "$1" >&2
+  exit 1
+}
+
+[[ "$(id -u)" -eq 0 ]] || fail '必须通过 sudo 执行。'
+[[ -n "${SUDO_USER:-}" && "$SUDO_USER" != 'root' ]] || fail '缺少实际发布账户。'
+[[ "$SUDO_USER" =~ ^[a-zA-Z0-9_]+$ ]] || fail '发布账户名称格式无效。'
+
+readonly DEPLOY_USER="$SUDO_USER"
+readonly CANDIDATE="/home/${DEPLOY_USER}/workagents-remote-deploy.candidate"
+readonly DEPLOY_COMMAND='/usr/local/sbin/workagents-remote-deploy'
+readonly DEPLOY_ROOT='/var/lib/workagents-remote-deploy'
+readonly SUDOERS_TARGET='/etc/sudoers.d/workagents-remote-deploy'
+readonly SUDOERS_CANDIDATE="$(mktemp /etc/sudoers.d/workagents-remote-deploy.XXXXXX)"
+
+cleanup() {
+  rm -f -- "$SUDOERS_CANDIDATE"
+}
+trap cleanup EXIT
+
+[[ -f "$CANDIDATE" && ! -L "$CANDIDATE" ]] || fail '找不到受控发布脚本候选文件。'
+[[ "$(stat -c '%U' "$CANDIDATE")" == "$DEPLOY_USER" ]] || fail '候选文件不属于发布账户。'
+/bin/bash -n "$CANDIDATE"
+
+install -o root -g root -m 0755 "$CANDIDATE" "$DEPLOY_COMMAND"
+install -d -o root -g root -m 0711 "$DEPLOY_ROOT"
+install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0700 "${DEPLOY_ROOT}/incoming"
+install -d -o root -g root -m 0700 "${DEPLOY_ROOT}/backups"
+
+printf '%s\n' \
+  "Defaults:${DEPLOY_USER} !requiretty" \
+  "${DEPLOY_USER} ALL=(root) NOPASSWD: ${DEPLOY_COMMAND} *" \
+  >"$SUDOERS_CANDIDATE"
+chmod 0440 "$SUDOERS_CANDIDATE"
+/usr/sbin/visudo -cf "$SUDOERS_CANDIDATE"
+install -o root -g root -m 0440 "$SUDOERS_CANDIDATE" "$SUDOERS_TARGET"
+/usr/sbin/visudo -cf /etc/sudoers
+
+printf '{"ok":true,"deployCommand":"%s","incomingRoot":"%s"}\n' \
+  "$DEPLOY_COMMAND" "${DEPLOY_ROOT}/incoming"
+

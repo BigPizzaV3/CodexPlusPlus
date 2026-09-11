@@ -1,6 +1,6 @@
 [package]
 name = "xuan-plus-remote-bridge"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 publish = false

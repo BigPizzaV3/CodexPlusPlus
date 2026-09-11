@@ -96,7 +96,7 @@ assert.equal(harness.recoverUncertain(firstCommand.commandId, "completed").statu
 assert.equal(
   harness.upsertSnapshot({ ...binding, snapshot: { ...baseSnapshot, stateVersion: 0 } }).reason,
   "stale_version",
-  "旧版本快照不得覆盖新事实",
+  "过期状态版本不得覆盖新事实",
 );
 assert.equal(
   harness.upsertSnapshot({ ...binding, snapshot: { ...baseSnapshot, stateVersion: 4 } }).reason,

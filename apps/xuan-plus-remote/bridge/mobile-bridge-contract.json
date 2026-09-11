@@ -1,6 +1,6 @@
 {
-  "contractVersion": "1.1",
-  "bridgeVersion": "0.1.0",
+  "contractVersion": "2.0",
+  "bridgeVersion": "1.0.0",
   "endpoints": {
     "status": { "method": "GET", "path": "/v1/mobile/status", "required": [] },
     "pair": { "method": "POST", "path": "/v1/mobile/pair", "required": [] },

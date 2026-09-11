@@ -1,0 +1,102 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+fail() {
+  printf '配置失败：%s\n' "$1" >&2
+  exit 1
+}
+
+[[ "$(id -u)" -eq 0 ]] || fail '必须通过 sudo 以 root 身份执行。'
+[[ -n "${SUDO_USER:-}" && "$SUDO_USER" != 'root' ]] || fail '缺少受控发布用户。'
+[[ "$SUDO_USER" =~ ^[a-zA-Z0-9_]+$ ]] || fail '发布用户名格式无效。'
+
+readonly CANDIDATE="/home/${SUDO_USER}/workagents-huawei-push-service-account.json.candidate"
+readonly TARGET_DIR='/etc/workagents-remote'
+readonly TARGET="${TARGET_DIR}/dev.env"
+
+[[ -f "$CANDIDATE" && ! -L "$CANDIDATE" ]] || fail '找不到 Huawei Push 服务账号候选文件。'
+[[ "$(readlink -f "$CANDIDATE")" == "$CANDIDATE" ]] || fail '候选文件路径解析结果不一致。'
+[[ "$(stat -c '%U' "$CANDIDATE")" == "$SUDO_USER" ]] || fail '候选文件不属于当前发布用户。'
+[[ "$(stat -c '%a' "$CANDIDATE")" == '600' ]] || fail '候选文件权限必须是 0600。'
+[[ "$(stat -c '%s' "$CANDIDATE")" -le 65536 ]] || fail '候选文件过大。'
+[[ -d "$TARGET_DIR" && ! -L "$TARGET_DIR" ]] || fail '目标配置目录不存在或类型无效。'
+[[ -f "$TARGET" && ! -L "$TARGET" ]] || fail '现有 dev.env 不存在或类型无效。'
+[[ "$(readlink -f "$TARGET")" == "$TARGET" ]] || fail 'dev.env 路径解析结果不一致。'
+[[ "$(stat -c '%U:%G' "$TARGET")" == 'root:root' ]] || fail 'dev.env 必须由 root 持有。'
+[[ "$(stat -c '%a' "$TARGET")" == '600' ]] || fail 'dev.env 权限必须是 0600。'
+
+readonly SEND_KEY='WORKAGENTS_REMOTE_HUAWEI_PUSH_SEND_URL'
+readonly SERVICE_ACCOUNT_KEY='WORKAGENTS_REMOTE_HUAWEI_PUSH_SERVICE_ACCOUNT_JSON_B64'
+readonly EXPECTED_PROJECT_ID='101653523864848579'
+readonly EXPECTED_TOKEN_URI='https://oauth-login.cloud.huawei.com/oauth2/v3/token'
+command -v /usr/bin/python3 >/dev/null 2>&1 || fail '服务器缺少 /usr/bin/python3。'
+
+mapfile -t parsed_service_account < <(/usr/bin/python3 - "$CANDIDATE" "$EXPECTED_PROJECT_ID" "$EXPECTED_TOKEN_URI" <<'PY'
+import base64
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+expected_project_id = sys.argv[2]
+expected_token_uri = sys.argv[3]
+raw = path.read_bytes()
+try:
+    value = json.loads(raw.decode("utf-8-sig"))
+except (UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit("服务账号 JSON 无效。")
+if not isinstance(value, dict):
+    raise SystemExit("服务账号 JSON 顶层必须是对象。")
+required = ("project_id", "key_id", "private_key", "sub_account", "token_uri")
+if any(not isinstance(value.get(key), str) or not value[key].strip() for key in required):
+    raise SystemExit("服务账号 JSON 缺少必需字符串字段。")
+if value["project_id"] != expected_project_id:
+    raise SystemExit("服务账号 project_id 不是开发项目。")
+if value["token_uri"] != expected_token_uri:
+    raise SystemExit("服务账号 token_uri 不是已核验的 Huawei HTTPS 入口。")
+if len(value["key_id"]) > 512 or len(value["sub_account"]) > 512:
+    raise SystemExit("服务账号标识过长。")
+private_key = value["private_key"].strip()
+if len(private_key) > 32768 or not private_key.startswith("-----BEGIN PRIVATE KEY-----") or not private_key.endswith("-----END PRIVATE KEY-----"):
+    raise SystemExit("服务账号 private_key 不是受支持的 PKCS#8 PEM。")
+print(value["project_id"])
+print(base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="))
+PY
+)
+[[ "${#parsed_service_account[@]}" -eq 2 ]] || fail '服务账号解析结果无效。'
+readonly PROJECT_ID="${parsed_service_account[0]}"
+readonly SERVICE_ACCOUNT_B64="${parsed_service_account[1]}"
+[[ "$PROJECT_ID" == "$EXPECTED_PROJECT_ID" ]] || fail '服务账号 project_id 核对失败。'
+readonly SERVICE_ACCOUNT_B64_LENGTH="${#SERVICE_ACCOUNT_B64}"
+[[ "$SERVICE_ACCOUNT_B64_LENGTH" -ge 100 && "$SERVICE_ACCOUNT_B64_LENGTH" -le 87382 ]] || fail '服务账号 base64url 长度无效。'
+[[ "$SERVICE_ACCOUNT_B64" =~ ^[A-Za-z0-9_-]+$ ]] || fail '服务账号 base64url 字符集无效。'
+readonly SEND_URL="https://push-api.cloud.huawei.com/v3/${PROJECT_ID}/messages:send"
+
+temporary_target="$(mktemp "${TARGET_DIR}/dev.env.XXXXXX")"
+cleanup() {
+  rm -f -- "$temporary_target"
+}
+trap cleanup EXIT
+
+awk -F= '
+  $1 != "WORKAGENTS_REMOTE_HUAWEI_PUSH_OAUTH_URL" &&
+  $1 != "WORKAGENTS_REMOTE_HUAWEI_PUSH_SEND_URL" &&
+  $1 != "WORKAGENTS_REMOTE_HUAWEI_PUSH_CLIENT_ID" &&
+  $1 != "WORKAGENTS_REMOTE_HUAWEI_PUSH_CLIENT_SECRET" &&
+  $1 != "WORKAGENTS_REMOTE_HUAWEI_PUSH_SERVICE_ACCOUNT_JSON_B64"
+' "$TARGET" > "$temporary_target"
+
+printf '%s=%s\n' "$SEND_KEY" "$SEND_URL" >> "$temporary_target"
+printf '%s=%s\n' "$SERVICE_ACCOUNT_KEY" "$SERVICE_ACCOUNT_B64" >> "$temporary_target"
+
+chown root:root "$temporary_target"
+chmod 0600 "$temporary_target"
+mv -f -- "$temporary_target" "$TARGET"
+temporary_target=''
+rm -f -- "$CANDIDATE"
+trap - EXIT
+
+printf '{"ok":true,"target":"%s","candidateRemoved":true}\n' "$TARGET"
+

@@ -1,6 +1,6 @@
 {
   "validStartCommand": {
-    "schemaVersion": "1.0",
+    "schemaVersion": "2.0",
     "messageType": "app/command",
     "messageId": "message_00000001",
     "environment": "dev",
@@ -14,7 +14,7 @@
     }
   },
   "validSendInputCommand": {
-    "schemaVersion": "1.0",
+    "schemaVersion": "2.0",
     "messageType": "app/command",
     "messageId": "message_00000002",
     "environment": "dev",
@@ -27,8 +27,8 @@
       "text": "继续检查状态"
     }
   },
-  "validPauseCommandV12": {
-    "schemaVersion": "1.3",
+  "validPauseCommand": {
+    "schemaVersion": "2.0",
     "messageType": "app/command",
     "messageId": "message_00000005",
     "environment": "dev",
@@ -40,7 +40,7 @@
     "payload": {}
   },
   "invalidStartWithoutText": {
-    "schemaVersion": "1.0",
+    "schemaVersion": "2.0",
     "messageType": "app/command",
     "messageId": "message_00000003",
     "environment": "dev",
@@ -52,7 +52,7 @@
     "payload": {}
   },
   "invalidModelOverride": {
-    "schemaVersion": "1.0",
+    "schemaVersion": "2.0",
     "messageType": "app/command",
     "messageId": "message_00000004",
     "environment": "dev",
@@ -67,7 +67,7 @@
     }
   },
   "validAppDeviceRegistrationChallenge": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/device-registration-challenge",
     "messageId": "device_challenge_request_01",
     "environment": "dev",
@@ -77,7 +77,7 @@
     "devicePublicKey": "MCowBQYDK2VwAyEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
   },
   "validAppDeviceRegistrationChallenged": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/device-registration-challenged",
     "messageId": "device_challenge_response_1",
     "requestMessageId": "device_challenge_request_01",
@@ -89,7 +89,7 @@
     "expiresAt": "2026-08-18T00:05:00Z"
   },
   "validAppDeviceRegistration": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/device-register",
     "messageId": "device_reg_000001",
     "environment": "dev",
@@ -103,10 +103,10 @@
     "pushProvider": "huawei_push_kit",
     "pushToken": "test-push-token-not-a-secret",
     "appDisplayName": "开发手机",
-    "appVersion": "0.1.0-dev"
+    "appVersion": "1.0.0"
   },
   "validAppDeviceRegistered": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/device-registered",
     "messageId": "device_ack_000001",
     "requestMessageId": "device_reg_000001",
@@ -117,7 +117,7 @@
     "registrationState": "registered"
   },
   "validPairingRegistration": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/register",
     "messageId": "pair_register_0001",
     "environment": "dev",
@@ -133,7 +133,7 @@
     "expiresAt": "2026-08-18T00:10:30Z"
   },
   "validPairingRegistered": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/registered",
     "messageId": "pair_ready_000001",
     "requestMessageId": "pair_register_0001",
@@ -144,7 +144,7 @@
     "registrationState": "ready"
   },
   "validPairingConsume": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/consume",
     "messageId": "pair_consume_001",
     "environment": "dev",
@@ -157,7 +157,7 @@
     }
   },
   "validPairingPending": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/pending",
     "messageId": "pair_pending_001",
     "requestMessageId": "pair_consume_001",
@@ -178,7 +178,7 @@
     "bindingState": "pending_local_confirmation"
   },
   "validBindingConfirmationRequest": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "binding/confirmation-request",
     "messageId": "confirm_request_1",
     "requestMessageId": "pair_register_0001",
@@ -198,7 +198,7 @@
     }
   },
   "validLocalBindingConfirmation": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "binding/local-confirm",
     "messageId": "local_confirm_001",
     "environment": "dev",
@@ -211,7 +211,7 @@
     "confirmed": true
   },
   "validBindingActive": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "binding/active",
     "messageId": "binding_active_01",
     "requestMessageId": "local_confirm_001",
@@ -226,7 +226,7 @@
     "activatedAt": "2026-08-18T00:01:11Z"
   },
   "validBindingRevocation": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "binding/revoke",
     "messageId": "binding_revoke_01",
     "environment": "dev",
@@ -235,7 +235,7 @@
     "bindingId": "binding_00000001"
   },
   "validBindingRevoked": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "binding/revoked",
     "messageId": "binding_revoked_1",
     "requestMessageId": "binding_revoke_01",
@@ -246,7 +246,7 @@
     "revokedAt": "2026-08-18T00:01:21Z"
   },
   "validPcDeviceListQuery": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/pc-devices-query",
     "messageId": "pc_list_query_01",
     "environment": "dev",
@@ -255,7 +255,7 @@
     "limit": 20
   },
   "validPcDeviceListEmpty": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/pc-devices",
     "messageId": "pc_list_result_1",
     "requestMessageId": "pc_list_query_01",
@@ -265,7 +265,7 @@
     "nextCursor": null
   },
   "validTaskListQuery": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/task-list-query",
     "messageId": "task_list_query1",
     "environment": "dev",
@@ -275,7 +275,7 @@
     "limit": 20
   },
   "validTaskListEmpty": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/task-list",
     "messageId": "task_list_result",
     "requestMessageId": "task_list_query1",
@@ -288,7 +288,7 @@
     "nextCursor": null
   },
   "validPushRefreshQuery": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/push-refresh-query",
     "messageId": "push_refresh_query_0001",
     "environment": "dev",
@@ -296,7 +296,7 @@
     "appDeviceId": "app_device_000001"
   },
   "validPushRefreshResponse": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/push-refresh",
     "messageId": "push_refresh_result_0001",
     "requestMessageId": "push_refresh_query_0001",
@@ -309,7 +309,7 @@
     "terminalStateVersion": 12
   },
   "validTaskDetailQuery": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/task-query",
     "messageId": "task_query_00001",
     "environment": "dev",
@@ -318,7 +318,7 @@
     "remoteTaskId": "remote_task_0001"
   },
   "validTaskDetailResponse": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/task",
     "messageId": "task_result_0001",
     "requestMessageId": "task_query_00001",
@@ -346,7 +346,7 @@
     }
   },
   "validCommandQuery": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/command-query",
     "messageId": "command_query_01",
     "environment": "dev",
@@ -355,7 +355,7 @@
     "commandId": "command_00000001"
   },
   "validCommandStatus": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/command-status",
     "messageId": "command_state_01",
     "requestMessageId": "command_query_01",
@@ -374,7 +374,7 @@
     }
   },
   "validCommandAccepted": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/command-accepted",
     "messageId": "command_accept_01",
     "requestMessageId": "message_00000001",
@@ -393,7 +393,7 @@
     }
   },
   "invalidPairingQrWithUrl": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/consume",
     "messageId": "pair_bad_url_0001",
     "environment": "dev",
@@ -407,7 +407,7 @@
     }
   },
   "invalidPairingEnvironmentMismatch": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/consume",
     "messageId": "pair_bad_env_0001",
     "environment": "prod",
@@ -420,7 +420,7 @@
     }
   },
   "invalidPairingQrVersion": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/consume",
     "messageId": "pair_bad_ver_0001",
     "environment": "dev",
@@ -433,7 +433,7 @@
     }
   },
   "invalidPairingShortCode": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "pairing/consume",
     "messageId": "pair_bad_code_01",
     "environment": "dev",
@@ -447,7 +447,7 @@
     "shortCode": "ILO00000"
   },
   "invalidPairingSummaryMismatch": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "binding/local-confirm",
     "messageId": "local_bad_sum_001",
     "environment": "dev",
@@ -460,7 +460,7 @@
     "confirmed": true
   },
   "invalidTaskQueryWithPath": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/task-query",
     "messageId": "task_bad_path_01",
     "environment": "dev",
@@ -470,7 +470,7 @@
     "cwd": "D:\\secret-workspace"
   },
   "validLiveReplyStreamQuery": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "app/reply-stream-connect",
     "messageId": "live_query_000001",
     "environment": "dev",
@@ -478,7 +478,7 @@
     "appDeviceId": "app_device_000001"
   },
   "validLiveReplySubscription": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "reply-stream/subscription",
     "messageId": "live_subscribe_001",
     "environment": "dev",
@@ -490,7 +490,7 @@
     "sentAt": "2026-08-18T00:06:01Z"
   },
   "validLiveReplyReset": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "reply-stream/reset",
     "messageId": "live_reset_000001",
     "environment": "dev",
@@ -505,7 +505,7 @@
     "text": "正在生成🙂"
   },
   "validLiveReplyAppend": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "reply-stream/append",
     "messageId": "live_append_00001",
     "environment": "dev",
@@ -520,7 +520,7 @@
     "text": "，继续"
   },
   "validLiveReplyEnd": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "reply-stream/end",
     "messageId": "live_end_0000001",
     "environment": "dev",
@@ -535,7 +535,7 @@
     "outcome": "completed"
   },
   "invalidLiveReplyGap": {
-    "schemaVersion": "1.5",
+    "schemaVersion": "2.0",
     "messageType": "reply-stream/append",
     "messageId": "live_gap_0000001",
     "environment": "dev",

@@ -26,10 +26,10 @@ pub fn install_user_script(destination: Option<&Path>) -> anyhow::Result<PathBuf
 }
 
 fn default_user_script_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++").join("user_scripts");
-        }
+    if cfg!(windows)
+        && let Some(roaming) = std::env::var_os("APPDATA")
+    {
+        return PathBuf::from(roaming).join("Codex++").join("user_scripts");
     }
     directories::BaseDirs::new()
         .map(|dirs| dirs.config_dir().join("Codex++").join("user_scripts"))

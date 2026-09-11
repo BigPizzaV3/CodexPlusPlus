@@ -81,10 +81,10 @@ fn config_root() -> PathBuf {
     if let Some(path) = std::env::var_os("XUAN_HOME") {
         return PathBuf::from(path);
     }
-    if cfg!(windows) {
-        if let Some(path) = std::env::var_os("APPDATA") {
-            return PathBuf::from(path).join("XuanPlusPlus");
-        }
+    if cfg!(windows)
+        && let Some(path) = std::env::var_os("APPDATA")
+    {
+        return PathBuf::from(path).join("XuanPlusPlus");
     }
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".config").join("xuan-plus-plus"))

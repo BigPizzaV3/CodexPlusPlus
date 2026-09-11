@@ -60,10 +60,11 @@ assert.match(index, /if \(this\.taskWorkspaceIsExpanded\(workspaceGroup\.name\)\
   "任务卡片必须仅在项目展开后显示");
 const manifest = await read("cloud-service/Cargo.toml");
 assert.match(manifest, /^\[workspace\]/m, "云端应使用本目录内的独立 Cargo 工作区");
-assert.match(manifest, /name = "xuan-plus-remote-cloud"/);
+assert.match(manifest, /name = "workagents-remote-cloud"/);
+assert.match(manifest, /version = "1\.0\.0"/);
 const cloud = await read("cloud-service/src/main.rs");
-assert.ok(!cloud.includes("WORKAGENTS_REMOTE_"), "云端不能读取原服务的进程配置");
-assert.ok(cloud.includes("XUANPLUS_REMOTE_DATABASE"));
+assert.ok(cloud.includes("WORKAGENTS_REMOTE_DATABASE"), "云端必须沿用现有服务环境变量");
+assert.ok(!cloud.includes("XUANPLUS_REMOTE_"), "云端不得引入平行环境变量体系");
 const config = JSON.parse(await read("environment/shared-remote-service.json"));
 if (!config.enabled) {
   const mobile = await read("app/entry/src/main/ets/remote/RemoteEnvironmentConfig.ets");

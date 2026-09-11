@@ -325,10 +325,8 @@ impl TaskReader {
                     }
                     self.outcome = "completed".into();
                 }
-                "turn_aborted" => {
-                    if self.matches_turn(payload) {
-                        self.outcome = "interrupted".into();
-                    }
+                "turn_aborted" if self.matches_turn(payload) => {
+                    self.outcome = "interrupted".into();
                 }
                 _ => {}
             },

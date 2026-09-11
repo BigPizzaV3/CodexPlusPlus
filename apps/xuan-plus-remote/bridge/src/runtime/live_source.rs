@@ -103,7 +103,7 @@ pub(super) async fn run(
         }
         // 只复用轩++已启动的本机调试端口，不扫描其他进程或改变桌面启动参数。
         #[cfg(not(test))]
-        let port = crate::status::StatusStore::default()
+        let port = crate::status::StatusStore
             .load_latest()
             .ok()
             .flatten()

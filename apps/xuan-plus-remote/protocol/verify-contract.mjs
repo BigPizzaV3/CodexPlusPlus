@@ -7,6 +7,11 @@ const schemaPath = join(scriptDirectory, "remote-control.schema.json");
 const fixturesPath = join(scriptDirectory, "contract-fixtures.json");
 const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
 const fixtures = JSON.parse(readFileSync(fixturesPath, "utf8"));
+for (const [name, fixture] of Object.entries(fixtures)) {
+  if (Object.hasOwn(fixture, "schemaVersion") && fixture.schemaVersion !== "2.0") {
+    throw new Error(`${name} 仍引用非当前协议版本`);
+  }
+}
 
 const failures = [];
 const assert = (condition, message) => {
@@ -24,14 +29,14 @@ const hasOnlyKeys = (value, allowedKeys, label) => {
   assert(unexpected.length === 0, `${label} 包含未声明字段：${unexpected.join(", ")}`);
 };
 const assertHttpRequest = (value, messageType, label) => {
-  assert(value.schemaVersion === "1.5", `${label} 必须使用 1.5`);
+  assert(value.schemaVersion === "2.0", `${label} 必须使用 2.0`);
   assert(value.messageType === messageType, `${label} messageType 不正确`);
   assert(value.environment === "dev" || value.environment === "prod", `${label} environment 无效`);
   assert(isOpaqueId(value.messageId), `${label} messageId 必须是不透明 ID`);
   assert(isTimestamp(value.sentAt), `${label} sentAt 必须是 UTC RFC 3339 时间`);
 };
 const assertHttpResponse = (value, messageType, requestMessageId, label) => {
-  assert(value.schemaVersion === "1.5", `${label} 必须使用 1.5`);
+  assert(value.schemaVersion === "2.0", `${label} 必须使用 2.0`);
   assert(value.messageType === messageType, `${label} messageType 不正确`);
   assert(value.requestMessageId === requestMessageId, `${label} 没有关联正确的请求`);
   assert(value.environment === "dev" || value.environment === "prod", `${label} environment 无效`);
@@ -40,11 +45,11 @@ const assertHttpResponse = (value, messageType, requestMessageId, label) => {
 };
 
 assert(schema.$schema === "https://json-schema.org/draft/2020-12/schema", "必须使用 JSON Schema 2020-12");
-assert(schema.$id === "https://workagents.invalid/contracts/remote-control/1.5/schema.json", "Schema ID 必须升级到 1.5");
-assert(schema["x-contractVersion"] === "1.5", "契约版本必须为 1.5");
+assert(schema.$id === "https://workagents.invalid/contracts/remote-control/2.0/schema.json", "Schema ID 必须固定为 2.0");
+assert(schema["x-contractVersion"] === "2.0", "契约版本必须为 2.0");
 assert(
-  JSON.stringify(schema["x-compatibleVersions"]) === JSON.stringify(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]),
-  "必须显式声明 1.0 到 1.5 的兼容集合",
+  JSON.stringify(schema["x-compatibleVersions"]) === JSON.stringify(["2.0"]),
+  "云端升级后只能声明当前 2.0 协议",
 );
 
 const definitions = schema.$defs ?? {};
@@ -97,10 +102,9 @@ for (const definitionName of requiredDefinitions) {
 }
 const terminalPushEligibility = definitions.snapshotUpsert.allOf?.[1]?.properties?.terminalPushEligible;
 assert(terminalPushEligibility?.type === "boolean", "终态 Push 准入位必须是布尔值");
-assert(terminalPushEligibility?.default === false, "旧快照缺少终态 Push 准入位时必须安全默认为 false");
 assert(
-  !definitions.snapshotUpsert.allOf?.[1]?.required?.includes("terminalPushEligible"),
-  "终态 Push 准入位必须保持可选，以便旧持久 outbox 安全重放为不推送",
+  definitions.snapshotUpsert.allOf?.[1]?.required?.includes("terminalPushEligible"),
+  "2.0 快照必须显式携带终态 Push 准入位",
 );
 
 const expectedMessageTypes = [
@@ -149,10 +153,10 @@ for (const messageType of expectedMessageTypes) {
   assert(definitions.messageType?.enum?.includes(messageType), `缺少消息类型：${messageType}`);
 }
 assert(
-  JSON.stringify(definitions.schemaVersion?.enum) === JSON.stringify(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"]),
-  "既有消息必须保留 1.0/1.1/1.2/1.3/1.4 并接受 1.5",
+  definitions.schemaVersion?.const === "2.0",
+  "所有消息必须只接受 2.0",
 );
-assert(definitions.httpSchemaVersion?.const === "1.5", "无账号设备认证 REST envelope 必须固定使用 1.5");
+assert(definitions.httpSchemaVersion?.const === "2.0", "无账号设备认证 REST envelope 必须固定使用 2.0");
 
 const expectedCommandTypes = ["create_task", "start_task", "send_input", "pause_task", "resume_task", "stop_task"];
 assert(
@@ -179,7 +183,7 @@ assert(
 assert(
   definitions.commandPayloadCreate?.required?.includes("initialText") &&
     definitions.commandPayloadCreate?.properties?.initialText?.["x-maxUtf8Bytes"] === 8192,
-  "1.5 create_task 必须携带受限的第一条指令",
+  "2.0 create_task 必须携带受限的第一条指令",
 );
 assert(
   JSON.stringify(definitions.commandStatus?.enum) === JSON.stringify(expectedCommandStatuses),
@@ -263,7 +267,7 @@ assert(
 assert(definitions.devicePublicKey?.["x-format"] === "spki-der-base64url", "设备公钥格式必须固定");
 assert(definitions.deviceSignature?.pattern === "^[A-Za-z0-9_-]{86}$", "Ed25519 签名长度必须固定");
 assert(definitions.pairingQrPayload?.additionalProperties === false, "二维码 payload 必须拒绝未知字段");
-assert(!definitions.shortPairingCode, "1.5 契约不得继续定义手动短码");
+assert(!definitions.shortPairingCode, "2.0 契约不得定义手动短码");
 assert(
   definitions.pairingQrPayload?.["x-forbiddenProperties"]?.includes("url") &&
     definitions.pairingQrPayload?.["x-forbiddenProperties"]?.includes("endpoint"),
@@ -275,7 +279,7 @@ for (const definitionName of ["appCommandRequest", "pairingConsumeRequest", "bin
 }
 
 const assertCommandEnvelope = (value, label) => {
-  assert(["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"].includes(value.schemaVersion), `${label} 版本不兼容`);
+  assert(value.schemaVersion === "2.0", `${label} 必须使用 2.0`);
   assert(value.messageType === "app/command", `${label} messageType 不正确`);
   assert(value.environment === "dev", `${label} fixture environment 应为 dev`);
   assert(isOpaqueId(value.messageId), `${label} messageId 必须是不透明 ID`);
@@ -288,7 +292,7 @@ const assertCommandEnvelope = (value, label) => {
 for (const [fixtureName, commandType] of [
   ["validStartCommand", "start_task"],
   ["validSendInputCommand", "send_input"],
-  ["validPauseCommandV12", "pause_task"],
+  ["validPauseCommand", "pause_task"],
 ]) {
   const fixture = fixtures[fixtureName];
   assertCommandEnvelope(fixture, fixtureName);
@@ -302,7 +306,7 @@ assert(
   fixtures.validSendInputCommand.payload.text.length > 0 && byteLength(fixtures.validSendInputCommand.payload.text) <= 8192,
   "合法 send_input 夹具必须包含不超过 8 KiB 的文本",
 );
-assert(Object.keys(fixtures.validPauseCommandV12.payload).length === 0, "pause_task 必须使用空 payload");
+assert(Object.keys(fixtures.validPauseCommand.payload).length === 0, "pause_task 必须使用空 payload");
 assert(
   fixtures.invalidStartWithoutText.commandType === "start_task" && !fixtures.invalidStartWithoutText.payload.text,
   "缺少首条文本的非法夹具未保持非法形态",

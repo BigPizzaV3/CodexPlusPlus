@@ -2,7 +2,7 @@ import { DeviceRegistrationResult } from './DeviceRegistrationCoordinator';
 import { RemoteApiClient } from './RemoteApiClient';
 import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
 
-const CONTRACT_VERSION = '1.5';
+const CONTRACT_VERSION = '2.0';
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
 export interface PushRefreshTarget {

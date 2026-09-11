@@ -22,6 +22,11 @@ function validateMobileSource(source, config) {
 }
 
 function validateProtocolFixtures(fixtures, config) {
+  for (const [name, fixture] of Object.entries(fixtures)) {
+    if (Object.hasOwn(fixture, "schemaVersion")) {
+      assert.equal(fixture.schemaVersion, config.protocolVersion, `${name} 协议版本不一致`);
+    }
+  }
   for (const name of ["validPairingRegistration", "validPairingConsume"]) {
     const fixture = fixtures[name];
     assert.equal(fixture?.environment, config.protocolEnvironment, `${name} 请求环境不一致`);
@@ -30,7 +35,10 @@ function validateProtocolFixtures(fixtures, config) {
 }
 
 function validateConfig(config) {
-  assert.equal(config.schemaVersion, "1.1", "共享远程服务配置版本不受支持");
+  assert.equal(config.schemaVersion, "2.0", "共享远程服务配置版本不受支持");
+  assert.equal(config.remoteReleaseVersion, "1.0.0", "远程套件版本不一致");
+  assert.equal(config.protocolVersion, "2.0", "远程协议版本不一致");
+  assert.equal(config.storageSchemaVersion, 8, "云端存储结构版本不一致");
   assert.equal(config.protocolEnvironment, "dev", "本副本只允许开发环境");
   assert.equal(typeof config.enabled, "boolean", "必须显式配置启用状态");
   if (!config.enabled) {

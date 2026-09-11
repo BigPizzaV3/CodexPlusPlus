@@ -1,5 +1,8 @@
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "2.0",
+  "remoteReleaseVersion": "1.0.0",
+  "protocolVersion": "2.0",
+  "storageSchemaVersion": 8,
   "enabled": true,
   "protocolEnvironment": "dev",
   "apiBaseUrl": "https://www.meishijiankang.com/workagents-remote/api",

@@ -13,10 +13,10 @@ pub fn default_remote_state_dir() -> PathBuf {
             return path.join("xuan-plus-remote");
         }
     }
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("XuanPlusPlus").join("remote");
-        }
+    if cfg!(windows)
+        && let Some(roaming) = std::env::var_os("APPDATA")
+    {
+        return PathBuf::from(roaming).join("XuanPlusPlus").join("remote");
     }
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".xuan-plus").join("remote"))

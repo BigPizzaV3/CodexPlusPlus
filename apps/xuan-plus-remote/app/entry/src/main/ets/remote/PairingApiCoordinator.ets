@@ -4,7 +4,7 @@ import { RemoteApiClient } from './RemoteApiClient';
 import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
 import { PcConnectionState } from './RemoteModels';
 
-const CONTRACT_VERSION = '1.5';
+const CONTRACT_VERSION = '2.0';
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const SAFETY_PHRASE_PATTERN = /^[a-z]{3,16}(?:-[a-z]{3,16}){2}$/;

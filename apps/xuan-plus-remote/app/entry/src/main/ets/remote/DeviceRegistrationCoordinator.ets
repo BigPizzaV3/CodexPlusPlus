@@ -6,7 +6,7 @@ import { DeviceIdentityCoordinator } from './DeviceIdentityCoordinator';
 import { RemoteApiClient } from './RemoteApiClient';
 import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
 
-const CONTRACT_VERSION = '1.5';
+const CONTRACT_VERSION = '2.0';
 const DEVICE_KEY_ALGORITHM = 'ed25519';
 const APP_DISPLAY_NAME = '轩++远程';
 const APP_VERSION = '0.1.9-dev';

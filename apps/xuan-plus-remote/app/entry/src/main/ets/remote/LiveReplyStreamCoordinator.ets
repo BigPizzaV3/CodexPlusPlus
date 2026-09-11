@@ -7,7 +7,7 @@ import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
 import { utf8ByteLength } from './RemoteModels';
 import { RemoteTaskSnapshot } from './TaskSyncCoordinator';
 
-const CONTRACT_VERSION: string = '1.5';
+const CONTRACT_VERSION: string = '2.0';
 const OPAQUE_ID_PATTERN: RegExp = /^[A-Za-z0-9_-]{16,128}$/;
 const LOG_DOMAIN: number = 0x5741;
 const LOG_TAG: string = 'XuanPlusRemote';

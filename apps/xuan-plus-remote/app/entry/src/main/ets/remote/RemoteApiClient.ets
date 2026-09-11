@@ -281,7 +281,7 @@ export class RemoteApiClient {
       return new RemoteFailureNotice('请求校验失败',
         errorCode === 'unsupported_operation' ? '云端不支持当前客户端请求的操作。' :
           '云端已收到请求，但请求字段、格式或协议版本未通过校验。',
-        status, '请确认手机端与开发云端均已发布协议 1.5；修正后重新提交。', false);
+        status, '请确认手机端与开发云端均已发布协议 2.0；修正后重新提交。', false);
     }
     if (errorCode === 'environment_mismatch') {
       return new RemoteFailureNotice('环境不匹配', '手机端连接的云端环境与请求环境不一致。',
@@ -352,7 +352,7 @@ export class RemoteApiClient {
     if (statusCode === 404) {
       return new RemoteFailureNotice('服务尚未发布或版本不匹配',
         '当前云端没有客户端所请求的接口，常见原因是开发云端尚未发布对应版本。',
-        status, '请发布协议 1.5 云端并确认公开健康检查通过，然后重新连接。', false);
+        status, '请发布协议 2.0 云端并确认公开健康检查通过，然后重新连接。', false);
     }
     if (statusCode === 401 || statusCode === 403) {
       return new RemoteFailureNotice('云端鉴权失败', '云端拒绝了当前请求的身份或环境证明。',
@@ -400,7 +400,7 @@ export class RemoteApiClient {
   private static protocolFailure(statusCode: number, reason: string): RemoteRequestError {
     return new RemoteRequestError(new RemoteFailureNotice(
       '云端响应无法验证', reason, `HTTP ${statusCode} · 响应格式异常 · 请勿原样继续`,
-      '请确认开发云端已发布协议 1.5；持续出现时联系开发人员。', false));
+      '请确认开发云端已发布协议 2.0；持续出现时联系开发人员。', false));
   }
 
   private static safeLocalReason(error: Object, fallbackReason: string): string {

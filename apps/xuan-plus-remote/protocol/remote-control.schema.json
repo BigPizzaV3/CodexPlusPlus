@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://workagents.invalid/contracts/remote-control/1.5/schema.json",
+  "$id": "https://workagents.invalid/contracts/remote-control/2.0/schema.json",
   "title": "轩++远程远程控制契约",
   "description": "P0 frozen HTTP/WSS message contract. The invalid host is documentation-only; runtime endpoints are environment configuration and fail closed when absent.",
   "type": "object",
@@ -45,8 +45,8 @@
     { "$ref": "#/$defs/liveReplyAppend" },
     { "$ref": "#/$defs/liveReplyEnd" }
   ],
-  "x-contractVersion": "1.5",
-  "x-compatibleVersions": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"],
+  "x-contractVersion": "2.0",
+  "x-compatibleVersions": ["2.0"],
   "x-unknownFieldPolicy": {
     "requests": "reject",
     "authenticatedControlMessages": "reject",
@@ -110,12 +110,12 @@
     },
     "schemaVersion": {
       "type": "string",
-      "enum": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"],
+      "const": "2.0",
       "x-maxUtf8Bytes": 8
     },
     "httpSchemaVersion": {
       "type": "string",
-      "const": "1.5",
+      "const": "2.0",
       "x-maxUtf8Bytes": 8
     },
     "environment": {
@@ -428,10 +428,10 @@
         { "$ref": "#/$defs/eventBase" },
         {
           "type": "object",
-          "required": ["messageType", "snapshot"],
+          "required": ["messageType", "terminalPushEligible", "snapshot"],
           "properties": {
             "messageType": { "const": "snapshot/upsert" },
-            "terminalPushEligible": { "type": "boolean", "default": false },
+            "terminalPushEligible": { "type": "boolean" },
             "snapshot": { "$ref": "#/$defs/taskSnapshot" }
           }
         }

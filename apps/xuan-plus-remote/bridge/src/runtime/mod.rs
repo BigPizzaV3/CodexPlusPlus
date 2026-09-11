@@ -642,7 +642,7 @@ impl Worker {
 
     fn base(&self, kind: &str) -> Value {
         json!({
-            "schemaVersion":"1.5", "messageType":kind, "messageId":id(),
+            "schemaVersion":"2.0", "messageType":kind, "messageId":id(),
             "environment":"dev", "sentAt":now(),
             "pcDeviceId":self.store.state.pc_id, "installationId":self.store.state.installation_id,
         })
@@ -689,7 +689,7 @@ impl Worker {
             .json()
             .await
             .map_err(|_| anyhow::anyhow!("云端绑定响应无效"))?;
-        if result["schemaVersion"] != "1.5"
+        if result["schemaVersion"] != "2.0"
             || result["environment"] != "dev"
             || result["messageType"] != "pairing/registered"
             || result["requestMessageId"] != value["messageId"]
@@ -736,7 +736,7 @@ impl Worker {
         )
         .await??;
         let mut hello = self.event("pc/hello")?;
-        hello["supportedSchemaVersions"] = json!(["1.5"]);
+        hello["supportedSchemaVersions"] = json!(["2.0"]);
         hello["lastAckEventId"] = Value::Null;
         hello["lastAckStateVersion"] = json!(0);
         send(&mut socket, &hello).await?;
@@ -744,7 +744,7 @@ impl Worker {
     }
 
     async fn binding_is_active(&mut self) -> anyhow::Result<bool> {
-        // 协议 1.5 没有主动解绑通知；短连接只复核绑定，不上传任何任务内容。
+        // 协议 2.0 没有主动解绑通知；短连接只复核绑定，不上传任何任务内容。
         let mut probe = self.connect_gateway().await?;
         let incoming = tokio::time::timeout(Duration::from_secs(3), probe.next()).await;
         let _ = tokio::time::timeout(Duration::from_secs(2), probe.close(None)).await;
@@ -752,7 +752,7 @@ impl Worker {
             return Ok(false);
         };
         let message: Value = serde_json::from_str(&text)?;
-        if message["schemaVersion"] != "1.5"
+        if message["schemaVersion"] != "2.0"
             || message["environment"] != "dev"
             || message["messageType"] != "binding/active"
         {
@@ -946,7 +946,7 @@ impl Worker {
                     match incoming? {
                         Message::Text(text) => {
                             let message: Value = serde_json::from_str(&text)?;
-                            if message["schemaVersion"] != "1.5" || message["environment"] != "dev" {
+                            if message["schemaVersion"] != "2.0" || message["environment"] != "dev" {
                                 bail!("远程协议不兼容");
                             }
                             match message["messageType"].as_str().unwrap_or("") {

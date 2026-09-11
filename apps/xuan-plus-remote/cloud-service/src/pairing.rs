@@ -807,25 +807,9 @@ impl CloudService {
                 now,
             },
         )?;
-        if hello.supported_schema_versions.is_empty()
-            || hello.supported_schema_versions.len() > 4
-            || !hello
-                .supported_schema_versions
-                .iter()
-                .any(|version| version == CONTRACT_VERSION)
-            || hello
-                .supported_schema_versions
-                .iter()
-                .any(|version| version.is_empty() || version.len() > 8)
+        if hello.supported_schema_versions.as_slice() != [CONTRACT_VERSION]
             || hello.last_ack_state_version < 0
         {
-            return Err(CloudError::InvalidRequest);
-        }
-        let unique_versions = hello
-            .supported_schema_versions
-            .iter()
-            .collect::<std::collections::HashSet<_>>();
-        if unique_versions.len() != hello.supported_schema_versions.len() {
             return Err(CloudError::InvalidRequest);
         }
         if let Some(last_ack_event_id) = hello.last_ack_event_id.as_deref() {

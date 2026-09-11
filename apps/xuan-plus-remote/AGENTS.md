@@ -2,16 +2,16 @@
 
 本目录是独立源码副本，不是子模块；源码和运行不依赖原 WorkAgents 工作目录。
 来源为 WorkAgents 提交 `27589048261db42d7aee44e361d60a1c3b7c8302`
-下的 `harmony6-workagents-remote-app`。仅引入受版本控制的手机端、协议和云端源码，
-未引入旧部署脚本、历史设计文档、运行数据、签名或本机配置。
+下的 `harmony6-workagents-remote-app`。引入受版本控制的手机端、协议、云端源码及现网部署脚本，
+不引入运行数据、签名或本机配置。
 
 ## 目录与边界
 
 - `app/`：HarmonyOS ArkTS/ArkUI 客户端。按用户明确授权，沿用 `com.dyys.workagents.remote.dev` 和原签名，覆盖手机上的原 WorkAgents；界面名称为轩++远程。
-- `protocol/`：协议 1.5、夹具和参考模型。保留原协议签名域与 HTTP 字段，不能为了改名破坏协议。
+- `protocol/`：协议 2.0、夹具和参考模型。只维护当前协议代际，保留现网 HTTP 路径与签名头字段。
 - `environment/`：本副本的服务地址与一致性检查；按用户授权沿用现有 WorkAgents 云服务，不另建环境，不自动修改云端部署。
-- `cloud-service/`：独立 Cargo 工作区，不参与轩++桌面默认构建；进程配置仅接受 `XUANPLUS_REMOTE_*`。
-- 桌面接入位于 `crates/codex-plus-core/src/remote_mobile/` 和管理器“手机连接”页，使用本机确认绑定、Windows DPAPI 设备身份保护及按需选择的官方任务同步。已绑定手机仅可对已同步任务发送文本、新建同工作区任务和停止当前任务；其他远程执行仍拒绝。协议 1.5 的解绑通过每 30 秒复核绑定处理，不能把本地集成测试当作手机真机同步成功。
+- `cloud-service/`：独立 Cargo 工作区，不参与轩++桌面默认构建；沿用现网 `WORKAGENTS_REMOTE_*`、systemd、nginx 和发布入口。
+- 桌面接入由独立 `bridge/` 提供，使用本机确认绑定、Windows DPAPI 设备身份保护及按需选择的官方任务同步。已绑定手机仅可对已同步任务发送文本、新建同工作区任务和停止当前任务；其他远程执行仍拒绝。协议 2.0 的解绑通过每 30 秒复核绑定处理，不能把本地集成测试当作手机真机同步成功。
 
 ## 修改与验证
 
