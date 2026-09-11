@@ -41,6 +41,9 @@ fn bridge_script_defines_expected_globals_and_binding() {
     assert!(script.contains("window.__codexSessionDeleteResolve"));
     assert!(script.contains("window.__codexSessionDeleteReject"));
     assert!(script.contains("codexSessionDeleteV2"));
+    assert!(script.contains("previousCallbacks"));
+    assert!(script.contains("桥接已重新连接"));
+    assert!(script.contains("Number.isFinite(window.__codexSessionDeleteSeq)"));
 }
 
 #[test]
