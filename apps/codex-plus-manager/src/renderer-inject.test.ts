@@ -30,6 +30,31 @@ async function readStepwiseSource() {
   return `(() => {\n${fragments.join("\n")}\n})();\n`;
 }
 
+it("only reveals floating-panel content after the shell has settled open", async () => {
+  const source = await readFile(
+    new URL("../../../assets/inject/floating-panel/core/appearance.js", import.meta.url),
+    "utf8",
+  );
+  const panelRules = Array.from(
+    source.replace(/\$\{[^}]+\}/g, "0").matchAll(/(?:^|\n)\s*([^{}\n]*\.csw-panel)\s*\{([^}]+)\}/g),
+    ([, selector, declarations]) => ({ selector: selector.trim(), declarations }),
+  );
+  const hidden = panelRules.find((rule) => rule.selector === ".csw-panel");
+  assert.ok(hidden, "panel needs a hidden default for collapsed and interrupted states");
+  assert.match(hidden.declarations, /opacity:\s*0\s*;/);
+  assert.match(hidden.declarations, /visibility:\s*hidden\s*;/);
+  assert.match(hidden.declarations, /transition:\s*none\s*!important\s*;/);
+
+  const visible = panelRules.filter((rule) =>
+    /opacity:\s*1\s*;|visibility:\s*visible\s*;/.test(rule.declarations),
+  );
+  assert.ok(visible.length > 0, "settled content must remain visible");
+  for (const rule of visible) {
+    assert.ok(rule.selector.includes('[data-open="true"]'), rule.selector);
+    assert.ok(rule.selector.includes('[data-morphing="false"]'), rule.selector);
+  }
+});
+
 type FakeElementOptions = {
   className?: string;
   dismissLabel?: string;
