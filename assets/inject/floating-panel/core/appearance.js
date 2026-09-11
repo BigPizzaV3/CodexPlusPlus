@@ -731,6 +731,8 @@
         pointer-events: none;
         position: absolute;
         inset: 0;
+        /* Host-wide transitions must not delay hiding or revealing panel content. */
+        transition: none !important;
         visibility: hidden;
         will-change: clip-path;
         z-index: 2;
@@ -745,15 +747,11 @@
         filter: none !important;
       }
 
+      /* Reveal content only after the shell settles. During either morph direction,
+         clip-path alone can leave composited text painted outside the moving shell. */
       .csw-popover[data-open="true"][data-morphing="false"] .csw-panel {
         opacity: 1;
         pointer-events: auto;
-        visibility: visible;
-      }
-
-      .csw-popover[data-morphing="true"] .csw-panel {
-        opacity: 1;
-        pointer-events: none;
         visibility: visible;
       }
 

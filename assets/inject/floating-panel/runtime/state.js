@@ -31,7 +31,7 @@
   const PAYLOAD_ATTR = "data-codex-stepwise-payload";
   const MARK_ATTR = "data-codex-stepwise-outline-id";
   const HIGHLIGHT_CLASS = "codex-stepwise-outline-target-flash";
-  const SCRIPT_VERSION = "2.0.7";
+  const SCRIPT_VERSION = "2.0.8";
   const PAGE_BRIDGE = "__codexSessionDeleteBridge";
   const CONVERSATION_TURN_SELECTOR = "div.contents[data-content-search-turn-key]";
   const POPOVER_ID = "codex-stepwise-popover";
