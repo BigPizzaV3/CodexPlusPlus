@@ -11,6 +11,7 @@ pub struct LaunchStatus {
     pub debug_port: Option<u16>,
     pub helper_port: Option<u16>,
     pub codex_app: Option<String>,
+    pub aumid: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +78,7 @@ mod tests {
             debug_port: Some(9222),
             helper_port: Some(4545),
             codex_app: Some("Codex".to_string()),
+            aumid: Some("OpenAI.Codex_abc!App".to_string()),
         };
 
         store.save_latest(&status).unwrap();
