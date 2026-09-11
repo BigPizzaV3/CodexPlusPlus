@@ -312,6 +312,11 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             }
             model["priority"] = json!(1000 + index);
             model["visibility"] = json!("list");
+            // Custom Responses relay catalogs must advertise the v2 multi-agent
+            // contract so Codex exposes the sub-agent tools.
+            if use_responses_lite_override.is_some() {
+                model["multi_agent_version"] = json!("v2");
+            }
             if !deepseek_metadata {
                 model["supported_in_api"] = json!(true);
             }
