@@ -94,8 +94,18 @@ pub fn build_bridge_script(binding_name: &str) -> String {
     format!(
         r#"
 (() => {{
+  // Bridge 可能在请求进行中被重新注入。不要静默丢弃旧 resolver，
+  // 否则调用方的 Promise 会永久 pending（服务模式会一直显示“正在读取”）。
+  const previousCallbacks = window.__codexSessionDeleteCallbacks;
+  if (previousCallbacks && typeof previousCallbacks.forEach === "function") {{
+    previousCallbacks.forEach((callback) => {{
+      try {{ callback.resolve({{ status: "failed", message: "桥接已重新连接" }}); }} catch {{}}
+    }});
+  }}
   window.__codexSessionDeleteCallbacks = new Map();
-  window.__codexSessionDeleteSeq = 0;
+  window.__codexSessionDeleteSeq = Number.isFinite(window.__codexSessionDeleteSeq)
+    ? window.__codexSessionDeleteSeq
+    : 0;
   window.__codexPlusBridgeHealth = window.__codexPlusBridgeHealth || {{}};
   window.__codexPlusBridgeHealth.lastInjectionAt = Date.now();
   window.__codexSessionDeleteResolve = (id, result) => {{
