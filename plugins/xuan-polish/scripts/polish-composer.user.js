@@ -10,31 +10,44 @@
     else node.textContent = value;
     node.dispatchEvent(new Event("input", { bubbles: true }));
   };
-  const install = () => {
-    if (document.querySelector(`[${marker}]`)) return;
-    const node = composer();
-    if (!node?.parentElement) return;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute(marker, "true");
-    button.title = "Polish draft";
-    button.textContent = "✨";
-    button.addEventListener("click", async () => {
-      const text = read(node).trim();
-      if (!text) return;
-      button.disabled = true;
-      try {
-        const headers = { "content-type": "application/json" };
-        if (bridgeToken) headers["x-xuan-bridge-token"] = bridgeToken;
-        const response = await fetch(`${bridgeUrl}/v1/polish`, {
-          method: "POST", headers,
-          body: JSON.stringify({ text, style: "structured" })
-        });
-        const payload = await response.json();
-        if (payload?.text) write(node, payload.text);
-      } finally { button.disabled = false; }
+  const bridgeRequest = async (path, payload) => {
+    if (typeof window.__codexSessionDeleteBridge === "function") {
+      return window.__codexSessionDeleteBridge(path, payload);
+    }
+    const headers = { "content-type": "application/json" };
+    if (bridgeToken) headers["x-xuan-bridge-token"] = bridgeToken;
+    const response = await fetch(`${bridgeUrl}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
     });
-    node.parentElement.append(button);
+    return response.json();
+  };
+  const install = () => {
+    const permission = document.querySelector("button[aria-label='更改权限'], button[aria-label='Change permissions']");
+    if (!composer() || !permission?.parentElement) return;
+    let button = document.querySelector(`[${marker}]`);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute(marker, "true");
+      button.textContent = "✨";
+      button.addEventListener("click", async () => {
+        const node = composer();
+        const text = read(node).trim();
+        if (!text) return;
+        button.disabled = true;
+        try {
+          const payload = await bridgeRequest("/v1/polish", { text, style: "structured" });
+          if (payload?.text) write(node, payload.text);
+        } finally { button.disabled = false; }
+      });
+    }
+    button.title = "润色输入内容";
+    button.setAttribute("aria-label", "润色输入内容");
+    button.className = permission.className;
+    Object.assign(button.style, { width: "28px", minWidth: "28px", paddingInline: "0", justifyContent: "center" });
+    if (permission.nextElementSibling !== button) permission.insertAdjacentElement("afterend", button);
   };
   new MutationObserver(install).observe(document.documentElement, { childList: true, subtree: true });
   install();

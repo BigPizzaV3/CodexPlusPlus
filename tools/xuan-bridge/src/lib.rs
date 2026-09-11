@@ -1863,7 +1863,11 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
 
 fn is_allowed_origin(origin: &str) -> bool {
     let origin = origin.trim();
-    if origin.eq_ignore_ascii_case("null") || origin.eq_ignore_ascii_case("tauri://localhost") {
+    if origin.eq_ignore_ascii_case("null")
+        || origin.eq_ignore_ascii_case("app://-")
+        || origin.eq_ignore_ascii_case("app://localhost")
+        || origin.eq_ignore_ascii_case("tauri://localhost")
+    {
         return true;
     }
     if std::env::var("XUAN_BRIDGE_ALLOWED_ORIGINS")

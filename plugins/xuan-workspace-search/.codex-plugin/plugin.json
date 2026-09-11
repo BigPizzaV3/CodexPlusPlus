@@ -1,6 +1,6 @@
 {
   "name": "xuan-workspace-search",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Search approved workspace roots and preview matching files.",
   "author": { "name": "XuanPlusPlus" },
   "license": "AGPL-3.0-only",

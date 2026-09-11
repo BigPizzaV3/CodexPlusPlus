@@ -1,6 +1,6 @@
 {
   "name": "xuan-polish",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Polish a draft prompt through a configured model.",
   "author": { "name": "XuanPlusPlus" },
   "license": "AGPL-3.0-only",

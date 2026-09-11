@@ -1,6 +1,6 @@
 {
   "name": "xuan-usage",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Query relay usage through a provider-neutral local bridge.",
   "author": { "name": "XuanPlusPlus" },
   "license": "AGPL-3.0-only",

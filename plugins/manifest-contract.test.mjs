@@ -6,12 +6,18 @@ import path from "node:path";
 const root = path.join(import.meta.dirname);
 const marketplacePath = path.resolve(root, "..", ".agents", "plugins", "marketplace.json");
 const pluginNames = ["xuan-workspace-search", "xuan-usage", "xuan-polish"];
+const pluginVersions = { "xuan-workspace-search": "0.1.2", "xuan-usage": "0.1.2", "xuan-polish": "0.1.2" };
+const userScripts = {
+  "xuan-workspace-search": "workspace-search.user.js",
+  "xuan-usage": "usage-header.user.js",
+  "xuan-polish": "polish-composer.user.js"
+};
 
 test("all Xuan plugin manifests use the official extension fields", () => {
   for (const name of pluginNames) {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, name, ".codex-plugin", "plugin.json"), "utf8"));
     assert.equal(manifest.name, name);
-    assert.match(manifest.version, /^0\.1\.0$/);
+    assert.equal(manifest.version, pluginVersions[name]);
     assert.equal(manifest.skills, "./skills/");
     assert.equal(manifest.mcpServers, "./.mcp.json");
     assert.ok(Array.isArray(manifest.interface.capabilities));
@@ -40,5 +46,6 @@ test("each plugin package is self contained", () => {
     assert.match(server, /\.\/lib\/mcp-server\.mjs/);
     assert.doesNotMatch(server, /\.\.\/shared/);
     assert.ok(fs.existsSync(path.join(root, name, "lib", "mcp-server.mjs")));
+    assert.ok(fs.existsSync(path.join(root, name, "scripts", userScripts[name])));
   }
 });

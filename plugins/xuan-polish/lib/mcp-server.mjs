@@ -1,10 +1,22 @@
 import readline from "node:readline";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
-const bridgeBinary = process.env.XUAN_BRIDGE_BIN || "xuan-bridge";
+function resolveBridgeBinary() {
+  if (process.env.XUAN_BRIDGE_BIN) return process.env.XUAN_BRIDGE_BIN;
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    const installed = path.join(process.env.LOCALAPPDATA, "XuanPlusPlus", "bin", "xuan-bridge.exe");
+    if (fs.existsSync(installed)) return installed;
+  }
+  return "xuan-bridge";
+}
+
+const bridgeBinary = resolveBridgeBinary();
 const bridge = spawn(bridgeBinary, [], { stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
 const pending = new Map();
 let nextBridgeId = 1;
+let bridgeFailure = null;
 
 function rejectPending(error) {
   for (const item of pending.values()) {
@@ -14,8 +26,14 @@ function rejectPending(error) {
   pending.clear();
 }
 
-bridge.once("error", (error) => rejectPending(error));
-bridge.once("exit", (code) => rejectPending(new Error(`xuan-bridge exited with code ${code}`)));
+bridge.once("error", (error) => {
+  bridgeFailure = error;
+  rejectPending(error);
+});
+bridge.once("exit", (code) => {
+  bridgeFailure = new Error(`xuan-bridge exited with code ${code}`);
+  rejectPending(bridgeFailure);
+});
 process.once("exit", () => bridge.kill());
 
 readline.createInterface({ input: bridge.stdout }).on("line", (line) => {
@@ -31,6 +49,7 @@ readline.createInterface({ input: bridge.stdout }).on("line", (line) => {
 });
 
 function callBridge(method, params) {
+  if (bridgeFailure) return Promise.reject(bridgeFailure);
   return new Promise((resolve, reject) => {
     const id = `mcp-${nextBridgeId++}`;
     const timer = setTimeout(() => {
@@ -46,7 +65,7 @@ function resultText(value) {
   return [{ type: "text", text: JSON.stringify(value) }];
 }
 
-export function createMcpServer({ name, version = "0.1.0", tools }) {
+export function createMcpServer({ name, version = "0.1.2", tools }) {
   const input = readline.createInterface({ input: process.stdin });
   input.once("close", () => bridge.stdin.end());
   input.on("line", async (line) => {

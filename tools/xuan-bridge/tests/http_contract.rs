@@ -11,7 +11,7 @@ use xuan_bridge::{BRIDGE_PROTOCOL_VERSION, serve_http_listener};
 fn loopback_http_routes_and_cors_follow_the_bridge_contract() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
-    let server = thread::spawn(move || serve_http_listener(listener, Some(4)).unwrap());
+    let server = thread::spawn(move || serve_http_listener(listener, Some(5)).unwrap());
     let client = Client::builder().build().unwrap();
 
     let health: Value = client
@@ -36,6 +36,20 @@ fn loopback_http_routes_and_cors_follow_the_bridge_contract() {
     assert_eq!(
         preflight.headers()["access-control-allow-origin"],
         "https://chatgpt.com"
+    );
+
+    let desktop_preflight = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://{address}/v1/usage"),
+        )
+        .header("Origin", "app://-")
+        .send()
+        .unwrap();
+    assert_eq!(desktop_preflight.status(), 204);
+    assert_eq!(
+        desktop_preflight.headers()["access-control-allow-origin"],
+        "app://-"
     );
 
     let workspace = tempdir().unwrap();

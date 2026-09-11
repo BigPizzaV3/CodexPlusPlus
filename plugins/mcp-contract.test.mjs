@@ -18,11 +18,18 @@ const bridgeBinary = process.env.XUAN_BRIDGE_BIN || path.join(
 );
 const pluginNames = ["xuan-workspace-search", "xuan-usage", "xuan-polish"];
 
-function startServer(pluginName) {
+function startServer(pluginName, options = {}) {
   const pluginRoot = path.join(import.meta.dirname, pluginName);
+  const environment = {
+    ...process.env,
+    XUAN_BRIDGE_BIN: bridgeBinary,
+    XUAN_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "xuan-mcp-home-")),
+    ...options.env
+  };
+  for (const key of options.unsetEnv || []) delete environment[key];
   const child = spawn(process.execPath, ["server.mjs"], {
     cwd: pluginRoot,
-    env: { ...process.env, XUAN_BRIDGE_BIN: bridgeBinary, XUAN_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "xuan-mcp-home-")) },
+    env: environment,
     stdio: ["pipe", "pipe", "pipe"]
   });
   const waiters = new Map();
@@ -51,7 +58,10 @@ function startServer(pluginName) {
     },
     close() {
       child.stdin.end();
+      if (child.exitCode !== null) return Promise.resolve();
+      const exited = once(child, "exit").then(() => undefined);
       child.kill();
+      return exited;
     }
   };
 }
@@ -74,7 +84,7 @@ test("all plugin MCP servers complete initialize and tools/list", async () => {
       assert.equal(tool.inputSchema.additionalProperties, false);
       assert.equal("bridgeMethod" in tool, false);
     } finally {
-      server.close();
+      await server.close();
     }
   }
 });
@@ -95,8 +105,35 @@ test("workspace search MCP tool calls the bridge end to end", async () => {
     assert.equal(payload.result.results[0].relativePath, "sample.txt");
     assert.equal(payload.result.results[0].line, 2);
   } finally {
-    server.close();
+    await server.close();
     fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("windows plugin server finds the installed bridge without refreshed user environment", { skip: process.platform !== "win32" }, async () => {
+  const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-local-app-data-"));
+  const installedBridge = path.join(localAppData, "XuanPlusPlus", "bin", "xuan-bridge.exe");
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-mcp-fallback-"));
+  fs.mkdirSync(path.dirname(installedBridge), { recursive: true });
+  fs.copyFileSync(bridgeBinary, installedBridge);
+  fs.writeFileSync(path.join(workspace, "sample.txt"), "fallback works\n");
+  const server = startServer("xuan-workspace-search", {
+    env: { LOCALAPPDATA: localAppData },
+    unsetEnv: ["XUAN_BRIDGE_BIN"]
+  });
+  try {
+    await server.request(30, "initialize");
+    const response = await server.request(31, "tools/call", {
+      name: "workspace_search",
+      arguments: { root: workspace, query: "fallback works", maxResults: 10 }
+    });
+    assert.equal(response.result.isError, false);
+    const payload = JSON.parse(response.result.content[0].text);
+    assert.equal(payload.result.results[0].relativePath, "sample.txt");
+  } finally {
+    await server.close();
+    fs.rmSync(workspace, { recursive: true, force: true });
+    await fs.promises.rm(localAppData, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
