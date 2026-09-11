@@ -4288,6 +4288,31 @@ experimental_bearer_token = "sk-new"
     assert_eq!(sol["service_tiers"][0]["id"], "priority");
     assert_eq!(sol["supports_search_tool"], true);
     assert_eq!(sol["use_responses_lite"], false);
+    assert_eq!(sol["multi_agent_version"], "v2");
+}
+
+#[test]
+fn apply_relay_profile_preserves_live_multi_agent_features() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[features]\nmulti_agent_v2 = true\nmemories = true\n",
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-features".to_string(),
+        model: "gpt-5.6-sol".to_string(),
+        config_contents: "model = \"gpt-5.6-sol\"\n".to_string(),
+        model_list: "gpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["features"]["multi_agent_v2"].as_bool(), Some(true));
+    assert_eq!(parsed["features"]["memories"].as_bool(), Some(true));
 }
 
 #[test]
