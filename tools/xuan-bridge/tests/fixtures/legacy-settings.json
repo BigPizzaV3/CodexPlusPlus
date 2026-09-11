@@ -9,5 +9,13 @@
   "codexAppPromptOptimizeStyle": "structured",
   "codexAppPromptOptimizeApiKey": "must-not-be-migrated",
   "mobileRemoteEnabled": true,
-  "mobileRemoteAutoSync": false
+  "mobileRemoteAutoSync": false,
+  "activeRelayId": "relay-demo",
+  "relayProfiles": [
+    {
+      "id": "relay-demo",
+      "name": "Demo Relay",
+      "modelList": "gpt-test[1M]\ngpt-test-mini"
+    }
+  ]
 }

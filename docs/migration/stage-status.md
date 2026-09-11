@@ -39,13 +39,19 @@
 ## Stage 5: Phone Connection
 
 - Checked: HarmonyOS app, protocol 1.5, cloud service and legacy desktop implementation are
-  separable, but the desktop implementation still imports CodexPlusPlus internals and CDP hooks.
-- Decision: keep the app/cloud/protocol in `apps/xuan-plus-remote`; expose a stable mobile bridge
-  contract to `xuan-bridge` instead of restoring the old manager page or settings fields.
-- Files: `apps/xuan-plus-remote/**` and `apps/xuan-plus-remote/bridge/**`.
-- Verification: bridge manifest, fork boundary, 39-message protocol contract and 41 fixtures pass.
-- Risk/next: migrate the desktop runtime behind the bridge contract, preserving DPAPI database
-  compatibility, then perform signed HAP and real-device tests. This stage is not complete.
+  separable. The only renderer dependency was the legacy
+  `window.__codexPlusMobileRemoteCommand` hook, which official 1.3.0 does not install by default.
+- Decision: keep app/cloud/protocol/runtime in `apps/xuan-plus-remote`; migrate the runtime into an
+  independent Cargo crate, replace official-core imports with narrow path/CDP/diagnostic shims,
+  and restore the renderer hook through the official User Scripts mechanism.
+- Files: `apps/xuan-plus-remote/bridge/Cargo.toml`, `src/**`, `tests/**`, `user-scripts/**`, the
+  mobile bridge contract, and `tools/xuan-bridge/tests/mobile_forwarding.rs`.
+- Verification: 36 Remote Bridge Rust tests pass, including HTTP auth, task indexing, CDP source,
+  DPAPI identity and legacy receipt tables. User-script execution, six HTTP endpoints,
+  `xuan-bridge` forwarding, the 39-message protocol contract and all 41 fixtures pass.
+- Risk/next: signed HAP, real cloud pairing, reconnect, send/stop and complete-reply behavior still
+  require a redacted real-device acceptance run. The cloud crate offline test remains blocked by
+  the missing cached `jsonwebtoken` crate.
 
 ## Stage 6: Upgrade And Rollback
 
@@ -55,6 +61,7 @@
   expand compatibility only after contract tests pass on a candidate official tag.
 - Files: `docs/migration/compatibility-matrix.md` and this status report.
 - Verification: legacy settings migration creates read-only backups, namespaced JSON and SQLite
-  migration records without copying API keys.
+  migration records without copying API keys. A separate writable Remote DB preserves the legacy
+  identity/receipt format, while an existing migrated DB is never overwritten.
 - Risk/next: perform a parallel-run soak with real user data copied to a disposable directory and
   record release/rollback runbooks before replacing the legacy installation.

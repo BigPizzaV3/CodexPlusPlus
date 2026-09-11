@@ -29,6 +29,8 @@ fn migration_cli_creates_config_database_and_read_only_backup() {
     assert!(config.contains("owlai"));
     assert!(config.contains("gpt-test"));
     assert!(config.contains("chat-completions"));
+    assert!(config.contains("gpt-test-mini"));
+    assert!(config.contains("relay-demo"));
     assert!(config.contains("credentialMigrationRequired"));
     assert!(!config.contains("must-not-be-migrated"));
     assert!(

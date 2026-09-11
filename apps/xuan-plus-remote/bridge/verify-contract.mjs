@@ -7,7 +7,10 @@ const contract = JSON.parse(fs.readFileSync(path.join(root, "mobile-bridge-contr
 const expected = ["status", "pair", "confirm", "tasks", "send-input", "stop"];
 assert.deepEqual(Object.keys(contract.endpoints), expected);
 assert.equal(contract.security.deviceKeysLeaveDevice, false);
+assert.equal(contract.security.transport, "loopback-only");
+assert.equal(contract.security.credentialsInResponse, false);
 for (const [name, endpoint] of Object.entries(contract.endpoints)) {
   assert.match(endpoint.path, /^\/v1\/mobile\//, name);
+  assert.ok(Array.isArray(endpoint.required), name);
 }
 console.log(JSON.stringify({ ok: true, contractVersion: contract.contractVersion, endpoints: expected.length }));

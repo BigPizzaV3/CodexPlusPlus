@@ -80,4 +80,4 @@ validateConfig({
   appWssUrl: "wss://example.invalid/tasks",
 });
 
-process.stdout.write("手机与本副本服务配置一致性检查通过；不代表桌面适配器已接入\n");
+process.stdout.write("手机与本副本服务配置一致性检查通过；不代表真机同步已验证\n");

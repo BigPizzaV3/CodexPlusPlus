@@ -1,16 +1,18 @@
 {
-  "contractVersion": "1",
+  "contractVersion": "1.1",
+  "bridgeVersion": "0.1.0",
   "endpoints": {
-    "status": { "method": "GET", "path": "/v1/mobile/status" },
-    "pair": { "method": "POST", "path": "/v1/mobile/pair" },
-    "confirm": { "method": "POST", "path": "/v1/mobile/confirm" },
-    "tasks": { "method": "POST", "path": "/v1/mobile/tasks" },
-    "send-input": { "method": "POST", "path": "/v1/mobile/send-input" },
-    "stop": { "method": "POST", "path": "/v1/mobile/stop" }
+    "status": { "method": "GET", "path": "/v1/mobile/status", "required": [] },
+    "pair": { "method": "POST", "path": "/v1/mobile/pair", "required": [] },
+    "confirm": { "method": "POST", "path": "/v1/mobile/confirm", "required": ["requestId", "confirmed"] },
+    "tasks": { "method": "POST", "path": "/v1/mobile/tasks", "required": [] },
+    "send-input": { "method": "POST", "path": "/v1/mobile/send-input", "required": ["threadId", "clientRequestId", "text"] },
+    "stop": { "method": "POST", "path": "/v1/mobile/stop", "required": ["threadId", "turnId"] }
   },
   "security": {
-    "transport": "loopback-or-private-network",
+    "transport": "loopback-only",
     "authorization": "bearer-token-optional",
-    "deviceKeysLeaveDevice": false
+    "deviceKeysLeaveDevice": false,
+    "credentialsInResponse": false
   }
 }

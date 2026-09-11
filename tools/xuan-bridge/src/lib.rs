@@ -745,12 +745,24 @@ fn forward_mobile(operation: &str, params: &Value) -> Result<Value, RpcError> {
             "mobile bridge URL must use HTTP or HTTPS",
         ));
     }
+    let host = url.host_str().unwrap_or_default();
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !loopback {
+        return Err(error(
+            "configuration_error",
+            "mobile bridge URL must use a loopback host",
+        ));
+    }
     url.set_path(&format!(
         "{}/v1/mobile/{operation}",
         url.path().trim_end_matches('/')
     ));
     url.set_query(None);
     let client = Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|_| {
@@ -1373,6 +1385,7 @@ pub fn migrate_legacy_settings(input: &Path, output_root: &Path) -> Result<Value
     let state_backup_root = output_root.join("legacy-state");
     std::fs::create_dir_all(&state_backup_root).map_err(|error| error.to_string())?;
     let mut state_backups = Vec::new();
+    let mut remote_database_path = None;
     if let Some(legacy_state_root) = input.parent() {
         for name in ["mobile-remote.sqlite", "skills.json", "latest-status.json"] {
             let source = legacy_state_root.join(name);
@@ -1380,14 +1393,33 @@ pub fn migrate_legacy_settings(input: &Path, output_root: &Path) -> Result<Value
                 continue;
             }
             let destination = state_backup_root.join(name);
-            std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+            if name == "mobile-remote.sqlite" {
+                copy_sqlite_snapshot(&source, &destination)?;
+            } else {
+                std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+            }
             let mut permissions = std::fs::metadata(&destination)
                 .map_err(|error| error.to_string())?
                 .permissions();
             permissions.set_readonly(true);
             std::fs::set_permissions(&destination, permissions)
                 .map_err(|error| error.to_string())?;
-            state_backups.push(destination);
+            state_backups.push(destination.clone());
+            if name == "mobile-remote.sqlite" {
+                let remote_root = output_root.join("xuan-plus-remote");
+                std::fs::create_dir_all(&remote_root).map_err(|error| error.to_string())?;
+                let writable = remote_root.join("mobile-remote.sqlite");
+                if !writable.exists() {
+                    std::fs::copy(&destination, &writable).map_err(|error| error.to_string())?;
+                    let mut permissions = std::fs::metadata(&writable)
+                        .map_err(|error| error.to_string())?
+                        .permissions();
+                    permissions.set_readonly(false);
+                    std::fs::set_permissions(&writable, permissions)
+                        .map_err(|error| error.to_string())?;
+                }
+                remote_database_path = Some(writable);
+            }
         }
     }
     let config = MigratedConfig {
@@ -1423,7 +1455,9 @@ pub fn migrate_legacy_settings(input: &Path, output_root: &Path) -> Result<Value
         }),
         mobile: json!({
             "enabled": bool_field(&source, "mobileRemoteEnabled"),
-            "autoSync": bool_field(&source, "mobileRemoteAutoSync")
+            "autoSync": bool_field(&source, "mobileRemoteAutoSync"),
+            "models": migrated_mobile_models(&source),
+            "databasePath": remote_database_path
         }),
     };
     let output = output_root.join("xuan-plugins.json");
@@ -1450,9 +1484,64 @@ pub fn migrate_legacy_settings(input: &Path, output_root: &Path) -> Result<Value
         "configPath": output,
         "backupPath": backup,
         "stateBackups": state_backups,
+        "remoteDatabasePath": remote_database_path,
         "databasePath": database_path,
         "schemaVersion": DATABASE_SCHEMA_VERSION,
     }))
+}
+
+fn copy_sqlite_snapshot(source: &Path, destination: &Path) -> Result<(), String> {
+    let source = Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    let mut destination = Connection::open(destination).map_err(|error| error.to_string())?;
+    let backup = rusqlite::backup::Backup::new(&source, &mut destination)
+        .map_err(|error| error.to_string())?;
+    backup
+        .run_to_completion(64, Duration::from_millis(10), None)
+        .map_err(|error| error.to_string())
+}
+
+fn migrated_mobile_models(source: &Value) -> Vec<Value> {
+    let active_id = source
+        .get("activeRelayId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(profiles) = source.get("relayProfiles").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let Some(profile) = profiles
+        .iter()
+        .find(|profile| profile.get("id").and_then(Value::as_str) == Some(active_id))
+        .or_else(|| profiles.first())
+    else {
+        return Vec::new();
+    };
+    let provider = profile
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("custom");
+    let mut seen = std::collections::BTreeSet::new();
+    let mut models = Vec::new();
+    let list = profile
+        .get("modelList")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    for model in list
+        .split(['\r', '\n', ','])
+        .chain(profile.get("model").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|model| !model.is_empty() && model.len() <= 256)
+    {
+        if seen.insert(model.to_owned()) {
+            models.push(json!({"model": model, "provider": provider}));
+        }
+        if models.len() >= 100 {
+            break;
+        }
+    }
+    models
 }
 
 fn bool_field(source: &Value, key: &str) -> bool {
