@@ -1,9 +1,0 @@
-{
-  "name": "xuan-curated",
-  "owner": "XuanPlusPlus",
-  "plugins": [
-    { "name": "xuan-workspace-search", "path": "./xuan-workspace-search" },
-    { "name": "xuan-usage", "path": "./xuan-usage" },
-    { "name": "xuan-polish", "path": "./xuan-polish" }
-  ]
-}

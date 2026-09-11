@@ -1,6 +1,7 @@
 (() => {
   const marker = "data-xuan-polish-button";
   const bridgeUrl = window.__XUAN_BRIDGE_URL__ || "http://127.0.0.1:57324";
+  const bridgeToken = window.__XUAN_BRIDGE_TOKEN__ || "";
   const composer = () => document.querySelector("textarea, [contenteditable='true']");
   const read = (node) => node?.value ?? node?.textContent ?? "";
   const write = (node, value) => {
@@ -23,8 +24,10 @@
       if (!text) return;
       button.disabled = true;
       try {
+        const headers = { "content-type": "application/json" };
+        if (bridgeToken) headers["x-xuan-bridge-token"] = bridgeToken;
         const response = await fetch(`${bridgeUrl}/v1/polish`, {
-          method: "POST", headers: { "content-type": "application/json" },
+          method: "POST", headers,
           body: JSON.stringify({ text, style: "structured" })
         });
         const payload = await response.json();

@@ -1,0 +1,13 @@
+{
+  "codexAppWorkspaceSearchEnabled": true,
+  "codexAppRelayBalanceEnabled": true,
+  "codexAppRelayBalanceProvider": "owlai",
+  "codexAppPromptOptimizeEnabled": true,
+  "codexAppPromptOptimizeRelayId": "relay-demo",
+  "codexAppPromptOptimizeProtocol": "chat-completions",
+  "codexAppPromptOptimizeModel": "gpt-test",
+  "codexAppPromptOptimizeStyle": "structured",
+  "codexAppPromptOptimizeApiKey": "must-not-be-migrated",
+  "mobileRemoteEnabled": true,
+  "mobileRemoteAutoSync": false
+}

@@ -1,0 +1,44 @@
+{
+  "name": "xuan-curated",
+  "interface": {
+    "displayName": "Xuan Plugins"
+  },
+  "plugins": [
+    {
+      "name": "xuan-workspace-search",
+      "source": {
+        "source": "local",
+        "path": "./plugins/xuan-workspace-search"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "xuan-usage",
+      "source": {
+        "source": "local",
+        "path": "./plugins/xuan-usage"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
+      "name": "xuan-polish",
+      "source": {
+        "source": "local",
+        "path": "./plugins/xuan-polish"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
