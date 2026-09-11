@@ -1732,6 +1732,8 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
             merge_toml_item(&mut target_doc[key], &live_value);
         }
     }
+    // Preserve user-managed feature flags such as multi_agent_v2 and memories.
+    preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
     remove_unsupported_approval_policies(&mut target_doc);
     preserve_live_hook_state(&mut target_doc, &live_doc);
     let context_usage_configured = target_doc
@@ -1748,6 +1750,27 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
         }
     }
     Ok(normalize_optional_toml(target_doc))
+}
+
+fn preserve_missing_table_keys(
+    target_doc: &mut DocumentMut,
+    live_doc: &DocumentMut,
+    table_name: &str,
+) {
+    let Some(live_table) = live_doc.get(table_name).and_then(Item::as_table_like) else {
+        return;
+    };
+    if target_doc.get(table_name).and_then(Item::as_table_like).is_none() {
+        target_doc[table_name] = toml_edit::table();
+    }
+    let target_table = target_doc[table_name]
+        .as_table_like_mut()
+        .expect("table was initialized above");
+    for (key, value) in live_table.iter() {
+        if target_table.get(key).is_none() {
+            target_table.insert(key, value.clone());
+        }
+    }
 }
 
 fn preserve_live_hook_state(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
