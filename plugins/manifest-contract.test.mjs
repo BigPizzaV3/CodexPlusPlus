@@ -5,12 +5,18 @@ import path from "node:path";
 
 const root = path.join(import.meta.dirname);
 const marketplacePath = path.resolve(root, "..", ".agents", "plugins", "marketplace.json");
-const pluginNames = ["xuan-workspace-search", "xuan-usage", "xuan-polish"];
-const pluginVersions = { "xuan-workspace-search": "0.1.2", "xuan-usage": "0.1.2", "xuan-polish": "0.1.2" };
+const pluginNames = ["xuan-workspace-search", "xuan-usage", "xuan-polish", "xuan-mobile"];
+const pluginVersions = {
+  "xuan-workspace-search": "0.1.2",
+  "xuan-usage": "0.1.2",
+  "xuan-polish": "0.1.2",
+  "xuan-mobile": "0.1.0"
+};
 const userScripts = {
   "xuan-workspace-search": "workspace-search.user.js",
   "xuan-usage": "usage-header.user.js",
-  "xuan-polish": "polish-composer.user.js"
+  "xuan-polish": "polish-composer.user.js",
+  "xuan-mobile": "mobile-connect.user.js"
 };
 
 test("all Xuan plugin manifests use the official extension fields", () => {
@@ -24,7 +30,7 @@ test("all Xuan plugin manifests use the official extension fields", () => {
   }
 });
 
-test("marketplace contains exactly the three plugin packages", () => {
+test("marketplace contains exactly the four plugin packages", () => {
   const marketplace = JSON.parse(fs.readFileSync(marketplacePath, "utf8"));
   assert.equal(marketplace.name, "xuan-curated");
   assert.equal(marketplace.interface.displayName, "Xuan Plugins");

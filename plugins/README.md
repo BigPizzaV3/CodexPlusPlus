@@ -12,12 +12,11 @@ codex plugin marketplace add <repository-root>
 codex plugin add xuan-workspace-search@xuan-curated
 codex plugin add xuan-usage@xuan-curated
 codex plugin add xuan-polish@xuan-curated
+codex plugin add xuan-mobile@xuan-curated
 ```
 
 Set `XUAN_BRIDGE_BIN` when the bridge executable is not available on `PATH`.
-The bridge uses a versioned JSON-lines protocol so the same contract can later
-be exposed through loopback HTTP or a named pipe without changing the plugins.
-
-The mobile feature is intentionally not packaged here. It remains the
-independent `xuan-plus-remote` project, with its own bridge adapter, HarmonyOS
-application and protocol/cloud-service compatibility matrix.
+The bridge uses a versioned JSON-lines protocol and loopback HTTP endpoints.
+The mobile plugin is an independent package: its renderer User Script provides
+the desktop pairing entry, QR code, local confirmation and task selection while
+the `xuan-plus-remote` project supplies the HarmonyOS client and remote bridge.

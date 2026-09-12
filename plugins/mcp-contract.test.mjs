@@ -16,7 +16,7 @@ const bridgeBinary = process.env.XUAN_BRIDGE_BIN || path.join(
   "debug",
   process.platform === "win32" ? "xuan-bridge.exe" : "xuan-bridge"
 );
-const pluginNames = ["xuan-workspace-search", "xuan-usage", "xuan-polish"];
+const pluginNames = ["xuan-workspace-search", "xuan-usage", "xuan-polish", "xuan-mobile"];
 
 function startServer(pluginName, options = {}) {
   const pluginRoot = path.join(import.meta.dirname, pluginName);
@@ -78,7 +78,13 @@ test("all plugin MCP servers complete initialize and tools/list", async () => {
       });
       assert.equal(initialized.result.serverInfo.name, pluginName);
       const listed = await server.request(2, "tools/list");
-      assert.equal(listed.result.tools.length, pluginName === "xuan-workspace-search" ? 2 : 1);
+      const expectedToolCount = {
+        "xuan-workspace-search": 2,
+        "xuan-usage": 1,
+        "xuan-polish": 1,
+        "xuan-mobile": 4
+      }[pluginName];
+      assert.equal(listed.result.tools.length, expectedToolCount);
       const tool = listed.result.tools[0];
       assert.equal(tool.inputSchema.type, "object");
       assert.equal(tool.inputSchema.additionalProperties, false);
@@ -86,6 +92,23 @@ test("all plugin MCP servers complete initialize and tools/list", async () => {
     } finally {
       await server.close();
     }
+  }
+});
+
+test("mobile status MCP tool calls the bridge end to end", async () => {
+  const server = startServer("xuan-mobile");
+  try {
+    await server.request(40, "initialize");
+    const response = await server.request(41, "tools/call", {
+      name: "xuan_mobile_status",
+      arguments: {}
+    });
+    assert.equal(typeof response.result.isError, "boolean");
+    const payload = JSON.parse(response.result.content[0].text);
+    assert.equal(typeof payload, "object");
+    assert.ok("state" in payload || "paired" in payload || "error" in payload || "message" in payload);
+  } finally {
+    await server.close();
   }
 });
 

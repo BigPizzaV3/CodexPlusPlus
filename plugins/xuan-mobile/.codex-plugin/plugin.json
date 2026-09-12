@@ -1,0 +1,20 @@
+{
+  "name": "xuan-mobile",
+  "version": "0.1.0",
+  "description": "Pair the XuanPlusPlus HarmonyOS client and manage task synchronization.",
+  "author": {
+    "name": "XuanPlusPlus"
+  },
+  "license": "AGPL-3.0-only",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Xuan Mobile",
+    "shortDescription": "Pair a phone and choose synchronized tasks.",
+    "longDescription": "Adds the XuanPlusPlus phone pairing QR code, local confirmation, connection controls and task synchronization UI through independent local bridges.",
+    "developerName": "XuanPlusPlus",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "Inspect the Xuan mobile connection status."
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
@@ -25,6 +25,9 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RESULTS: usize = 2_000;
 const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
+const MAX_PROJECT_MAP_CHARS: usize = 4_000;
+const MAX_PROJECT_MAP_FILES: usize = 160;
+const MAX_PROJECT_MAP_DEPTH: usize = 4;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcRequest {
@@ -87,15 +90,23 @@ fn dispatch(state: &mut BridgeState, method: &str, params: Value) -> Result<Valu
     match method {
         "bridge.health" => Ok(health_response()),
         "bridge.paths" => Ok(paths_response()),
+        "workspace.roots" => workspace_roots_response(),
+        "workspace.projects" => workspace_projects_response(&params),
+        "workspace.current_root" => workspace_current_root_response(&params),
         "workspace.search.start" => start_search(state, &params),
         "workspace.search.poll" => poll_search(state, &params),
         "workspace.search.cancel" => cancel_search(state, &params),
         "workspace.search.preview" => preview_file(&params),
         "usage.query" => query_usage(&params),
+        "polish.settings.get" => polish_settings_response(),
+        "polish.settings.set" => update_polish_settings(&params),
         "polish.generate" => generate_polish(&params),
         "mobile.status" => forward_mobile("status", &params),
         "mobile.pair" => forward_mobile("pair", &params),
+        "mobile.enable" => forward_mobile("enable", &params),
         "mobile.confirm" => forward_mobile("confirm", &params),
+        "mobile.auto_sync" => forward_mobile("auto-sync", &params),
+        "mobile.select" => forward_mobile("select", &params),
         "mobile.tasks" => forward_mobile("tasks", &params),
         "mobile.send_input" => forward_mobile("send-input", &params),
         "mobile.stop" => forward_mobile("stop", &params),
@@ -120,6 +131,390 @@ fn health_response() -> Value {
     })
 }
 
+#[derive(Debug, Clone)]
+struct CodexRelayConnection {
+    id: String,
+    name: String,
+    protocol: String,
+    base_url: String,
+    api_key: String,
+    user_agent: String,
+}
+
+fn user_home_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn codex_settings_path() -> PathBuf {
+    std::env::var_os("XUAN_CODEX_SETTINGS_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| user_home_dir().join(".codex-session-delete/settings.json"))
+}
+
+fn codex_home_dir() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .unwrap_or_else(|| user_home_dir().join(".codex"))
+}
+
+fn load_json_file(path: &Path, label: &str) -> Result<Value, RpcError> {
+    if !path.is_file() {
+        return Ok(Value::Null);
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|_| error("configuration_error", format!("无法读取{label}")))?;
+    serde_json::from_str(&raw)
+        .map_err(|_| error("configuration_error", format!("{label}不是有效 JSON")))
+}
+
+fn load_codex_settings() -> Result<Value, RpcError> {
+    load_json_file(&codex_settings_path(), "Codex++ 设置")
+}
+
+fn relay_profile_base_url(profile: &Value, settings: &Value) -> String {
+    configured_string(profile, "upstreamBaseUrl")
+        .or_else(|| relay_config_string(profile, "base_url"))
+        .or_else(|| configured_string(settings, "relayBaseUrl"))
+        .unwrap_or_default()
+}
+
+fn relay_profile_api_key(profile: &Value, settings: &Value) -> String {
+    profile
+        .get("authContents")
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|auth| configured_string(&auth, "OPENAI_API_KEY"))
+        .or_else(|| relay_config_string(profile, "experimental_bearer_token"))
+        .or_else(|| configured_string(settings, "relayApiKey"))
+        .unwrap_or_default()
+}
+
+fn relay_config_string(profile: &Value, key: &str) -> Option<String> {
+    let raw = profile.get("configContents").and_then(Value::as_str)?;
+    let provider_id = raw.lines().find_map(|line| parse_toml_string_assignment(line, "model_provider"))?;
+    let expected_section = format!("[model_providers.{provider_id}]");
+    let mut in_provider = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_provider = trimmed == expected_section;
+            continue;
+        }
+        if in_provider
+            && let Some(value) = parse_toml_string_assignment(trimmed, key)
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn parse_toml_string_assignment(line: &str, key: &str) -> Option<String> {
+    let line = line.trim();
+    if line.starts_with('#') {
+        return None;
+    }
+    let (name, value) = line.split_once('=')?;
+    if name.trim() != key {
+        return None;
+    }
+    let value = value.trim();
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return None;
+    }
+    serde_json::from_str::<String>(value)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn reusable_relay_profile(profile: &Value) -> bool {
+    let relay_mode = configured_string(profile, "relayMode").unwrap_or_else(|| "mixedApi".into());
+    relay_mode != "aggregate"
+        && (relay_mode != "official"
+            || profile
+                .get("officialMixApiKey")
+                .and_then(Value::as_bool)
+                .unwrap_or(false))
+}
+
+fn relay_connection_from_settings(
+    settings: &Value,
+    relay_id: Option<&str>,
+) -> Result<Option<CodexRelayConnection>, RpcError> {
+    if settings
+        .get("activeAggregateRelayId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        && relay_id.is_none()
+    {
+        return Ok(None);
+    }
+    let active_id = relay_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| settings.get("activeRelayId").and_then(Value::as_str).map(str::trim))
+        .unwrap_or_default();
+    let profile = settings
+        .get("relayProfiles")
+        .and_then(Value::as_array)
+        .and_then(|profiles| {
+            profiles
+                .iter()
+                .find(|profile| profile.get("id").and_then(Value::as_str) == Some(active_id))
+                .or_else(|| profiles.first())
+        });
+    let Some(profile) = profile else {
+        let base_url = configured_string(settings, "relayBaseUrl").unwrap_or_default();
+        if base_url.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(CodexRelayConnection {
+            id: active_id.to_string(),
+            name: "默认中转".into(),
+            protocol: "responses".into(),
+            base_url,
+            api_key: configured_string(settings, "relayApiKey").unwrap_or_default(),
+            user_agent: format!("XuanBridge/{BRIDGE_VERSION}"),
+        }));
+    };
+    if !reusable_relay_profile(profile) {
+        return Err(error(
+            "configuration_error",
+            "润色需要普通 API 供应商，不能使用纯官方登录或聚合供应商",
+        ));
+    }
+    Ok(Some(CodexRelayConnection {
+        id: configured_string(profile, "id").unwrap_or_else(|| active_id.to_string()),
+        name: configured_string(profile, "name").unwrap_or_else(|| "未命名供应商".into()),
+        protocol: match configured_string(profile, "protocol").as_deref() {
+            Some("chatCompletions") => "chat-completions",
+            _ => "responses",
+        }
+        .into(),
+        base_url: relay_profile_base_url(profile, settings),
+        api_key: relay_profile_api_key(profile, settings),
+        user_agent: configured_string(profile, "userAgent")
+            .unwrap_or_else(|| format!("XuanBridge/{BRIDGE_VERSION}")),
+    }))
+}
+
+fn relay_options(settings: &Value) -> Vec<Value> {
+    settings
+        .get("relayProfiles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|profile| reusable_relay_profile(profile))
+        .filter_map(|profile| {
+            Some(json!({
+                "id": configured_string(profile, "id")?,
+                "name": configured_string(profile, "name").unwrap_or_else(|| "未命名供应商".into()),
+            }))
+        })
+        .collect()
+}
+
+fn load_codex_global_state() -> Result<Value, RpcError> {
+    load_json_file(
+        &codex_home_dir().join(".codex-global-state.json"),
+        "Codex 项目状态",
+    )
+}
+
+fn collect_path_strings(value: &Value, paths: &mut Vec<String>) {
+    match value {
+        Value::String(value) => paths.push(value.clone()),
+        Value::Array(values) => values.iter().for_each(|value| collect_path_strings(value, paths)),
+        Value::Object(values) => values.values().for_each(|value| collect_path_strings(value, paths)),
+        _ => {}
+    }
+}
+
+fn existing_workspace_path(value: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(value.trim());
+    if !path.is_absolute() || !path.is_dir() {
+        return None;
+    }
+    Some(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+fn workspace_roots_from_state(state: &Value) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for key in [
+        "electron-saved-workspace-roots",
+        "project-order",
+        "active-workspace-roots",
+        "electron-workspace-root-labels",
+        "thread-workspace-root-hints",
+        "thread-projectless-output-directories",
+        "thread-writable-roots",
+    ] {
+        if let Some(value) = state.get(key) {
+            collect_path_strings(value, &mut candidates);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut roots = candidates
+        .into_iter()
+        .filter_map(|value| existing_workspace_path(&value))
+        .filter(|path| seen.insert(path.to_string_lossy().to_lowercase()))
+        .collect::<Vec<_>>();
+    roots.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+    roots
+}
+
+fn thread_id_variants(thread_id: &str) -> Vec<String> {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() {
+        return Vec::new();
+    }
+    let bare = thread_id.strip_prefix("local:").unwrap_or(thread_id);
+    if bare == thread_id {
+        vec![thread_id.to_string(), format!("local:{thread_id}")]
+    } else {
+        vec![thread_id.to_string(), bare.to_string()]
+    }
+}
+
+fn workspace_root_for_thread(state: &Value, thread_id: &str) -> Option<PathBuf> {
+    for key in [
+        "thread-workspace-root-hints",
+        "thread-projectless-output-directories",
+        "thread-writable-roots",
+    ] {
+        let Some(entries) = state.get(key).and_then(Value::as_object) else {
+            continue;
+        };
+        for thread_id in thread_id_variants(thread_id) {
+            let mut candidates = Vec::new();
+            if let Some(value) = entries.get(&thread_id) {
+                collect_path_strings(value, &mut candidates);
+            }
+            if let Some(root) = candidates
+                .into_iter()
+                .find_map(|value| existing_workspace_path(&value))
+            {
+                return Some(root);
+            }
+        }
+    }
+    None
+}
+
+fn workspace_projects(state: &Value) -> Vec<Value> {
+    let order = state
+        .get("project-order")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .enumerate()
+        .map(|(index, id)| (id.to_string(), index))
+        .collect::<HashMap<_, _>>();
+    let mut projects = state
+        .get("local-projects")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|projects| projects.iter())
+        .filter_map(|(entry_id, project)| {
+            let id = configured_string(project, "id").unwrap_or_else(|| entry_id.clone());
+            let name = configured_string(project, "name")?;
+            let roots = project
+                .get("rootPaths")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter_map(existing_workspace_path)
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            Some((order.get(&id).copied().unwrap_or(usize::MAX), name.clone(), json!({
+                "id": id,
+                "name": name,
+                "roots": roots,
+            })))
+        })
+        .collect::<Vec<_>>();
+    projects.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    projects.into_iter().map(|(_, _, project)| project).collect()
+}
+
+fn selected_project_id(state: &Value) -> Option<String> {
+    state
+        .get("selected-project")
+        .and_then(Value::as_object)
+        .and_then(|project| project.get("projectId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn project_id_for_thread(state: &Value, thread_id: &str) -> Option<String> {
+    let assignments = state.get("thread-project-assignments")?.as_object()?;
+    thread_id_variants(thread_id).into_iter().find_map(|thread_id| {
+        assignments
+            .get(&thread_id)
+            .and_then(Value::as_object)
+            .and_then(|assignment| assignment.get("projectId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn workspace_roots_response() -> Result<Value, RpcError> {
+    let state = load_codex_global_state()?;
+    Ok(json!({
+        "status": "ok",
+        "roots": workspace_roots_from_state(&state)
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn workspace_projects_response(params: &Value) -> Result<Value, RpcError> {
+    let state = load_codex_global_state()?;
+    let thread_id = params
+        .get("threadId")
+        .or_else(|| params.get("thread_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let selected = selected_project_id(&state);
+    let current = project_id_for_thread(&state, thread_id).or_else(|| selected.clone());
+    Ok(json!({
+        "status": "ok",
+        "projects": workspace_projects(&state),
+        "selectedProjectId": selected,
+        "currentProjectId": current,
+    }))
+}
+
+fn workspace_current_root_response(params: &Value) -> Result<Value, RpcError> {
+    let thread_id = params
+        .get("threadId")
+        .or_else(|| params.get("thread_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if thread_id.trim().is_empty() {
+        return Err(error("invalid_request", "缺少当前会话标识"));
+    }
+    let state = load_codex_global_state()?;
+    Ok(match workspace_root_for_thread(&state, thread_id) {
+        Some(root) => json!({ "status": "ok", "root": root.to_string_lossy() }),
+        None => json!({ "status": "missing", "root": "" }),
+    })
+}
+
 #[derive(Debug)]
 struct UsageConnection {
     provider: String,
@@ -132,17 +527,31 @@ struct UsageConnection {
 }
 
 fn query_usage(params: &Value) -> Result<Value, RpcError> {
-    let connection = resolve_usage_connection(params)?;
-    if connection.provider == "owlai" {
-        let data = query_owlai(&connection.api_key, &connection.user_agent)?;
+    let Some(connection) = resolve_usage_connection(params)? else {
         return Ok(json!({
             "status": "ok",
-            "disabled": false,
-            "provider": connection.provider,
-            "profileRef": connection.profile_ref,
-            "profileName": connection.profile_name,
-            "data": data,
+            "disabled": true,
+            "message": "当前中转未配置可用的地址",
         }));
+    };
+    if connection.provider == "owlai" {
+        return Ok(match query_owlai(&connection.api_key, &connection.user_agent) {
+            Ok(data) => json!({
+                "status": "ok",
+                "disabled": false,
+                "provider": connection.provider,
+                "profileId": connection.profile_ref,
+                "profileRef": connection.profile_ref,
+                "profileName": connection.profile_name,
+                "data": data,
+            }),
+            Err(error) => json!({
+                "status": "failed",
+                "provider": connection.provider,
+                "profileName": connection.profile_name,
+                "message": error.message,
+            }),
+        });
     }
     let url = build_usage_url(
         &connection.base_url,
@@ -176,13 +585,14 @@ fn query_usage(params: &Value) -> Result<Value, RpcError> {
         "status": "ok",
         "disabled": false,
         "provider": connection.provider,
+        "profileId": connection.profile_ref,
         "profileRef": connection.profile_ref,
         "profileName": connection.profile_name,
         "data": body,
     }))
 }
 
-fn resolve_usage_connection(params: &Value) -> Result<UsageConnection, RpcError> {
+fn resolve_usage_connection(params: &Value) -> Result<Option<UsageConnection>, RpcError> {
     let plugin = load_plugin_settings("xuan-usage")?;
     let (settings, profile_ref) = selected_profile(&plugin, params)?;
     let mut base_url = environment_value("XUAN_USAGE_BASE_URL")
@@ -195,22 +605,42 @@ fn resolve_usage_connection(params: &Value) -> Result<UsageConnection, RpcError>
         base_url = "https://api.owlai.tech".into();
     }
     if base_url.is_empty() {
-        return Err(error(
-            "configuration_error",
-            "configure xuan-usage baseUrl or set XUAN_USAGE_BASE_URL",
-        ));
+        let codex_settings = load_codex_settings()?;
+        let Some(relay) = relay_connection_from_settings(&codex_settings, None)? else {
+            return Ok(None);
+        };
+        let provider = resolve_usage_provider(&relay.base_url, &configured_provider)?;
+        if relay.api_key.trim().is_empty() {
+            return Err(error(
+                "configuration_error",
+                "请在当前中转配置中填写并保存 API Key",
+            ));
+        }
+        return Ok(Some(UsageConnection {
+            provider,
+            profile_ref: relay.id,
+            profile_name: relay.name,
+            base_url: relay.base_url,
+            api_key: relay.api_key,
+            usage_path: params
+                .get("usagePath")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| configured_string(&settings, "usagePath"))
+                .unwrap_or_else(|| DEFAULT_USAGE_PATH.into()),
+            user_agent: relay.user_agent,
+        }));
     }
     let provider = resolve_usage_provider(&base_url, &configured_provider)?;
     let api_key_env =
         configured_string(&settings, "apiKeyEnv").unwrap_or_else(|| "XUAN_USAGE_API_KEY".into());
     let api_key = secret_from_environment(&api_key_env)?;
     if api_key.is_empty() {
-        return Err(error(
-            "configuration_error",
-            format!("usage credential environment variable is empty: {api_key_env}"),
-        ));
+        return Err(error("configuration_error", format!("用量凭据环境变量为空：{api_key_env}")));
     }
-    Ok(UsageConnection {
+    Ok(Some(UsageConnection {
         provider,
         profile_ref: profile_ref.clone(),
         profile_name: configured_string(&settings, "name").unwrap_or(profile_ref),
@@ -226,12 +656,12 @@ fn resolve_usage_connection(params: &Value) -> Result<UsageConnection, RpcError>
             .unwrap_or_else(|| DEFAULT_USAGE_PATH.into()),
         user_agent: configured_string(&settings, "userAgent")
             .unwrap_or_else(|| format!("XuanBridge/{BRIDGE_VERSION}")),
-    })
+    }))
 }
 
 fn resolve_usage_provider(endpoint: &str, configured: &str) -> Result<String, RpcError> {
     let url = Url::parse(endpoint.trim())
-        .map_err(|_| error("configuration_error", "usage base URL is invalid"))?;
+        .map_err(|_| error("configuration_error", "中转站地址无效"))?;
     let is_owlai = url.scheme() == "https"
         && url.host_str() == Some(OWLAI_HOST)
         && url.port_or_known_default() == Some(443)
@@ -243,9 +673,9 @@ fn resolve_usage_provider(endpoint: &str, configured: &str) -> Result<String, Rp
         "owlai" if is_owlai => Ok("owlai".into()),
         "owlai" => Err(error(
             "configuration_error",
-            "OwlAI provider requires the HTTPS api.owlai.tech endpoint",
+            "OwlAI 方案仅适用于当前地址为 api.owlai.tech 的 HTTPS 中转",
         )),
-        _ => Err(error("configuration_error", "unsupported usage provider")),
+        _ => Err(error("configuration_error", "用量方案无效，请重新选择")),
     }
 }
 
@@ -258,7 +688,7 @@ fn query_owlai(api_key: &str, user_agent: &str) -> Result<Value, RpcError> {
     {
         return Err(error(
             "configuration_error",
-            "OwlAI API key format is invalid",
+            "当前中转的 API Key 格式无效，请检查后重试",
         ));
     }
     let client = Client::builder()
@@ -266,7 +696,7 @@ fn query_owlai(api_key: &str, user_agent: &str) -> Result<Value, RpcError> {
         .timeout(Duration::from_secs(15))
         .user_agent(user_agent)
         .build()
-        .map_err(|_| error("transport_error", "unable to initialize OwlAI usage client"))?;
+        .map_err(|_| error("transport_error", "无法初始化用量查询"))?;
     let response = client
         .get(OWLAI_USAGE_URL)
         .query(&[("days", "1"), ("timezone", DEFAULT_TIMEZONE)])
@@ -274,14 +704,14 @@ fn query_owlai(api_key: &str, user_agent: &str) -> Result<Value, RpcError> {
         .header("Accept-Language", "zh")
         .bearer_auth(api_key)
         .send()
-        .map_err(|_| error("transport_error", "OwlAI usage request failed or timed out"))?;
+        .map_err(|_| error("transport_error", "今日用量查询连接失败或超时，请检查网络后重试"))?;
     let status = response.status();
     if !status.is_success() {
         return Err(error("remote_error", usage_remote_error(status.as_u16())));
     }
     let payload: Value = response
         .json()
-        .map_err(|_| error("invalid_response", "OwlAI usage response is not valid JSON"))?;
+        .map_err(|_| error("invalid_response", "用量接口返回的数据无法识别"))?;
     parse_owlai_today(&payload)
 }
 
@@ -301,7 +731,7 @@ fn parse_owlai_today(payload: &Value) -> Result<Value, RpcError> {
     {
         return Err(error(
             "invalid_response",
-            "OwlAI usage response was not successful",
+            "OwlAI 用量查询未成功，请检查当前中转的 API Key",
         ));
     }
     Ok(json!({
@@ -312,11 +742,11 @@ fn parse_owlai_today(payload: &Value) -> Result<Value, RpcError> {
 
 fn usage_remote_error(status: u16) -> String {
     match status {
-        401 | 403 => "usage credential is invalid or expired".into(),
-        404 => "the provider does not expose the configured usage endpoint".into(),
-        429 => "usage queries are rate limited; retry later".into(),
-        300..=399 => "the usage endpoint redirected unexpectedly".into(),
-        _ => format!("usage endpoint returned HTTP {status}"),
+        401 | 403 => "用量查询凭据无效或已过期，请更新对应方案的凭据".into(),
+        404 => "站点未提供该用量接口，请检查所选方案".into(),
+        429 => "用量查询过于频繁，请稍后重试".into(),
+        300..=399 => "用量接口发生重定向，请检查站点地址".into(),
+        _ => format!("站点暂时无法完成用量查询（状态码 {status}），请稍后重试"),
     }
 }
 
@@ -398,10 +828,160 @@ struct PolishConnection {
     base_url: String,
     api_key: String,
     model: String,
+    style: String,
     max_input_chars: usize,
     max_output_tokens: u64,
     timeout: Duration,
     user_agent: String,
+}
+
+fn polish_settings_response() -> Result<Value, RpcError> {
+    let plugin = load_plugin_settings("xuan-polish")?;
+    let codex = load_codex_settings()?;
+    let legacy_relay_id = configured_string(&codex, "codexAppPromptOptimizeRelayId");
+    let connection_mode = configured_string(&plugin, "connectionMode").unwrap_or_else(|| {
+        if configured_string(&plugin, "baseUrl").is_some() && configured_string(&plugin, "relayId").is_none() {
+            "manual".into()
+        } else {
+            "relay".into()
+        }
+    });
+    let relay_id = if connection_mode == "manual" {
+        String::new()
+    } else {
+        configured_string(&plugin, "relayId")
+            .or(legacy_relay_id)
+            .or_else(|| configured_string(&codex, "activeRelayId"))
+            .unwrap_or_default()
+    };
+    let relay = if relay_id.is_empty() {
+        None
+    } else {
+        relay_connection_from_settings(&codex, Some(&relay_id))?
+    };
+    let manual_protocol = configured_string(&plugin, "protocol")
+        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeProtocol"))
+        .unwrap_or_else(|| "chat-completions".into());
+    let manual_base_url = configured_string(&plugin, "baseUrl")
+        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeBaseUrl"))
+        .unwrap_or_default();
+    let manual_api_key = configured_string(&plugin, "apiKey")
+        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeApiKey"))
+        .unwrap_or_default();
+    let api_key_env = configured_string(&plugin, "apiKeyEnv")
+        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeApiKeyEnv"))
+        .unwrap_or_else(|| "XUAN_POLISH_API_KEY".into());
+    let environment_key = secret_from_environment(&api_key_env)?;
+    let model = configured_string(&plugin, "model")
+        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeModel"))
+        .unwrap_or_default();
+    let style = configured_string(&plugin, "style")
+        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeStyle"))
+        .filter(|value| matches!(value.as_str(), "structured" | "concise" | "coding"))
+        .unwrap_or_else(|| "structured".into());
+    let (protocol, base_url, api_key, configuration_error) = match relay {
+        Some(relay) => (
+            relay.protocol,
+            relay.base_url,
+            relay.api_key,
+            Value::Null,
+        ),
+        None => (
+            manual_protocol.clone(),
+            manual_base_url.clone(),
+            if manual_api_key.is_empty() { environment_key.clone() } else { manual_api_key },
+            Value::Null,
+        ),
+    };
+    Ok(json!({
+        "status": "ok",
+        "settings": {
+            "relayId": relay_id,
+            "providers": relay_options(&codex),
+            "configurationError": configuration_error,
+            "manualProtocol": if manual_protocol == "anthropic" { "anthropic" } else { "openai" },
+            "manualBaseUrl": manual_base_url,
+            "manualModel": model,
+            "enabled": plugin.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+            "protocol": match protocol.as_str() {
+                "anthropic" => "anthropic",
+                "responses" => "responses",
+                _ => "openai",
+            },
+            "baseUrl": base_url,
+            "baseUrlConfigured": !base_url.trim().is_empty(),
+            "apiKeyConfigured": !api_key.trim().is_empty(),
+            "apiKeyEnv": api_key_env,
+            "apiKeyEnvConfigured": !environment_key.is_empty(),
+            "model": model,
+            "style": style,
+            "styles": ["structured", "concise", "coding"],
+            "maxInputChars": configured_u64(&plugin, "maxInputChars", 24_000, 1_000, 100_000),
+            "maxOutputTokens": configured_u64(&plugin, "maxOutputTokens", 4_096, 100, 8_192),
+            "timeoutMs": configured_u64(&plugin, "timeoutMs", 60_000, 1_000, 120_000),
+        }
+    }))
+}
+
+fn update_polish_settings(params: &Value) -> Result<Value, RpcError> {
+    let root = config_root();
+    initialize_storage(&root).map_err(|message| error("configuration_error", message))?;
+    let path = root.join("xuan-plugins.json");
+    let mut config = load_json_file(&path, "Xuan 插件设置")?;
+    if !config.is_object() {
+        config = json!({ "schemaVersion": 1, "plugins": {} });
+    }
+    let config_object = config.as_object_mut().expect("object ensured above");
+    let plugins = config_object
+        .entry("plugins")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !plugins.is_object() {
+        *plugins = Value::Object(Default::default());
+    }
+    let polish = plugins
+        .as_object_mut()
+        .expect("object ensured above")
+        .entry("xuan-polish")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !polish.is_object() {
+        *polish = Value::Object(Default::default());
+    }
+    let polish = polish.as_object_mut().expect("object ensured above");
+    polish.insert("enabled".into(), Value::Bool(true));
+    let relay_id = params
+        .get("codexAppPromptOptimizeRelayId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    polish.insert("relayId".into(), Value::String(relay_id.to_string()));
+    polish.insert(
+        "connectionMode".into(),
+        Value::String(if relay_id.is_empty() { "manual" } else { "relay" }.into()),
+    );
+    for (source, target) in [
+        ("codexAppPromptOptimizeStyle", "style"),
+        ("codexAppPromptOptimizeModel", "model"),
+        ("codexAppPromptOptimizeProtocol", "protocol"),
+        ("codexAppPromptOptimizeBaseUrl", "baseUrl"),
+        ("codexAppPromptOptimizeApiKey", "apiKey"),
+    ] {
+        if let Some(value) = params.get(source).and_then(Value::as_str) {
+            let value = if target == "protocol" && value == "openai" {
+                "chat-completions"
+            } else {
+                value
+            };
+            polish.insert(target.into(), Value::String(value.trim().to_string()));
+        }
+    }
+    let encoded = serde_json::to_vec_pretty(&config)
+        .map_err(|_| error("configuration_error", "无法编码 Xuan 插件设置"))?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, encoded)
+        .map_err(|_| error("configuration_error", "无法保存 Xuan 插件设置"))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|_| error("configuration_error", "无法替换 Xuan 插件设置"))?;
+    Ok(json!({ "status": "ok", "message": "设置已保存" }))
 }
 
 fn generate_polish(params: &Value) -> Result<Value, RpcError> {
@@ -419,7 +999,7 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
     let style = params
         .get("style")
         .and_then(Value::as_str)
-        .unwrap_or("structured");
+        .unwrap_or(&connection.style);
     let system = polish_system_prompt(style);
     let user_prompt = contextual_polish_prompt(&text, params);
     let url = polish_endpoint(&connection.base_url, connection.protocol)?;
@@ -507,15 +1087,32 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
 
 fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcError> {
     let plugin = load_plugin_settings("xuan-polish")?;
-    let (settings, _) = selected_profile(&plugin, params)?;
-    let base_url = environment_value("XUAN_POLISH_BASE_URL")
-        .or_else(|| configured_string(&settings, "baseUrl"))
-        .ok_or_else(|| {
-            error(
-                "configuration_error",
-                "configure xuan-polish baseUrl or set XUAN_POLISH_BASE_URL",
-            )
-        })?;
+    let (settings, profile_ref) = selected_profile(&plugin, params)?;
+    let codex = load_codex_settings()?;
+    let use_codex_fallback = profile_ref.is_empty();
+    let connection_mode = configured_string(&settings, "connectionMode").unwrap_or_else(|| {
+        if configured_string(&settings, "baseUrl").is_some() && configured_string(&settings, "relayId").is_none() {
+            "manual".into()
+        } else {
+            "relay".into()
+        }
+    });
+    let relay_id = configured_string(&settings, "relayId")
+        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeRelayId")).flatten())
+        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "activeRelayId")).flatten());
+    let relay = if connection_mode == "manual" {
+        None
+    } else {
+        relay_connection_from_settings(&codex, relay_id.as_deref())?
+    };
+    let base_url = if let Some(relay) = &relay {
+        relay.base_url.clone()
+    } else {
+        environment_value("XUAN_POLISH_BASE_URL")
+            .or_else(|| configured_string(&settings, "baseUrl"))
+            .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeBaseUrl")).flatten())
+            .ok_or_else(|| error("configuration_error", "请先配置润色 Base URL"))?
+    };
     let model = params
         .get("model")
         .and_then(Value::as_str)
@@ -524,24 +1121,36 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
         .map(ToOwned::to_owned)
         .or_else(|| environment_value("XUAN_POLISH_MODEL"))
         .or_else(|| configured_string(&settings, "model"))
-        .ok_or_else(|| error("configuration_error", "configure a polish model"))?;
-    let protocol = environment_value("XUAN_POLISH_PROTOCOL")
+        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeModel")).flatten())
+        .ok_or_else(|| error("configuration_error", "请先设置润色模型"))?;
+    let protocol = relay
+        .as_ref()
+        .map(|relay| relay.protocol.clone())
+        .or_else(|| environment_value("XUAN_POLISH_PROTOCOL"))
         .or_else(|| configured_string(&settings, "protocol"))
+        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeProtocol")).flatten())
         .unwrap_or_else(|| "chat-completions".into());
     let api_key_env =
         configured_string(&settings, "apiKeyEnv").unwrap_or_else(|| "XUAN_POLISH_API_KEY".into());
-    let api_key = secret_from_environment(&api_key_env)?;
+    let api_key = if let Some(relay) = &relay {
+        relay.api_key.clone()
+    } else {
+        configured_string(&settings, "apiKey")
+            .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeApiKey")).flatten())
+            .unwrap_or(secret_from_environment(&api_key_env)?)
+    };
     if api_key.is_empty() {
-        return Err(error(
-            "configuration_error",
-            format!("polish credential environment variable is empty: {api_key_env}"),
-        ));
+        return Err(error("configuration_error", "请先配置润色 API Key"));
     }
     Ok(PolishConnection {
         protocol: PolishProtocol::parse(&protocol)?,
         base_url,
         api_key,
         model,
+        style: configured_string(&settings, "style")
+            .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeStyle")).flatten())
+            .filter(|value| matches!(value.as_str(), "structured" | "concise" | "coding"))
+            .unwrap_or_else(|| "structured".into()),
         max_input_chars: configured_u64(&settings, "maxInputChars", 24_000, 1_000, 100_000)
             as usize,
         max_output_tokens: configured_u64(&settings, "maxOutputTokens", 4_096, 100, 8_192),
@@ -552,7 +1161,9 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
             1_000,
             120_000,
         )),
-        user_agent: configured_string(&settings, "userAgent")
+        user_agent: relay
+            .map(|relay| relay.user_agent)
+            .or_else(|| configured_string(&settings, "userAgent"))
             .unwrap_or_else(|| format!("XuanBridge/{BRIDGE_VERSION}")),
     })
 }
@@ -635,7 +1246,12 @@ fn extract_polished_text(protocol: PolishProtocol, payload: &Value) -> String {
 
 fn contextual_polish_prompt(draft: &str, params: &Value) -> String {
     let mut context = String::new();
-    if let Some(turns) = params.get("recentTurns").and_then(Value::as_array) {
+    let context_params = params.get("context").unwrap_or(params);
+    if let Some(turns) = context_params
+        .get("recentTurns")
+        .or_else(|| context_params.get("recent_turns"))
+        .and_then(Value::as_array)
+    {
         let start = turns.len().saturating_sub(4);
         for turn in &turns[start..] {
             let user = turn
@@ -662,11 +1278,29 @@ fn contextual_polish_prompt(draft: &str, params: &Value) -> String {
         }
     }
     context = truncate_chars(&context, 6_000);
-    let project_map = params
+    let explicit_project_map = params
         .get("projectMap")
         .and_then(Value::as_str)
         .map(|value| truncate_chars(value.trim(), 4_000))
         .filter(|value| !value.is_empty());
+    let project_map = explicit_project_map.or_else(|| {
+        let include = context_params
+            .get("includeProjectMap")
+            .or_else(|| context_params.get("include_project_map"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let session_id = context_params
+            .get("sessionId")
+            .or_else(|| context_params.get("session_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !include || session_id.trim().is_empty() {
+            return None;
+        }
+        let state = load_codex_global_state().ok()?;
+        let root = workspace_root_for_thread(&state, session_id)?;
+        build_project_map(&root, draft)
+    });
     if context.is_empty() && project_map.is_none() {
         return draft.to_string();
     }
@@ -686,6 +1320,107 @@ fn contextual_polish_prompt(draft: &str, params: &Value) -> String {
     prompt.push_str(draft);
     prompt.push_str("\n</draft>");
     prompt
+}
+
+fn build_project_map(workspace_path: &Path, draft: &str) -> Option<String> {
+    let root = workspace_path.canonicalize().ok()?;
+    if !root.is_dir() {
+        return None;
+    }
+    let mut files = Vec::new();
+    collect_project_files(&root, &root, 0, &mut files);
+    if files.is_empty() {
+        return None;
+    }
+    let keywords = project_map_keywords(draft);
+    files.sort_by(|left, right| {
+        project_path_relevance(right, &keywords)
+            .cmp(&project_path_relevance(left, &keywords))
+            .then_with(|| left.cmp(right))
+    });
+    files.truncate(MAX_PROJECT_MAP_FILES);
+    let project_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workspace");
+    let mut output = format!("Project: {project_name}\nFiles:\n");
+    for path in files {
+        let line = format!("- {}\n", path.to_string_lossy().replace('\\', "/"));
+        if output.chars().count() + line.chars().count() > MAX_PROJECT_MAP_CHARS {
+            break;
+        }
+        output.push_str(&line);
+    }
+    Some(output.trim_end().to_string())
+}
+
+fn collect_project_files(root: &Path, directory: &Path, depth: usize, files: &mut Vec<PathBuf>) {
+    if depth > MAX_PROJECT_MAP_DEPTH || files.len() >= MAX_PROJECT_MAP_FILES * 3 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if files.len() >= MAX_PROJECT_MAP_FILES * 3 {
+            break;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if ignored_project_entry(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_project_files(root, &path, depth + 1, files);
+        } else if file_type.is_file()
+            && let Ok(relative) = path.strip_prefix(root)
+        {
+            files.push(relative.to_path_buf());
+        }
+    }
+}
+
+fn ignored_project_entry(name: &str) -> bool {
+    name == ".env"
+        || name.starts_with(".env.")
+        || matches!(
+            name,
+            ".git"
+                | "target"
+                | "node_modules"
+                | "dist"
+                | "build"
+                | ".next"
+                | "coverage"
+                | ".idea"
+                | ".vscode"
+                | "__pycache__"
+                | "auth.json"
+                | "credentials.json"
+        )
+}
+
+fn project_map_keywords(draft: &str) -> Vec<String> {
+    draft
+        .split(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/')))
+        .map(str::trim)
+        .filter(|value| value.len() >= 3)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn project_path_relevance(path: &Path, keywords: &[String]) -> bool {
+    let value = path.to_string_lossy().to_lowercase();
+    keywords.iter().any(|keyword| value.contains(keyword))
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {
@@ -1309,15 +2044,19 @@ pub fn initialize_storage(root: &Path) -> Result<Value, String> {
             "plugins": {
                 "xuan-workspace-search": { "enabled": true },
                 "xuan-usage": {
-                    "enabled": false,
+                    "enabled": true,
                     "defaultProfile": "",
                     "profiles": {}
                 },
                 "xuan-polish": {
-                    "enabled": false,
+                    "enabled": true,
+                    "connectionMode": "relay",
+                    "relayId": "",
+                    "style": "structured",
                     "defaultProfile": "",
                     "profiles": {}
-                }
+                },
+                "xuan-mobile": { "enabled": true }
             },
             "mobile": { "enabled": false, "autoSync": false }
         });
@@ -1900,15 +2639,23 @@ fn http_bridge_method(path: &str) -> Option<(&'static str, &'static str)> {
     match path {
         "/v1/health" => Some(("bridge.health", "GET")),
         "/v1/paths" => Some(("bridge.paths", "GET")),
+        "/v1/search/roots" => Some(("workspace.roots", "POST")),
+        "/v1/search/projects" => Some(("workspace.projects", "POST")),
+        "/v1/search/current-root" => Some(("workspace.current_root", "POST")),
         "/v1/search/start" => Some(("workspace.search.start", "POST")),
         "/v1/search/poll" => Some(("workspace.search.poll", "POST")),
         "/v1/search/cancel" => Some(("workspace.search.cancel", "POST")),
         "/v1/search/preview" => Some(("workspace.search.preview", "POST")),
         "/v1/usage" => Some(("usage.query", "POST")),
+        "/v1/polish/settings" => Some(("polish.settings.get", "GET")),
+        "/v1/polish/settings/set" => Some(("polish.settings.set", "POST")),
         "/v1/polish" => Some(("polish.generate", "POST")),
         "/v1/mobile/status" => Some(("mobile.status", "GET")),
         "/v1/mobile/pair" => Some(("mobile.pair", "POST")),
+        "/v1/mobile/enable" => Some(("mobile.enable", "POST")),
         "/v1/mobile/confirm" => Some(("mobile.confirm", "POST")),
+        "/v1/mobile/auto-sync" => Some(("mobile.auto_sync", "POST")),
+        "/v1/mobile/select" => Some(("mobile.select", "POST")),
         "/v1/mobile/tasks" => Some(("mobile.tasks", "POST")),
         "/v1/mobile/send-input" => Some(("mobile.send_input", "POST")),
         "/v1/mobile/stop" => Some(("mobile.stop", "POST")),

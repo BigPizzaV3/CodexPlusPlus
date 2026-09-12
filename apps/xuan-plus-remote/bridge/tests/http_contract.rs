@@ -73,6 +73,21 @@ async fn bridge_requires_token_and_serves_status_tasks_and_validation_errors() {
     assert_eq!(status["enabled"], false);
     assert!(status.get("qrImage").is_some());
 
+    for (path, payload) in [
+        ("enable", json!({"enabled": false})),
+        ("auto-sync", json!({"enabled": false})),
+        ("select", json!({"selected": []})),
+    ] {
+        let response = client
+            .post(format!("http://{address}/v1/mobile/{path}"))
+            .bearer_auth("test-token")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+    }
+
     let tasks: Value = client
         .post(format!("http://{address}/v1/mobile/tasks"))
         .bearer_auth("test-token")

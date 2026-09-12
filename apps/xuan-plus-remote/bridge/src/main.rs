@@ -15,6 +15,7 @@ async fn main() -> anyhow::Result<()> {
                 "bridgeVersion": env!("CARGO_PKG_VERSION"),
                 "mobileContractVersion": "2.0",
                 "remoteProtocolVersion": "2.0",
+                "desktopUiApiVersion": 1,
             })
         );
         return Ok(());

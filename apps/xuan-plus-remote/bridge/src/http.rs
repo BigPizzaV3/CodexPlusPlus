@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -33,7 +34,10 @@ pub fn router(state: RemoteBridgeState) -> Router {
     Router::new()
         .route("/v1/mobile/status", get(status))
         .route("/v1/mobile/pair", post(pair))
+        .route("/v1/mobile/enable", post(enable))
         .route("/v1/mobile/confirm", post(confirm))
+        .route("/v1/mobile/auto-sync", post(auto_sync))
+        .route("/v1/mobile/select", post(select))
         .route("/v1/mobile/tasks", post(tasks))
         .route("/v1/mobile/send-input", post(send_input))
         .route("/v1/mobile/stop", post(stop))
@@ -61,6 +65,26 @@ async fn pair(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EnableRequest {
+    enabled: bool,
+}
+
+async fn enable(
+    State(state): State<RemoteBridgeState>,
+    headers: HeaderMap,
+    Json(request): Json<EnableRequest>,
+) -> Result<Json<Value>, ApiError> {
+    authorize(&state, &headers)?;
+    let status = state
+        .remote
+        .enable(request.enabled)
+        .await
+        .map_err(remote_error)?;
+    Ok(Json(serde_json::to_value(status).map_err(internal)?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ConfirmRequest {
     request_id: String,
     confirmed: bool,
@@ -75,6 +99,46 @@ async fn confirm(
     let status = state
         .remote
         .confirm(request.request_id, request.confirmed)
+        .await
+        .map_err(remote_error)?;
+    Ok(Json(serde_json::to_value(status).map_err(internal)?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AutoSyncRequest {
+    enabled: bool,
+}
+
+async fn auto_sync(
+    State(state): State<RemoteBridgeState>,
+    headers: HeaderMap,
+    Json(request): Json<AutoSyncRequest>,
+) -> Result<Json<Value>, ApiError> {
+    authorize(&state, &headers)?;
+    let status = state
+        .remote
+        .auto_sync(request.enabled)
+        .await
+        .map_err(remote_error)?;
+    Ok(Json(serde_json::to_value(status).map_err(internal)?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SelectRequest {
+    selected: BTreeSet<String>,
+}
+
+async fn select(
+    State(state): State<RemoteBridgeState>,
+    headers: HeaderMap,
+    Json(request): Json<SelectRequest>,
+) -> Result<Json<Value>, ApiError> {
+    authorize(&state, &headers)?;
+    let status = state
+        .remote
+        .select(request.selected)
         .await
         .map_err(remote_error)?;
     Ok(Json(serde_json::to_value(status).map_err(internal)?))

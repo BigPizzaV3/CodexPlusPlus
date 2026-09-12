@@ -39,6 +39,18 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "xuan-mobile",
+      "source": {
+        "source": "local",
+        "path": "./plugins/xuan-mobile"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
     }
   ]
 }
