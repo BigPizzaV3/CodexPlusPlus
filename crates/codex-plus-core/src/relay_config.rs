@@ -1727,7 +1727,13 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
             merge_toml_item(&mut target_doc["desktop"], &live_desktop);
         }
     }
-    for key in ["sandbox_mode", "approval_policy", "sandbox_workspace_write"] {
+    // Windows 沙盒实现属于本机设置，切换模板时保留，避免重启后重新要求设置。
+    for key in [
+        "sandbox_mode",
+        "approval_policy",
+        "sandbox_workspace_write",
+        "windows",
+    ] {
         if let Some(live_value) = live_doc.get(key).cloned() {
             merge_toml_item(&mut target_doc[key], &live_value);
         }
