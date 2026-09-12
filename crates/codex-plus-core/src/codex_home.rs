@@ -27,7 +27,7 @@ pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow
     let target = normalize_for_comparison(target);
     let home = normalize_for_comparison(codex_home);
 
-    if target.as_os_str().is_empty() || target == Path::new("/") {
+    if target.as_os_str().is_empty() || target.parent().is_none() || target.file_name().is_none() {
         anyhow::bail!("拒绝删除文件系统根目录：{}", target.display());
     }
     if target == home {
@@ -146,8 +146,9 @@ mod tests {
 
     #[test]
     fn removal_guard_rejects_filesystem_root() {
-        let home = PathBuf::from("/somewhere/.codex");
-        let error = ensure_safe_recursive_removal(Path::new("/"), &home).unwrap_err();
+        let root = PathBuf::from(std::path::MAIN_SEPARATOR.to_string());
+        let home = root.join("somewhere").join(".codex");
+        let error = ensure_safe_recursive_removal(&root, &home).unwrap_err();
         assert!(error.to_string().contains("文件系统根"), "{error}");
     }
 

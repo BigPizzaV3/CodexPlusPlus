@@ -2403,6 +2403,7 @@
   };
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
+  const codexServiceTierReadTimeoutMs = 5000;
   const codexServiceTierModulePromises = new Map();
   // namePart -> { at, attempts, error }，见 loadCodexAppModule 里的说明。
   const codexAppModuleFailures = new Map();
@@ -2646,11 +2647,21 @@
 
   async function getCodexServiceTierSetting() {
     try {
-      const settingStorage = await codexSettingStorageModule();
-      return await settingStorage.n(codexDefaultServiceTierSetting);
+      const read = (async () => {
+        const settingStorage = await codexSettingStorageModule();
+        return await settingStorage.n(codexDefaultServiceTierSetting);
+      })();
+      return await Promise.race([
+        read,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Codex 应用设置读取超时")), codexServiceTierReadTimeoutMs)),
+      ]);
     } catch (error) {
       if (typeof codexStateCall === "function") {
-        const result = await codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
+        const fallbackRead = codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
+        const result = await Promise.race([
+          fallbackRead,
+          new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
+        ]);
         return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
       }
       throw error;
@@ -3090,7 +3101,11 @@
   }
 
   async function getConfigTomlServiceTier() {
-    const catalog = await loadCodexModelCatalog();
+    const read = loadCodexModelCatalog();
+    const catalog = await Promise.race([
+      read,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("config.toml service_tier 读取超时")), codexServiceTierReadTimeoutMs)),
+    ]);
     const rawTier = catalog && typeof catalog === "object" ? catalog.service_tier : null;
     const normalized = String(rawTier || "").trim();
     return normalized ? normalized : null;
