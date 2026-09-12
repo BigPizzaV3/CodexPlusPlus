@@ -1972,6 +1972,8 @@ fn apply_model_catalog_to_config(
         return Ok(normalize_optional_toml(doc));
     }
     // Known bundled metadata entries need a catalog even without a user-supplied window.
+    // 自定义 Responses provider 走 model_routes 时需要 catalog，才能给路由目标暴露模型元数据；
+    // 纯平铺 model_list 且无窗口/元数据的仍保持"不生成"契约（无后缀不落盘，见既有测试）。
     if !has_metadata_overrides
         && !entries.iter().any(|entry| {
             entry.suffix_window.is_some()
@@ -1979,6 +1981,7 @@ fn apply_model_catalog_to_config(
                 || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
                 || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
         })
+        && !(custom_responses && profile.has_model_routes())
     {
         let mut doc = parse_toml_document(&config_text)?;
         if root_key_string(&config_text, "model_catalog_json").as_deref()
