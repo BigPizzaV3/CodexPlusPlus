@@ -113,7 +113,12 @@ import {
 } from "./model-windows";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
-import { resolveProviderSyncCompletion } from "./provider-sync-flow";
+import { resolveProviderName } from "./provider-name";
+import {
+  providerSyncStreamPercent,
+  resolveProviderSyncCompletion,
+  type ProviderSyncStreamProgress,
+} from "./provider-sync-flow";
 import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./provider-sync-target";
 import { resolveLaunchStatus } from "./launch-status";
 import {
@@ -2529,21 +2534,41 @@ export function App() {
     if (providerSyncProgress.active) return;
     setProviderSyncProgress({
       active: true,
-      percent: 12,
-      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
+      percent: 0,
+      message: t("正在扫描历史会话与索引…"),
       result: null,
     });
-    const progressTimer = window.setInterval(() => {
-      setProviderSyncProgress((current) => {
-        if (!current.active) return current;
-        return {
-          ...current,
-          percent: Math.min(88, current.percent + 8),
-          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
-        };
-      });
-    }, 350);
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await listen<ProviderSyncStreamProgress>("provider-sync-progress", (event) => {
+        const progress = event.payload;
+        const message = (() => {
+          switch (progress.phase) {
+            case "scanning":
+              return t("正在扫描历史会话与索引…");
+            case "planning":
+              return t("正在检查会话 provider 标记…");
+            case "backing_up":
+              return t("正在创建修复备份…");
+            case "rewriting":
+              return t("正在写入会话修复…");
+            case "updating_indexes":
+              return t("正在更新会话索引…");
+            case "rolling_back":
+              return t("正在回滚已写入的会话…");
+            case "complete":
+              return t("正在完成历史会话修复…");
+          }
+        })();
+        setProviderSyncProgress((current) => {
+          if (!current.active) return current;
+          return {
+            ...current,
+            percent: Math.max(current.percent, providerSyncStreamPercent(progress)),
+            message,
+          };
+        });
+      });
       const targetProvider = selectedProviderSyncTarget || undefined;
       const result = await run(() =>
         call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
@@ -2630,8 +2655,17 @@ export function App() {
           result: null,
         });
       }
+    } catch (error) {
+      const message = stringifyError(error);
+      setProviderSyncProgress({
+        active: false,
+        percent: 100,
+        message,
+        result: null,
+      });
+      showNotice(t("历史会话修复"), message, "failed");
     } finally {
-      window.clearInterval(progressTimer);
+      unlisten?.();
     }
   };
 
