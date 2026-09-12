@@ -302,4 +302,16 @@ if [ "$DMG_CREATED" != true ]; then
   exit 1
 fi
 
+# hdiutil may return before the output directory entry becomes visible to the
+# next process on the x64 runner. Wait briefly and fail with a useful message.
+for attempt in 1 2 3 4 5; do
+  [ -f "$DMG" ] && break
+  sleep "$attempt"
+done
+if [ ! -f "$DMG" ]; then
+  echo "error: DMG output is missing after conversion: $DMG" >&2
+  find "$DIST" -maxdepth 2 -type f -print >&2 || true
+  exit 1
+fi
+
 echo "$DMG"
