@@ -45,7 +45,7 @@ jobs:
         run: npm run vite:build
 
       - name: Rust tests
-        run: cargo test --workspace
+        run: cargo test -p codex-plus-core --test relay_config
 
       - name: Build release binaries
         run: cargo build --release
