@@ -2601,6 +2601,8 @@ fn clear_relay_config_removes_model_provider_and_preserves_other_config() {
         temp.path().join("config.toml"),
         r#"model = "gpt-5"
 model_provider = "custom"
+model_context_window = 262144
+model_auto_compact_token_limit = 200000
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
@@ -2637,6 +2639,8 @@ model = "gpt-5-mini"
     assert!(updated.contains(r#"model = "gpt-5""#));
     assert!(!updated.contains("model_provider ="));
     assert!(!updated.contains("model_catalog_json"));
+    assert!(!updated.contains("model_context_window"));
+    assert!(!updated.contains("model_auto_compact_token_limit"));
     assert!(!updated.contains("OPENAI_API_KEY"));
     assert!(updated.contains("[model_providers.custom]"));
     assert!(updated.contains(r#"wire_api = "responses""#));
