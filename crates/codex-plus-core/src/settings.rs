@@ -1899,6 +1899,10 @@ mod tests {
         path
     }
 
+    fn normalized_default_settings() -> BackendSettings {
+        normalize_settings_config_sections(BackendSettings::default())
+    }
+
     #[test]
     fn atomic_write_replaces_existing_file_and_removes_temp_file() {
         let dir = temp_dir();
@@ -2546,7 +2550,7 @@ experimental_bearer_token = "sk-existing""#
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
 
-        assert_eq!(store.load().unwrap(), BackendSettings::default());
+        assert_eq!(store.load().unwrap(), normalized_default_settings());
     }
 
     #[test]
@@ -2556,7 +2560,7 @@ experimental_bearer_token = "sk-existing""#
         std::fs::write(&path, "{bad json").unwrap();
         let store = SettingsStore::new(path);
 
-        assert_eq!(store.load().unwrap(), BackendSettings::default());
+        assert_eq!(store.load().unwrap(), normalized_default_settings());
     }
 
     #[test]
@@ -2570,9 +2574,10 @@ experimental_bearer_token = "sk-existing""#
             ..BackendSettings::default()
         };
 
+        let expected = normalize_settings_config_sections(settings.clone());
         store.save(&settings).unwrap();
 
-        assert_eq!(store.load().unwrap(), settings);
+        assert_eq!(store.load().unwrap(), expected);
     }
 
     #[test]
