@@ -1307,6 +1307,28 @@ experimental_bearer_token = "sk-a"
 }
 
 #[test]
+fn apply_relay_files_preserves_live_windows_sandbox_across_profile_switches() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "[windows]\nsandbox = \"unelevated\"\nsandbox_private_desktop = false\n",
+    )
+    .unwrap();
+    apply_relay_files_to_home(
+        temp.path(),
+        "model = \"new\"\n[windows]\nsandbox = \"elevated\"\nsandbox_private_desktop = true\n",
+        "{}",
+    )
+    .unwrap();
+    let parsed: toml::Value = std::fs::read_to_string(temp.path().join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(parsed["windows"]["sandbox"].as_str(), Some("unelevated"));
+    assert_eq!(parsed["windows"]["sandbox_private_desktop"].as_bool(), Some(false));
+}
+
+#[test]
 fn apply_relay_files_preserves_live_desktop_personalization_settings() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(

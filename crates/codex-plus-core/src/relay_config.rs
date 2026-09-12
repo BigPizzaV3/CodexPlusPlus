@@ -1727,7 +1727,13 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
             merge_toml_item(&mut target_doc["desktop"], &live_desktop);
         }
     }
-    for key in ["sandbox_mode", "approval_policy", "sandbox_workspace_write"] {
+    // Windows 沙盒实现属于本机设置，切换模板时保留，避免重启后重新要求设置。
+    for key in [
+        "sandbox_mode",
+        "approval_policy",
+        "sandbox_workspace_write",
+        "windows",
+    ] {
         if let Some(live_value) = live_doc.get(key).cloned() {
             merge_toml_item(&mut target_doc[key], &live_value);
         }
@@ -1748,6 +1754,46 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
         }
     }
     Ok(normalize_optional_toml(target_doc))
+}
+
+/// Normal-user launches cannot complete the elevated native Windows sandbox
+/// setup. Downgrade only that case; an elevated process keeps the user's mode.
+pub fn ensure_windows_sandbox_usable_for_current_user(home: &Path) -> anyhow::Result<bool> {
+    if windows_process_is_elevated() {
+        return Ok(false);
+    }
+    let config_path = home.join("config.toml");
+    let existing = match std::fs::read_to_string(&config_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut doc = parse_toml_document(&existing)?;
+    let Some(windows) = doc.get_mut("windows").and_then(Item::as_table_mut) else {
+        return Ok(false);
+    };
+    let elevated = windows
+        .get("sandbox")
+        .and_then(Item::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("elevated"));
+    if !elevated {
+        return Ok(false);
+    }
+    windows["sandbox"] = toml_edit::value("unelevated");
+    crate::settings::atomic_write(&config_path, normalize_optional_toml(doc).as_bytes())?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn windows_process_is_elevated() -> bool {
+    use windows::Win32::UI::Shell::IsUserAnAdmin;
+
+    unsafe { IsUserAnAdmin().as_bool() }
+}
+
+#[cfg(not(windows))]
+fn windows_process_is_elevated() -> bool {
+    true
 }
 
 fn preserve_live_hook_state(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
