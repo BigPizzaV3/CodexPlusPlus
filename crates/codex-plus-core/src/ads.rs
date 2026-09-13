@@ -19,6 +19,7 @@ const BUILTIN_SPONSOR_EXPIRES_AT: &str = "2026-08-02T23:59:59+08:00";
 const DEEPKEY_SPONSOR_EXPIRES_AT: &str = "2026-08-25T23:59:59+08:00";
 const APIMART_SPONSOR_EXPIRES_AT: &str = "2026-09-27T23:59:59+08:00";
 const NEW_SPONSOR_EXPIRES_AT: &str = "2026-11-27T23:59:59+08:00";
+const BAIKEWEI_SPONSOR_EXPIRES_AT: &str = "2026-10-14T23:59:59+08:00";
 
 pub const DEFAULT_AD_LIST_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
@@ -45,6 +46,7 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
         .cloned()
         .collect::<Vec<_>>();
     fill_known_remote_logos(&mut ads);
+    apply_known_remote_expiry_overrides(&mut ads);
     append_builtin_sponsors(&mut ads);
     // `topAd` 是独立的置顶赞助位，**不参与** `ads` 列表的排序与过期过滤语义。
     // 它比普通推荐贵，由商务单独指定，所以不能混在推荐池里按数组顺序取。
@@ -94,6 +96,27 @@ fn fill_known_remote_logos(ads: &mut [Value]) {
             continue;
         };
         object.insert("image".to_string(), json!(data_uri(mime, image)));
+    }
+}
+
+// 百可为AI已确认续期一个月；在外部广告清单同步前保留本地覆盖。
+fn apply_known_remote_expiry_overrides(ads: &mut [Value]) {
+    for ad in ads {
+        let Some(object) = ad.as_object_mut() else {
+            continue;
+        };
+        if object.get("id").and_then(Value::as_str) != Some("baikewei-ai") {
+            continue;
+        }
+        let Some(current) = object.get("expires_at").and_then(Value::as_str) else {
+            continue;
+        };
+        if current.split('T').next() == Some("2026-09-11") {
+            object.insert(
+                "expires_at".to_string(),
+                json!(BAIKEWEI_SPONSOR_EXPIRES_AT),
+            );
+        }
     }
 }
 

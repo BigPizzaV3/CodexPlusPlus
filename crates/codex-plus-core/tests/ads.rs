@@ -82,6 +82,26 @@ fn normalizes_remote_ads_for_plugin_and_manager_rendering() {
 }
 
 #[test]
+fn extends_baikewei_sponsor_expiry_for_the_local_override() {
+    let payload = normalize_ad_payload(json!({
+        "version": 1,
+        "ads": [{
+            "id": "baikewei-ai",
+            "type": "sponsor",
+            "title": "百可为AI",
+            "description": "推荐内容",
+            "url": "https://example.test/baikewei",
+            "expires_at": "2026-09-11"
+        }]
+    }));
+
+    assert_eq!(
+        payload["ads"][0]["expires_at"],
+        json!("2026-10-14T23:59:59+08:00")
+    );
+}
+
+#[test]
 fn builtin_sponsors_are_appended_after_remote_sponsors_in_declared_order() {
     let payload = normalize_ad_payload(json!({
         "version": 1,
