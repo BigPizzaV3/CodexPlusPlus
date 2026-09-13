@@ -4945,7 +4945,11 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
     match style {
         ChatReasoningStyle::Thinking => {
             result["thinking"] = json!({
-                "type": if reasoning_enabled { "enabled" } else { "disabled" }
+                "type": if reasoning_enabled {
+                    kimi_thinking_enabled_type(model)
+                } else {
+                    "disabled"
+                }
             });
         }
         ChatReasoningStyle::EnableThinking => {
@@ -5085,7 +5089,15 @@ fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<
 /// 仍只发 thinking 开关。
 fn is_kimi_coding_model(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.starts_with("k3") || model.contains("for-coding")
+    model.starts_with("k3") || model.contains("kimi-k3") || model.contains("for-coding")
+}
+
+fn kimi_thinking_enabled_type(model: &str) -> &'static str {
+    if is_kimi_coding_model(model) {
+        "adaptive"
+    } else {
+        "enabled"
+    }
 }
 
 fn supports_reasoning_effort(model: &str) -> bool {
