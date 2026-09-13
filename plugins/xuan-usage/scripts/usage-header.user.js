@@ -343,24 +343,18 @@
 
   function callBridge(path, payload) {
     if (path !== "/relay-balance/query") return Promise.reject(new Error("Xuan 用量请求不受支持"));
-    const bridgeUrl = window.__XUAN_BRIDGE_URL__ || "http://127.0.0.1:57324";
-    const headers = { "content-type": "application/json" };
-    if (window.__XUAN_BRIDGE_TOKEN__) headers["x-xuan-bridge-token"] = window.__XUAN_BRIDGE_TOKEN__;
+    const request = Promise.resolve().then(() => {
+      const pageBridge = window.__xuanPluginBridge?.["xuan-usage"];
+      if (typeof pageBridge !== "function") throw new Error("用量插件尚未连接，请确认插件已启用并重新打开任务");
+      return pageBridge("/v1/usage", payload || {});
+    });
     let timeout;
     return Promise.race([
-      fetch(`${bridgeUrl}/v1/usage`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload || {}),
-      }).then(async (response) => {
-        const result = await response.json().catch(() => ({}));
-        if (response.ok) return result;
-        throw new Error(result?.error?.message || result?.message || "用量请求失败");
-      }),
+      request,
       new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("用量请求超时")), 20_000); }),
     ]).catch((error) => {
       if (/failed to fetch|networkerror|econnrefused/i.test(error?.message || "")) {
-        throw new Error("无法连接本地 Xuan Bridge，请先运行 install-xuan-features.bat 启动服务");
+        throw new Error("无法连接用量插件，请重新打开任务后重试");
       }
       throw error;
     }).finally(() => clearTimeout(timeout));

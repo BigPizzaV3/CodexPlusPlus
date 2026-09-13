@@ -23,10 +23,11 @@ test("all Xuan plugin manifests use the official extension fields", () => {
   for (const name of pluginNames) {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, name, ".codex-plugin", "plugin.json"), "utf8"));
     assert.equal(manifest.name, name);
-    assert.equal(manifest.version, pluginVersions[name]);
+    assert.equal(manifest.version.split("+")[0], pluginVersions[name]);
     assert.equal(manifest.skills, "./skills/");
     assert.equal(manifest.mcpServers, "./.mcp.json");
     assert.ok(Array.isArray(manifest.interface.capabilities));
+    assert.ok(manifest.interface.defaultPrompt?.every((prompt) => typeof prompt === "string" && prompt.length > 0));
   }
 });
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import http from "node:http";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const bridgeBinary = process.env.XUAN_BRIDGE_BIN || path.join(
@@ -20,10 +21,11 @@ const pluginNames = ["xuan-workspace-search", "xuan-usage", "xuan-polish", "xuan
 
 function startServer(pluginName, options = {}) {
   const pluginRoot = path.join(import.meta.dirname, pluginName);
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-mcp-home-"));
   const environment = {
     ...process.env,
     XUAN_BRIDGE_BIN: bridgeBinary,
-    XUAN_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "xuan-mcp-home-")),
+    XUAN_HOME: home,
     ...options.env
   };
   for (const key of options.unsetEnv || []) delete environment[key];
@@ -56,12 +58,26 @@ function startServer(pluginName, options = {}) {
         child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
       });
     },
-    close() {
+    async close() {
       child.stdin.end();
-      if (child.exitCode !== null) return Promise.resolve();
-      const exited = once(child, "exit").then(() => undefined);
-      child.kill();
-      return exited;
+      let timer;
+      try {
+        if (child.exitCode !== null) return;
+        await Promise.race([
+          once(child, "exit"),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error("插件未按预期退出")), 5000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = once(child, "exit");
+          child.kill();
+          await exited;
+        }
+        fs.rmSync(home, { recursive: true, force: true });
+      }
     }
   };
 }
@@ -178,4 +194,46 @@ test("installed-style MCP stdio exits after input closes", async () => {
   assert.equal(code, 0);
   assert.equal(JSON.parse(stdout.trim()).result.serverInfo.name, "xuan-workspace-search");
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("版本化安装加载独立界面模块，兼容旧环境变量并随 MCP 退出", { skip: process.platform !== "win32" }, async () => {
+  const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-versioned-runtime-"));
+  const bin = path.join(localAppData, "XuanPlusPlus", "bin");
+  const version = "a".repeat(64);
+  const runtime = path.join(bin, "versions", version);
+  fs.mkdirSync(runtime, { recursive: true });
+  fs.copyFileSync(bridgeBinary, path.join(runtime, "xuan-bridge.exe"));
+  fs.copyFileSync(path.join(repoRoot, "tools", "xuan-ui-bridge", "xuan-ui-bridge.mjs"), path.join(runtime, "xuan-ui-bridge.mjs"));
+  fs.writeFileSync(path.join(bin, "current.json"), JSON.stringify({ version }));
+  let probes = 0;
+  const debug = http.createServer((request, response) => {
+    probes++;
+    response.writeHead(200);
+    response.end("[]");
+  });
+  debug.listen(0, "127.0.0.1");
+  await once(debug, "listening");
+  const server = startServer("xuan-polish", {
+    env: {
+      LOCALAPPDATA: localAppData,
+      XUAN_BRIDGE_BIN: path.join(bin, "xuan-bridge.exe"),
+      XUAN_CODEX_DEBUG_PORT: String(debug.address().port),
+      XUAN_UI_BRIDGE_DISABLE: "0",
+    },
+    unsetEnv: ["XUAN_UI_BRIDGE_MODULE"],
+  });
+  try {
+    const initialized = await server.request(60, "initialize");
+    assert.equal(initialized.result.serverInfo.name, "xuan-polish");
+    for (let attempt = 0; attempt < 100 && probes === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(probes > 0, "已安装的独立界面模块未启动");
+    const validation = await server.request(61, "tools/call", { name: "polish_text", arguments: { text: "" } });
+    assert.equal(validation.result.isError, true);
+  } finally {
+    await server.close();
+    await new Promise((resolve) => debug.close(resolve));
+    fs.rmSync(localAppData, { recursive: true, force: true });
+  }
 });

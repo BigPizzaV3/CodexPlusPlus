@@ -39,10 +39,6 @@ async fn bridge_routes_cover_all_current_paths() {
             "/llm-proxy",
             json!({"url": "http://example.com", "method": "POST"}),
         ),
-        ("/v1/search/start", json!({"query": "needle"})),
-        ("/v1/search/preview", json!({"path": "sample.txt"})),
-        ("/v1/usage", json!({})),
-        ("/v1/polish", json!({"text": "draft"})),
         ("/ads", json!({})),
         ("/zed-remote/status", json!({})),
         (
@@ -110,25 +106,6 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
-}
-
-#[tokio::test]
-async fn xuan_bridge_routes_forward_only_the_ui_contract() {
-    let ctx = test_context();
-    for path in [
-        "/v1/search/start",
-        "/v1/search/preview",
-        "/v1/usage",
-        "/v1/polish",
-    ] {
-        let result = handle_bridge_request(ctx.clone(), path, json!({"marker": path})).await;
-        assert_eq!(result["status"], json!("ok"));
-        assert_eq!(result["path"], json!(path));
-        assert_eq!(result["payload"]["marker"], json!(path));
-    }
-
-    let result = handle_bridge_request(ctx, "/v1/search/poll", json!({})).await;
-    assert_eq!(result["message"], json!("Unknown bridge path"));
 }
 
 #[tokio::test]
@@ -1325,10 +1302,6 @@ impl BridgeRuntimeService for FakeRuntime {
 
     async fn ads(&self) -> anyhow::Result<Value> {
         Ok(json!({"version": 1, "ads": [{"id": "runtime-ad"}]}))
-    }
-
-    async fn xuan_bridge_request(&self, path: String, payload: Value) -> anyhow::Result<Value> {
-        Ok(json!({"status": "ok", "path": path, "payload": payload}))
     }
 
     async fn zed_remote_status(&self) -> anyhow::Result<Value> {

@@ -10,10 +10,7 @@ use codex_plus_core::status::LaunchStatus;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::process::{Child, Command};
 
 #[derive(Clone)]
 struct LauncherHooks {
@@ -101,114 +98,10 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
     tokio::spawn(async {
         let _ = notify_manager_when_update_available().await;
     });
-    let xuan_bridges = start_xuan_bridge_services().await?;
     let hooks = LauncherHooks::default();
-    let result = async {
-        let handle = launch_and_inject_with_hooks(options, &hooks).await?;
-        handle.wait_for_codex_exit().await
-    }
-    .await;
-    xuan_bridges.shutdown().await;
-    result
-}
-
-struct XuanBridgeServices {
-    children: Vec<Child>,
-}
-
-impl XuanBridgeServices {
-    async fn shutdown(mut self) {
-        for child in &mut self.children {
-            let _ = child.kill().await;
-        }
-        for child in &mut self.children {
-            let _ = child.wait().await;
-        }
-    }
-}
-
-async fn start_xuan_bridge_services() -> anyhow::Result<XuanBridgeServices> {
-    let mut children = Vec::new();
-    if let Some(child) = start_xuan_bridge_service(
-        "xuan-bridge",
-        57324,
-        resolve_xuan_binary("XUAN_BRIDGE_BIN", "xuan-bridge"),
-        ["--http", "127.0.0.1:57324"],
-    )
-    .await?
-    {
-        children.push(child);
-    }
-    let mobile = start_xuan_bridge_service(
-        "mobile-bridge",
-        17421,
-        resolve_xuan_binary("XUAN_REMOTE_BRIDGE_BIN", "xuan-plus-remote-bridge"),
-        std::iter::empty::<&str>(),
-    )
-    .await;
-    match mobile {
-        Ok(Some(child)) => children.push(child),
-        Ok(None) => {}
-        Err(error) => {
-            XuanBridgeServices { children }.shutdown().await;
-            return Err(error);
-        }
-    }
-    Ok(XuanBridgeServices { children })
-}
-
-fn resolve_xuan_binary(variable: &str, command_name: &str) -> String {
-    if let Ok(value) = std::env::var(variable) {
-        if !value.trim().is_empty() {
-            return value;
-        }
-    }
-    #[cfg(windows)]
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let installed = PathBuf::from(local_app_data)
-            .join("XuanPlusPlus")
-            .join("bin")
-            .join(format!("{command_name}.exe"));
-        if installed.is_file() {
-            return installed.to_string_lossy().into_owned();
-        }
-    }
-    command_name.to_string()
-}
-
-async fn start_xuan_bridge_service<I, S>(
-    name: &str,
-    port: u16,
-    binary: String,
-    args: I,
-) -> anyhow::Result<Option<Child>>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
-    if codex_plus_core::ports::can_connect_loopback_port(port) {
-        return Ok(None);
-    }
-    let mut command = Command::new(&binary);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("启动 {name} 失败，请确认插件已安装"))?;
-    for _ in 0..50 {
-        if codex_plus_core::ports::can_connect_loopback_port(port) {
-            return Ok(Some(child));
-        }
-        if let Some(status) = child.try_wait()? {
-            anyhow::bail!("{name} 启动后退出（{status}）");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let _ = child.kill().await;
-    anyhow::bail!("{name} 未能监听 127.0.0.1:{port}");
+    let handle = launch_and_inject_with_hooks(options, &hooks).await?;
+    handle.wait_for_codex_exit().await?;
+    Ok(())
 }
 
 fn current_timestamp_ms() -> u64 {

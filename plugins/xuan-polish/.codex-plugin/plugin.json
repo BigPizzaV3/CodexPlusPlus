@@ -1,17 +1,23 @@
 {
   "name": "xuan-polish",
-  "version": "0.1.2",
+  "version": "0.1.2+codex.20260913172044",
   "description": "Polish a draft prompt through a configured model.",
-  "author": { "name": "XuanPlusPlus" },
+  "author": {
+    "name": "XuanPlusPlus"
+  },
   "license": "AGPL-3.0-only",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Xuan Polish",
+    "defaultPrompt": ["在保留原意和技术约束的前提下，润色我提供的提示词。"],
     "shortDescription": "Rewrite prompts with selectable styles.",
     "longDescription": "Uses xuan-bridge for model calls and keeps the optional Composer button as a thin user script.",
     "developerName": "XuanPlusPlus",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"]
+    "capabilities": [
+      "Read",
+      "Write"
+    ]
   }
 }

@@ -34,6 +34,8 @@ set "CODEX_PLUS_USER_SCRIPT_DIR=%APPDATA%\Codex++\user_scripts"
 set "XUAN_BRIDGE_MANIFEST=%ROOT_DIR%\tools\xuan-bridge\Cargo.toml"
 set "XUAN_BRIDGE_BUILD=%ROOT_DIR%\tools\xuan-bridge\target\release\xuan-bridge.exe"
 set "XUAN_BRIDGE_BIN=%BIN_DIR%\xuan-bridge.exe"
+set "UI_BRIDGE_SOURCE=%ROOT_DIR%\tools\xuan-ui-bridge\xuan-ui-bridge.mjs"
+set "RUNTIME_INSTALLER=%ROOT_DIR%\scripts\install-xuan-runtime.ps1"
 set "REMOTE_BRIDGE_MANIFEST=%ROOT_DIR%\apps\xuan-plus-remote\bridge\Cargo.toml"
 set "REMOTE_BRIDGE_BUILD=%ROOT_DIR%\apps\xuan-plus-remote\bridge\target\release\xuan-plus-remote-bridge.exe"
 set "XUAN_REMOTE_BRIDGE_BIN=%BIN_DIR%\xuan-plus-remote-bridge.exe"
@@ -57,6 +59,11 @@ if not defined CODEX_CMD if defined APPDATA if exist "%APPDATA%\npm\codex.cmd" s
 echo [1/7] Checking plugin prerequisites...
 call :require_command node.exe Node.js
 if errorlevel 1 exit /b 1
+node.exe -e "if(typeof WebSocket!=='function')process.exit(1)"
+if errorlevel 1 (
+  echo [错误] 独立插件界面需要 Node.js 22 或更高版本。
+  exit /b 1
+)
 call :require_command cargo.exe Rust
 if errorlevel 1 exit /b 1
 call :require_command pwsh.exe PowerShell
@@ -71,6 +78,8 @@ call :require_command rg.exe ripgrep
 if errorlevel 1 exit /b 1
 for %%F in (
   "%XUAN_BRIDGE_MANIFEST%"
+  "%UI_BRIDGE_SOURCE%"
+  "%RUNTIME_INSTALLER%"
   "%REMOTE_BRIDGE_MANIFEST%"
   "%MARKETPLACE_PATH%"
   "%POLISH_SCRIPT_SOURCE%"
@@ -113,34 +122,19 @@ if errorlevel 1 (
   echo [ERROR] Cannot create the local bridge directory.
   exit /b 1
 )
-copy /y "%XUAN_BRIDGE_BUILD%" "%XUAN_BRIDGE_BIN%" >nul
+pwsh.exe -NoLogo -NoProfile -NonInteractive -File "%RUNTIME_INSTALLER%" -BridgeSource "%XUAN_BRIDGE_BUILD%" -RemoteSource "%REMOTE_BRIDGE_BUILD%" -UiSource "%UI_BRIDGE_SOURCE%" -BinDirectory "%BIN_DIR%"
 if errorlevel 1 (
-  echo [ERROR] Cannot install xuan-bridge.
+  echo [错误] 独立插件运行文件安装失败。
   exit /b 1
 )
-copy /y "%REMOTE_BRIDGE_BUILD%" "%XUAN_REMOTE_BRIDGE_BIN%" >nul
-if errorlevel 1 (
-  echo [ERROR] Cannot install the mobile bridge.
-  exit /b 1
-)
-echo   [OK] Both independent bridges installed.
+echo   [通过] 独立插件运行文件已按版本安装，无需关闭或替换 Codex++。
 
 echo [4/7] Initializing plugin configuration...
-"%XUAN_BRIDGE_BIN%" init "%XUAN_HOME%"
+"%XUAN_BRIDGE_BUILD%" init "%XUAN_HOME%"
 if errorlevel 1 (
   echo [ERROR] Xuan plugin configuration initialization failed.
   exit /b 1
 )
-setx XUAN_HOME "%XUAN_HOME%" >nul
-if errorlevel 1 exit /b 1
-setx XUAN_BRIDGE_BIN "%XUAN_BRIDGE_BIN%" >nul
-if errorlevel 1 exit /b 1
-setx XUAN_REMOTE_BRIDGE_BIN "%XUAN_REMOTE_BRIDGE_BIN%" >nul
-if errorlevel 1 exit /b 1
-setx XUAN_MOBILE_BRIDGE_URL "%XUAN_MOBILE_BRIDGE_URL%" >nul
-if errorlevel 1 exit /b 1
-setx XUAN_BRIDGE_ALLOWED_ORIGINS "%XUAN_BRIDGE_ALLOWED_ORIGINS%" >nul
-if errorlevel 1 exit /b 1
 
 echo [5/7] Registering and installing four Codex plugins...
 call "%CODEX_CMD%" plugin marketplace list | findstr.exe /i /b /c:"xuan-curated" >nul
@@ -155,12 +149,7 @@ if errorlevel 1 (
 )
 set "PLUGIN_LIST_FILE=%TEMP%\xuan-codex-plugin-list.txt"
 for %%P in (xuan-workspace-search xuan-usage xuan-polish xuan-mobile) do (
-  call "%CODEX_CMD%" plugin list > "%PLUGIN_LIST_FILE%"
-  findstr.exe /i /r /c:"%%P@xuan-curated.*installed, enabled" "%PLUGIN_LIST_FILE%" >nul
-  if not errorlevel 1 (
-    echo   [OK] %%P is already installed and enabled.
-  ) else (
-    echo   Installing %%P...
+    echo   更新独立插件 %%P...
     call "%CODEX_CMD%" plugin add "%%P@xuan-curated"
     if errorlevel 1 (
       echo [ERROR] Cannot install or enable plugin: %%P
@@ -175,7 +164,6 @@ for %%P in (xuan-workspace-search xuan-usage xuan-polish xuan-mobile) do (
       exit /b 1
     )
     echo   [OK] %%P installed and enabled.
-  )
 )
 del /q "%PLUGIN_LIST_FILE%" >nul 2>&1
 
@@ -210,8 +198,8 @@ if errorlevel 1 (
 )
 echo   [OK] mobile User Script installed.
 
-echo [7/7] Bridge services are ready for Codex++ startup.
-echo   [OK] Codex++ will start and stop the local bridge services with its launcher.
+echo [7/7] 独立插件运行环境已就绪。
+echo   [通过] 插件自行管理通信和子进程，不修改 Codex++ 程序或更新逻辑。
 
 echo.
 echo Four features were installed as independent plugins:
@@ -220,7 +208,7 @@ echo   2. Usage: original panel with automatic OwlAI usage lookup
 echo   3. Search: project search, preview, cancel and Ctrl+Shift+F
 echo   4. Mobile: desktop entry, pairing QR, confirmation and task sync
 echo.
-echo Fully exit and restart Codex++ to activate plugins and User Scripts.
+echo 重新打开 Codex++ 并新建任务，以加载更新后的插件和用户脚本。
 exit /b 0
 
 :require_command

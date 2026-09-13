@@ -48,18 +48,14 @@
       "/workspace-search/preview": "/v1/search/preview",
     }[path];
     if (!route) return Promise.resolve({ status: "failed", message: "Xuan 搜索请求不受支持" });
-    const bridgeUrl = window.__XUAN_BRIDGE_URL__ || "http://127.0.0.1:57324";
-    const headers = { "content-type": "application/json" };
-    if (window.__XUAN_BRIDGE_TOKEN__) headers["x-xuan-bridge-token"] = window.__XUAN_BRIDGE_TOKEN__;
-    return fetch(`${bridgeUrl}${route}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    }).then(async (response) => {
-      const result = await response.json().catch(() => ({}));
-      if (response.ok) return result;
-      return { status: "failed", message: result?.error?.message || result?.message || "搜索请求失败" };
-    }).catch((error) => ({ status: "failed", message: error?.message || String(error) }));
+    return Promise.resolve().then(() => {
+      const pageBridge = window.__xuanPluginBridge?.["xuan-workspace-search"];
+      if (typeof pageBridge !== "function") throw new Error("搜索插件尚未连接，请确认插件已启用并重新打开任务");
+      return pageBridge(route, payload);
+    }).catch((error) => ({
+      status: "failed",
+      message: /\p{Script=Han}/u.test(error?.message || "") ? error.message : "搜索插件请求失败，请重试",
+    }));
   }
 
   function absoluteLocalPath(value) {

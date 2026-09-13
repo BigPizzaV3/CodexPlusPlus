@@ -1,17 +1,22 @@
 {
   "name": "xuan-usage",
-  "version": "0.1.2",
+  "version": "0.1.2+codex.20260913172044",
   "description": "Query relay usage through a provider-neutral local bridge.",
-  "author": { "name": "XuanPlusPlus" },
+  "author": {
+    "name": "XuanPlusPlus"
+  },
   "license": "AGPL-3.0-only",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Xuan Usage",
+    "defaultPrompt": ["查询当前中转用量，不显示任何凭据。"],
     "shortDescription": "Inspect relay usage and account summaries.",
     "longDescription": "Adds provider adapters for relay usage while retaining official Codex token history.",
     "developerName": "XuanPlusPlus",
     "category": "Developer Tools",
-    "capabilities": ["Read"]
+    "capabilities": [
+      "Read"
+    ]
   }
 }

@@ -99,6 +99,14 @@ popd
 
 echo [4/6] 构建 Release 程序...
 echo   使用独立输出目录，避免运行中的程序锁定构建产物。
+set "TAURI_PERMISSION_CACHE_CORRUPT="
+if exist "%PACKAGE_TARGET_DIR%\release\build\." (
+  for /r "%PACKAGE_TARGET_DIR%\release\build" %%F in (*.toml) do call :check_tauri_permission_cache "%%~fF"
+)
+if defined TAURI_PERMISSION_CACHE_CORRUPT (
+  set "PACKAGE_TARGET_DIR=%ROOT_DIR%\target\package-%COMPUTERNAME%"
+  echo   [修复] 检测到损坏的 Tauri 权限缓存，改用本机隔离目录重新构建。
+)
 set "CARGO_TARGET_DIR=%PACKAGE_TARGET_DIR%"
 cargo.exe build --release
 if errorlevel 1 (
@@ -167,4 +175,11 @@ echo.
 echo 打包完成：
 echo   便携版：%ZIP_PATH%
 echo   安装包：%SETUP_PATH%
+exit /b 0
+
+:check_tauri_permission_cache
+set "TAURI_PERMISSION_FILE=%~1"
+if /i "%TAURI_PERMISSION_FILE:\out\permissions\=%"=="%TAURI_PERMISSION_FILE%" exit /b 0
+findstr.exe /L /C:"[" "%~1" >nul 2>&1
+if errorlevel 1 set "TAURI_PERMISSION_CACHE_CORRUPT=1"
 exit /b 0

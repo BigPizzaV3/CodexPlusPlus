@@ -90,9 +90,6 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
-    async fn xuan_bridge_request(&self, path: String, payload: Value) -> anyhow::Result<Value> {
-        xuan_bridge_value(&path, payload).await
-    }
     async fn create_share(&self, payload: Value) -> anyhow::Result<Value> {
         crate::share::create_share(payload).await
     }
@@ -194,11 +191,6 @@ pub async fn handle_bridge_request(
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/llm-proxy" => llm_proxy_value(payload.clone()).await,
-        path @ ("/v1/search/start" | "/v1/search/preview" | "/v1/usage" | "/v1/polish") => {
-            ctx.runtime
-                .xuan_bridge_request(path.to_string(), payload.clone())
-                .await
-        }
         "/ads" => ctx.runtime.ads().await,
         "/share/create" => ctx.runtime.create_share(payload.clone()).await,
         "/zed-remote/status" => ctx.runtime.zed_remote_status().await,
@@ -788,51 +780,6 @@ async fn llm_proxy_value(payload: Value) -> anyhow::Result<Value> {
         "body_text": body_text,
         "body_json": body_json,
     }))
-}
-
-async fn xuan_bridge_value(path: &str, payload: Value) -> anyhow::Result<Value> {
-    if !is_allowed_xuan_bridge_path(path) {
-        anyhow::bail!("不支持的 Xuan Bridge 路径");
-    }
-
-    let body = serde_json::to_vec(&payload)?;
-    if body.len() > 1_048_576 {
-        anyhow::bail!("Xuan Bridge 请求体过大");
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    let mut request = client
-        .post(format!("http://127.0.0.1:57324{path}"))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body);
-    if let Ok(token) = std::env::var("XUAN_BRIDGE_HTTP_TOKEN") {
-        let token = token.trim();
-        if !token.is_empty() {
-            request = request.header("x-xuan-bridge-token", HeaderValue::from_str(token)?);
-        }
-    }
-
-    let response = request.send().await?;
-    if let Some(length) = response.content_length() {
-        if length > 4 * 1024 * 1024 {
-            anyhow::bail!("Xuan Bridge 响应体过大");
-        }
-    }
-    let bytes = response.bytes().await?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        anyhow::bail!("Xuan Bridge 响应体过大");
-    }
-    serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Xuan Bridge 返回了无效数据"))
-}
-
-fn is_allowed_xuan_bridge_path(path: &str) -> bool {
-    matches!(
-        path,
-        "/v1/search/start" | "/v1/search/preview" | "/v1/usage" | "/v1/polish"
-    )
 }
 
 fn validate_llm_proxy_url(raw: &str) -> anyhow::Result<reqwest::Url> {

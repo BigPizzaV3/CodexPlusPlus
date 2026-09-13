@@ -15,10 +15,10 @@ test("usage script renders the original compact panel and OwlAI daily usage", ()
 });
 
 test("usage script uses the independent bridge and keeps credentials out of the renderer", () => {
-  assert.match(source, /__XUAN_BRIDGE_URL__/);
-  assert.match(source, /x-xuan-bridge-token/);
+  assert.match(source, /__xuanPluginBridge/);
+  assert.doesNotMatch(source, /__codexSessionDeleteBridge|127\.0\.0\.1:57324|x-xuan-bridge-token/);
   assert.match(source, /用量服务暂时不可用|用量查询失败/);
-  assert.match(source, /无法连接本地 Xuan Bridge/);
+  assert.match(source, /无法连接用量插件/);
   assert.doesNotMatch(source, /Authorization\s*:/i);
   assert.doesNotMatch(source, /bearer\s+\$?\{/i);
 });

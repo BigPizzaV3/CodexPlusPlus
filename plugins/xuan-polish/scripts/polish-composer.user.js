@@ -1,23 +1,12 @@
 /*
- * Xuan++ built-in Prompt Optimize (official rewrite).
- *
- * Reference: community "Prompt Optimize" market script v1.0.3. This built-in
- * version replaces the market implementation:
- *   - settings are stored in the Xuan++ settings store, not renderer
- *     localStorage; the API key never leaves the Xuan++ backend;
- *   - optimization requests go through the Xuan++ bridge
- *     /prompt-optimize/generate so the upstream request and key handling stay
- *     in the Rust side.
- *
- * Host contract: injected by the Xuan++ launcher into the Codex renderer
- * (app://-), where window.__codexSessionDeleteBridge is available. The script
- * self-destroys when the feature is disabled or the bridge is missing.
+ * 润色界面通过 Codex++ 用户脚本机制加载，通信由独立插件进程提供。
+ * 密钥和供应商请求保留在 xuan-bridge，不依赖宿主源码或定制启动器。
  */
 (() => {
   const SCRIPT_VERSION = "1.1.6";
-  const INSTANCE_REVISION = "official-2026-09-v17";
+  const INSTANCE_REVISION = "official-2026-09-v19";
   const API_KEY = "__codexPlusPromptOptimize";
-  const BRIDGE_KEY = "__codexSessionDeleteBridge";
+  const BRIDGE_KEY = "__xuanPluginBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
   const BUTTON_ATTR = `data-cpo-button-${INSTANCE_REVISION}`;
   const PANEL_ATTR = `data-cpo-panel-${INSTANCE_REVISION}`;
@@ -219,24 +208,31 @@
       "/settings/set": ["POST", "/v1/polish/settings/set"],
     }[path];
     if (!route) return Promise.reject(new Error("Xuan 润色请求不受支持"));
-    const bridgeUrl = window.__XUAN_BRIDGE_URL__ || "http://127.0.0.1:57324";
-    const headers = { "content-type": "application/json" };
-    if (window.__XUAN_BRIDGE_TOKEN__) headers["x-xuan-bridge-token"] = window.__XUAN_BRIDGE_TOKEN__;
     let timer = 0;
     const timeout = new Promise((resolve) => {
       timer = window.setTimeout(() => resolve({ error: "Xuan++ 桥请求超时" }), BRIDGE_TIMEOUT_MS);
     });
-    const request = fetch(`${bridgeUrl}${route[1]}`, {
-      method: route[0],
-      headers,
-      body: route[0] === "GET" ? undefined : JSON.stringify(payload || {}),
-    }).then(async (response) => {
-      const result = await response.json().catch(() => ({}));
-      if (response.ok) return result;
-      const message = result?.error?.message || result?.message || "Xuan++ 桥请求失败";
+    const request = Promise.resolve().then(async () => {
+      const pageBridge = window[BRIDGE_KEY]?.["xuan-polish"];
+      // 只调用插件自己的通道，不依赖宿主补丁，也不重发写入请求。
+      if (typeof pageBridge !== "function") throw new Error("润色插件尚未连接，请确认插件已启用并重新打开任务");
+      return pageBridge(route[1], payload || {});
+    }).then((result) => {
+      if (result?.status === "failed" || result?.error) throw result;
+      return result;
+    }).catch((error) => {
+      const message = polishBridgeErrorMessage(error);
       return { status: "failed", error: message, message };
     });
     return Promise.race([request, timeout]).finally(() => window.clearTimeout(timer));
+  }
+
+  function polishBridgeErrorMessage(error) {
+    const message = error?.error?.message || error?.message || error?.error || "";
+    if (/Unknown bridge path/i.test(message)) return "润色插件接口不匹配，请更新插件后重新打开任务";
+    if (/failed to fetch|networkerror|econnrefused/i.test(message)) return "无法连接润色插件，请重新打开任务后重试";
+    return typeof message === "string" && /\p{Script=Han}/u.test(message)
+      ? message : "润色服务请求失败，请检查设置后重试";
   }
 
   async function refreshSettings() {

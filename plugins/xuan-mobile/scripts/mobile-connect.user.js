@@ -123,8 +123,6 @@
   const ROOT_ID = "xuan-mobile-connect";
   const PANEL_ID = "xuan-mobile-connect-panel";
   const STYLE_ID = "xuan-mobile-connect-style";
-  const bridgeUrl = window.__XUAN_BRIDGE_URL__ || "http://127.0.0.1:57324";
-  const bridgeToken = window.__XUAN_BRIDGE_TOKEN__ || "";
 
   window[API_KEY]?.destroy?.();
   const state = {
@@ -148,18 +146,37 @@
   }
 
   async function request(path, payload, method = "POST") {
-    const headers = { "content-type": "application/json" };
-    if (bridgeToken) headers["x-xuan-bridge-token"] = bridgeToken;
-    const response = await fetch(`${bridgeUrl}${path}`, {
-      method,
-      headers,
-      body: method === "GET" ? undefined : JSON.stringify(payload || {}),
-    });
-    const value = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(value?.error?.message || value?.message || "手机连接操作未完成");
+    let timer;
+    try {
+      const pending = Promise.resolve().then(async () => {
+        const pageBridge = window.__xuanPluginBridge?.["xuan-mobile"];
+        // 绑定仅提交给独立插件，宿主和页面 HTTP 均不参与转发。
+        if (typeof pageBridge !== "function") throw new Error("手机插件尚未连接，请确认插件已启用并重新打开任务");
+        return pageBridge(path, payload || {});
+      });
+      const value = await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = window.setTimeout(() => {
+            reject(new Error("手机连接请求超时，请稍后重试"));
+          }, 30_000);
+        }),
+      ]);
+      if (!value || value.status === "failed" || value.error) throw value;
+      return value;
+    } catch (error) {
+      throw new Error(mobileBridgeErrorMessage(error));
+    } finally {
+      window.clearTimeout(timer);
     }
-    return value;
+  }
+
+  function mobileBridgeErrorMessage(error) {
+    const message = error?.error?.message || error?.message || error?.error || "";
+    if (/Unknown bridge path/i.test(message)) return "手机插件接口不匹配，请更新插件后重新打开任务";
+    if (/failed to fetch|networkerror|econnrefused/i.test(message)) return "无法连接手机插件，请重新打开任务后重试";
+    return typeof message === "string" && /\p{Script=Han}/u.test(message)
+      ? message : "手机连接操作未完成，请检查本地服务后重试";
   }
 
   function ensureStyle() {

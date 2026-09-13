@@ -2,18 +2,30 @@ import readline from "node:readline";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 function resolveBridgeBinary() {
-  if (process.env.XUAN_BRIDGE_BIN) return process.env.XUAN_BRIDGE_BIN;
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
     const installed = path.join(process.env.LOCALAPPDATA, "XuanPlusPlus", "bin", "xuan-bridge.exe");
+    if (process.env.XUAN_BRIDGE_BIN && path.resolve(process.env.XUAN_BRIDGE_BIN).toLowerCase() !== installed.toLowerCase()) return process.env.XUAN_BRIDGE_BIN;
+    const pointer = path.join(path.dirname(installed), "current.json");
+    if (fs.existsSync(pointer)) {
+      const { version } = JSON.parse(fs.readFileSync(pointer, "utf8"));
+      if (!/^[a-f0-9]{64}$/.test(version)) throw new Error("插件运行文件索引无效，请重新安装插件");
+      const versioned = path.join(path.dirname(installed), "versions", version, "xuan-bridge.exe");
+      if (!fs.existsSync(versioned)) throw new Error("插件运行文件缺失，请重新安装插件");
+      return versioned;
+    }
     if (fs.existsSync(installed)) return installed;
   }
-  return "xuan-bridge";
+  return process.env.XUAN_BRIDGE_BIN || "xuan-bridge";
 }
 
 const bridgeBinary = resolveBridgeBinary();
-const bridge = spawn(bridgeBinary, [], { stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+const bridge = spawn(bridgeBinary, [], {
+  stdio: ["pipe", "pipe", "inherit"], windowsHide: true,
+  env: { ...process.env, XUAN_MOBILE_BRIDGE_URL: process.env.XUAN_MOBILE_BRIDGE_URL || "http://127.0.0.1:17421" },
+});
 const pending = new Map();
 let nextBridgeId = 1;
 let bridgeFailure = null;
@@ -55,7 +67,7 @@ function callBridge(method, params) {
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error(`xuan-bridge request timed out: ${method}`));
-    }, 30_000);
+    }, method === "polish.generate" ? 75_000 : 30_000);
     pending.set(id, { resolve, reject, timer });
     bridge.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
   });
@@ -66,14 +78,32 @@ function resultText(value) {
 }
 
 export function createMcpServer({ name, version = "0.1.2", tools }) {
+  let uiStarting;
+  let closing = false;
+  function startUi() {
+    if (uiStarting || closing || process.env.XUAN_UI_BRIDGE_DISABLE === "1") return;
+    const modulePath = process.env.XUAN_UI_BRIDGE_MODULE || path.join(path.dirname(bridgeBinary), "xuan-ui-bridge.mjs");
+    if (!fs.existsSync(modulePath)) return;
+    uiStarting = import(pathToFileURL(modulePath).href)
+      .then(({ startPluginUi }) => startPluginUi({
+        name, request: callBridge, remoteBinary: path.join(path.dirname(bridgeBinary), "xuan-plus-remote-bridge.exe"),
+      }))
+      .catch(() => { process.stderr.write("插件界面通道启动失败，请重新安装插件。\n"); });
+  }
   const input = readline.createInterface({ input: process.stdin });
-  input.once("close", () => bridge.stdin.end());
+  input.once("close", async () => {
+    closing = true;
+    const ui = await uiStarting;
+    await ui?.close();
+    bridge.stdin.end();
+  });
   input.on("line", async (line) => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
     const response = { jsonrpc: "2.0", id: request.id };
     try {
       if (request.method === "initialize") {
+        startUi();
         response.result = {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
