@@ -9,7 +9,9 @@ try {
     $remote = Join-Path $root 'apps\xuan-plus-remote\bridge\target\release\xuan-plus-remote-bridge.exe'
     $ui = Join-Path $testRoot 'xuan-ui-bridge.mjs'
     Copy-Item -LiteralPath (Join-Path $root 'tools\xuan-ui-bridge\xuan-ui-bridge.mjs') -Destination $ui
-    $bin = Join-Path $testRoot 'bin'
+    $hiddenParent = [System.IO.Directory]::CreateDirectory((Join-Path $testRoot 'AppData'))
+    $hiddenParent.Attributes = $hiddenParent.Attributes -bor [System.IO.FileAttributes]::Hidden
+    $bin = Join-Path $hiddenParent.FullName 'XuanPlusPlus\bin'
     $installer = Join-Path $PSScriptRoot 'install-xuan-runtime.ps1'
     $parameters = @{
         BridgeSource = $bridge
@@ -42,7 +44,7 @@ try {
     if ($second.version -eq $first.version) { throw '新版插件未切换运行文件索引。' }
     if ($child.HasExited) { throw '安装新版不应终止旧版 Bridge。' }
     if ((Get-FileHash -LiteralPath $oldBinary -Algorithm SHA256).Hash -ne $hash) { throw '安装新版修改了旧版可执行文件。' }
-    [pscustomobject]@{ whatIf = $true; idempotent = $true; lockedUpgrade = $true; oldProcessPreserved = $true } | ConvertTo-Json -Compress
+    [pscustomobject]@{ hiddenAncestor = $true; whatIf = $true; idempotent = $true; lockedUpgrade = $true; oldProcessPreserved = $true } | ConvertTo-Json -Compress
 } catch {
     $failed = $true
     Write-Error $_ -ErrorAction Continue

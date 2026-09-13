@@ -69,7 +69,13 @@ function callBridge(method, params) {
       reject(new Error(`xuan-bridge request timed out: ${method}`));
     }, method === "polish.generate" ? 75_000 : 30_000);
     pending.set(id, { resolve, reject, timer });
-    bridge.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    try {
+      bridge.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    } catch (error) {
+      pending.delete(id);
+      clearTimeout(timer);
+      reject(error);
+    }
   });
 }
 
@@ -93,13 +99,21 @@ export function createMcpServer({ name, version = "0.1.2", tools }) {
   const input = readline.createInterface({ input: process.stdin });
   input.once("close", async () => {
     closing = true;
+    rejectPending(new Error("MCP 客户端已关闭"));
     const ui = await uiStarting;
     await ui?.close();
-    bridge.stdin.end();
+    if (!bridge.stdin.destroyed) bridge.stdin.end();
+    if (!bridge.killed) bridge.kill();
   });
   input.on("line", async (line) => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
+    if (!request || typeof request !== "object" || Array.isArray(request)) return;
+    const isNotification = !Object.hasOwn(request, "id");
+    if (isNotification) {
+      // 客户端通知没有响应；向 stdout 写入无 id 响应会破坏 JSON-RPC 会话。
+      return;
+    }
     const response = { jsonrpc: "2.0", id: request.id };
     try {
       if (request.method === "initialize") {
@@ -111,6 +125,8 @@ export function createMcpServer({ name, version = "0.1.2", tools }) {
         };
       } else if (request.method === "notifications/initialized") {
         return;
+      } else if (request.method === "ping") {
+        response.result = {};
       } else if (request.method === "tools/list") {
         response.result = { tools: tools.map(({ bridgeMethod, ...tool }) => tool) };
       } else if (request.method === "tools/call") {

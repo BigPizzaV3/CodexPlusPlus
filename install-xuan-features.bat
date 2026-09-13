@@ -36,6 +36,7 @@ set "XUAN_BRIDGE_BUILD=%ROOT_DIR%\tools\xuan-bridge\target\release\xuan-bridge.e
 set "XUAN_BRIDGE_BIN=%BIN_DIR%\xuan-bridge.exe"
 set "UI_BRIDGE_SOURCE=%ROOT_DIR%\tools\xuan-ui-bridge\xuan-ui-bridge.mjs"
 set "RUNTIME_INSTALLER=%ROOT_DIR%\scripts\install-xuan-runtime.ps1"
+set "PLUGIN_PROCESS_STOPPER=%ROOT_DIR%\scripts\stop-xuan-plugin-processes.ps1"
 set "REMOTE_BRIDGE_MANIFEST=%ROOT_DIR%\apps\xuan-plus-remote\bridge\Cargo.toml"
 set "REMOTE_BRIDGE_BUILD=%ROOT_DIR%\apps\xuan-plus-remote\bridge\target\release\xuan-plus-remote-bridge.exe"
 set "XUAN_REMOTE_BRIDGE_BIN=%BIN_DIR%\xuan-plus-remote-bridge.exe"
@@ -80,6 +81,7 @@ for %%F in (
   "%XUAN_BRIDGE_MANIFEST%"
   "%UI_BRIDGE_SOURCE%"
   "%RUNTIME_INSTALLER%"
+  "%PLUGIN_PROCESS_STOPPER%"
   "%REMOTE_BRIDGE_MANIFEST%"
   "%MARKETPLACE_PATH%"
   "%POLISH_SCRIPT_SOURCE%"
@@ -137,6 +139,12 @@ if errorlevel 1 (
 )
 
 echo [5/7] Registering and installing four Codex plugins...
+echo   清理仍在运行的 Xuan 插件进程，保留 Codex++ 主程序...
+pwsh.exe -NoLogo -NoProfile -NonInteractive -File "%PLUGIN_PROCESS_STOPPER%" -BinDirectory "%BIN_DIR%"
+if errorlevel 1 (
+  echo [错误] Xuan 插件进程未能清理完成，已停止安装。
+  exit /b 1
+)
 call "%CODEX_CMD%" plugin marketplace list | findstr.exe /i /b /c:"xuan-curated" >nul
 if errorlevel 1 (
   call "%CODEX_CMD%" plugin marketplace add "%ROOT_DIR%"
@@ -199,6 +207,7 @@ if errorlevel 1 (
 echo   [OK] mobile User Script installed.
 
 echo [7/7] 独立插件运行环境已就绪。
+
 echo   [通过] 插件自行管理通信和子进程，不修改 Codex++ 程序或更新逻辑。
 
 echo.

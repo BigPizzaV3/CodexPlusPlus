@@ -33,7 +33,7 @@ try {
     $ancestor = $destination
     while ($ancestor) {
         if (Test-Path -LiteralPath $ancestor) {
-            $entry = Get-Item -LiteralPath $ancestor
+            $entry = Get-Item -LiteralPath $ancestor -Force
             if ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                 throw '插件安装路径不能包含目录链接。'
             }

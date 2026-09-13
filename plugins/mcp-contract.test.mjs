@@ -35,6 +35,7 @@ function startServer(pluginName, options = {}) {
     stdio: ["pipe", "pipe", "pipe"]
   });
   const waiters = new Map();
+  const unsolicited = [];
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
   readline.createInterface({ input: child.stdout }).on("line", (line) => {
@@ -43,7 +44,7 @@ function startServer(pluginName, options = {}) {
     if (waiter) {
       waiters.delete(response.id);
       waiter.resolve(response);
-    }
+    } else unsolicited.push(response);
   });
   child.once("exit", (code) => {
     for (const waiter of waiters.values()) {
@@ -58,6 +59,10 @@ function startServer(pluginName, options = {}) {
         child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
       });
     },
+    notify(method, params = {}) {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+    },
+    unsolicited() { return unsolicited.slice(); },
     async close() {
       child.stdin.end();
       let timer;
@@ -194,6 +199,25 @@ test("installed-style MCP stdio exits after input closes", async () => {
   assert.equal(code, 0);
   assert.equal(JSON.parse(stdout.trim()).result.serverInfo.name, "xuan-workspace-search");
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("all plugin MCP servers ignore cancellation notifications and answer ping", async () => {
+  assert.ok(fs.existsSync(bridgeBinary), `build xuan-bridge first: ${bridgeBinary}`);
+  for (const pluginName of pluginNames) {
+    const server = startServer(pluginName);
+    try {
+      await server.request(1, "initialize");
+      server.notify("notifications/initialized");
+      server.notify("notifications/cancelled", { requestId: 999, reason: "cancelled" });
+      server.notify("notifications/progress", { progressToken: "request", progress: 1 });
+      const ping = await server.request(2, "ping");
+      assert.deepEqual(ping.result, {});
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.deepEqual(server.unsolicited(), []);
+    } finally {
+      await server.close();
+    }
+  }
 });
 
 test("版本化安装加载独立界面模块，兼容旧环境变量并随 MCP 退出", { skip: process.platform !== "win32" }, async () => {
