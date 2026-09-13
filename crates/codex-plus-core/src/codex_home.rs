@@ -27,7 +27,10 @@ pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow
     let target = normalize_for_comparison(target);
     let home = normalize_for_comparison(codex_home);
 
-    if target.as_os_str().is_empty() || target == Path::new("/") {
+    // Windows 上 Path::new("/") 不是绝对路径，会先被 normalize 成当前盘符根
+    // （如 `C:\`），单纯和 `"/"` 相等比较拦不住盘符根。根路径在 Rust 里的可靠
+    // 特征是 `parent()` 为 None，POSIX 根与 Windows 盘符根一并覆盖。
+    if target.as_os_str().is_empty() || target == Path::new("/") || target.parent().is_none() {
         anyhow::bail!("拒绝删除文件系统根目录：{}", target.display());
     }
     if target == home {
@@ -148,6 +151,14 @@ mod tests {
     fn removal_guard_rejects_filesystem_root() {
         let home = PathBuf::from("/somewhere/.codex");
         let error = ensure_safe_recursive_removal(Path::new("/"), &home).unwrap_err();
+        assert!(error.to_string().contains("文件系统根"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn removal_guard_rejects_windows_drive_root() {
+        let home = PathBuf::from(r"C:\somewhere\.codex");
+        let error = ensure_safe_recursive_removal(Path::new(r"C:\"), &home).unwrap_err();
         assert!(error.to_string().contains("文件系统根"), "{error}");
     }
 
