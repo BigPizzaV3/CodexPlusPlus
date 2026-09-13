@@ -2478,7 +2478,11 @@ experimental_bearer_token = "sk-existing""#
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
 
-        assert_eq!(store.load().unwrap(), BackendSettings::default());
+        // load() 会把扁平字段镜像进 tools.codex（sync_tool_shards），所以这里的
+        // 期望值不是裸 default，而是带默认工具分片的 default。
+        let mut expected = BackendSettings::default();
+        expected.sync_tool_shards();
+        assert_eq!(store.load().unwrap(), expected);
     }
 
     #[test]
@@ -2488,7 +2492,9 @@ experimental_bearer_token = "sk-existing""#
         std::fs::write(&path, "{bad json").unwrap();
         let store = SettingsStore::new(path);
 
-        assert_eq!(store.load().unwrap(), BackendSettings::default());
+        let mut expected = BackendSettings::default();
+        expected.sync_tool_shards();
+        assert_eq!(store.load().unwrap(), expected);
     }
 
     #[test]
@@ -2504,7 +2510,10 @@ experimental_bearer_token = "sk-existing""#
 
         store.save(&settings).unwrap();
 
-        assert_eq!(store.load().unwrap(), settings);
+        // save() 同样会同步工具分片，roundtrip 的期望值要带上 tools.codex 镜像。
+        let mut expected = settings;
+        expected.sync_tool_shards();
+        assert_eq!(store.load().unwrap(), expected);
     }
 
     #[test]
