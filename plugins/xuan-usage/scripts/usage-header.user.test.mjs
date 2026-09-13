@@ -18,6 +18,7 @@ test("usage script uses the independent bridge and keeps credentials out of the 
   assert.match(source, /__XUAN_BRIDGE_URL__/);
   assert.match(source, /x-xuan-bridge-token/);
   assert.match(source, /用量服务暂时不可用|用量查询失败/);
+  assert.match(source, /无法连接本地 Xuan Bridge/);
   assert.doesNotMatch(source, /Authorization\s*:/i);
   assert.doesNotMatch(source, /bearer\s+\$?\{/i);
 });

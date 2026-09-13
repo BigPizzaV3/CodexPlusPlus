@@ -2764,6 +2764,7 @@ mod tests {
             resolve_usage_provider("https://api.owlai.tech/v1", "auto").unwrap(),
             "owlai"
         );
+        assert_eq!(OWLAI_USAGE_URL, "https://api.owlai.tech/v1/usage");
         assert!(resolve_usage_provider("https://relay.example/v1", "owlai").is_err());
         let data = parse_owlai_today(&json!({
             "balance": 100,

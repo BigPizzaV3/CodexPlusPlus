@@ -10,15 +10,12 @@ if errorlevel 1 (
 
 set "ROOT_DIR=%CD%"
 set "MODE=install"
-set "START_SERVICES=1"
 if /i "%~1"=="check" (
   set "MODE=check"
-  set "START_SERVICES=0"
 )
-if /i "%~1"=="no-start" set "START_SERVICES=0"
-if not "%~1"=="" if /i not "%~1"=="check" if /i not "%~1"=="no-start" (
+if not "%~1"=="" if /i not "%~1"=="check" (
   echo [ERROR] Unsupported argument: %~1
-  echo Usage: install-xuan-features.bat [check^|no-start]
+  echo Usage: install-xuan-features.bat [check]
   exit /b 1
 )
 
@@ -62,7 +59,7 @@ call :require_command node.exe Node.js
 if errorlevel 1 exit /b 1
 call :require_command cargo.exe Rust
 if errorlevel 1 exit /b 1
-call :require_command powershell.exe PowerShell
+call :require_command pwsh.exe PowerShell
 if errorlevel 1 exit /b 1
 if not defined CODEX_CMD (
   echo [ERROR] Codex CLI was not found.
@@ -116,8 +113,6 @@ if errorlevel 1 (
   echo [ERROR] Cannot create the local bridge directory.
   exit /b 1
 )
-taskkill.exe /f /im xuan-bridge.exe >nul 2>&1
-taskkill.exe /f /im xuan-plus-remote-bridge.exe >nul 2>&1
 copy /y "%XUAN_BRIDGE_BUILD%" "%XUAN_BRIDGE_BIN%" >nul
 if errorlevel 1 (
   echo [ERROR] Cannot install xuan-bridge.
@@ -139,6 +134,8 @@ if errorlevel 1 (
 setx XUAN_HOME "%XUAN_HOME%" >nul
 if errorlevel 1 exit /b 1
 setx XUAN_BRIDGE_BIN "%XUAN_BRIDGE_BIN%" >nul
+if errorlevel 1 exit /b 1
+setx XUAN_REMOTE_BRIDGE_BIN "%XUAN_REMOTE_BRIDGE_BIN%" >nul
 if errorlevel 1 exit /b 1
 setx XUAN_MOBILE_BRIDGE_URL "%XUAN_MOBILE_BRIDGE_URL%" >nul
 if errorlevel 1 exit /b 1
@@ -213,15 +210,8 @@ if errorlevel 1 (
 )
 echo   [OK] mobile User Script installed.
 
-echo [7/7] Starting independent bridge services...
-if "%START_SERVICES%"=="1" (
-  call :ensure_service 57324 "%XUAN_BRIDGE_BIN%" xuan-bridge
-  if errorlevel 1 exit /b 1
-  call :ensure_service 17421 "%XUAN_REMOTE_BRIDGE_BIN%" mobile-bridge
-  if errorlevel 1 exit /b 1
-) else (
-  echo   [SKIP] Services were not started because no-start was requested.
-)
+echo [7/7] Bridge services are ready for Codex++ startup.
+echo   [OK] Codex++ will start and stop the local bridge services with its launcher.
 
 echo.
 echo Four features were installed as independent plugins:
@@ -241,30 +231,3 @@ if errorlevel 1 (
 )
 echo   [OK] %~2
 exit /b 0
-
-:ensure_service
-netstat.exe -ano | findstr.exe /r /c:":%~1 .*LISTENING" >nul
-if not errorlevel 1 (
-  echo   [OK] %~3 is listening on 127.0.0.1:%~1.
-  exit /b 0
-)
-powershell.exe -NoProfile -NonInteractive -Command "Start-Process -FilePath '%~2' -WindowStyle Hidden"
-if errorlevel 1 (
-  echo [ERROR] Cannot start %~3.
-  exit /b 1
-)
-call :wait_for_port %~1
-if errorlevel 1 (
-  echo [ERROR] %~3 did not listen on 127.0.0.1:%~1.
-  exit /b 1
-)
-echo   [OK] %~3 started.
-exit /b 0
-
-:wait_for_port
-for /l %%I in (1,1,10) do (
-  netstat.exe -ano | findstr.exe /r /c:":%~1 .*LISTENING" >nul
-  if not errorlevel 1 exit /b 0
-  timeout.exe /t 1 /nobreak >nul
-)
-exit /b 1

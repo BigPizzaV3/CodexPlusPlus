@@ -15,6 +15,12 @@ test("polish script keeps the original composer workflow in an independent bridg
   assert.match(source, /润色中|正在润色|loading/);
 });
 
+test("polish script keeps Ctrl+Enter as a toggle shortcut", () => {
+  assert.match(source, /if \(event\.ctrlKey && !event\.metaKey\) return true;/);
+  assert.match(source, /const activeElement = document\.activeElement;/);
+  assert.match(source, /function onPromptOptimizeShortcut\(event\) \{\s*if \(runtime\.disposed\) return;/);
+});
+
 test("polish script supports cancellation, restore state and settings without exposing credentials", () => {
   assert.match(source, /optimizeToken|AbortController/);
   assert.match(source, /promptOptimizeState/);

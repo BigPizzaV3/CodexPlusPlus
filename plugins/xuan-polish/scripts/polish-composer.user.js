@@ -14,8 +14,8 @@
  * self-destroys when the feature is disabled or the bridge is missing.
  */
 (() => {
-  const SCRIPT_VERSION = "1.1.5";
-  const INSTANCE_REVISION = "official-2026-09-v16";
+  const SCRIPT_VERSION = "1.1.6";
+  const INSTANCE_REVISION = "official-2026-09-v17";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -380,7 +380,11 @@
       controlBranch = controlBranch.parentElement;
     }
     if (controlBranch.parentElement !== commonParent) return null;
-    return { node: commonParent, before: controlBranch.nextSibling };
+    return {
+      node: commonParent,
+      before: controlBranch.nextSibling,
+      fontSize: window.getComputedStyle(control).fontSize,
+    };
   }
 
   function findComposerInput() {
@@ -407,20 +411,22 @@
 
   function eventTargetsComposer(event) {
     const input = findComposerInput();
+    if (!(input instanceof Element)) return false;
     const target = event.target;
-    if (!(input instanceof Element) || !(target instanceof Node)) return false;
-    return input === target || input.contains(target);
+    const activeElement = document.activeElement;
+    const isWithinInput = (node) => node instanceof Node && (input === node || input.contains(node));
+    return isWithinInput(target) || isWithinInput(activeElement);
   }
 
   function isPromptOptimizeShortcut(event) {
     if (event.key !== "Enter" || event.repeat || event.isComposing || event.keyCode === 229) return false;
     if (event.altKey || event.shiftKey) return false;
-    if (isMacPlatform()) return event.metaKey && !event.ctrlKey;
-    return event.ctrlKey && !event.metaKey;
+    if (event.ctrlKey && !event.metaKey) return true;
+    return isMacPlatform() && event.metaKey && !event.ctrlKey;
   }
 
   function onPromptOptimizeShortcut(event) {
-    if (runtime.disposed || event.defaultPrevented) return;
+    if (runtime.disposed) return;
     if (!isPromptOptimizeShortcut(event)) return;
     if (!runtime.loading && !eventTargetsComposer(event)) return;
     event.preventDefault();
@@ -705,7 +711,7 @@
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
-      [${BUTTON_ATTR}]{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:30px;padding:0 7px;border-radius:8px;cursor:pointer;font-size:12px;line-height:1;flex:none;user-select:none}
+      [${BUTTON_ATTR}]{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:30px;padding:0 7px;border-radius:8px;cursor:pointer;font-size:12px !important;line-height:1;flex:none;user-select:none}
       [${BUTTON_ATTR}]:hover{background:rgba(128,128,128,.14)}
       [${BUTTON_ATTR}].cpo-loading{opacity:.72;cursor:pointer}
       [${PANEL_ATTR}]{all:initial;--cpo-overlay:rgba(0,0,0,.28);--cpo-surface:#fff;--cpo-input:#fff;--cpo-text:#111;--cpo-muted:#666;--cpo-label:#333;--cpo-border:#ccc;--cpo-key:#1a7f37;--cpo-primary:#111;position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:var(--cpo-overlay);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--cpo-text);color-scheme:light}
@@ -759,10 +765,11 @@
           : "润色（右键设置）";
   }
 
-  function createButton() {
+  function createButton(fontSize) {
     const button = document.createElement("button");
     button.setAttribute(BUTTON_ATTR, "true");
     button.type = "button";
+    if (fontSize) button.style.setProperty("font-size", fontSize, "important");
     button.addEventListener("click", onButtonClick);
     button.addEventListener("contextmenu", onButtonContextMenu);
     refreshButtonAppearance(button);
@@ -823,7 +830,7 @@
       return;
     }
     destroyButton();
-    const button = createButton();
+    const button = createButton(anchor.fontSize);
     const nextHost = document.createElement("span");
     nextHost.setAttribute(`data-cpo-composer-${INSTANCE_REVISION}`, "true");
     nextHost.appendChild(button);

@@ -358,7 +358,12 @@
         throw new Error(result?.error?.message || result?.message || "用量请求失败");
       }),
       new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("用量请求超时")), 20_000); }),
-    ]).finally(() => clearTimeout(timeout));
+    ]).catch((error) => {
+      if (/failed to fetch|networkerror|econnrefused/i.test(error?.message || "")) {
+        throw new Error("无法连接本地 Xuan Bridge，请先运行 install-xuan-features.bat 启动服务");
+      }
+      throw error;
+    }).finally(() => clearTimeout(timeout));
   }
 
   async function fetchUsage() {
