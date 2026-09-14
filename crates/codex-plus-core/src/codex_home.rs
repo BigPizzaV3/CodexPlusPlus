@@ -27,7 +27,8 @@ pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow
     let target = normalize_for_comparison(target);
     let home = normalize_for_comparison(codex_home);
 
-    if target.as_os_str().is_empty() || target == Path::new("/") {
+    // Windows canonicalize 会返回带盘符或 UNC 前缀的根，不能只与 "/" 比较。
+    if target.as_os_str().is_empty() || (target.has_root() && target.parent().is_none()) {
         anyhow::bail!("拒绝删除文件系统根目录：{}", target.display());
     }
     if target == home {
@@ -149,6 +150,21 @@ mod tests {
         let home = PathBuf::from("/somewhere/.codex");
         let error = ensure_safe_recursive_removal(Path::new("/"), &home).unwrap_err();
         assert!(error.to_string().contains("文件系统根"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn removal_guard_rejects_windows_roots_outside_codex_home_drive() {
+        let home = Path::new(r"C:\Users\test\.codex");
+        for root in [
+            r"D:\",
+            r"\\?\D:\",
+            r"\\server\share\",
+            r"\\?\UNC\server\share\",
+        ] {
+            let error = ensure_safe_recursive_removal(Path::new(root), home).unwrap_err();
+            assert!(error.to_string().contains("文件系统根"), "{root}: {error}");
+        }
     }
 
     #[test]
