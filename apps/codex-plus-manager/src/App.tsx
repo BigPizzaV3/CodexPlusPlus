@@ -4243,13 +4243,12 @@ function WeixinConnectScreen({
 /// 概览页和推荐内容页共用同一份数据、同一个渲染，所以两处看到的赞助商是
 /// 一致的 —— 以前概览页把赞助商内容硬编码在 JSX 里，跟推荐内容页各说各话。
 ///
-/// 数据优先级：广告源里的 sponsor 条目 → 本地内置的兜底条目。本地兜底保证
-/// 断网或广告源没加载时这块不会空着。
+/// 数据来自广告源里的 sponsor 条目。
 /// 概览页置顶赞助位。
 ///
 /// 这个位置**不来自推荐池** —— `topAd` 是单独售卖的贵价位置，由广告源里的
 /// `top_ad` 字段单独指定，不参与 `ads` 数组的排序，也不会被推荐列表的
-/// 数量上限影响。没有 `topAd` 时才退回内置兜底。
+/// 数量上限影响。没有 `topAd` 时不显示置顶赞助位。
 function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
   const topAd = ads?.topAd;
   const featured: AdItem[] = topAd && !isExpiredAd(topAd) ? [topAd] : [];

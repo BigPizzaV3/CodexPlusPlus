@@ -95,6 +95,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
+      <a href="https://grooroute.com/register?aff=2B3KJR5SRNTX">
+        <img src="docs/images/sponsor-grooroute.png" alt="GrooRoute" width="170">
+      </a>
+    </td>
+    <td><a href="https://grooroute.com/register?aff=2B3KJR5SRNTX"><strong>GrooRoute｜官方原模型 API</strong></a><br>GrooRoute 提供 Claude 与 GPT 全系官方原模型，一行配置即可接入 Claude Code、Codex 或直接调用 API，官方承诺不掺假、永久保真。限时注册活动：充值 50 美元赠送 50 美元，通过<a href="https://grooroute.com/register?aff=2B3KJR5SRNTX">专属链接注册</a>并完成充值后，联系客服即可获取优惠。官网：<a href="https://grooroute.com/">grooroute.com</a>。</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://xc.y1yun.net/">
         <img src="docs/images/sponsor-yiyun-tech.jpg" alt="屹芸科技" height="80">
       </a>
