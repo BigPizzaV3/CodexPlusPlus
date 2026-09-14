@@ -18,6 +18,10 @@ use tokio_tungstenite::tungstenite::Message;
 pub const BRIDGE_BINDING_NAME: &str = "codexSessionDeleteV2";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+/// 陈旧会话的 generation 轮询间隔。旧会话只会在"socket 再收到消息"时走到循环顶部的
+/// generation 检查；bridge 失效场景下旧 socket 不会再有任何消息，没有这个轮询，
+/// 被顶替的会话会带着 Runtime.enable 订阅和脚本注册无限期滞留。
+pub const BRIDGE_GENERATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub type BridgeHandler = Arc<
     dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>
@@ -345,6 +349,9 @@ pub async fn install_bridge(
                         Ok(None) | Err(_) => break,
                     }
                 }
+                // 不依赖 socket 消息也能发现 generation 过期：旧会话最多
+                // 一个轮询间隔内主动退出，避免失效场景下会话无限堆积。
+                _ = tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL) => {}
             }
         }
         session.close().await;
