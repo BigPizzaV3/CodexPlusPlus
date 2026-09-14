@@ -84,6 +84,7 @@ struct WeixinQrSession {
 
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
+    codex_path: codex_plus_core::connect::WeixinCodexPath,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1453,8 +1454,10 @@ fn spawn_weixin_connect(
     if runtime.is_some() {
         anyhow::bail!("微信连接已在运行或正在停止");
     }
+    let codex_path = codex_plus_core::connect::WeixinCodexPath::new(&config.codex_path);
     *runtime = Some(WeixinRuntime {
         stop: Arc::clone(&stop),
+        codex_path: codex_path.clone(),
     });
     drop(runtime);
     let status = weixin_status();
@@ -1467,9 +1470,13 @@ fn spawn_weixin_connect(
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            codex_plus_core::connect::run_weixin_connect(config, stop, Arc::clone(&task_status))
-                .await
+        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_codex_path(
+            config,
+            stop,
+            Arc::clone(&task_status),
+            codex_path,
+        )
+        .await
             && let Ok(mut current) = task_status.lock()
         {
             current.state = "error".to_string();
@@ -1559,7 +1566,14 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
         );
     }
     match store.save(&settings) {
-        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
+        Ok(()) => {
+            if let Ok(runtime) = weixin_runtime().lock()
+                && let Some(runtime) = runtime.as_ref()
+            {
+                runtime.codex_path.set(&settings.weixin_connect_codex_path);
+            }
+            settings_payload("设置已保存。", "设置保存后重新读取失败")
+        }
         Err(error) => {
             let _ = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
                 previous.enhancements_enabled && previous.codex_app_dream_skin_enabled,
