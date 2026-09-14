@@ -204,6 +204,16 @@ export const PRESETS: ProviderPreset[] = [
     model: "gpt-5.5",
   },
   {
+    id: "grooroute",
+    name: "GrooRoute",
+    websiteUrl: "https://grooroute.com/",
+    apiKeyUrl: "https://grooroute.com/register?aff=2B3KJR5SRNTX",
+    category: "aggregator",
+    baseUrl: "https://grooroute.com",
+    protocol: "responses",
+    model: "gpt-5.5",
+  },
+  {
     id: "siliconflow",
     name: "SiliconFlow",
     websiteUrl: "https://siliconflow.cn",
