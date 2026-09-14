@@ -280,7 +280,7 @@ pub fn responses_proxy_configured_in_home(home: &Path) -> bool {
     provider_string_from_config(&contents, "base_url").as_deref()
         == Some(
             crate::protocol_proxy::local_responses_proxy_base_url(
-                crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                crate::protocol_proxy::protocol_proxy_port(),
             )
             .as_str(),
         )
@@ -367,7 +367,7 @@ pub fn apply_relay_config_to_home(
         base_url,
         bearer_token,
         RelayProtocol::Responses,
-        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        crate::protocol_proxy::protocol_proxy_port(),
     )
 }
 
@@ -438,7 +438,7 @@ pub fn apply_pure_api_config_to_home(
         base_url,
         bearer_token,
         RelayProtocol::Responses,
-        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        crate::protocol_proxy::protocol_proxy_port(),
     )
 }
 
@@ -762,7 +762,7 @@ const OPENAI_BASE_URL_KEY: &str = "openai_base_url";
 
 fn managed_openai_base_url() -> String {
     crate::protocol_proxy::local_responses_proxy_base_url(
-        crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        crate::protocol_proxy::protocol_proxy_port(),
     )
 }
 
@@ -923,7 +923,7 @@ pub fn backfill_relay_profile_from_home_with_common(
         && provider_string_from_config(&profile.config_contents, "base_url").as_deref()
             == Some(
                 crate::protocol_proxy::local_responses_proxy_base_url(
-                    crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                    crate::protocol_proxy::protocol_proxy_port(),
                 )
                 .as_str(),
             )
@@ -2783,7 +2783,7 @@ pub fn relay_profile_model(profile: &RelayProfile) -> String {
 pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return crate::protocol_proxy::local_responses_proxy_base_url(
-            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            crate::protocol_proxy::protocol_proxy_port(),
         );
     }
     if profile.has_model_routes() {
@@ -2793,7 +2793,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         if !profile.base_url.trim().is_empty()
             && profile.base_url.trim()
                 != crate::protocol_proxy::local_responses_proxy_base_url(
-                    crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                    crate::protocol_proxy::protocol_proxy_port(),
                 )
         {
             return profile.base_url.trim().to_string();
@@ -2818,7 +2818,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     if profile.protocol == RelayProtocol::ChatCompletions
         && provider_base_url
             == crate::protocol_proxy::local_responses_proxy_base_url(
-                crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                crate::protocol_proxy::protocol_proxy_port(),
             )
     {
         String::new()
@@ -2936,13 +2936,13 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     }
     let provider_base_url = if profile.has_model_routes() || profile.uses_no_auth() {
         crate::protocol_proxy::local_responses_proxy_base_url(
-            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            crate::protocol_proxy::protocol_proxy_port(),
         )
     } else {
         codex_base_url_for_protocol(
             base_url.trim(),
             profile.protocol,
-            crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            crate::protocol_proxy::protocol_proxy_port(),
         )
     };
     if !provider_base_url.trim().is_empty() {
