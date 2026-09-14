@@ -109,6 +109,12 @@ if errorlevel 1 (
   echo [ERROR] Mobile bridge build failed.
   exit /b 1
 )
+set "XUAN_BRIDGE_BUILD_DISCOVERED="
+if not exist "%XUAN_BRIDGE_BUILD%" for /d %%D in ("%ROOT_DIR%\tools\xuan-bridge\target\*") do if exist "%%~fD\release\xuan-bridge.exe" if not defined XUAN_BRIDGE_BUILD_DISCOVERED set "XUAN_BRIDGE_BUILD_DISCOVERED=%%~fD\release\xuan-bridge.exe"
+if defined XUAN_BRIDGE_BUILD_DISCOVERED set "XUAN_BRIDGE_BUILD=%XUAN_BRIDGE_BUILD_DISCOVERED%"
+set "REMOTE_BRIDGE_BUILD_DISCOVERED="
+if not exist "%REMOTE_BRIDGE_BUILD%" for /d %%D in ("%ROOT_DIR%\apps\xuan-plus-remote\bridge\target\*") do if exist "%%~fD\release\xuan-plus-remote-bridge.exe" if not defined REMOTE_BRIDGE_BUILD_DISCOVERED set "REMOTE_BRIDGE_BUILD_DISCOVERED=%%~fD\release\xuan-plus-remote-bridge.exe"
+if defined REMOTE_BRIDGE_BUILD_DISCOVERED set "REMOTE_BRIDGE_BUILD=%REMOTE_BRIDGE_BUILD_DISCOVERED%"
 if not exist "%XUAN_BRIDGE_BUILD%" (
   echo [ERROR] xuan-bridge.exe was not produced.
   exit /b 1

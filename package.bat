@@ -13,6 +13,7 @@ set "MANAGER_DIR=%ROOT_DIR%\apps\codex-plus-manager"
 set "WINDOWS_DIST=%ROOT_DIR%\dist\windows"
 set "APP_DIST=%WINDOWS_DIST%\app"
 set "PACKAGE_TARGET_DIR=%ROOT_DIR%\target\package"
+set "RUST_TARGET=x86_64-pc-windows-msvc"
 set "NSIS_DIR=%ROOT_DIR%\scripts\installer\windows"
 set "CHECK_ONLY=0"
 
@@ -100,25 +101,27 @@ popd
 echo [4/6] 构建 Release 程序...
 echo   使用独立输出目录，避免运行中的程序锁定构建产物。
 set "TAURI_PERMISSION_CACHE_CORRUPT="
-if exist "%PACKAGE_TARGET_DIR%\release\build\." (
-  for /r "%PACKAGE_TARGET_DIR%\release\build" %%F in (*.toml) do call :check_tauri_permission_cache "%%~fF"
+set "PACKAGE_RELEASE_DIR=%PACKAGE_TARGET_DIR%\%RUST_TARGET%\release"
+if exist "%PACKAGE_RELEASE_DIR%\build\." (
+  for /r "%PACKAGE_RELEASE_DIR%\build" %%F in (*.toml) do call :check_tauri_permission_cache "%%~fF"
 )
 if defined TAURI_PERMISSION_CACHE_CORRUPT (
   set "PACKAGE_TARGET_DIR=%ROOT_DIR%\target\package-%COMPUTERNAME%"
   echo   [修复] 检测到损坏的 Tauri 权限缓存，改用本机隔离目录重新构建。
 )
+set "PACKAGE_RELEASE_DIR=%PACKAGE_TARGET_DIR%\%RUST_TARGET%\release"
 set "CARGO_TARGET_DIR=%PACKAGE_TARGET_DIR%"
-cargo.exe build --release
+cargo.exe build --release --target "%RUST_TARGET%" -p codex-plus-launcher -p codex-plus-manager
 if errorlevel 1 (
   echo [错误] Rust Release 构建失败。
   exit /b 1
 )
 
-if not exist "%PACKAGE_TARGET_DIR%\release\codex-plus-plus.exe" (
+if not exist "%PACKAGE_RELEASE_DIR%\codex-plus-plus.exe" (
   echo [错误] 未找到 codex-plus-plus.exe 构建产物。
   exit /b 1
 )
-if not exist "%PACKAGE_TARGET_DIR%\release\codex-plus-plus-manager.exe" (
+if not exist "%PACKAGE_RELEASE_DIR%\codex-plus-plus-manager.exe" (
   echo [错误] 未找到 codex-plus-plus-manager.exe 构建产物。
   exit /b 1
 )
@@ -131,12 +134,12 @@ if not exist "%APP_DIST%" (
     exit /b 1
   )
 )
-copy /Y "%PACKAGE_TARGET_DIR%\release\codex-plus-plus.exe" "%APP_DIST%\" >nul
+copy /Y "%PACKAGE_RELEASE_DIR%\codex-plus-plus.exe" "%APP_DIST%\" >nul
 if errorlevel 1 (
   echo [错误] 复制 codex-plus-plus.exe 失败。
   exit /b 1
 )
-copy /Y "%PACKAGE_TARGET_DIR%\release\codex-plus-plus-manager.exe" "%APP_DIST%\" >nul
+copy /Y "%PACKAGE_RELEASE_DIR%\codex-plus-plus-manager.exe" "%APP_DIST%\" >nul
 if errorlevel 1 (
   echo [错误] 复制 codex-plus-plus-manager.exe 失败。
   exit /b 1
