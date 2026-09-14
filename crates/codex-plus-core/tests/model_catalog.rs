@@ -456,6 +456,128 @@ base_url = "{}"
     assert_eq!(requests[0].path, "/v1/models");
 }
 
+#[tokio::test]
+async fn model_catalog_surfaces_business_error_from_http_200_envelope() {
+    // 智谱 Codex 专属端点（/api/v1）在 key 缺失或无效时返回 HTTP 200 + 业务错误信封，
+    // 之前只认状态码，会被解析成“0 个模型”，真因完全不可见（#2190）。
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server_with_response(
+        200,
+        json!({"code": 401, "msg": "令牌已过期或验证不正确", "success": false}).to_string(),
+    );
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "glm-5.3"
+model_provider = "ZAI"
+
+[model_providers.ZAI]
+name = "ZAI"
+base_url = "{}"
+experimental_bearer_token = "bad-key"
+wire_api = "responses"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["sources"][0]["status"], "failed");
+    assert_eq!(result["sources"][0]["message"], "令牌已过期或验证不正确");
+    assert_eq!(result["models"], json!([]));
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_appends_upstream_reason_to_http_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server_with_response(
+        401,
+        json!({
+            "error": {
+                "message": "Incorrect API key provided",
+                "type": "incorrect_api_key_error"
+            }
+        })
+        .to_string(),
+    );
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model = "qwen3-coder"
+model_provider = "relay"
+
+[model_providers.relay]
+name = "Relay"
+base_url = "{}"
+experimental_bearer_token = "relay-key"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["sources"][0]["status"], "failed");
+    let message = result["sources"][0]["message"].as_str().unwrap();
+    assert!(message.starts_with("HTTP 401"), "{message}");
+    assert!(message.contains("Incorrect API key provided"), "{message}");
+    server.finish();
+}
+
+#[tokio::test]
+async fn model_catalog_parses_gemini_style_model_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({
+        "models": [
+            {"name": "models/gemini-2.5-pro"},
+            {"name": "models/gemini-2.5-flash"}
+        ]
+    }));
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+model_provider = "gemini"
+
+[model_providers.gemini]
+name = "Gemini"
+base_url = "{}"
+"#,
+            server.base_url
+        ),
+    );
+
+    let result = read_codex_model_catalog_from_home(
+        temp.path(),
+        &HashMap::new(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+    )
+    .await;
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(
+        result["models"],
+        json!(["gemini-2.5-pro", "gemini-2.5-flash"])
+    );
+    server.finish();
+}
+
 fn write_config(home: &Path, contents: &str) {
     std::fs::write(home.join("config.toml"), contents.trim_start()).unwrap();
 }
@@ -477,13 +599,17 @@ struct ModelsRequest {
 }
 
 fn spawn_models_server(payload: serde_json::Value) -> ModelsServer {
+    spawn_models_server_with_response(200, payload.to_string())
+}
+
+fn spawn_models_server_with_response(status: u16, body: String) -> ModelsServer {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let address = listener.local_addr().unwrap();
     let base_url = format!("http://{address}");
     listener
         .set_nonblocking(true)
         .expect("listener should switch to nonblocking mode");
-    let models_body = payload.to_string();
+    let models_body = body;
     let handle = thread::spawn(move || {
         let started = std::time::Instant::now();
         let mut requests = Vec::new();
@@ -520,11 +646,11 @@ fn spawn_models_server(payload: serde_json::Value) -> ModelsServer {
                 .find_map(|line| line.strip_prefix("authorization: "))
                 .unwrap_or_default()
                 .to_string();
-            let (status, body) = (200, models_body.as_str());
             let response = format!(
-                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
+                "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                http_reason(status),
+                models_body.len(),
+                models_body
             );
             stream.write_all(response.as_bytes()).unwrap();
             requests.push(ModelsRequest {
@@ -535,4 +661,15 @@ fn spawn_models_server(payload: serde_json::Value) -> ModelsServer {
         requests
     });
     ModelsServer { base_url, handle }
+}
+
+fn http_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "Error",
+    }
 }
