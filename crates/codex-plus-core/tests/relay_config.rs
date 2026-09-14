@@ -4284,6 +4284,8 @@ experimental_bearer_token = "sk-new"
         .find(|model| model["slug"] == "gpt-5.6-sol")
         .unwrap();
     assert_eq!(sol["context_window"], 272_000);
+    // 未显式配置窗口时保留官方模板上限（issue #2191）。
+    assert_eq!(sol["max_context_window"], 872_000);
     assert_eq!(sol["default_reasoning_level"], "low");
     assert_eq!(sol["service_tiers"][0]["id"], "priority");
     assert_eq!(sol["supports_search_tool"], true);
@@ -4321,6 +4323,8 @@ base_url = "https://relay.example/v1"
     let astra = &catalog["models"][0];
     assert_eq!(astra["slug"], "gpt-6-astra");
     assert_eq!(astra["context_window"], 272_000);
+    // 未显式配置窗口时保留官方模板上限（issue #2191）。
+    assert_eq!(astra["max_context_window"], 872_000);
     assert_eq!(astra["use_responses_lite"], false);
     assert_eq!(astra["additional_speed_tiers"], serde_json::json!(["fast"]));
     assert_eq!(astra["service_tiers"][0]["id"], "priority");
@@ -5400,7 +5404,7 @@ fn apply_model_metadata_overrides_catalog_and_protects_managed_fields() {
                 "display_name": "Imported model",
                 "description": "Imported description",
                 "context_window": 1,
-                "max_context_window": 1_000_000,
+                "max_context_window": 999_999,
                 "auto_compact_token_limit": 3,
                 "effective_context_window_percent": 4,
                 "priority": 5,
