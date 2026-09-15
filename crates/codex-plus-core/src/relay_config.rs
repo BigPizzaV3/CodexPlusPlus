@@ -1979,16 +1979,16 @@ fn apply_model_catalog_to_config(
             .any(|entry| entry.suffix_window.is_some() || entry.auto_compact_percent.is_some());
     // Codex 侧 wire_api 恒为 Responses，真实上游协议仍以 profile 为准。
     // API 传输的工具默认值不能随会话身份改变；纯官方保留原生元数据。
+    let managed_api_mode = matches!(
+        profile.relay_mode,
+        crate::settings::RelayMode::PureApi | crate::settings::RelayMode::MixedApi
+    ) || (profile.relay_mode == crate::settings::RelayMode::Official
+        && profile.official_mix_api_key);
+    // 保留仅配置 custom provider、未同步模式字段的旧调用方及既有聚合策略。
     let standard_responses = profile.protocol == RelayProtocol::Responses
-        && match profile.relay_mode {
-            crate::settings::RelayMode::PureApi | crate::settings::RelayMode::MixedApi => true,
-            crate::settings::RelayMode::Official => profile.official_mix_api_key,
-            // 聚合可能包含不同协议的成员，此处仅保留既有策略。
-            crate::settings::RelayMode::Aggregate => {
-                active_provider_id(&parse_toml_document(&config_text)?)
-                    .is_some_and(|provider_id| is_custom_provider_id(&provider_id))
-            }
-        };
+        && (managed_api_mode
+            || active_provider_id(&parse_toml_document(&config_text)?)
+                .is_some_and(|provider_id| is_custom_provider_id(&provider_id)));
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);

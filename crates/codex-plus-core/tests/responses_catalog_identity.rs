@@ -189,11 +189,11 @@ fn explicit_lite_metadata_still_overrides_managed_defaults() {
 }
 
 #[test]
-fn native_and_aggregate_catalog_defaults_are_not_broadened() {
+fn native_legacy_and_aggregate_catalog_defaults_are_not_broadened() {
     for (_, apply) in APPLY_PATHS {
         for (mode, identity, expected_lite) in [
             (RelayMode::Official, "openai", true),
-            (RelayMode::Official, "custom", true),
+            (RelayMode::Official, "custom", false),
             (RelayMode::Aggregate, "openai", true),
             (RelayMode::Aggregate, "custom", false),
         ] {
