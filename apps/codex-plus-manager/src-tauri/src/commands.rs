@@ -1521,6 +1521,11 @@ fn empty_weixin_qr_payload(status: &str) -> WeixinQrPayload {
 }
 
 #[tauri::command]
+pub fn native_browser_status() -> codex_plus_core::native_browser::BrowserStatus {
+    codex_plus_core::native_browser::read_status()
+}
+
+#[tauri::command]
 pub fn load_settings() -> CommandResult<SettingsPayload> {
     settings_payload("设置已加载。", "设置读取失败")
 }

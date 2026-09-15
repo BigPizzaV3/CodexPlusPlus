@@ -99,8 +99,20 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
         let _ = notify_manager_when_update_available().await;
     });
     let hooks = LauncherHooks::default();
-    let handle = launch_and_inject_with_hooks(options, &hooks).await?;
-    handle.wait_for_codex_exit().await?;
+    let browser_settings = codex_plus_core::settings::SettingsStore::default().load()?;
+    let browser_monitor = codex_plus_core::native_browser::start_monitor(
+        browser_settings.enhancements_enabled
+            && browser_settings.codex_app_native_browser_require_identification,
+    ).await;
+    let result = match launch_and_inject_with_hooks(options, &hooks).await {
+        Ok(handle) => handle.wait_for_codex_exit().await,
+        Err(error) => Err(error),
+    };
+    if let Some(monitor) = browser_monitor {
+        monitor.abort();
+        let _ = monitor.await;
+    }
+    result?;
     Ok(())
 }
 

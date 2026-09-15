@@ -71,6 +71,7 @@ pub fn run() {
             commands::launch_codex_plus,
             commands::restart_codex_plus,
             commands::load_settings,
+            commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,
             commands::test_vlm,
