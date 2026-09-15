@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -194,38 +194,56 @@ fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+fn write_new(path: &Path, bytes: &[u8]) -> Result<File> {
     let _guards = pin_parents(path)?;
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    Ok(())
+    Ok(file)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_with_modified(path, bytes, None)
+}
+
+fn atomic_write_with_modified(
+    path: &Path,
+    bytes: &[u8],
+    modified: Option<SystemTime>,
+) -> Result<()> {
     let _guards = pin_parents(path)?;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    write_new(&temp, bytes)?;
-    #[cfg(windows)]
-    let result = {
-        use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Storage::FileSystem::{
-            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        };
-        use windows::core::PCWSTR;
-        let source: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-        let target: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        unsafe {
-            MoveFileExW(
-                PCWSTR(source.as_ptr()),
-                PCWSTR(target.as_ptr()),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
+    let result = (|| -> Result<()> {
+        let file = write_new(&temp, bytes)?;
+        // Publish bytes and timestamp together; never reopen the replaced target to set metadata.
+        if let Some(modified) = modified {
+            file.set_modified(modified)?;
+            file.sync_all()?;
         }
-        .map_err(anyhow::Error::from)
-    };
-    #[cfg(not(windows))]
-    let result = fs::rename(&temp, path).map_err(anyhow::Error::from);
+        drop(file);
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows::Win32::Storage::FileSystem::{
+                MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+            };
+            use windows::core::PCWSTR;
+            let source: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
+            let target: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            unsafe {
+                MoveFileExW(
+                    PCWSTR(source.as_ptr()),
+                    PCWSTR(target.as_ptr()),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            }
+            .map_err(anyhow::Error::from)
+        }
+        #[cfg(not(windows))]
+        {
+            fs::rename(&temp, path).map_err(anyhow::Error::from)
+        }
+    })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
@@ -376,10 +394,10 @@ fn prepare(paths: &BrowserPaths, key: &str, contract: &RuntimeContract) -> Resul
                 read_regular(&target, MAX_SERVICE)? == current,
                 "Concurrent adapter upgrade"
             );
-            atomic_write(&target, &original)?;
-            File::options().write(true).open(&target)?.set_modified(
-                UNIX_EPOCH + Duration::new(journal.modified_secs, journal.modified_nanos),
-            )?;
+            let modified = UNIX_EPOCH
+                .checked_add(Duration::new(journal.modified_secs, journal.modified_nanos))
+                .context("Invalid recovery timestamp")?;
+            atomic_write_with_modified(&target, &original, Some(modified))?;
             current = original;
         }
         ensure!(
@@ -495,23 +513,19 @@ fn restore_all(paths: &BrowserPaths, keep: Option<&str>, contract: &RuntimeContr
             "External runtime change prevents recovery"
         );
         if current == candidate {
-            pending.push((target, journal, original, current));
+            let modified = UNIX_EPOCH
+                .checked_add(Duration::new(journal.modified_secs, journal.modified_nanos))
+                .context("Invalid recovery timestamp")?;
+            pending.push((target, modified, original, current));
         }
     }
     // Preflight every cache before restoring any, independent of directory enumeration order.
-    for (target, journal, original, current) in pending {
+    for (target, modified, original, current) in pending {
         ensure!(
             read_regular(&target, MAX_SERVICE)? == current,
             "Concurrent recovery change"
         );
-        atomic_write(&target, &original)?;
-        let modified = UNIX_EPOCH
-            .checked_add(Duration::new(journal.modified_secs, journal.modified_nanos))
-            .context("Invalid recovery timestamp")?;
-        File::options()
-            .write(true)
-            .open(&target)?
-            .set_modified(modified)?;
+        atomic_write_with_modified(&target, &original, Some(modified))?;
         ensure!(
             read_regular(&target, MAX_SERVICE)? == original,
             "Recovery verification failed"
@@ -1030,13 +1044,33 @@ mod tests {
         atomic_write(&path, b"candidate").unwrap();
         assert_eq!(read_regular(&path, 50).unwrap(), b"candidate");
         let time = UNIX_EPOCH + Duration::new(1_789_145_796, 123_456_700);
-        File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(time)
-            .unwrap();
+        atomic_write_with_modified(&path, b"original", Some(time)).unwrap();
+        assert_eq!(read_regular(&path, 50).unwrap(), b"original");
         assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), time);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_atomic_restore_preserves_target_bytes_and_timestamp() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("service.mjs");
+        write_new(&path, b"candidate").unwrap();
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        let restored = UNIX_EPOCH + Duration::new(1_789_145_796, 123_456_700);
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(0x1)
+            .open(&path)
+            .unwrap();
+        assert!(atomic_write_with_modified(&path, b"original", Some(restored)).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"candidate");
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        drop(held);
+        atomic_write_with_modified(&path, b"original", Some(restored)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), restored);
     }
 
     fn synthetic(temp: &tempfile::TempDir) -> (BrowserPaths, RuntimeContract, PathBuf) {
@@ -1153,13 +1187,22 @@ mod tests {
         }
         let other_service = paths.runtime_root.join(other).join(SERVICE);
         fs::create_dir_all(other_service.parent().unwrap()).unwrap();
-        fs::write(other_service, b"external change").unwrap();
+        fs::write(&other_service, b"external change").unwrap();
         assert!(reconcile_contract(&paths, false, &contract).is_err());
-        assert_eq!(fs::read(service).unwrap(), candidate);
+        assert_eq!(fs::read(&service).unwrap(), candidate);
         let control: Value =
             serde_json::from_slice(&fs::read(paths.state_root.join("control.json")).unwrap())
                 .unwrap();
         assert_eq!(control["requireIdentification"], false);
+        fs::write(&other_service, &candidate).unwrap();
+        let journal_path = other_backup.join("journal.json");
+        let mut journal: Journal =
+            serde_json::from_slice(&fs::read(&journal_path).unwrap()).unwrap();
+        journal.modified_secs = u64::MAX;
+        fs::write(&journal_path, serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(reconcile_contract(&paths, false, &contract).is_err());
+        assert_eq!(fs::read(&service).unwrap(), candidate);
+        assert_eq!(fs::read(&other_service).unwrap(), candidate);
     }
 
     #[test]
@@ -1261,10 +1304,12 @@ mod tests {
     fn pinned_fixture_transaction_recovery_and_external_change() {
         let fixture = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_FIXTURE").unwrap());
         let generated = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_DESCRIPTOR").unwrap());
-        let mut data: Value =
-            serde_json::from_slice(&fs::read(&generated).unwrap()).unwrap();
+        let mut data: Value = serde_json::from_slice(&fs::read(&generated).unwrap()).unwrap();
         let source_key = selected_key(&data, fixture.parent().unwrap()).unwrap();
-        assert_eq!(Some(source_key.as_str()), fixture.file_name().unwrap().to_str());
+        assert_eq!(
+            Some(source_key.as_str()),
+            fixture.file_name().unwrap().to_str()
+        );
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         let key = "0123456789abcdef";

@@ -94,7 +94,10 @@ journals are retained in
 `~/.codex-session-delete/native-browser-identification`, outside Desktop's
 runtime-cache cleanup scope. Writes use an exclusive transaction lock, synced
 backups, and atomic replacement. Windows directory handles prevent parent
-renaming during transactions. All known caches are preflighted before recovery;
+renaming during transactions. Restored bytes and modification time are prepared
+on the same temporary-file handle before replacement, so recovery does not
+reopen the target to update metadata after publishing the restored content.
+All known caches are preflighted before recovery;
 conflicting user changes are never deliberately overwritten.
 
 To disable the adapter, save the option as off and restart Codex++ and Codex.
@@ -122,6 +125,10 @@ $env:CPP_NATIVE_BROWSER_FIXTURE = 'C:\path\to\pinned\cua_node\runtime'
 $env:CPP_NATIVE_BROWSER_DESCRIPTOR = 'C:\path\to\unified-computer-use\version\.mcp.json'
 cargo test -p codex-plus-core native_browser::tests::pinned_fixture_transaction_recovery_and_external_change --lib -- --ignored --exact
 ```
+
+`CPP_NATIVE_BROWSER_FIXTURE` must be the actual 16-character runtime directory
+selected by that descriptor, not an independently relocated offline copy.
+The test itself performs the relocation; it never writes to the supplied runtime.
 
 Node tests execute only the first-party identification helper with isolated
 control files and stubbed metadata/fallbacks. They do not execute cloud identity,
