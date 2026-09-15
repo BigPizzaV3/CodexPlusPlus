@@ -41,10 +41,11 @@ function functionSource(name) {
 
 function composerAnchorAdapter() {
   class ComposerElement {
-    constructor(tagName, { attributes = {}, textContent = "" } = {}) {
+    constructor(tagName, { attributes = {}, textContent = "", className = "" } = {}) {
       this.tagName = tagName;
       this.attributes = new Map(Object.entries(attributes));
       this.textContent = textContent;
+      this.className = className;
       this.children = [];
       this.parentElement = null;
       this.parentNode = null;
@@ -70,6 +71,19 @@ function composerAnchorAdapter() {
       return this.attributes.has(name);
     }
 
+    matches(selector) {
+      return selector === ".composer-footer" && this.className.split(/\s+/).includes("composer-footer");
+    }
+
+    closest(selector) {
+      let node = this;
+      while (node) {
+        if (node.matches?.(selector)) return node;
+        node = node.parentElement;
+      }
+      return null;
+    }
+
     contains(node) {
       return this === node || this.children.some((child) => child.contains(node));
     }
@@ -92,6 +106,17 @@ function composerAnchorAdapter() {
   }
 
   const document = { body: new ComposerElement("BODY") };
+  document.querySelectorAll = (selector) => {
+    const nodes = [];
+    const visit = (node) => {
+      for (const child of node.children) {
+        if (child.matches?.(selector)) nodes.push(child);
+        visit(child);
+      }
+    };
+    visit(document.body);
+    return nodes;
+  };
   const context = vm.createContext({
     BUTTON_ATTR: "data-cpo-button-test",
     HTMLElement: ComposerElement,
@@ -109,6 +134,7 @@ function composerAnchorAdapter() {
     "isAccessPermissionLikeLabel",
     "accessPermissionBeforeSend",
     "controlAfterAnchor",
+    "composerFooterForInput",
     "composerInsertAnchor",
   ];
   vm.runInContext(functions.map(functionSource).join("\n"), context);
@@ -146,6 +172,18 @@ test("输入框重绘先恢复权限控件时，润色按钮仍可定位", () =>
   assert.equal(anchorWithSend.node, composer);
   assert.equal(anchorWithSend.before, send);
   assert.equal(permission.nextSibling, send);
+});
+
+test("优先使用 composer footer，输入框与权限控件不在同一层时仍插入到完全访问右侧", () => {
+  const { ComposerElement, document, composerInsertAnchor } = composerAnchorAdapter();
+  const form = document.body.append(new ComposerElement("FORM"));
+  const input = form.append(new ComposerElement("DIV", { attributes: { role: "textbox" } }));
+  const footer = form.append(new ComposerElement("DIV", { className: "composer-footer" }));
+  const permission = footer.append(new ComposerElement("BUTTON", { attributes: { "aria-label": "Full access" } }));
+  const anchor = composerInsertAnchor(input);
+  assert.equal(anchor.node, footer);
+  assert.equal(anchor.before, null);
+  assert.equal(permission.nextSibling, null);
 });
 
 test("polish script supports cancellation, restore state and settings without exposing credentials", () => {

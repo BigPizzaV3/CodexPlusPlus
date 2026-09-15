@@ -67,7 +67,7 @@ if errorlevel 1 (
 )
 call :require_command cargo.exe Rust
 if errorlevel 1 exit /b 1
-call :require_command pwsh.exe PowerShell
+call :find_powershell
 if errorlevel 1 exit /b 1
 if not defined CODEX_CMD (
   echo [ERROR] Codex CLI was not found.
@@ -75,7 +75,7 @@ if not defined CODEX_CMD (
   exit /b 1
 )
 echo   [OK] Codex CLI: %CODEX_CMD%
-call :require_command rg.exe ripgrep
+call :find_ripgrep
 if errorlevel 1 exit /b 1
 for %%F in (
   "%XUAN_BRIDGE_MANIFEST%"
@@ -130,7 +130,7 @@ if errorlevel 1 (
   echo [ERROR] Cannot create the local bridge directory.
   exit /b 1
 )
-pwsh.exe -NoLogo -NoProfile -NonInteractive -File "%RUNTIME_INSTALLER%" -BridgeSource "%XUAN_BRIDGE_BUILD%" -RemoteSource "%REMOTE_BRIDGE_BUILD%" -UiSource "%UI_BRIDGE_SOURCE%" -BinDirectory "%BIN_DIR%"
+"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%RUNTIME_INSTALLER%" -BridgeSource "%XUAN_BRIDGE_BUILD%" -RemoteSource "%REMOTE_BRIDGE_BUILD%" -UiSource "%UI_BRIDGE_SOURCE%" -BinDirectory "%BIN_DIR%"
 if errorlevel 1 (
   echo [错误] 独立插件运行文件安装失败。
   exit /b 1
@@ -146,7 +146,7 @@ if errorlevel 1 (
 
 echo [5/7] Registering and installing four Codex plugins...
 echo   清理仍在运行的 Xuan 插件进程，保留 Codex++ 主程序...
-pwsh.exe -NoLogo -NoProfile -NonInteractive -File "%PLUGIN_PROCESS_STOPPER%" -BinDirectory "%BIN_DIR%"
+"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%PLUGIN_PROCESS_STOPPER%" -BinDirectory "%BIN_DIR%"
 if errorlevel 1 (
   echo [错误] Xuan 插件进程未能清理完成，已停止安装。
   exit /b 1
@@ -224,6 +224,34 @@ echo   3. Search: project search, preview, cancel and Ctrl+Shift+F
 echo   4. Mobile: desktop entry, pairing QR, confirmation and task sync
 echo.
 echo 重新打开 Codex++ 并新建任务，以加载更新后的插件和用户脚本。
+exit /b 0
+
+:find_powershell
+set "POWERSHELL_CMD="
+set "POWERSHELL_EXECUTION_POLICY="
+for /f "delims=" %%C in ('where.exe pwsh.exe 2^>nul') do if not defined POWERSHELL_CMD set "POWERSHELL_CMD=%%C"
+if not defined POWERSHELL_CMD if defined LOCALAPPDATA if exist "%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe" set "POWERSHELL_CMD=%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe"
+if not defined POWERSHELL_CMD if defined ProgramFiles if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" set "POWERSHELL_CMD=%ProgramFiles%\PowerShell\7\pwsh.exe"
+if not defined POWERSHELL_CMD set "POWERSHELL_EXECUTION_POLICY=-ExecutionPolicy Bypass"
+for /f "delims=" %%C in ('where.exe powershell.exe 2^>nul') do if not defined POWERSHELL_CMD set "POWERSHELL_CMD=%%C"
+if not defined POWERSHELL_CMD if defined SystemRoot if exist "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" set "POWERSHELL_CMD=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not defined POWERSHELL_CMD (
+  echo [ERROR] PowerShell was not found: pwsh.exe or powershell.exe
+  exit /b 1
+)
+echo   [OK] PowerShell: %POWERSHELL_CMD%
+exit /b 0
+
+:find_ripgrep
+set "RIPGREP_CMD="
+for /f "delims=" %%C in ('where.exe rg.exe 2^>nul') do if not defined RIPGREP_CMD set "RIPGREP_CMD=%%C"
+if not defined RIPGREP_CMD if defined LOCALAPPDATA for /f "delims=" %%C in ('dir /b /s "%LOCALAPPDATA%\OpenAI\Codex\bin\rg.exe" 2^>nul') do if not defined RIPGREP_CMD set "RIPGREP_CMD=%%C"
+if not defined RIPGREP_CMD (
+  echo [ERROR] ripgrep was not found: rg.exe
+  exit /b 1
+)
+for %%D in ("%RIPGREP_CMD%") do set "PATH=%%~dpD;%PATH%"
+echo   [OK] ripgrep: %RIPGREP_CMD%
 exit /b 0
 
 :require_command

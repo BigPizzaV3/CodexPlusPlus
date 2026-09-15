@@ -1,11 +1,11 @@
-[CmdletBinding(SupportsShouldProcess)]
+﻿[CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)][string]$BinDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 try {
-    if (-not $IsWindows) { throw '插件进程清理仅支持 Windows。' }
+    if ($env:OS -ne 'Windows_NT') { throw '插件进程清理仅支持 Windows。' }
     $root = [System.IO.Path]::GetFullPath($BinDirectory).TrimEnd('\', '/')
     if ($root -eq [System.IO.Path]::GetPathRoot($root).TrimEnd('\', '/')) {
         throw '插件运行目录不能是磁盘根目录。'

@@ -1,4 +1,4 @@
-[CmdletBinding(SupportsShouldProcess)]
+﻿[CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)][string]$BridgeSource,
     [Parameter(Mandatory = $true)][string]$RemoteSource,
@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $lock = $null
 $temporaryPointer = $null
+$backupPointer = $null
 try {
     $root = [System.IO.Path]::GetFullPath($BinDirectory).TrimEnd('\', '/')
     if ($root -eq [System.IO.Path]::GetPathRoot($root).TrimEnd('\', '/')) {
@@ -24,7 +25,12 @@ try {
         $item.Hash = (Get-FileHash -LiteralPath $item.Source -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $fingerprint = [System.Text.Encoding]::UTF8.GetBytes(($sources.Hash -join ':'))
-    $version = [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($fingerprint)).ToLowerInvariant()
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $version = -join ($sha256.ComputeHash($fingerprint) | ForEach-Object { $_.ToString('x2') })
+    } finally {
+        $sha256.Dispose()
+    }
     $destination = Join-Path (Join-Path $root 'versions') $version
     if (-not $destination.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
         throw '插件安装目标超出指定目录。'
@@ -60,7 +66,16 @@ try {
     $temporaryPointer = Join-Path $root ("current." + [guid]::NewGuid().ToString('N') + '.json')
     $content = @{ version = $version } | ConvertTo-Json -Compress
     [System.IO.File]::WriteAllText($temporaryPointer, $content, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::Move($temporaryPointer, (Join-Path $root 'current.json'), $true)
+    $currentPointer = Join-Path $root 'current.json'
+    if (Test-Path -LiteralPath $currentPointer) {
+        # .NET Framework 的 Replace 需要非空备份路径，完成后立即清理。
+        $backupPointer = Join-Path $root ("current.backup." + [guid]::NewGuid().ToString('N') + '.json')
+        [System.IO.File]::Replace($temporaryPointer, $currentPointer, $backupPointer)
+        Remove-Item -LiteralPath $backupPointer -Force
+        $backupPointer = $null
+    } else {
+        [System.IO.File]::Move($temporaryPointer, $currentPointer)
+    }
     $temporaryPointer = $null
     Write-Output '独立插件运行文件安装完成；运行中的旧版本将在退出后释放。'
 } catch {
@@ -69,6 +84,9 @@ try {
 } finally {
     if ($temporaryPointer -and (Test-Path -LiteralPath $temporaryPointer)) {
         Remove-Item -LiteralPath $temporaryPointer -Force
+    }
+    if ($backupPointer -and (Test-Path -LiteralPath $backupPointer)) {
+        Remove-Item -LiteralPath $backupPointer -Force
     }
     if ($lock) { $lock.Dispose() }
 }

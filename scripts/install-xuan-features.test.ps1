@@ -6,6 +6,27 @@ try {
     $encoding = [System.Text.UTF8Encoding]::new($false, $true)
     $source = [System.IO.File]::ReadAllText((Join-Path $root 'install-xuan-features.bat'), $encoding)
     if ($source -match '(?<!\r)\n') { throw '批处理不能包含 LF-only 换行。' }
+    foreach ($script in @('scripts\install-xuan-runtime.ps1', 'scripts\stop-xuan-plugin-processes.ps1')) {
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $root $script))
+        if ($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
+            throw "Windows PowerShell 兼容脚本必须使用 UTF-8 BOM：$script"
+        }
+    }
+    $pwshLookup = $source.IndexOf('where.exe pwsh.exe')
+    $legacyFallback = $source.IndexOf('%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe')
+    if ($pwshLookup -lt 0 -or $legacyFallback -lt 0 -or $pwshLookup -ge $legacyFallback) {
+        throw '批处理必须优先使用 pwsh.exe，并回退到 Windows PowerShell。'
+    }
+    if ($source.IndexOf('"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%RUNTIME_INSTALLER%"') -lt 0) {
+        throw '运行时安装必须使用已解析的 PowerShell 命令。'
+    }
+    if ($source.IndexOf('if not defined POWERSHELL_CMD set "POWERSHELL_EXECUTION_POLICY=-ExecutionPolicy Bypass"') -lt 0) {
+        throw 'Windows PowerShell 回退必须绕过当前进程的执行策略。'
+    }
+    if ($source.IndexOf('dir /b /s "%LOCALAPPDATA%\OpenAI\Codex\bin\rg.exe"') -lt 0 -or
+        $source.IndexOf('for %%D in ("%RIPGREP_CMD%") do set "PATH=%%~dpD;%PATH%"') -lt 0) {
+        throw '批处理必须能定位 Codex 内置 rg.exe，并供后续子进程使用。'
+    }
     $start = $source.IndexOf('echo [7/7]')
     $end = $source.IndexOf(':require_command', $start)
     if ($start -lt 0 -or $end -lt 0) { throw '未找到安装结束提示。' }

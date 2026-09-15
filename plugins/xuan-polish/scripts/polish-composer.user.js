@@ -3,8 +3,8 @@
  * 密钥和供应商请求保留在 xuan-bridge，不依赖宿主源码或定制启动器。
  */
 (() => {
-  const SCRIPT_VERSION = "1.1.7";
-  const INSTANCE_REVISION = "official-2026-09-v20";
+  const SCRIPT_VERSION = "1.1.8";
+  const INSTANCE_REVISION = "official-2026-09-v21";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__xuanPluginBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -348,14 +348,18 @@
   }
 
   function accessPermissionBeforeSend(clickables, send) {
-    if (!(send instanceof HTMLElement)) return null;
-    const sendRect = send.getBoundingClientRect();
-    return clickables
+    const candidates = clickables
       .filter((button) => button !== send)
       .filter((button) =>
         [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent]
           .some((text) => isAccessPermissionLikeLabel(normalizeText(text))),
-      )
+      );
+    if (!(send instanceof HTMLElement)) {
+      return candidates
+        .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0] || null;
+    }
+    const sendRect = send.getBoundingClientRect();
+    return candidates
       .filter((button) => {
         const rect = button.getBoundingClientRect();
         return rect.right <= sendRect.left + 2 && rect.top < sendRect.bottom && rect.bottom > sendRect.top;
@@ -774,14 +778,61 @@
     return button;
   }
 
+  function composerFooterForInput(input) {
+    if (!(input instanceof HTMLElement)) return null;
+    const closestFooter = input.closest?.(".composer-footer");
+    if (closestFooter instanceof Element && isVisible(closestFooter)) return closestFooter;
+
+    const footers = typeof document.querySelectorAll === "function"
+      ? Array.from(document.querySelectorAll(".composer-footer")).filter((footer) => isVisible(footer))
+      : [];
+    if (!footers.length) return null;
+    const containing = footers.find((footer) => footer.contains?.(input));
+    if (containing) return containing;
+
+    const inputRect = input.getBoundingClientRect();
+    const inputRoot = input.closest?.("form") || input.parentElement;
+    const related = footers.filter((footer) => inputRoot?.contains?.(footer));
+    const candidates = related.length ? related : footers;
+    return candidates
+      .map((footer) => {
+        const rect = footer.getBoundingClientRect();
+        const verticalDistance = rect.bottom < inputRect.top
+          ? inputRect.top - rect.bottom
+          : rect.top > inputRect.bottom
+            ? rect.top - inputRect.bottom
+            : 0;
+        const horizontalDistance = rect.right < inputRect.left
+          ? inputRect.left - rect.right
+          : rect.left > inputRect.right
+            ? rect.left - inputRect.right
+            : 0;
+        return { footer, distance: verticalDistance + horizontalDistance };
+      })
+      .sort((left, right) => left.distance - right.distance)[0]?.footer || null;
+  }
+
   function composerInsertAnchor(input) {
     if (!(input instanceof HTMLElement)) return null;
-    let node = input;
+    const footer = composerFooterForInput(input);
+    let node = footer || input;
+    if (footer) {
+      const clickables = Array.from(footer.querySelectorAll("button,[role='button'],[role='combobox'],[aria-haspopup='menu']"))
+        .filter((el) => isVisible(el) && !el.hasAttribute(BUTTON_ATTR));
+      const send = clickables.find((el) => {
+        return [el.getAttribute("aria-label"), el.getAttribute("title"), el.textContent]
+          .some((text) => isSendLikeLabel(normalizeText(text)));
+      });
+      const accessControl = accessPermissionBeforeSend(clickables, send);
+      const accessAnchor = controlAfterAnchor(accessControl, send);
+      if (accessAnchor) return accessAnchor;
+      return null;
+    }
     for (let depth = 0; node && node !== document.body && depth < 12; depth += 1, node = node.parentNode) {
       if (!(node instanceof Element)) continue;
       const role = node.getAttribute && node.getAttribute("role");
       if (role === "textbox") continue;
-      const clickables = Array.from(node.querySelectorAll("button,[role='button']"))
+      const clickables = Array.from(node.querySelectorAll("button,[role='button'],[role='combobox'],[aria-haspopup='menu']"))
         .filter((el) => isVisible(el) && !el.hasAttribute(BUTTON_ATTR));
       const send = clickables.find((el) => {
         return [el.getAttribute("aria-label"), el.getAttribute("title"), el.textContent]
@@ -821,21 +872,25 @@
       if (existing) destroyButton();
       return;
     }
-    const host = existing?.parentElement;
-    if (
-      existing?.isConnected &&
-      host?.hasAttribute(`data-cpo-composer-${INSTANCE_REVISION}`) &&
-      host.parentElement === anchor.node &&
-      (anchor.before === host || (anchor.before === null && host.nextSibling === null))
-    ) {
-      return;
+    let button = existing instanceof HTMLElement && existing.isConnected ? existing : null;
+    let host = button?.parentElement;
+    if (!(host instanceof HTMLElement) || !host.hasAttribute(`data-cpo-composer-${INSTANCE_REVISION}`)) {
+      if (button) button.remove();
+      button = null;
+      host = null;
     }
-    destroyButton();
-    const button = createButton(anchor.fontSize);
-    const nextHost = document.createElement("span");
-    nextHost.setAttribute(`data-cpo-composer-${INSTANCE_REVISION}`, "true");
-    nextHost.appendChild(button);
-    anchor.node.insertBefore(nextHost, anchor.before);
+    if (!button) {
+      button = createButton(anchor.fontSize);
+      host = document.createElement("span");
+      host.setAttribute(`data-cpo-composer-${INSTANCE_REVISION}`, "true");
+      host.appendChild(button);
+    } else if (anchor.fontSize) {
+      button.style.setProperty("font-size", anchor.fontSize, "important");
+    }
+    const before = anchor.before?.parentNode === anchor.node ? anchor.before : null;
+    if (host.parentElement !== anchor.node || host.nextSibling !== before) {
+      anchor.node.insertBefore(host, before);
+    }
     refreshButtonAppearance(button);
   }
 

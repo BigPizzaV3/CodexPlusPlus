@@ -45,7 +45,7 @@ try {
     }
     $batch = [System.Text.UTF8Encoding]::new($false, $true).GetString($batchBytes)
     if ($batch -match '(?<!\r)\n') { throw '批处理不能包含 LF-only 换行。' }
-    $stopCall = $batch.IndexOf('pwsh.exe -NoLogo -NoProfile -NonInteractive -File "%PLUGIN_PROCESS_STOPPER%"')
+    $stopCall = $batch.IndexOf('"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%PLUGIN_PROCESS_STOPPER%"')
     if ($stopCall -lt $batch.IndexOf('echo [5/7]') -or $stopCall -ge $batch.IndexOf('plugin add "%%P@xuan-curated"')) {
         throw '批处理必须在更新插件前调用进程清理。'
     }
