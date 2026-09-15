@@ -25,11 +25,11 @@ fn codex_home_env_dir_is_valid(path: &PathBuf) -> bool {
 /// （清理临时目录的常见情形，此时用词法规范化比较）。
 pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow::Result<()> {
     let target = normalize_for_comparison(target);
-    let home = normalize_for_comparison(codex_home);
 
-    if target.as_os_str().is_empty() || target == Path::new("/") {
+    if target.as_os_str().is_empty() || is_filesystem_root(&target) {
         anyhow::bail!("拒绝删除文件系统根目录：{}", target.display());
     }
+    let home = normalize_for_comparison(codex_home);
     if target == home {
         anyhow::bail!(
             "拒绝递归删除 CODEX_HOME 本身（{}）——这会连同全部会话历史一起丢失",
@@ -44,6 +44,10 @@ pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow
         );
     }
     Ok(())
+}
+
+fn is_filesystem_root(path: &Path) -> bool {
+    path.has_root() && path.parent().is_none()
 }
 
 /// 规范化到可比较的形态。
@@ -63,6 +67,9 @@ fn normalize_for_comparison(path: &Path) -> PathBuf {
             .unwrap_or_else(|_| path.to_path_buf())
     };
     let lexical = lexically_normalize(&absolute);
+    if is_filesystem_root(&lexical) {
+        return lexical;
+    }
 
     // 找到最深的、真实存在的祖先，用它拿到 canonical 前缀
     let mut ancestor = lexical.as_path();
@@ -149,6 +156,46 @@ mod tests {
         let home = PathBuf::from("/somewhere/.codex");
         let error = ensure_safe_recursive_removal(Path::new("/"), &home).unwrap_err();
         assert!(error.to_string().contains("文件系统根"), "{error}");
+    }
+
+    #[test]
+    fn filesystem_root_detection_preserves_non_root_paths() {
+        assert!(is_filesystem_root(Path::new("/")));
+        for path in ["", ".", "..", "child", "/child"] {
+            assert!(!is_filesystem_root(Path::new(path)), "{path}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn filesystem_root_detection_handles_windows_prefixes() {
+        // Pure path checks must not access drives or network shares.
+        for path in [
+            r"C:\",
+            r"Z:\",
+            r"\\?\C:\",
+            r"\\server\share",
+            r"\\server\share\",
+            r"\\?\UNC\server\share\",
+        ] {
+            assert!(is_filesystem_root(Path::new(path)), "{path}");
+        }
+        for path in [
+            "C:",
+            r"C:\child",
+            r"\\?\C:\child",
+            r"\\server\share\child",
+            r"\\?\UNC\server\share\child",
+        ] {
+            assert!(!is_filesystem_root(Path::new(path)), "{path}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn root_normalization_does_not_add_a_verbatim_prefix() {
+        let root = Path::new(r"C:\");
+        assert_eq!(normalize_for_comparison(root), root);
     }
 
     #[test]
