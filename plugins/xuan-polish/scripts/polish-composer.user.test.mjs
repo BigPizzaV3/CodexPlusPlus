@@ -32,6 +32,89 @@ function adapter(pageBridge, fetch = () => { throw new Error("不应直连本地
   return { call: context.bridgeCall, timers };
 }
 
+function functionSource(name) {
+  const start = source.indexOf(`  function ${name}(`);
+  const end = source.indexOf("\n  function ", start + 1);
+  assert.ok(start >= 0 && end > start, `未找到 ${name}`);
+  return source.slice(start, end);
+}
+
+function composerAnchorAdapter() {
+  class ComposerElement {
+    constructor(tagName, { attributes = {}, textContent = "" } = {}) {
+      this.tagName = tagName;
+      this.attributes = new Map(Object.entries(attributes));
+      this.textContent = textContent;
+      this.children = [];
+      this.parentElement = null;
+      this.parentNode = null;
+    }
+
+    append(child) {
+      child.parentElement = this;
+      child.parentNode = this;
+      this.children.push(child);
+      return child;
+    }
+
+    get nextSibling() {
+      const siblings = this.parentElement?.children || [];
+      return siblings[siblings.indexOf(this) + 1] || null;
+    }
+
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null;
+    }
+
+    hasAttribute(name) {
+      return this.attributes.has(name);
+    }
+
+    contains(node) {
+      return this === node || this.children.some((child) => child.contains(node));
+    }
+
+    querySelectorAll() {
+      const descendants = [];
+      const visit = (node) => {
+        for (const child of node.children) {
+          descendants.push(child);
+          visit(child);
+        }
+      };
+      visit(this);
+      return descendants.filter((node) => node.tagName === "BUTTON" || node.getAttribute("role") === "button");
+    }
+
+    getBoundingClientRect() {
+      return { width: 24, height: 24, top: 0, bottom: 24, left: 0, right: 24 };
+    }
+  }
+
+  const document = { body: new ComposerElement("BODY") };
+  const context = vm.createContext({
+    BUTTON_ATTR: "data-cpo-button-test",
+    HTMLElement: ComposerElement,
+    Element: ComposerElement,
+    document,
+    window: {
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1", fontSize: "12px" }),
+    },
+  });
+  const functions = [
+    "collapseWs",
+    "normalizeText",
+    "isVisible",
+    "isSendLikeLabel",
+    "isAccessPermissionLikeLabel",
+    "accessPermissionBeforeSend",
+    "controlAfterAnchor",
+    "composerInsertAnchor",
+  ];
+  vm.runInContext(functions.map(functionSource).join("\n"), context);
+  return { ComposerElement, document, composerInsertAnchor: context.composerInsertAnchor };
+}
+
 test("polish script keeps the original composer workflow in an independent bridge adapter", () => {
   assert.match(source, /MutationObserver/);
   assert.match(source, /\/v1\/polish/);
@@ -46,6 +129,23 @@ test("polish script keeps Ctrl+Enter as a toggle shortcut", () => {
   assert.match(source, /if \(event\.ctrlKey && !event\.metaKey\) return true;/);
   assert.match(source, /const activeElement = document\.activeElement;/);
   assert.match(source, /function onPromptOptimizeShortcut\(event\) \{\s*if \(runtime\.disposed\) return;/);
+});
+
+test("输入框重绘先恢复权限控件时，润色按钮仍可定位", () => {
+  const { ComposerElement, document, composerInsertAnchor } = composerAnchorAdapter();
+  const composer = document.body.append(new ComposerElement("DIV"));
+  const input = composer.append(new ComposerElement("DIV", { attributes: { role: "textbox" } }));
+  const permission = composer.append(new ComposerElement("BUTTON", { attributes: { "aria-label": "完全访问" } }));
+
+  const anchorWithoutSend = composerInsertAnchor(input);
+  assert.equal(anchorWithoutSend.node, composer);
+  assert.equal(anchorWithoutSend.before, null);
+
+  const send = composer.append(new ComposerElement("BUTTON", { attributes: { "aria-label": "Send message" } }));
+  const anchorWithSend = composerInsertAnchor(input);
+  assert.equal(anchorWithSend.node, composer);
+  assert.equal(anchorWithSend.before, send);
+  assert.equal(permission.nextSibling, send);
 });
 
 test("polish script supports cancellation, restore state and settings without exposing credentials", () => {

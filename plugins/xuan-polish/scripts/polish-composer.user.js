@@ -3,8 +3,8 @@
  * 密钥和供应商请求保留在 xuan-bridge，不依赖宿主源码或定制启动器。
  */
 (() => {
-  const SCRIPT_VERSION = "1.1.6";
-  const INSTANCE_REVISION = "official-2026-09-v19";
+  const SCRIPT_VERSION = "1.1.7";
+  const INSTANCE_REVISION = "official-2026-09-v20";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__xuanPluginBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -363,11 +363,13 @@
       .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0] || null;
   }
 
-  function controlAfterAnchor(control, send) {
-    if (!(control instanceof HTMLElement) || !(send instanceof HTMLElement)) return null;
+  function controlAfterAnchor(control, relatedControl) {
+    if (!(control instanceof HTMLElement)) return null;
     let commonParent = control.parentElement;
-    while (commonParent && !commonParent.contains(send)) {
-      commonParent = commonParent.parentElement;
+    if (relatedControl instanceof HTMLElement) {
+      while (commonParent && !commonParent.contains(relatedControl)) {
+        commonParent = commonParent.parentElement;
+      }
     }
     if (!commonParent) return null;
 
@@ -779,17 +781,20 @@
       if (!(node instanceof Element)) continue;
       const role = node.getAttribute && node.getAttribute("role");
       if (role === "textbox") continue;
-      const clickables = Array.from(node.querySelectorAll("button"))
+      const clickables = Array.from(node.querySelectorAll("button,[role='button']"))
         .filter((el) => isVisible(el) && !el.hasAttribute(BUTTON_ATTR));
       const send = clickables.find((el) => {
         return [el.getAttribute("aria-label"), el.getAttribute("title"), el.textContent]
           .some((text) => isSendLikeLabel(normalizeText(text)));
       });
+      const accessControl = accessPermissionBeforeSend(clickables, send) || clickables.find((el) => {
+        return [el.getAttribute("aria-label"), el.getAttribute("title"), el.textContent]
+          .some((text) => isAccessPermissionLikeLabel(normalizeText(text)));
+      });
+      const accessAnchor = controlAfterAnchor(accessControl, send);
+      if (accessAnchor) return accessAnchor;
       if (send) {
-        const accessControl = accessPermissionBeforeSend(clickables, send);
-        const accessAnchor = controlAfterAnchor(accessControl, send);
-        if (accessAnchor) return accessAnchor;
-        // 始终以访问权限为锚点，避免模型控件或发送控件的重绘造成位置漂移。
+        // 发送控件出现但权限控件缺失时，不插入到模型或发送控件附近。
         return null;
       }
       if (node.tagName === "FORM" || node.tagName === "MAIN") break;
