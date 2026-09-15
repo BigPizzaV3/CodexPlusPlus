@@ -282,7 +282,9 @@ test("add ISSUE is a separate result step beside issue update", () => {
 });
 
 test("add ISSUE owns independent creation fields", () => {
-  const createIssueBlock = catalog.match(/kind: "issue-create",[\s\S]*?\n    },\n  },/)?.[0] ?? "";
+  const createIssueBlock = catalog.match(
+    /kind: "issue-create",[\s\S]*?createIssueLabels: "",/,
+  )?.[0] ?? "";
   assert.match(createIssueBlock, /createIssueTitle: ""/);
   assert.match(createIssueBlock, /createIssueDescription: ""/);
   assert.match(createIssueBlock, /createIssueStatus: "todo"/);
