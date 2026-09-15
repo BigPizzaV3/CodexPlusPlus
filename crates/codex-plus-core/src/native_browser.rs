@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -19,6 +19,34 @@ const NATIVE_SHA: &str = "ef53f8f0d957b7cf437020499b6b9d880dee381214788930107b54
 const ANCHOR: &str = "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEndedTracker,cD)";
 const HELPER: &str = include_str!("../../../assets/native-browser/require-identification.mjs");
 const MAX_SERVICE: u64 = 32 * 1024 * 1024;
+
+struct RuntimeContract {
+    service_sha: String,
+    files: Vec<(&'static str, String)>,
+}
+
+impl RuntimeContract {
+    fn pinned() -> Self {
+        Self {
+            service_sha: ORIGINAL_SHA.into(),
+            files: vec![
+                ("bin/node_repl.exe", NATIVE_SHA.into()),
+                (
+                    "bin/node.exe",
+                    "be14417b6c4b4a5af06be7c16bda58730f26b912c3e8c6489d12392ef08f35bf".into(),
+                ),
+                (
+                    "manifest.json",
+                    "ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc".into(),
+                ),
+                (
+                    "bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs",
+                    "992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278".into(),
+                ),
+            ],
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct BrowserPaths {
@@ -104,18 +132,70 @@ fn plain_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
+// Deny directory deletion/renaming while a Windows transaction uses its descendants.
+// Open root-first with OPEN_REPARSE_POINT so no checked parent can become a junction.
+fn pin_parents(path: &Path) -> Result<Vec<File>> {
     plain_path(path)?;
-    let meta = fs::metadata(path)?;
+    let mut guards = Vec::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        let mut parents: Vec<_> = path.ancestors().skip(1).collect();
+        parents.reverse();
+        for parent in parents {
+            if !parent.exists() {
+                break;
+            }
+            let guard = OpenOptions::new()
+                .read(true)
+                .share_mode(0x1 | 0x2) // FILE_SHARE_READ | FILE_SHARE_WRITE, never DELETE.
+                .custom_flags(0x02000000 | 0x00200000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
+                .open(parent)?;
+            let meta = guard.metadata()?;
+            ensure!(
+                meta.is_dir() && meta.file_attributes() & 0x400 == 0,
+                "Parent directory is a reparse point"
+            );
+            guards.push(guard);
+        }
+    }
+    Ok(guards)
+}
+
+fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let _guards = pin_parents(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0x1).custom_flags(0x00200000);
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        ensure!(
+            meta.file_attributes() & 0x400 == 0,
+            "File is a reparse point"
+        );
+    }
     ensure!(
         meta.is_file() && meta.len() <= limit,
         "Unexpected file type or size"
     );
-    Ok(fs::read(path)?)
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "File grew beyond the size limit"
+    );
+    Ok(bytes)
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    plain_path(path)?;
+    let _guards = pin_parents(path)?;
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -123,7 +203,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    plain_path(path)?;
+    let _guards = pin_parents(path)?;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     write_new(&temp, bytes)?;
     #[cfg(windows)]
@@ -152,9 +232,9 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
-fn transform(source: &[u8], control: &Path) -> Result<Vec<u8>> {
+fn transform(source: &[u8], control: &Path, contract: &RuntimeContract) -> Result<Vec<u8>> {
     ensure!(
-        sha(source) == ORIGINAL_SHA,
+        sha(source) == contract.service_sha,
         "Unsupported native browser service hash"
     );
     transform_binding(source, control)
@@ -201,6 +281,10 @@ fn selected_key(descriptor: &Value, root: &Path) -> Result<String> {
     ensure!(
         env["NODE_REPL_NODE_PATH"].as_str() == node.to_str(),
         "Conflicting native Node selection"
+    );
+    ensure!(
+        env["CUA_REPL_NODE_REPL_PATH"].as_str() == root.join(key).join("bin/node_repl.exe").to_str(),
+        "Conflicting native worker selection"
     );
     let services: Value = serde_json::from_str(
         env["NODE_REPL_TRUSTED_SERVICES"]
@@ -260,26 +344,50 @@ fn discover(paths: &BrowserPaths) -> Result<Option<String>> {
     Ok(keys.into_iter().next())
 }
 
-fn prepare(paths: &BrowserPaths, key: &str) -> Result<()> {
+fn prepare(paths: &BrowserPaths, key: &str, contract: &RuntimeContract) -> Result<()> {
     ensure!(key_valid(key), "Invalid runtime key");
     let runtime = paths.runtime_root.join(key);
     let target = runtime.join(SERVICE);
-    ensure!(
-        sha(&read_regular(
-            &runtime.join("bin/node_repl.exe"),
-            128 * 1024 * 1024
-        )?) == NATIVE_SHA,
-        "Unsupported native worker hash"
-    );
-    let current = read_regular(&target, MAX_SERVICE)?;
+    let _runtime_guards = pin_parents(&target)?;
+    for (file, expected) in &contract.files {
+        ensure!(
+            sha(&read_regular(&runtime.join(file), 128 * 1024 * 1024)?) == *expected,
+            "Unsupported native runtime component: {file}"
+        );
+    }
+    let mut current = read_regular(&target, MAX_SERVICE)?;
     let backup_dir = paths.state_root.join(key);
     plain_path(&backup_dir)?;
     fs::create_dir_all(&backup_dir)?;
+    let _backup_guards = pin_parents(&backup_dir.join("journal.json"))?;
     let backup = backup_dir.join("original.mjs");
     let journal_path = backup_dir.join("journal.json");
     let control = paths.state_root.join("control.json");
-    if !journal_path.exists() {
-        let candidate = transform(&current, &control)?;
+    if journal_path.exists() {
+        let (journal, original, recorded_candidate) = recovery_material(paths, key, contract)?;
+        let candidate = transform(&original, &control, contract)?;
+        if current == recorded_candidate {
+            if candidate == recorded_candidate {
+                return Ok(());
+            }
+            // Restore before upgrading the journal, so either journal can recover a crash.
+            ensure!(
+                read_regular(&target, MAX_SERVICE)? == current,
+                "Concurrent adapter upgrade"
+            );
+            atomic_write(&target, &original)?;
+            File::options().write(true).open(&target)?.set_modified(
+                UNIX_EPOCH + Duration::new(journal.modified_secs, journal.modified_nanos),
+            )?;
+            current = original;
+        }
+        ensure!(
+            sha(&current) == contract.service_sha,
+            "Runtime changed outside Codex++"
+        );
+    }
+    {
+        let candidate = transform(&current, &control, contract)?;
         if backup.exists() {
             ensure!(
                 read_regular(&backup, MAX_SERVICE)? == current,
@@ -288,12 +396,21 @@ fn prepare(paths: &BrowserPaths, key: &str) -> Result<()> {
         } else {
             write_new(&backup, &current)?;
         }
+        let candidate_path = backup_dir.join(format!("candidate-{}.mjs", sha(&candidate)));
+        if candidate_path.exists() {
+            ensure!(
+                read_regular(&candidate_path, MAX_SERVICE)? == candidate,
+                "Candidate backup conflict"
+            );
+        } else {
+            write_new(&candidate_path, &candidate)?;
+        }
         let modified = fs::metadata(&target)?
             .modified()?
             .duration_since(UNIX_EPOCH)?;
         let journal = Journal {
             schema: 1,
-            original_sha: ORIGINAL_SHA.into(),
+            original_sha: contract.service_sha.clone(),
             candidate_sha: sha(&candidate),
             modified_secs: modified.as_secs(),
             modified_nanos: modified.subsec_nanos(),
@@ -301,7 +418,7 @@ fn prepare(paths: &BrowserPaths, key: &str) -> Result<()> {
         // Durable original and journal precede any runtime write.
         atomic_write(&journal_path, &serde_json::to_vec(&journal)?)?;
     }
-    let (journal, original, candidate) = recovery_material(paths, key)?;
+    let (journal, original, candidate) = recovery_material(paths, key, contract)?;
     if current == candidate {
         return Ok(());
     }
@@ -321,15 +438,28 @@ fn prepare(paths: &BrowserPaths, key: &str) -> Result<()> {
     Ok(())
 }
 
-fn recovery_material(paths: &BrowserPaths, key: &str) -> Result<(Journal, Vec<u8>, Vec<u8>)> {
+fn recovery_material(
+    paths: &BrowserPaths,
+    key: &str,
+    contract: &RuntimeContract,
+) -> Result<(Journal, Vec<u8>, Vec<u8>)> {
     ensure!(key_valid(key), "Invalid recovery key");
     let dir = paths.state_root.join(key);
     let journal: Journal = serde_json::from_slice(&read_regular(&dir.join("journal.json"), 4096)?)?;
     let original = read_regular(&dir.join("original.mjs"), MAX_SERVICE)?;
-    let candidate = transform(&original, &paths.state_root.join("control.json"))?;
+    ensure!(
+        journal.candidate_sha.len() == 64
+            && journal.candidate_sha.bytes().all(|b| b.is_ascii_hexdigit()),
+        "Invalid candidate hash"
+    );
+    let candidate = read_regular(
+        &dir.join(format!("candidate-{}.mjs", journal.candidate_sha)),
+        MAX_SERVICE,
+    )?;
     ensure!(
         journal.schema == 1
-            && journal.original_sha == ORIGINAL_SHA
+            && journal.original_sha == contract.service_sha
+            && sha(&original) == contract.service_sha
             && journal.candidate_sha == sha(&candidate)
             && journal.modified_nanos < 1_000_000_000,
         "Recovery journal conflicts with verified content"
@@ -337,7 +467,9 @@ fn recovery_material(paths: &BrowserPaths, key: &str) -> Result<(Journal, Vec<u8
     Ok((journal, original, candidate))
 }
 
-fn restore_all(paths: &BrowserPaths, keep: Option<&str>) -> Result<()> {
+fn restore_all(paths: &BrowserPaths, keep: Option<&str>, contract: &RuntimeContract) -> Result<()> {
+    let mut pending = Vec::new();
+    let mut guards = Vec::new();
     for entry in fs::read_dir(&paths.state_root)? {
         let entry = entry?;
         let key = entry.file_name().to_string_lossy().to_string();
@@ -349,23 +481,28 @@ fn restore_all(paths: &BrowserPaths, keep: Option<&str>) -> Result<()> {
         if !dir.join("journal.json").exists() {
             continue;
         }
-        let (journal, original, candidate) = recovery_material(paths, &key)?;
+        let (journal, original, candidate) = recovery_material(paths, &key, contract)?;
         let target = paths.runtime_root.join(&key).join(SERVICE);
         if !target.exists() {
             continue; // Desktop owns cache deletion; never resurrect an obsolete runtime.
         }
+        guards.extend(pin_parents(&target)?);
         let current = read_regular(&target, MAX_SERVICE)?;
         ensure!(
             current == original || current == candidate,
             "External runtime change prevents recovery"
         );
         if current == candidate {
-            ensure!(
-                read_regular(&target, MAX_SERVICE)? == current,
-                "Concurrent recovery change"
-            );
-            atomic_write(&target, &original)?;
+            pending.push((target, journal, original, current));
         }
+    }
+    // Preflight every cache before restoring any, independent of directory enumeration order.
+    for (target, journal, original, current) in pending {
+        ensure!(
+            read_regular(&target, MAX_SERVICE)? == current,
+            "Concurrent recovery change"
+        );
+        atomic_write(&target, &original)?;
         let modified = UNIX_EPOCH
             .checked_add(Duration::new(journal.modified_secs, journal.modified_nanos))
             .context("Invalid recovery timestamp")?;
@@ -384,6 +521,14 @@ fn restore_all(paths: &BrowserPaths, keep: Option<&str>) -> Result<()> {
 /// No runtime operation occurs when this feature has never been enabled.
 /// Call only from the owning launcher, never from settings save or status inspection.
 pub fn reconcile(paths: &BrowserPaths, enabled: bool) -> Result<BrowserStatus> {
+    reconcile_contract(paths, enabled, &RuntimeContract::pinned())
+}
+
+fn reconcile_contract(
+    paths: &BrowserPaths,
+    enabled: bool,
+    contract: &RuntimeContract,
+) -> Result<BrowserStatus> {
     plain_path(&paths.runtime_root)?;
     plain_path(&paths.state_root)?;
     ensure!(
@@ -394,6 +539,7 @@ pub fn reconcile(paths: &BrowserPaths, enabled: bool) -> Result<BrowserStatus> {
         return Ok(BrowserStatus::new("disabled", "Not configured"));
     }
     fs::create_dir_all(&paths.state_root)?;
+    let _guards = pin_parents(&paths.state_root.join("owner.lock"))?;
     let lock_path = paths.state_root.join("owner.lock");
     plain_path(&lock_path)?;
     let lock = OpenOptions::new()
@@ -403,7 +549,7 @@ pub fn reconcile(paths: &BrowserPaths, enabled: bool) -> Result<BrowserStatus> {
         .open(lock_path)?;
     lock.try_lock_exclusive()
         .context("Another compatibility transaction is active")?;
-    let result = reconcile_locked(paths, enabled);
+    let result = reconcile_locked(paths, enabled, contract);
     if result.is_err() {
         // Fail closed for an already-loaded helper as well as future workers.
         let _ = atomic_write(
@@ -414,11 +560,15 @@ pub fn reconcile(paths: &BrowserPaths, enabled: bool) -> Result<BrowserStatus> {
     result
 }
 
-fn reconcile_locked(paths: &BrowserPaths, enabled: bool) -> Result<BrowserStatus> {
+fn reconcile_locked(
+    paths: &BrowserPaths,
+    enabled: bool,
+    contract: &RuntimeContract,
+) -> Result<BrowserStatus> {
     let control = paths.state_root.join("control.json");
     if !enabled {
         atomic_write(&control, br#"{"schema":1,"requireIdentification":false}"#)?;
-        restore_all(paths, None)?;
+        restore_all(paths, None, contract)?;
         return Ok(BrowserStatus::new(
             "restored",
             "Service restored; extension identification may remain enabled",
@@ -431,8 +581,8 @@ fn reconcile_locked(paths: &BrowserPaths, enabled: bool) -> Result<BrowserStatus
             "Waiting for a native browser runtime descriptor",
         ));
     };
-    restore_all(paths, Some(&key))?;
-    prepare(paths, &key)?;
+    restore_all(paths, Some(&key), contract)?;
+    prepare(paths, &key, contract)?;
     atomic_write(&control, br#"{"schema":1,"requireIdentification":true}"#)?;
     Ok(BrowserStatus::new(
         "prepared",
@@ -463,18 +613,51 @@ pub fn read_status() -> BrowserStatus {
         })
 }
 
+pub struct BrowserMonitor {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl BrowserMonitor {
+    pub async fn stop(self) {
+        let _ = self.shutdown.send(());
+        // A started blocking filesystem transaction must finish before its owner exits.
+        let _ = self.task.await;
+    }
+}
+
 /// The singleton launcher owns this task. Existing-instance activation does not start another one.
 /// The startup snapshot intentionally requires a launcher restart to apply a saved choice.
-pub async fn start_monitor(enabled: bool) -> Option<tokio::task::JoinHandle<()>> {
+pub async fn start_monitor(enabled: bool) -> Option<BrowserMonitor> {
     let paths = BrowserPaths::current().ok()?;
     if !enabled && !paths.state_root.exists() {
         return None;
     }
     let initial = monitor_once(paths.clone(), enabled).await;
-    Some(tokio::spawn(async move {
+    if let Ok(status) = &initial {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "native_browser.compatibility",
+            json!(status),
+        );
+    }
+    let (shutdown, mut stopped) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
         let mut previous = initial.ok();
+        let started = std::time::Instant::now();
         loop {
-            tokio::time::sleep(Duration::from_secs(15)).await;
+            let delay = if started.elapsed() < Duration::from_secs(30)
+                && previous
+                    .as_ref()
+                    .is_some_and(|s| s.state == "waiting_for_runtime")
+            {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_secs(15)
+            };
+            tokio::select! {
+                _ = &mut stopped => break,
+                _ = tokio::time::sleep(delay) => {}
+            }
             let outcome = monitor_once(paths.clone(), enabled).await;
             if let Ok(status) = outcome {
                 if previous.as_ref() != Some(&status) {
@@ -486,7 +669,8 @@ pub async fn start_monitor(enabled: bool) -> Option<tokio::task::JoinHandle<()>>
                 }
             }
         }
-    }))
+    });
+    Some(BrowserMonitor { shutdown, task })
 }
 
 async fn monitor_once(paths: BrowserPaths, enabled: bool) -> Result<BrowserStatus> {
@@ -542,7 +726,14 @@ mod tests {
 
     #[test]
     fn unknown_hash_is_rejected_even_with_matching_anchor() {
-        assert!(transform(ANCHOR.as_bytes(), Path::new("C:/state/control.json")).is_err());
+        assert!(
+            transform(
+                ANCHOR.as_bytes(),
+                Path::new("C:/state/control.json"),
+                &RuntimeContract::pinned()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -564,7 +755,7 @@ mod tests {
         let node = root.join(key).join("bin/node.exe");
         json!({"mcpServers":{"cua_repl":{
             "command":node, "args":[root.join(key).join("bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs")],
-            "env":{"NODE_REPL_NODE_PATH":node,"NODE_REPL_TRUSTED_SERVICES":"{\"browser\":\"@oai/browser-desktop/service\"}",
+            "env":{"NODE_REPL_NODE_PATH":node,"CUA_REPL_NODE_REPL_PATH":root.join(key).join("bin/node_repl.exe"),"NODE_REPL_TRUSTED_SERVICES":"{\"browser\":\"@oai/browser-desktop/service\"}",
                 "CUA_REPL_ENABLED_SURFACES":"browser"}
         }}})
     }
@@ -654,6 +845,176 @@ mod tests {
         assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), time);
     }
 
+    fn synthetic(temp: &tempfile::TempDir) -> (BrowserPaths, RuntimeContract, PathBuf) {
+        let paths = paths(temp);
+        let key = "0123456789abcdef";
+        let service = paths.runtime_root.join(key).join(SERVICE);
+        let original = format!("fixture;{ANCHOR};original");
+        fs::create_dir_all(service.parent().unwrap()).unwrap();
+        fs::write(&service, &original).unwrap();
+        let contract = RuntimeContract {
+            service_sha: sha(original.as_bytes()),
+            files: vec![("bin/node.exe", sha(b"fixture-node"))],
+        };
+        fs::write(
+            paths.runtime_root.join(key).join("bin/node.exe"),
+            b"fixture-node",
+        )
+        .unwrap();
+        let dir = paths
+            .codex_home
+            .join("plugins/cache/openai-bundled/unified-computer-use/test");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(".mcp.json"),
+            serde_json::to_vec(&descriptor(&paths.runtime_root, key)).unwrap(),
+        )
+        .unwrap();
+        (paths, contract, service)
+    }
+
+    #[test]
+    fn synthetic_transaction_and_rebuilt_generation_timestamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let original = fs::read(&service).unwrap();
+        assert_eq!(
+            reconcile_contract(&paths, true, &contract).unwrap().state,
+            "prepared"
+        );
+        let candidate = fs::read(&service).unwrap();
+        reconcile_contract(&paths, true, &contract).unwrap();
+        assert_eq!(fs::read(&service).unwrap(), candidate);
+        reconcile_contract(&paths, false, &contract).unwrap();
+        assert_eq!(fs::read(&service).unwrap(), original);
+        let rebuilt_time = UNIX_EPOCH + Duration::new(1_789_145_800, 700);
+        File::options()
+            .write(true)
+            .open(&service)
+            .unwrap()
+            .set_modified(rebuilt_time)
+            .unwrap();
+        // A disabled reconcile must not overwrite an already-original generation's timestamp.
+        reconcile_contract(&paths, false, &contract).unwrap();
+        assert_eq!(
+            fs::metadata(&service).unwrap().modified().unwrap(),
+            rebuilt_time
+        );
+        reconcile_contract(&paths, true, &contract).unwrap();
+        reconcile_contract(&paths, false, &contract).unwrap();
+        assert_eq!(
+            fs::metadata(&service).unwrap().modified().unwrap(),
+            rebuilt_time
+        );
+    }
+
+    #[test]
+    fn stored_candidate_allows_adapter_upgrade_without_overwriting_external_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        reconcile_contract(&paths, true, &contract).unwrap();
+        let key = "0123456789abcdef";
+        let (mut journal, original, current_candidate) =
+            recovery_material(&paths, key, &contract).unwrap();
+        let old_candidate = [
+            current_candidate.as_slice(),
+            b"\n// previous adapter revision\n",
+        ]
+        .concat();
+        journal.candidate_sha = sha(&old_candidate);
+        let backup = paths.state_root.join(key);
+        fs::write(
+            backup.join(format!("candidate-{}.mjs", journal.candidate_sha)),
+            &old_candidate,
+        )
+        .unwrap();
+        fs::write(
+            backup.join("journal.json"),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
+        fs::write(&service, &old_candidate).unwrap();
+        reconcile_contract(&paths, true, &contract).unwrap();
+        assert_eq!(fs::read(&service).unwrap(), current_candidate);
+        fs::write(&service, b"third-party change").unwrap();
+        assert!(reconcile_contract(&paths, false, &contract).is_err());
+        assert_eq!(fs::read(&service).unwrap(), b"third-party change");
+        fs::write(&service, current_candidate).unwrap();
+        reconcile_contract(&paths, false, &contract).unwrap();
+        assert_eq!(fs::read(service).unwrap(), original);
+    }
+
+    #[test]
+    fn all_restores_are_preflighted_before_any_runtime_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        reconcile_contract(&paths, true, &contract).unwrap();
+        let candidate = fs::read(&service).unwrap();
+        let other = "fedcba9876543210";
+        let other_backup = paths.state_root.join(other);
+        fs::create_dir_all(&other_backup).unwrap();
+        for entry in fs::read_dir(paths.state_root.join("0123456789abcdef")).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), other_backup.join(entry.file_name())).unwrap();
+        }
+        let other_service = paths.runtime_root.join(other).join(SERVICE);
+        fs::create_dir_all(other_service.parent().unwrap()).unwrap();
+        fs::write(other_service, b"external change").unwrap();
+        assert!(reconcile_contract(&paths, false, &contract).is_err());
+        assert_eq!(fs::read(service).unwrap(), candidate);
+        let control: Value =
+            serde_json::from_slice(&fs::read(paths.state_root.join("control.json")).unwrap())
+                .unwrap();
+        assert_eq!(control["requireIdentification"], false);
+    }
+
+    #[test]
+    fn changed_entry_component_is_refused_before_service_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let original = fs::read(&service).unwrap();
+        fs::write(
+            paths.runtime_root.join("0123456789abcdef/bin/node.exe"),
+            b"unknown-node",
+        )
+        .unwrap();
+        assert!(reconcile_contract(&paths, true, &contract).is_err());
+        assert_eq!(fs::read(&service).unwrap(), original);
+    }
+
+    #[test]
+    fn interrupted_backup_stage_can_be_resumed_and_tampering_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let dir = paths.state_root.join("0123456789abcdef");
+        fs::create_dir_all(&dir).unwrap();
+        fs::copy(&service, dir.join("original.mjs")).unwrap();
+        reconcile_contract(&paths, true, &contract).unwrap();
+        let candidate = fs::read(&service).unwrap();
+        let journal: Journal =
+            serde_json::from_slice(&fs::read(dir.join("journal.json")).unwrap()).unwrap();
+        fs::write(
+            dir.join(format!("candidate-{}.mjs", journal.candidate_sha)),
+            b"corrupt backup",
+        )
+        .unwrap();
+        assert!(reconcile_contract(&paths, false, &contract).is_err());
+        assert_eq!(fs::read(service).unwrap(), candidate);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pinned_parent_cannot_be_renamed_during_transaction() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let destination = temp.path().join("renamed");
+        fs::create_dir(&parent).unwrap();
+        let guards = pin_parents(&parent.join("service.mjs")).unwrap();
+        assert!(fs::rename(&parent, &destination).is_err());
+        drop(guards);
+        fs::rename(&parent, &destination).unwrap();
+    }
+
     // The proprietary runtime is supplied locally, never committed or executed by this test.
     #[test]
     #[ignore = "requires CPP_NATIVE_BROWSER_FIXTURE containing the pinned service and worker"]
@@ -666,11 +1027,11 @@ mod tests {
         let service = runtime.join(SERVICE);
         fs::create_dir_all(service.parent().unwrap()).unwrap();
         fs::copy(fixture.join(SERVICE), &service).unwrap();
-        fs::copy(
-            fixture.join("bin/node_repl.exe"),
-            runtime.join("bin/node_repl.exe"),
-        )
-        .unwrap();
+        for (file, _) in RuntimeContract::pinned().files {
+            let target = runtime.join(file);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(fixture.join(file), target).unwrap();
+        }
         let original = fs::read(&service).unwrap();
         let modified = fs::metadata(&service).unwrap().modified().unwrap();
         let dir = paths

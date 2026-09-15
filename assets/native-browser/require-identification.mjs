@@ -3,11 +3,15 @@ function cppNativeIdentificationReader(runtime, fallback, getTurnMetadata, contr
   return async function () {
     const info = this.clientInfo;
     const turn = getTurnMetadata(runtime);
+    const sessionId = turn?.session_id;
+    const turnId = turn?.turn_id;
+    const instanceId = info?.metadata?.extensionInstanceId;
     if (info?.type !== "extension" || info.family !== "edge" ||
         info.metadata?.extensionId !== "odlomjlbamekndcpllcnffbgeohgkmjh" ||
         typeof info.agentRequestHeaderEnabled !== "boolean" ||
-        typeof turn?.session_id !== "string" || !turn.session_id ||
-        typeof turn?.turn_id !== "string" || !turn.turn_id) {
+        typeof instanceId !== "string" || !instanceId ||
+        typeof sessionId !== "string" || !sessionId ||
+        typeof turnId !== "string" || !turnId) {
       return fallback();
     }
     let control;
@@ -21,8 +25,11 @@ function cppNativeIdentificationReader(runtime, fallback, getTurnMetadata, contr
     }
     // Recheck after I/O; do not apply a decision to a replaced client or ended turn.
     const current = getTurnMetadata(runtime);
-    if (this.clientInfo !== info || current?.session_id !== turn.session_id ||
-        current?.turn_id !== turn.turn_id || control?.schema !== 1 ||
+    if (this.clientInfo !== info || info.type !== "extension" || info.family !== "edge" ||
+        info.metadata?.extensionId !== "odlomjlbamekndcpllcnffbgeohgkmjh" ||
+        info.metadata?.extensionInstanceId !== instanceId ||
+        typeof info.agentRequestHeaderEnabled !== "boolean" ||
+        current?.session_id !== sessionId || current?.turn_id !== turnId || control?.schema !== 1 ||
         control?.requireIdentification !== true) return fallback();
     return true;
   };

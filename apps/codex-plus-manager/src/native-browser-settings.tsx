@@ -13,14 +13,17 @@ export const nativeBrowserConsent =
 
 export function NativeBrowserStatusView() {
   const [state, setState] = useState("not_started");
+  const [detail, setDetail] = useState("");
   const [busy, setBusy] = useState(false);
   const refresh = async () => {
     setBusy(true);
     try {
-      const result = await invoke<{ state: string }>("native_browser_status");
+      const result = await invoke<{ state: string; detail: string }>("native_browser_status");
       setState(result.state);
+      setDetail(result.detail);
     } catch {
       setState("unavailable");
+      setDetail("");
     } finally {
       setBusy(false);
     }
@@ -28,7 +31,10 @@ export function NativeBrowserStatusView() {
   useEffect(() => { void refresh(); }, []);
   return (
     <div className="feature-action-row">
-      <div role="status"><small>{nativeBrowserStatusLabel(state)}</small></div>
+      <div role="status">
+        <small>{nativeBrowserStatusLabel(state)}</small>
+        {state === "blocked" && detail ? <small>{detail}</small> : null}
+      </div>
       <Button variant="outline" size="icon" disabled={busy} onClick={() => void refresh()}
         aria-label="刷新原生浏览器兼容状态" title="刷新原生浏览器兼容状态">
         <RefreshCw />

@@ -16,11 +16,24 @@ fn save_and_partial_update_preserve_explicit_choice() {
     let mut settings = BackendSettings::default();
     settings.codex_app_native_browser_require_identification = true;
     store.save(&settings).unwrap();
-    assert!(store.load().unwrap().codex_app_native_browser_require_identification);
-    assert!(store.update(json!({"codexAppThreadIdBadge": true})).unwrap()
-        .codex_app_native_browser_require_identification);
-    assert!(!store.update(json!({"codexAppNativeBrowserRequireIdentification": false})).unwrap()
-        .codex_app_native_browser_require_identification);
+    assert!(
+        store
+            .load()
+            .unwrap()
+            .codex_app_native_browser_require_identification
+    );
+    assert!(
+        store
+            .update(json!({"codexAppThreadIdBadge": true}))
+            .unwrap()
+            .codex_app_native_browser_require_identification
+    );
+    assert!(
+        !store
+            .update(json!({"codexAppNativeBrowserRequireIdentification": false}))
+            .unwrap()
+            .codex_app_native_browser_require_identification
+    );
     // Saving this option writes settings only, not browser runtime or recovery files.
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
 }

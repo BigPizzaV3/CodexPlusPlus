@@ -16,7 +16,7 @@ test("local opt-in uses real Edge metadata and preserves the original fallback",
   const turn = { session_id: "fixture-session", turn_id: "fixture-turn" };
   const info = {
     type: "extension", family: "edge", agentRequestHeaderEnabled: false,
-    metadata: { extensionId: "odlomjlbamekndcpllcnffbgeohgkmjh" },
+    metadata: { extensionId: "odlomjlbamekndcpllcnffbgeohgkmjh", extensionInstanceId: "fixture-extension" },
   };
   const client = { clientInfo: info };
   let calls = 0;
@@ -48,6 +48,12 @@ test("local opt-in uses real Edge metadata and preserves the original fallback",
     await assert.rejects(changedTurn.call(client), /original decision unavailable/);
     const noTurn = reader({}, fallback, () => null, path);
     await assert.rejects(noTurn.call(client), /original decision unavailable/);
+    let mutationReads = 0;
+    const mutatedTurn = reader({}, fallback, () => {
+      if (++mutationReads > 1) turn.turn_id = "mutated-in-place";
+      return turn;
+    }, path);
+    await assert.rejects(mutatedTurn.call(client), /original decision unavailable/);
   } finally {
     await rm(path, { force: true });
     await rmdir(dir);
