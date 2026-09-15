@@ -104,12 +104,9 @@ fn response_contains_codex_target(response: &[u8], debug_port: u16) -> bool {
         return false;
     };
     targets.iter().any(|target| {
-        is_primary_codex_page_target(target)
-            && target
-                .url
-                .trim()
-                .to_ascii_lowercase()
-                .starts_with("app://-/")
+        target.target_type == "page"
+            && is_codex_app_page_target(target)
+            && !is_quick_chat_page_target(target)
             && target
                 .web_socket_debugger_url
                 .as_deref()
@@ -382,7 +379,7 @@ mod endpoint_tests {
     fn endpoint_available_accepts_devtools_target_response() {
         let (port, server) = serve_once(|port| {
             format!(
-                r#"[{{"id":"codex","type":"page","title":"Codex","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+                r#"[{{"id":"codex","type":"page","title":"CI output","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
             )
         });
 

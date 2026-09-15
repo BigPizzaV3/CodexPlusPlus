@@ -49,6 +49,8 @@ pub mod skills;
 pub mod status;
 pub mod stepwise;
 pub mod sub2api;
+pub mod taskboard_embedded;
+pub mod taskboard_runtime;
 pub mod tools;
 pub mod update;
 pub mod upstream_worktree;
@@ -73,6 +75,11 @@ pub fn windows_open_url(url: &str) -> anyhow::Result<()> {
 #[cfg(windows)]
 pub fn windows_activate_process_window(process_id: u32) -> bool {
     windows_integration::activate_process_window(process_id)
+}
+
+#[cfg(windows)]
+pub fn windows_allow_set_foreground_window(process_id: u32) -> bool {
+    windows_integration::allow_set_foreground_window(process_id)
 }
 
 #[cfg(windows)]

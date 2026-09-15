@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 
 use crate::settings::BackendSettings;
 
-const MAX_PROMPT_LENGTH: usize = 420;
 const MAX_LABEL_LENGTH: usize = 36;
 const MAX_SUMMARY_LENGTH: usize = 72;
 const ANTHROPIC_VERSION: &str = "2023-06-01";

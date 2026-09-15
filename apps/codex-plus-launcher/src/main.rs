@@ -10,6 +10,7 @@ use codex_plus_core::status::LaunchStatus;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -76,7 +77,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOptions) -> Result<()> {
+async fn launcher_main(_args: Vec<String>, helper_only: bool, options: LaunchOptions) -> Result<()> {
     if helper_only {
         let hooks = LauncherHooks::default();
         hooks.start_helper(options.helper_port).await?;
@@ -105,6 +106,9 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
     });
     let hooks = LauncherHooks::default();
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
+    if let Ok(settings) = hooks.load_settings().await {
+        start_taskboard_sidebar_injector_if_enabled(&settings, handle.debug_port);
+    }
     handle.wait_for_codex_exit().await?;
     Ok(())
 }
@@ -293,6 +297,9 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             "launch_error": launch_result.as_ref().err().map(|error| error.to_string())
         }),
     );
+    if launch_result.is_ok() {
+        start_taskboard_sidebar_injector_if_enabled(&settings, options.debug_port);
+    }
     launch_result.map(|_| ())
 }
 
@@ -330,6 +337,70 @@ fn open_manager_with_update_prompt() -> anyhow::Result<()> {
     )
     .map(|_| ())
     .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
+}
+
+fn start_taskboard_sidebar_injector_if_enabled(
+    settings: &codex_plus_core::settings::BackendSettings,
+    debug_port: u16,
+) {
+    if !settings.enhancements_enabled || !settings.codex_taskboard_enabled {
+        return;
+    }
+    match spawn_taskboard_sidebar_injector(debug_port) {
+        Ok(Some(process_id)) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.taskboard_injector_started",
+                json!({
+                    "debug_port": debug_port,
+                    "process_id": process_id
+                }),
+            );
+        }
+        Ok(None) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.taskboard_injector_skipped",
+                json!({
+                    "debug_port": debug_port,
+                    "message": "Taskboard injector script was not found"
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.taskboard_injector_failed",
+                json!({
+                    "debug_port": debug_port,
+                    "message": error.to_string()
+                }),
+            );
+        }
+    }
+}
+
+fn spawn_taskboard_sidebar_injector(debug_port: u16) -> anyhow::Result<Option<u32>> {
+    let Some(taskboard_root) =
+        codex_plus_core::taskboard_runtime::taskboard_root_from_current_exe()
+    else {
+        return Ok(None);
+    };
+    let injector = taskboard_root.join("scripts").join("codex-injector.mjs");
+    let mut command = Command::new(codex_plus_core::taskboard_runtime::taskboard_node_executable());
+    command
+        .current_dir(&taskboard_root)
+        .arg(injector)
+        .arg("--daemon")
+        .arg("--port")
+        .arg(debug_port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let child = command.spawn()?;
+    Ok(Some(child.id()))
 }
 
 fn parse_launch_options<I, S>(args: I) -> LaunchOptions
@@ -1208,6 +1279,43 @@ mod tests {
     }
 
     #[test]
+    fn taskboard_root_resolution_finds_dev_tree_from_debug_exe() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "codex-plus-taskboard-root-test-{}",
+            std::process::id()
+        ));
+        let script = test_dir
+            .join("apps")
+            .join("codex-taskboard")
+            .join("scripts")
+            .join("codex-injector.mjs");
+        let server = test_dir
+            .join("apps")
+            .join("codex-taskboard")
+            .join("server")
+            .join("index.mjs");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "").unwrap();
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        std::fs::write(&server, "").unwrap();
+        let exe = test_dir
+            .join("target")
+            .join("debug")
+            .join(if cfg!(windows) {
+                "codex-plus-plus.exe"
+            } else {
+                "codex-plus-plus"
+            });
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+
+        assert_eq!(
+            codex_plus_core::taskboard_runtime::taskboard_root_for_exe_path(&exe),
+            Some(test_dir.join("apps").join("codex-taskboard"))
+        );
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
     fn launcher_accepts_only_a_completed_provider_sync() {
         assert!(
             require_completed_provider_sync(
@@ -1302,6 +1410,28 @@ mod tests {
         assert!(!body.contains("hooks.ensure_injection"));
         assert!(!body.contains("hooks.start_bridge_watchdog"));
         assert!(body.contains("can_connect_loopback_port(options.helper_port)"));
+    }
+
+    #[test]
+    fn existing_launcher_path_starts_taskboard_injector_after_activation() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("existing launcher activation function");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after existing launcher activation");
+        let body = &source[start..end];
+        let launch = body
+            .find("let launch_result = hooks")
+            .expect("Codex activation");
+        let injector = body
+            .find("start_taskboard_sidebar_injector_if_enabled(&settings, options.debug_port)")
+            .expect("Taskboard injector startup");
+
+        assert!(launch < injector);
+        assert!(body[..injector].contains("if launch_result.is_ok()"));
     }
 
     #[test]

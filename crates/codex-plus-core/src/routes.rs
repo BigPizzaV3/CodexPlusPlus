@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -10,6 +10,10 @@ use serde_json::{Value, json};
 use crate::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
 use crate::settings::{BackendSettings, SettingsStore};
 use crate::status::StatusStore;
+use crate::taskboard_runtime::{
+    TASKBOARD_URL, spawn_taskboard_service, taskboard_health_ok, taskboard_launch_warning,
+    wait_for_taskboard_health,
+};
 use crate::user_scripts::UserScriptManager;
 
 pub type UserScriptEvaluator = Arc<dyn Fn(&str, &str) -> anyhow::Result<Value> + Send + Sync>;
@@ -188,6 +192,7 @@ pub async fn handle_bridge_request(
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager(payload.clone()).await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager(payload.clone()).await,
+        "/taskboard/open" => taskboard_open_value(ctx.settings.get_settings().await),
         "/backend/status" => backend_status_value(
             ctx.runtime.backend_status().await,
             ctx.settings.get_settings().await,
@@ -312,6 +317,67 @@ impl CoreSettingsService {
             app_dir: Some(app_dir),
         }
     }
+}
+
+fn taskboard_open_value(settings: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+    let settings = settings?;
+    if !settings.enhancements_enabled || !settings.codex_taskboard_enabled {
+        return Ok(taskboard_response(
+            "failed",
+            "Taskboard is disabled in Codex++ settings.",
+            false,
+            false,
+        ));
+    }
+    Ok(open_taskboard_panel())
+}
+
+pub(crate) fn open_taskboard_from_default_settings() -> anyhow::Result<Value> {
+    taskboard_open_value(SettingsStore::default().load())
+}
+
+fn open_taskboard_panel() -> Value {
+    if taskboard_health_ok() {
+        return taskboard_response("ok", "Taskboard is already running.", true, false);
+    }
+
+    if let Err(error) = spawn_taskboard_service() {
+        return taskboard_response(
+            "failed",
+            format!("Failed to start Taskboard with codex-taskboard: {error}"),
+            false,
+            false,
+        );
+    }
+
+    if wait_for_taskboard_health(Duration::from_secs(8)) {
+        let message = taskboard_launch_warning()
+            .map(|warning| format!("Taskboard started. {warning}"))
+            .unwrap_or_else(|| "Taskboard started.".to_string());
+        taskboard_response("ok", message, false, true)
+    } else {
+        taskboard_response(
+            "failed",
+            "Started codex-taskboard, but http://127.0.0.1:47823/health is still unavailable.",
+            false,
+            true,
+        )
+    }
+}
+
+fn taskboard_response(
+    status: &str,
+    message: impl Into<String>,
+    already_running: bool,
+    launched: bool,
+) -> Value {
+    json!({
+        "status": status,
+        "message": message.into(),
+        "url": TASKBOARD_URL,
+        "alreadyRunning": already_running,
+        "launched": launched
+    })
 }
 
 #[async_trait]

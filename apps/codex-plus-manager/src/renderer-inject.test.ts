@@ -91,6 +91,72 @@ function installRendererStyle(renderer: string) {
   return appended;
 }
 
+function taskboardOpenRuntime(renderer: string) {
+  const start = renderer.indexOf("  function closeCodexPlusSurfaces()");
+  const end = renderer.indexOf("\n  function scheduleBackendHeartbeat()", start);
+  assert.ok(start >= 0 && end > start, "taskboard opener block not found in renderer-inject.js");
+  const source = renderer.slice(start, end);
+  const removed: string[] = [];
+  const navigationStates: boolean[] = [];
+  let inlineOpens = 0;
+  let popupOpens = 0;
+  let postCalls = 0;
+  const nodes = [
+    { remove: () => removed.push("page") },
+    { remove: () => removed.push("modal") },
+  ];
+  const documentValue = {
+    querySelectorAll(selector: string) {
+      assert.equal(selector, ".codex-plus-page-overlay, .codex-plus-modal-overlay");
+      return nodes;
+    },
+    getElementById() {
+      return null;
+    },
+  };
+  const windowValue = {
+    __codexTaskboardInjection__: {
+      open: () => {
+        inlineOpens += 1;
+      },
+    },
+    open: () => {
+      popupOpens += 1;
+      return null;
+    },
+  };
+  const open = new Function(
+    "window",
+    "document",
+    "codexPlusPageClass",
+    "postJson",
+    "showToast",
+    "setCodexPlusSidebarNavActive",
+    "taskboardPanelUrl",
+    `${source}\nreturn openTaskboardFromCodex;`,
+  )(
+    windowValue,
+    documentValue,
+    "codex-plus-page-overlay",
+    async () => {
+      postCalls += 1;
+      return { status: "ok" };
+    },
+    () => {},
+    (active: boolean) => navigationStates.push(active),
+    "http://127.0.0.1:47823/?host=codex",
+  ) as () => Promise<void>;
+
+  return {
+    open,
+    inlineOpens: () => inlineOpens,
+    popupOpens: () => popupOpens,
+    postCalls: () => postCalls,
+    removed,
+    navigationStates,
+  };
+}
+
 describe("renderer injection header compatibility", () => {
   it("纯 API 会话使用当前真实 provider，不强行改成 custom", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
@@ -176,8 +242,26 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /target\?\.closest\(selectors\.sidebarThread\)/);
     assert.match(renderer, /closeCodexPlusPageAfterNativeNavigation\(\)/);
     assert.match(renderer, /setTimeout\(\(\) => \{\s*window\.__codexPlusPageNavigationCloseTimer = null;\s*closeCodexPlusPage\(\);/);
+    assert.match(renderer, /dataset\.codexPlusOpenHandlerVersion !== codexPlusBuild/);
+    assert.match(renderer, /sidebarButton\.replaceWith\(replacement\)/);
+    assert.match(renderer, /const codexPlusSurfaceVersion\s*=\s*"2"/);
+    assert.match(renderer, /node\.dataset\.codexPlusSurfaceVersion !== codexPlusSurfaceVersion/);
+    assert.match(renderer, /overlay\.dataset\.codexPlusSurfaceVersion = codexPlusSurfaceVersion/);
     assert.match(renderer, /installCodexPlusSidebarNavigation\(\);/);
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
+  });
+
+  it("opens the existing inline Taskboard from the Codex++ page button", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const runtime = taskboardOpenRuntime(renderer);
+
+    await runtime.open();
+
+    assert.equal(runtime.inlineOpens(), 1);
+    assert.equal(runtime.popupOpens(), 0);
+    assert.equal(runtime.postCalls(), 0);
+    assert.deepEqual(runtime.removed, ["page", "modal"]);
+    assert.deepEqual(runtime.navigationStates, [false]);
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {

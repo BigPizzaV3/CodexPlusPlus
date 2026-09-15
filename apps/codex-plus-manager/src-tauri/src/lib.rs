@@ -75,6 +75,7 @@ pub fn run() {
             commands::load_overview,
             commands::launch_codex_plus,
             commands::restart_codex_plus,
+            commands::ensure_taskboard_service,
             commands::load_settings,
             commands::native_browser_status,
             commands::save_settings,
@@ -199,13 +200,13 @@ pub fn run() {
         ])
         .build(tauri::generate_context!());
     match app_result {
-        Ok(app) => app.run(|app_handle, event| {
+        Ok(app) => app.run(|_app_handle, _event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = event {
+            if let tauri::RunEvent::Opened { urls } = _event {
                 for url in urls {
                     if handle_session_share_url(url.as_str()) || handle_dream_skin_url(url.as_str())
                     {
-                        show_main_window(app_handle);
+                        show_main_window(_app_handle);
                     }
                 }
             }

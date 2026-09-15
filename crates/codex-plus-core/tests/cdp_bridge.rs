@@ -2863,6 +2863,25 @@ fn injection_script_keeps_session_action_buttons_in_pr_style() {
 
     assert!(script.contains("actionButtonClass = \"codex-session-action-button\""));
     assert!(script.contains("background: transparent;"));
+    assert!(script.contains("color: var(--color-token-text-secondary"));
+    assert!(script.contains("background: var(--color-token-list-hover-background"));
+    assert!(script.contains("viewBox=\"0 0 20 20\""));
+    assert!(script.contains("fill=\"none\""));
+    assert!(script.contains("fill=\"currentColor\" fill-rule=\"evenodd\""));
+    assert!(script.contains("codexDeleteStyleVersion = \"20\""));
+    assert!(script.contains("codexDeleteVersion = \"10\""));
+    assert!(script.contains("codexActionGroupVersion = \"10\""));
+    assert!(script.contains(
+        ".${actionGroupClass}[data-codex-action-native-slot=\"true\"] .${actionButtonClass}:focus-visible"
+    ));
+    assert!(
+        script.contains("nativeContainer.classList.add(\"codex-session-action-native-container\")")
+    );
+    assert!(script.contains("--codex-session-action-container-width"));
+    assert!(script.contains("syncNativeActionGroupStyle(row, group)"));
+    assert!(script.contains("codex-session-action-rail"));
+    assert!(!script.contains("syncNativeActionGroupMask"));
+    assert!(!script.contains("inset: -2px -8px -2px -18px;"));
     assert!(
         script.contains("background: var(--codex-session-action-hover-background, transparent);")
     );
@@ -3057,7 +3076,7 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
 
     assert!(script.contains("moreButtonClass = \"codex-session-more-button\""));
     assert!(script.contains("moreMenuClass = \"codex-session-more-menu\""));
-    assert!(script.contains("configureActionButton(moreButton, \"更多操作\", \"…\")"));
+    assert!(script.contains("configureSvgActionButton(moreButton, \"更多操作\", moreIconSvg())"));
     assert!(script.contains("createSessionMoreMenuItem(\"导出\""));
     assert!(!script.contains("createSessionMoreMenuItem(\"移动\""));
     assert!(script.contains("group.appendChild(moreButton)"));
@@ -3066,6 +3085,10 @@ fn injection_script_moves_export_and_project_move_into_more_menu() {
     assert!(script.contains("updateSessionMoreMenuDirection(moreButton, moreMenu)"));
     assert!(script.contains("positionSessionMoreMenu(moreButton, moreMenu)"));
     assert!(script.contains("document.body.appendChild(moreMenu)"));
+    assert!(script.contains("nativeContainer.insertBefore(group, nativeContainer.firstChild)"));
+    assert!(script.contains("removeProperty(\"--codex-session-action-mask-background\")"));
+    assert!(!script.contains("var(--codex-session-action-mask-background"));
+    assert!(!script.contains("[data-codex-action-native-slot=\"true\"]::before"));
     assert!(script.contains("position: fixed;"));
     assert!(script.contains("codex-session-more-menu-open-up"));
     assert!(script.contains("transform: translateY(calc(-100% - 34px));"));

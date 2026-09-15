@@ -118,8 +118,8 @@ fn windows_binaries_run_as_invoker_without_administrator_privileges() {
 
     assert!(manager_build.contains("windows-app-manifest.xml"));
     assert!(launcher_build.contains("windows-app-manifest.xml"));
-    // Elevated launcher processes also elevate Codex, so Explorer file drops are blocked by UIPI.
     assert!(windows_manifest.contains("asInvoker"));
+    // Elevated launcher processes also elevate Codex, so Explorer file drops are blocked by UIPI.
     assert!(!windows_manifest.contains("requireAdministrator"));
     assert!(windows_manifest.contains("Microsoft.Windows.Common-Controls"));
     assert!(windows_installer.contains("RequestExecutionLevel user"));

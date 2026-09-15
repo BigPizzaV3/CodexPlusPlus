@@ -442,6 +442,10 @@ pub struct BackendSettings {
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
+    #[serde(rename = "codexTaskboardEnabled", default)]
+    pub codex_taskboard_enabled: bool,
+    #[serde(rename = "computerUseGuardEnabled", default)]
+    pub computer_use_guard_enabled: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
@@ -625,6 +629,10 @@ pub struct BackendSettings {
 
 impl Default for BackendSettings {
     fn default() -> Self {
+        let tools = [(ToolId::Codex, ToolConfig::default())]
+            .into_iter()
+            .collect();
+
         Self {
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
@@ -635,6 +643,8 @@ impl Default for BackendSettings {
             ccs_db_path: String::new(),
             relay_profiles_enabled: true,
             enhancements_enabled: true,
+            codex_taskboard_enabled: false,
+            computer_use_guard_enabled: false,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
@@ -698,7 +708,7 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
-            tools: BTreeMap::new(),
+            tools,
             active_tool: ToolId::Codex,
         }
     }
@@ -1219,9 +1229,7 @@ impl SettingsStore {
         let contents = match fs::read_to_string(&self.path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut settings = BackendSettings::default();
-                settings.sync_tool_shards();
-                return Ok(settings);
+                return Ok(BackendSettings::default());
             }
             Err(error) => {
                 return Err(error)
@@ -1381,6 +1389,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
+    merge_bool_setting(target, source, "codexTaskboardEnabled");
+    merge_bool_setting(target, source, "computerUseGuardEnabled");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
@@ -2064,6 +2074,8 @@ mod tests {
         assert!(!settings.provider_sync_enabled);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
+        assert!(!settings.codex_taskboard_enabled);
+        assert!(!settings.computer_use_guard_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
