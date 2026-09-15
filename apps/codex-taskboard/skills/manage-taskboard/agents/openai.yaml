@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage Taskboard"
+  short_description: "Manage projects and issues with taskctl CLI"
+  default_prompt: "Use $manage-taskboard to manage this project and its issues with taskctl."
