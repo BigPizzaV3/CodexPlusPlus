@@ -111,11 +111,15 @@ retain support for restoring previously supported original-service fingerprints.
 ## Validation
 
 Normal Rust tests use synthetic fixtures and never execute bundled proprietary
-code. The explicit ignored fixture test reads a locally supplied pinned runtime,
-copies it to a temporary directory, and tests transformation and recovery there:
+code. Windows regression tests cover independently spelled path separators and
+reject genuinely conflicting paths. The explicit ignored fixture test reads a
+locally supplied pinned runtime and its actual generated descriptor, validates
+the original selection read-only, then relocates the descriptor and runtime to
+a temporary directory for transformation and recovery:
 
 ```powershell
 $env:CPP_NATIVE_BROWSER_FIXTURE = 'C:\path\to\pinned\cua_node\runtime'
+$env:CPP_NATIVE_BROWSER_DESCRIPTOR = 'C:\path\to\unified-computer-use\version\.mcp.json'
 cargo test -p codex-plus-core native_browser::tests::pinned_fixture_transaction_recovery_and_external_change --lib -- --ignored --exact
 ```
 
@@ -128,6 +132,7 @@ page creation, existing-tab access, input/click/reload, actual identification
 headers, explicit site/approval denial, physical stop, turn cleanup, and
 disable/restart recovery. Testing an already-enabled Edge profile alone cannot
 prove first-time enablement, because the extension retains identification.
-The Edge-only build has user-reported acceptance; the expanded Chrome build
-requires its own native end-to-end acceptance. No macOS or other cross-platform
-acceptance is implied.
+Earlier Edge success on an already-enabled profile did not establish that the
+launcher had deployed compatibility. The corrected combined build requires
+fresh native end-to-end acceptance and launcher status verification.
+No macOS or other cross-platform acceptance is implied.

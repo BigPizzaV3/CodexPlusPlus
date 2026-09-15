@@ -279,12 +279,12 @@ fn selected_key(descriptor: &Value, root: &Path) -> Result<String> {
     );
     let env = &server["env"];
     ensure!(
-        env["NODE_REPL_NODE_PATH"].as_str() == node.to_str(),
+        env["NODE_REPL_NODE_PATH"].as_str().map(Path::new) == Some(node.as_path()),
         "Conflicting native Node selection"
     );
+    let worker = root.join(key).join("bin/node_repl.exe");
     ensure!(
-        env["CUA_REPL_NODE_REPL_PATH"].as_str()
-            == root.join(key).join("bin/node_repl.exe").to_str(),
+        env["CUA_REPL_NODE_REPL_PATH"].as_str().map(Path::new) == Some(worker.as_path()),
         "Conflicting native worker selection"
     );
     let services: Value = serde_json::from_str(
@@ -307,7 +307,7 @@ fn selected_key(descriptor: &Value, root: &Path) -> Result<String> {
         .join(key)
         .join("bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs");
     ensure!(
-        args.len() == 1 && args[0].as_str() == entry.to_str(),
+        args.len() == 1 && args[0].as_str().map(Path::new) == Some(entry.as_path()),
         "Unsupported native entry point"
     );
     plain_path(&node)?;
@@ -890,6 +890,80 @@ mod tests {
         assert!(selected_key(&descriptor(temp.path(), "0123456789abcdef"), &root).is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_generated_descriptor_accepts_backslash_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenAI/Codex/runtimes/cua_node");
+        let key = "0123456789abcdef";
+        let base = format!(r"{}\{key}", root.display().to_string().replace('/', "\\"));
+        // Desktop writes backslashes independently of our PathBuf joins.
+        let data = json!({"mcpServers":{"cua_repl":{
+            "command":format!(r"{base}\bin\node.exe"),
+            "args":[format!(r"{base}\bin\node_modules\@oai\cua-repl\bin\cua-repl.mjs")],
+            "env":{
+                "NODE_REPL_NODE_PATH":format!(r"{base}\bin\node.exe"),
+                "CUA_REPL_NODE_REPL_PATH":format!(r"{base}\bin\node_repl.exe"),
+                "NODE_REPL_TRUSTED_SERVICES":"{\"browser\":\"@oai/browser-desktop/service\"}",
+                "CUA_REPL_ENABLED_SURFACES":"browser"
+            }
+        }}});
+        assert_eq!(selected_key(&data, &root).unwrap(), key);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_descriptor_accepts_independent_separator_styles() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenAI/Codex/runtimes/cua_node");
+        let key = "0123456789abcdef";
+        let fields = [
+            "/mcpServers/cua_repl/command",
+            "/mcpServers/cua_repl/env/NODE_REPL_NODE_PATH",
+            "/mcpServers/cua_repl/env/CUA_REPL_NODE_REPL_PATH",
+            "/mcpServers/cua_repl/args/0",
+        ];
+        for mask in 0..16 {
+            let mut data = descriptor(&root, key);
+            for (index, field) in fields.iter().enumerate() {
+                let value = data.pointer_mut(field).unwrap();
+                let path = value.as_str().unwrap().replace('\\', "/");
+                *value = json!(if mask & (1 << index) == 0 {
+                    path
+                } else {
+                    path.replace('/', "\\")
+                });
+            }
+            assert_eq!(selected_key(&data, &root).unwrap(), key, "mask {mask}");
+        }
+    }
+
+    #[test]
+    fn descriptor_rejects_conflicting_or_malformed_runtime_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("cache");
+        let key = "0123456789abcdef";
+        for field in [
+            "/mcpServers/cua_repl/command",
+            "/mcpServers/cua_repl/env/NODE_REPL_NODE_PATH",
+            "/mcpServers/cua_repl/env/CUA_REPL_NODE_REPL_PATH",
+            "/mcpServers/cua_repl/args/0",
+        ] {
+            for invalid in [
+                Value::Null,
+                json!(42),
+                json!(""),
+                json!("bin/node_repl.exe"),
+                json!(root.join("fedcba9876543210/bin/node_repl.exe")),
+                json!(root.join(key).join("bin/../bin/node_repl.exe")),
+            ] {
+                let mut data = descriptor(&root, key);
+                *data.pointer_mut(field).unwrap() = invalid;
+                assert!(selected_key(&data, &root).is_err(), "{field}");
+            }
+        }
+    }
+
     #[test]
     fn ambiguous_descriptors_refuse_enablement() {
         let temp = tempfile::tempdir().unwrap();
@@ -1183,13 +1257,31 @@ mod tests {
 
     // The proprietary runtime is supplied locally, never committed or executed by this test.
     #[test]
-    #[ignore = "requires CPP_NATIVE_BROWSER_FIXTURE containing the pinned service and worker"]
+    #[ignore = "requires CPP_NATIVE_BROWSER_FIXTURE and CPP_NATIVE_BROWSER_DESCRIPTOR"]
     fn pinned_fixture_transaction_recovery_and_external_change() {
         let fixture = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_FIXTURE").unwrap());
+        let generated = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_DESCRIPTOR").unwrap());
+        let mut data: Value =
+            serde_json::from_slice(&fs::read(&generated).unwrap()).unwrap();
+        let source_key = selected_key(&data, fixture.parent().unwrap()).unwrap();
+        assert_eq!(Some(source_key.as_str()), fixture.file_name().unwrap().to_str());
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         let key = "0123456789abcdef";
         let runtime = paths.runtime_root.join(key);
+        // Preserve Desktop's descriptor spelling; only relocate its checked paths.
+        for field in [
+            "/mcpServers/cua_repl/command",
+            "/mcpServers/cua_repl/env/NODE_REPL_NODE_PATH",
+            "/mcpServers/cua_repl/env/CUA_REPL_NODE_REPL_PATH",
+            "/mcpServers/cua_repl/args/0",
+        ] {
+            let value = data.pointer_mut(field).unwrap();
+            let relative = Path::new(value.as_str().unwrap())
+                .strip_prefix(&fixture)
+                .unwrap();
+            *value = json!(runtime.join(relative));
+        }
         let service = runtime.join(SERVICE);
         fs::create_dir_all(service.parent().unwrap()).unwrap();
         fs::copy(fixture.join(SERVICE), &service).unwrap();
@@ -1206,7 +1298,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join(".mcp.json"),
-            serde_json::to_vec(&descriptor(&paths.runtime_root, key)).unwrap(),
+            serde_json::to_vec(&data).unwrap(),
         )
         .unwrap();
         assert_eq!(reconcile(&paths, true).unwrap().state, "prepared");
