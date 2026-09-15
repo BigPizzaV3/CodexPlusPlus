@@ -1,17 +1,23 @@
-# Native Edge Request Identification Compatibility
+# Native Edge / Chrome Request Identification Compatibility
 
 This experimental Windows option adapts a pinned native browser service so a
 local user can require request identification without using the service's
 cloud rollout decision for that requirement. Browser execution still uses the
-original Edge extension and bundled native runtime. It does not install another
+original Edge or Chrome extension and bundled native runtime. It does not install another
 browser engine, impersonate a ChatGPT login, or provide access to other
 authenticated services.
 
 ## Enablement
 
-In Codex enhancements, enable **原生 Edge 请求标识兼容（实验）**, review the
-confirmation, and save. It is disabled by default, including for existing
-settings. The master enhancements switch also controls activation.
+In Codex enhancements, enable **原生 Edge / Chrome 请求标识兼容（实验）**, review the
+confirmation, and save. The setting defaults to off when absent; existing saved
+values are retained. The master enhancements switch also controls activation.
+
+Edge and Chrome share the existing
+`codexAppNativeBrowserRequireIdentification` setting. If it was enabled in the
+Edge-only build, starting this build also permits the supported Chrome pair;
+it does not create a separate Chrome opt-in. The persistent identification
+disclosure below applies to either browser.
 
 Saving does not patch a running service or restart an application. The next
 Codex++ launcher takes a settings snapshot and applies compatibility before
@@ -28,9 +34,22 @@ and user-stop handling remain in the original execution path.
 
 ## Compatibility And Status
 
-Support is restricted to the tested Windows Edge extension family and the
-following bundled runtime fingerprints. Chrome is not supported by this adapter.
-Version labels alone are not accepted.
+The adapter accepts only these Windows stable extension pairs and the following
+bundled runtime fingerprints. Cross-paired IDs, beta extensions, other browsers
+and unknown runtimes fall back to the original decision or fail compatibility
+checks. Version labels alone are not accepted.
+
+| Browser family | Extension ID |
+| --- | --- |
+| `edge` | `odlomjlbamekndcpllcnffbgeohgkmjh` |
+| `chrome` | `hehggadaopoacecdllhhajmbjkdcmajg` |
+
+Both IDs are listed in the pinned service's production extension registry.
+Locally inspected Edge and Chrome extension packages at version
+`1.26.901.11451` have byte-identical background scripts. This is static protocol
+evidence, not proof that a connected client loaded that particular disk copy.
+The helper checks the actual client's family, ID, instance and Boolean
+identification state, and rejects client or browser-pair changes across I/O.
 
 | Component | SHA-256 |
 | --- | --- |
@@ -104,9 +123,11 @@ Node tests execute only the first-party identification helper with isolated
 control files and stubbed metadata/fallbacks. They do not execute cloud identity,
 site-policy or native approval implementations.
 
-Release acceptance still requires human tests after restarting: native Edge
+Release acceptance still requires human tests after restarting, separately for Edge and Chrome:
 page creation, existing-tab access, input/click/reload, actual identification
 headers, explicit site/approval denial, physical stop, turn cleanup, and
 disable/restart recovery. Testing an already-enabled Edge profile alone cannot
 prove first-time enablement, because the extension retains identification.
-No Chrome or cross-platform acceptance is implied.
+The Edge-only build has user-reported acceptance; the expanded Chrome build
+requires its own native end-to-end acceptance. No macOS or other cross-platform
+acceptance is implied.

@@ -6,8 +6,12 @@ function cppNativeIdentificationReader(runtime, fallback, getTurnMetadata, contr
     const sessionId = turn?.session_id;
     const turnId = turn?.turn_id;
     const instanceId = info?.metadata?.extensionInstanceId;
-    if (info?.type !== "extension" || info.family !== "edge" ||
-        info.metadata?.extensionId !== "odlomjlbamekndcpllcnffbgeohgkmjh" ||
+    const family = info?.family;
+    const extensionId = info?.metadata?.extensionId;
+    const supportedBrowser =
+      (family === "edge" && extensionId === "odlomjlbamekndcpllcnffbgeohgkmjh") ||
+      (family === "chrome" && extensionId === "hehggadaopoacecdllhhajmbjkdcmajg");
+    if (info?.type !== "extension" || !supportedBrowser ||
         typeof info.agentRequestHeaderEnabled !== "boolean" ||
         typeof instanceId !== "string" || !instanceId ||
         typeof sessionId !== "string" || !sessionId ||
@@ -25,8 +29,8 @@ function cppNativeIdentificationReader(runtime, fallback, getTurnMetadata, contr
     }
     // Recheck after I/O; do not apply a decision to a replaced client or ended turn.
     const current = getTurnMetadata(runtime);
-    if (this.clientInfo !== info || info.type !== "extension" || info.family !== "edge" ||
-        info.metadata?.extensionId !== "odlomjlbamekndcpllcnffbgeohgkmjh" ||
+    if (this.clientInfo !== info || info.type !== "extension" || info.family !== family ||
+        info.metadata?.extensionId !== extensionId ||
         info.metadata?.extensionInstanceId !== instanceId ||
         typeof info.agentRequestHeaderEnabled !== "boolean" ||
         current?.session_id !== sessionId || current?.turn_id !== turnId || control?.schema !== 1 ||

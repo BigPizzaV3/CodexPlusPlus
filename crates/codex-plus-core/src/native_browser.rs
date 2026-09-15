@@ -1,4 +1,4 @@
-//! Opt-in adaptation of a pinned native Edge identification callback.
+//! Opt-in adaptation of a pinned native Edge/Chrome identification callback.
 //! Does not implement browser execution, cloud identity or approval decisions.
 
 use std::collections::BTreeSet;

@@ -17,6 +17,9 @@ test("consent precedes enabling, default is off, and refresh is read-only", asyn
   assert.match(app, /if \(value && !window\.confirm\(nativeBrowserConsent\)\) return;/);
   assert.match(component, /x-browser-agent/);
   assert.match(component, /不会关闭扩展已保存的标识设置/);
+  assert.match(component, /Edge \/ Chrome 稳定版扩展/);
+  assert.match(app, /原生 Edge \/ Chrome 请求标识兼容（实验）/);
+  assert.match(nativeBrowserStatusLabel("unsupported"), /Edge \/ Chrome/);
   assert.match(component, /"native_browser_status"/);
   assert.doesNotMatch(component, /"restart|"save_settings/);
 });

@@ -4775,8 +4775,8 @@ function EnhanceScreen({
             <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
               {isWindowsPlatform ? <>
                 <FeatureToggle
-                  title={t("原生 Edge 请求标识兼容（实验）")}
-                  detail={t("仅 Windows Edge；下次启动 Codex++ 时应用。扩展可能持久保留请求标识。")}
+                  title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
+                  detail={t("仅 Windows Edge / Chrome；下次启动 Codex++ 时应用。扩展可能持久保留请求标识。")}
                   checked={form.codexAppNativeBrowserRequireIdentification}
                   disabled={!masterEnabled}
                   onChange={(value) => {
