@@ -46,7 +46,10 @@ hashes, linked paths, and external file changes prevent enablement. No remote
 runtime is downloaded or redistributed.
 
 The launcher checks for late-created or rebuilt caches, initially at bounded
-500 ms intervals while waiting for a descriptor, then every 15 seconds. This
+500 ms intervals while waiting for a descriptor or incomplete runtime, then every
+15 seconds. At idle it compares file identities, sizes and timestamps rather
+than repeatedly hashing executable contents. Actual service writes still require
+the full fingerprint checks. This
 cannot guarantee interception before the first worker loads a newly generated
 cache. It does not force a worker reload, alter Desktop's generated descriptor,
 or attach to a worker's debugger.

@@ -283,7 +283,8 @@ fn selected_key(descriptor: &Value, root: &Path) -> Result<String> {
         "Conflicting native Node selection"
     );
     ensure!(
-        env["CUA_REPL_NODE_REPL_PATH"].as_str() == root.join(key).join("bin/node_repl.exe").to_str(),
+        env["CUA_REPL_NODE_REPL_PATH"].as_str()
+            == root.join(key).join("bin/node_repl.exe").to_str(),
         "Conflicting native worker selection"
     );
     let services: Value = serde_json::from_str(
@@ -458,8 +459,9 @@ fn recovery_material(
     )?;
     ensure!(
         journal.schema == 1
-            && journal.original_sha == contract.service_sha
-            && sha(&original) == contract.service_sha
+            && (journal.original_sha == contract.service_sha
+                || journal.original_sha == ORIGINAL_SHA)
+            && sha(&original) == journal.original_sha
             && journal.candidate_sha == sha(&candidate)
             && journal.modified_nanos < 1_000_000_000,
         "Recovery journal conflicts with verified content"
@@ -481,11 +483,11 @@ fn restore_all(paths: &BrowserPaths, keep: Option<&str>, contract: &RuntimeContr
         if !dir.join("journal.json").exists() {
             continue;
         }
-        let (journal, original, candidate) = recovery_material(paths, &key, contract)?;
         let target = paths.runtime_root.join(&key).join(SERVICE);
         if !target.exists() {
             continue; // Desktop owns cache deletion; never resurrect an obsolete runtime.
         }
+        let (journal, original, candidate) = recovery_material(paths, &key, contract)?;
         guards.extend(pin_parents(&target)?);
         let current = read_regular(&target, MAX_SERVICE)?;
         ensure!(
@@ -633,8 +635,8 @@ pub async fn start_monitor(enabled: bool) -> Option<BrowserMonitor> {
     if !enabled && !paths.state_root.exists() {
         return None;
     }
-    let initial = monitor_once(paths.clone(), enabled).await;
-    if let Ok(status) = &initial {
+    let initial = monitor_once(paths.clone(), enabled, None).await;
+    if let Ok((status, _)) = &initial {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "native_browser.compatibility",
             json!(status),
@@ -648,7 +650,7 @@ pub async fn start_monitor(enabled: bool) -> Option<BrowserMonitor> {
             let delay = if started.elapsed() < Duration::from_secs(30)
                 && previous
                     .as_ref()
-                    .is_some_and(|s| s.state == "waiting_for_runtime")
+                    .is_some_and(|(s, _)| s.state == "waiting_for_runtime")
             {
                 Duration::from_millis(500)
             } else {
@@ -658,33 +660,148 @@ pub async fn start_monitor(enabled: bool) -> Option<BrowserMonitor> {
                 _ = &mut stopped => break,
                 _ = tokio::time::sleep(delay) => {}
             }
-            let outcome = monitor_once(paths.clone(), enabled).await;
-            if let Ok(status) = outcome {
-                if previous.as_ref() != Some(&status) {
+            let outcome = monitor_once(paths.clone(), enabled, previous.clone()).await;
+            if let Ok((status, fingerprint)) = outcome {
+                if previous.as_ref().map(|(s, _)| s) != Some(&status) {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "native_browser.compatibility",
                         json!(status),
                     );
-                    previous = Some(status);
                 }
+                previous = Some((status, fingerprint));
             }
         }
     });
     Some(BrowserMonitor { shutdown, task })
 }
 
-async fn monitor_once(paths: BrowserPaths, enabled: bool) -> Result<BrowserStatus> {
+fn error_status(error: &anyhow::Error) -> BrowserStatus {
+    let retryable = error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::WouldBlock
+            ) || matches!(error.raw_os_error(), Some(32 | 33))
+        }) || cause
+            .downcast_ref::<serde_json::Error>()
+            .is_some_and(|error| error.is_eof())
+    });
+    BrowserStatus::new(
+        if retryable {
+            "waiting_for_runtime"
+        } else {
+            "blocked"
+        },
+        &format!("Compatibility refused: {error}"),
+    )
+}
+
+// A process-local observation cache avoids repeated large-file hashing at idle.
+// It is never trusted to authorize a write; reconcile still verifies the full contract.
+fn observation(paths: &BrowserPaths) -> Result<String> {
+    let mut files = BTreeSet::new();
+    let mut keys = BTreeSet::new();
+    if let Some(key) = discover(paths)? {
+        keys.insert(key);
+    }
+    let plugin = paths
+        .codex_home
+        .join("plugins/cache/openai-bundled/unified-computer-use");
+    if plugin.exists() {
+        for entry in fs::read_dir(plugin)? {
+            files.insert(entry?.path().join(".mcp.json"));
+        }
+    }
+    files.insert(paths.state_root.join("control.json"));
+    if paths.state_root.exists() {
+        for entry in fs::read_dir(&paths.state_root)? {
+            let entry = entry?;
+            let key = entry.file_name().to_string_lossy().to_string();
+            if key_valid(&key) {
+                plain_path(&entry.path())?;
+                keys.insert(key);
+                for file in fs::read_dir(entry.path())? {
+                    files.insert(file?.path());
+                    ensure!(files.len() <= 1024, "Too many recovery records");
+                }
+            }
+        }
+    }
+    for key in keys {
+        let runtime = paths.runtime_root.join(key);
+        files.insert(runtime.join(SERVICE));
+        for (file, _) in RuntimeContract::pinned().files {
+            files.insert(runtime.join(file));
+        }
+    }
+    let mut hash = Sha256::new();
+    for path in files {
+        plain_path(&path)?;
+        hash.update(path.to_string_lossy().as_bytes());
+        if !path.exists() {
+            hash.update(b"missing");
+            continue;
+        }
+        let file = File::open(&path)?;
+        let meta = file.metadata()?;
+        ensure!(meta.is_file(), "Unexpected observation path");
+        hash.update(format!(
+            "{:?}:{:?}:{}",
+            meta.created()?,
+            meta.modified()?,
+            meta.len()
+        ));
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            };
+            let mut identity = BY_HANDLE_FILE_INFORMATION::default();
+            unsafe {
+                GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut identity)?;
+            }
+            ensure!(
+                identity.dwFileAttributes & 0x400 == 0,
+                "Reparse observation file"
+            );
+            hash.update(identity.dwVolumeSerialNumber.to_le_bytes());
+            hash.update(identity.nFileIndexHigh.to_le_bytes());
+            hash.update(identity.nFileIndexLow.to_le_bytes());
+        }
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+async fn monitor_once(
+    paths: BrowserPaths,
+    enabled: bool,
+    cache: Option<(BrowserStatus, Option<String>)>,
+) -> Result<(BrowserStatus, Option<String>)> {
     tokio::task::spawn_blocking(move || {
-        let status = reconcile(&paths, enabled).unwrap_or_else(|error| {
-            BrowserStatus::new("blocked", &format!("Compatibility refused: {error}"))
+        let before = observation(&paths).ok();
+        let cached = cache.filter(|(status, observed)| {
+            matches!(status.state.as_str(), "prepared" | "restored" | "blocked")
+                && before.is_some()
+                && &before == observed
         });
+        let (status, fingerprint) = match cached {
+            Some((status, _)) => (status, before),
+            None => {
+                let status =
+                    reconcile(&paths, enabled).unwrap_or_else(|error| error_status(&error));
+                let fingerprint = observation(&paths).ok();
+                (status, fingerprint)
+            }
+        };
         if paths.state_root.exists() {
             let _ = atomic_write(
                 &paths.state_root.join("status.json"),
                 &serde_json::to_vec(&status).unwrap_or_default(),
             );
         }
-        status
+        (status, fingerprint)
     })
     .await
     .map_err(anyhow::Error::from)
@@ -802,6 +919,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         let dir = paths.state_root.join("0123456789abcdef");
+        let target = paths.runtime_root.join("0123456789abcdef").join(SERVICE);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, b"unrecognized service").unwrap();
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("journal.json"), br#"{"schema":1,"originalSha":"fake","candidateSha":"fake","modifiedSecs":0,"modifiedNanos":0}"#).unwrap();
         fs::write(dir.join("original.mjs"), ANCHOR).unwrap();
@@ -1013,6 +1133,52 @@ mod tests {
         assert!(fs::rename(&parent, &destination).is_err());
         drop(guards);
         fs::rename(&parent, &destination).unwrap();
+    }
+
+    #[test]
+    fn removed_cache_does_not_require_obsolete_recovery_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        let dir = paths.state_root.join("0123456789abcdef");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("journal.json"),
+            b"obsolete record without a target",
+        )
+        .unwrap();
+        assert_eq!(reconcile(&paths, false).unwrap().state, "restored");
+    }
+
+    #[test]
+    fn transient_generation_errors_retry_but_unknown_contracts_do_not() {
+        let missing = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(error_status(&missing).state, "waiting_for_runtime");
+        let partial = serde_json::from_str::<Value>("{").unwrap_err();
+        assert_eq!(error_status(&partial.into()).state, "waiting_for_runtime");
+        assert_eq!(
+            error_status(&anyhow::anyhow!("Unsupported runtime hash")).state,
+            "blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_observation_does_not_rewrite_control_or_reconcile() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        reconcile_contract(&paths, true, &contract).unwrap();
+        let control = paths.state_root.join("control.json");
+        let modified = fs::metadata(&control).unwrap().modified().unwrap();
+        let observed = observation(&paths).unwrap();
+        let cached = Some((
+            BrowserStatus::new("prepared", "fixture"),
+            Some(observed.clone()),
+        ));
+        let (status, after) = monitor_once(paths.clone(), true, cached).await.unwrap();
+        assert_eq!(status.state, "prepared"); // A full pinned-contract reconcile would reject this fixture.
+        assert_eq!(after.as_deref(), Some(observed.as_str()));
+        assert_eq!(fs::metadata(control).unwrap().modified().unwrap(), modified);
+        fs::write(service, b"external change").unwrap();
+        assert_ne!(observation(&paths).unwrap(), observed);
     }
 
     // The proprietary runtime is supplied locally, never committed or executed by this test.
