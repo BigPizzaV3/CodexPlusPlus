@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +20,7 @@ const ANCHOR: &str = "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEnde
 const HELPER: &str = include_str!("../../../assets/native-browser/require-identification.mjs");
 const MAX_SERVICE: u64 = 32 * 1024 * 1024;
 
+#[derive(Clone)]
 struct RuntimeContract {
     service_sha: String,
     files: Vec<(&'static str, String)>,
@@ -638,7 +639,12 @@ impl BrowserMonitor {
     pub async fn stop(self) {
         let _ = self.shutdown.send(());
         // A started blocking filesystem transaction must finish before its owner exits.
-        let _ = self.task.await;
+        if let Err(error) = self.task.await {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "native_browser.shutdown_failed",
+                json!({"detail": error.to_string()}),
+            );
+        }
     }
 }
 
@@ -649,7 +655,165 @@ pub async fn start_monitor(enabled: bool) -> Option<BrowserMonitor> {
     if !enabled && !paths.state_root.exists() {
         return None;
     }
-    let initial = monitor_once(paths.clone(), enabled, None).await;
+    match start_monitor_with_contract(paths, enabled, RuntimeContract::pinned()).await {
+        Ok(monitor) => Some(monitor),
+        Err(error) => {
+            // Do not overwrite the active owner's control or status on a second launch.
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "native_browser.owner_refused",
+                json!({"detail": error.to_string()}),
+            );
+            None
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorReceipt {
+    schema: u32,
+    generation: String,
+    state: String,
+}
+
+fn write_monitor_receipt(file: &mut File, generation: &str, state: &str) -> Result<()> {
+    let bytes = serde_json::to_vec(&MonitorReceipt {
+        schema: 1,
+        generation: generation.into(),
+        state: state.into(),
+    })?;
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn verify_restored_state(paths: &BrowserPaths) -> Result<()> {
+    if !paths.state_root.exists() {
+        return Ok(());
+    }
+    let control = paths.state_root.join("control.json");
+    if control.exists() {
+        let value: Value = serde_json::from_slice(&read_regular(&control, 1024)?)?;
+        ensure!(
+            value["schema"] == 1 && value["requireIdentification"] == false,
+            "Native browser compatibility is still enabled"
+        );
+    }
+    for entry in fs::read_dir(&paths.state_root)? {
+        let key = entry?.file_name().to_string_lossy().to_string();
+        if !key_valid(&key) || !paths.state_root.join(&key).join("journal.json").exists() {
+            continue;
+        }
+        let target = paths.runtime_root.join(&key).join(SERVICE);
+        if target.exists() {
+            let (_, original, _) = recovery_material(paths, &key, &RuntimeContract::pinned())?;
+            ensure!(
+                read_regular(&target, MAX_SERVICE)? == original,
+                "Native browser service has not been restored"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn acquire_monitor_owner(paths: &BrowserPaths) -> Result<File> {
+    plain_path(&paths.state_root)?;
+    ensure!(
+        !paths.state_root.starts_with(&paths.runtime_root),
+        "Backups must be outside the cache"
+    );
+    fs::create_dir_all(&paths.state_root)?;
+    let path = paths.state_root.join("monitor.lock");
+    let _guards = pin_parents(&path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0x1 | 0x2).custom_flags(0x00200000);
+    }
+    let owner = options.open(&path)?;
+    let meta = owner.metadata()?;
+    ensure!(meta.is_file(), "Unexpected monitor lock type");
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        ensure!(meta.file_attributes() & 0x400 == 0, "Monitor lock is a reparse point");
+    }
+    plain_path(&path)?;
+    owner.try_lock_exclusive().context("Another native browser monitor is active")?;
+    Ok(owner)
+}
+
+/// Called after Codex has been stopped, before the manager launches a replacement.
+/// Never restores files itself or creates a lock for an older launcher.
+pub fn wait_for_monitor_shutdown(timeout: Duration) -> Result<()> {
+    if !cfg!(windows) {
+        return Ok(());
+    }
+    let paths = BrowserPaths::current()?;
+    wait_for_monitor_shutdown_at(&paths, timeout)
+}
+
+fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Result<()> {
+    let path = paths.state_root.join("monitor.lock");
+    let _guards = pin_parents(&path)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0x1 | 0x2).custom_flags(0x00200000);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return verify_restored_state(paths);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    plain_path(&path)?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                ensure!(file.metadata()?.len() <= 1024, "Invalid native cleanup receipt");
+                file.seek(SeekFrom::Start(0))?;
+                let mut bytes = Vec::new();
+                Read::by_ref(&mut file).take(1025).read_to_end(&mut bytes)?;
+                let receipt: MonitorReceipt = serde_json::from_slice(&bytes)?;
+                ensure!(
+                    receipt.schema == 1 && uuid::Uuid::parse_str(&receipt.generation).is_ok()
+                        && receipt.state == "restored",
+                    "Native browser cleanup did not complete successfully"
+                );
+                return Ok(());
+            }
+            Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
+                ensure!(
+                    std::time::Instant::now() < deadline,
+                    "Native browser cleanup is still running; launcher was not terminated"
+                );
+                std::thread::sleep(Duration::from_millis(50).min(
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+async fn start_monitor_with_contract(
+    paths: BrowserPaths,
+    enabled: bool,
+    contract: RuntimeContract,
+) -> Result<BrowserMonitor> {
+    let mut owner = acquire_monitor_owner(&paths)?;
+    let generation = uuid::Uuid::new_v4().to_string();
+    write_monitor_receipt(&mut owner, &generation, "active")?;
+    let initial = monitor_once(paths.clone(), enabled, None, contract.clone()).await;
     if let Ok((status, _)) = &initial {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "native_browser.compatibility",
@@ -674,7 +838,7 @@ pub async fn start_monitor(enabled: bool) -> Option<BrowserMonitor> {
                 _ = &mut stopped => break,
                 _ = tokio::time::sleep(delay) => {}
             }
-            let outcome = monitor_once(paths.clone(), enabled, previous.clone()).await;
+            let outcome = monitor_once(paths.clone(), enabled, previous.clone(), contract.clone()).await;
             if let Ok((status, fingerprint)) = outcome {
                 if previous.as_ref().map(|(s, _)| s) != Some(&status) {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -685,8 +849,30 @@ pub async fn start_monitor(enabled: bool) -> Option<BrowserMonitor> {
                 previous = Some((status, fingerprint));
             }
         }
+        // Keep lifetime ownership through recovery; a new monitor must not race this restore.
+        match monitor_once(paths, false, None, contract).await {
+            Ok((status, _)) => {
+                if let Err(error) = write_monitor_receipt(&mut owner, &generation, &status.state) {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "native_browser.shutdown_failed",
+                        json!({"detail": error.to_string()}),
+                    );
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "native_browser.compatibility",
+                    json!(status),
+                );
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "native_browser.shutdown_failed",
+                    json!({"detail": error.to_string()}),
+                );
+            }
+        }
+        drop(owner);
     });
-    Some(BrowserMonitor { shutdown, task })
+    Ok(BrowserMonitor { shutdown, task })
 }
 
 fn error_status(error: &anyhow::Error) -> BrowserStatus {
@@ -792,6 +978,7 @@ async fn monitor_once(
     paths: BrowserPaths,
     enabled: bool,
     cache: Option<(BrowserStatus, Option<String>)>,
+    contract: RuntimeContract,
 ) -> Result<(BrowserStatus, Option<String>)> {
     tokio::task::spawn_blocking(move || {
         let before = observation(&paths).ok();
@@ -804,7 +991,7 @@ async fn monitor_once(
             Some((status, _)) => (status, before),
             None => {
                 let status =
-                    reconcile(&paths, enabled).unwrap_or_else(|error| error_status(&error));
+                    reconcile_contract(&paths, enabled, &contract).unwrap_or_else(|error| error_status(&error));
                 let fingerprint = observation(&paths).ok();
                 (status, fingerprint)
             }
@@ -1290,12 +1477,132 @@ mod tests {
             BrowserStatus::new("prepared", "fixture"),
             Some(observed.clone()),
         ));
-        let (status, after) = monitor_once(paths.clone(), true, cached).await.unwrap();
+        let (status, after) =
+            monitor_once(paths.clone(), true, cached, RuntimeContract::pinned()).await.unwrap();
         assert_eq!(status.state, "prepared"); // A full pinned-contract reconcile would reject this fixture.
         assert_eq!(after.as_deref(), Some(observed.as_str()));
         assert_eq!(fs::metadata(control).unwrap().modified().unwrap(), modified);
         fs::write(service, b"external change").unwrap();
         assert_ne!(observation(&paths).unwrap(), observed);
+    }
+
+    #[tokio::test]
+    async fn monitor_stop_restores_original_content_timestamp_and_control() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let original = fs::read(&service).unwrap();
+        let modified = fs::metadata(&service).unwrap().modified().unwrap();
+        let monitor = start_monitor_with_contract(paths.clone(), true, contract).await.unwrap();
+        assert_ne!(fs::read(&service).unwrap(), original);
+        monitor.stop().await;
+        assert_eq!(sha(&fs::read(&service).unwrap()), sha(&original));
+        assert_eq!(fs::metadata(&service).unwrap().modified().unwrap(), modified);
+        let control: Value =
+            serde_json::from_slice(&fs::read(paths.state_root.join("control.json")).unwrap()).unwrap();
+        assert_eq!(control["requireIdentification"], false);
+        let status: BrowserStatus =
+            serde_json::from_slice(&fs::read(paths.state_root.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status.state, "restored");
+    }
+
+    #[tokio::test]
+    async fn second_monitor_cannot_disable_or_restore_the_active_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let first = start_monitor_with_contract(paths.clone(), true, contract.clone()).await.unwrap();
+        let candidate = sha(&fs::read(&service).unwrap());
+        let control = fs::read(paths.state_root.join("control.json")).unwrap();
+        let status = fs::read(paths.state_root.join("status.json")).unwrap();
+        assert!(start_monitor_with_contract(paths.clone(), false, contract.clone()).await.is_err());
+        assert_eq!(sha(&fs::read(&service).unwrap()), candidate);
+        assert_eq!(fs::read(paths.state_root.join("control.json")).unwrap(), control);
+        assert_eq!(fs::read(paths.state_root.join("status.json")).unwrap(), status);
+        first.stop().await;
+        let next = start_monitor_with_contract(paths.clone(), true, contract).await.unwrap();
+        assert_eq!(sha(&fs::read(&service).unwrap()), candidate);
+        next.stop().await;
+    }
+
+    #[tokio::test]
+    async fn monitor_shutdown_preserves_external_edits_and_reports_recovery_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let monitor = start_monitor_with_contract(paths.clone(), true, contract).await.unwrap();
+        fs::write(&service, b"external edit").unwrap();
+        monitor.stop().await;
+        assert_eq!(fs::read(&service).unwrap(), b"external edit");
+        let control: Value =
+            serde_json::from_slice(&fs::read(paths.state_root.join("control.json")).unwrap()).unwrap();
+        assert_eq!(control["requireIdentification"], false);
+        let status: BrowserStatus =
+            serde_json::from_slice(&fs::read(paths.state_root.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status.state, "blocked");
+        assert!(status.detail.contains("External runtime change"));
+        assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+        assert!(acquire_monitor_owner(&paths).is_ok());
+    }
+
+    #[tokio::test]
+    async fn dropped_monitor_sender_still_runs_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let original = sha(&fs::read(&service).unwrap());
+        let BrowserMonitor { shutdown, task } =
+            start_monitor_with_contract(paths.clone(), true, contract).await.unwrap();
+        drop(shutdown);
+        task.await.unwrap();
+        assert_eq!(sha(&fs::read(&service).unwrap()), original);
+        assert!(acquire_monitor_owner(&paths).is_ok());
+    }
+
+    #[test]
+    fn manager_wait_is_read_only_and_refuses_an_active_monitor() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap();
+        assert!(!paths.state_root.exists());
+        let mut owner = acquire_monitor_owner(&paths).unwrap();
+        write_monitor_receipt(&mut owner, &uuid::Uuid::new_v4().to_string(), "restored").unwrap();
+        assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+        assert!(!paths.state_root.join("control.json").exists());
+        drop(owner);
+        wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn manager_rejects_incomplete_receipts_and_legacy_enabled_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        fs::create_dir_all(&paths.state_root).unwrap();
+        fs::write(paths.state_root.join("control.json"),
+            br#"{"schema":1,"requireIdentification":true}"#).unwrap();
+        assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+        let mut owner = acquire_monitor_owner(&paths).unwrap();
+        let generation = uuid::Uuid::new_v4().to_string();
+        for state in ["active", "blocked"] {
+            write_monitor_receipt(&mut owner, &generation, state).unwrap();
+            FileExt::unlock(&owner).unwrap();
+            assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+            owner.try_lock_exclusive().unwrap();
+        }
+        owner.set_len(0).unwrap();
+        drop(owner);
+        assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+    }
+
+    #[tokio::test]
+    async fn manager_wait_finishes_only_after_original_is_restored() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        let original = sha(&fs::read(&service).unwrap());
+        let monitor = start_monitor_with_contract(paths.clone(), true, contract).await.unwrap();
+        let wait_paths = paths.clone();
+        let waiter = tokio::task::spawn_blocking(move || {
+            wait_for_monitor_shutdown_at(&wait_paths, Duration::from_secs(5)).unwrap();
+            assert_eq!(sha(&fs::read(service).unwrap()), original);
+        });
+        monitor.stop().await;
+        waiter.await.unwrap();
     }
 
     // The proprietary runtime is supplied locally, never committed or executed by this test.

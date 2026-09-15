@@ -106,10 +106,46 @@ Already-original files keep their modification times; deleted caches are not
 recreated. Backups are retained. If recovery reports a conflict, preserve the
 backup and affected runtime for diagnosis instead of deleting the journal.
 
+An orderly launcher exit now disables the helper and restores service bytes and
+their original modification time before releasing its monitor ownership lock.
+This waits for an already-started filesystem transaction. A second compatible
+monitor cannot take ownership until cleanup finishes. A generation-specific
+completion receipt is synced through the locked file; a released lock with an
+active, failed or unreadable receipt is not accepted as successful cleanup.
+The manager's Windows restart path records existing launcher process identities,
+stops Codex first, and waits up to ten seconds for native cleanup and then up to
+ten seconds for those same launcher processes to exit. It does not terminate
+launchers by name after cleanup. If either wait fails, restart stops without
+forcibly terminating the launcher or starting another instance.
+
+Forced process termination, crashes and older managers can bypass this exit
+path. They are not evidence of completed restoration. Recovery journals remain
+available for reconciliation by the next compatible launcher. A new manager
+cannot retrofit orderly cleanup into an older launcher that does not implement
+the ownership protocol. A missing ownership receipt is accepted only when the
+existing control and recovery records show no remaining enabled adapter or
+candidate service.
+
 This is not a security boundary against another process with the same user's
 write access. In particular, a malicious process able to replace both recovery
 records and files can compromise local integrity. Future adapter versions must
 retain support for restoring previously supported original-service fingerprints.
+
+## Page Preparation Failures
+
+`Unable to prepare popup request headers. Retry the browser command.` comes
+from the original extension's popup script preparation, after browser discovery.
+It is not the earlier API-key identity failure and does not, by itself, identify
+a network outage or missing header-rule permission. The original extension
+collapses several injection failures and timeouts into this message.
+
+In local testing, both browsers read newly created ordinary pages and Edge read
+a newly created Bilibili homepage. An existing Bilibili homepage and the Chrome
+Web Store page still failed popup preparation. This does not establish that all
+pages on either browser work, or that the failed existing page has recovered.
+The specific underlying injection failure remains unresolved. This integration
+does not suppress that check, disable request identification, navigate an
+existing tab automatically, or replace native browser execution to hide it.
 
 ## Validation
 

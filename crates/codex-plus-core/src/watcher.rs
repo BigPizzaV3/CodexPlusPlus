@@ -547,6 +547,75 @@ pub fn stop_launcher_processes_and_wait() {
     );
 }
 
+#[cfg(windows)]
+pub struct LauncherExitSnapshot {
+    processes: Vec<(u32, u64)>,
+}
+
+#[cfg(windows)]
+impl LauncherExitSnapshot {
+    pub fn capture() -> anyhow::Result<Self> {
+        let processes = crate::windows_integration::enumerate_processes();
+        let ids = filter_killable_launcher_processes(
+            processes.iter().map(|p| (p.process_id, p.parent_process_id, p.exe_file.as_str())),
+            std::process::id(),
+        );
+        let mut captured = Vec::new();
+        for pid in ids {
+            if let Some(birth) = crate::windows_integration::process_birth_id(pid) {
+                captured.push((pid, birth));
+            } else {
+                anyhow::bail!("Cannot verify launcher process identity: {pid}");
+            }
+        }
+        Ok(Self { processes: captured })
+    }
+
+    pub fn wait_for_exit(self, timeout: Duration) -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = launcher_incarnations_still_running(
+                &self.processes,
+                |pid| crate::windows_integration::process_birth_id(pid),
+            );
+            if remaining.is_empty() {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "Previous launcher has not exited; no process was forcibly terminated"
+            );
+            std::thread::sleep(Duration::from_millis(RESTART_STOP_WAIT_INTERVAL_MS));
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn launcher_incarnations_still_running(
+    captured: &[(u32, u64)],
+    mut birth_id: impl FnMut(u32) -> Option<u64>,
+) -> Vec<u32> {
+    captured.iter().filter_map(|(pid, birth)| {
+        (birth_id(*pid) == Some(*birth)).then_some(*pid)
+    }).collect()
+}
+
+#[cfg(test)]
+mod launcher_exit_tests {
+    use super::launcher_incarnations_still_running;
+
+    #[test]
+    fn only_the_captured_launcher_incarnation_is_waited_for() {
+        let captured = [(10, 100), (20, 200), (30, 300)];
+        let remaining = launcher_incarnations_still_running(&captured, |pid| match pid {
+            10 => Some(100),
+            20 => Some(999),
+            _ => None,
+        });
+        assert_eq!(remaining, [10]);
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn stop_launcher_processes_and_wait() {
     terminate_macos_processes_and_wait(
