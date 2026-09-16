@@ -168,6 +168,7 @@ fn package_full_names_for_family(family_name: &str) -> anyhow::Result<Vec<String
         GetPackagesByPackageFamily(
             PCWSTR(family.as_ptr()),
             &mut count,
+            None,
             &mut buffer_length,
             PWSTR(std::ptr::null_mut()),
         )
