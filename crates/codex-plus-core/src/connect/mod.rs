@@ -101,10 +101,43 @@ impl Default for WeixinConnectStatus {
 
 pub type SharedWeixinConnectStatus = Arc<Mutex<WeixinConnectStatus>>;
 
+/// 只在消息边界切换 CLI，避免中断正在执行的回合。
+#[derive(Clone)]
+pub struct WeixinCodexPath(Arc<Mutex<String>>);
+
+impl WeixinCodexPath {
+    pub fn new(path: &str) -> Self {
+        Self(Arc::new(Mutex::new(path.trim().to_string())))
+    }
+
+    pub fn set(&self, path: &str) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = path.trim().to_string();
+    }
+
+    fn apply(&self, config: &mut AppServerConfig) -> bool {
+        let path = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if config.executable == *path {
+            return false;
+        }
+        config.executable.clone_from(&path);
+        true
+    }
+}
+
 pub async fn run_weixin_connect(
     config: WeixinConnectConfig,
     stop: Arc<AtomicBool>,
     status: SharedWeixinConnectStatus,
+) -> anyhow::Result<()> {
+    let codex_path = WeixinCodexPath::new(&config.codex_path);
+    run_weixin_connect_with_codex_path(config, stop, status, codex_path).await
+}
+
+pub async fn run_weixin_connect_with_codex_path(
+    config: WeixinConnectConfig,
+    stop: Arc<AtomicBool>,
+    status: SharedWeixinConnectStatus,
+    codex_path: WeixinCodexPath,
 ) -> anyhow::Result<()> {
     let config = config.normalized();
     if config.token.is_empty() {
@@ -129,7 +162,7 @@ pub async fn run_weixin_connect(
     let client = WeixinClient::new(&config.base_url, &config.token, &config.route_tag)?;
     let store = ConnectSessionStore::default_for_account(&config.account_id);
     let mut state = store.load().unwrap_or_default();
-    let app_config = AppServerConfig {
+    let mut app_config = AppServerConfig {
         executable: config.codex_path.clone(),
         work_dir,
         model: config.model.clone(),
@@ -194,6 +227,11 @@ pub async fn run_weixin_connect(
             state
                 .context_tokens
                 .insert(message.from_user_id.clone(), message.context_token.clone());
+            if codex_path.apply(&mut app_config) {
+                if let Some(mut server) = app_server.take() {
+                    server.close().await;
+                }
+            }
             let result = process_weixin_message(
                 &client,
                 &app_config,
@@ -232,8 +270,8 @@ pub async fn run_weixin_connect(
                         )
                         .await;
                     update_status(&status, |current| {
-                        current.state = "error".to_string();
-                        current.message = format!("处理微信消息失败：{error}");
+                        current.state = "retrying".to_string();
+                        current.message = format!("处理微信消息失败，等待下一条消息重试：{error}");
                         current.last_peer_id = message.from_user_id.clone();
                         current.last_message_at_ms = now_ms();
                     });
@@ -403,6 +441,28 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_cli_path_replaces_startup_path_at_next_message() {
+        let path = WeixinCodexPath::new("missing-codex");
+        let runtime_path = path.clone();
+        let mut config = AppServerConfig {
+            executable: "missing-codex".to_string(),
+            work_dir: PathBuf::from("."),
+            model: "test-model".to_string(),
+            sandbox: "read-only".to_string(),
+        };
+        assert!(!runtime_path.apply(&mut config));
+        path.set(" C:/new/codex.exe ");
+        assert_eq!(config.executable, "missing-codex");
+        assert!(runtime_path.apply(&mut config));
+        assert_eq!(config.executable, "C:/new/codex.exe");
+        assert_eq!(config.model, "test-model");
+        assert!(!runtime_path.apply(&mut config));
+        path.set("   ");
+        assert!(runtime_path.apply(&mut config));
+        assert_eq!(config.executable, "");
+    }
 
     #[test]
     fn allow_from_supports_wildcard_and_comma_separated_ids() {
