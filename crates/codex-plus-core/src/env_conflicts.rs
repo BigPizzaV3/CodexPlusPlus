@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 const WINDOWS_USER_ENV_KEY: &str = "Environment";
@@ -68,7 +69,7 @@ where
 
 pub fn detect_env_conflicts() -> Vec<EnvConflict> {
     let mut conflicts =
-        detected_env_conflicts_from_pairs(std::env::vars(), EnvConflictSource::Process);
+        detected_env_conflicts_from_os_pairs(std::env::vars_os(), EnvConflictSource::Process);
     conflicts.extend(detect_user_env_conflicts());
     conflicts.sort_by(|left, right| {
         left.name
@@ -77,6 +78,17 @@ pub fn detect_env_conflicts() -> Vec<EnvConflict> {
     });
     conflicts.dedup_by(|left, right| left.name == right.name && left.source == right.source);
     conflicts
+}
+
+fn detected_env_conflicts_from_os_pairs<I>(pairs: I, source: EnvConflictSource) -> Vec<EnvConflict>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    let pairs = pairs.into_iter().filter_map(|(name, value)| {
+        let name = name.into_string().ok()?;
+        Some((name, value.to_string_lossy().into_owned()))
+    });
+    detected_env_conflicts_from_pairs(pairs, source)
 }
 
 pub fn remove_env_conflicts(
@@ -228,5 +240,26 @@ mod tests {
             ]),
             vec!["OPENAI_API_KEY", "OPENAI_BASE_URL"]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn os_pairs_ignore_non_unicode_names_and_tolerate_non_unicode_values() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let conflicts = detected_env_conflicts_from_os_pairs(
+            [
+                (
+                    OsString::from("OPENAI_API_KEY"),
+                    OsString::from_vec(vec![b's', b'k', b'-', 0xFF]),
+                ),
+                (OsString::from_vec(vec![0xFF]), OsString::from("ignored")),
+            ],
+            EnvConflictSource::Process,
+        );
+
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].name, "OPENAI_API_KEY");
+        assert!(conflicts[0].value_present);
     }
 }

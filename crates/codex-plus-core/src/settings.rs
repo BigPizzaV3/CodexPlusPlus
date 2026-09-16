@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -1802,14 +1803,44 @@ fn normalize_text_config(contents: String) -> String {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    atomic_write_with(path, |file| file.write_all(bytes))
+}
+
+/// 流式原子写入：内容由 `write_contents` 直接写进临时文件，调用方不必先把
+/// 完整字节拼在内存里。大文件（如历史会话的 rollout JSONL）走这条路径。
+pub fn atomic_write_with(
+    path: &Path,
+    write_contents: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
 
+    // 保留原文件权限：临时文件默认权限不一定和它一致。
+    let existing_permissions = match fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read permissions for {}", path.display()));
+        }
+    };
     let temp_path = temp_path_for(path);
-    fs::write(&temp_path, bytes)
-        .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
+    let write_result = (|| -> std::io::Result<()> {
+        let mut temp_file = File::create(&temp_path)?;
+        write_contents(&mut temp_file)?;
+        temp_file.flush()?;
+        if let Some(permissions) = existing_permissions {
+            temp_file.set_permissions(permissions)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error)
+            .with_context(|| format!("failed to write temp file {}", temp_path.display()));
+    }
     if let Err(error) = replace_file(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(error).with_context(|| {
@@ -2487,16 +2518,19 @@ experimental_bearer_token = "sk-existing""#
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
     }
 
+    fn normalized_default_settings() -> BackendSettings {
+        // Keep expected values independent of the production normalizer.
+        let mut expected = BackendSettings::default();
+        expected.tools.insert(ToolId::Codex, ToolConfig::default());
+        expected
+    }
+
     #[test]
     fn settings_store_load_missing_file_returns_default() {
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
 
-        // load() 会把扁平字段镜像进工具分片（sync_tool_shards），
-        // 所以期望值不是裸 default，而是带上默认工具分片的 default。
-        let mut expected = BackendSettings::default();
-        expected.tools.insert(ToolId::Codex, ToolConfig::default());
-        assert_eq!(store.load().unwrap(), expected);
+        assert_eq!(store.load().unwrap(), normalized_default_settings());
     }
 
     #[test]
@@ -2506,9 +2540,7 @@ experimental_bearer_token = "sk-existing""#
         std::fs::write(&path, "{bad json").unwrap();
         let store = SettingsStore::new(path);
 
-        let mut expected = BackendSettings::default();
-        expected.tools.insert(ToolId::Codex, ToolConfig::default());
-        assert_eq!(store.load().unwrap(), expected);
+        assert_eq!(store.load().unwrap(), normalized_default_settings());
     }
 
     #[test]
