@@ -137,7 +137,8 @@ fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
             .filter_map(|entry| entry["effort"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(model["context_window"], 272_000);
-        assert_eq!(model["max_context_window"], 272_000);
+        // 官方 gpt-5.6 目录为 272000/872000：未显式配置窗口时保留官方上限（issue #2191）。
+        assert_eq!(model["max_context_window"], 872_000);
         assert_eq!(model["default_reasoning_level"], default_reasoning);
         assert_eq!(efforts, expected_efforts);
         assert!(!efforts.contains(&"minimal"));
@@ -198,7 +199,8 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
     assert_eq!(model["default_reasoning_level"], "medium");
     assert_eq!(metadata["defaultReasoningEffort"], "medium");
     assert_eq!(model["context_window"], 272_000);
-    assert_eq!(model["max_context_window"], 272_000);
+    // 官方 gpt-6-astra 目录为 272000/872000：未显式配置窗口时保留官方上限（issue #2191）。
+    assert_eq!(model["max_context_window"], 872_000);
     assert_eq!(model["supports_search_tool"], true);
     assert_eq!(model["supports_image_detail_original"], true);
     assert_eq!(model["use_responses_lite"], false);
@@ -211,6 +213,8 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
     let overridden: serde_json::Value =
         serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();
     assert_eq!(overridden["models"][0]["context_window"], 200_000);
+    // 显式配置窗口（profile 全局 / 每模型）时两字段同值，产品语义不变（issue #2191）。
+    assert_eq!(overridden["models"][0]["max_context_window"], 200_000);
 }
 
 #[test]

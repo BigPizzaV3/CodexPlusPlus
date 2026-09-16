@@ -2096,7 +2096,12 @@ fn apply_model_metadata_overrides(
             continue;
         };
         for (key, value) in user_override {
-            if matches!(key.as_str(), "slug" | "context_window" | "auto_compact_token_limit") {
+            // 窗口与压缩阈值由 model_windows / model_auto_compact 生成（issue #2191）；
+            // max_context_window 是 codex 运行时的 clamp 权威，绝不能被历史 metadata 残留值覆盖。
+            if matches!(
+                key.as_str(),
+                "slug" | "context_window" | "max_context_window" | "auto_compact_token_limit"
+            ) {
                 continue;
             }
             model_object.insert(key.clone(), value.clone());
