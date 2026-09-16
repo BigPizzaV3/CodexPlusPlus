@@ -1312,6 +1312,111 @@ async fn a_permanently_busy_protocol_proxy_port_reports_what_the_user_should_do(
     );
 }
 
+/// issue #2189：Windows 上 57321 被划进 Hyper-V/WSL 的动态端口排除区间（os error 10013），
+/// 和「被占用」不是一回事——重试永远失败，必须立即报错并给出能照着做的指引，
+/// 而不是像过去那样裸抛一句英文 bind 失败，用户不知道为什么混入 Responses key 后再也起不来。
+#[tokio::test]
+async fn a_windows_reserved_protocol_proxy_port_fails_fast_with_actionable_advice() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone())
+        .with_settings(official_mix_responses_settings())
+        .with_helper_bind_forbidden();
+
+    let error = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("被 Windows 保留"),
+        "unexpected message: {message}"
+    );
+    assert!(
+        message.contains("excludedportrange"),
+        "unexpected message: {message}"
+    );
+    assert!(
+        message.contains("CODEX_PLUS_PROTOCOL_PROXY_PORT"),
+        "unexpected message: {message}"
+    );
+    // 保留端口重试毫无意义：只允许尝试一次 bind，不能烧完 6 秒重试预算。
+    assert_eq!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| *event == "start-helper-forbidden:57321")
+            .count(),
+        1
+    );
+    // 端口没起来就不该继续把 Codex 拉起来，否则它会连到没人监听的地址。
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("launch:"))
+    );
+}
+
+/// 与占用/保留都无关的其他 bind 失败：错误原样冒泡，不误贴「被占用」「被保留」的标签。
+#[tokio::test]
+async fn an_unrelated_helper_bind_error_is_reported_as_is() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone())
+        .with_settings(official_mix_responses_settings())
+        .with_helper_bind_other_error("simulated unrelated failure");
+
+    let error = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58123,
+            status_store,
+        },
+        &hooks,
+    )
+    .await
+    .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("failed to bind helper runtime"),
+        "unexpected message: {message}"
+    );
+    assert!(
+        message.contains("simulated unrelated failure"),
+        "unexpected message: {message}"
+    );
+    assert!(!message.contains("被 Windows 保留"));
+    assert!(!message.contains("被其他进程占用"));
+    assert_eq!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| *event == "start-helper-error:57321")
+            .count(),
+        1
+    );
+}
+
 /// macOS 允许端口释放竞态的六秒重试；其他平台的浮动端口仍立即失败。
 #[tokio::test]
 async fn a_busy_floating_helper_port_respects_the_platform_retry_budget() {
@@ -1968,6 +2073,10 @@ struct FakeHooks {
     has_pending_remote_control_session_recoveries: bool,
     /// 还需要让 `start_helper` 报几次「端口被占用」，用来模拟旧 helper 尚未交还监听。
     remaining_helper_bind_conflicts: Arc<Mutex<u32>>,
+    /// 模拟「端口被 Windows 保留」（os error 10013）：bind 永远不会成功（issue #2189）。
+    helper_bind_forbidden: bool,
+    /// 模拟与占用/保留都无关的其他 bind 失败，验证错误原样冒泡。
+    helper_bind_other_error: Option<String>,
 }
 
 impl FakeHooks {
@@ -1986,11 +2095,23 @@ impl FakeHooks {
             plugin_marketplace_error: None,
             has_pending_remote_control_session_recoveries: false,
             remaining_helper_bind_conflicts: Arc::new(Mutex::new(0)),
+            helper_bind_forbidden: false,
+            helper_bind_other_error: None,
         }
     }
 
     fn with_helper_bind_conflicts(self, conflicts: u32) -> Self {
         *self.remaining_helper_bind_conflicts.lock().unwrap() = conflicts;
+        self
+    }
+
+    fn with_helper_bind_forbidden(mut self) -> Self {
+        self.helper_bind_forbidden = true;
+        self
+    }
+
+    fn with_helper_bind_other_error(mut self, message: &str) -> Self {
+        self.helper_bind_other_error = Some(message.to_string());
         self
     }
 
@@ -2121,6 +2242,21 @@ impl LaunchHooks for FakeHooks {
                     "failed to bind helper runtime on 127.0.0.1:{helper_port}"
                 )));
             }
+        }
+        if self.helper_bind_forbidden {
+            self.event(format!("start-helper-forbidden:{helper_port}"));
+            // raw_os_error(10013) 在 Windows 上是 WSAEACCES，跨平台都能命中
+            // `port_bind_forbidden` 的判定，测试行为一致。
+            return Err(anyhow::Error::new(std::io::Error::from_raw_os_error(10013)).context(
+                format!("failed to bind helper runtime on 127.0.0.1:{helper_port}"),
+            ));
+        }
+        if let Some(message) = &self.helper_bind_other_error {
+            self.event(format!("start-helper-error:{helper_port}"));
+            return Err(anyhow::Error::new(std::io::Error::other(message.clone()))
+                .context(format!(
+                    "failed to bind helper runtime on 127.0.0.1:{helper_port}"
+                )));
         }
         self.event(format!("start-helper:{helper_port}"));
         Ok(())

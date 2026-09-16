@@ -990,11 +990,11 @@ fn sync_active_relay_to_home(
         return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-                codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                codex_plus_core::protocol_proxy::protocol_proxy_port(),
             ),
             "codex-plus-aggregate",
             codex_plus_core::settings::RelayProtocol::Responses,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             aggregate.session_provider,
         );
     }
@@ -1020,7 +1020,7 @@ fn sync_active_relay_to_home(
     let mut protocol = relay.protocol;
     if relay.has_model_routes() {
         base_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         );
         protocol = codex_plus_core::settings::RelayProtocol::Responses;
     }
@@ -1030,7 +1030,7 @@ fn sync_active_relay_to_home(
             &base_url,
             &relay.api_key,
             protocol,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             codex_plus_core::relay_config::relay_session_provider_from_config(
                 &relay.config_contents,
             ),
@@ -1046,7 +1046,7 @@ fn sync_active_relay_to_home(
         &base_url,
         &relay.api_key,
         protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     )
 }
@@ -2290,7 +2290,7 @@ fn empty_dream_skin_community_payload() -> DreamSkinCommunityPayload {
 }
 
 fn default_dream_skin_helper_port() -> u16 {
-    codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
+    codex_plus_core::protocol_proxy::protocol_proxy_port()
 }
 
 fn current_dream_skin_library(
@@ -5370,7 +5370,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
@@ -5415,11 +5415,11 @@ fn apply_aggregate_relay_injection_to_home(
     match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         ),
         "codex-plus-aggregate",
         codex_plus_core::settings::RelayProtocol::Responses,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         session_provider,
     ) {
         Ok(result) => {
@@ -5515,7 +5515,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
