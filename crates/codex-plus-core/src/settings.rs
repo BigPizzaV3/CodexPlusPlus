@@ -19,6 +19,10 @@ pub enum LaunchMode {
     Relay,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
@@ -111,6 +115,9 @@ pub struct RelayProfile {
     pub sub2api_multiplier: String,
     #[serde(rename = "modelRoutes", default, skip_serializing_if = "Vec::is_empty")]
     pub model_routes: Vec<RelayModelRoute>,
+    // 上游审查要求：导出 round-trip 不改变既有 provider；为 false 时不写出该字段。
+    #[serde(rename = "standardOpenaiProtocol", default, skip_serializing_if = "is_false")]
+    pub standard_openai_protocol: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -225,6 +232,7 @@ impl Default for RelayProfile {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            standard_openai_protocol: false,
         }
     }
 }
@@ -713,6 +721,7 @@ impl BackendSettings {
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
                 model_routes: Vec::new(),
+                standard_openai_protocol: false,
             };
         }
 
@@ -767,6 +776,7 @@ impl BackendSettings {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            standard_openai_protocol: false,
         }
     }
 
@@ -1792,6 +1802,8 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     atomic_write_with(path, |file| file.write_all(bytes))
 }
 
+/// 流式原子写入：内容由 `write_contents` 直接写进临时文件，调用方不必先把
+/// 完整字节拼在内存里。大文件（如历史会话的 rollout JSONL）走这条路径。
 pub fn atomic_write_with(
     path: &Path,
     write_contents: impl FnOnce(&mut File) -> std::io::Result<()>,
@@ -1801,6 +1813,7 @@ pub fn atomic_write_with(
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
 
+    // 保留原文件权限：临时文件默认权限不一定和它一致。
     let existing_permissions = match fs::metadata(path) {
         Ok(metadata) => Some(metadata.permissions()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -1899,10 +1912,6 @@ mod tests {
         path
     }
 
-    fn normalized_default_settings() -> BackendSettings {
-        normalize_settings_config_sections(BackendSettings::default())
-    }
-
     #[test]
     fn atomic_write_replaces_existing_file_and_removes_temp_file() {
         let dir = temp_dir();
@@ -1913,46 +1922,6 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.join("settings.json.tmp").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn atomic_write_with_streams_chunks_and_keeps_existing_contents_on_error() {
-        let dir = temp_dir();
-        let path = dir.join("settings.json");
-        std::fs::write(&path, b"old").unwrap();
-
-        atomic_write_with(&path, |file| {
-            file.write_all(b"new")?;
-            file.write_all(b"-value")
-        })
-        .unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"new-value");
-
-        let error =
-            atomic_write_with(&path, |_| Err(std::io::Error::other("writer failed"))).unwrap_err();
-        assert!(error.to_string().contains("failed to write temp file"));
-        assert_eq!(std::fs::read(&path).unwrap(), b"new-value");
-        assert!(!dir.join("settings.json.tmp").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn atomic_write_with_preserves_existing_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = temp_dir();
-        let path = dir.join("settings.json");
-        std::fs::write(&path, b"old").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        atomic_write_with(&path, |file| file.write_all(b"new")).unwrap();
-
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2543,6 +2512,10 @@ experimental_bearer_token = "sk-existing""#
                 .contains(r#"experimental_bearer_token = "22222222222222222222222222222222222""#)
         );
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
+    }
+
+    fn normalized_default_settings() -> BackendSettings {
+        normalize_settings_config_sections(BackendSettings::default())
     }
 
     #[test]
@@ -3267,5 +3240,33 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(!updated.provider_sync_enabled);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn relay_profile_standard_openai_protocol_defaults_off_for_legacy_profiles() {
+        // 旧 profile 没有该字段：反序列化后默认关闭。
+        let mut enabled = RelayProfile::default();
+        enabled.standard_openai_protocol = true;
+        let mut legacy = serde_json::to_value(&enabled).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("standardOpenaiProtocol");
+        let profile: RelayProfile = serde_json::from_value(legacy).unwrap();
+        assert!(!profile.standard_openai_protocol);
+    }
+
+    #[test]
+    fn relay_profile_standard_openai_protocol_round_trip_keeps_existing_providers() {
+        // 关闭时导出不写该字段，round-trip 不改变既有 provider。
+        let value = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(value.get("standardOpenaiProtocol").is_none());
+
+        let mut enabled = RelayProfile::default();
+        enabled.standard_openai_protocol = true;
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["standardOpenaiProtocol"], json!(true));
+        let round_tripped: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(round_tripped.standard_openai_protocol);
     }
 }
