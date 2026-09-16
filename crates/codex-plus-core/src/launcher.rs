@@ -144,6 +144,7 @@ impl LaunchHandle {
         if self.helper_started {
             self.hooks.shutdown_helper(self.helper_port).await;
         }
+        self.hooks.stop_native_browser_compatibility().await;
         result
     }
 }
@@ -158,6 +159,8 @@ pub trait LaunchHooks: Send + Sync {
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
+    async fn start_native_browser_compatibility(&self, _settings: &BackendSettings) {}
+    async fn stop_native_browser_compatibility(&self) {}
     fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -405,6 +408,7 @@ where
     let mut keep_launched_on_error = false;
 
     let result: anyhow::Result<LaunchHandle> = async {
+        hooks.start_native_browser_compatibility(&settings).await;
         let home = crate::relay_config::default_codex_home_dir();
         hooks.cleanup_unsupported_config()?;
         crate::relay_config::ensure_windows_sandbox_usable_for_current_user(&home)?;
@@ -548,6 +552,7 @@ where
     match result {
         Ok(handle) => Ok(handle),
         Err(error) => {
+            hooks.stop_native_browser_compatibility().await;
             if helper_started {
                 hooks.shutdown_helper(helper_port).await;
             }

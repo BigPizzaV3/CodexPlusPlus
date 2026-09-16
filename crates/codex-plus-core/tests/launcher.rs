@@ -2097,6 +2097,44 @@ fn paused_dream_skin_does_not_reapply_the_native_base_theme_on_launch() {
     assert!(source.contains("!settings.codex_app_dream_skin_paused"));
 }
 
+#[tokio::test]
+async fn native_browser_lifecycle_uses_one_settings_snapshot_and_stops_on_success_or_failure() {
+    for fail in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("Codex.app");
+        std::fs::create_dir(&app_dir).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let settings = BackendSettings {
+            codex_app_native_browser_require_identification: true,
+            provider_sync_enabled: false,
+            ..BackendSettings::default()
+        };
+        let mut hooks = FakeHooks::new(events.clone()).with_settings(settings);
+        if fail {
+            hooks = hooks.with_launch_error("fixture launch failure");
+        }
+        let result = launch_and_inject_with_hooks(
+            LaunchOptions {
+                app_dir: Some(app_dir),
+                status_store: StatusStore::new(temp.path().join("status.json")),
+                ..LaunchOptions::default()
+            },
+            &hooks,
+        ).await;
+        if fail {
+            assert!(result.is_err());
+        } else {
+            result.unwrap().wait_for_codex_exit().await.unwrap();
+        }
+        let events = events.lock().unwrap();
+        assert_eq!(events.iter().filter(|event| *event == "load-settings").count(), 1);
+        let start = events.iter().position(|event| event == "native-browser:start:true").unwrap();
+        let launch = events.iter().position(|event| event == "launch:9229").unwrap();
+        let stop = events.iter().position(|event| event == "native-browser:stop").unwrap();
+        assert!(start < launch && launch < stop);
+    }
+}
+
 #[derive(Clone)]
 struct FakeHooks {
     events: Arc<Mutex<Vec<String>>>,
@@ -2216,6 +2254,18 @@ impl LaunchHooks for FakeHooks {
     async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
         self.event("load-settings");
         Ok(self.settings.clone())
+    }
+
+    async fn start_native_browser_compatibility(&self, settings: &BackendSettings) {
+        if settings.codex_app_native_browser_require_identification {
+            self.event(format!("native-browser:start:{}", settings.enhancements_enabled));
+        }
+    }
+
+    async fn stop_native_browser_compatibility(&self) {
+        if self.settings.codex_app_native_browser_require_identification {
+            self.event("native-browser:stop");
+        }
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {

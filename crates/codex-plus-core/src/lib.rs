@@ -26,6 +26,7 @@ pub mod mcp_config;
 pub mod model_catalog;
 pub mod model_suffix;
 pub mod models;
+pub mod native_browser;
 pub mod native_menu;
 pub mod paths;
 pub mod plugin_marketplace;

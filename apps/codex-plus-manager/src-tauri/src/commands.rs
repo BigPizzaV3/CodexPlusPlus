@@ -842,8 +842,27 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    codex_plus_core::watcher::stop_launcher_processes_and_wait();
-    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
+    #[cfg(windows)]
+    let launchers = match codex_plus_core::watcher::LauncherExitSnapshot::capture() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
+    };
+    if let Err(error) = stop_codex_plus_for_restart(
+        || codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port),
+        || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
+        || {
+            #[cfg(windows)]
+            launchers.wait_for_exit(std::time::Duration::from_secs(10))?;
+            #[cfg(not(windows))]
+            codex_plus_core::watcher::stop_launcher_processes_and_wait();
+            Ok(())
+        },
+    ) {
+        return failed(
+            &format!("Codex 已请求停止，但原生浏览器清理或旧启动器退出未完成；未强制终止启动器或启动新实例：{error}"),
+            json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+        );
+    }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.restart_requested",
@@ -896,6 +915,18 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             )
         }
     }
+}
+
+fn stop_codex_plus_for_restart(
+    stop_codex: impl FnOnce(),
+    wait_native: impl FnOnce() -> anyhow::Result<()>,
+    stop_launcher: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // The launcher owns native recovery; terminating it first skips that cleanup.
+    stop_codex();
+    wait_native()?;
+    stop_launcher()?;
+    Ok(())
 }
 
 fn restart_codex_plus_after_stop<F>(
@@ -1527,6 +1558,11 @@ fn empty_weixin_qr_payload(status: &str) -> WeixinQrPayload {
         linked_user_id: String::new(),
         has_token: false,
     }
+}
+
+#[tauri::command]
+pub fn native_browser_status() -> codex_plus_core::native_browser::BrowserStatus {
+    codex_plus_core::native_browser::read_status()
 }
 
 #[tauri::command]
@@ -7094,6 +7130,31 @@ base_url = "https://example.invalid/v1"
             std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
             "{\"old\":true}\n"
         );
+    }
+
+    #[test]
+    fn restart_stops_codex_then_waits_for_native_cleanup_before_launcher() {
+        let events = std::cell::RefCell::new(Vec::new());
+        stop_codex_plus_for_restart(
+            || events.borrow_mut().push("codex"),
+            || { events.borrow_mut().push("cleanup"); Ok(()) },
+            || { events.borrow_mut().push("launcher"); Ok(()) },
+        ).unwrap();
+        assert_eq!(*events.borrow(), ["codex", "cleanup", "launcher"]);
+    }
+
+    #[test]
+    fn restart_does_not_kill_launcher_when_native_cleanup_is_still_running() {
+        let stopped = std::cell::Cell::new(false);
+        let killed = std::cell::Cell::new(false);
+        let result = stop_codex_plus_for_restart(
+            || stopped.set(true),
+            || anyhow::bail!("cleanup still running"),
+            || { killed.set(true); Ok(()) },
+        );
+        assert!(result.is_err());
+        assert!(stopped.get());
+        assert!(!killed.get());
     }
 
     #[test]

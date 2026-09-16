@@ -450,6 +450,8 @@ pub struct BackendSettings {
     pub codex_app_native_menu_placement: bool,
     #[serde(rename = "codexAppNativeMenuLocalization", default = "default_true")]
     pub codex_app_native_menu_localization: bool,
+    #[serde(rename = "codexAppNativeBrowserRequireIdentification", default)]
+    pub codex_app_native_browser_require_identification: bool,
     #[serde(rename = "codexAppServiceTierControls", default)]
     pub codex_app_service_tier_controls: bool,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
@@ -624,6 +626,7 @@ impl Default for BackendSettings {
             codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
             codex_app_native_menu_localization: true,
+            codex_app_native_browser_require_identification: false,
             codex_app_service_tier_controls: false,
             codex_app_pet_real_mouse_look: false,
             codex_app_stepwise_enabled: false,
@@ -1308,6 +1311,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
+    merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
@@ -2515,7 +2519,10 @@ experimental_bearer_token = "sk-existing""#
     }
 
     fn normalized_default_settings() -> BackendSettings {
-        normalize_settings_config_sections(BackendSettings::default())
+        // Keep expected values independent of the production normalizer.
+        let mut expected = BackendSettings::default();
+        expected.tools.insert(ToolId::Codex, ToolConfig::default());
+        expected
     }
 
     #[test]
@@ -2547,9 +2554,10 @@ experimental_bearer_token = "sk-existing""#
             ..BackendSettings::default()
         };
 
-        let expected = normalize_settings_config_sections(settings.clone());
         store.save(&settings).unwrap();
 
+        let mut expected = settings;
+        expected.tools.insert(ToolId::Codex, ToolConfig::default());
         assert_eq!(store.load().unwrap(), expected);
     }
 

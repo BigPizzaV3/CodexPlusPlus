@@ -18,6 +18,7 @@ struct LauncherHooks {
     data: Arc<LauncherDataService>,
     runtime: Arc<LauncherRuntimeService>,
     bridge_context: Arc<Mutex<Option<BridgeContext>>>,
+    browser_monitor: Arc<Mutex<Option<codex_plus_core::native_browser::BrowserMonitor>>>,
 }
 
 impl Default for LauncherHooks {
@@ -30,6 +31,7 @@ impl Default for LauncherHooks {
                 default_user_script_manager(),
             )),
             bridge_context: Arc::new(Mutex::new(None)),
+            browser_monitor: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -350,6 +352,20 @@ impl LaunchHooks for LauncherHooks {
 
     async fn load_settings(&self) -> anyhow::Result<codex_plus_core::settings::BackendSettings> {
         self.core.load_settings().await
+    }
+
+    async fn start_native_browser_compatibility(&self, settings: &codex_plus_core::settings::BackendSettings) {
+        let monitor = codex_plus_core::native_browser::start_monitor(
+            settings.enhancements_enabled && settings.codex_app_native_browser_require_identification,
+        ).await;
+        *self.browser_monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = monitor;
+    }
+
+    async fn stop_native_browser_compatibility(&self) {
+        let monitor = self.browser_monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        if let Some(monitor) = monitor {
+            monitor.stop().await;
+        }
     }
 
     fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
@@ -1329,6 +1345,7 @@ mod tests {
                 ),
             )),
             bridge_context: Arc::new(Mutex::new(None)),
+            browser_monitor: Arc::new(Mutex::new(None)),
         };
 
         hooks.bridge_context(9229, &test_dir).await.unwrap();

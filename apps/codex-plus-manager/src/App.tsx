@@ -83,6 +83,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
+import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import {
   clearModelMetadataForSlug,
@@ -258,6 +259,7 @@ type BackendSettings = {
   codexAppUpstreamWorktreeCreate: boolean;
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeMenuLocalization: boolean;
+  codexAppNativeBrowserRequireIdentification: boolean;
   codexAppServiceTierControls: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppStepwiseEnabled: boolean;
@@ -1018,6 +1020,7 @@ const defaultSettings: BackendSettings = {
   codexAppUpstreamWorktreeCreate: true,
   codexAppNativeMenuPlacement: true,
   codexAppNativeMenuLocalization: true,
+  codexAppNativeBrowserRequireIdentification: false,
   codexAppServiceTierControls: false,
   codexAppPetRealMouseLook: false,
   codexAppStepwiseEnabled: false,
@@ -4808,6 +4811,19 @@ function EnhanceScreen({
           </div>
           <div className="enhance-feature-groups">
             <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
+              {isWindowsPlatform ? <>
+                <FeatureToggle
+                  title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
+                  detail={t("仅 Windows Edge / Chrome；下次启动 Codex++ 时应用。扩展可能持久保留请求标识。")}
+                  checked={form.codexAppNativeBrowserRequireIdentification}
+                  disabled={!masterEnabled}
+                  onChange={(value) => {
+                    if (value && !window.confirm(nativeBrowserConsent)) return;
+                    setEnhanceFlag("codexAppNativeBrowserRequireIdentification", value);
+                  }}
+                />
+                <NativeBrowserStatusView />
+              </> : null}
               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
               <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
               <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
