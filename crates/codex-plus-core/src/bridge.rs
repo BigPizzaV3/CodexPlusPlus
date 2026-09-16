@@ -250,6 +250,195 @@ pub async fn add_script_to_new_documents(
         .await
 }
 
+/// issue #2177：AppServerRequestClient 在 Codex 26.908+ 被藏进模块闭包且不再导出，
+/// 渲染层扫描无法触达，直接改写 dispatcher 又会撞上不可写的 RPC stub。
+/// 分两段接管：渲染层用纯文本定位算出 sendRequest 的断点坐标并放到
+/// `window.__codexPlusAppServerClientCapture`；这里用独立 CDP 会话按坐标下
+/// 条件断点（`!window.__codexPlusAppServerClientClass`），命中时把类构造器挂到
+/// `window.__codexPlusAppServerClientClass`，渲染层再对原型套用与旧版实例补丁
+/// 一致的请求逻辑。条件断点保证页面重载后自动重新捕获、正常路径零暂停。
+pub fn app_server_client_capture_condition() -> &'static str {
+    "!window.__codexPlusAppServerClientClass"
+}
+
+pub fn app_server_client_capture_probe_script() -> &'static str {
+    "JSON.stringify(window.__codexPlusAppServerClientCapture || null)"
+}
+
+pub fn parse_app_server_client_capture_location(value: &Value) -> Option<(String, u32, u32)> {
+    let text = value.as_str()?;
+    let parsed: Value = serde_json::from_str(text).ok()?;
+    let url_regex = parsed.get("urlRegex")?.as_str()?.to_string();
+    if url_regex.is_empty() {
+        return None;
+    }
+    let line_number = parsed.get("lineNumber")?.as_u64()?;
+    let column_number = parsed.get("columnNumber")?.as_u64()?;
+    if line_number > u32::MAX as u64 || column_number > u32::MAX as u64 {
+        return None;
+    }
+    Some((url_regex, line_number as u32, column_number as u32))
+}
+
+const APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT: Duration = Duration::from_secs(90);
+const APP_SERVER_CLIENT_CAPTURE_LOCATION_POLL: Duration = Duration::from_secs(2);
+const APP_SERVER_CLIENT_CAPTURE_WATCH_CAP: Duration = Duration::from_secs(8 * 60 * 60);
+const APP_SERVER_CLIENT_CAPTURE_ON_CALL_FRAME: &str =
+    "try{window.__codexPlusAppServerClientClass=this.constructor}catch(e){};1";
+
+fn spawn_app_server_client_capture(websocket_url: &str, generation: BridgeGeneration) {
+    let websocket_url = websocket_url.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = run_app_server_client_capture(&websocket_url, generation).await {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.app_server_client_capture_failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+    });
+}
+
+async fn run_app_server_client_capture(
+    websocket_url: &str,
+    generation: BridgeGeneration,
+) -> anyhow::Result<()> {
+    let settings = crate::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
+    if !settings.codex_app_service_tier_controls && !settings.codex_app_model_whitelist_unlock {
+        return Ok(());
+    }
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    let probe_script = app_server_client_capture_probe_script();
+    let location_wait = async {
+        loop {
+            tokio::time::sleep(APP_SERVER_CLIENT_CAPTURE_LOCATION_POLL).await;
+            let Ok(response) = session
+                .send_command(
+                    next_message_id(),
+                    "Runtime.evaluate",
+                    runtime_evaluate_params(probe_script),
+                )
+                .await
+            else {
+                continue;
+            };
+            let Some(text) = response.pointer("/result/result/value").and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if let Some(location) =
+                parse_app_server_client_capture_location(&Value::String(text.to_string()))
+            {
+                return Some(location);
+            }
+        }
+    };
+    let Some((url_regex, line_number, column_number)) = tokio::time::timeout(
+        APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT,
+        location_wait,
+    )
+    .await
+    .unwrap_or(None)
+    else {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.app_server_client_capture_skipped",
+            json!({ "reason": "capture_location_unavailable" }),
+        );
+        return Ok(());
+    };
+    session
+        .send_command(next_message_id(), "Debugger.enable", json!({}))
+        .await?;
+    let breakpoint = session
+        .send_command(
+            next_message_id(),
+            "Debugger.setBreakpointByUrl",
+            json!({
+                "lineNumber": line_number,
+                "columnNumber": column_number,
+                "urlRegex": url_regex,
+                "condition": app_server_client_capture_condition(),
+            }),
+        )
+        .await?;
+    let Some(breakpoint_id) = breakpoint
+        .pointer("/result/breakpointId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.app_server_client_capture_skipped",
+            json!({ "reason": "breakpoint_unresolved" }),
+        );
+        return Ok(());
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "bridge.app_server_client_capture_armed",
+        json!({
+            "lineNumber": line_number,
+            "columnNumber": column_number,
+        }),
+    );
+    let watch_deadline = tokio::time::Instant::now() + APP_SERVER_CLIENT_CAPTURE_WATCH_CAP;
+    let mut captured_once = false;
+    loop {
+        if !bridge_generation_is_current(&generation) {
+            break;
+        }
+        let message = tokio::time::timeout_at(watch_deadline, session.next_message()).await;
+        let Ok(message) = message else {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.app_server_client_capture_watch_expired",
+                json!({}),
+            );
+            break;
+        };
+        let Ok(Some(message)) = message else {
+            break;
+        };
+        if message.get("method").and_then(Value::as_str) != Some("Debugger.paused") {
+            continue;
+        }
+        if let Some(call_frame_id) = message
+            .pointer("/params/callFrames/0/callFrameId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        {
+            let _ = session
+                .send_command(
+                    next_message_id(),
+                    "Debugger.evaluateOnCallFrame",
+                    json!({
+                        "callFrameId": call_frame_id,
+                        "expression": APP_SERVER_CLIENT_CAPTURE_ON_CALL_FRAME,
+                        "returnByValue": true,
+                    }),
+                )
+                .await;
+        }
+        let _ = session
+            .send_command(next_message_id(), "Debugger.resume", json!({}))
+            .await;
+        if !captured_once {
+            captured_once = true;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.app_server_client_captured",
+                json!({}),
+            );
+        }
+    }
+    let _ = session
+        .send_command(
+            next_message_id(),
+            "Debugger.removeBreakpoint",
+            json!({ "breakpointId": breakpoint_id }),
+        )
+        .await;
+    Ok(())
+}
+
 pub async fn install_bridge(
     websocket_url: &str,
     binding_name: &str,
@@ -316,6 +505,8 @@ pub async fn install_bridge(
         "bridge.generation_published",
         json!({ "generation": generation.id }),
     );
+
+    spawn_app_server_client_capture(websocket_url, generation.clone());
 
     let mut pending_calls = FuturesUnordered::new();
     session.enqueue_binding_calls(&mut pending_calls);
