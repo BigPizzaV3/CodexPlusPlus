@@ -1,18 +1,19 @@
 use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, image_edits_url, image_generations_url,
-    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
-    is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
-    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
-    open_chat_completions_proxy_request, open_image_edits_proxy_request,
-    open_image_generations_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    chat_sse_to_responses_sse_with_request, extract_responses_stream_summary_text, image_edits_url,
+    image_generations_url, is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path,
+    is_image_edits_proxy_path, is_image_generations_proxy_path, is_models_proxy_path,
+    is_responses_compact_proxy_path, is_responses_proxy_path, models_url,
+    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
+    open_image_edits_proxy_request, open_image_generations_proxy_request,
+    open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
-    open_responses_proxy_request_with_settings_for_path, responses_compact_url,
-    responses_error_from_upstream, responses_to_chat_completions,
-    responses_to_chat_completions_with_options,
-    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
-    upstream_stream_header_timeout,
+    open_responses_proxy_request_with_settings_for_path, request_has_compaction_trigger,
+    responses_compact_url, responses_error_from_upstream, responses_to_chat_completions,
+    responses_to_chat_completions_with_options, send_upstream_request_with_header_timeout,
+    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
+    wrap_non_stream_response_as_compaction,
 };
 use codex_plus_core::relay_config::test_relay_profile;
 use codex_plus_core::settings::{
@@ -41,6 +42,179 @@ fn contains_problematic_local_ref_siblings(value: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+#[test]
+fn compaction_trigger_detection() {
+    let with_trigger = json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "x" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    assert!(request_has_compaction_trigger(&with_trigger));
+
+    let without_trigger = json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "x" }] }
+        ]
+    });
+    assert!(!request_has_compaction_trigger(&without_trigger));
+
+    let string_input = json!({ "model": "m", "input": "hi" });
+    assert!(!request_has_compaction_trigger(&string_input));
+}
+
+#[test]
+fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "latest question" }] },
+            { "type": "compaction", "encrypted_content": "PRIOR_SUMMARY" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let replayed = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("PRIOR_SUMMARY"))
+        })
+        .expect("compaction item 应展开为摘要 user 消息");
+    assert_eq!(replayed["role"], "user");
+}
+
+#[test]
+fn wrap_non_stream_response_produces_single_compaction_item() {
+    let upstream = json!({
+        "id": "resp_up",
+        "object": "response",
+        "output": [
+            { "type": "reasoning", "summary": [] },
+            { "type": "message", "role": "assistant",
+              "content": [{ "type": "output_text", "text": "SUMMARYfromRESPONSES" }] }
+        ]
+    })
+    .to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("event: response.completed"));
+    assert!(text.contains("\"type\":\"compaction\""));
+    assert!(text.contains("SUMMARYfromRESPONSES"));
+    assert!(text.contains("data: [DONE]"));
+    // 恰好一个 compaction 输出项
+    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+}
+
+#[test]
+fn wrap_non_stream_chat_response_produces_single_compaction_item() {
+    let upstream = json!({
+        "choices": [
+            { "message": { "role": "assistant", "content": "SUMMARYfromCHAT" } }
+        ]
+    })
+    .to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("SUMMARYfromCHAT"));
+    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+}
+
+#[test]
+fn wrap_empty_upstream_yields_failed_compaction_response() {
+    let upstream = json!({ "choices": [] }).to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("\"status\":\"failed\""));
+    assert!(text.contains("compaction_empty_summary") || text.contains("空摘要"));
+}
+
+#[test]
+fn responses_stream_summary_text_extracts_output_text_deltas() {
+    let sse = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"llo\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
+    assert_eq!(
+        extract_responses_stream_summary_text(sse.as_bytes()),
+        "Hello"
+    );
+    assert_eq!(extract_responses_stream_summary_text(b"not sse"), "");
+}
+
+#[tokio::test]
+async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 8192];
+        let read = stream.read(&mut buffer).await.unwrap();
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        let body = json!({
+            "id": "resp_up",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                { "type": "message", "role": "assistant",
+                  "content": [{ "type": "output_text", "text": "COMPACTED_SUMMARY_TEXT" }] }
+            ]
+        });
+        let body_text = serde_json::to_string(&body).unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body_text.len(),
+            body_text
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+    let settings = BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+
+    let request_body = json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "long history" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    let result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request_body).unwrap(),
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+
+    // 上游端点保持普通 /v1/responses，请求体剥离了 trigger 并注入了摘要指令。
+    assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
+    assert!(request.contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(!request.contains("compaction_trigger"));
+
+    // 标记为压缩请求，交给响应包装层重组。
+    assert!(result.compaction);
+    assert_eq!(result.status_code, 200);
 }
 
 #[test]
@@ -2524,7 +2698,20 @@ async fn model_route_preserves_responses_compact_endpoint() {
     let (headers, upstream_body) = target_server.await.unwrap();
 
     assert!(headers.starts_with("POST /v1/responses/compact HTTP/1.1"));
-    assert_eq!(upstream_body, request);
+    // legacy compact 请求同样被改写为摘要生成：注入摘要指令并禁用工具，
+    // 端点与 model/stream 字段保持不变。
+    assert_eq!(
+        upstream_body["input"].as_array().unwrap().last().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("CONTEXT CHECKPOINT COMPACTION"),
+        true
+    );
+    assert_eq!(upstream_body["tools"], json!([]));
+    assert_eq!(upstream_body["tool_choice"], json!("none"));
+    assert_eq!(upstream_body["parallel_tool_calls"], json!(false));
+    assert_eq!(upstream_body["model"], request["model"]);
+    assert_eq!(upstream_body["stream"], request["stream"]);
 }
 
 #[tokio::test]
