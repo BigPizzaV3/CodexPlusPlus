@@ -1,11 +1,12 @@
 use std::path::Path;
 
+use codex_plus_core::protocol_proxy::{local_responses_proxy_base_url, protocol_proxy_port};
 use codex_plus_core::relay_config::{
     RelayApplyResult, apply_relay_profile_config_to_home_with_context,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
     clear_relay_config_to_home_with_auth,
 };
-use codex_plus_core::settings::{RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{RelayMode, RelayModelRoute, RelayProfile, RelayProtocol};
 use serde_json::{Value, json};
 
 type ApplyProfile = fn(&Path, &RelayProfile, &str) -> anyhow::Result<RelayApplyResult>;
@@ -110,6 +111,9 @@ fn managed_responses_defaults_are_independent_of_session_identity() {
                     assert_eq!(model["supports_search_tool"], true);
                     assert_eq!(model["web_search_tool_type"], "text_and_image");
                     assert_eq!(model["tool_mode"], "code_mode_only");
+                    assert_eq!(model["multi_agent_version"], "v2");
+                    assert_eq!(model["context_window"], 272_000);
+                    assert_eq!(model["max_context_window"], 872_000);
                 }
                 assert_auth_and_identity(temp.path(), &profile, identity);
             }
@@ -227,11 +231,11 @@ fn responses_chat_responses_roundtrip_uses_real_upstream_protocol() {
                 let provider = &config["model_providers"]["custom"];
                 assert_eq!(provider["wire_api"].as_str(), Some("responses"));
                 let expected_url = if protocol == RelayProtocol::ChatCompletions {
-                    "http://127.0.0.1:57321/v1"
+                    local_responses_proxy_base_url(protocol_proxy_port())
                 } else {
-                    "https://relay.example/v1"
+                    "https://relay.example/v1".to_string()
                 };
-                assert_eq!(provider["base_url"].as_str(), Some(expected_url));
+                assert_eq!(provider["base_url"].as_str(), Some(expected_url.as_str()));
                 for model in catalog(temp.path())["models"].as_array().unwrap() {
                     assert_eq!(
                         model["use_responses_lite"],
@@ -240,6 +244,73 @@ fn responses_chat_responses_roundtrip_uses_real_upstream_protocol() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn routed_unbundled_models_get_catalogs_for_managed_responses_only() {
+    for mode in API_MODES {
+        for identity in ["custom", "openai", "vendor"] {
+            for (_, apply) in APPLY_PATHS {
+                for routed in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut profile = profile(mode, identity);
+                    profile.model = "qwen3-coder".to_string();
+                    profile.model_list = profile.model.clone();
+                    if routed {
+                        profile.model_routes = vec![RelayModelRoute {
+                            model: profile.model.clone(),
+                            target_relay_id: "target".to_string(),
+                            target_model: "target-model".to_string(),
+                        }];
+                    }
+                    std::fs::write(temp.path().join("auth.json"), &profile.auth_contents).unwrap();
+                    apply(temp.path(), &profile, "").unwrap();
+                    let config = config(temp.path());
+                    assert_eq!(config["model_provider"].as_str(), Some(identity));
+                    assert_eq!(config.get("model_catalog_json").is_some(), routed);
+                    if routed {
+                        let catalog = catalog(temp.path());
+                        let models = catalog["models"].as_array().unwrap();
+                        assert_eq!(models.len(), 1);
+                        assert_eq!(models[0]["slug"], "qwen3-coder");
+                        assert_eq!(models[0]["use_responses_lite"], false);
+                        assert_eq!(models[0]["multi_agent_version"], "v2");
+                    } else {
+                        assert!(!temp.path().join("model-catalogs").exists());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn explicit_windows_keep_upstream_clamp_and_metadata_precedence() {
+    for identity in ["custom", "openai"] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut profile = profile(RelayMode::PureApi, identity);
+        profile.model_windows = json!({"gpt-5.6-sol": "400000"}).to_string();
+        profile.model_metadata = json!({
+            "gpt-5.6-sol": {
+                "max_context_window": 1234,
+                "multi_agent_version": "custom-contract",
+                "use_responses_lite": true
+            }
+        })
+        .to_string();
+        apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+        let catalog = catalog(temp.path());
+        let sol = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(sol["context_window"], 400_000);
+        assert_eq!(sol["max_context_window"], 400_000);
+        assert_eq!(sol["multi_agent_version"], "custom-contract");
+        assert_eq!(sol["use_responses_lite"], true);
     }
 }
 
