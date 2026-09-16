@@ -26,12 +26,12 @@ fn codex_home_env_dir_is_valid(path: &PathBuf) -> bool {
 pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow::Result<()> {
     let target = normalize_for_comparison(target);
 
-    // 根路径的可靠特征是规范化后没有父目录：POSIX 根（`/`）与 Windows 根
-    // （`C:\`、`\\?\D:\`、UNC `\\server\share\`）一并覆盖。
+    // 根路径 = 有根前缀且没有父目录，覆盖 POSIX 根（`/`）与 Windows 的各种写法
+    // （`C:\`、`\\?\C:\`、UNC `\\server\share\`）。
     //
-    // 不能只与 `Path::new("/")` 比较：Windows 上 `/` 不是绝对路径，会被
-    // normalize 成当前盘符根（如 `C:\`），相等比较拦不住它——也就是说
-    // 递归删除盘符根本可以绕过这道守卫。
+    // 不能只与 `Path::new("/")` 比较：Windows 上 `/` 不是绝对路径，会被 normalize
+    // 成当前盘符根（如 `C:\`），相等比较拦不住它——也就是说递归删除盘符根本可以
+    // 绕过这道守卫。`has_root()` 这一半也不可省：没有它 `C:` 会被误判成根。
     if target.as_os_str().is_empty() || is_filesystem_root(&target) {
         anyhow::bail!("拒绝删除文件系统根目录：{}", target.display());
     }
