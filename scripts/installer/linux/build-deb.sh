@@ -13,8 +13,10 @@ DEB_DIR="$BUILD_DIR/deb"
 PACKAGE_NAME="codex-plus-plus"
 VERSION="${1:-1.3.0}"
 ARCH="$(dpkg --print-architecture)"
-NODE_BIN="${NODE_BIN:-/home/czw/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node}"
-PNPM_BIN="${PNPM_BIN:-/home/czw/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback/pnpm}"
+# Node / 包管理器：优先从环境变量取，其次探测 PATH。
+# 不要写死绝对路径——这里是给所有贡献者和 CI 用的，不是某台机器的构建脚本。
+NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
+PNPM_BIN="${PNPM_BIN:-$(command -v pnpm || true)}"
 
 echo "=== Codex++ Linux .deb 构建 ==="
 echo "版本: $VERSION"
@@ -58,10 +60,17 @@ install_rust() {
 build_frontend() {
     echo ">>> 构建前端..."
     cd "$PROJECT_DIR"
-    # Use pnpm from codex runtime or system
-    local PM="${PNPM_BIN:-pnpm}"
-    if [ ! -x "$PM" ]; then
-        PM="pnpm"
+    # vite 需要 node 在 PATH 上；允许通过 NODE_BIN 指定非 PATH 中的安装。
+    if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then
+        export PATH="$(dirname "$NODE_BIN"):$PATH"
+    fi
+    local PM="$PNPM_BIN"
+    if [ -z "$PM" ] || [ ! -x "$PM" ]; then
+        PM="$(command -v pnpm || true)"
+    fi
+    if [ -z "$PM" ]; then
+        echo "error: 找不到 pnpm。请安装（npm i -g pnpm）或用 PNPM_BIN=/path/to/pnpm 指定。" >&2
+        return 1
     fi
     export PATH="$(dirname "$PM"):$PATH"
     "$PM" install

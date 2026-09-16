@@ -505,7 +505,7 @@ fn app_paths_invalid_saved_path_falls_back_instead_of_sticking() {
 }
 
 #[test]
-fn app_paths_linux_rejects_nonexistent_and_empty_directories() {
+fn app_paths_rejects_nonexistent_and_empty_directories() {
     let temp = tempfile::tempdir().unwrap();
     // 根本不存在的路径（例如探测生成的候选）不能被误认成应用目录或退回父目录
     let nonexistent = temp.path().join("Codex");
@@ -517,6 +517,12 @@ fn app_paths_linux_rejects_nonexistent_and_empty_directories() {
     assert_eq!(normalize_codex_app_path(&empty_codex), None);
 }
 
+/// Linux 的可执行文件名是无扩展名的 `ChatGPT` / `Codex`，而这两个名字只在
+/// Linux 构建里被 `is_supported_app_executable_name` / `executable_in_dir`
+/// 认作有效，`linux_app_candidates` 的目录扫描也在 `cfg(target_os = "linux")` 内。
+/// 因此本测试只在 Linux 上有意义——其他平台上 `normalize_codex_app_path`
+/// 正确地返回 None，断言必然失败。
+#[cfg(target_os = "linux")]
 #[test]
 fn app_paths_linux_detects_chatgpt_executable_and_builds_it() {
     let temp = tempfile::tempdir().unwrap();
@@ -538,11 +544,10 @@ fn app_paths_linux_detects_chatgpt_executable_and_builds_it() {
     );
     // 版本读取
     assert_eq!(codex_app_version(&app).as_deref(), Some("42.3.0"));
-
-    #[cfg(target_os = "linux")]
     assert_eq!(build_codex_executable(&app), bin);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn app_paths_linux_finds_codex_app_from_search_roots_avoiding_empty_opt() {
     let temp = tempfile::tempdir().unwrap();
