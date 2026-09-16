@@ -185,6 +185,7 @@ type LaunchStatus = {
   debug_port: number | null;
   helper_port: number | null;
   codex_app: string | null;
+  aumid: string | null;
 };
 
 type OverviewResult = CommandResult<{
@@ -2467,10 +2468,11 @@ export function App() {
         title: kind === "workDir" ? t("选择微信连接工作目录") : t("选择 Codex CLI"),
       });
       if (typeof selected !== "string" || !selected.trim()) return;
-      setSettingsForm((current) => ({
-        ...current,
-        [kind === "workDir" ? "weixinConnectWorkDir" : "weixinConnectCodexPath"]: selected.trim(),
-      }));
+      if (kind === "codexPath") {
+        await saveSettingsValue({ ...settingsForm, weixinConnectCodexPath: selected.trim() }, false);
+      } else {
+        setSettingsForm((current) => ({ ...current, weixinConnectWorkDir: selected.trim() }));
+      }
     } catch (error) {
       showNotice(t("微信连接"), stringifyError(error), "failed");
     }
@@ -2481,10 +2483,8 @@ export function App() {
     if (!result) return;
     const path = result.path?.trim();
     if (isSuccessStatus(result.status) && path) {
-      setSettingsForm((current) => ({
-        ...current,
-        weixinConnectCodexPath: path,
-      }));
+      const saved = await saveSettingsValue({ ...settingsForm, weixinConnectCodexPath: path }, false);
+      if (!saved) return;
     }
     showResultNotice(t("Codex CLI 路径"), result);
   };
@@ -10129,6 +10129,7 @@ function LatestLaunch({ status }: { status: LaunchStatus | null }) {
       <Metric label="Debug" value={String(status.debug_port ?? "-")} />
       <Metric label="Helper" value={String(status.helper_port ?? "-")} />
       <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
+      {status.aumid && <Metric label="AUMID" value={status.aumid} />}
     </div>
   );
 }

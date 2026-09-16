@@ -68,6 +68,7 @@ async fn main() -> Result<()> {
                 codex_app: options
                     .app_dir
                     .map(|path| path.to_string_lossy().to_string()),
+                aumid: None,
             });
         }
         return Err(error);
@@ -94,6 +95,7 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
             codex_app: options
                 .app_dir
                 .map(|path| path.to_string_lossy().to_string()),
+            aumid: None,
         })?;
         return Ok(());
     };

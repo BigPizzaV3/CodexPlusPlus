@@ -223,7 +223,9 @@ fn acquire_resilient_loopback_port_guard_with(
     }
 }
 
-fn port_bind_forbidden(error: &std::io::Error) -> bool {
+/// 端口被系统禁止绑定（Windows 保留端口区间返回 os error 10013），
+/// 与「端口被占用」（AddrInUse）不同，这类失败重试也不会好。
+pub(crate) fn port_bind_forbidden(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::PermissionDenied
         || matches!(error.raw_os_error(), Some(10013))
 }

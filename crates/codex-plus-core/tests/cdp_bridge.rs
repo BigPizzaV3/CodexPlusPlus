@@ -2864,7 +2864,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"7\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"9\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -2995,6 +2995,18 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("data-codex-service-tier-controls"));
     assert!(script.contains("removeCodexServiceTierBadges"));
     assert!(script.contains("installCodexServiceTierDispatcherPatch"));
+    assert!(script.contains("codexServiceTierDispatcherPatchable"));
+    assert!(script.contains("dispatcher is a non-writable RPC stub"));
+    assert!(script.contains("Object.isExtensible(dispatcher)"));
+    assert!(script.contains("applyCodexServiceTierRequestOnly"));
+    assert!(script.contains("codexPlusServiceTierPrewarmThreadStart"));
+    assert!(script.contains("Object.isExtensible(client)"));
+    assert!(script.contains("locateCodexAppServerClientBreakpoint"));
+    assert!(script.contains("installCodexAppServerClientCapture"));
+    assert!(script.contains("__codexPlusAppServerClientCapture"));
+    assert!(script.contains("installCodexAppServerClientPrototypePatch"));
+    assert!(script.contains("__codexPlusAppServerClientClass"));
+    assert!(script.contains("app_server_client_prototype_patch_installed"));
     assert!(script.contains("服务模式"));
     assert!(script.contains("data-codex-service-tier-status"));
     assert!(script.contains("data-codex-service-tier-inherit"));
@@ -3235,6 +3247,17 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["appServerParamsUnchanged"], true);
     assert_eq!(cases["appServerProjectlessParamsUnchanged"], true);
     assert_eq!(cases["appServerSentCount"], 7);
+    assert_eq!(cases["serviceTierClientPatched"], true);
+    assert_eq!(cases["serviceTierClientSendTier"], "priority");
+    assert_eq!(cases["serviceTierClientPrewarmTier"], "priority");
+    assert_eq!(cases["frozenClientPatchSkipped"], true);
+    assert_eq!(cases["captureLine"], 1);
+    assert_eq!(cases["captureColumn"], 24);
+    assert_eq!(cases["captureMissIsNull"], true);
+    assert_eq!(cases["prototypePatched"], true);
+    assert_eq!(cases["prototypeSendTier"], "priority");
+    assert_eq!(cases["prototypePrewarmTier"], "priority");
+    assert_eq!(cases["prototypeStateHasClass"], true);
     assert_eq!(
         cases["providerFromMissing"]["modelProvider"],
         "vendor_alpha"
@@ -3375,7 +3398,6 @@ require(scriptPath);
 const api = window.__codexPlusServiceTierTest;
 api.setServiceTierState({{ status: "ok", serviceTier: "priority", fastTierValue: "priority" }});
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4", "gpt-5.5"] }});
-
 const inheritUnsetStatus = api.statusSummary({{
   controlMode: "inherit",
   threadMode: "inherit",
@@ -3592,6 +3614,7 @@ const appServerClient = {{
   }},
 }};
 api.patchAppServerClient(appServerClient);
+localStorage.setItem("codexPlusSettings", JSON.stringify({{ serviceTierControls: false }}));
 
 appServerClient.sendRequest("start-conversation", nativeAppServerParams, {{ signal: "native" }}).then(async () => {{
 await appServerClient.sendRequest(
@@ -3599,6 +3622,39 @@ await appServerClient.sendRequest(
   nativeProjectlessAppServerParams,
   {{ signal: "native-projectless" }}
 );
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+api.setBackendSettings({{ codexAppServiceTierControls: true }});
+localStorage.setItem("codexPlusSettings", JSON.stringify({{ serviceTierControls: true }}));
+const serviceTierClientCalls = [];
+const serviceTierClient = {{
+  async sendRequest(method, params) {{ serviceTierClientCalls.push({{ method, params }}); return {{ ok: true }}; }},
+  async prewarmThreadStart(params) {{ serviceTierClientCalls.push({{ method: "prewarm", params }}); return {{ ok: true }}; }},
+}};
+const serviceTierClientPatched = api.patchAppServerClient(serviceTierClient);
+await serviceTierClient.sendRequest("turn/start", {{ threadId: "thread-service-tier", model: "gpt-5.4" }});
+await serviceTierClient.prewarmThreadStart({{ threadId: "thread-service-tier", model: "gpt-5.4" }});
+const serviceTierClientSendTier = serviceTierClientCalls[0]?.params?.serviceTier;
+const serviceTierClientPrewarmTier = serviceTierClientCalls[1]?.params?.serviceTier;
+const frozenClient = Object.preventExtensions({{ async sendRequest() {{ return {{ ok: true }}; }} }});
+const frozenClientPatchSkipped = api.patchAppServerClient(frozenClient) === false;
+const captureSample = "x" + String.fromCharCode(10) + "async sendRequest(e,t,n){{if(this.dispatchMessage==null)throw Error(`AppServerRequestClient is missing a message dispatcher`);}}";
+const captureLocation = api.locateAppServerClientBreakpoint(captureSample);
+const captureLine = captureLocation ? captureLocation.lineNumber : -1;
+const captureColumn = captureLocation ? captureLocation.columnNumber : -1;
+const captureMissIsNull = api.locateAppServerClientBreakpoint("no marker here") === null;
+window.__codexPlusAppServerClientClass = class CodexPlusTestClient {{
+  async sendRequest(method, params) {{ return {{ method, params }}; }}
+  async prewarmThreadStart(params) {{ return {{ prewarm: params }}; }}
+}};
+const prototypePatched = api.installAppServerClientPrototypePatch();
+const protoClient = new window.__codexPlusAppServerClientClass();
+const protoTurn = await protoClient.sendRequest("turn/start", {{ threadId: "thread-prototype", model: "gpt-5.4" }});
+const protoPrewarm = await protoClient.prewarmThreadStart({{ threadId: "thread-prototype", model: "gpt-5.4" }});
+const prototypeSendTier = protoTurn && protoTurn.params ? protoTurn.params.serviceTier : null;
+const prototypePrewarmTier = protoPrewarm && protoPrewarm.prewarm ? protoPrewarm.prewarm.serviceTier : null;
+const prototypeState = api.appServerClientPrototypeState();
+api.setThreadState({{ mode: "inherit", defaultMode: "inherit", entries: {{}} }});
+api.setBackendSettings({{ codexAppServiceTierControls: false }});
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4"], service_tier: "fast" }});
 const resolvedConfigTomlTier = await api.resolveInheritedServiceTier();
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4"] }});
@@ -4019,6 +4075,18 @@ process.stdout.write(JSON.stringify({{
   appServerParamsUnchanged,
   appServerProjectlessParamsUnchanged,
   appServerSentCount: appServerCalls.length,
+  serviceTierClientPatched,
+  serviceTierClientSendTier,
+  serviceTierClientPrewarmTier,
+  frozenClientPatchSkipped,
+  captureLine,
+  captureColumn,
+  captureMissIsNull,
+  prototypePatched,
+  prototypeSendTier,
+  prototypePrewarmTier,
+  prototypeStateHasClass: prototypeState.hasClass,
+  prototypeStateInstalled: prototypeState.installed !== null,
   providerFromMissing,
   providerFromOpenAi,
   providerFromOtherUnchanged: providerFromOther === explicitOtherProvider,
@@ -5590,4 +5658,32 @@ fn noop_handler() -> bridge::BridgeHandler {
         Box::pin(async { Ok(json!({ "status": "ok" })) })
             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
     })
+}
+
+#[test]
+fn app_server_client_capture_condition_targets_class_handle() {
+    assert_eq!(
+        bridge::app_server_client_capture_condition(),
+        "!window.__codexPlusAppServerClientClass"
+    );
+}
+
+#[test]
+fn parse_app_server_client_capture_location_reads_renderer_report() {
+    let report = json!({
+        "urlRegex": "app://-/assets/app-initial-abc123.js",
+        "lineNumber": 1796_u64,
+        "columnNumber": 87512_u64,
+    });
+    let (url_regex, line, column) =
+        bridge::parse_app_server_client_capture_location(&serde_json::Value::String(
+            report.to_string(),
+        ))
+        .expect("renderer report should parse");
+    assert_eq!(url_regex, "app://-/assets/app-initial-abc123.js");
+    assert_eq!(line, 1796);
+    assert_eq!(column, 87512);
+    assert!(bridge::parse_app_server_client_capture_location(&json!("null")).is_none());
+    assert!(bridge::parse_app_server_client_capture_location(&json!("{}")).is_none());
+    assert!(bridge::parse_app_server_client_capture_location(&json!("")).is_none());
 }

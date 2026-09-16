@@ -626,3 +626,40 @@ fn base_theme_restore_removes_generated_desktop_table() {
     let restored = std::fs::read_to_string(home.join("config.toml")).unwrap();
     assert_eq!(restored, "model = \"gpt-5\"\n");
 }
+
+#[test]
+fn dream_skin_api_bootstrap_marks_parts_without_rescanning_on_streaming() {
+    use codex_plus_core::assets::injection_script_with_settings;
+
+    let mut settings = BackendSettings::default();
+    settings.codex_app_dream_skin_enabled = true;
+    let script = injection_script_with_settings(57321, &settings);
+    let marker = script
+        .find("data-ds-part")
+        .expect("dream skin bootstrap should mark skin parts");
+    let start = script[..marker]
+        .rfind("(() => {")
+        .expect("dream skin bootstrap IIFE start");
+    let end = script[marker..]
+        .find("})();")
+        .expect("dream skin bootstrap IIFE end")
+        + marker
+        + "})();".len();
+    let bootstrap = &script[start..end];
+
+    assert!(bootstrap.contains("window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__"));
+    // 回归 issue #2181：流式输出不能触发皮肤挂载点全量重扫。
+    // 需要防抖、幂等打标，且纯文本节点增删（流式输出的全部形态）被直接跳过。
+    assert!(
+        bootstrap.contains("markTimer"),
+        "mark() should be debounced so streaming cannot trigger it per mutation batch"
+    );
+    assert!(
+        bootstrap.contains("nodeType === 3"),
+        "text-node-only mutation batches should be skipped entirely"
+    );
+    assert!(
+        !bootstrap.contains("MutationObserver(() => mark())"),
+        "observer must filter mutation records before marking"
+    );
+}

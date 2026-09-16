@@ -2482,6 +2482,8 @@ experimental_bearer_token = "sk-existing""#
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
 
+        // load() 会把扁平字段镜像进工具分片（sync_tool_shards），
+        // 所以期望值不是裸 default，而是带上默认工具分片的 default。
         let mut expected = BackendSettings::default();
         expected.tools.insert(ToolId::Codex, ToolConfig::default());
         assert_eq!(store.load().unwrap(), expected);

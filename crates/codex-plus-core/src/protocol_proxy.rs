@@ -13,6 +13,21 @@ use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
+
+/// 协议代理的实际生效端口，默认 [`DEFAULT_PROTOCOL_PROXY_PORT`]，
+/// 可用环境变量 `CODEX_PLUS_PROTOCOL_PROXY_PORT` 覆盖。
+///
+/// 端口要写进 `config.toml` 的 `base_url`，不能像普通 helper 端口那样自动换；
+/// 但少数机器（issue #2189）上 57321 恰好被 Hyper-V/WSL 开机划进了 Windows
+/// 动态端口排除区间，bind 报 os error 10013 永远起不来，只能整体挪一个端口。
+/// 写入 base_url 与读取校验必须都走本函数，保证同一进程内一致。
+pub fn protocol_proxy_port() -> u16 {
+    std::env::var("CODEX_PLUS_PROTOCOL_PROXY_PORT")
+        .ok()
+        .and_then(|value| value.trim().parse::<u16>().ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(DEFAULT_PROTOCOL_PROXY_PORT)
+}
 pub const NO_AUTH_PROXY_BEARER_TOKEN: &str = "codex-plus-no-auth";
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1388,7 +1403,8 @@ fn is_local_protocol_proxy_base_url(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
         return false;
     };
-    if !url.scheme().eq_ignore_ascii_case("http") || url.port() != Some(DEFAULT_PROTOCOL_PROXY_PORT)
+    if !url.scheme().eq_ignore_ascii_case("http")
+        || url.port() != Some(protocol_proxy_port())
     {
         return false;
     }
@@ -4945,7 +4961,11 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str) {
     match style {
         ChatReasoningStyle::Thinking => {
             result["thinking"] = json!({
-                "type": if reasoning_enabled { "enabled" } else { "disabled" }
+                "type": if reasoning_enabled {
+                    kimi_thinking_enabled_type(model)
+                } else {
+                    "disabled"
+                }
             });
         }
         ChatReasoningStyle::EnableThinking => {
@@ -5085,7 +5105,15 @@ fn map_chat_reasoning_effort(effort: &str, style: ChatReasoningStyle) -> Option<
 /// 仍只发 thinking 开关。
 fn is_kimi_coding_model(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.starts_with("k3") || model.contains("for-coding")
+    model.starts_with("k3") || model.contains("kimi-k3") || model.contains("for-coding")
+}
+
+fn kimi_thinking_enabled_type(model: &str) -> &'static str {
+    if is_kimi_coding_model(model) {
+        "adaptive"
+    } else {
+        "enabled"
+    }
 }
 
 fn supports_reasoning_effort(model: &str) -> bool {
