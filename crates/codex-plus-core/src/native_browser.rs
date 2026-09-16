@@ -1012,11 +1012,24 @@ async fn monitor_once(
 mod tests {
     use super::*;
 
+    /// `plain_path` 拒绝祖先链上含软链的路径（防 junction / symlink 攻击，见该函数注释）。
+    /// macOS 上 `/var` 是指向 `/private/var` 的系统软链，而 `tempfile` 默认建在
+    /// `/var/folders/...` 下——直接用 `temp.path()` 会让所有测试都撞上这条校验。
+    /// 这里 canonicalize 到真实路径，既保留被校验路径的生产语义，又让测试可跨平台运行。
+    /// Windows 的 junction 重定向（如被重定向的 TEMP）不在此 helper 的处理范围内，
+    /// 那属于 `plain_path` 自身需要收紧的地方。
+    fn temp_root(temp: &tempfile::TempDir) -> PathBuf {
+        temp.path()
+            .canonicalize()
+            .expect("temp dir should canonicalize")
+    }
+
     fn paths(temp: &tempfile::TempDir) -> BrowserPaths {
+        let root = temp_root(temp);
         BrowserPaths {
-            codex_home: temp.path().join("home"),
-            runtime_root: temp.path().join("cache"),
-            state_root: temp.path().join("state"),
+            codex_home: root.join("home"),
+            runtime_root: root.join("cache"),
+            state_root: root.join("state"),
         }
     }
 
@@ -1081,21 +1094,21 @@ mod tests {
     #[test]
     fn discovery_checks_native_backend_and_paths() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("cache");
+        let root = temp_root(&temp).join("cache");
         let mut data = descriptor(&root, "0123456789abcdef");
         assert_eq!(selected_key(&data, &root).unwrap(), "0123456789abcdef");
         data["mcpServers"]["cua_repl"]["env"]["NODE_REPL_TRUSTED_SERVICES"] =
             json!("{\"browser\":\"other/backend\"}");
         assert!(selected_key(&data, &root).is_err());
         assert!(selected_key(&descriptor(&root, "../escape"), &root).is_err());
-        assert!(selected_key(&descriptor(temp.path(), "0123456789abcdef"), &root).is_err());
+        assert!(selected_key(&descriptor(&temp_root(&temp), "0123456789abcdef"), &root).is_err());
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_generated_descriptor_accepts_backslash_paths() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("OpenAI/Codex/runtimes/cua_node");
+        let root = temp_root(&temp).join("OpenAI/Codex/runtimes/cua_node");
         let key = "0123456789abcdef";
         let base = format!(r"{}\{key}", root.display().to_string().replace('/', "\\"));
         // Desktop writes backslashes independently of our PathBuf joins.
@@ -1116,7 +1129,7 @@ mod tests {
     #[test]
     fn windows_descriptor_accepts_independent_separator_styles() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("OpenAI/Codex/runtimes/cua_node");
+        let root = temp_root(&temp).join("OpenAI/Codex/runtimes/cua_node");
         let key = "0123456789abcdef";
         let fields = [
             "/mcpServers/cua_repl/command",
@@ -1142,7 +1155,7 @@ mod tests {
     #[test]
     fn descriptor_rejects_conflicting_or_malformed_runtime_paths() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("cache");
+        let root = temp_root(&temp).join("cache");
         let key = "0123456789abcdef";
         for field in [
             "/mcpServers/cua_repl/command",
@@ -1225,7 +1238,7 @@ mod tests {
     #[test]
     fn atomic_replace_and_timestamp_roundtrip() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("value");
+        let path = temp_root(&temp).join("value");
         write_new(&path, b"original").unwrap();
         assert!(write_new(&path, b"collision").is_err());
         atomic_write(&path, b"candidate").unwrap();
@@ -1241,7 +1254,7 @@ mod tests {
     fn failed_atomic_restore_preserves_target_bytes_and_timestamp() {
         use std::os::windows::fs::OpenOptionsExt;
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("service.mjs");
+        let path = temp_root(&temp).join("service.mjs");
         write_new(&path, b"candidate").unwrap();
         let before = fs::metadata(&path).unwrap().modified().unwrap();
         let restored = UNIX_EPOCH + Duration::new(1_789_145_796, 123_456_700);
@@ -1253,7 +1266,7 @@ mod tests {
         assert!(atomic_write_with_modified(&path, b"original", Some(restored)).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"candidate");
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
-        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(temp_root(&temp)).unwrap().count(), 1);
         drop(held);
         atomic_write_with_modified(&path, b"original", Some(restored)).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"original");
@@ -1430,8 +1443,8 @@ mod tests {
     #[test]
     fn pinned_parent_cannot_be_renamed_during_transaction() {
         let temp = tempfile::tempdir().unwrap();
-        let parent = temp.path().join("parent");
-        let destination = temp.path().join("renamed");
+        let parent = temp_root(&temp).join("parent");
+        let destination = temp_root(&temp).join("renamed");
         fs::create_dir(&parent).unwrap();
         let guards = pin_parents(&parent.join("service.mjs")).unwrap();
         assert!(fs::rename(&parent, &destination).is_err());
