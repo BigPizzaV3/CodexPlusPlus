@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Conversation canvas
 // @description  可缩放的任务树画布与原文定位
-// @version      0.3.1
+// @version      0.3.2
 // ==/UserScript==
 (function installCanvas() {
   if(!document.body){window.addEventListener('DOMContentLoaded',installCanvas,{once:true});return;}
@@ -346,6 +346,48 @@ function persistentHistoryCache(){
     async delete(key){memory.delete(key);await canvasStore(`history:${key}`,null,true);}};
 }
 
+// Private Desktop exports change between builds. Only bind reviewed contracts;
+// discovering a new asset does not make its minified export names compatible.
+const nativeBuilds={
+  'app-initial-f87238153a19.js':{ESt:'ESt',kr:'kr',Mr:'Mr',Q1:'Q1',lGt:'lGt',cGt:'cGt',jR:'jR'},
+  'app-initial-bcc2ff475eb6.js':{ESt:'EDt',kr:'MDt',lGt:'hJt',cGt:'mJt',jR:'TW'},
+};
+function nativeAssetCandidates(doc=globalThis.document,perf=globalThis.performance){
+  const urls=[...Array.from(doc?.querySelectorAll?.('script[src],link[rel="modulepreload"][href]')||[],e=>e.src||e.href),
+    ...(perf?.getEntriesByType?.('resource')||[]).map(e=>e.name)];
+  return [...new Set(urls.filter(url=>/^app:\/\/-\/assets\/app-initial-[\w-]+\.js$/.test(url)))];
+}
+function bindNativeRuntime(module,filename){
+  const mapping=nativeBuilds[filename];
+  if(!mapping)throw Error('当前 Codex 版本尚未适配对话脉络，请更新插件；已有整理结果仍保留');
+  const adapter={};
+  // Keep live bindings: initialization populates the HTTP class and services.
+  for(const [key,value] of Object.entries(mapping))Object.defineProperty(adapter,key,{get:()=>module[value]});
+  return adapter;
+}
+function createNativeLoader({discover=nativeAssetCandidates,importModule=url=>import(url)}={}){
+  let pending;
+  return function load(){
+    if(!pending)pending=(async()=>{
+      const discovered=discover();
+      // Without resource timing (e.g. after a reload), try reviewed builds only.
+      const candidates=discovered.length?discovered:Object.keys(nativeBuilds).reverse().map(name=>'app://-/assets/'+name);
+      for(const url of candidates){
+        const filename=url.split('/').pop();
+        if(!nativeBuilds[filename])continue;
+        let module;
+        try{module=await importModule(url);}catch{continue;}
+        return bindNativeRuntime(module,filename);
+      }
+      throw Error(discovered.some(url=>!nativeBuilds[url.split('/').pop()])
+        ?'当前 Codex 版本尚未适配对话脉络，请更新插件；已有整理结果仍保留'
+        :'Codex 原生模块加载失败，请重新加载应用后重试；已有整理结果仍保留');
+    })().catch(error=>{pending=null;throw error;});
+    return pending;
+  };
+}
+const loadNativeRuntime=createNativeLoader();
+
 
 function isExportSizeError(message){
   return /超过.*(?:大小|限制)|too (?:large|big)|size.{0,30}limit|maximum.{0,20}size/i.test(String(message));
@@ -416,11 +458,11 @@ async function readNativeHistory(send,threadId,cache=new Map(),onProgress=()=>{}
   return messages;
 }
 
-// Adapter verified against Codex Desktop 26.901.6511. Native exports are private;
-// reject unsupported builds rather than submitting anything to the main composer.
+// Runtime bindings are versioned separately. History reading does not require
+// the private side-conversation submission API to be available.
 async function nativeContext(threadId){
-  const native=await import('app://-/assets/app-initial-f87238153a19.js');
-  if(typeof native.ESt!=='function'||typeof native.Mr!=='function')throw Error('当前 Codex 版本的侧边对话接口不兼容');
+  const native=await loadNativeRuntime();
+  if(typeof native.ESt!=='function'||typeof native.kr!=='function')throw Error('当前 Codex 版本的对话读取接口不兼容');
   native.kr();
   const scopes=[],callbacks=[],seeds=[],navigation=[];
   const visited=new Set(),domVisited=new Set();
@@ -532,6 +574,7 @@ async function createOrganizerSide(native,scope,manager,parent,threadId,session,
 }
 async function nativeSideChat(threadId,prompt,onProgress,signal,options={}){
   const {native,scope,manager,parent}=await nativeContext(threadId);
+  if(typeof native.Mr!=='function'||typeof native.Q1!=='function')throw Error('当前 Codex 版本的后台整理接口尚未适配，请在设置中使用外接 API 整理');
   if(!parent?.cwd||parent.sideConversation||parent.ephemeral)throw Error('请在主任务中发起整理');
   const session=options.session||{},requestId=options.requestId||'single',save=options.onSession||async function(){};
   const hostId=manager.getHostId(),mode=organizerMode();
@@ -716,11 +759,11 @@ function createApiOrganizer({request,timeoutMs=300000,maxRetries=2,retryDelayMs=
   return {run,dispose};
 }
 
-// Verified Desktop 26.901.6511 adapter: HTTP uses the app host, not renderer fetch/CSP.
+// HTTP uses the app host, with versioned runtime bindings, not renderer fetch/CSP.
 async function nativeApiRequest(url,options){
   const localError=message=>Object.assign(Error(message),{canvasApiLocal:true});
   let native;
-  try{native=await import('app://-/assets/app-initial-f87238153a19.js');}catch{throw localError('当前 Codex 版本的 API 适配器不兼容，请更新对话脉络脚本');}
+  try{native=await loadNativeRuntime();}catch{throw localError('当前 Codex 版本的 API 适配器不兼容，请更新对话脉络脚本');}
   if(typeof native.lGt!=='function')throw localError('当前 Codex 版本未提供兼容的 HTTP 服务');
   native.lGt();
   const client=native.cGt?.getInstance?.();
@@ -831,7 +874,7 @@ function createTaskCanvas(viewport,{onNode,onCollapse,onCamera}){
 
   const annotationIndex={};
   function diagnostic(stage,detail={}){
-    try{window.__codexSessionDeleteBridge?.('/diagnostics/log',{event:'conversation_canvas',detail:{version:'0.3.1',stage,...detail}})?.catch(()=>{});}catch{}
+    try{window.__codexSessionDeleteBridge?.('/diagnostics/log',{event:'conversation_canvas',detail:{version:'0.3.2',stage,...detail}})?.catch(()=>{});}catch{}
   }
   diagnostic('native_installed',{pageOrigin:location.origin});
   const host=document.createElement('div');host.id='conversation-canvas-host';
@@ -891,10 +934,10 @@ function createTaskCanvas(viewport,{onNode,onCollapse,onCamera}){
 #source-view{width:min(920px,100%);margin:0 auto}#organization-status{flex-shrink:0;margin:0}
 @media(max-width:750px){.map-heading{max-width:100%}.map-topbar{padding:10px 14px}.canvas-bottom{padding:8px 12px}.canvas-help{display:none}.panel-header{padding:10px 14px}}
 
-  </style><aside role="complementary" aria-label="对话脉络" data-version="0.3.1"><div class="panel-header"><div class="heading"><strong>对话脉络</strong><p id="connection" role="status">当前对话的主线与分支</p></div><button id="retry" aria-label="重新连接" title="重新连接">↻</button><button id="close" aria-label="关闭画布" title="关闭">×</button></div><div class="canvas-body"><div class="canvas-toolbar"><button id="map-tab" class="active">任务树</button><button id="source-tab">对话原文</button><button id="pause-organize" hidden>暂停整理</button><button id="organize" title="GPT-5.6 Luna · 中 · 后台分批整理">整理脉络</button></div><p id="organization-status" role="status" hidden></p><div class="canvas-scroll"><section id="map-view"><div class="map-topbar"><div class="map-heading"><h2 id="title">当前对话</h2><div id="subtitle"></div></div><div class="tree-actions"><button id="expand-tree">展开全部</button><button id="collapse-tree">收起分支</button><button id="locate-current">当前推进</button><button id="fit-canvas">适应视图</button></div></div><div id="graph" role="region" aria-label="任务树画布，滚轮缩放，拖拽平移" tabindex="0"></div><div id="pending-tray"></div><div class="canvas-bottom"><span class="canvas-help">拖动画布平移 · 滚轮缩放 · 点击节点查看依据</span><div class="zoom-tools"><button id="zoom-out" aria-label="缩小画布">−</button><button id="canvas-zoom" title="恢复 100% 缩放">100%</button><button id="zoom-in" aria-label="放大画布">+</button></div></div></section><section id="source-view" hidden><div class="tree-actions"><button id="source-prev">上一页</button><span id="source-page-info"></span><button id="source-next">下一页</button><button id="source-list">消息列表</button></div><div id="transcript"></div></section></div><section id="details" aria-label="节点详情" hidden><div class="detail-head"><small id="detail-status"></small><button id="close-detail" aria-label="关闭节点详情">×</button></div><h2 id="detail-title"></h2><p id="detail-path"></p><p id="detail-description"></p><div id="source-actions"></div><p id="jump-status" role="status"></p></section></div></aside>`;
+  </style><aside role="complementary" aria-label="对话脉络" data-version="0.3.2"><div class="panel-header"><div class="heading"><strong>对话脉络</strong><p id="connection" role="status">当前对话的主线与分支</p></div><button id="retry" aria-label="重新连接" title="重新连接">↻</button><button id="close" aria-label="关闭画布" title="关闭">×</button></div><div class="canvas-body"><div class="canvas-toolbar"><button id="map-tab" class="active">任务树</button><button id="source-tab">对话原文</button><button id="pause-organize" hidden>暂停整理</button><button id="organize" title="GPT-5.6 Luna · 中 · 后台分批整理">整理脉络</button></div><p id="organization-status" role="status" hidden></p><div class="canvas-scroll"><section id="map-view"><div class="map-topbar"><div class="map-heading"><h2 id="title">当前对话</h2><div id="subtitle"></div></div><div class="tree-actions"><button id="expand-tree">展开全部</button><button id="collapse-tree">收起分支</button><button id="locate-current">当前推进</button><button id="fit-canvas">适应视图</button></div></div><div id="graph" role="region" aria-label="任务树画布，滚轮缩放，拖拽平移" tabindex="0"></div><div id="pending-tray"></div><div class="canvas-bottom"><span class="canvas-help">拖动画布平移 · 滚轮缩放 · 点击节点查看依据</span><div class="zoom-tools"><button id="zoom-out" aria-label="缩小画布">−</button><button id="canvas-zoom" title="恢复 100% 缩放">100%</button><button id="zoom-in" aria-label="放大画布">+</button></div></div></section><section id="source-view" hidden><div class="tree-actions"><button id="source-prev">上一页</button><span id="source-page-info"></span><button id="source-next">下一页</button><button id="source-list">消息列表</button></div><div id="transcript"></div></section></div><section id="details" aria-label="节点详情" hidden><div class="detail-head"><small id="detail-status"></small><button id="close-detail" aria-label="关闭节点详情">×</button></div><h2 id="detail-title"></h2><p id="detail-path"></p><p id="detail-description"></p><div id="source-actions"></div><p id="jump-status" role="status"></p></section></div></aside>`;
   document.body.append(host);
   const pane=shadow.querySelector('aside');
-  pane.dataset.version='0.3.1';
+  pane.dataset.version='0.3.2';
   const settingsButton=document.createElement('button');settingsButton.id='organizer-settings';settingsButton.textContent='⚙';settingsButton.title='整理设置';settingsButton.setAttribute('aria-label','整理设置');
   shadow.getElementById('retry').before(settingsButton);
   const settingsForm=document.createElement('form');settingsForm.id='api-settings';settingsForm.hidden=true;settingsForm.setAttribute('aria-label','整理设置');

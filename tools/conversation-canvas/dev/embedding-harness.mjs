@@ -127,7 +127,7 @@ http.createServer((req,res)=>{
   }
   if(u.pathname==='/test-user.js'){
     res.setHeader('Content-Type','text/javascript;charset=utf-8');
-    res.end(fs.readFileSync(new URL('canvas.user.js',root),'utf8').replace('!/^app:\\/\\/-/.test(location.href)','location.hostname!=="127.0.0.1"').replaceAll('app://-/assets/app-initial-f87238153a19.js','/native-fixture.js').replace('app://-/assets/thread-pin-shortcut-bridge-f85d28ddca38.js','/tabs-fixture.js').replace('app://-/assets/side-chat-tab-content-7dc20bc79612.js','/content-fixture.js'));return;
+    res.end(fs.readFileSync(new URL('canvas.user.js',root),'utf8').replace('!/^app:\\/\\/-/.test(location.href)','location.hostname!=="127.0.0.1"').replace('const loadNativeRuntime=createNativeLoader();',"const loadNativeRuntime=createNativeLoader({discover:()=>['app://-/assets/app-initial-f87238153a19.js'],importModule:()=>import('/native-fixture.js')});").replace('app://-/assets/thread-pin-shortcut-bridge-f85d28ddca38.js','/tabs-fixture.js').replace('app://-/assets/side-chat-tab-content-7dc20bc79612.js','/content-fixture.js'));return;
   }
   res.writeHead(404);res.end();
 }).listen(port,'127.0.0.1',()=>console.log(`http://127.0.0.1:${port}/host?thread=${id}`));

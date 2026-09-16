@@ -1,8 +1,8 @@
-// Adapter verified against Codex Desktop 26.901.6511. Native exports are private;
-// reject unsupported builds rather than submitting anything to the main composer.
+// Runtime bindings are versioned separately. History reading does not require
+// the private side-conversation submission API to be available.
 async function nativeContext(threadId){
-  const native=await import('app://-/assets/app-initial-f87238153a19.js');
-  if(typeof native.ESt!=='function'||typeof native.Mr!=='function')throw Error('当前 Codex 版本的侧边对话接口不兼容');
+  const native=await loadNativeRuntime();
+  if(typeof native.ESt!=='function'||typeof native.kr!=='function')throw Error('当前 Codex 版本的对话读取接口不兼容');
   native.kr();
   const scopes=[],callbacks=[],seeds=[],navigation=[];
   const visited=new Set(),domVisited=new Set();
@@ -114,6 +114,7 @@ async function createOrganizerSide(native,scope,manager,parent,threadId,session,
 }
 async function nativeSideChat(threadId,prompt,onProgress,signal,options={}){
   const {native,scope,manager,parent}=await nativeContext(threadId);
+  if(typeof native.Mr!=='function'||typeof native.Q1!=='function')throw Error('当前 Codex 版本的后台整理接口尚未适配，请在设置中使用外接 API 整理');
   if(!parent?.cwd||parent.sideConversation||parent.ephemeral)throw Error('请在主任务中发起整理');
   const session=options.session||{},requestId=options.requestId||'single',save=options.onSession||async function(){};
   const hostId=manager.getHostId(),mode=organizerMode();

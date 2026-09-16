@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-const code=fs.readFileSync(new URL('src/native-sidechat.js',import.meta.url),'utf8').replace("import('app://-/assets/app-initial-f87238153a19.js')",'Promise.resolve(globalThis.native)');
+const code=fs.readFileSync(new URL('src/native-sidechat.js',import.meta.url),'utf8').replace("loadNativeRuntime()",'Promise.resolve(globalThis.native)');
 const scope=id=>({get(){},value:{routeKind:'local-thread',conversationId:id}});
 const scopeFiber=s=>({memoizedState:{memoizedState:{current:s}}});
 function runtime(elements){
@@ -57,6 +57,13 @@ test('root container uses committed current tree and ignores a hidden route',asy
 test('absence of a matching context fails without requesting input-box focus or submitting anything',async()=>{
   const {context}=runtime([{'__reactFiber$test':scopeFiber(scope('other'))}]);
   await assert.rejects(context.nativeContext('target'),/原生接口尚未就绪/);
+});
+
+test('history is readable when a Desktop update removes side-chat submission exports',async()=>{
+  const {context,manager}=runtime([{'__reactFiber$test':scopeFiber(scope('target'))}]);
+  delete context.native.Mr;
+  assert.equal((await context.nativeContext('target')).manager,manager);
+  await assert.rejects(context.nativeSideChat('target','organize',()=>{}),/后台整理接口尚未适配/);
 });
 
 test('virtualized navigation belongs to the requested task and selected route scope',async()=>{

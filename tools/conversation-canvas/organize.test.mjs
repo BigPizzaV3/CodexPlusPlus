@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import {organizationPrompt,parseOrganization,validateOrganization} from './organize.mjs';
 const messages=[{id:'m1',role:'user',text:'尝试一'},{id:'m2',role:'assistant',text:'尚未验证'}];
 const value=()=>({requestId:'request',nodes:[{id:'n1',parent:null,lane:'main',title:'目标',summary:'摘要',description:'具体描述',status:'待验证',sources:['m1','m2']}]});
-const adapterCode=()=>fs.readFileSync(new URL('src/native-sidechat.js',import.meta.url),'utf8').replace("import('app://-/assets/app-initial-f87238153a19.js')",'Promise.resolve(globalThis.native)');
+const adapterCode=()=>fs.readFileSync(new URL('src/native-sidechat.js',import.meta.url),'utf8').replace("loadNativeRuntime()",'Promise.resolve(globalThis.native)');
 const uiNative={rMt(){throw Error('Must not open sidebar');},x3(){throw Error('Must not attach visible side task');},w3(){throw Error('Must not mutate sidebar');}};
 const assertModel=mode=>{assert.equal(mode.mode,'default');assert.equal(mode.settings.model,'gpt-5.6-luna');assert.equal(mode.settings.reasoning_effort,'medium');assert.equal(mode.settings.developer_instructions,null);};
 test('parse grounded output and reject invented sources, duplicate IDs, wrong request and cycles',()=>{
