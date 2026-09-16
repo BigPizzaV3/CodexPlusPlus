@@ -829,6 +829,8 @@ pub fn clear_relay_config_to_home_with_auth(
         "OPENAI_API_KEY",
         "model_provider",
         "model_catalog_json",
+        "model_context_window",
+        "model_auto_compact_token_limit",
         "base_url",
         "experimental_bearer_token",
         "env_key",
