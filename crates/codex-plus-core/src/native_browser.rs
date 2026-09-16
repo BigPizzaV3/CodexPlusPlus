@@ -1019,9 +1019,17 @@ mod tests {
     /// Windows 的 junction 重定向（如被重定向的 TEMP）不在此 helper 的处理范围内，
     /// 那属于 `plain_path` 自身需要收紧的地方。
     fn temp_root(temp: &tempfile::TempDir) -> PathBuf {
-        temp.path()
-            .canonicalize()
-            .expect("temp dir should canonicalize")
+        let canonical = temp.path().canonicalize().expect("temp dir should canonicalize");
+        // Windows 的 canonicalize 会加上 `\\?\` verbatim 前缀。测试构造的路径要参与
+        // 字符串形态断言（分隔符风格、路径比较），带上这个前缀会改变语义，所以剥掉。
+        #[cfg(windows)]
+        {
+            let text = canonical.to_string_lossy().to_string();
+            if let Some(stripped) = text.strip_prefix(r"\\?\") {
+                return PathBuf::from(stripped);
+            }
+        }
+        canonical
     }
 
     fn paths(temp: &tempfile::TempDir) -> BrowserPaths {
