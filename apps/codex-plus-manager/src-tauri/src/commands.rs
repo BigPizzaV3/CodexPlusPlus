@@ -84,6 +84,7 @@ struct WeixinQrSession {
 
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
+    codex_path: codex_plus_core::connect::WeixinCodexPath,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -989,11 +990,11 @@ fn sync_active_relay_to_home(
         return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-                codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                codex_plus_core::protocol_proxy::protocol_proxy_port(),
             ),
             "codex-plus-aggregate",
             codex_plus_core::settings::RelayProtocol::Responses,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             aggregate.session_provider,
         );
     }
@@ -1019,7 +1020,7 @@ fn sync_active_relay_to_home(
     let mut protocol = relay.protocol;
     if relay.has_model_routes() {
         base_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         );
         protocol = codex_plus_core::settings::RelayProtocol::Responses;
     }
@@ -1029,7 +1030,7 @@ fn sync_active_relay_to_home(
             &base_url,
             &relay.api_key,
             protocol,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             codex_plus_core::relay_config::relay_session_provider_from_config(
                 &relay.config_contents,
             ),
@@ -1045,7 +1046,7 @@ fn sync_active_relay_to_home(
         &base_url,
         &relay.api_key,
         protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     )
 }
@@ -1146,6 +1147,7 @@ fn requested_launch_status(
         helper_port: Some(request.helper_port),
         codex_app: (!request.app_path.trim().is_empty())
             .then(|| request.app_path.trim().to_string()),
+        aumid: None,
     }
 }
 
@@ -1453,8 +1455,10 @@ fn spawn_weixin_connect(
     if runtime.is_some() {
         anyhow::bail!("微信连接已在运行或正在停止");
     }
+    let codex_path = codex_plus_core::connect::WeixinCodexPath::new(&config.codex_path);
     *runtime = Some(WeixinRuntime {
         stop: Arc::clone(&stop),
+        codex_path: codex_path.clone(),
     });
     drop(runtime);
     let status = weixin_status();
@@ -1467,9 +1471,13 @@ fn spawn_weixin_connect(
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            codex_plus_core::connect::run_weixin_connect(config, stop, Arc::clone(&task_status))
-                .await
+        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_codex_path(
+            config,
+            stop,
+            Arc::clone(&task_status),
+            codex_path,
+        )
+        .await
             && let Ok(mut current) = task_status.lock()
         {
             current.state = "error".to_string();
@@ -1559,7 +1567,14 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
         );
     }
     match store.save(&settings) {
-        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
+        Ok(()) => {
+            if let Ok(runtime) = weixin_runtime().lock()
+                && let Some(runtime) = runtime.as_ref()
+            {
+                runtime.codex_path.set(&settings.weixin_connect_codex_path);
+            }
+            settings_payload("设置已保存。", "设置保存后重新读取失败")
+        }
         Err(error) => {
             let _ = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
                 previous.enhancements_enabled && previous.codex_app_dream_skin_enabled,
@@ -2276,7 +2291,7 @@ fn empty_dream_skin_community_payload() -> DreamSkinCommunityPayload {
 }
 
 fn default_dream_skin_helper_port() -> u16 {
-    codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
+    codex_plus_core::protocol_proxy::protocol_proxy_port()
 }
 
 fn current_dream_skin_library(
@@ -5356,7 +5371,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
@@ -5401,11 +5416,11 @@ fn apply_aggregate_relay_injection_to_home(
     match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         ),
         "codex-plus-aggregate",
         codex_plus_core::settings::RelayProtocol::Responses,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         session_provider,
     ) {
         Ok(result) => {
@@ -5501,7 +5516,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {

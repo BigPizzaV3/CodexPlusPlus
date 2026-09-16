@@ -2601,6 +2601,8 @@ fn clear_relay_config_removes_model_provider_and_preserves_other_config() {
         temp.path().join("config.toml"),
         r#"model = "gpt-5"
 model_provider = "custom"
+model_context_window = 262144
+model_auto_compact_token_limit = 200000
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
@@ -2637,6 +2639,8 @@ model = "gpt-5-mini"
     assert!(updated.contains(r#"model = "gpt-5""#));
     assert!(!updated.contains("model_provider ="));
     assert!(!updated.contains("model_catalog_json"));
+    assert!(!updated.contains("model_context_window"));
+    assert!(!updated.contains("model_auto_compact_token_limit"));
     assert!(!updated.contains("OPENAI_API_KEY"));
     assert!(updated.contains("[model_providers.custom]"));
     assert!(updated.contains(r#"wire_api = "responses""#));
@@ -4284,6 +4288,8 @@ experimental_bearer_token = "sk-new"
         .find(|model| model["slug"] == "gpt-5.6-sol")
         .unwrap();
     assert_eq!(sol["context_window"], 272_000);
+    // 未显式配置窗口时保留官方模板上限（issue #2191）。
+    assert_eq!(sol["max_context_window"], 872_000);
     assert_eq!(sol["default_reasoning_level"], "low");
     assert_eq!(sol["service_tiers"][0]["id"], "priority");
     assert_eq!(sol["supports_search_tool"], true);
@@ -4321,6 +4327,8 @@ base_url = "https://relay.example/v1"
     let astra = &catalog["models"][0];
     assert_eq!(astra["slug"], "gpt-6-astra");
     assert_eq!(astra["context_window"], 272_000);
+    // 未显式配置窗口时保留官方模板上限（issue #2191）。
+    assert_eq!(astra["max_context_window"], 872_000);
     assert_eq!(astra["use_responses_lite"], false);
     assert_eq!(astra["additional_speed_tiers"], serde_json::json!(["fast"]));
     assert_eq!(astra["service_tiers"][0]["id"], "priority");
@@ -5400,7 +5408,7 @@ fn apply_model_metadata_overrides_catalog_and_protects_managed_fields() {
                 "display_name": "Imported model",
                 "description": "Imported description",
                 "context_window": 1,
-                "max_context_window": 1_000_000,
+                "max_context_window": 999_999,
                 "auto_compact_token_limit": 3,
                 "effective_context_window_percent": 4,
                 "priority": 5,

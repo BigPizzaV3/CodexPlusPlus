@@ -184,6 +184,7 @@ type LaunchStatus = {
   debug_port: number | null;
   helper_port: number | null;
   codex_app: string | null;
+  aumid: string | null;
 };
 
 type OverviewResult = CommandResult<{
@@ -2464,10 +2465,11 @@ export function App() {
         title: kind === "workDir" ? t("选择微信连接工作目录") : t("选择 Codex CLI"),
       });
       if (typeof selected !== "string" || !selected.trim()) return;
-      setSettingsForm((current) => ({
-        ...current,
-        [kind === "workDir" ? "weixinConnectWorkDir" : "weixinConnectCodexPath"]: selected.trim(),
-      }));
+      if (kind === "codexPath") {
+        await saveSettingsValue({ ...settingsForm, weixinConnectCodexPath: selected.trim() }, false);
+      } else {
+        setSettingsForm((current) => ({ ...current, weixinConnectWorkDir: selected.trim() }));
+      }
     } catch (error) {
       showNotice(t("微信连接"), stringifyError(error), "failed");
     }
@@ -2478,10 +2480,8 @@ export function App() {
     if (!result) return;
     const path = result.path?.trim();
     if (isSuccessStatus(result.status) && path) {
-      setSettingsForm((current) => ({
-        ...current,
-        weixinConnectCodexPath: path,
-      }));
+      const saved = await saveSettingsValue({ ...settingsForm, weixinConnectCodexPath: path }, false);
+      if (!saved) return;
     }
     showResultNotice(t("Codex CLI 路径"), result);
   };
@@ -4243,13 +4243,12 @@ function WeixinConnectScreen({
 /// 概览页和推荐内容页共用同一份数据、同一个渲染，所以两处看到的赞助商是
 /// 一致的 —— 以前概览页把赞助商内容硬编码在 JSX 里，跟推荐内容页各说各话。
 ///
-/// 数据优先级：广告源里的 sponsor 条目 → 本地内置的兜底条目。本地兜底保证
-/// 断网或广告源没加载时这块不会空着。
+/// 数据来自广告源里的 sponsor 条目。
 /// 概览页置顶赞助位。
 ///
 /// 这个位置**不来自推荐池** —— `topAd` 是单独售卖的贵价位置，由广告源里的
 /// `top_ad` 字段单独指定，不参与 `ads` 数组的排序，也不会被推荐列表的
-/// 数量上限影响。没有 `topAd` 时才退回内置兜底。
+/// 数量上限影响。没有 `topAd` 时不显示置顶赞助位。
 function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
   const topAd = ads?.topAd;
   const featured: AdItem[] = topAd && !isExpiredAd(topAd) ? [topAd] : [];
@@ -10114,6 +10113,7 @@ function LatestLaunch({ status }: { status: LaunchStatus | null }) {
       <Metric label="Debug" value={String(status.debug_port ?? "-")} />
       <Metric label="Helper" value={String(status.helper_port ?? "-")} />
       <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
+      {status.aumid && <Metric label="AUMID" value={status.aumid} />}
     </div>
   );
 }

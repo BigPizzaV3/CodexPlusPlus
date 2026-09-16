@@ -14,7 +14,7 @@
         { "effort": "ultra", "description": "Ultra reasoning depth for the most demanding problems" }
       ],
       "context_window": 272000,
-      "max_context_window": 272000,
+      "max_context_window": 872000,
       "effective_context_window_percent": 100,
       "additional_speed_tiers": ["fast"],
       "service_tiers": [

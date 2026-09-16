@@ -27,7 +27,13 @@ pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow
     let target = normalize_for_comparison(target);
     let home = normalize_for_comparison(codex_home);
 
-    if target.as_os_str().is_empty() || target == Path::new("/") {
+    // 根路径的可靠特征是规范化后没有父目录：POSIX 根（`/`）与 Windows 根
+    // （`C:\`、`\\?\D:\`、UNC `\\server\share\`）一并覆盖。
+    //
+    // 不能只与 `Path::new("/")` 比较：Windows 上 `/` 不是绝对路径，会被
+    // normalize 成当前盘符根（如 `C:\`），相等比较拦不住它——也就是说
+    // 递归删除盘符根本可以绕过这道守卫。
+    if target.as_os_str().is_empty() || target.parent().is_none() {
         anyhow::bail!("拒绝删除文件系统根目录：{}", target.display());
     }
     if target == home {
@@ -146,9 +152,29 @@ mod tests {
 
     #[test]
     fn removal_guard_rejects_filesystem_root() {
-        let home = PathBuf::from("/somewhere/.codex");
-        let error = ensure_safe_recursive_removal(Path::new("/"), &home).unwrap_err();
+        // 用平台原生根，POSIX（`/`）与 Windows（`C:\`）都能覆盖。
+        let root = PathBuf::from(std::path::MAIN_SEPARATOR.to_string());
+        let home = root.join("somewhere").join(".codex");
+        let error = ensure_safe_recursive_removal(&root, &home).unwrap_err();
         assert!(error.to_string().contains("文件系统根"), "{error}");
+    }
+
+    /// Windows 的根有多种写法，且 `Path::new("/")` 在 Windows 上不是绝对路径。
+    /// 这些都是真实会出现的形态，必须全部拦住。
+    #[cfg(windows)]
+    #[test]
+    fn removal_guard_rejects_windows_root_variants() {
+        let home = Path::new(r"C:\Users\test\.codex");
+        for root in [
+            r"C:\",
+            r"D:\",
+            r"\\?\D:\",
+            r"\\server\share\",
+            r"\\?\UNC\server\share\",
+        ] {
+            let error = ensure_safe_recursive_removal(Path::new(root), home).unwrap_err();
+            assert!(error.to_string().contains("文件系统根"), "{root}: {error}");
+        }
     }
 
     #[test]

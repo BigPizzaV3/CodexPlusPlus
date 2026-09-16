@@ -282,6 +282,66 @@ fn error_is_address_in_use(error: &anyhow::Error) -> bool {
     })
 }
 
+/// 判断错误链里是不是「端口被系统禁止绑定」（issue #2189）。
+/// Windows 上 Hyper-V/WSL 会在开机时把动态端口范围（49152-65535）里的一段段端口
+/// 划进排除区间，落在区间里的端口 bind 报 os error 10013（PermissionDenied），
+/// 和「被进程占用」不是一回事：重试永远失败，用户需要的是对症指引。
+fn error_is_bind_forbidden(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(crate::ports::port_bind_forbidden)
+    })
+}
+
+/// 把 helper 端口 bind 失败翻译成用户能照着处理的提示。
+///
+/// 过去只有「端口被占用」会追加中文说明（issue #1933 的重试逻辑），
+/// Windows 保留端口区间（os error 10013）直接裸抛英文 bind 报错，
+/// 用户既看不懂也不知道为什么混入 Responses key 之后就再也起不来。
+fn describe_helper_bind_failure(
+    error: anyhow::Error,
+    helper_port: u16,
+    protocol_proxy_enabled: bool,
+    bind_retry_timeout_ms: u64,
+) -> anyhow::Error {
+    if protocol_proxy_enabled && error_is_address_in_use(&error) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.bind_gave_up_on_busy_port",
+            serde_json::json!({
+                "helper_port": helper_port,
+                "waited_ms": bind_retry_timeout_ms,
+            }),
+        );
+        return error.context(format!(
+            "协议代理端口 {helper_port} 被其他进程占用，等待 {} 秒后仍未释放。\
+             该端口写在 config.toml 的 base_url 里，不能自动改用其他端口；\
+             请退出仍在运行的 Codex++ 或占用该端口的程序后重试。",
+            bind_retry_timeout_ms / 1000
+        ));
+    }
+    if error_is_bind_forbidden(&error) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.bind_forbidden_port",
+            serde_json::json!({ "helper_port": helper_port }),
+        );
+        if cfg!(windows) {
+            return error.context(format!(
+                "helper 端口 {helper_port} 被 Windows 保留，无法绑定\
+                 （os error 10013，常见于 Hyper-V/WSL 开机划走的动态端口排除区间）。\
+                 请以管理员运行 netsh interface ipv4 show excludedportrange protocol=tcp \
+                 确认该端口是否在排除区间内，重启电脑通常可重新分配；\
+                 协议代理模式下也可以设置环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT \
+                 换一个端口后重试。"
+            ));
+        }
+        return error.context(format!(
+            "helper 端口 {helper_port} 绑定被系统拒绝，请检查端口占用与权限。"
+        ));
+    }
+    error
+}
+
 /// 端口被占用时按 `interval_ms` 重试启动 helper，直到成功或超过 `timeout_ms`。
 async fn start_helper_waiting_for_busy_port<F, Fut>(
     mut start: F,
@@ -403,7 +463,7 @@ where
             || remote_control_provider_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             hooks.ensure_active_protocol_proxy_config(&settings).await?;
-            helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
+            helper_port = crate::protocol_proxy::protocol_proxy_port();
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
             // macOS 重启时旧 launcher 的 socket 释放可能稍晚于进程退出。
@@ -416,22 +476,12 @@ where
             )
             .await
             .map_err(|error| {
-                if protocol_proxy_enabled && error_is_address_in_use(&error) {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "helper.bind_gave_up_on_busy_port",
-                        serde_json::json!({
-                            "helper_port": helper_port,
-                            "waited_ms": bind_retry_timeout_ms,
-                        }),
-                    );
-                    return error.context(format!(
-                        "协议代理端口 {helper_port} 被其他进程占用，等待 {} 秒后仍未释放。\
-                         该端口写在 config.toml 的 base_url 里，不能自动改用其他端口；\
-                         请退出仍在运行的 Codex++ 或占用该端口的程序后重试。",
-                        bind_retry_timeout_ms / 1000
-                    ));
-                }
-                error
+                describe_helper_bind_failure(
+                    error,
+                    helper_port,
+                    protocol_proxy_enabled,
+                    bind_retry_timeout_ms,
+                )
             })?;
             helper_started = true;
         }
@@ -829,23 +879,38 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
-                let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                apply_codexplusplus_window_icon_after_launch(process_id);
-                if let Some(inspector_port) = native_menu_inspector_port {
-                    start_native_menu_localizer(inspector_port);
+                match activate_packaged_app(app_user_model_id, arguments).await {
+                    Ok(process_id) => {
+                        apply_codexplusplus_window_icon_after_launch(process_id);
+                        if let Some(inspector_port) = native_menu_inspector_port {
+                            start_native_menu_localizer(inspector_port);
+                        }
+                        return Ok(match activation {
+                            CodexLaunch::PackagedActivation {
+                                app_user_model_id,
+                                arguments,
+                                ..
+                            } => CodexLaunch::PackagedActivation {
+                                app_user_model_id,
+                                arguments,
+                                process_id: Some(process_id),
+                            },
+                            CodexLaunch::Process { .. } => unreachable!(),
+                        });
+                    }
+                    Err(error) => {
+                        // AUMID 激活失败（例如清单 Application Id 变化）时回退到
+                        // 直接执行应用，避免整份配置无法启动。
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.packaged_activation_fallback",
+                            serde_json::json!({
+                                "app_user_model_id": app_user_model_id,
+                                "app_dir": app_dir,
+                                "error": error.to_string()
+                            }),
+                        );
+                    }
                 }
-                return Ok(match activation {
-                    CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        ..
-                    } => CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        process_id: Some(process_id),
-                    },
-                    CodexLaunch::Process { .. } => unreachable!(),
-                });
             }
         }
 
@@ -3131,6 +3196,7 @@ fn launch_status(
         debug_port: Some(debug_port),
         helper_port: Some(helper_port),
         codex_app: Some(app_dir.to_string_lossy().to_string()),
+        aumid: crate::app_paths::packaged_app_user_model_id(app_dir),
     }
 }
 

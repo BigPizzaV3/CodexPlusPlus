@@ -309,9 +309,18 @@ fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
             "input": "hi"
         }))
         .unwrap();
-        assert_eq!(converted["thinking"]["type"], "enabled", "{effort}");
+        assert_eq!(converted["thinking"]["type"], "adaptive", "{effort}");
         assert_eq!(converted["reasoning_effort"], expected, "{effort}");
     }
+
+    let kimi_k3 = responses_to_chat_completions(json!({
+        "model": "kimi-k3",
+        "reasoning": { "effort": "xhigh" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert_eq!(kimi_k3["thinking"]["type"], "adaptive");
+    assert_eq!(kimi_k3["reasoning_effort"], "max");
 
     let k2_coding = responses_to_chat_completions(json!({
         "model": "kimi-for-coding",
