@@ -3849,6 +3849,21 @@
     });
   }
 
+  let syncBackendSettingsInFlight = false;
+  async function syncBackendSettingsFromHeartbeat() {
+    if (syncBackendSettingsInFlight) return;
+    syncBackendSettingsInFlight = true;
+    try {
+      const previousConversationView = !!codexPlusSettings().conversationView;
+      const loaded = await loadBackendSettingsState();
+      if (loaded && previousConversationView !== !!codexPlusSettings().conversationView) {
+        refreshConversationView();
+      }
+    } finally {
+      syncBackendSettingsInFlight = false;
+    }
+  }
+
   async function setBackendSetting(key, value) {
     const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
@@ -3935,6 +3950,7 @@
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
           refreshOfficialUsageAlertVisibility();
         }
+        void syncBackendSettingsFromHeartbeat();
       } else {
         codexPlusBackendFailureCount += 1;
         sendCodexPlusDiagnostic("backend_check_failed", {
@@ -9044,6 +9060,7 @@
     mo: null,
     ro: null,
     pollId: 0,
+    runtimeStarted: false,
     moObserved: false,
     observed: new WeakSet(),
     elements: new Set(),
@@ -9350,28 +9367,6 @@
     return rect.left + rect.width / 2;
   }
 
-  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds) {
-    if (!nativeRect || !bounds) return false;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
-    const targetRight = targetLeft + nativeRect.width;
-    return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
-  }
-
-  function conversationViewAlignElement(el) {
-    if (!el?.isConnected) return;
-    conversationViewApplyNativeWidth(el);
-    conversationViewResetOwnOffset(el);
-    const nativeRect = el.getBoundingClientRect();
-    const bounds = conversationViewSessionRectFor(el);
-    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds)) return;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
-    const delta = targetLeft - nativeRect.left;
-    if (Math.abs(delta) > 0.5) {
-      const nextLeft = `${delta.toFixed(2)}px`;
-      if (el.style.left !== nextLeft) el.style.left = nextLeft;
-    }
-  }
-
   function conversationViewObserveIfNeeded(el) {
     if (!el || !conversationViewState.ro || conversationViewState.observed.has(el)) return;
     conversationViewState.observed.add(el);
@@ -9396,8 +9391,36 @@
   function conversationViewAlignNow() {
     if (!codexPlusSettings().conversationView) return;
     conversationViewResolveTargets();
-    conversationViewAlignElement(conversationViewState.contentEl);
-    conversationViewAlignElement(conversationViewState.composerEl);
+    // 两阶段批量对齐：先对全部目标应用宽度/复位（写 style），
+    // 再统一读取几何并决定是否写入 left，避免写-读-写交替触发强制重排。
+    const targets = [
+      conversationViewState.contentEl,
+      conversationViewState.composerEl,
+    ].filter((el) => el?.isConnected);
+    if (!targets.length) return;
+    targets.forEach((el) => {
+      conversationViewApplyNativeWidth(el);
+      conversationViewResetOwnOffset(el);
+    });
+    const htmlCenter = conversationViewHtmlCenter();
+    targets.forEach((el) => {
+      const nativeRect = el.getBoundingClientRect();
+      const bounds = conversationViewSessionRectFor(el);
+      if (!conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter)) return;
+      const targetLeft = htmlCenter - nativeRect.width / 2;
+      const delta = targetLeft - nativeRect.left;
+      if (Math.abs(delta) > 0.5) {
+        const nextLeft = `${delta.toFixed(2)}px`;
+        if (el.style.left !== nextLeft) el.style.left = nextLeft;
+      }
+    });
+  }
+
+  function conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter) {
+    if (!nativeRect || !bounds) return false;
+    const targetLeft = htmlCenter - nativeRect.width / 2;
+    const targetRight = targetLeft + nativeRect.width;
+    return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
   }
 
   function scheduleConversationViewAlign(frames = 16) {
@@ -9424,6 +9447,7 @@
     conversationViewState.mo = null;
     conversationViewState.ro = null;
     conversationViewState.moObserved = false;
+    conversationViewState.runtimeStarted = false;
     conversationViewState.observed = new WeakSet();
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();
@@ -9434,7 +9458,7 @@
   window.__codexPlusConversationViewCleanup = cleanupConversationView;
 
   function ensureConversationViewRuntime() {
-    if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
+    if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
     conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
     if (document.body && !conversationViewState.moObserved) {
@@ -9446,7 +9470,7 @@
       });
       conversationViewState.moObserved = true;
     }
-    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(2), 350);
+    conversationViewState.runtimeStarted = true;
   }
 
   function refreshConversationView() {
