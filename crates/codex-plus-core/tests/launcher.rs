@@ -1339,18 +1339,25 @@ async fn a_windows_reserved_protocol_proxy_port_fails_fast_with_actionable_advic
     .unwrap_err();
 
     let message = format!("{error:#}");
+    // 分类报错（「被系统拒绝」而不是「被占用」）是跨平台的：10013 走 port_bind_forbidden。
     assert!(
-        message.contains("被 Windows 保留"),
+        message.contains("绑定被系统拒绝"),
         "unexpected message: {message}"
     );
     assert!(
-        message.contains("excludedportrange"),
-        "unexpected message: {message}"
+        !message.contains("被其他进程占用"),
+        "reserved port must not be reported as busy: {message}"
     );
-    assert!(
-        message.contains("CODEX_PLUS_PROTOCOL_PROXY_PORT"),
-        "unexpected message: {message}"
-    );
+    // 对症的排查指引只在 Windows 上给出（netsh / 环境变量换端口）。
+    #[cfg(windows)]
+    {
+        assert!(message.contains("被 Windows 保留"), "unexpected message: {message}");
+        assert!(message.contains("excludedportrange"), "unexpected message: {message}");
+        assert!(
+            message.contains("CODEX_PLUS_PROTOCOL_PROXY_PORT"),
+            "unexpected message: {message}"
+        );
+    }
     // 保留端口重试毫无意义：只允许尝试一次 bind，不能烧完 6 秒重试预算。
     assert_eq!(
         events
