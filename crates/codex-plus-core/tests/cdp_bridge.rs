@@ -2601,6 +2601,32 @@ fn injection_script_exposes_conversation_view_width_control() {
 }
 
 #[test]
+fn injection_script_conversation_view_engine_drops_background_poll() {
+    let script = assets::injection_script(57321);
+
+    // 对齐引擎不应再有常驻的 350ms 轮询托底（issue #2221 的 layout thrashing 根因之一）。
+    assert!(!script.contains("setInterval(() => scheduleConversationViewAlign"));
+    // 运行时用独立标志防 observer 泄漏，而不是借用 pollId 作守卫。
+    assert!(script.contains("runtimeStarted"));
+    // 批量两阶段对齐：先统一应用宽度/复位，再批量读取几何。
+    assert!(script.contains("conversationViewHasRoomForHtmlCenterAt"));
+    // 事件驱动的 16 帧 settle 保留。
+    assert!(script.contains("function scheduleConversationViewAlign"));
+}
+
+#[test]
+fn injection_script_heartbeat_syncs_backend_settings() {
+    let script = assets::injection_script(57321);
+
+    // 心跳在健康时顺带刷新后端设置，让 manager 侧的改动能传播到已运行窗口（issue #2221）。
+    assert!(script.contains("function syncBackendSettingsFromHeartbeat"));
+    assert!(script.contains("syncBackendSettingsInFlight"));
+    assert!(script.contains("void syncBackendSettingsFromHeartbeat();"));
+    assert!(script.contains("previousConversationView"));
+    assert!(script.contains("refreshConversationView();"));
+}
+
+#[test]
 fn injection_script_exposes_sidebar_thread_id_badge_control() {
     let script = assets::injection_script(57321);
 
