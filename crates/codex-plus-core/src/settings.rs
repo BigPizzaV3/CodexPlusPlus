@@ -2478,7 +2478,11 @@ experimental_bearer_token = "sk-existing""#
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
 
-        assert_eq!(store.load().unwrap(), BackendSettings::default());
+        // load() 会把扁平字段镜像进工具分片（sync_tool_shards），
+        // 所以期望值不是裸 default，而是带上默认工具分片的 default。
+        let mut expected = BackendSettings::default();
+        expected.sync_tool_shards();
+        assert_eq!(store.load().unwrap(), expected);
     }
 
     #[test]
@@ -2488,19 +2492,23 @@ experimental_bearer_token = "sk-existing""#
         std::fs::write(&path, "{bad json").unwrap();
         let store = SettingsStore::new(path);
 
-        assert_eq!(store.load().unwrap(), BackendSettings::default());
+        let mut expected = BackendSettings::default();
+        expected.sync_tool_shards();
+        assert_eq!(store.load().unwrap(), expected);
     }
 
     #[test]
     fn settings_store_save_load_roundtrip_uses_custom_path() {
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("nested").join("settings.json"));
-        let settings = BackendSettings {
+        let mut settings = BackendSettings {
             provider_sync_enabled: true,
             codex_extra_args: vec!["--force_high_performance_gpu".to_string()],
             ccs_db_path: dir.join("cc-switch.db").to_string_lossy().to_string(),
             ..BackendSettings::default()
         };
+        // save() 同样会同步工具分片，roundtrip 的期望值要带上 tools.codex 镜像。
+        settings.sync_tool_shards();
 
         store.save(&settings).unwrap();
 
