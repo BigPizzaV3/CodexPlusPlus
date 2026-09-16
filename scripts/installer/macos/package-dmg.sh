@@ -290,20 +290,32 @@ MOUNT_DEVICE=""
 
 # 上一步 detach 可能触发延迟弹出：卷目录已消失但磁盘镜像仍在弹出中，
 # convert 会暂时报 Resource temporarily unavailable——退避重试等它完成。
+# macOS x64 runner 上镜像可能忙碌超过一分钟，所以重试窗口给得比较宽。
 DMG_CREATED=false
-for attempt in 1 2 3 4 5; do
-  if hdiutil convert "$DMG_WORK_PATH" -format UDZO -ov -o "$DMG" && [ -s "$DMG" ]; then
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if hdiutil convert "$DMG_WORK_PATH" -format UDZO -ov -o "$DMG"; then
     DMG_CREATED=true
     break
   fi
 
-  if [ "$attempt" -lt 5 ]; then
-    sleep "$((attempt * 3))"
+  if [ "$attempt" -lt 12 ]; then
+    sleep 5
   fi
 done
 
 if [ "$DMG_CREATED" != true ]; then
-  echo "error: failed to create DMG after 5 attempts" >&2
+  echo "error: failed to create DMG after 12 attempts" >&2
+  exit 1
+fi
+
+# Wait briefly for a nonempty output before reporting successful packaging.
+for attempt in 1 2 3 4 5; do
+  [ -s "$DMG" ] && break
+  sleep "$attempt"
+done
+if [ ! -s "$DMG" ]; then
+  echo "error: DMG output is missing or empty after conversion: $DMG" >&2
+  find "$DIST" -maxdepth 2 -type f -print >&2 || true
   exit 1
 fi
 

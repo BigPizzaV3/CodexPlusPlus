@@ -16,12 +16,20 @@ const bash = process.platform === "win32"
 const fixture = `
 set -euo pipefail
 DMG="out/final.dmg"
+DIST="out"
 STAGE="stage"
 ATTACHED=1
 CONVERT_CALLS=0
 DETACH_CALLS=0
+OUTPUT_WAITS=0
 mktemp() { printf '%s\\n' "work"; }
-sleep() { :; }
+sleep() {
+  if [ "$SCENARIO" = delayed-output ] && [ "$CONVERT_CALLS" -gt 0 ]; then
+    OUTPUT_WAITS=$((OUTPUT_WAITS + 1))
+    if [ "$OUTPUT_WAITS" -eq 2 ]; then printf 'compressed image' > "$DMG"; fi
+  fi
+  return 0
+}
 rm() { :; }
 rmdir() { :; }
 osascript() { cat >/dev/null; }
@@ -56,9 +64,10 @@ hdiutil() {
       if [ "$ATTACHED" -ne 0 ]; then return 1; fi
       case "$SCENARIO" in
         fail-convert) return 1 ;;
-        missing-output) return 0 ;;
+        missing-output|delayed-output) return 0 ;;
         empty-output) : > "$DMG"; return 0 ;;
         retry-convert) if [ "$CONVERT_CALLS" -lt 3 ]; then return 1; fi ;;
+        late-convert) if [ "$CONVERT_CALLS" -lt 7 ]; then return 1; fi ;;
       esac
       printf 'compressed image' > "$DMG"
       ;;
@@ -90,7 +99,7 @@ async function runScenario(scenario: string) {
   }
 }
 
-for (const scenario of ["success", "retry-convert", "delayed", "already-gone", "force-only"]) {
+for (const scenario of ["success", "retry-convert", "late-convert", "delayed-output", "delayed", "already-gone", "force-only"]) {
   test(`DMG packaging succeeds after ${scenario}`, async () => {
     const result = await runScenario(scenario);
     assert.equal(result.status, 0, result.stderr);
@@ -98,6 +107,12 @@ for (const scenario of ["success", "retry-convert", "delayed", "already-gone", "
     assert.match(result.trace, /detach \/dev\/disk4(?:\n| )/);
     if (scenario === "retry-convert") {
       assert.equal(result.trace.match(/^convert /gm)?.length, 3);
+    }
+    if (scenario === "late-convert") {
+      assert.equal(result.trace.match(/^convert /gm)?.length, 7);
+    }
+    if (scenario === "delayed-output") {
+      assert.equal(result.trace.match(/^convert /gm)?.length, 1);
     }
     if (scenario === "delayed") {
       assert.equal(result.trace.match(/^detach /gm)?.length, 2);
@@ -128,8 +143,13 @@ for (const scenario of ["fail-convert", "missing-output", "empty-output"]) {
   test(`DMG packaging rejects ${scenario} instead of reporting create success`, async () => {
     const result = await runScenario(scenario);
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /failed to create DMG after 5 attempts/);
-    assert.equal(result.trace.match(/^convert /gm)?.length, 5);
+    if (scenario === "fail-convert") {
+      assert.match(result.stderr, /failed to create DMG after 12 attempts/);
+      assert.equal(result.trace.match(/^convert /gm)?.length, 12);
+    } else {
+      assert.match(result.stderr, /DMG output is missing or empty after conversion/);
+      assert.equal(result.trace.match(/^convert /gm)?.length, 1);
+    }
     assert.doesNotMatch(result.stdout, /out\/final\.dmg/);
   });
 }
