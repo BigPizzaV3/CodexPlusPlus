@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_bundled_codex_cli, find_latest_codex_app_dir,
-    find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
-    packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
+    find_latest_codex_app_dir_from_roots, find_linux_codex_app, find_macos_codex_app,
+    normalize_codex_app_path, packaged_app_user_model_id, resolve_codex_app_dir_with_saved,
+    user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -504,6 +505,81 @@ fn app_paths_invalid_saved_path_falls_back_instead_of_sticking() {
 }
 
 #[test]
+fn app_paths_rejects_nonexistent_and_empty_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    // 根本不存在的路径（例如探测生成的候选）不能被误认成应用目录或退回父目录
+    let nonexistent = temp.path().join("Codex");
+    assert_eq!(normalize_codex_app_path(&nonexistent), None);
+
+    // 即使存在名为 Codex 或 ChatGPT 的空目录，若无有效可执行文件也应拒绝
+    let empty_codex = temp.path().join("empty-dir").join("Codex");
+    std::fs::create_dir_all(&empty_codex).unwrap();
+    assert_eq!(normalize_codex_app_path(&empty_codex), None);
+}
+
+/// Linux 的可执行文件名是无扩展名的 `ChatGPT` / `Codex`，而这两个名字只在
+/// Linux 构建里被 `is_supported_app_executable_name` / `executable_in_dir`
+/// 认作有效，`linux_app_candidates` 的目录扫描也在 `cfg(target_os = "linux")` 内。
+/// 因此本测试只在 Linux 上有意义——其他平台上 `normalize_codex_app_path`
+/// 正确地返回 None，断言必然失败。
+#[cfg(target_os = "linux")]
+#[test]
+fn app_paths_linux_detects_chatgpt_executable_and_builds_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("usr").join("lib").join("chatgpt");
+    std::fs::create_dir_all(&app).unwrap();
+    let bin = app.join("ChatGPT");
+    std::fs::write(&bin, "").unwrap();
+    std::fs::write(app.join("version"), "42.3.0").unwrap();
+
+    // 传入目录
+    assert_eq!(
+        normalize_codex_app_path(&app).as_deref(),
+        Some(app.as_path())
+    );
+    // 传入可执行文件本身
+    assert_eq!(
+        normalize_codex_app_path(&bin).as_deref(),
+        Some(app.as_path())
+    );
+    // 版本读取
+    assert_eq!(codex_app_version(&app).as_deref(), Some("42.3.0"));
+    assert_eq!(build_codex_executable(&app), bin);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn app_paths_linux_finds_codex_app_from_search_roots_avoiding_empty_opt() {
+    let temp = tempfile::tempdir().unwrap();
+    // 模拟 /opt（空目录）
+    let opt = temp.path().join("opt");
+    std::fs::create_dir_all(&opt).unwrap();
+
+    // 模拟 /usr/lib/chatgpt/ChatGPT
+    let usr_lib = temp.path().join("usr").join("lib");
+    let chatgpt_dir = usr_lib.join("chatgpt");
+    std::fs::create_dir_all(&chatgpt_dir).unwrap();
+    std::fs::write(chatgpt_dir.join("ChatGPT"), "").unwrap();
+
+    let roots = vec![opt, usr_lib];
+    assert_eq!(
+        find_linux_codex_app(&roots).as_deref(),
+        Some(chatgpt_dir.as_path())
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn live_system_resolves_chatgpt_on_linux_when_installed() {
+    let resolved = codex_plus_core::app_paths::resolve_codex_app_dir(None);
+    if Path::new("/usr/lib/chatgpt").is_dir() {
+        assert_eq!(resolved.as_deref(), Some(Path::new("/usr/lib/chatgpt")));
+        let exe = codex_plus_core::app_paths::build_codex_executable(&resolved.unwrap());
+        assert_eq!(exe, PathBuf::from("/usr/lib/chatgpt/ChatGPT"));
+    }
+}
+
+#[test]
 fn launcher_builds_debug_arguments_and_commands() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
 
@@ -682,49 +758,6 @@ fn launcher_packaged_activation_appends_extra_codex_arguments() {
                     .to_string(),
             process_id: None,
         }
-    );
-}
-
-#[test]
-fn packaged_app_user_model_id_reads_application_id_from_manifest() {
-    // 新版 ChatGPT Desktop 可能调整 manifest 中的 Application Id（见 issue #2148）。
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp
-        .path()
-        .join("OpenAI.ChatGPT-Desktop_1.2026.190.0_x64__2p2nqsd0c76g0");
-    let app_dir = package_dir.join("app");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    std::fs::write(
-        package_dir.join("AppxManifest.xml"),
-        concat!(
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
-            "<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\"> ",
-            "<Applications><Application Id=\"ChatGPTDesktop\" ",
-            "Executable=\"app\\ChatGPT.exe\" EntryPoint=\"Windows.FullTrustApplication\"/>",
-            "</Applications></Package>"
-        ),
-    )
-    .unwrap();
-
-    assert_eq!(
-        packaged_app_user_model_id(&app_dir).as_deref(),
-        Some("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPTDesktop")
-    );
-}
-
-#[test]
-fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
-    // manifest 缺失/不可读时保持旧行为（仍使用历史默认值 "App"）。
-    let temp = tempfile::tempdir().unwrap();
-    let package_dir = temp
-        .path()
-        .join("OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0");
-    let app_dir = package_dir.join("app");
-    std::fs::create_dir_all(&app_dir).unwrap();
-
-    assert_eq!(
-        packaged_app_user_model_id(&app_dir).as_deref(),
-        Some("OpenAI.Codex_2p2nqsd0c76g0!App")
     );
 }
 

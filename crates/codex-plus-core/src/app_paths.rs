@@ -13,7 +13,21 @@ struct AppPackageSpec {
 }
 
 const CODEX_PACKAGE_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
+#[cfg(not(target_os = "linux"))]
 const STANDALONE_CODEX_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
+
+/// Linux 可执行文件名（原生优先，兼容便携包）
+#[cfg(target_os = "linux")]
+const LINUX_CODEX_EXECUTABLES: &[&str] = &[
+    "ChatGPT",
+    "chatgpt",
+    "Codex",
+    "codex",
+    "ChatGPT.exe",
+    "Codex.exe",
+    "codex.exe",
+];
+
 
 #[cfg(windows)]
 const OPENAI_PACKAGE_FAMILY_NAMES: &[&str] = &[
@@ -89,12 +103,22 @@ pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
             .max_by(compare_app_dir_candidates)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        find_macos_codex_app_default()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        find_linux_codex_app_default()
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         None
     }
-}
 
+}
 #[cfg(windows)]
 fn find_latest_codex_app_dir_from_appx_package() -> anyhow::Result<Option<PathBuf>> {
     Ok(registered_windows_packages()?
@@ -271,12 +295,85 @@ pub fn find_macos_codex_app_default() -> Option<PathBuf> {
     find_macos_codex_app(&roots)
 }
 
+
+pub fn find_linux_codex_app(search_roots: &[PathBuf]) -> Option<PathBuf> {
+    for root in search_roots {
+        for candidate in linux_app_candidates(root) {
+            if let Some(app_dir) = normalize_codex_app_path(&candidate) {
+                return Some(app_dir);
+            }
+        }
+    }
+    None
+}
+
+fn linux_app_candidates(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    // 直接匹配应用目录（仅在目录实际存在时推入）
+    for name in &["ChatGPT", "chatgpt", "Codex", "codex"] {
+        let app_dir = root.join(name);
+        if app_dir.is_dir() {
+            candidates.push(app_dir.clone());
+            let app_sub = app_dir.join("app");
+            if app_sub.is_dir() {
+                candidates.push(app_sub);
+            }
+        }
+    }
+    // 扫描根目录下的一级子目录，查找包含可执行文件的 app 目录
+    // 例如：/usr/lib/chatgpt/ChatGPT（可执行文件直接在子目录中）
+    #[cfg(target_os = "linux")]
+    {
+        if root.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(root) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let name = path.file_name().and_then(OsStr::to_str);
+                    if let Some(name) = name {
+                        let lower = name.to_ascii_lowercase();
+                        if lower == "chatgpt" || lower == "codex" || lower == "codex-beta" {
+                            candidates.push(path.clone());
+                            // 也检查该子目录的 app 子目录（AppDir 结构）
+                            let app_sub = path.join("app");
+                            if app_sub.is_dir() {
+                                candidates.push(app_sub);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
+
+pub fn find_linux_codex_app_default() -> Option<PathBuf> {
+    let home = directories::BaseDirs::new();
+    let mut roots = Vec::new();
+    // 系统级（官方 deb 默认安装在 /usr/lib/chatgpt）
+    roots.push(PathBuf::from("/usr/lib"));
+    roots.push(PathBuf::from("/opt"));
+    // 用户级
+    if let Some(h) = home {
+        roots.push(h.home_dir().join("Applications"));
+        roots.push(h.home_dir().join(".local").join("share"));
+    }
+    find_linux_codex_app(&roots)
+}
+
 pub fn resolve_codex_app_dir(app_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(app_dir) = app_dir {
         return normalize_codex_app_path(app_dir);
     }
     if cfg!(target_os = "macos") {
         return find_macos_codex_app_default();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return find_linux_codex_app_default();
     }
     // Windows: try MS Store version first, then standalone install
     find_latest_codex_app_dir_default().or_else(|| find_standalone_codex_app_dir())
@@ -363,9 +460,8 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
-    if is_supported_app_executable_name(file_name) {
-        return path.parent().map(Path::to_path_buf);
+    if !path.exists() {
+        return None;
     }
 
     if path.extension() == Some(OsStr::new("app")) {
@@ -373,7 +469,7 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
     }
 
     if path.is_file() {
-        // 任意普通文件不再视为应用根；仅当父目录已是合法 Codex 目录时取父路径
+        // 任意普通文件或可执行文件自身不再视为应用根；仅当父目录已是合法 Codex 目录时取父路径
         let parent = path.parent()?;
         return normalize_codex_app_path(parent);
     }
@@ -448,7 +544,14 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
     if let Some(spec) = package_spec_from_path(app_dir) {
         return app_dir.join(spec.executable_names[0]);
     }
-    app_dir.join("Codex.exe")
+    #[cfg(target_os = "linux")]
+    {
+        app_dir.join("ChatGPT")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        app_dir.join("Codex.exe")
+    }
 }
 
 pub fn find_bundled_codex_cli(app_dir: &Path) -> Option<PathBuf> {
@@ -491,54 +594,7 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     if publisher_id.is_empty() {
         return None;
     }
-    // 新版 ChatGPT-Desktop 可能改变包内 Application Id（参见 #2148 的 0x80270254 报错），
-    // 这里优先读取真实 manifest，读取失败再回退到历史硬编码值。
-    let app_id = packaged_manifest_app_id(app_dir).unwrap_or_else(|| spec.app_id.to_string());
-    Some(format!("{}_{publisher_id}!{app_id}", spec.identity))
-}
-
-fn packaged_manifest_app_id(app_dir: &Path) -> Option<String> {
-    let package_dir = if app_dir
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("app"))
-    {
-        app_dir.parent()?
-    } else {
-        app_dir
-    };
-    let manifest = std::fs::read_to_string(package_dir.join("AppxManifest.xml")).ok()?;
-    manifest_first_application_id(&manifest)
-}
-
-// AppxManifest.xml 中第一个 <Application> 节点的 Id，即 AUMID 感叹号后的部分。
-fn manifest_first_application_id(manifest: &str) -> Option<String> {
-    let mut rest = manifest;
-    while let Some(pos) = rest.find("<Application") {
-        rest = &rest[pos + "<Application".len()..];
-        // 跳过 <Applications> 等容器节点，只处理 <Application ...>。
-        if !rest.chars().next().is_some_and(char::is_whitespace) {
-            continue;
-        }
-        let tag_end = rest.find('>')?;
-        if let Some(id) = xml_attribute_value(&rest[..tag_end], "Id") {
-            return Some(id);
-        }
-        rest = &rest[tag_end..];
-    }
-    None
-}
-
-fn xml_attribute_value(tag: &str, name: &str) -> Option<String> {
-    for segment in tag.split_whitespace() {
-        let Some((attr, value)) = segment.split_once('=') else {
-            continue;
-        };
-        if attr != name {
-            continue;
-        }
-        return Some(value.trim_matches('"').trim_matches('\'').to_string());
-    }
-    None
+    Some(format!("{}_{publisher_id}!{}", spec.identity, spec.app_id))
 }
 
 fn package_name_from_app_dir(app_dir: &Path) -> Option<String> {
@@ -673,7 +729,18 @@ pub(crate) fn is_supported_windows_app_package_name(package_name: &str) -> bool 
 }
 
 pub(crate) fn is_supported_app_executable_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe")
+    // Windows
+    if name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe") {
+        return true;
+    }
+    // Linux（无扩展名）
+    #[cfg(target_os = "linux")]
+    {
+        if name.eq_ignore_ascii_case("Codex") || name.eq_ignore_ascii_case("ChatGPT") {
+            return true;
+        }
+    }
+    false
 }
 
 fn package_spec_from_path(path: &Path) -> Option<AppPackageSpec> {
@@ -714,12 +781,17 @@ fn package_entry_dir(package_dir: &Path, spec: AppPackageSpec) -> Option<PathBuf
 }
 
 fn executable_in_dir(dir: &Path) -> Option<PathBuf> {
-    let names = package_spec_from_path(dir)
-        .map(|spec| spec.executable_names)
-        .unwrap_or(STANDALONE_CODEX_EXECUTABLES);
+    let names: &[&str] = if let Some(spec) = package_spec_from_path(dir) {
+        spec.executable_names
+    } else {
+        #[cfg(target_os = "linux")]
+        { LINUX_CODEX_EXECUTABLES }
+        #[cfg(not(target_os = "linux"))]
+        { STANDALONE_CODEX_EXECUTABLES }
+    };
     for name in names {
         let candidate = dir.join(name);
-        if candidate.exists() {
+        if candidate.is_file() {
             return Some(candidate);
         }
     }
