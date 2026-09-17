@@ -419,10 +419,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /window\.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus\.hideOfficialUsageAlert/);
     assert.match(renderer, /\[data-codex-plus-usage-alert-hidden="true"\] \{ display: none !important; \}/);
     assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] aside:has/);
-    assert.doesNotMatch(
-      renderer,
-      /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] aside:has\(\[role="heading"\], h1, h2, h3, h4, h5\)/,
-    );
+    assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] div:has\(> aside:has/);
     assert.doesNotMatch(renderer, /container\.style\.(?:setProperty|removeProperty)\("display"/);
   });
 

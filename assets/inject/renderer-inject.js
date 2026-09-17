@@ -832,7 +832,8 @@
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
-      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:has(a[href*="billing" i], a[href*="upgrade" i], [data-testid*="upgrade" i], [data-testid*="billing" i]) { display: none !important; }
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:has([role="heading"], h1, h2, h3, h4, h5),
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] div:has(> aside:has([role="heading"], h1, h2, h3, h4, h5)) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
