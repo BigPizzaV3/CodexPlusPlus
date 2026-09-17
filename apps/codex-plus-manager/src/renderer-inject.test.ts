@@ -419,7 +419,11 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /window\.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus\.hideOfficialUsageAlert/);
     assert.match(renderer, /\[data-codex-plus-usage-alert-hidden="true"\] \{ display: none !important; \}/);
     assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] aside:has/);
-    assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] div:has\(> aside:has/);
+    assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] div:has\(> aside \[role="heading"\]/);
+    assert.match(
+      renderer,
+      /body\.codex-plus-hide-usage-alert aside\.app-shell-left-panel \[role="status"\]\[aria-live="polite"\]:has\(progress\)/,
+    );
     assert.doesNotMatch(renderer, /container\.style\.(?:setProperty|removeProperty)\("display"/);
   });
 

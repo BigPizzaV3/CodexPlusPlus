@@ -833,7 +833,8 @@
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
       body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:has([role="heading"], h1, h2, h3, h4, h5),
-      body.codex-plus-hide-usage-alert [data-codex-composer-root] div:has(> aside:has([role="heading"], h1, h2, h3, h4, h5)) { display: none !important; }
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] div:has(> aside [role="heading"], > aside h1, > aside h2, > aside h3, > aside h4, > aside h5),
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel [role="status"][aria-live="polite"]:has(progress) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
