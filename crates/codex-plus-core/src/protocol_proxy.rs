@@ -467,6 +467,10 @@ pub struct CompactionSseConverter {
     model: String,
     summary: String,
     failed: Option<(String, Option<String>)>,
+    /// 跨网络 chunk 攒 SSE 事件的缓冲（见 push_upstream_bytes）。
+    sse_buffer: String,
+    sse_utf8_remainder: Vec<u8>,
+    responses_wire: bool,
 }
 
 impl CompactionSseConverter {
@@ -476,12 +480,80 @@ impl CompactionSseConverter {
             model: model.to_string(),
             summary: String::new(),
             failed: None,
+            sse_buffer: String::new(),
+            sse_utf8_remainder: Vec::new(),
+            responses_wire: true,
         }
     }
 
-    /// 追加上游输出的一块内容，返回给 codex 的增量 SSE（压缩阶段无增量事件）。
+    /// 标记上游是 Chat Completions（SSE chunk 的增量在 `choices[].delta.content`）。
+    /// Responses 上游默认，增量在 `response.output_text.delta` 事件里。
+    pub fn with_chat_upstream(mut self) -> Self {
+        self.responses_wire = false;
+        self
+    }
+
+    /// 追加上游输出的一块文本内容（非流式路径直接喂完整摘要）。
     pub fn push_summary_text(&mut self, text: &str) {
         self.summary.push_str(text);
+    }
+
+    /// 当前已收集的原始摘要文本（剥 think 之前），供空摘要判定。
+    pub fn summary_text(&self) -> &str {
+        &self.summary
+    }
+
+    /// 喂入上游流式响应的一个网络 chunk。SSE 事件可能被 TCP 拆开，
+    /// 内部按 `\n\n` 边界缓冲；残缺块留在缓冲区等下一个 chunk。
+    pub fn push_upstream_bytes(&mut self, bytes: &[u8]) {
+        append_utf8_safe(&mut self.sse_buffer, &mut self.sse_utf8_remainder, bytes);
+        while let Some(block) = take_sse_block(&mut self.sse_buffer) {
+            if block.trim().is_empty() {
+                continue;
+            }
+            self.handle_upstream_sse_block(&block);
+        }
+    }
+
+    fn handle_upstream_sse_block(&mut self, block: &str) {
+        let mut event_name = "";
+        let mut data_parts: Vec<&str> = Vec::new();
+        for line in block.lines() {
+            if let Some(event) = strip_sse_field(line, "event") {
+                event_name = event.trim();
+            }
+            if let Some(data) = strip_sse_field(line, "data") {
+                data_parts.push(data);
+            }
+        }
+        if data_parts.is_empty() {
+            return;
+        }
+        let data = data_parts.join("\n");
+        if data.trim() == "[DONE]" {
+            return;
+        }
+        // Responses 流只取正文增量；reasoning 增量事件同名携带 delta，必须排除。
+        if self.responses_wire && event_name != "response.output_text.delta" {
+            return;
+        }
+        let Ok(chunk) = serde_json::from_str::<Value>(&data) else {
+            return;
+        };
+        if self.responses_wire {
+            if let Some(delta) = chunk.get("delta").and_then(Value::as_str) {
+                self.summary.push_str(delta);
+            }
+        } else if let Some(content) = chunk
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("delta"))
+            .and_then(|delta| delta.get("content"))
+            .and_then(Value::as_str)
+        {
+            self.summary.push_str(content);
+        }
     }
 
     pub fn fail(&mut self, message: String, error_type: Option<String>) -> Vec<u8> {
@@ -490,7 +562,16 @@ impl CompactionSseConverter {
     }
 
     /// 收尾：产出完整的 compaction 响应 SSE。
-    pub fn finish(self) -> Vec<u8> {
+    /// 链式推理上游（DeepSeek thinking 等）会把推理过程以 `<think>` 块
+    /// 混进正文，这里统一剥掉首部完整 think 块，只保留真正的摘要答案；
+    /// think 块未闭合（上游截断）时整个丢弃——剩下的只有推理残片。
+    pub fn finish(mut self) -> Vec<u8> {
+        if let Some((_reasoning, answer)) = split_leading_think_block(&self.summary) {
+            self.summary = answer;
+        } else if self.summary.trim_start().starts_with(THINK_OPEN_TAG) {
+            self.summary = String::new();
+        }
+        self.summary = self.summary.trim().to_string();
         let mut output = String::new();
         let (status, error, summary) = if let Some((message, _)) = &self.failed {
             ("failed", json!({ "message": message }), String::new())
@@ -606,65 +687,6 @@ fn extract_summary_text_from_chat(response: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
-}
-
-/// 从 Chat Completions SSE 流里拼接 assistant 增量文本。
-fn extract_summary_text_from_chat_sse(sse: &str) -> String {
-    let mut text = String::new();
-    for block in sse.split("\n\n") {
-        for line in block.lines() {
-            let Some(data) = strip_sse_field(line, "data") else {
-                continue;
-            };
-            let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-            let Ok(chunk) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-            if let Some(content) = chunk
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("delta"))
-                .and_then(|delta| delta.get("content"))
-                .and_then(Value::as_str)
-            {
-                text.push_str(content);
-            }
-        }
-    }
-    text
-}
-
-/// 从 Responses SSE 流（`response.output_text.delta`）拼接 assistant 增量文本。
-/// 供压缩包装器在流式直通场景逐块调用；非 SSE 字节原样忽略。
-pub fn extract_responses_stream_summary_text(bytes: &[u8]) -> String {
-    let input = String::from_utf8_lossy(bytes);
-    let mut text = String::new();
-    for block in input.split("\n\n") {
-        let mut event_name = "";
-        let mut data_parts: Vec<&str> = Vec::new();
-        for line in block.lines() {
-            if let Some(event) = strip_sse_field(line, "event") {
-                event_name = event.trim();
-            }
-            if let Some(data) = strip_sse_field(line, "data") {
-                data_parts.push(data);
-            }
-        }
-        if event_name != "response.output_text.delta" || data_parts.is_empty() {
-            continue;
-        }
-        let Ok(payload) = serde_json::from_str::<Value>(&data_parts.join("\n")) else {
-            continue;
-        };
-        if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
-            text.push_str(delta);
-        }
-    }
-    text
 }
 
 /// 历史回放：把 codex 历史里的 `compaction` item 展开成明文 user 消息。
@@ -1588,28 +1610,33 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
 
     if is_compaction {
         // v2 压缩：无论上游协议/是否流式，都重组为单个 compaction 输出项。
-        let summary = if wire_api == UpstreamWireApi::Responses {
-            let json: Value = serde_json::from_slice(&upstream_body)?;
-            extract_summary_text_from_responses(&json)
-        } else if is_stream {
-            extract_summary_text_from_chat_sse(&String::from_utf8_lossy(&upstream_body))
-        } else {
-            let json: Value = serde_json::from_slice(&upstream_body)?;
-            extract_summary_text_from_chat(&json)
-        };
         let mut converter = CompactionSseConverter::new(
             request_json
                 .get("model")
                 .and_then(Value::as_str)
                 .unwrap_or(""),
         );
-        if summary.is_empty() {
+        if wire_api != UpstreamWireApi::Responses {
+            converter = converter.with_chat_upstream();
+        }
+        if is_stream {
+            // 整包已收齐，直接喂给有状态 SSE 解析器（与 launcher 逐 chunk 路径同逻辑）。
+            converter.push_upstream_bytes(&upstream_body);
+        } else {
+            let json: Value = serde_json::from_slice(&upstream_body)?;
+            let responses_text = extract_summary_text_from_responses(&json);
+            let text = if responses_text.is_empty() {
+                extract_summary_text_from_chat(&json)
+            } else {
+                responses_text
+            };
+            converter.push_summary_text(&text);
+        }
+        if converter.summary_text().is_empty() {
             converter.fail(
                 "上游返回了空摘要，无法完成压缩".to_string(),
                 Some("compaction_empty_summary".to_string()),
             );
-        } else {
-            converter.push_summary_text(&summary);
         }
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),

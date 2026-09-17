@@ -1697,6 +1697,7 @@ async fn handle_protocol_proxy_connection(
         if upstream.compaction {
             // v2 远程压缩：无论上游协议都重组为恰好一个 compaction 输出项，
             // 压缩无增量展示诉求，收齐上游文本后一次性下发。
+            // SSE 事件可能跨网络 chunk 拆开，converter 内部按事件边界缓冲。
             let mut converter = crate::protocol_proxy::CompactionSseConverter::new(
                 request_json
                     .as_ref()
@@ -1704,21 +1705,13 @@ async fn handle_protocol_proxy_connection(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or(""),
             );
-            let responses_wire =
-                upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses;
+            if upstream.wire_api != crate::protocol_proxy::UpstreamWireApi::Responses {
+                converter = converter.with_chat_upstream();
+            }
             let mut bytes_stream = upstream.response.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
                 match chunk {
-                    Ok(bytes) => {
-                        let text = if responses_wire {
-                            crate::protocol_proxy::extract_responses_stream_summary_text(&bytes)
-                        } else {
-                            String::from_utf8_lossy(&bytes).to_string()
-                        };
-                        if !text.is_empty() {
-                            converter.push_summary_text(&text);
-                        }
-                    }
+                    Ok(bytes) => converter.push_upstream_bytes(&bytes),
                     Err(error) => {
                         converter.fail(format!("Stream error: {error}"), None);
                         break;

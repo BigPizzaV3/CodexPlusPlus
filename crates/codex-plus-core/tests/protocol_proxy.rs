@@ -1,7 +1,7 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
-    chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, extract_responses_stream_summary_text, image_edits_url,
+    ChatSseToResponsesConverter, CompactionSseConverter, audio_transcriptions_url,
+    chat_completion_to_response, chat_completion_to_response_with_request, chat_completions_url,
+    chat_sse_to_responses_sse, chat_sse_to_responses_sse_with_request, image_edits_url,
     image_generations_url, is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path,
     is_image_edits_proxy_path, is_image_generations_proxy_path, is_models_proxy_path,
     is_responses_compact_proxy_path, is_responses_proxy_path, models_url,
@@ -137,13 +137,58 @@ fn wrap_empty_upstream_yields_failed_compaction_response() {
 }
 
 #[test]
-fn responses_stream_summary_text_extracts_output_text_deltas() {
-    let sse = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"llo\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
-    assert_eq!(
-        extract_responses_stream_summary_text(sse.as_bytes()),
-        "Hello"
-    );
-    assert_eq!(extract_responses_stream_summary_text(b"not sse"), "");
+fn compaction_converter_extracts_output_text_deltas_and_ignores_reasoning() {
+    let sse = "event: response.reasoning_text.delta\ndata: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking...\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"llo\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_upstream_bytes(sse.as_bytes());
+    assert_eq!(converter.summary_text(), "Hello");
+
+    let mut silent = CompactionSseConverter::new("deepseek");
+    silent.push_upstream_bytes(b"not sse");
+    assert_eq!(silent.summary_text(), "");
+}
+
+#[test]
+fn compaction_converter_buffers_sse_events_across_chunks() {
+    // 同一 SSE 事件被 TCP 拆成两个 chunk，中间还断了 UTF-8 字符边界（中文摘要）。
+    let full = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"摘要\"}\n\n";
+    let (first, second) = full.split_at(full.len() - 10);
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_upstream_bytes(first.as_bytes());
+    assert_eq!(converter.summary_text(), "", "残缺事件不应提前产出增量");
+    converter.push_upstream_bytes(second.as_bytes());
+    assert_eq!(converter.summary_text(), "摘要");
+}
+
+#[test]
+fn compaction_converter_strips_leading_think_block_from_chat_stream() {
+    // DeepSeek 类 thinking 模型把推理塞在 delta.content 的 <think> 块里。
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"<think>step by step\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" reasoning...\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"</think>\\n真实摘要内容\"}}]}\n\ndata: [DONE]\n\n";
+    let mut converter = CompactionSseConverter::new("deepseek").with_chat_upstream();
+    converter.push_upstream_bytes(sse.as_bytes());
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("真实摘要内容"));
+    assert!(!payload.contains("step by step"));
+    assert!(!payload.contains("reasoning..."));
+}
+
+#[test]
+fn compaction_converter_strips_think_block_from_direct_text() {
+    // 非流式路径直接 push 文本，think 剥离同样在 finish 生效。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>internal reasoning</think>\nSUMMARY_BODY");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("SUMMARY_BODY"));
+    assert!(!payload.contains("internal reasoning"));
+}
+
+#[test]
+fn compaction_converter_unclosed_think_block_drops_reasoning_fragment() {
+    // 上游截断导致 think 块未闭合：宁可丢掉残片也不要污染摘要。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>half written reasoning");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(!payload.contains("half written reasoning"));
 }
 
 #[tokio::test]
