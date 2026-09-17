@@ -832,7 +832,7 @@
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
-      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:has([role="heading"], h1, h2, h3, h4, h5) { display: none !important; }
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:has(a[href*="billing" i], a[href*="upgrade" i], [data-testid*="upgrade" i], [data-testid*="billing" i]) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
@@ -9741,18 +9741,25 @@
 
   function composerUsageAlertBanners(scope = document) {
     const root = scope?.querySelectorAll ? scope : document;
-    const titleRe = /^You(?:'|\u2019|')re out of Codex and Work usage$|^You(?:'|\u2019|')ve used all Codex and Work usage$|^(?:你的\s*)?Codex\s*(?:和|及|與|与)\s*(?:工作|「工作」)\s*(?:使用额度|使用額度|使用量|额度|額度|用量)\s*(?:已用完|已用盡|已耗尽)$|^已达到使用量上限$|^你已達到用量限額$|^This model is out of usage$|^Selected model is out of usage$/i;
+    const titleRe = /^You['\u2019]re\s+out\s+of\s+Codex\s+and\s+Work\s+usage$|^You['\u2019]ve\s+used\s+all\s+Codex\s+and\s+Work\s+usage$|^You['\u2019]ve\s+reached\s+your\s+(?:usage\s+)?limit$|^(?:你的\s*)?Codex\s*(?:和|及|與|与)\s*(?:工作|「工作」)\s*(?:使用额度|使用額度|使用量|额度|額度|用量)\s*(?:已用完|已用盡|已耗尽)$|^已达到使用量上限$|^你已達到用量限額$|^(?:This|Selected)\s+model\s+is\s+out\s+of\s+usage$/i;
     return Array.from(root.querySelectorAll("[data-codex-composer-root] aside")).filter((aside) => {
       if (!(aside instanceof HTMLElement)) return false;
       const heading = aside.querySelector("h1, h2, h3, h4, h5, [role='heading']");
-      return heading && titleRe.test(heading.textContent.trim());
+      const headingText = heading?.textContent ? heading.textContent.trim().replace(/\s+/g, " ") : "";
+      if (headingText && titleRe.test(headingText)) return true;
+      const hasUpgradeAction = !!aside.querySelector('a[href*="billing" i], a[href*="upgrade" i], [data-testid*="upgrade" i], [data-testid*="billing" i]');
+      return hasUpgradeAction && /usage|limit|额度|用量/i.test(headingText);
     });
   }
 
   function officialUsageAlertContainer(card) {
     const parent = card.parentElement;
     if (parent?.children.length === 1) {
-      if (parent.matches("div.w-full") || parent.closest("[data-codex-composer-root]")) {
+      if (parent.matches?.("div.w-full")) return parent;
+      if (
+        parent.closest?.("[data-codex-composer-root]") &&
+        !parent.matches?.("[data-codex-composer-root], form, main")
+      ) {
         return parent;
       }
     }
@@ -9763,13 +9770,25 @@
     const hidden = officialUsageAlertHidden();
     // body class 控制 CSS 预隐藏，防止切换会话时闪烁
     document.body?.classList.toggle("codex-plus-hide-usage-alert", hidden);
-    document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]').forEach((container) => {
-      delete container.dataset.codexPlusUsageAlertHidden;
+    const currentHidden = new Set(document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]'));
+    if (!hidden) {
+      currentHidden.forEach((container) => {
+        delete container.dataset.codexPlusUsageAlertHidden;
+      });
+      return;
+    }
+    const targetContainers = new Set(
+      [...officialUsageAlertCards(), ...composerUsageAlertBanners()].map(officialUsageAlertContainer),
+    );
+    currentHidden.forEach((container) => {
+      if (!targetContainers.has(container)) {
+        delete container.dataset.codexPlusUsageAlertHidden;
+      }
     });
-    if (!hidden) return;
-    [...officialUsageAlertCards(), ...composerUsageAlertBanners()].forEach((card) => {
-      const container = officialUsageAlertContainer(card);
-      container.dataset.codexPlusUsageAlertHidden = "true";
+    targetContainers.forEach((container) => {
+      if (container.dataset.codexPlusUsageAlertHidden !== "true") {
+        container.dataset.codexPlusUsageAlertHidden = "true";
+      }
     });
   }
 

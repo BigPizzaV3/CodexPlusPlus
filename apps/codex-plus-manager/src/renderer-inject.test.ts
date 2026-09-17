@@ -60,6 +60,7 @@ type FakeElementOptions = {
   closestMatch?: string;
   dismissLabel?: string;
   hasProgress?: boolean;
+  hasUpgradeAction?: boolean;
   headingText?: string;
   styleDisplay?: string;
 };
@@ -73,6 +74,7 @@ class FakeElement {
   private readonly closestMatch?: string;
   private readonly dismissLabel: string;
   private readonly hasProgress: boolean;
+  private readonly hasUpgradeAction: boolean;
   private readonly headingText?: string;
 
   constructor(options: FakeElementOptions = {}) {
@@ -80,6 +82,7 @@ class FakeElement {
     this.closestMatch = options.closestMatch;
     this.dismissLabel = options.dismissLabel ?? "";
     this.hasProgress = options.hasProgress ?? false;
+    this.hasUpgradeAction = options.hasUpgradeAction ?? false;
     this.headingText = options.headingText;
     this.style = { display: options.styleDisplay ?? "" };
   }
@@ -107,6 +110,9 @@ class FakeElement {
     }
     if (/heading|h[1-5]/.test(selector) && this.headingText) {
       return { textContent: this.headingText };
+    }
+    if (/billing|upgrade/i.test(selector) && this.hasUpgradeAction) {
+      return new FakeElement();
     }
     return null;
   }
@@ -360,30 +366,49 @@ describe("renderer injection header compatibility", () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const composerWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
     const matchingBanner = new FakeElement({ headingText: "Codex 和工作使用额度已用完" });
+    composerWrapper.appendChild(matchingBanner);
+
+    const englishWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const englishBanner = new FakeElement({ headingText: "You're out of\nCodex and Work usage" });
+    englishWrapper.appendChild(englishBanner);
+
+    const actionWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const actionBanner = new FakeElement({ headingText: "You've reached your usage limit", hasUpgradeAction: true });
+    actionWrapper.appendChild(actionBanner);
+
     const unrelatedWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
     const unrelatedNotice = new FakeElement({ headingText: "Network disconnected" });
-    composerWrapper.appendChild(matchingBanner);
     unrelatedWrapper.appendChild(unrelatedNotice);
+
+    const fileErrorWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const fileErrorNotice = new FakeElement({ headingText: "File upload failed" });
+    fileErrorWrapper.appendChild(fileErrorNotice);
 
     const { runtime, windowValue, bodyClasses } = usageAlertRuntime(
       renderer,
       [],
-      [composerWrapper, unrelatedWrapper],
-      [matchingBanner, unrelatedNotice],
+      [composerWrapper, englishWrapper, actionWrapper, unrelatedWrapper, fileErrorWrapper],
+      [matchingBanner, englishBanner, actionBanner, unrelatedNotice, fileErrorNotice],
     );
 
     windowValue.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;
     runtime.refreshOfficialUsageAlertVisibility();
 
     assert.equal(composerWrapper.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(englishWrapper.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(actionWrapper.dataset.codexPlusUsageAlertHidden, "true");
     assert.equal(unrelatedWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(fileErrorWrapper.dataset.codexPlusUsageAlertHidden, undefined);
     assert.equal(bodyClasses.has("codex-plus-hide-usage-alert"), true);
 
     windowValue.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;
     runtime.refreshOfficialUsageAlertVisibility();
 
     assert.equal(composerWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(englishWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(actionWrapper.dataset.codexPlusUsageAlertHidden, undefined);
     assert.equal(unrelatedWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(fileErrorWrapper.dataset.codexPlusUsageAlertHidden, undefined);
     assert.equal(bodyClasses.has("codex-plus-hide-usage-alert"), false);
   });
 
@@ -394,6 +419,10 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /window\.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus\.hideOfficialUsageAlert/);
     assert.match(renderer, /\[data-codex-plus-usage-alert-hidden="true"\] \{ display: none !important; \}/);
     assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] aside:has/);
+    assert.doesNotMatch(
+      renderer,
+      /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] aside:has\(\[role="heading"\], h1, h2, h3, h4, h5\)/,
+    );
     assert.doesNotMatch(renderer, /container\.style\.(?:setProperty|removeProperty)\("display"/);
   });
 
