@@ -407,7 +407,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "17";
+  const codexDeleteStyleVersion = "18";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -832,6 +832,9 @@
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:not([data-codex-plus-usage-alert-hidden="false"]):has([role="heading"], h1, h2, h3, h4, h5),
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] div:not([data-codex-plus-usage-alert-hidden="false"]):has(> aside [role="heading"], > aside h1, > aside h2, > aside h3, > aside h4, > aside h5),
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel:not([data-codex-plus-usage-alert-hidden="false"]) [role="status"][aria-live="polite"]:has(progress) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
@@ -9738,20 +9741,69 @@
     });
   }
 
+  function composerUsageAlertBanners(scope = document) {
+    const root = scope?.querySelectorAll ? scope : document;
+    const titleRe = /^You['\u2019]re\s+out\s+of\s+Codex\s+and\s+Work\s+usage$|^You['\u2019]ve\s+used\s+all\s+Codex\s+and\s+Work\s+usage$|^You['\u2019]ve\s+reached\s+your\s+(?:usage\s+)?limit$|^(?:你的\s*)?Codex\s*(?:和|及|與|与)\s*(?:工作|「工作」)\s*(?:使用额度|使用額度|使用量|额度|額度|用量)\s*(?:已用完|已用盡|已耗尽)$|^已达到使用量上限$|^你已達到用量限額$|^(?:This|Selected)\s+model\s+is\s+out\s+of\s+usage$/i;
+    return Array.from(root.querySelectorAll("[data-codex-composer-root] aside")).filter((aside) => {
+      if (!(aside instanceof HTMLElement)) return false;
+      const heading = aside.querySelector("h1, h2, h3, h4, h5, [role='heading']");
+      const headingText = heading?.textContent ? heading.textContent.trim().replace(/\s+/g, " ") : "";
+      if (headingText && titleRe.test(headingText)) return true;
+      const hasUpgradeAction = !!aside.querySelector('a[href*="billing" i], a[href*="upgrade" i], [data-testid*="upgrade" i], [data-testid*="billing" i]');
+      return hasUpgradeAction && /usage|limit|额度|用量/i.test(headingText);
+    });
+  }
+
   function officialUsageAlertContainer(card) {
     const parent = card.parentElement;
-    return parent?.children.length === 1 && parent.matches("div.w-full") ? parent : card;
+    if (parent?.children.length === 1) {
+      if (parent.matches?.("div.w-full")) return parent;
+      if (
+        parent.closest?.("[data-codex-composer-root]") &&
+        !parent.matches?.("[data-codex-composer-root], form, main")
+      ) {
+        return parent;
+      }
+    }
+    return card;
   }
 
   function refreshOfficialUsageAlertVisibility() {
     const hidden = officialUsageAlertHidden();
-    document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]').forEach((container) => {
-      delete container.dataset.codexPlusUsageAlertHidden;
-    });
-    if (!hidden) return;
-    officialUsageAlertCards().forEach((card) => {
+    // body class 控制 CSS 预隐藏，防止切换会话时闪烁
+    document.body?.classList.toggle("codex-plus-hide-usage-alert", hidden);
+    
+    if (!hidden) {
+      document.querySelectorAll('[data-codex-plus-usage-alert-hidden]').forEach((el) => {
+        delete el.dataset.codexPlusUsageAlertHidden;
+      });
+      return;
+    }
+
+    const targetCards = officialUsageAlertCards();
+    const allSidebarAlerts = Array.from(document.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]'));
+    allSidebarAlerts.forEach(card => {
+      const isTarget = targetCards.includes(card);
+      const state = isTarget ? "true" : "false";
+      if (card.dataset.codexPlusUsageAlertHidden !== state) card.dataset.codexPlusUsageAlertHidden = state;
       const container = officialUsageAlertContainer(card);
-      container.dataset.codexPlusUsageAlertHidden = "true";
+      if (container !== card && container.dataset.codexPlusUsageAlertHidden !== state) {
+        container.dataset.codexPlusUsageAlertHidden = state;
+      }
+    });
+
+    const targetBanners = composerUsageAlertBanners();
+    const allComposerAsides = Array.from(document.querySelectorAll("[data-codex-composer-root] aside"));
+    allComposerAsides.forEach((aside) => {
+      const isTarget = targetBanners.includes(aside);
+      const state = isTarget ? "true" : "false";
+      
+      if (aside.dataset.codexPlusUsageAlertHidden !== state) aside.dataset.codexPlusUsageAlertHidden = state;
+      
+      const container = officialUsageAlertContainer(aside);
+      if (container !== aside && container.dataset.codexPlusUsageAlertHidden !== state) {
+         container.dataset.codexPlusUsageAlertHidden = state;
+      }
     });
   }
 

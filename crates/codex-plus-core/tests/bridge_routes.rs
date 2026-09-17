@@ -868,7 +868,11 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
             })
         })
         .with_websocket_url("ws://page");
-    let ctx = BridgeContext::core_with_data(Arc::new(runtime), Arc::new(FakeData::default()));
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::default()),
+        Arc::new(runtime),
+        Arc::new(FakeData::default())
+    );
 
     let status = handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await;
     let reloaded = handle_bridge_request(ctx, "/user-scripts/reload", json!({})).await;
