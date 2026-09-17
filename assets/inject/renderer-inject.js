@@ -832,9 +832,9 @@
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
-      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:has([role="heading"], h1, h2, h3, h4, h5),
-      body.codex-plus-hide-usage-alert [data-codex-composer-root] div:has(> aside [role="heading"], > aside h1, > aside h2, > aside h3, > aside h4, > aside h5),
-      body.codex-plus-hide-usage-alert aside.app-shell-left-panel [role="status"][aria-live="polite"]:has(progress) { display: none !important; }
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:not([data-codex-plus-usage-alert-hidden="false"]):has([role="heading"], h1, h2, h3, h4, h5),
+      body.codex-plus-hide-usage-alert [data-codex-composer-root] div:not([data-codex-plus-usage-alert-hidden="false"]):has(> aside [role="heading"], > aside h1, > aside h2, > aside h3, > aside h4, > aside h5),
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel:not([data-codex-plus-usage-alert-hidden="false"]) [role="status"][aria-live="polite"]:has(progress) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
@@ -9772,24 +9772,37 @@
     const hidden = officialUsageAlertHidden();
     // body class 控制 CSS 预隐藏，防止切换会话时闪烁
     document.body?.classList.toggle("codex-plus-hide-usage-alert", hidden);
-    const currentHidden = new Set(document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]'));
+    
     if (!hidden) {
-      currentHidden.forEach((container) => {
-        delete container.dataset.codexPlusUsageAlertHidden;
+      document.querySelectorAll('[data-codex-plus-usage-alert-hidden]').forEach((el) => {
+        delete el.dataset.codexPlusUsageAlertHidden;
       });
       return;
     }
-    const targetContainers = new Set(
-      [...officialUsageAlertCards(), ...composerUsageAlertBanners()].map(officialUsageAlertContainer),
-    );
-    currentHidden.forEach((container) => {
-      if (!targetContainers.has(container)) {
-        delete container.dataset.codexPlusUsageAlertHidden;
+
+    const targetCards = officialUsageAlertCards();
+    const allSidebarAlerts = Array.from(document.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]'));
+    allSidebarAlerts.forEach(card => {
+      const isTarget = targetCards.includes(card);
+      const state = isTarget ? "true" : "false";
+      if (card.dataset.codexPlusUsageAlertHidden !== state) card.dataset.codexPlusUsageAlertHidden = state;
+      const container = officialUsageAlertContainer(card);
+      if (container !== card && container.dataset.codexPlusUsageAlertHidden !== state) {
+        container.dataset.codexPlusUsageAlertHidden = state;
       }
     });
-    targetContainers.forEach((container) => {
-      if (container.dataset.codexPlusUsageAlertHidden !== "true") {
-        container.dataset.codexPlusUsageAlertHidden = "true";
+
+    const targetBanners = composerUsageAlertBanners();
+    const allComposerAsides = Array.from(document.querySelectorAll("[data-codex-composer-root] aside"));
+    allComposerAsides.forEach((aside) => {
+      const isTarget = targetBanners.includes(aside);
+      const state = isTarget ? "true" : "false";
+      
+      if (aside.dataset.codexPlusUsageAlertHidden !== state) aside.dataset.codexPlusUsageAlertHidden = state;
+      
+      const container = officialUsageAlertContainer(aside);
+      if (container !== aside && container.dataset.codexPlusUsageAlertHidden !== state) {
+         container.dataset.codexPlusUsageAlertHidden = state;
       }
     });
   }

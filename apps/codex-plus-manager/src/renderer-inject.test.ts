@@ -156,6 +156,9 @@ function usageAlertRuntime(
       if (selector === '[data-codex-plus-usage-alert-hidden="true"]') {
         return managed.filter((node) => node.dataset.codexPlusUsageAlertHidden === "true");
       }
+      if (selector === '[data-codex-plus-usage-alert-hidden]') {
+        return [...managed, ...cards].filter((node) => "codexPlusUsageAlertHidden" in node.dataset);
+      }
       if (selector === '[data-codex-composer-root] aside') {
         return composerBanners;
       }
@@ -346,10 +349,11 @@ describe("renderer injection header compatibility", () => {
 
     assert.equal(wrapper.dataset.codexPlusUsageAlertHidden, "true");
     assert.equal(wrapper.style.display, "grid");
-    assert.equal(otherStatus.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(otherStatus.dataset.codexPlusUsageAlertHidden, "false");
     assert.deepEqual(selectors, [
-      '[data-codex-plus-usage-alert-hidden="true"]',
       'aside.app-shell-left-panel [role="status"][aria-live="polite"]',
+      'aside.app-shell-left-panel [role="status"][aria-live="polite"]',
+      '[data-codex-composer-root] aside',
       '[data-codex-composer-root] aside',
     ]);
 
@@ -359,7 +363,7 @@ describe("renderer injection header compatibility", () => {
     assert.equal(wrapper.dataset.codexPlusUsageAlertHidden, undefined);
     assert.equal(wrapper.style.display, "grid");
     assert.equal(wrapper.children[0], usageAlert);
-    assert.equal(selectors.at(-1), '[data-codex-plus-usage-alert-hidden="true"]');
+    assert.equal(selectors.pop(), '[data-codex-plus-usage-alert-hidden]');
   });
 
   it("hides modern composer usage alert banners and restores them without hiding unrelated asides", async () => {
@@ -397,8 +401,8 @@ describe("renderer injection header compatibility", () => {
     assert.equal(composerWrapper.dataset.codexPlusUsageAlertHidden, "true");
     assert.equal(englishWrapper.dataset.codexPlusUsageAlertHidden, "true");
     assert.equal(actionWrapper.dataset.codexPlusUsageAlertHidden, "true");
-    assert.equal(unrelatedWrapper.dataset.codexPlusUsageAlertHidden, undefined);
-    assert.equal(fileErrorWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(unrelatedWrapper.dataset.codexPlusUsageAlertHidden, "false");
+    assert.equal(fileErrorWrapper.dataset.codexPlusUsageAlertHidden, "false");
     assert.equal(bodyClasses.has("codex-plus-hide-usage-alert"), true);
 
     windowValue.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;
@@ -418,11 +422,11 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /typeof nextStatus\.hideOfficialUsageAlert === "boolean"/);
     assert.match(renderer, /window\.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus\.hideOfficialUsageAlert/);
     assert.match(renderer, /\[data-codex-plus-usage-alert-hidden="true"\] \{ display: none !important; \}/);
-    assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] aside:has/);
-    assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] div:has\(> aside \[role="heading"\]/);
+    assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] aside:not\(\[data-codex-plus-usage-alert-hidden="false"\]\):has/);
+    assert.match(renderer, /body\.codex-plus-hide-usage-alert \[data-codex-composer-root\] div:not\(\[data-codex-plus-usage-alert-hidden="false"\]\):has\(> aside \[role="heading"/);
     assert.match(
       renderer,
-      /body\.codex-plus-hide-usage-alert aside\.app-shell-left-panel \[role="status"\]\[aria-live="polite"\]:has\(progress\)/,
+      /body\.codex-plus-hide-usage-alert aside\.app-shell-left-panel:not\(\[data-codex-plus-usage-alert-hidden="false"\]\) \[role="status"\]\[aria-live="polite"\]:has\(progress\)/,
     );
     assert.doesNotMatch(renderer, /container\.style\.(?:setProperty|removeProperty)\("display"/);
   });
