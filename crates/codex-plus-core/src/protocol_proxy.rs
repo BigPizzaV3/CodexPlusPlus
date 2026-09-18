@@ -572,6 +572,15 @@ impl CompactionSseConverter {
             self.summary = String::new();
         }
         self.summary = self.summary.trim().to_string();
+        // 剥掉 think 块后为空（上游空输出、纯推理文本、截断导致块未闭合），
+        // 一律按失败返回，避免向 codex 交付 `completed + 空 encrypted_content`
+        // 的空 checkpoint 静默清空会话。
+        if self.failed.is_none() && self.summary.is_empty() {
+            self.failed = Some((
+                "上游返回了空摘要，无法完成压缩".to_string(),
+                Some("compaction_empty_summary".to_string()),
+            ));
+        }
         let mut output = String::new();
         let (status, error, summary) = if let Some((message, _)) = &self.failed {
             ("failed", json!({ "message": message }), String::new())

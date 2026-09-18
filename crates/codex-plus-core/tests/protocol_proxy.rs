@@ -189,6 +189,36 @@ fn compaction_converter_unclosed_think_block_drops_reasoning_fragment() {
     converter.push_summary_text("<think>half written reasoning");
     let payload = String::from_utf8(converter.finish()).unwrap();
     assert!(!payload.contains("half written reasoning"));
+    // 剥完 think 后没有答案，按失败返回而非空 compaction item。
+    assert!(payload.contains("\"status\":\"failed\""));
+}
+
+#[test]
+fn compaction_converter_pure_think_block_yields_failed_response() {
+    // 闭合的纯 think 块（无答案文本）：原文非空能通过调用方预检，
+    // 剥完 think 后为空，finish 必须兜底转 failed，
+    // 杜绝 `completed + 空 encrypted_content` 的空 checkpoint。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>internal reasoning</think>");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(!payload.contains("internal reasoning"));
+    assert!(payload.contains("\"status\":\"failed\""));
+    // finish() 的 error 输出只带 message，error_type 供调用方分类、不进入响应体。
+    assert!(payload.contains("空摘要"));
+    assert!(!payload.contains("\"status\":\"completed\""));
+}
+
+#[test]
+fn compaction_converter_stream_error_yields_failed_response() {
+    // 上游流中断：failed 状态优先于空摘要兜底。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("some partial summary");
+    converter.fail("Stream error: broken pipe".to_string(), None);
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("\"status\":\"failed\""));
+    assert!(payload.contains("Stream error: broken pipe"));
+    // failed 状态已阻止 codex 安装空 checkpoint，无需判断 encrypted_content 内容。
+    assert!(!payload.contains("\"status\":\"completed\""));
 }
 
 #[tokio::test]
