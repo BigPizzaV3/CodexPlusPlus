@@ -957,6 +957,7 @@
       .codex-plus-backend-indicator[data-status="ok"] { background: var(--codex-plus-success); }
       .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
       .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
+      .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
       #${codexPlusSidebarNavId} {
         position: relative;
         flex: 0 0 auto;
@@ -1191,6 +1192,7 @@
       .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
+      .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
       .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
       .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
       .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
@@ -1370,6 +1372,8 @@
       .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="checking"],
       .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="degraded"],
+      .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
       .${codexServiceTierBadgeClass} {
         height: 24px;
         border-color: var(--codex-plus-border);
@@ -1393,6 +1397,7 @@
       .codex-plus-ad-empty { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); color: var(--codex-plus-text-tertiary); }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"], .codex-plus-user-script-error { color: var(--codex-plus-danger); }
+      .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
       .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-user-script-warning, .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
     `;
     document.documentElement.appendChild(style);
@@ -3934,6 +3939,10 @@
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
+  // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
+  // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
+  let codexPlusBridgeFailureCount = 0;
+  const CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD = 3;
   const codexPlusBackendGeneration = (Number(window.__codexPlusBackendGeneration) || 0) + 1;
   window.__codexPlusBackendGeneration = codexPlusBackendGeneration;
 
@@ -3941,29 +3950,37 @@
     if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
     const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
     health.lastSuccessAt = Date.now();
+    codexPlusBridgeFailureCount = 0;
+  }
+
+  function recordCodexPlusBridgeFailure() {
+    codexPlusBridgeFailureCount += 1;
   }
 
   function renderBackendStatus() {
-    const status = codexPlusBackendStatus.status || "failed";
+    const bridgeDegraded = codexPlusBridgeFailureCount >= CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD;
+    const rawStatus = codexPlusBackendStatus.status || "failed";
+    const status = bridgeDegraded && rawStatus === "ok" ? "degraded" : rawStatus;
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
         node.textContent = `Codex++ ${codexPlusVersion}`;
       });
     }
+    const labelFallback = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，自动修复中" : status === "checking" ? "正在检查后端…" : "未连接";
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
-      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? "后端已连接" : "未连接");
+      label.textContent = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
       indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      indicator.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     });
     const sidebarStatus = document.querySelector(`#${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status`);
     if (sidebarStatus) {
       sidebarStatus.dataset.status = status;
-      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
     refreshCodexServiceTierControls();
   }
@@ -6328,6 +6345,7 @@
       }
     }
     if (!window.__codexSessionDeleteBridge) {
+      recordCodexPlusBridgeFailure();
       if (path === "/backend/status") {
         return await fetchBackendStatusFromHelper(path, payload);
       }
@@ -6339,6 +6357,7 @@
       try {
         request = window.__codexSessionDeleteBridge(path, payload);
       } catch (error) {
+        recordCodexPlusBridgeFailure();
         return Promise.resolve({ status: "failed", message: error?.message || "未连接" });
       }
       return withBackendTimeout(request);
@@ -6350,6 +6369,7 @@
           recordCodexPlusBridgeSuccess();
           return result;
         }
+        recordCodexPlusBridgeFailure();
         if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
         const fallback = await fetchBackendStatusFromHelper(path, payload);
         if (fallback?.status === "ok") {
@@ -6367,8 +6387,11 @@
         });
         return fallback;
       }
-      return await window.__codexSessionDeleteBridge(path, payload);
+      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
+      recordCodexPlusBridgeSuccess();
+      return bridgeResult;
     } catch (error) {
+      recordCodexPlusBridgeFailure();
       sendCodexPlusDiagnostic("bridge_call_failed", {
         path,
         errorName: error?.name || "",

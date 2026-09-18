@@ -322,6 +322,31 @@ describe("renderer injection header compatibility", () => {
     assert.doesNotMatch(renderer, /container\.style\.(?:setProperty|removeProperty)\("display"/);
   });
 
+  // issue #2169：HTTP 回落成功不得掩盖桥接通道故障。桥接失败计数独立于后端状态，
+  // 连续失败时状态灯降级呈现；回落路径绝不能清零计数或刷新 bridge 健康时间戳，
+  // 否则启动器侧健康检查失去修复动力，重注入风暴对用户完全静默。
+  it("surfaces persistent bridge degradation while the http fallback keeps the backend reachable", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /const CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD = 3;/);
+    assert.match(
+      renderer,
+      /function recordCodexPlusBridgeFailure\(\) \{\s*codexPlusBridgeFailureCount \+= 1;\s*\}/,
+    );
+    // 降级渲染：桥接连续失败 + 后端 ok → degraded
+    assert.match(renderer, /bridgeDegraded && rawStatus === "ok" \? "degraded" : rawStatus/);
+    assert.match(renderer, /桥接降级，自动修复中/);
+    // 回落分支只记失败，不得触碰成功路径
+    const fallbackBlock = renderer.match(
+      /const fallback = await fetchBackendStatusFromHelper\(path, payload\);[\s\S]*?return fallback;\s*\}/,
+    );
+    assert.ok(fallbackBlock, "http fallback block not found in postJson");
+    assert.doesNotMatch(fallbackBlock[0], /recordCodexPlusBridgeSuccess\(\)/);
+    // 降级状态有专属样式（指示灯与文本）
+    assert.match(renderer, /\.codex-plus-backend-indicator\[data-status="degraded"\]/);
+    assert.match(renderer, /\.codex-plus-backend-label\[data-status="degraded"\]/);
+  });
+
   it("keeps Windows Dream Skin compatible with the modern Codex main surface", async () => {
     const dreamSkinRenderer = await readFile(
       new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
