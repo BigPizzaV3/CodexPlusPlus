@@ -4957,7 +4957,9 @@ experimental_bearer_token = "sk-new"
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(catalog["models"][0]["use_responses_lite"], true);
+    assert_eq!(catalog["models"][0]["use_responses_lite"], false);
+    // Chat 上游经本地代理转译后同样走标准 Responses，Lite 标记按上游能力统一关闭；
+    // 旧行为（保留模板 true）会让 codex 对 chat 上游尝试内部 Lite 线格式。
 }
 
 #[test]
@@ -5662,5 +5664,164 @@ experimental_bearer_token = "sk-new"
     assert!(
         config.contains("/mnt/external/catalog.json"),
         "普通路径不属于本次修复范围，必须原样保留：{config}"
+    );
+}
+
+// ---- responses_lite 分流（ChatGPT 后端专属线格式）----
+
+/// 场景锚点：Lite 判定 = 官方登录态 && 有效 base_url 主机为 chatgpt.com。
+/// 中转 / 公开 API / 解析失败一律标准 Responses（安全默认）。
+fn lite_test_profile(id: &str, relay_mode: RelayMode, base_url: &str) -> RelayProfile {
+    RelayProfile {
+        id: id.to_string(),
+        model: "gpt-5.6-sol".to_string(),
+        relay_mode,
+        config_contents: format!(
+            r#"model = "gpt-5.6-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "{base_url}"
+"#
+        ),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        model_list: "gpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    }
+}
+
+fn generated_catalog_model(home: &tempfile::TempDir, id: &str) -> serde_json::Value {
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            home.path()
+                .join("model-catalogs")
+                .join(format!("{id}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    catalog["models"][0].clone()
+}
+
+#[test]
+fn lite_disabled_for_relay_base_url() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = lite_test_profile("relay-lite-relay", RelayMode::PureApi, "https://relay.example/v1");
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    // 中转上游：官方目录的 lite=true 必须翻转为 false
+    assert_eq!(
+        generated_catalog_model(&temp, "relay-lite-relay")["use_responses_lite"],
+        false
+    );
+}
+
+#[test]
+fn lite_disabled_for_official_api_key_base_url() {
+    let temp = tempfile::tempdir().unwrap();
+    // 公开 API（api.openai.com）不暴露内部 Lite 通道，API-key 登录同样关闭
+    let profile = lite_test_profile(
+        "relay-lite-api",
+        RelayMode::PureApi,
+        "https://api.openai.com/v1",
+    );
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(
+        generated_catalog_model(&temp, "relay-lite-api")["use_responses_lite"],
+        false
+    );
+}
+
+#[test]
+fn lite_preserved_for_official_login_chatgpt_backend() {
+    let temp = tempfile::tempdir().unwrap();
+    // 官方登录 + ChatGPT 后端：唯一保留模板 Lite 原值的组合
+    let profile = lite_test_profile(
+        "relay-lite-oauth",
+        RelayMode::Official,
+        "https://chatgpt.com/backend-api/codex",
+    );
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(
+        generated_catalog_model(&temp, "relay-lite-oauth")["use_responses_lite"],
+        true
+    );
+}
+
+#[test]
+fn lite_disabled_for_official_mode_with_relay_url() {
+    let temp = tempfile::tempdir().unwrap();
+    // 官方登录态但 base_url 指向中转：域名不匹配，仍然关闭
+    let profile = lite_test_profile(
+        "relay-lite-mixed",
+        RelayMode::Official,
+        "https://relay.example/v1",
+    );
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(
+        generated_catalog_model(&temp, "relay-lite-mixed")["use_responses_lite"],
+        false
+    );
+}
+
+#[test]
+fn lite_disabled_when_provider_id_looks_official_but_url_is_relay() {
+    let temp = tempfile::tempdir().unwrap();
+    // provider id 无法区分（旧逻辑按 id 判断会误放行），base_url 才是权威
+    let profile = RelayProfile {
+        id: "relay-lite-imperson".to_string(),
+        model: "gpt-5.6-sol".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-5.6-sol"
+model_provider = "openai"
+
+[model_providers.openai]
+name = "openai"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        model_list: "gpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(
+        generated_catalog_model(&temp, "relay-lite-imperson")["use_responses_lite"],
+        false
+    );
+}
+
+// 官方登录真实形态：会话身份 model_provider = "openai"（保留 id），base_url
+// 实际写在传输表 [model_providers.custom]。effective_provider_base_url 必须
+// 按传输表定位，否则读不到 chatgpt.com，Lite 被误关（PR 原实现漏掉该形态）。
+#[test]
+fn lite_preserved_for_official_login_with_openai_session_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-lite-oauth-session".to_string(),
+        model: "gpt-5.6-sol".to_string(),
+        relay_mode: RelayMode::Official,
+        protocol: RelayProtocol::Responses,
+        config_contents: r#"model = "gpt-5.6-sol"
+model_provider = "openai"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://chatgpt.com/backend-api/codex"
+"#
+        .to_string(),
+        auth_contents: r#"{}"#.to_string(),
+        model_list: "gpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(
+        generated_catalog_model(&temp, "relay-lite-oauth-session")["use_responses_lite"],
+        true
     );
 }

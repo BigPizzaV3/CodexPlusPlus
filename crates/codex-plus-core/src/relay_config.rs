@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 use crate::settings::{
-    BackendSettings, RelayProfile, RelayProtocol, RelaySessionProvider,
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, RelaySessionProvider,
 };
 
 const RELAY_PROVIDER: &str = "custom";
@@ -1986,6 +1986,14 @@ fn apply_model_catalog_to_config(
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
+    // Lite 线格式只有 ChatGPT 产品后端支持；官方登录态才可能走该通道，
+    // 其余上游（公开 API / 中转）一律标准 Responses。判定基于生成后的
+    // 有效 config 而非 profile 陈旧 URL，与 deepseek 判定同一模式。
+    let official_login = profile.relay_mode == RelayMode::Official;
+    let lite_supported = upstream_supports_responses_lite(
+        effective_provider_base_url(&config_text).as_deref(),
+        official_login,
+    );
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）。
     // Codex++ 管理的 catalog 必须随当前 profile 切换；否则前一个供应商的模型列表会残留。
@@ -2018,6 +2026,7 @@ fn apply_model_catalog_to_config(
                         &catalog_relative,
                         &entries,
                         fallback,
+                        lite_supported,
                     )?
                 {
                     let mut doc = parse_toml_document(&config_text)?;
@@ -2044,6 +2053,7 @@ fn apply_model_catalog_to_config(
                 &catalog_relative,
                 &entries,
                 fallback,
+                lite_supported,
             )?
         {
             doc["model_catalog_json"] = toml_edit::value(catalog_relative);
@@ -2076,13 +2086,13 @@ fn apply_model_catalog_to_config(
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Only custom Responses providers need the standard Responses tool wire format. Official
-    // profiles and custom Chat Completions retain the model template's original Lite behavior.
+    // Lite 线格式跟随上游能力：仅官方登录态 + ChatGPT 后端保留模板原值，
+    // 公开 API / 第三方中转一律关闭（标准 Responses），不再以 provider id 近似判断。
     let catalog_json = crate::model_suffix::build_model_catalog_json_with_capabilities(
         &entries,
         fallback,
         None,
-        custom_responses.then_some(false),
+        (!lite_supported).then_some(false),
         official_deepseek_responses,
     );
     let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
@@ -2225,6 +2235,57 @@ fn deepseek_api_base_url(base_url: &str) -> bool {
     host == "deepseek.com" || host.ends_with(".deepseek.com")
 }
 
+/// Responses Lite 线格式（X-OpenAI-Internal-Codex-Responses-Lite 头）只有
+/// ChatGPT 产品后端实现；官方公开 API（api.openai.com）与第三方中转均只支持
+/// 标准 Responses（判定锚点对齐 sub2api accountCodexToolCapabilities：
+/// 认证模式 + 有效 base_url 主机名，而非 provider id）。
+///
+/// false 是安全默认：declared false 而上游其实支持，损失的只是 Lite 降级优化；
+/// declared true 而上游不支持，是运行时不可预期的线格式错配。
+/// URL 解析失败一律 false，不猜测。
+fn upstream_supports_responses_lite(effective_base_url: Option<&str>, official_login: bool) -> bool {
+    if !official_login {
+        return false;
+    }
+    let Some(base_url) = effective_base_url else {
+        return false;
+    };
+    let host = base_url
+        .trim()
+        .split("://")
+        .nth(1)
+        .unwrap_or(base_url)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    host == "chatgpt.com" || host.ends_with(".chatgpt.com")
+}
+
+/// 从生成后的有效 config 读取 active transport provider 的 base_url。
+/// 注意会话身份（model_provider）可能是保留 id（openai），但 base_url 实际
+/// 写在传输表 [model_providers.custom]；故用 active_or_default_provider_id
+/// 定位，openai 身份回落 custom 表。仍查不到时回落顶层 base_url。
+fn effective_provider_base_url(config_text: &str) -> Option<String> {
+    let doc = parse_toml_document(config_text).ok()?;
+    let provider_id = active_or_default_provider_id(&doc);
+    if let Some(base_url) = doc
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table_like)
+        .and_then(|provider| provider.get("base_url"))
+        .and_then(Item::as_str)
+    {
+        return Some(base_url.to_string());
+    }
+    root_key_string(config_text, "base_url")
+}
+
 pub fn apply_deepseek_responses_compatibility(
     profile: &RelayProfile,
     config_text: &str,
@@ -2298,6 +2359,7 @@ fn copy_standard_responses_catalog(
     target_relative: &str,
     entries: &[crate::model_suffix::ModelCatalogEntry],
     fallback_window: Option<u64>,
+    lite_supported: bool,
 ) -> anyhow::Result<bool> {
     let source_path = {
         let path = Path::new(source);
@@ -2322,7 +2384,12 @@ fn copy_standard_responses_catalog(
         .map(|entry| (entry.slug.as_str(), entry.suffix_window.or(fallback_window)))
         .collect::<std::collections::HashMap<_, _>>();
     for model in models {
-        if model.get("use_responses_lite").and_then(Value::as_bool) == Some(true) {
+        // Lite 能力跟随上游：官方登录 + ChatGPT 后端保留原值，
+        // 其余上游强制关闭（外部目录的 Lite 标记可能照抄官方目录，
+        // 与实际上游能力无关，见 upstream_supports_responses_lite）。
+        if !lite_supported
+            && model.get("use_responses_lite").and_then(Value::as_bool) == Some(true)
+        {
             model["use_responses_lite"] = Value::Bool(false);
             changed = true;
         }
@@ -3685,6 +3752,49 @@ cwd = \"/tmp\"
             ..RelayProfile::default()
         };
         assert!(relay_profile_model(&empty).trim().is_empty());
+    }
+
+    #[test]
+    fn upstream_supports_responses_lite_matches_only_chatgpt_host() {
+        // 官方登录态下，仅 chatgpt.com 及其子域判 true
+        let official = true;
+        assert!(upstream_supports_responses_lite(
+            Some("https://chatgpt.com/backend-api/codex"),
+            official
+        ));
+        assert!(upstream_supports_responses_lite(
+            Some("https://ab.chatgpt.com/backend-api/codex"),
+            official
+        ));
+        assert!(upstream_supports_responses_lite(
+            Some("HTTPS://ChatGPT.com"),
+            official
+        ));
+        assert!(upstream_supports_responses_lite(
+            Some("https://chatgpt.com:443/backend-api"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://api.openai.com/v1"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://chatgpt.com.evil.example/v1"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://notchatgpt.com/v1"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://relay.example/v1"),
+            official
+        ));
+        // 非官方登录态一律 false
+        assert!(!upstream_supports_responses_lite(Some("https://chatgpt.com"), false));
+        // URL 缺失/无 scheme 一律 false（安全默认，不猜测）
+        assert!(!upstream_supports_responses_lite(None, official));
+        assert!(!upstream_supports_responses_lite(Some(""), official));
     }
 }
 
