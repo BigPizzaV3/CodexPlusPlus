@@ -1694,6 +1694,42 @@ async fn handle_protocol_proxy_connection(
     }
     if upstream.is_stream {
         write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
+        if upstream.compaction {
+            // v2 远程压缩：无论上游协议都重组为恰好一个 compaction 输出项，
+            // 压缩无增量展示诉求，收齐上游文本后一次性下发。
+            // SSE 事件可能跨网络 chunk 拆开，converter 内部按事件边界缓冲。
+            let mut converter = crate::protocol_proxy::CompactionSseConverter::new(
+                request_json
+                    .as_ref()
+                    .and_then(|request| request.get("model"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            );
+            if upstream.wire_api != crate::protocol_proxy::UpstreamWireApi::Responses {
+                converter = converter.with_chat_upstream();
+            }
+            let mut bytes_stream = upstream.response.bytes_stream();
+            while let Some(chunk) = bytes_stream.next().await {
+                match chunk {
+                    Ok(bytes) => converter.push_upstream_bytes(&bytes),
+                    Err(error) => {
+                        converter.fail(format!("Stream error: {error}"), None);
+                        break;
+                    }
+                }
+            }
+            let payload = converter.finish();
+            stream.write_all(&payload).await?;
+            log_helper_response(
+                "helper.protocol_proxy_compaction_ok",
+                method,
+                path,
+                "200 OK",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
         if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
             let mut bytes_stream = upstream.response.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
@@ -1757,6 +1793,27 @@ async fn handle_protocol_proxy_connection(
         return Ok(());
     }
     let upstream_body = upstream.response.bytes().await?;
+    if upstream.compaction {
+        // v2 远程压缩非流式路径：同样重组为单个 compaction 输出项。
+        let body = crate::protocol_proxy::wrap_non_stream_response_as_compaction(
+            &upstream_body,
+            request_json
+                .as_ref()
+                .and_then(|request| request.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
+        )?;
+        write_http_response(stream, "200 OK", "text/event-stream; charset=utf-8", &body).await?;
+        log_helper_response(
+            "helper.protocol_proxy_compaction_ok",
+            method,
+            path,
+            "200 OK",
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
     if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
         write_http_response(
             stream,

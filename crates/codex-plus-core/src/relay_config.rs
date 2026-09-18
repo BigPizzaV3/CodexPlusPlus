@@ -3007,6 +3007,19 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["name"] = toml_edit::value(transport_provider_id.as_str());
     }
+    // codex 用 `name == "OpenAI"` 的严格匹配判定 provider 是否走 v2 远程压缩
+    // （RemoteCompactionSupport::V2，见 openai/codex issue #42313），第三方中转
+    // 顶着这个名字会被要求返回 `compaction` 输出项而稳定报错（issue #2217）。
+    // 只有真正的 OpenAI 会话身份（官方 OAuth / 混合模式）可以保留该名称，
+    // 其余情况一律改写成 provider id，让 codex 回退到本地压缩。
+    if !uses_openai_provider
+        && provider
+            .get("name")
+            .and_then(Item::as_str)
+            .is_some_and(|name| name.trim().eq_ignore_ascii_case("OpenAI"))
+    {
+        provider["name"] = toml_edit::value(transport_provider_id.as_str());
+    }
     // Codex 26.901 起不再支持 `wire_api = "chat"`（见 openai/codex discussion #7782），
     // 一旦出现会导致整份 config.toml 被判为无效并回退内置默认模型。
     // Chat Completions 上游由本地协议代理（protocol_proxy）负责 responses→chat 转换，
