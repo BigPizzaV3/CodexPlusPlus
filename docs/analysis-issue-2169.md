@@ -117,9 +117,10 @@ Codex++ 对主进程唯一注入是一次性菜单翻译脚本(`native_menu.rs`,
 安装中途若后续 `Runtime.evaluate` 或附加脚本失败，也会走同一清理路径，避免部分安装
 留下孤立的脚本注册。
 
-该路径由 `crates/codex-plus-core/tests/cdp_bridge.rs` 的陈旧会话测试覆盖。由于当前
-Windows 开发环境未安装 Rust/Cargo，编译测试和 10--20 分钟真实 Codex 对话压力测试
-需在具备 Rust 工具链的 Windows 环境中完成；本分支不宣称已完成 Linux/macOS 实测。
+该路径由 `crates/codex-plus-core/tests/cdp_bridge.rs` 的陈旧会话测试覆盖。F 盘 Rust
+工具链已完成编译验证；`cdp_bridge` 156 项、launcher 过滤测试 28 项单元测试和 25
+项集成测试全部通过。本分支不宣称已完成 Linux/macOS 实测，也不把协议级故障注入
+等同于真实 renderer 压测。
 
 ### Windows 等价故障注入记录
 
@@ -138,4 +139,4 @@ monotonic_growth=False
 
 该结果验证退避序列和“旧脚本/旧 socket 先清理再重注入”的资源不单调增长不变量。
 这是协议/调度级等价验证，不替代真实 Codex renderer 的 RSS、CPU 和句柄采样；真实
-运行测试仍需在安装 Rust 工具链并可启动 Codex 的 Windows 环境执行。
+renderer 采样仍属于后续验证项。
