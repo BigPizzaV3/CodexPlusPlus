@@ -25,6 +25,16 @@ test('unknown builds never receive guessed export aliases or stale build fallbac
   await assert.rejects(loader(),/尚未适配/);assert.equal(calls,0);
 });
 test('missing resource timing falls back across reviewed builds',async()=>{
-  const calls=[];const loader=createNativeLoader({discover:()=>[],importModule:async url=>{calls.push(url);if(url===current)throw Error('missing');return {ESt:'old'};}});
-  assert.equal((await loader()).ESt,'old');assert.equal(calls.length,2);
+  const calls=[];const loader=createNativeLoader({discover:()=>[],importModule:async url=>{calls.push(url);if(!url.endsWith('app-initial-f87238153a19.js'))throw Error('missing');return {ESt:'old'};}});
+  assert.equal((await loader()).ESt,'old');assert.equal(calls.length,3);
+});
+
+test('26.915 binds history and lazy HTTP exports without enabling unverified side submissions',async()=>{
+  const url='app://-/assets/app-initial-f61fcec072b5.js';
+  let initialized=false;
+  const module={Yqt(){assert.ok(initialized);return 'manager';},tJt(){initialized=true;},_in(){module.hin={getInstance:()=>({fetch(){}})};module.Y9={httpFetch:{}};}};
+  const loader=createNativeLoader({discover:()=>[url],importModule:async actual=>{assert.equal(actual,url);return module;}});
+  const native=await loader();native.kr();assert.equal(native.ESt(),'manager');
+  native.lGt();assert.equal(typeof native.cGt.getInstance().fetch,'function');assert.ok(native.jR.httpFetch);
+  assert.equal(native.Mr,undefined);assert.equal(native.Q1,undefined);
 });
