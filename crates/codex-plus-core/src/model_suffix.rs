@@ -361,23 +361,56 @@ fn deepseek_model_template_entry(slug: &str) -> Option<(Value, bool)> {
 }
 
 fn model_template_entry(slug: &str) -> (Value, bool) {
-    if let Some(entry) = bundled_template_entry(slug) {
-        return (entry, true);
-    }
-    if let Some(compatibility) = compatibility_metadata_entry(slug) {
-        let mut template = first_bundled_template_entry().unwrap_or_else(|| json!({}));
-        if let (Some(target), Some(source)) = (template.as_object_mut(), compatibility.as_object())
-        {
-            for (key, value) in source {
-                target.insert(key.clone(), value.clone());
-            }
-        }
-        return (template, true);
+    let (template, has_model_metadata) = runtime_or_bundled_template_entry(slug);
+    if let Some(template) = template {
+        return (template, has_model_metadata);
     }
     (
         first_bundled_template_entry().unwrap_or_else(|| json!({})),
         false,
     )
+}
+
+/// 运行时模板查找链（issue #2141）：
+/// 1. compat 精调元数据（Codex++ 产品特性，如 fast tier，优先级最高）
+/// 2. 用户本机 codex 官方 models_cache.json（随官方 App 更新，元数据最新鲜）
+/// 3. 打包的静态资产 assets/codex-models.json（兜底，纯 API / 未登录用户）
+///
+/// 兜底场景（slug 未命中任何同 slug 条目）仍用静态资产首条做模板基座，
+/// 保证未匹配模型在所有机器上的行为一致、可测试。
+fn runtime_or_bundled_template_entry(slug: &str) -> (Option<Value>, bool) {
+    if let Some(entry) = compatibility_metadata_entry(slug) {
+        let base = bundled_template_entry(slug)
+            .unwrap_or_else(|| first_bundled_template_entry().unwrap_or_else(|| json!({})));
+        let mut template = base;
+        if let (Some(target), Some(source)) = (template.as_object_mut(), entry.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        return (Some(template), true);
+    }
+    if let Some(entry) = runtime_models_cache_entry(slug) {
+        return (Some(entry), true);
+    }
+    if let Some(entry) = bundled_template_entry(slug) {
+        return (Some(entry), true);
+    }
+    (None, false)
+}
+
+/// 从用户本机 codex 官方缓存读取同 slug 条目。
+/// 缓存由官方 App 登录态维护，这里只读不写；文件缺失或解析失败时静默回落静态资产。
+fn runtime_models_cache_entry(slug: &str) -> Option<Value> {
+    let cache_path = crate::codex_home::default_codex_home_dir().join("models_cache.json");
+    let contents = std::fs::read_to_string(cache_path).ok()?;
+    let catalog: Value = serde_json::from_str(&contents).ok()?;
+    catalog
+        .get("models")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("slug").and_then(Value::as_str) == Some(slug))
+        .cloned()
 }
 
 fn bundled_template_entry(slug: &str) -> Option<Value> {
