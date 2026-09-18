@@ -266,49 +266,58 @@ pub async fn install_bridge(
     session = session.with_generation(generation.clone());
     let mut registered_script_ids = Vec::new();
 
-    session.send_command(1, "Runtime.enable", json!({})).await?;
-    session
-        .send_command(2, "Runtime.removeBinding", json!({ "name": binding_name }))
-        .await?;
-    session
-        .send_command(3, "Runtime.addBinding", json!({ "name": binding_name }))
-        .await?;
+    let install_result: anyhow::Result<()> = async {
+        session.send_command(1, "Runtime.enable", json!({})).await?;
+        session
+            .send_command(2, "Runtime.removeBinding", json!({ "name": binding_name }))
+            .await?;
+        session
+            .send_command(3, "Runtime.addBinding", json!({ "name": binding_name }))
+            .await?;
 
-    let bridge_script = build_bridge_script(binding_name);
-    let response = session
-        .send_command(
-            4,
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": bridge_script }),
-        )
-        .await?;
-    collect_script_identifier(&response, &mut registered_script_ids);
-    session
-        .send_command(
-            5,
-            "Runtime.evaluate",
-            runtime_evaluate_params(&bridge_script),
-        )
-        .await?;
-
-    for script in new_document_scripts {
-        let message_id = next_message_id();
+        let bridge_script = build_bridge_script(binding_name);
         let response = session
             .send_command(
-                message_id,
+                4,
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": script }),
+                json!({ "source": bridge_script }),
             )
             .await?;
         collect_script_identifier(&response, &mut registered_script_ids);
-        let message_id = next_message_id();
         session
             .send_command(
-                message_id,
+                5,
                 "Runtime.evaluate",
-                runtime_evaluate_params(script),
+                runtime_evaluate_params(&bridge_script),
             )
             .await?;
+
+        for script in new_document_scripts {
+            let message_id = next_message_id();
+            let response = session
+                .send_command(
+                    message_id,
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({ "source": script }),
+                )
+                .await?;
+            collect_script_identifier(&response, &mut registered_script_ids);
+            let message_id = next_message_id();
+            session
+                .send_command(
+                    message_id,
+                    "Runtime.evaluate",
+                    runtime_evaluate_params(script),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = install_result {
+        session.remove_registered_scripts(&registered_script_ids).await;
+        session.close().await;
+        return Err(error);
     }
 
     if !publish_bridge_generation(&generation) {
