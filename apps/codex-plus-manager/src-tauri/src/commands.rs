@@ -1450,9 +1450,11 @@ pub fn find_desktop_codex_cli() -> CommandResult<Value> {
     ) else {
         return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
     };
-    let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
+    let bundled = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir);
+    let standalone = codex_plus_core::app_paths::find_standalone_codex_cli();
+    let Some(path) = [bundled, standalone].into_iter().flatten().find(|candidate| codex_cli_can_start(candidate)) else {
         return failed(
-            "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
+            "已找到 Codex Desktop，但没有可用的 Codex CLI；请安装或指定用户目录中的 Codex CLI。",
             json!({ "path": null }),
         );
     };
@@ -1460,6 +1462,27 @@ pub fn find_desktop_codex_cli() -> CommandResult<Value> {
         "已填入桌面版内置 Codex CLI。",
         json!({ "path": path.to_string_lossy() }),
     )
+}
+
+fn codex_cli_can_start(path: &std::path::Path) -> bool {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut command = Command::new(path);
+    command.arg("--version").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let Ok(mut child) = command.spawn() else { return false; };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            _ => { let _ = child.kill(); let _ = child.wait(); return false; }
+        }
+    }
 }
 
 fn spawn_weixin_connect(
