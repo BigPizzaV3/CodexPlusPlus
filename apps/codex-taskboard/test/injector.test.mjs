@@ -63,11 +63,14 @@ test("the package injection command remains resident for tab-triggered recovery"
   assert.match(packageJson.scripts["codex:inject"], /--watch/);
   assert.match(packageJson.scripts["codex:daemon"], /--daemon --open/);
   assert.match(source, /function startResidentInjector/);
+  assert.match(source, /args\.push\("--background-taskboard"\)/);
+  assert.match(source, /arg === "--background-taskboard"/);
+  assert.match(source, /detached: !options\.watch \|\| options\.backgroundTaskboard/);
   assert.match(source, /const defaultCodexDebuggingPort = 9229/);
   assert.match(source, /port: defaultCodexDebuggingPort/);
   assert.match(source, /--startup-token/);
   assert.match(source, /__codexTaskboardHostStartupTokenV1/);
-  assert.ok([...source.matchAll(/windowsHide: process\.platform === "win32"/g)].length >= 2);
+  assert.ok([...source.matchAll(/windowsHide: process\.platform === "win32"/g)].length >= 3);
 });
 
 test("attach reconciles the renderer against a hashed current injection source", () => {

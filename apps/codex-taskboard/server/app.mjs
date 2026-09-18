@@ -1,5 +1,4 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
@@ -7,7 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import {
   DEFAULT_PROJECT_ID,
@@ -27,7 +25,6 @@ import {
 import { ApiError, TaskboardDatabase } from "./database.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const execFileAsync = promisify(execFile);
 const JSON_BODY_LIMIT = 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT = 25 * 1024 * 1024;
 const AI_CHAT_TURN_BODY_LIMIT = 25 * 1024 * 1024;
@@ -1325,17 +1322,17 @@ function parseWorktrees(output) {
 async function scanDevelopmentContexts(workspacePath) {
   if (!workspacePath) return { workspacePath: null, contexts: [] };
   try {
-    const rootResult = await execFileAsync("git", ["-C", workspacePath, "rev-parse", "--show-toplevel"], {
+    const rootResult = await execFileExecutable("git", ["-C", workspacePath, "rev-parse", "--show-toplevel"], {
       timeout: 4_000,
       maxBuffer: 1024 * 1024,
     });
     const root = rootResult.stdout.trim();
     const [branchesResult, worktreesResult] = await Promise.all([
-      execFileAsync("git", ["-C", root, "for-each-ref", "--format=%(refname:short)", "refs/heads"], {
+      execFileExecutable("git", ["-C", root, "for-each-ref", "--format=%(refname:short)", "refs/heads"], {
         timeout: 4_000,
         maxBuffer: 1024 * 1024,
       }),
-      execFileAsync("git", ["-C", root, "worktree", "list", "--porcelain"], {
+      execFileExecutable("git", ["-C", root, "worktree", "list", "--porcelain"], {
         timeout: 4_000,
         maxBuffer: 1024 * 1024,
       }),
