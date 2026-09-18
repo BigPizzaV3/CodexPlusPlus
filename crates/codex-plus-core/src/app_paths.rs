@@ -410,6 +410,62 @@ pub fn find_standalone_codex_app_dir() -> Option<PathBuf> {
     None
 }
 
+/// Finds the CLI shipped by the standalone Codex installer.
+pub fn find_standalone_codex_cli() -> Option<PathBuf> {
+    let local_appdata = std::env::var_os("LOCALAPPDATA")?;
+    find_standalone_codex_cli_in(&PathBuf::from(local_appdata).join("OpenAI").join("Codex").join("bin"))
+}
+
+fn find_standalone_codex_cli_in(bin_dir: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = standalone_cli_in_dir(bin_dir) { candidates.push(path); }
+    if let Ok(entries) = std::fs::read_dir(bin_dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                if let Some(path) = standalone_cli_in_dir(&entry.path()) { candidates.push(path); }
+            }
+        }
+    }
+    candidates.sort_by_key(|path| std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok());
+    candidates.pop()
+}
+
+fn standalone_cli_in_dir(dir: &Path) -> Option<PathBuf> {
+    ["codex.exe", "codex", "Codex.exe", "Codex"].iter().map(|name| dir.join(name)).find(|path| path.is_file())
+}
+
+#[cfg(test)]
+mod standalone_cli_tests {
+    use super::find_standalone_codex_cli_in;
+
+    #[test]
+    fn standalone_cli_finds_latest_versioned_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        let new = temp.path().join("new");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("codex.exe"), "old").unwrap();
+        std::fs::write(new.join("codex.exe"), "new").unwrap();
+        std::fs::File::options().write(true).open(old.join("codex.exe")).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))).unwrap();
+        assert_eq!(find_standalone_codex_cli_in(temp.path()), Some(new.join("codex.exe")));
+    }
+
+    #[test]
+    fn standalone_cli_returns_none_without_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(find_standalone_codex_cli_in(temp.path()), None);
+    }
+
+    #[test]
+    fn standalone_cli_finds_unversioned_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("codex.exe");
+        std::fs::write(&binary, "cli").unwrap();
+        assert_eq!(find_standalone_codex_cli_in(temp.path()), Some(binary));
+    }
+}
+
 pub fn resolve_codex_app_dir_with_saved(
     app_dir: Option<&Path>,
     saved_app_path: Option<&str>,
