@@ -5793,3 +5793,35 @@ base_url = "https://relay.example/v1"
         false
     );
 }
+
+// 官方登录真实形态：会话身份 model_provider = "openai"（保留 id），base_url
+// 实际写在传输表 [model_providers.custom]。effective_provider_base_url 必须
+// 按传输表定位，否则读不到 chatgpt.com，Lite 被误关（PR 原实现漏掉该形态）。
+#[test]
+fn lite_preserved_for_official_login_with_openai_session_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-lite-oauth-session".to_string(),
+        model: "gpt-5.6-sol".to_string(),
+        relay_mode: RelayMode::Official,
+        protocol: RelayProtocol::Responses,
+        config_contents: r#"model = "gpt-5.6-sol"
+model_provider = "openai"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://chatgpt.com/backend-api/codex"
+"#
+        .to_string(),
+        auth_contents: r#"{}"#.to_string(),
+        model_list: "gpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(
+        generated_catalog_model(&temp, "relay-lite-oauth-session")["use_responses_lite"],
+        true
+    );
+}

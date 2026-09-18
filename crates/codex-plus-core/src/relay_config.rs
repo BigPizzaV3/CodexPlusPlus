@@ -2266,21 +2266,22 @@ fn upstream_supports_responses_lite(effective_base_url: Option<&str>, official_l
     host == "chatgpt.com" || host.ends_with(".chatgpt.com")
 }
 
-/// 从生成后的有效 config 读取 active provider 的 base_url；
-/// provider 表缺失时回落顶层 base_url（官方登录态的常见形态）。
+/// 从生成后的有效 config 读取 active transport provider 的 base_url。
+/// 注意会话身份（model_provider）可能是保留 id（openai），但 base_url 实际
+/// 写在传输表 [model_providers.custom]；故用 active_or_default_provider_id
+/// 定位，openai 身份回落 custom 表。仍查不到时回落顶层 base_url。
 fn effective_provider_base_url(config_text: &str) -> Option<String> {
     let doc = parse_toml_document(config_text).ok()?;
-    if let Some(provider_id) = active_provider_id(&doc) {
-        if let Some(base_url) = doc
-            .get("model_providers")
-            .and_then(Item::as_table)
-            .and_then(|providers| providers.get(&provider_id))
-            .and_then(Item::as_table_like)
-            .and_then(|provider| provider.get("base_url"))
-            .and_then(Item::as_str)
-        {
-            return Some(base_url.to_string());
-        }
+    let provider_id = active_or_default_provider_id(&doc);
+    if let Some(base_url) = doc
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table_like)
+        .and_then(|provider| provider.get("base_url"))
+        .and_then(Item::as_str)
+    {
+        return Some(base_url.to_string());
     }
     root_key_string(config_text, "base_url")
 }
@@ -3751,6 +3752,49 @@ cwd = \"/tmp\"
             ..RelayProfile::default()
         };
         assert!(relay_profile_model(&empty).trim().is_empty());
+    }
+
+    #[test]
+    fn upstream_supports_responses_lite_matches_only_chatgpt_host() {
+        // 官方登录态下，仅 chatgpt.com 及其子域判 true
+        let official = true;
+        assert!(upstream_supports_responses_lite(
+            Some("https://chatgpt.com/backend-api/codex"),
+            official
+        ));
+        assert!(upstream_supports_responses_lite(
+            Some("https://ab.chatgpt.com/backend-api/codex"),
+            official
+        ));
+        assert!(upstream_supports_responses_lite(
+            Some("HTTPS://ChatGPT.com"),
+            official
+        ));
+        assert!(upstream_supports_responses_lite(
+            Some("https://chatgpt.com:443/backend-api"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://api.openai.com/v1"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://chatgpt.com.evil.example/v1"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://notchatgpt.com/v1"),
+            official
+        ));
+        assert!(!upstream_supports_responses_lite(
+            Some("https://relay.example/v1"),
+            official
+        ));
+        // 非官方登录态一律 false
+        assert!(!upstream_supports_responses_lite(Some("https://chatgpt.com"), false));
+        // URL 缺失/无 scheme 一律 false（安全默认，不猜测）
+        assert!(!upstream_supports_responses_lite(None, official));
+        assert!(!upstream_supports_responses_lite(Some(""), official));
     }
 }
 
