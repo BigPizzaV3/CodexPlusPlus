@@ -58,6 +58,7 @@ function parseArgs(argv) {
     attachExisting: false,
     startupToken: null,
     daemon: false,
+    backgroundTaskboard: false,
     screenshot: null,
     appPath: "/Applications/ChatGPT.app",
   };
@@ -77,6 +78,7 @@ function parseArgs(argv) {
       }
     }
     else if (arg === "--daemon") options.daemon = true;
+    else if (arg === "--background-taskboard") options.backgroundTaskboard = true;
     else if (arg === "--port") {
       options.port = Number(argv[++index]);
       options.portExplicit = true;
@@ -246,6 +248,7 @@ function windowsProcessRows() {
   ], {
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
+    windowsHide: process.platform === "win32",
   });
   return result.status === 0 ? result.stdout : "";
 }
@@ -420,6 +423,7 @@ function startResidentInjector(
   const [existingPid] = residentInjectorPids(port);
   if (existingPid) return { pid: existingPid, started: false };
   const args = [injectorPath, "--watch", "--port", String(port)];
+  args.push("--background-taskboard");
   if (shouldOpen) args.push("--open");
   if (attachExisting) args.push("--attach-existing");
   if (startupToken) args.push("--startup-token", startupToken);
@@ -1321,7 +1325,9 @@ async function main() {
   }
 
   let codexProcess = null;
-  const supervisor = createTaskboardSupervisor({ detached: !options.watch });
+  const supervisor = createTaskboardSupervisor({
+    detached: !options.watch || options.backgroundTaskboard,
+  });
 
   try {
     const cdpReachable = Boolean(await resolveCdpBaseUrl(options.port));

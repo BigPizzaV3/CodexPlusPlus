@@ -23,12 +23,19 @@ function normalizeExecutable(executable, args = []) {
   return { executable, args };
 }
 
+function childProcessOptions(options) {
+  return {
+    ...options,
+    windowsHide: process.platform === "win32",
+  };
+}
+
 export function spawnExecutable(executable, args, options) {
   const command = normalizeExecutable(executable, args);
-  return spawn(command.executable, command.args, options);
+  return spawn(command.executable, command.args, childProcessOptions(options));
 }
 
 export function execFileExecutable(executable, args, options) {
   const command = normalizeExecutable(executable, args);
-  return execFileAsync(command.executable, command.args, options);
+  return execFileAsync(command.executable, command.args, childProcessOptions(options));
 }
