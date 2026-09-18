@@ -106,3 +106,15 @@ Codex++ 对主进程唯一注入是一次性菜单翻译脚本(`native_menu.rs`,
 3. **脚本注册清理**:记录 `Page.addScriptToEvaluateOnNewDocument` 返回的 identifier,
    重注入前 `Page.removeScriptToEvaluateOnNewDocument` 清掉本会话旧脚本。
 4. **健康检查降载**:`browser_identity` 每 5s 一次 HTTP 可与 health 检查合并复用同一目标列表。
+
+## 7. 本修复补充：清理 new-document 脚本注册
+
+每次 `install_bridge` 都会调用 `Page.addScriptToEvaluateOnNewDocument`。旧版本只
+关闭 WebSocket，会话虽然退出，但 Chromium 目标上的脚本注册仍可能保留；连续重注入
+会让后续新文档执行重复脚本，增加 renderer 的工作量。当前修复保存 CDP 返回的
+`identifier`，在 generation 被替换或会话退出前发送
+`Page.removeScriptToEvaluateOnNewDocument`。CDP 未返回 identifier 时保持兼容并跳过清理。
+
+该路径由 `crates/codex-plus-core/tests/cdp_bridge.rs` 的陈旧会话测试覆盖。由于当前
+Windows 开发环境未安装 Rust/Cargo，编译测试和 10--20 分钟真实 Codex 对话压力测试
+需在具备 Rust 工具链的 Windows 环境中完成；本分支不宣称已完成 Linux/macOS 实测。

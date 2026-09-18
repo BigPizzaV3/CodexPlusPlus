@@ -264,6 +264,7 @@ pub async fn install_bridge(
     let mut session = CdpSession::new(socket).with_handler(handler);
     let generation = next_bridge_generation(websocket_url);
     session = session.with_generation(generation.clone());
+    let mut registered_script_ids = Vec::new();
 
     session.send_command(1, "Runtime.enable", json!({})).await?;
     session
@@ -274,13 +275,14 @@ pub async fn install_bridge(
         .await?;
 
     let bridge_script = build_bridge_script(binding_name);
-    session
+    let response = session
         .send_command(
             4,
             "Page.addScriptToEvaluateOnNewDocument",
             json!({ "source": bridge_script }),
         )
         .await?;
+    collect_script_identifier(&response, &mut registered_script_ids);
     session
         .send_command(
             5,
@@ -291,13 +293,14 @@ pub async fn install_bridge(
 
     for script in new_document_scripts {
         let message_id = next_message_id();
-        session
+        let response = session
             .send_command(
                 message_id,
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": script }),
             )
             .await?;
+        collect_script_identifier(&response, &mut registered_script_ids);
         let message_id = next_message_id();
         session
             .send_command(
@@ -313,6 +316,7 @@ pub async fn install_bridge(
             "bridge.generation_superseded_before_publish",
             json!({ "generation": generation.id }),
         );
+        session.remove_registered_scripts(&registered_script_ids).await;
         session.close().await;
         return Ok(());
     }
@@ -354,11 +358,23 @@ pub async fn install_bridge(
                 _ = tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL) => {}
             }
         }
+        session.remove_registered_scripts(&registered_script_ids).await;
         session.close().await;
         release_bridge_generation(&generation);
     });
 
     Ok(())
+}
+
+fn collect_script_identifier(response: &Value, identifiers: &mut Vec<String>) {
+    if let Some(identifier) = response
+        .get("result")
+        .and_then(|result| result.get("identifier"))
+        .and_then(Value::as_str)
+        && !identifier.is_empty()
+    {
+        identifiers.push(identifier.to_string());
+    }
 }
 
 pub fn runtime_evaluate_params(script: &str) -> Value {
@@ -457,6 +473,18 @@ where
     async fn close(&mut self) {
         let _ = self.socket.send(Message::Close(None)).await;
         let _ = self.socket.close().await;
+    }
+
+    async fn remove_registered_scripts(&mut self, identifiers: &[String]) {
+        for identifier in identifiers {
+            let _ = self
+                .send_command_without_wait(
+                    next_message_id(),
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    json!({ "identifier": identifier }),
+                )
+                .await;
+        }
     }
 
     async fn send_command(

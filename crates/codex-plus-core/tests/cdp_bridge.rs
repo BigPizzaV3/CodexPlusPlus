@@ -5386,14 +5386,28 @@ async fn superseded_bridge_session_closes_socket_without_incoming_messages() {
             .expect("fresh websocket should upgrade");
         acknowledge_bridge_install(&mut fresh).await;
 
-        // 不向任何会话发送消息：旧会话只能靠 generation 轮询发现被顶替。
-        let stale_closed = tokio::time::timeout(
+        // 旧会话会先移除自己注册的 new-document 脚本，再由 generation 轮询关闭 socket。
+        let stale_cleanup = tokio::time::timeout(
             bridge::BRIDGE_GENERATION_POLL_INTERVAL + Duration::from_millis(1500),
-            recv_text_message(&mut stale),
+            async {
+                let mut removed = false;
+                loop {
+                    match recv_text_message(&mut stale).await {
+                        Some(text) => {
+                            let message: serde_json::Value = serde_json::from_str(&text)
+                                .expect("bridge cleanup message should be JSON");
+                            if message["method"] == "Page.removeScriptToEvaluateOnNewDocument" {
+                                removed = true;
+                            }
+                        }
+                        None => break removed,
+                    }
+                }
+            },
         )
         .await
-        .is_ok_and(|message| message.is_none());
-        let _ = stale_closed_tx.send(stale_closed);
+        .unwrap_or(false);
+        let _ = stale_closed_tx.send(stale_cleanup);
 
         // 新会话不受影响，仍应正常应答 binding 调用。
         send_json(
@@ -5598,7 +5612,12 @@ async fn acknowledge_bridge_install(socket: &mut TestSocket) {
     for expected_id in 1..=5 {
         let command = recv_json(socket).await;
         assert_eq!(command["id"], expected_id);
-        send_json(socket, json!({ "id": expected_id, "result": {} })).await;
+        let result = if expected_id == 4 {
+            json!({ "identifier": "bridge-script-test" })
+        } else {
+            json!({})
+        };
+        send_json(socket, json!({ "id": expected_id, "result": result })).await;
     }
 }
 
