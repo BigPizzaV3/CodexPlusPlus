@@ -114,6 +114,8 @@ Codex++ 对主进程唯一注入是一次性菜单翻译脚本(`native_menu.rs`,
 会让后续新文档执行重复脚本，增加 renderer 的工作量。当前修复保存 CDP 返回的
 `identifier`，在 generation 被替换或会话退出前发送
 `Page.removeScriptToEvaluateOnNewDocument`。CDP 未返回 identifier 时保持兼容并跳过清理。
+安装中途若后续 `Runtime.evaluate` 或附加脚本失败，也会走同一清理路径，避免部分安装
+留下孤立的脚本注册。
 
 该路径由 `crates/codex-plus-core/tests/cdp_bridge.rs` 的陈旧会话测试覆盖。由于当前
 Windows 开发环境未安装 Rust/Cargo，编译测试和 10--20 分钟真实 Codex 对话压力测试
