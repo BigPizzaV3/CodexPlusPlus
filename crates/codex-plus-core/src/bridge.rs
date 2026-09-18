@@ -315,7 +315,9 @@ pub async fn install_bridge(
     }
     .await;
     if let Err(error) = install_result {
-        session.remove_registered_scripts(&registered_script_ids).await;
+        session
+            .remove_registered_scripts(&registered_script_ids)
+            .await;
         session.close().await;
         return Err(error);
     }
@@ -325,7 +327,9 @@ pub async fn install_bridge(
             "bridge.generation_superseded_before_publish",
             json!({ "generation": generation.id }),
         );
-        session.remove_registered_scripts(&registered_script_ids).await;
+        session
+            .remove_registered_scripts(&registered_script_ids)
+            .await;
         session.close().await;
         return Ok(());
     }
@@ -367,7 +371,9 @@ pub async fn install_bridge(
                 _ = tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL) => {}
             }
         }
-        session.remove_registered_scripts(&registered_script_ids).await;
+        session
+            .remove_registered_scripts(&registered_script_ids)
+            .await;
         session.close().await;
         release_bridge_generation(&generation);
     });
