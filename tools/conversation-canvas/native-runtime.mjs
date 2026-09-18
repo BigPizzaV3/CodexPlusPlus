@@ -3,6 +3,7 @@
 export const nativeBuilds={
   'app-initial-f87238153a19.js':{ESt:'ESt',kr:'kr',Mr:'Mr',Q1:'Q1',lGt:'lGt',cGt:'cGt',jR:'jR'},
   'app-initial-bcc2ff475eb6.js':{ESt:'EDt',kr:'MDt',lGt:'hJt',cGt:'mJt',jR:'TW'},
+  'app-initial-f61fcec072b5.js':{ESt:'Yqt',kr:'tJt',lGt:'_in',cGt:'hin',jR:'Y9'},
 };
 export function nativeAssetCandidates(doc=globalThis.document,perf=globalThis.performance){
   const urls=[...Array.from(doc?.querySelectorAll?.('script[src],link[rel="modulepreload"][href]')||[],e=>e.src||e.href),
