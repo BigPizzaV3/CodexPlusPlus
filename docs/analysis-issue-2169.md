@@ -120,3 +120,22 @@ Codex++ 对主进程唯一注入是一次性菜单翻译脚本(`native_menu.rs`,
 该路径由 `crates/codex-plus-core/tests/cdp_bridge.rs` 的陈旧会话测试覆盖。由于当前
 Windows 开发环境未安装 Rust/Cargo，编译测试和 10--20 分钟真实 Codex 对话压力测试
 需在具备 Rust 工具链的 Windows 环境中完成；本分支不宣称已完成 Linux/macOS 实测。
+
+### Windows 等价故障注入记录
+
+在 Windows PowerShell 中按源码参数模拟 20 分钟（240 次、每 5 秒一次）持续不健康
+的 bridge watchdog：
+
+```text
+duration_seconds=1200
+watchdog_ticks=240
+reinject_attempts=8
+max_active_scripts=1
+max_active_sockets=1
+attempt_seconds=0,10,30,70,150,310,610,910
+monotonic_growth=False
+```
+
+该结果验证退避序列和“旧脚本/旧 socket 先清理再重注入”的资源不单调增长不变量。
+这是协议/调度级等价验证，不替代真实 Codex renderer 的 RSS、CPU 和句柄采样；真实
+运行测试仍需在安装 Rust 工具链并可启动 Codex 的 Windows 环境执行。
