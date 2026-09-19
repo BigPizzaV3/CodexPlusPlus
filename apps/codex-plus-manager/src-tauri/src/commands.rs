@@ -3538,6 +3538,48 @@ pub async fn refresh_user_script_inventory() -> CommandResult<SettingsPayload> {
 }
 
 #[tauri::command]
+pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
+    let debug_port = StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten()
+        .and_then(|status| status.debug_port)
+        .unwrap_or_else(default_debug_port);
+    let manager = default_user_script_manager();
+    match codex_plus_core::user_scripts::reload_live_scripts(debug_port, &manager).await {
+        Ok(user_scripts) => {
+            let page_reload = user_scripts["reload_mode"] == "page";
+            let script_failed = user_scripts["scripts"]
+                .as_array()
+                .is_some_and(|scripts| scripts.iter().any(|script| script["status"] == "failed"));
+            let payload = SettingsPayload {
+                settings: SettingsStore::default().load().unwrap_or_default(),
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts,
+            };
+            if script_failed {
+                failed("部分脚本执行失败，请查看本地脚本状态。", payload)
+            } else {
+                ok(
+                    if page_reload {
+                        "已请求刷新 Codex 页面以安全重载旧脚本。"
+                    } else {
+                        "用户脚本已热重载。"
+                    },
+                    payload,
+                )
+            }
+        }
+        Err(error) => failed(
+            &format!("用户脚本热重载失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
 pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayload> {
     let trimmed = id.trim();
     if trimmed.is_empty() {

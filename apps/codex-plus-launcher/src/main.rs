@@ -910,12 +910,13 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
-        let bundle = self.user_scripts.build_enabled_bundle()?;
-        let websocket_url = self.websocket_url.lock().unwrap().clone();
-        if let Some(websocket_url) = websocket_url.filter(|_| !bundle.trim().is_empty()) {
-            codex_plus_core::bridge::evaluate_script(&websocket_url, &bundle).await?;
-        }
-        self.user_scripts.inventory()
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        codex_plus_core::user_scripts::reload_scripts_at(&websocket_url, &self.user_scripts).await
     }
 
     async fn open_devtools(&self) -> anyhow::Result<Value> {
@@ -1089,15 +1090,10 @@ async fn try_inject_with_context(
         .load()
         .unwrap_or_default();
     let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
-    let user_bundle = runtime
-        .user_scripts
-        .build_enabled_bundle()
-        .unwrap_or_default();
-    let new_document_scripts = if user_bundle.is_empty() {
-        vec![script]
-    } else {
-        vec![script, user_bundle]
-    };
+    let new_document_scripts = vec![
+        script,
+        codex_plus_core::user_scripts::BOOTSTRAP_SCRIPT.to_string(),
+    ];
     codex_plus_core::bridge::install_bridge(
         websocket_url,
         codex_plus_core::bridge::BRIDGE_BINDING_NAME,

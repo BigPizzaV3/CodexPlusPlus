@@ -435,10 +435,10 @@ impl BridgeRuntimeService for CoreRuntimeService {
             self.websocket_url.as_deref(),
             &self.user_script_evaluator,
         ) {
-            let bundle = user_scripts.build_enabled_bundle()?;
-            if !bundle.trim().is_empty() {
-                evaluator(websocket_url, &bundle)?;
-            }
+            let bundle = user_scripts.build_reload_bundle()?;
+            evaluator(websocket_url, &bundle)?;
+        } else {
+            anyhow::bail!("Codex 页面尚未连接");
         }
         self.user_script_inventory().await
     }
