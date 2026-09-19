@@ -289,7 +289,7 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
 fn open_manager_with_update_prompt() -> anyhow::Result<()> {
     codex_plus_core::install::spawn_companion(
         codex_plus_core::install::MANAGER_BINARY,
-        ["--show-update"],
+        ["--show-update", "--background"],
     )
     .map(|_| ())
     .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
