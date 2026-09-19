@@ -105,8 +105,49 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
     });
     let hooks = LauncherHooks::default();
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
-    handle.wait_for_codex_exit().await?;
+    run_periodic_until_exit(
+        handle.wait_for_codex_exit(),
+        std::time::Duration::from_secs(60),
+        || repair_session_index_automatically(true),
+    )
+    .await?;
     Ok(())
+}
+
+// 退出时不再安排下一次检查；已开始的数据库事务先完成，避免脱离启动器生命周期。
+async fn run_periodic_until_exit<F, T, C, W>(exit: F, interval: std::time::Duration, mut check: C) -> T
+where
+    F: std::future::Future<Output = T>,
+    C: FnMut() -> W,
+    W: std::future::Future<Output = ()>,
+{
+    tokio::pin!(exit);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut exit => return result,
+            _ = tokio::time::sleep(interval) => check().await,
+        }
+    }
+}
+
+async fn repair_session_index_automatically(check_setting: bool) {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        if check_setting && !codex_plus_core::settings::SettingsStore::default().load()?.provider_sync_enabled {
+            return Ok(());
+        }
+        codex_plus_data::repair_session_index(None)?;
+        Ok(())
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|result| result);
+    if let Err(error) = result {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.session_index_repair.failed",
+            json!({ "message": error.to_string() }),
+        );
+    }
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -413,7 +454,9 @@ impl LaunchHooks for LauncherHooks {
         let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
             .await
             .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        require_completed_provider_sync(&result.status, &result.message)
+        require_completed_provider_sync(&result.status, &result.message)?;
+        repair_session_index_automatically(false).await;
+        Ok(())
     }
 
     fn has_pending_remote_control_session_recoveries(&self) -> bool {
@@ -1172,6 +1215,33 @@ fn default_user_scripts_config_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn session_index_monitor_does_not_start_after_exit() {
+        let checks = std::cell::Cell::new(0);
+        let result = run_periodic_until_exit(async { 42 }, std::time::Duration::ZERO, || {
+            checks.set(checks.get() + 1);
+            std::future::ready(())
+        }).await;
+        assert_eq!(result, 42);
+        assert_eq!(checks.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_index_monitor_finishes_current_check_before_exit() {
+        let (done, exit) = tokio::sync::oneshot::channel::<()>();
+        let mut done = Some(done);
+        let finished = std::cell::Cell::new(false);
+        run_periodic_until_exit(exit, std::time::Duration::from_millis(1), || {
+            done.take().expect("only one check").send(()).unwrap();
+            let finished = &finished;
+            async move {
+                tokio::task::yield_now().await;
+                finished.set(true);
+            }
+        }).await.unwrap();
+        assert!(finished.get());
+    }
 
     #[test]
     fn parse_launch_options_accepts_manager_forwarded_ports_and_app_path() {

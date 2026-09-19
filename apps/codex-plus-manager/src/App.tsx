@@ -785,6 +785,18 @@ type TaskProgress = {
   message: string;
 };
 
+type SessionIndexRepairReport = {
+  scannedFiles: number;
+  cachedFiles: number;
+  repairedItems: number;
+  alreadyPresent: number;
+  skippedItems: number;
+  deferredItems?: number;
+  issues: string[];
+  backupPath: string | null;
+  elapsedMs: number;
+};
+
 type LogsResult = CommandResult<{
   path: string;
   text: string;
@@ -1186,6 +1198,9 @@ export function App() {
     message: t("尚未检查官方远端插件缓存。"),
   });
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
+  const [sessionIndexRepairActive, setSessionIndexRepairActive] = useState(false);
+  const sessionIndexRepairRunning = useRef(false);
+  const [sessionIndexRepairReport, setSessionIndexRepairReport] = useState<SessionIndexRepairReport | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
@@ -2083,6 +2098,7 @@ export function App() {
       await refreshSettings(true);
       await refreshLocalSessions(true);
       await refreshProviderSyncTargets(true);
+      await refreshSessionIndexRepairReport();
     }
     if (next === "zedRemote") {
       await refreshSettings(true);
@@ -2546,7 +2562,34 @@ export function App() {
     return result;
   };
 
+  const refreshSessionIndexRepairReport = async () => {
+    const result = await run(() => call<CommandResult<{ report: SessionIndexRepairReport | null }>>(
+      "load_session_index_repair_report",
+    ));
+    if (result && isSuccessStatus(result.status)) setSessionIndexRepairReport(result.report);
+  };
+
+  const repairSessionIndex = async () => {
+    if (sessionIndexRepairRunning.current || providerSyncProgress.active) return;
+    sessionIndexRepairRunning.current = true;
+    setSessionIndexRepairActive(true);
+    try {
+      const result = await run(() => call<CommandResult<SessionIndexRepairReport>>("repair_session_index"));
+      if (result) {
+        if (isSuccessStatus(result.status)) {
+          setSessionIndexRepairReport(result);
+          await refreshLocalSessions(true);
+        }
+        showNotice(t("修复会话索引"), result.message, result.status);
+      }
+    } finally {
+      sessionIndexRepairRunning.current = false;
+      setSessionIndexRepairActive(false);
+    }
+  };
+
   const syncProvidersNow = async () => {
+    if (sessionIndexRepairRunning.current) return;
     if (providerSyncProgress.active) return;
     setProviderSyncProgress({
       active: true,
@@ -3346,6 +3389,7 @@ export function App() {
         }
       },
       syncProvidersNow,
+      repairSessionIndex,
       refreshProviderSyncTargets,
       setProviderSyncTarget: (provider: string) => {
         setSelectedProviderSyncTarget(provider);
@@ -3555,6 +3599,8 @@ export function App() {
               form={settingsForm}
               sessions={localSessions}
               providerSyncProgress={providerSyncProgress}
+              sessionIndexRepairActive={sessionIndexRepairActive}
+              sessionIndexRepairReport={sessionIndexRepairReport}
               providerSyncTargets={providerSyncTargets}
               selectedProviderSyncTarget={selectedProviderSyncTarget}
               onFormChange={setSettingsForm}
@@ -3772,6 +3818,7 @@ type Actions = {
   saveDreamSkinScreenshot: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
+  repairSessionIndex: () => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
   setProviderSyncTarget: (provider: string) => void;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
@@ -6167,6 +6214,8 @@ function SessionsScreen({
   form,
   sessions,
   providerSyncProgress,
+  sessionIndexRepairActive,
+  sessionIndexRepairReport,
   providerSyncTargets,
   selectedProviderSyncTarget,
   onFormChange,
@@ -6176,6 +6225,8 @@ function SessionsScreen({
   form: BackendSettings;
   sessions: LocalSessionsResult | null;
   providerSyncProgress: ProviderSyncProgress;
+  sessionIndexRepairActive: boolean;
+  sessionIndexRepairReport: SessionIndexRepairReport | null;
   providerSyncTargets: ProviderSyncTargetsResult | null;
   selectedProviderSyncTarget: string;
   onFormChange: (value: BackendSettings) => void;
@@ -6304,7 +6355,7 @@ function SessionsScreen({
               />
               <span>
                 <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{t("启动 Codex 前整理旧对话的归属标记。")}</small>
+                <small>{t("启动前整理会话归属并检查缺失消息；运行期间自动检查索引。保存设置后生效。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -6319,12 +6370,20 @@ function SessionsScreen({
                 {t("导入文件")}
               </Button>
               <Button
-                disabled={providerSyncProgress.active || !canRepairProviderSessions}
+                disabled={providerSyncProgress.active || sessionIndexRepairActive || !canRepairProviderSessions}
                 onClick={() => void actions.syncProvidersNow()}
                 variant="outline"
               >
                 <Wrench className="h-4 w-4" />
                 {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
+              </Button>
+              <Button
+                disabled={sessionIndexRepairActive || providerSyncProgress.active}
+                onClick={() => void actions.repairSessionIndex()}
+                variant="outline"
+              >
+                <Wrench className="h-4 w-4" />
+                {sessionIndexRepairActive ? t("正在检查索引…") : t("修复会话索引")}
               </Button>
               <Button onClick={() => void actions.saveSettings()}>
                 <Save className="h-4 w-4" />
@@ -6361,6 +6420,29 @@ function SessionsScreen({
                 <div className="provider-sync-progress-fill" style={{ width: `${providerSyncProgress.percent}%` }} />
               </div>
               <small>{providerSyncProgress.message}</small>
+            </div>
+          ) : null}
+
+          {sessionIndexRepairActive ? (
+            <p role="status">{t("正在检查全部会话并恢复高可信缺失消息，首次检查可能需要较长时间…")}</p>
+          ) : null}
+          {sessionIndexRepairReport ? (
+            <div className="provider-sync-progress session-repair-progress" aria-live="polite">
+              <strong>{t("最近一次会话索引修复报告")}</strong>
+              <p>
+                {t("读取文件")} {sessionIndexRepairReport.scannedFiles} · {t("复用缓存")} {sessionIndexRepairReport.cachedFiles} · {t("耗时")} {(sessionIndexRepairReport.elapsedMs / 1000).toFixed(1)} s
+              </p>
+              <p>
+                {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("自动稍后复查")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
+              </p>
+              <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
+              {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
+              {sessionIndexRepairReport.issues.length ? (
+                <details>
+                  <summary>{t("查看检查详情")} ({sessionIndexRepairReport.issues.length})</summary>
+                  <ul>{sessionIndexRepairReport.issues.map((issue, index) => <li key={index} className="break-all">{issue}</li>)}</ul>
+                </details>
+              ) : null}
             </div>
           ) : null}
 

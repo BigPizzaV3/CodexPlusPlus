@@ -3250,6 +3250,35 @@ fn merge_manual_provider_sync_targets(
 }
 
 #[tauri::command]
+pub async fn repair_session_index() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_session_index(None))
+        .await
+        .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))
+        .and_then(|result| result);
+    match result {
+        Ok(report) => ok(
+            &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
+            json!(report),
+        ),
+        Err(error) => failed(&format!("修复会话索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn load_session_index_repair_report() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::load_session_index_repair_report(None)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index report task failed: {error}"))
+    .and_then(|result| result);
+    match result {
+        Ok(report) => ok("已读取会话索引修复报告。", json!({ "report": report })),
+        Err(error) => failed(&format!("读取会话索引修复报告失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn preview_session_index_cleanup() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| {
         codex_plus_data::preview_session_index_cleanup(None)
