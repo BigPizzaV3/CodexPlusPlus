@@ -84,6 +84,7 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
         hooks.shutdown_helper(options.helper_port).await;
         return Ok(());
     }
+    ensure_weixin_manager_started();
     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
         activate_existing_codex_app(&options).await?;
         options.status_store.save_latest(&LaunchStatus {
@@ -113,6 +114,42 @@ fn current_timestamp_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn ensure_weixin_manager_started() {
+    let result = (|| -> anyhow::Result<()> {
+        let settings = codex_plus_core::settings::SettingsStore::default().load()?;
+        if should_start_weixin_manager(settings.weixin_connect_enabled, &settings.weixin_connect_token) {
+            codex_plus_core::install::spawn_companion(
+                codex_plus_core::install::MANAGER_BINARY,
+                ["--background"],
+            )?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.weixin_manager_start_failed",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
+}
+
+fn should_start_weixin_manager(enabled: bool, token: &str) -> bool {
+    enabled && !token.trim().is_empty()
+}
+
+#[cfg(test)]
+mod weixin_startup_tests {
+    use super::should_start_weixin_manager;
+
+    #[test]
+    fn only_enabled_and_authenticated_connections_start_manager() {
+        assert!(should_start_weixin_manager(true, "test-token"));
+        assert!(!should_start_weixin_manager(false, "test-token"));
+        assert!(!should_start_weixin_manager(true, ""));
+        assert!(!should_start_weixin_manager(true, "   "));
+    }
 }
 
 fn acquire_single_instance_guard(
