@@ -58,6 +58,9 @@ pub fn run() {
                 main_window_builder = main_window_builder.icon(icon)?;
             }
             let main_window = main_window_builder.build()?;
+            if startup_is_background() {
+                main_window.hide()?;
+            }
             install_tray(app)?;
             commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window, startup_is_transient());
@@ -353,6 +356,10 @@ fn startup_is_transient() -> bool {
     std::env::args().any(|arg| arg == "--transient")
 }
 
+fn startup_is_background() -> bool {
+    std::env::args().any(|arg| arg == "--background")
+}
+
 #[tauri::command]
 fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     APP_EXITING.store(true, Ordering::SeqCst);
@@ -513,7 +520,9 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                     "guard_port": codex_plus_core::ports::manager_guard_port()
                 }),
             );
-            focus_existing_manager_window();
+            if !startup_is_background() {
+                focus_existing_manager_window();
+            }
             None
         }
         Err(error) => {
