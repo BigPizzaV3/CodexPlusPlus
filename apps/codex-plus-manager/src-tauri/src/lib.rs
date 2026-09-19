@@ -52,6 +52,8 @@ pub fn run() {
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
                     .title("Codex++ 管理工具")
+                    .visible(!startup_is_background())
+                    .focused(!startup_is_background())
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -357,6 +359,29 @@ fn startup_is_transient() -> bool {
     std::env::args().any(|arg| arg == "--transient")
 }
 
+fn startup_is_background() -> bool {
+    is_background_launch(std::env::args())
+}
+
+fn is_background_launch(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter().any(|arg| arg == "--background")
+}
+
+#[cfg(test)]
+mod manager_launch_mode_tests {
+    use super::is_background_launch;
+
+    #[test]
+    fn explicit_open_is_visible_and_only_background_flag_hides() {
+        for args in [vec!["manager"], vec!["manager", "--transient"], vec!["manager", "--show-update"]] {
+            assert!(!is_background_launch(args.into_iter().map(String::from)));
+        }
+        for args in [vec!["manager", "--background"], vec!["manager", "--show-update", "--background"]] {
+            assert!(is_background_launch(args.into_iter().map(String::from)));
+        }
+    }
+}
+
 #[tauri::command]
 fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     APP_EXITING.store(true, Ordering::SeqCst);
@@ -517,7 +542,9 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                     "guard_port": codex_plus_core::ports::manager_guard_port()
                 }),
             );
-            focus_existing_manager_window();
+            if !startup_is_background() {
+                focus_existing_manager_window();
+            }
             None
         }
         Err(error) => {
