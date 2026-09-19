@@ -127,6 +127,7 @@ pub fn run() {
             commands::load_ads,
             commands::refresh_script_market,
             commands::refresh_user_script_inventory,
+            commands::reload_user_scripts,
             commands::install_market_script,
             commands::set_user_script_enabled,
             commands::delete_user_script,
