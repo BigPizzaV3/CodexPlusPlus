@@ -329,6 +329,10 @@ fn register_main_window_events<R: tauri::Runtime>(
             }
         }
         WindowEvent::Focused(true) => {
+            // 外部实例通过 Win32 ShowWindow 唤起时，Tao 的 VISIBLE 标记可能仍为 false。
+            // 同步框架状态，否则后续 hide() 会被当作重复操作而跳过。
+            #[cfg(windows)]
+            let _ = focus_event_window.show();
             let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
         }
         WindowEvent::CloseRequested { api, .. } => {
