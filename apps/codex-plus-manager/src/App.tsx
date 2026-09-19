@@ -1331,6 +1331,15 @@ export function App() {
     return result;
   };
 
+  const reloadUserScripts = async () => {
+    const result = await run(() => call<SettingsResult>("reload_user_scripts"));
+    if (result) {
+      setSettings(result);
+      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+      showResultNotice(t("本地脚本"), result);
+    }
+  };
+
   const installMarketScript = async (id: string) => {
     const result = await run(() => call<ScriptMarketResult>("install_market_script", { id }));
     if (result) {
@@ -3356,6 +3365,7 @@ export function App() {
       refreshAds,
       refreshScriptMarket,
       refreshUserScriptInventory,
+      reloadUserScripts,
       installMarketScript,
       setUserScriptEnabled,
       deleteUserScript,
@@ -3777,6 +3787,7 @@ type Actions = {
   refreshAds: () => Promise<void>;
   refreshScriptMarket: () => Promise<void>;
   refreshUserScriptInventory: () => Promise<SettingsResult | null>;
+  reloadUserScripts: () => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
@@ -6016,6 +6027,16 @@ function ZedRemoteProjectSection({
 }
 
 function UserScriptsScreen({ settings, market, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; actions: Actions }) {
+  const [reloading, setReloading] = useState(false);
+  const reload = async () => {
+    if (reloading) return;
+    setReloading(true);
+    try {
+      await actions.reloadUserScripts();
+    } finally {
+      setReloading(false);
+    }
+  };
   const inventory = settings?.user_scripts;
   const scripts = inventory?.scripts ?? [];
   const marketScripts = market?.market.scripts ?? [];
@@ -6063,6 +6084,10 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
             <Button onClick={() => void actions.refreshCurrent()} variant="secondary">
               <RefreshCw className="h-4 w-4" />
               {t("刷新本地")}
+            </Button>
+            <Button onClick={() => void reload()} disabled={reloading} variant="secondary" title={t("应用本地脚本及开关；旧脚本可能需要刷新 Codex 页面")}>
+              <RefreshCw className={reloading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+              {t("热重载脚本")}
             </Button>
           </Toolbar>
         </CardContent>

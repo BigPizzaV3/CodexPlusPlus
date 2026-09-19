@@ -9,6 +9,44 @@ use serde_json::{Map, Value, json};
 
 use crate::script_market::MarketScript;
 
+pub const BOOTSTRAP_SCRIPT: &str = include_str!("../../../assets/inject/user-scripts-bootstrap.js");
+const RUNTIME_SCRIPT: &str = include_str!("../../../assets/inject/user-scripts-runtime.js");
+
+/// 一次性连接当前 Codex 页面；不增加轮询，也不接管 launcher 的桥接连接。
+pub async fn reload_live_scripts(
+    debug_port: u16,
+    manager: &UserScriptManager,
+) -> anyhow::Result<Value> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = live_runtime_target(&targets)?;
+    let websocket = target
+        .web_socket_debugger_url
+        .as_deref()
+        .context("Codex renderer has no WebSocket URL")?;
+    reload_scripts_at(websocket, manager).await
+}
+
+pub async fn reload_scripts_at(
+    websocket: &str,
+    manager: &UserScriptManager,
+) -> anyhow::Result<Value> {
+    let response =
+        crate::bridge::evaluate_script(websocket, &manager.build_reload_bundle()?).await?;
+    if let Some(exception) = response.pointer("/result/exceptionDetails") {
+        anyhow::bail!(
+            "脚本重载失败：{}",
+            exception
+                .pointer("/exception/description")
+                .and_then(Value::as_str)
+                .unwrap_or("renderer exception")
+        );
+    }
+    let result = parse_live_runtime_status_response(&response)?;
+    let mut inventory = manager.inventory_with_runtime_status(result.get("scripts"))?;
+    inventory["reload_mode"] = result["mode"].clone();
+    Ok(inventory)
+}
+
 /// Query the live renderer-side user-script registry through a one-shot CDP
 /// connection. This is intentionally read-only and does not touch the
 /// launcher-owned bridge websocket.
@@ -237,7 +275,7 @@ impl UserScriptManager {
         if !config.enabled {
             return Ok(String::new());
         }
-        let mut blocks = Vec::new();
+        let mut blocks = vec![RUNTIME_SCRIPT.to_string()];
         for script in self.scan_script_files(&config)? {
             if !script.enabled {
                 continue;
@@ -247,6 +285,20 @@ impl UserScriptManager {
             blocks.push(wrap_script(&script, &source));
         }
         Ok(blocks.join("\n"))
+    }
+
+    /// 即便全部禁用也必须清理上一次运行的脚本。
+    pub fn build_reload_bundle(&self) -> anyhow::Result<String> {
+        let bundle = self.build_enabled_bundle()?;
+        Ok(format!(
+            r#"(() => {{
+  {RUNTIME_SCRIPT}
+  const mode = window.__codexPlusUserScripts.prepareReload();
+  if (mode === "page") return JSON.stringify({{ mode }});
+  {bundle}
+  return JSON.stringify({{ mode, scripts: window.__codexPlusUserScripts.scripts }});
+}})()"#
+        ))
     }
 
     fn scan_scripts(
@@ -366,6 +418,7 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   window.__codexPlusUserScripts = window.__codexPlusUserScripts || {{ scripts: {{}} }};
   const key = {key};
+  window.__codexPlusUserScripts.currentKey = key;
   window.__codexPlusUserScripts.scripts[key] = {{ key, name: {name}, source: {source_name}, status: "loading", error: "", loadedAt: new Date().toISOString() }};
   try {{
 {source}
@@ -374,6 +427,8 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
   }} catch (error) {{
     window.__codexPlusUserScripts.scripts[key].status = "failed";
     window.__codexPlusUserScripts.scripts[key].error = String(error && (error.stack || error.message) || error);
+  }} finally {{
+    window.__codexPlusUserScripts.currentKey = null;
   }}
 }})();
 "#,
