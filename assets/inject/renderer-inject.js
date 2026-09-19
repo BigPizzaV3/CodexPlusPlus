@@ -407,7 +407,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "18";
+  const codexDeleteStyleVersion = "19";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -580,9 +580,7 @@
   } catch (_) {}
   window.__codexPlusConversationViewCleanup = null;
   const selectors = {
-    // 仅把真正的会话行纳入处理；底部 API 输入区域也可能复用该 data 属性，
-    // 但没有会话标题节点，不能被注入操作按钮。
-    sidebarThread: '[data-app-action-sidebar-thread-id]:has([data-thread-title])',
+    sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
     appHeader: '[class*="ApplicationMenuTopBar"], .app-header-tint',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
@@ -802,6 +800,9 @@
         pointer-events: auto;
       }
       /* Work 标签保留占位，避免与悬浮操作按钮重叠。 */
+      [data-codex-delete-row="true"]:hover span:has(> span > [data-thread-title]) > span.shrink-0.text-xs.text-tertiary,
+      [data-codex-delete-row="true"]:focus-within span:has(> span > [data-thread-title]) > span.shrink-0.text-xs.text-tertiary,
+      [data-codex-delete-row="true"].codex-session-more-open span:has(> span > [data-thread-title]) > span.shrink-0.text-xs.text-tertiary,
       [data-codex-delete-row="true"]:hover [data-codex-session-work-label],
       [data-codex-delete-row="true"]:focus-within [data-codex-session-work-label],
       [data-codex-delete-row="true"].codex-session-more-open [data-codex-session-work-label] {
@@ -8810,14 +8811,33 @@
   function markWorkLabels(row) {
     if (!row) return;
     row.querySelectorAll("span,div").forEach((node) => {
+      // 本地会话外层拖放容器与内层按钮均携带 thread-id；外层不能撤销内层标记。
+      if (node.closest(selectors.sidebarThread) !== row) return;
       const control = node.closest('button,[role="button"],a');
       const isWorkLabel = node.children.length === 0
         && /^(工作|Work)$/i.test(node.textContent.trim())
         && !node.matches(selectors.threadTitle)
         && !node.closest(`${selectors.threadTitle}, .${actionGroupClass}`)
         && (!control || control === row || !row.contains(control));
-      if (isWorkLabel) node.setAttribute("data-codex-session-work-label", "true");
-      else node.removeAttribute("data-codex-session-work-label");
+      if (isWorkLabel && !node.hasAttribute("data-codex-session-work-label")) {
+        node.setAttribute("data-codex-session-work-label", "true");
+      } else if (!isWorkLabel && node.hasAttribute("data-codex-session-work-label")) {
+        node.removeAttribute("data-codex-session-work-label");
+      }
+    });
+  }
+
+  // Bennett 1.2.4 按底部按钮的几何位置猜测挂载点，会误选会话操作区。
+  // 仅修正已误挂到会话容器的用量控件；复用原节点，保留点击事件及脚本状态。
+  function repairSidebarUsageSlot() {
+    const sidebar = document.querySelector("aside.app-shell-left-panel");
+    if (!sidebar) return;
+    const profile = sidebar.querySelector('button[aria-label="打开个人资料菜单"], button[aria-label="Open profile menu"]');
+    const footer = profile?.parentElement;
+    if (!footer || footer.closest('[data-codex-tab-conversation-drop-target], [data-app-action-sidebar-thread-id]')) return;
+    sidebar.querySelectorAll('[data-codexpp="usage-slot"]').forEach((slot) => {
+      if (!slot.closest('[data-codex-tab-conversation-drop-target], [data-app-action-sidebar-thread-id]')) return;
+      footer.appendChild(slot);
     });
   }
 
@@ -10699,6 +10719,9 @@
   }
 
   function scan() {
+    repairSidebarUsageSlot();
+    // 模式切换会重建标签；后台窗口的动画帧可能暂停，不能等延迟按钮扫描。
+    sessionRows(true).forEach(markWorkLabels);
     void installDictationSupportPatch();
     runScanStep(scanLightweight);
     requestAnimationFrame(() => runScanStep(scanDeferred));

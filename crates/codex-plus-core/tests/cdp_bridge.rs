@@ -61,17 +61,17 @@ fn screenshot_command_uses_png_from_surface() {
 #[test]
 fn sidebar_work_label_is_hidden_without_hiding_titles_or_controls() {
     let script = assets::injection_script(57321);
-    let function = script.split("  function syncActionGroupLayout(row, group) {").nth(1).unwrap()
-        .split("    if (group.dataset.codexActionLayoutStable").next().unwrap();
+    let function = script.split("  function markWorkLabels(row) {").nth(1).unwrap()
+        .split("\n  // Bennett").next().unwrap();
     let harness = format!(r#"
 const assert = require('node:assert/strict');
-const selectors = {{ threadTitle: '[data-thread-title]' }};
+const selectors = {{ threadTitle: '[data-thread-title]', sidebarThread: '[data-app-action-sidebar-thread-id]' }};
 const actionGroupClass = 'actions';
 function label(text, kind = '') {{
   const attrs = new Set();
   return {{ textContent: text, children: [], attrs,
     matches: () => kind === 'title',
-    closest: (selector) => selector.includes('button')
+    closest: (selector) => selector === selectors.sidebarThread ? row : selector.includes('button')
       ? (kind === 'control' ? {{}} : row)
       : (kind === 'title-child' || kind === 'action' ? {{}} : null),
     hasAttribute: (key) => attrs.has(key),
@@ -82,22 +82,12 @@ function label(text, kind = '') {{
 const nodes = [label('工作'), label('Work'), label('工作', 'title'),
   label('Work', 'title-child'), label('工作', 'control'), label('Work', 'action'), label('其他')];
 const row = {{ querySelectorAll: () => nodes, contains: () => true }};
-function markWorkLabels(row) {{
-  row.querySelectorAll("span,div").forEach((node) => {{
-    const control = node.closest('button,[role="button"],a');
-    const isWorkLabel = node.children.length === 0
-      && /^(工作|Work)$/i.test(node.textContent.trim())
-      && !node.matches(selectors.threadTitle)
-      && !node.closest(`${{selectors.threadTitle}}, .${{actionGroupClass}}`)
-      && (!control || control === row || !row.contains(control));
-    if (isWorkLabel) node.setAttribute("data-codex-session-work-label", "true");
-    else node.removeAttribute("data-codex-session-work-label");
-  }});
-}}
-function sync(row, group) {{ {function} }}
+function sync(row, group) {{ {function}
 sync(row, {{}});
 const marked = () => nodes.map(node => node.attrs.has('data-codex-session-work-label'));
 assert.deepStrictEqual(marked(), [true, true, false, false, false, false, false]);
+sync({{ querySelectorAll: () => nodes }}, {{}});
+assert.strictEqual(marked()[0], true, 'outer row must preserve inner label');
 nodes[0].textContent = '其他';
 sync(row, {{}});
 assert.strictEqual(marked()[0], false);
@@ -109,6 +99,33 @@ assert.strictEqual(marked()[0], false);
             "[data-codex-delete-row=\"true\"]{state} [data-codex-session-work-label]"
         )));
     }
+}
+
+#[test]
+fn sidebar_usage_slot_moves_only_misplaced_controls() {
+    let script = assets::injection_script(57321);
+    let function = script.split("  function repairSidebarUsageSlot() {").nth(1).unwrap()
+        .split("\n  function nativeActionButtonsFromRow").next().unwrap();
+    let harness = format!(r#"
+const assert = require('node:assert/strict');
+let moves = 0;
+const misplaced = {{ closest: () => misplaced.inRow, inRow: true }};
+const correct = {{ closest: () => null }};
+const footer = {{ closest: () => null, appendChild: (slot) => {{
+  assert.strictEqual(slot, misplaced); moves++; slot.inRow = false;
+}} }};
+const sidebar = {{ querySelector: () => ({{ parentElement: footer }}),
+  querySelectorAll: () => [misplaced, correct] }};
+const document = {{ querySelector: () => sidebar }};
+function repair() {{ {function}
+repair(); repair();
+assert.strictEqual(moves, 1);
+sidebar.querySelector = () => null;
+repair();
+assert.strictEqual(moves, 1);
+"#);
+    let output = Command::new("node").args(["-e", &harness]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
