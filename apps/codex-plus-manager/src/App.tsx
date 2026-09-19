@@ -795,6 +795,16 @@ type SessionIndexRepairReport = {
   issues: string[];
   backupPath: string | null;
   elapsedMs: number;
+  checkedAtMs?: number;
+  pendingDetails?: {
+    threadId: string | null;
+    turnId: string | null;
+    reason: string;
+    state: "waiting" | "blocked";
+    firstSeenAtMs: number;
+    lastCheckedAtMs: number;
+    checks: number;
+  }[];
 };
 
 type LogsResult = CommandResult<{
@@ -1200,6 +1210,7 @@ export function App() {
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
   const [sessionIndexRepairActive, setSessionIndexRepairActive] = useState(false);
   const sessionIndexRepairRunning = useRef(false);
+  const sessionIndexReportLoading = useRef(false);
   const [sessionIndexRepairReport, setSessionIndexRepairReport] = useState<SessionIndexRepairReport | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
@@ -2562,11 +2573,25 @@ export function App() {
     return result;
   };
 
-  const refreshSessionIndexRepairReport = async () => {
-    const result = await run(() => call<CommandResult<{ report: SessionIndexRepairReport | null }>>(
-      "load_session_index_repair_report",
-    ));
-    if (result && isSuccessStatus(result.status)) setSessionIndexRepairReport(result.report);
+  const refreshSessionIndexRepairReport = async (isCurrent = () => true) => {
+    if (sessionIndexReportLoading.current || sessionIndexRepairRunning.current) return;
+    sessionIndexReportLoading.current = true;
+    try {
+      // 持久报告读取失败时保留现有结果，后台刷新不触发全局通知或忙碌状态。
+      const result = await call<CommandResult<{ report: SessionIndexRepairReport | null }>>(
+        "load_session_index_repair_report",
+      );
+      if (isCurrent() && !sessionIndexRepairRunning.current && isSuccessStatus(result.status)) {
+        setSessionIndexRepairReport((previous) => {
+          if ((previous?.checkedAtMs ?? 0) > (result.report?.checkedAtMs ?? 0)) return previous;
+          return result.report;
+        });
+      }
+    } catch {
+      // 下次页面刷新再读；读取报告本身不会启动修复。
+    } finally {
+      sessionIndexReportLoading.current = false;
+    }
   };
 
   const repairSessionIndex = async () => {
@@ -3099,6 +3124,18 @@ export function App() {
       stopListening?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (route !== "sessions") return;
+    let disposed = false;
+    const refresh = () => void refreshSessionIndexRepairReport(() => !disposed);
+    refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [route]);
 
   useEffect(() => {
     if (route !== "settings" || pendingSettingsSection !== "stepwise") return;
@@ -6429,14 +6466,32 @@ function SessionsScreen({
           {sessionIndexRepairReport ? (
             <div className="provider-sync-progress session-repair-progress" aria-live="polite">
               <strong>{t("最近一次会话索引修复报告")}</strong>
+              <p>{t("最后检查：")}{sessionIndexRepairReport.checkedAtMs ? formatTime(sessionIndexRepairReport.checkedAtMs) : t("旧版报告未记录时间")}</p>
               <p>
                 {t("读取文件")} {sessionIndexRepairReport.scannedFiles} · {t("复用缓存")} {sessionIndexRepairReport.cachedFiles} · {t("耗时")} {(sessionIndexRepairReport.elapsedMs / 1000).toFixed(1)} s
               </p>
               <p>
-                {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("自动稍后复查")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
+                {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
+              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
+              <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
               {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
+              {sessionIndexRepairReport.pendingDetails?.length ? (
+                <details>
+                  <summary>{t("等待与持续无法恢复详情")} ({sessionIndexRepairReport.pendingDetails.length})</summary>
+                  <ul>
+                    {sessionIndexRepairReport.pendingDetails.map((item, index) => (
+                      <li key={`${item.threadId}-${item.turnId}-${index}`} className="break-all my-3">
+                        <strong>{item.state === "waiting" ? t("短暂等待") : t("持续无法恢复")}</strong>
+                        <p>{t("任务 ID：")}{item.threadId ?? "—"} · {t("轮次 ID：")}{item.turnId ?? "—"}</p>
+                        <p>{t("原因：")}{item.reason}</p>
+                        <small>{t("首次发现：")}{formatTime(item.firstSeenAtMs)} · {t("最后检查：")}{formatTime(item.lastCheckedAtMs)} · {t("检查次数：")}{item.checks}</small>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
               {sessionIndexRepairReport.issues.length ? (
                 <details>
                   <summary>{t("查看检查详情")} ({sessionIndexRepairReport.issues.length})</summary>

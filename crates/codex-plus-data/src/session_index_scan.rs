@@ -10,6 +10,19 @@ use std::{
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct TurnBoundary {
+    pub start_ordinal: i64,
+    pub started_at: i64,
+    pub end_ordinal: i64,
+    pub completed_at: i64,
+    pub status: String,
+    pub error_json: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub first_user_projection: Option<(String, i64)>,
+    pub first_user_response_ordinal: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Candidate {
     pub thread: String,
     pub turn: String,
@@ -19,6 +32,23 @@ pub(crate) struct Candidate {
     pub goal: bool,
     #[serde(default)]
     pub projection: Option<(String, i64)>,
+    #[serde(default)]
+    pub following_turn: Option<(String, i64)>,
+    #[serde(default)]
+    pub turn_boundary: Option<TurnBoundary>,
+    #[serde(default)]
+    pub start_ordinal: Option<i64>,
+}
+
+fn event_time(row: &Value, field: &str) -> Option<i64> {
+    let payload = &row["payload"][field];
+    if !payload.is_null() {
+        return payload.as_i64().filter(|time| *time >= 0);
+    }
+    chrono::DateTime::parse_from_rfc3339(row["timestamp"].as_str()?)
+        .ok()
+        .map(|time| time.timestamp())
+        .filter(|time| *time >= 0)
 }
 
 fn text_content(value: &Value) -> Option<String> {
@@ -56,6 +86,17 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
     let mut inherited_from = HashSet::<String>::new();
     let mut own_history_start = None::<i64>;
     let mut current_turn = None::<String>;
+    let mut last_started_turn = None::<String>;
+    let mut following_turns = HashMap::<String, Option<(String, i64)>>::new();
+    let mut active_boundary = None::<(String, i64, i64)>;
+    let mut started_turns = HashSet::<String>::new();
+    let mut duplicate_starts = HashSet::<String>::new();
+    let mut start_ordinals = HashMap::<String, i64>::new();
+    let mut ended_turns = HashSet::<String>::new();
+    let mut invalid_boundaries = HashSet::<String>::new();
+    let mut boundaries = HashMap::<String, TurnBoundary>::new();
+    let mut first_user_projections = HashMap::<String, (String, i64)>::new();
+    let mut first_user_responses = HashMap::<String, i64>::new();
     let mut responses = HashMap::<String, Vec<Candidate>>::new();
     let mut evidence = HashSet::<(String, String)>::new();
     let mut projections = HashMap::<(String, String), Vec<(String, i64)>>::new();
@@ -117,16 +158,132 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
             continue;
         }
         if row["type"] == "event_msg" {
+            if p["type"] == "item_completed"
+                && matches!(
+                    p["item"]["type"].as_str(),
+                    Some("UserMessage" | "userMessage")
+                )
+            {
+                if let Some(turn) = p["turn_id"].as_str().or(current_turn.as_deref()) {
+                    if let (Some(id), Some(ordinal)) = (
+                        p["item"]["id"].as_str().filter(|id| !id.is_empty()),
+                        row["ordinal"].as_i64().filter(|ordinal| *ordinal >= 0),
+                    ) {
+                        if p["thread_id"].as_str() == Some(thread)
+                            && p["turn_id"].as_str() == Some(turn)
+                        {
+                            let first = first_user_projections
+                                .entry(turn.to_owned())
+                                .or_insert((id.to_owned(), ordinal));
+                            if ordinal < first.1 {
+                                *first = (id.to_owned(), ordinal);
+                            } else if ordinal == first.1 && id != first.0 {
+                                invalid_boundaries.insert(turn.to_owned());
+                            }
+                        } else {
+                            invalid_boundaries.insert(turn.to_owned());
+                        }
+                    } else {
+                        invalid_boundaries.insert(turn.to_owned());
+                    }
+                }
+            }
             match p["type"].as_str() {
                 Some("task_started") => {
+                    if let Some((interrupted, _, _)) = active_boundary.take() {
+                        invalid_boundaries.insert(interrupted);
+                    }
                     current_turn = p["turn_id"].as_str().map(str::to_owned);
+                    let started = current_turn.as_ref().filter(|id| !id.is_empty());
+                    if let Some(turn) = started {
+                        if !started_turns.insert(turn.clone()) {
+                            duplicate_starts.insert(turn.clone());
+                            invalid_boundaries.insert(turn.clone());
+                        }
+                        if ended_turns.contains(turn) {
+                            invalid_boundaries.insert(turn.clone());
+                        }
+                        if let Some(ordinal) =
+                            row["ordinal"].as_i64().filter(|ordinal| *ordinal >= 0)
+                        {
+                            start_ordinals.entry(turn.clone()).or_insert(ordinal);
+                        }
+                        if let (Some(ordinal), Some(time)) = (
+                            row["ordinal"].as_i64().filter(|ordinal| *ordinal >= 0),
+                            event_time(&row, "started_at"),
+                        ) {
+                            active_boundary = Some((turn.clone(), ordinal, time));
+                        }
+                    }
+                    if let Some(previous) = last_started_turn.take() {
+                        if started.is_none_or(|id| id != &previous) {
+                            // 只接受紧接的真实开始边界；缺失信息不得跳到更晚的轮次补猜。
+                            let following = started.and_then(|id| {
+                                row["ordinal"]
+                                    .as_i64()
+                                    .filter(|ordinal| *ordinal >= 0)
+                                    .map(|ordinal| (id.clone(), ordinal))
+                            });
+                            following_turns.entry(previous).or_insert(following);
+                        }
+                    }
+                    last_started_turn = started.cloned();
                     if let Some((_, _, turn)) = goal.as_mut() {
                         if turn.is_none() {
                             *turn = current_turn.clone();
                         }
                     }
                 }
-                Some("task_complete" | "task_failed" | "turn_aborted") => current_turn = None,
+                Some(kind @ ("task_complete" | "task_failed" | "turn_aborted")) => {
+                    let terminal_turn = p["turn_id"].as_str().or(current_turn.as_deref());
+                    if let Some(turn) = terminal_turn {
+                        if !ended_turns.insert(turn.to_owned()) {
+                            invalid_boundaries.insert(turn.to_owned());
+                        }
+                        if let Some((active, start_ordinal, started_at)) = active_boundary.take() {
+                            if active != turn
+                                || (!p["started_at"].is_null()
+                                    && p["started_at"].as_i64() != Some(started_at))
+                            {
+                                invalid_boundaries.insert(active);
+                                invalid_boundaries.insert(turn.to_owned());
+                            } else if let (Some(end_ordinal), Some(completed_at)) = (
+                                row["ordinal"]
+                                    .as_i64()
+                                    .filter(|ordinal| *ordinal > start_ordinal),
+                                event_time(&row, "completed_at").filter(|time| *time >= started_at),
+                            ) {
+                                let error_json =
+                                    (!p["error"].is_null()).then(|| p["error"].to_string());
+                                let status = match kind {
+                                    "turn_aborted" => "interrupted",
+                                    "task_failed" => "failed",
+                                    _ if error_json.is_some() => "failed",
+                                    _ => "completed",
+                                };
+                                boundaries.insert(
+                                    turn.to_owned(),
+                                    TurnBoundary {
+                                        start_ordinal,
+                                        started_at,
+                                        end_ordinal,
+                                        completed_at,
+                                        status: status.to_owned(),
+                                        error_json,
+                                        duration_ms: p["duration_ms"]
+                                            .as_i64()
+                                            .filter(|duration| *duration >= 0),
+                                        first_user_projection: None,
+                                        first_user_response_ordinal: None,
+                                    },
+                                );
+                            }
+                        }
+                    } else if let Some((active, _, _)) = active_boundary.take() {
+                        invalid_boundaries.insert(active);
+                    }
+                    current_turn = None;
+                }
                 Some("thread_goal_updated") => {
                     if p["threadId"].as_str() != Some(thread) {
                         continue;
@@ -161,9 +318,14 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                         (p["turn_id"].as_str(), text_content(&p["item"]["content"]))
                     {
                         if ordinary(&text) {
-                            if let (Some(id), Some(ordinal)) = (p["item"]["id"].as_str(), row["ordinal"].as_i64()) {
+                            if let (Some(id), Some(ordinal)) =
+                                (p["item"]["id"].as_str(), row["ordinal"].as_i64())
+                            {
                                 if !id.is_empty() && ordinal >= 0 {
-                                    projections.entry((turn.to_owned(), text.clone())).or_default().push((id.to_owned(), ordinal));
+                                    projections
+                                        .entry((turn.to_owned(), text.clone()))
+                                        .or_default()
+                                        .push((id.to_owned(), ordinal));
                                 }
                             }
                             evidence.insert((turn.to_owned(), text));
@@ -177,6 +339,32 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
             continue;
         }
         let meta = &p["internal_chat_message_metadata_passthrough"];
+        // 附件消息也占据首条用户输入位置，不能因无法恢复为纯文本而被后续 steering 越过。
+        let visible_text = p["content"]
+            .as_array()
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        if ordinary(&visible_text) {
+            if let Some(turn) = meta["turn_id"].as_str().or(current_turn.as_deref()) {
+                if let Some(ordinal) = row["ordinal"].as_i64().filter(|ordinal| *ordinal >= 0) {
+                    if meta["turn_id"].as_str() == Some(turn) {
+                        let first = first_user_responses
+                            .entry(turn.to_owned())
+                            .or_insert(ordinal);
+                        *first = (*first).min(ordinal);
+                    } else {
+                        invalid_boundaries.insert(turn.to_owned());
+                    }
+                } else {
+                    invalid_boundaries.insert(turn.to_owned());
+                }
+            }
+        }
         let (Some(turn), Some(ordinal), Some(text)) = (
             meta["turn_id"].as_str(),
             row["ordinal"].as_i64(),
@@ -201,6 +389,9 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     created: *created,
                     goal: true,
                     projection: None,
+                    following_turn: None,
+                    turn_boundary: None,
+                    start_ordinal: None,
                 });
                 seen_goals.insert(objective.clone());
                 goal = None;
@@ -231,6 +422,9 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     created,
                     goal: false,
                     projection: None,
+                    following_turn: None,
+                    turn_boundary: None,
+                    start_ordinal: None,
                 });
         }
     }
@@ -238,10 +432,15 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
         for (index, source) in candidates.iter().enumerate() {
             let mut candidate = source.clone();
             let key = (candidate.turn.clone(), candidate.text.clone());
-            let next = candidates[index + 1..].iter().find(|c| c.text == candidate.text).map(|c| c.ordinal);
+            let next = candidates[index + 1..]
+                .iter()
+                .find(|c| c.text == candidate.text)
+                .map(|c| c.ordinal);
             if let Some(items) = projections.get_mut(&key) {
                 // 每条 response 只匹配其后、下一次同文 response 之前的完成事件。
-                if let Some(index) = items.iter().position(|(_, ordinal)| *ordinal > candidate.ordinal && next.is_none_or(|next| *ordinal < next)) {
+                if let Some(index) = items.iter().position(|(_, ordinal)| {
+                    *ordinal > candidate.ordinal && next.is_none_or(|next| *ordinal < next)
+                }) {
                     candidate.projection = Some(items.remove(index));
                 }
             }
@@ -249,6 +448,51 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                 result.push(candidate);
             }
         }
+    }
+    for (turn, boundary) in &mut boundaries {
+        boundary.first_user_projection = first_user_projections.get(turn).cloned();
+        boundary.first_user_response_ordinal = first_user_responses.get(turn).copied();
+        if boundary
+            .first_user_projection
+            .as_ref()
+            .is_some_and(|(_, ordinal)| {
+                *ordinal <= boundary.start_ordinal || *ordinal >= boundary.end_ordinal
+            })
+            || boundary.first_user_response_ordinal.is_some_and(|ordinal| {
+                ordinal <= boundary.start_ordinal || ordinal >= boundary.end_ordinal
+            })
+        {
+            invalid_boundaries.insert(turn.clone());
+        }
+    }
+    for candidate in &mut result {
+        candidate.start_ordinal = start_ordinals
+            .get(&candidate.turn)
+            .filter(|ordinal| {
+                !duplicate_starts.contains(&candidate.turn) && **ordinal < candidate.ordinal
+            })
+            .copied();
+        candidate.turn_boundary = boundaries
+            .get(&candidate.turn)
+            .filter(|boundary| {
+                !invalid_boundaries.contains(&candidate.turn)
+                    && boundary.start_ordinal < candidate.ordinal
+                    && candidate.ordinal < boundary.end_ordinal
+                    && candidate.projection.as_ref().is_none_or(|(_, ordinal)| {
+                        boundary.start_ordinal < *ordinal && *ordinal < boundary.end_ordinal
+                    })
+            })
+            .cloned();
+        candidate.following_turn = following_turns
+            .get(&candidate.turn)
+            .and_then(|following| following.as_ref())
+            .filter(|(id, ordinal)| {
+                candidate.start_ordinal.is_some()
+                    && !duplicate_starts.contains(id)
+                    && id != &candidate.turn
+                    && *ordinal > candidate.ordinal
+            })
+            .cloned();
     }
     result.sort_by_key(|candidate| candidate.ordinal);
     Ok(result)
@@ -300,6 +544,358 @@ mod tests {
     }
     fn meta() -> Value {
         json!({"type":"session_meta","payload":{"id":"t"}})
+    }
+
+    fn start_at(turn: &str, ordinal: i64) -> Value {
+        let mut row = start(turn);
+        row["ordinal"] = json!(ordinal);
+        row
+    }
+
+    fn confirmed_message_rows() -> Vec<Value> {
+        vec![
+            meta(),
+            start_at("a", 1),
+            message("a", "原文", 2),
+            json!({"type":"event_msg","ordinal":3,"payload":{"type":"user_message","turn_id":"a","message":"原文"}}),
+        ]
+    }
+
+    #[test]
+    fn following_turn_uses_immediate_task_started_even_without_completion() {
+        for completed in [false, true] {
+            let mut rows = confirmed_message_rows();
+            if completed {
+                rows.push(json!({"type":"event_msg","ordinal":4,"payload":{"type":"task_complete","turn_id":"a"}}));
+            }
+            rows.extend([start_at("b", 5), start_at("c", 8)]);
+            let candidates = scan_rows(rows, "").unwrap();
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].following_turn, Some(("b".into(), 5)));
+        }
+    }
+
+    #[test]
+    fn following_turn_requires_distinct_valid_boundary_after_candidate() {
+        for next in [
+            None,
+            Some(start("b")),
+            Some(start_at("b", -1)),
+            Some(start_at("b", 2)),
+            Some(start_at("a", 5)),
+            Some(
+                json!({"type":"event_msg","ordinal":5,"payload":{"type":"task_complete","turn_id":"b"}}),
+            ),
+            Some(
+                json!({"type":"event_msg","ordinal":5,"payload":{"type":"task_started","turn_id":"b","thread_id":"other"}}),
+            ),
+            Some(
+                json!({"type":"event_msg","ordinal":5,"payload":{"type":"task_started","turn_id":"b","threadId":"other"}}),
+            ),
+        ] {
+            let mut rows = confirmed_message_rows();
+            rows.extend(next);
+            let candidates = scan_rows(rows, "").unwrap();
+            assert_eq!(candidates.len(), 1);
+            assert!(candidates[0].following_turn.is_none());
+        }
+    }
+
+    #[test]
+    fn following_turn_does_not_skip_an_unverifiable_intermediate_start() {
+        for next in [
+            start("b"),
+            start_at("b", -1),
+            start_at("", 5),
+            json!({"type":"event_msg","ordinal":5,"payload":{"type":"task_started"}}),
+        ] {
+            let mut rows = confirmed_message_rows();
+            rows.extend([next, start_at("c", 8)]);
+            let candidates = scan_rows(rows, "").unwrap();
+            assert_eq!(candidates.len(), 1);
+            assert!(candidates[0].following_turn.is_none());
+        }
+    }
+
+    #[test]
+    fn following_turn_ignores_inherited_history_and_foreign_thread_events() {
+        let rows = vec![
+            json!({"type":"session_meta","ordinal":0,"payload":{"id":"t","parent_thread_id":"parent","subagent_history_start_ordinal":5}}),
+            json!({"type":"session_meta","ordinal":1,"payload":{"id":"parent"}}),
+            start_at("parent-a", 2),
+            start_at("parent-b", 3),
+            start_at("a", 5),
+            message("a", "原文", 6),
+            json!({"type":"event_msg","ordinal":7,"payload":{"type":"user_message","turn_id":"a","message":"原文"}}),
+            json!({"type":"event_msg","ordinal":8,"payload":{"type":"task_started","turn_id":"parent-c","thread_id":"parent"}}),
+            start_at("b", 9),
+        ];
+        let candidates = scan_rows(rows, "").unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].following_turn, Some(("b".into(), 9)));
+    }
+
+    #[test]
+    fn following_turn_is_optional_in_older_cached_candidates() {
+        let candidate: Candidate = serde_json::from_value(json!({
+            "thread":"t", "turn":"a", "text":"原文", "ordinal":2,
+            "created":1000, "goal":false,
+        }))
+        .unwrap();
+        assert!(candidate.following_turn.is_none());
+        assert!(candidate.turn_boundary.is_none());
+        assert!(candidate.start_ordinal.is_none());
+    }
+
+    #[test]
+    fn following_turn_rejects_repeated_source_or_destination_starts() {
+        for extra in [start_at("a", 8), start_at("b", 8)] {
+            let mut rows = confirmed_message_rows();
+            rows.extend([start_at("b", 5), extra]);
+            let items = scan_rows(rows, "").unwrap();
+            assert!(items[0].following_turn.is_none());
+        }
+        let mut rows = confirmed_message_rows();
+        rows.push(start_at("b", 5));
+        let items = scan_rows(rows, "").unwrap();
+        assert_eq!(items[0].start_ordinal, Some(1));
+        assert_eq!(items[0].following_turn, Some(("b".into(), 5)));
+    }
+
+    #[test]
+    fn following_turn_requires_unique_source_start_ordinal() {
+        let mut rows = confirmed_message_rows();
+        rows[1].as_object_mut().unwrap().remove("ordinal");
+        rows.push(start_at("b", 5));
+        let items = scan_rows(rows, "").unwrap();
+        assert!(items[0].start_ordinal.is_none());
+        assert!(items[0].following_turn.is_none());
+    }
+
+    fn complete_boundary_rows() -> Vec<Value> {
+        let mut rows = confirmed_message_rows();
+        rows[1]["payload"]["started_at"] = json!(100);
+        rows.push(json!({"type":"event_msg","ordinal":5,"payload":{
+            "type":"task_complete","turn_id":"a","started_at":100,
+            "completed_at":105,"duration_ms":5000,
+        }}));
+        rows
+    }
+
+    #[test]
+    fn complete_turn_boundary_preserves_terminal_status_times_and_errors() {
+        for (kind, error, status) in [
+            ("task_complete", Value::Null, "completed"),
+            (
+                "task_complete",
+                json!({"message":"failure","codex_error_info":"other"}),
+                "failed",
+            ),
+            ("task_failed", Value::Null, "failed"),
+            ("turn_aborted", Value::Null, "interrupted"),
+        ] {
+            let mut rows = complete_boundary_rows();
+            rows[4]["payload"]["type"] = json!(kind);
+            rows[4]["payload"]["error"] = error.clone();
+            let items = scan_rows(rows, "").unwrap();
+            let boundary = items[0].turn_boundary.as_ref().unwrap();
+            assert_eq!((boundary.start_ordinal, boundary.end_ordinal), (1, 5));
+            assert_eq!((boundary.started_at, boundary.completed_at), (100, 105));
+            assert_eq!(boundary.status, status);
+            assert_eq!(boundary.duration_ms, Some(5000));
+            assert_eq!(
+                boundary.error_json,
+                (!error.is_null()).then(|| error.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn complete_turn_boundary_requires_identity_ordinals_and_times() {
+        for invalid in 0..11 {
+            let mut rows = complete_boundary_rows();
+            match invalid {
+                0 => {
+                    rows[1].as_object_mut().unwrap().remove("ordinal");
+                }
+                1 => {
+                    rows[1]["payload"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("started_at");
+                }
+                2 => {
+                    rows[4].as_object_mut().unwrap().remove("ordinal");
+                }
+                3 => {
+                    rows[4]["payload"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("completed_at");
+                }
+                4 => rows[4]["payload"]["turn_id"] = json!("other"),
+                5 => rows[4]["payload"]["started_at"] = json!(101),
+                6 => rows[4]["payload"]["completed_at"] = json!(99),
+                7 => rows[4]["ordinal"] = json!(2),
+                8 => rows[1]["ordinal"] = json!(2),
+                9 => rows[1]["ordinal"] = json!(-1),
+                10 => rows[4]["payload"]["thread_id"] = json!("other"),
+                _ => unreachable!(),
+            }
+            let items = scan_rows(rows, "").unwrap();
+            assert_eq!(items.len(), 1);
+            assert!(items[0].turn_boundary.is_none(), "invalid case {invalid}");
+        }
+    }
+
+    #[test]
+    fn complete_turn_boundary_rejects_duplicates_interleaving_and_late_projection() {
+        for invalid in 0..6 {
+            let mut rows = complete_boundary_rows();
+            match invalid {
+                0 => rows.insert(2, rows[1].clone()),
+                1 => rows.push(rows[4].clone()),
+                2 => rows.insert(4, start_at("other", 4)),
+                3 => rows.push(start_at("a", 8)),
+                4 => rows.insert(1, json!({"type":"event_msg","ordinal":0,"payload":{"type":"task_complete","turn_id":"a","completed_at":99}})),
+                5 => rows.push(json!({"type":"event_msg","ordinal":6,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"late","type":"UserMessage","content":[{"type":"text","text":"原文"}]}}})),
+                _ => unreachable!(),
+            }
+            let items = scan_rows(rows, "").unwrap();
+            assert_eq!(items.len(), 1);
+            assert!(items[0].turn_boundary.is_none(), "invalid case {invalid}");
+        }
+    }
+
+    #[test]
+    fn complete_turn_boundary_can_use_timestamp_and_unambiguous_current_turn() {
+        let mut rows = complete_boundary_rows();
+        rows[1]["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("started_at");
+        rows[1]["timestamp"] = json!("1970-01-01T00:01:40Z");
+        rows[4]["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("completed_at");
+        rows[4]["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("turn_id");
+        rows[4]["timestamp"] = json!("1970-01-01T00:01:45Z");
+        let items = scan_rows(rows, "").unwrap();
+        let boundary = items[0].turn_boundary.as_ref().unwrap();
+        assert_eq!((boundary.started_at, boundary.completed_at), (100, 105));
+    }
+
+    #[test]
+    fn complete_turn_boundary_applies_to_goals_and_verified_projection() {
+        let mut rows = complete_boundary_rows();
+        rows[3] = json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"native","type":"UserMessage","content":[{"type":"text","text":"原文"}]}}});
+        let projected = scan_rows(rows, "").unwrap();
+        assert_eq!(projected[0].projection, Some(("native".into(), 4)));
+        assert!(projected[0].turn_boundary.is_some());
+
+        let mut rows = complete_boundary_rows();
+        rows.insert(1, goal("t"));
+        rows[3] = message(
+            "a",
+            "<codex_internal_context><objective>\n原文\n</objective></codex_internal_context>",
+            2,
+        );
+        rows.remove(4);
+        rows.push(start_at("b", 6));
+        let goals = scan_rows(rows, "").unwrap();
+        assert_eq!(goals.len(), 1);
+        assert!(goals[0].goal);
+        assert!(goals[0].turn_boundary.is_some());
+        assert_eq!(goals[0].following_turn, Some(("b".into(), 6)));
+    }
+
+    #[test]
+    fn boundary_first_user_evidence_includes_attachments_before_text_steering() {
+        let mut rows = complete_boundary_rows();
+        rows[2] = message("a", "原文", 6);
+        rows[3]["ordinal"] = json!(7);
+        rows[4]["ordinal"] = json!(10);
+        rows.insert(2, json!({"type":"response_item","ordinal":2,"payload":{"role":"user","content":[{"type":"input_image","image_url":"local"}],"internal_chat_message_metadata_passthrough":{"turn_id":"a"}}}));
+        rows.insert(3, json!({"type":"event_msg","ordinal":3,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"attachment","type":"UserMessage","content":[{"type":"image","image_url":"local"}]}}}));
+        let items = scan_rows(rows, "").unwrap();
+        assert_eq!(items.len(), 1);
+        let boundary = items[0].turn_boundary.as_ref().unwrap();
+        assert_eq!(
+            boundary.first_user_projection,
+            Some(("attachment".into(), 3))
+        );
+        assert_eq!(boundary.first_user_response_ordinal, Some(2));
+        assert_eq!(items[0].ordinal, 6);
+    }
+
+    #[test]
+    fn boundary_rejects_unidentified_user_projection_and_response() {
+        for invalid in 0..6 {
+            let mut rows = complete_boundary_rows();
+            let mut item = json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"native","type":"UserMessage","content":[{"type":"image","image_url":"local"}]}}});
+            match invalid {
+                0 => {
+                    item["payload"]["item"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("id");
+                }
+                1 => {
+                    item.as_object_mut().unwrap().remove("ordinal");
+                }
+                2 => {
+                    item["payload"].as_object_mut().unwrap().remove("turn_id");
+                }
+                3 => {
+                    item["payload"].as_object_mut().unwrap().remove("thread_id");
+                }
+                4 | 5 => {
+                    item = message("a", "附件", 4);
+                    item["payload"]["content"] =
+                        json!([{"type":"input_image","image_url":"local"}]);
+                    if invalid == 4 {
+                        item.as_object_mut().unwrap().remove("ordinal");
+                    } else {
+                        item["payload"]["internal_chat_message_metadata_passthrough"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("turn_id");
+                    }
+                }
+                _ => unreachable!(),
+            }
+            rows.insert(4, item);
+            let items = scan_rows(rows, "").unwrap();
+            assert_eq!(items.len(), 1);
+            assert!(items[0].turn_boundary.is_none(), "invalid case {invalid}");
+        }
+    }
+
+    #[test]
+    fn boundary_first_user_response_excludes_internal_and_environment_messages() {
+        let mut rows = complete_boundary_rows();
+        rows[2]["ordinal"] = json!(6);
+        rows[3]["ordinal"] = json!(7);
+        rows[4]["ordinal"] = json!(8);
+        rows.insert(
+            2,
+            message("a", "<environment_context>环境</environment_context>", 2),
+        );
+        rows.insert(
+            3,
+            message(
+                "a",
+                "<codex_internal_context>续执行</codex_internal_context>",
+                3,
+            ),
+        );
+        let items = scan_rows(rows, "").unwrap();
+        let boundary = items[0].turn_boundary.as_ref().unwrap();
+        assert_eq!(boundary.first_user_response_ordinal, Some(6));
     }
 
     #[test]

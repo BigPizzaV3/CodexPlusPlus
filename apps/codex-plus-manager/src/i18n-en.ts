@@ -5,6 +5,20 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "最后检查：": "Last checked: ",
+  "旧版报告未记录时间": "Timestamp unavailable in this older report",
+  "短暂等待": "Waiting for records to settle",
+  "持续无法恢复": "Still unable to restore",
+  "等待与持续无法恢复详情": "Waiting and unresolved items",
+  "任务 ID：": "Task ID: ",
+  "轮次 ID：": "Turn ID: ",
+  "原因：": "Reason: ",
+  "首次发现：": "First seen: ",
+  "检查次数：": "Checks: ",
+  "自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":
+    "Automatic checks require the Codex++ launcher to be running and automatic repair to be enabled and saved. This page refreshes the report every 15 seconds without starting a repair; another check does not guarantee recovery.",
+  "短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。":
+    "Items wait for up to 30 minutes; when both the original message and its record file have been unchanged for more than 24 hours, the item goes directly to review. A missing native turn or completion state means there is insufficient evidence to safely restore it; later checks will still verify it.",
   "主导航": "Main navigation",
   "工作区": "Workspace",
   "扩展": "Extensions",
