@@ -82,6 +82,18 @@ function label(text, kind = '') {{
 const nodes = [label('工作'), label('Work'), label('工作', 'title'),
   label('Work', 'title-child'), label('工作', 'control'), label('Work', 'action'), label('其他')];
 const row = {{ querySelectorAll: () => nodes, contains: () => true }};
+function markWorkLabels(row) {{
+  row.querySelectorAll("span,div").forEach((node) => {{
+    const control = node.closest('button,[role="button"],a');
+    const isWorkLabel = node.children.length === 0
+      && /^(工作|Work)$/i.test(node.textContent.trim())
+      && !node.matches(selectors.threadTitle)
+      && !node.closest(`${{selectors.threadTitle}}, .${{actionGroupClass}}`)
+      && (!control || control === row || !row.contains(control));
+    if (isWorkLabel) node.setAttribute("data-codex-session-work-label", "true");
+    else node.removeAttribute("data-codex-session-work-label");
+  }});
+}}
 function sync(row, group) {{ {function} }}
 sync(row, {{}});
 const marked = () => nodes.map(node => node.attrs.has('data-codex-session-work-label'));

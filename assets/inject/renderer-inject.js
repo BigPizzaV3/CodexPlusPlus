@@ -580,7 +580,9 @@
   } catch (_) {}
   window.__codexPlusConversationViewCleanup = null;
   const selectors = {
-    sidebarThread: "[data-app-action-sidebar-thread-id]",
+    // 仅把真正的会话行纳入处理；底部 API 输入区域也可能复用该 data 属性，
+    // 但没有会话标题节点，不能被注入操作按钮。
+    sidebarThread: '[data-app-action-sidebar-thread-id]:has([data-thread-title])',
     threadTitle: "[data-thread-title]",
     appHeader: '[class*="ApplicationMenuTopBar"], .app-header-tint',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
@@ -8805,6 +8807,20 @@
     return row.querySelector(`.${actionGroupClass}`);
   }
 
+  function markWorkLabels(row) {
+    if (!row) return;
+    row.querySelectorAll("span,div").forEach((node) => {
+      const control = node.closest('button,[role="button"],a');
+      const isWorkLabel = node.children.length === 0
+        && /^(工作|Work)$/i.test(node.textContent.trim())
+        && !node.matches(selectors.threadTitle)
+        && !node.closest(`${selectors.threadTitle}, .${actionGroupClass}`)
+        && (!control || control === row || !row.contains(control));
+      if (isWorkLabel) node.setAttribute("data-codex-session-work-label", "true");
+      else node.removeAttribute("data-codex-session-work-label");
+    });
+  }
+
   function nativeActionButtonsFromRow(row) {
     return [...row.querySelectorAll('button,[role="button"],a')]
       .filter((node) => !node.closest(`.${actionGroupClass}`))
@@ -8828,21 +8844,7 @@
 
   function syncActionGroupLayout(row, group) {
     if (!row || !group) return;
-    // 不依赖上游构建生成的类名；排除标题和操作控件，仅标记独立类型标签。
-    // 每次扫描都刷新，兼容虚拟列表复用节点及异步挂载的标签。
-    row.querySelectorAll("span,div").forEach((node) => {
-      const control = node.closest('button,[role="button"],a');
-      const isWorkLabel = node.children.length === 0
-        && /^(工作|Work)$/i.test(node.textContent.trim())
-        && !node.matches(selectors.threadTitle)
-        && !node.closest(`${selectors.threadTitle}, .${actionGroupClass}`)
-        && (!control || control === row || !row.contains(control));
-      if (isWorkLabel && !node.hasAttribute("data-codex-session-work-label")) {
-        node.setAttribute("data-codex-session-work-label", "true");
-      } else if (!isWorkLabel && node.hasAttribute("data-codex-session-work-label")) {
-        node.removeAttribute("data-codex-session-work-label");
-      }
-    });
+    markWorkLabels(row);
     if (group.dataset.codexActionLayoutStable === "true") return;
     const rowRect = row.getBoundingClientRect();
     const nativeButtons = nativeActionButtonsFromRow(row);
@@ -9051,6 +9053,7 @@
   }
 
   function attachButton(row) {
+    markWorkLabels(row);
     const settings = codexPlusSettings();
     const sessionMenuEnabled = codexPlusBackendSettings.enhancementsEnabled !== false;
     if (!settings.sessionDelete && !settings.markdownExport && !sessionMenuEnabled) {
