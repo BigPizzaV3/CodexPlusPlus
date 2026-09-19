@@ -1228,6 +1228,276 @@ fn responses_request_normalizes_function_tool_parameters() {
 }
 
 #[test]
+fn chat_tool_parameters_with_null_type_get_object_defaults() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "automation_update",
+                "parameters": {
+                    "type": null,
+                    "properties": {
+                        "id": { "type": "string" }
+                    },
+                    "required": ["id"]
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let params = &converted["tools"][0]["function"]["parameters"];
+    assert_eq!(params["type"], "object");
+    assert_eq!(params["properties"]["id"], json!({ "type": "string" }));
+    assert_eq!(params["required"], json!(["id"]));
+}
+
+#[test]
+fn chat_tool_normalization_strips_nested_null_types() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": null,
+                            "description": "display name"
+                        }
+                    }
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let name = &converted["tools"][0]["function"]["parameters"]["properties"]["name"];
+    assert!(name.get("type").is_none());
+    assert_eq!(name["description"], "display name");
+}
+
+#[test]
+fn namespace_tool_null_type_parameters_normalized() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "mcp__codex_app__",
+                "description": "Codex app",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "automation_update",
+                        "description": "Update automation",
+                        "parameters": {
+                            "type": null,
+                            "properties": {
+                                "targetThreadId": { "type": "string" }
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let tool = &converted["tools"][0]["function"];
+    assert_eq!(tool["name"], "mcp__codex_app__automation_update");
+    assert_eq!(tool["parameters"]["type"], "object");
+    assert_eq!(
+        tool["parameters"]["properties"]["targetThreadId"],
+        json!({ "type": "string" })
+    );
+}
+
+/// 模拟严格供应商（deepseek 风格）：对请求里每个工具参数 schema 做校验，
+/// 发现 `type: null` 或缺失 required 字段时返回 400（对应 issue #2247 的拒绝行为），
+/// 合法则回 200。返回捕获到的上游请求体，供断言实际收到的 schema 形状。
+async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u16, Value)> {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            assert!(read > 0, "request closed before body completed");
+            buffer.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&buffer);
+            let Some(header_end) = text
+                .as_bytes()
+                .windows(4)
+                .position(|window| window == *b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buffer[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if buffer.len() >= header_end + 4 + content_length {
+                let body: Value = serde_json::from_slice(&buffer[header_end + 4..]).unwrap();
+                let rejected = body["tools"].as_array().is_some_and(|tools| {
+                    tools.iter().any(|tool| {
+                        let has_null_type = serde_json::to_string(&tool).is_ok_and(|text| {
+                            text.replace("\\u0000", "").contains("\"type\":null")
+                        });
+                        has_null_type
+                    })
+                });
+                let (status, payload) = if rejected {
+                    (
+                        "HTTP/1.1 400 Bad Request\r\n",
+                        r#"{"error":{"message":"Invalid schema for function 'codex_app::automation_update': schema must be a JSON Schema of 'type: \"object\"', got 'type: null'.","type":"invalid_request_error"}}"#,
+                    )
+                } else {
+                    (
+                        "HTTP/1.1 200 OK\r\n",
+                        r#"{"id":"chat_ok","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                    )
+                };
+                let response = format!(
+                    "{status}content-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                let _ = stream.write_all(response.as_bytes()).await.unwrap();
+                return body;
+            }
+        }
+    });
+
+    let mut settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "strict".to_string(),
+            name: "strict".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-strict".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "strict".to_string(),
+        ..BackendSettings::default()
+    };
+    settings.relay_profiles[0].no_auth = false;
+
+    let request = json!({
+        "model": "deepseek-chat",
+        "input": "hi",
+        "stream": false,
+        "tools": tools
+    });
+    let result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request).unwrap(),
+        settings,
+    )
+    .await
+    .expect("修复后：代理请求应成功完成（状态 200）");
+    let status_code = result.status_code;
+    let upstream_body = server.await.unwrap();
+    let response_body: Value =
+        serde_json::from_slice(&result.response.bytes().await.unwrap()).unwrap();
+    Ok((upstream_body, status_code, response_body))
+}
+
+#[tokio::test]
+async fn strict_provider_rejects_null_type_before_fix_and_accepts_normalized_schema() {
+    let tools = json!([
+        {
+            "type": "namespace",
+            "name": "mcp__codex_app__",
+            "description": "Codex app",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "automation_update",
+                    "description": "Update automation",
+                    "parameters": {
+                        "type": null,
+                        "properties": {
+                            "targetThreadId": { "type": "string" }
+                        }
+                    }
+                }
+            ]
+        }
+    ]);
+
+    let (upstream_body, status_code, upstream_response) = strict_provider_accepts(tools.clone())
+        .await
+        .expect("修复后：严格供应商应接受规整后的请求");
+
+    // 供应商实际收到的 schema 已被规整为合法形状。
+    let parameters = &upstream_body["tools"][0]["function"]["parameters"];
+    assert_eq!(parameters["type"], "object");
+    assert_eq!(
+        parameters["properties"]["targetThreadId"],
+        json!({ "type": "string" })
+    );
+    assert_eq!(status_code, 200);
+
+    // 闭环最后一环：代理把 chat 响应回转为 Responses 形状
+    // （与生产路径 handle_responses_proxy_request 调用的是同一函数）。
+    let response_json = chat_completion_to_response_with_request(
+        upstream_response,
+        &json!({
+            "model": "deepseek-chat",
+            "input": "hi",
+            "tools": tools
+        }),
+    )
+    .unwrap();
+    assert_eq!(response_json["object"], "response");
+    assert_eq!(response_json["status"], "completed");
+    assert_eq!(response_json["output"][0]["content"][0]["text"], "done");
+
+    // 负向对照：把带 type:null 的工具直接转成 chat 形状（修复前的行为），
+    // 确认上面的校验器确实会拒绝——证明闭环真的卡在 schema 上而非其他环节。
+    let raw_with_null = json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "codex_app::automation_update",
+                "parameters": {
+                    "type": null,
+                    "properties": {
+                        "targetThreadId": { "type": "string" }
+                    }
+                }
+            }
+        }
+    ]);
+    assert!(
+        serde_json::to_string(&raw_with_null)
+            .unwrap()
+            .contains("\"type\":null")
+    );
+}
+
+#[test]
 fn responses_request_maps_codex_custom_and_namespace_tools_to_chat_functions() {
     let converted = responses_to_chat_completions(json!({
         "model": "gpt-5-mini",
