@@ -319,17 +319,11 @@ fn register_main_window_events<R: tauri::Runtime>(
     transient: bool,
 ) {
     let event_window = window.clone();
-    let minimized_window = event_window.clone();
     let close_event_window = event_window.clone();
     let close_event_app = event_window.app_handle().clone();
     let focus_event_window = event_window.clone();
 
     event_window.on_window_event(move |event| match event {
-        WindowEvent::Resized(_) => {
-            if matches!(minimized_window.is_minimized(), Ok(true)) {
-                let _ = minimized_window.hide();
-            }
-        }
         WindowEvent::Focused(true) => {
             // 外部实例通过 Win32 ShowWindow 唤起时，Tao 的 VISIBLE 标记可能仍为 false。
             // 同步框架状态，否则后续 hide() 会被当作重复操作而跳过。
