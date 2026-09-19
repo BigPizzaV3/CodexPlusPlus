@@ -25,3 +25,9 @@
 - live重复检查：0写入、已存在654、等待1（当前目标）、需核查1（原始日志损坏）。本轮结束后需最后验证等待0。
 - EXE备份：C:/Users/lucy/AppData/Local/Programs/Codex++/backup-pending-repair-20260920-062156；两EXE SHA256与统一目录产物一致，manifest记录哈希。
 - 未中断运行中Codex/启动器/管理器；旧启动器目前仍可能覆盖报告且使用旧缓存版本，用户正常重启后新自动流程才生效。
+
+## 归零核验 2026-09-20
+- 上一轮正常结束后再次执行统一目录修复入口，最后1条目标补入原生首条userMessage；总恢复29条，短暂等待0，pendingDetails为空。
+- 再次检查447文件、缓存445：已存在655、修复0、等待0、需核查1（原始JSON损坏）；耗时303ms，无新备份。
+- 最后一条修复前备份：C:/Users/lucy/.codex/session-index-repair/before-repair-df9c760e-c969-418c-9b48-5c2ceb8b21f7.sqlite。原有userMessage正文/位置改动0。
+- 再核对两安装EXE与统一目录Release的SHA256均一致。目标流程与实际归零已验证；旧运行进程仍保留，不伪称自动流程已热更新。
