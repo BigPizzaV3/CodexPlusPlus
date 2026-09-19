@@ -3454,7 +3454,9 @@ fn normalize_chat_tool_parameters(parameters: &Value) -> Value {
         .as_object()
         .is_some_and(|object| object.len() == 1 && object.contains_key("$ref"));
     if !is_bare_ref {
-        if normalized.get("type").is_none() {
+        // `type: null` 与缺失等价：严格供应商（如 deepseek）会以
+        // `got 'type: null'` 拒绝整个请求（issue #2247）。
+        if normalized.get("type").is_none_or(Value::is_null) {
             normalized["type"] = json!("object");
         }
         if normalized.get("properties").is_none() {
@@ -3519,6 +3521,10 @@ fn normalize_schema_object(
 
     let mut normalized = Map::new();
     for (key, value) in object {
+        // JSON Schema 的 type 必须是字符串，null 恒非法，剥掉等价于未声明。
+        if key == "type" && value.is_null() {
+            continue;
+        }
         normalized.insert(key.clone(), normalize_schema_value(value, defs, resolving)?);
     }
     Ok(Value::Object(normalized))
