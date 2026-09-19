@@ -407,7 +407,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "17";
+  const codexDeleteStyleVersion = "18";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -798,6 +798,12 @@
       [data-codex-delete-row="true"]:hover .${actionGroupClass} {
         opacity: 1;
         pointer-events: auto;
+      }
+      /* Work 标签保留占位，避免与悬浮操作按钮重叠。 */
+      [data-codex-delete-row="true"]:hover [data-codex-session-work-label],
+      [data-codex-delete-row="true"]:focus-within [data-codex-session-work-label],
+      [data-codex-delete-row="true"].codex-session-more-open [data-codex-session-work-label] {
+        visibility: hidden;
       }
       [data-codex-delete-row="true"]:hover ${selectors.threadTitle},
       [data-codex-delete-row="true"]:focus-within ${selectors.threadTitle},
@@ -8822,6 +8828,21 @@
 
   function syncActionGroupLayout(row, group) {
     if (!row || !group) return;
+    // 不依赖上游构建生成的类名；排除标题和操作控件，仅标记独立类型标签。
+    // 每次扫描都刷新，兼容虚拟列表复用节点及异步挂载的标签。
+    row.querySelectorAll("span,div").forEach((node) => {
+      const control = node.closest('button,[role="button"],a');
+      const isWorkLabel = node.children.length === 0
+        && /^(工作|Work)$/i.test(node.textContent.trim())
+        && !node.matches(selectors.threadTitle)
+        && !node.closest(`${selectors.threadTitle}, .${actionGroupClass}`)
+        && (!control || control === row || !row.contains(control));
+      if (isWorkLabel && !node.hasAttribute("data-codex-session-work-label")) {
+        node.setAttribute("data-codex-session-work-label", "true");
+      } else if (!isWorkLabel && node.hasAttribute("data-codex-session-work-label")) {
+        node.removeAttribute("data-codex-session-work-label");
+      }
+    });
     if (group.dataset.codexActionLayoutStable === "true") return;
     const rowRect = row.getBoundingClientRect();
     const nativeButtons = nativeActionButtonsFromRow(row);

@@ -59,6 +59,47 @@ fn screenshot_command_uses_png_from_surface() {
 }
 
 #[test]
+fn sidebar_work_label_is_hidden_without_hiding_titles_or_controls() {
+    let script = assets::injection_script(57321);
+    let function = script.split("  function syncActionGroupLayout(row, group) {").nth(1).unwrap()
+        .split("    if (group.dataset.codexActionLayoutStable").next().unwrap();
+    let harness = format!(r#"
+const assert = require('node:assert/strict');
+const selectors = {{ threadTitle: '[data-thread-title]' }};
+const actionGroupClass = 'actions';
+function label(text, kind = '') {{
+  const attrs = new Set();
+  return {{ textContent: text, children: [], attrs,
+    matches: () => kind === 'title',
+    closest: (selector) => selector.includes('button')
+      ? (kind === 'control' ? {{}} : row)
+      : (kind === 'title-child' || kind === 'action' ? {{}} : null),
+    hasAttribute: (key) => attrs.has(key),
+    setAttribute: (key) => attrs.add(key),
+    removeAttribute: (key) => attrs.delete(key)
+  }};
+}}
+const nodes = [label('工作'), label('Work'), label('工作', 'title'),
+  label('Work', 'title-child'), label('工作', 'control'), label('Work', 'action'), label('其他')];
+const row = {{ querySelectorAll: () => nodes, contains: () => true }};
+function sync(row, group) {{ {function} }}
+sync(row, {{}});
+const marked = () => nodes.map(node => node.attrs.has('data-codex-session-work-label'));
+assert.deepStrictEqual(marked(), [true, true, false, false, false, false, false]);
+nodes[0].textContent = '其他';
+sync(row, {{}});
+assert.strictEqual(marked()[0], false);
+"#);
+    let output = Command::new("node").args(["-e", &harness]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    for state in [":hover", ":focus-within", ".codex-session-more-open"] {
+        assert!(script.contains(&format!(
+            "[data-codex-delete-row=\"true\"]{state} [data-codex-session-work-label]"
+        )));
+    }
+}
+
+#[test]
 fn injection_script_prefixes_helper_url_and_metadata() {
     let script = assets::injection_script(57321);
 
