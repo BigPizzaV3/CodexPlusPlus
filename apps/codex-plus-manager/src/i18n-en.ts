@@ -492,6 +492,7 @@ export const EN_PLAIN: Record<string, string> = {
   "只能勾选已填写 Base URL / Key 的 API 供应商，聚合供应商不会作为成员。":
     "Only API providers with a Base URL / Key can be selected; aggregate providers can't be members.",
   "可更新": "Update available",
+  "{0} 个脚本可更新": "{0} script(s) can be updated",
   "同一对话保持一个成员，不同对话依次分配。": "Keeps one member per conversation; different conversations are assigned in turn.",
   "同步 Zed settings": "Sync Zed settings",
   "同步目标": "Sync target",

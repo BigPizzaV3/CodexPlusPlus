@@ -6061,6 +6061,8 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
     });
   }, [marketSearch, marketScripts]);
   const installedCount = marketScripts.filter((script) => script.installed).length;
+  const availableUpdates = new Set(marketScripts.filter((script) => script.updateAvailable).map((script) => script.id));
+  const updateCount = scripts.filter((script) => script.market_id && availableUpdates.has(script.market_id)).length;
   return (
     <>
       <Panel>
@@ -6149,10 +6151,10 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("本地脚本")} detail={t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")} />
+        <CardHead title={updateCount > 0 ? `${t("本地脚本")} · ${tf("{0} 个脚本可更新", [updateCount])}` : t("本地脚本")} detail={t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")} />
         <CardContent>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} updateAvailable={!!script.market_id && availableUpdates.has(script.market_id)} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
           </div>
         </CardContent>
       </Panel>
@@ -10224,7 +10226,17 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
+function ScriptRow({ script, actions, updateAvailable }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions; updateAvailable: boolean }) {
+  const [updating, setUpdating] = useState(false);
+  const update = async () => {
+    if (updating || !script.market_id) return;
+    setUpdating(true);
+    try {
+      await actions.installMarketScript(script.market_id);
+    } finally {
+      setUpdating(false);
+    }
+  };
   const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
   const canDelete = script.source === "user";
   return (
@@ -10234,12 +10246,18 @@ function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventor
       <span>{script.enabled ? t("启用") : t("关闭")}</span>
       <span>{script.status}</span>
       <div className="script-row-actions">
-        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
+        {updateAvailable ? (
+          <Button onClick={() => void update()} disabled={updating} size="sm">
+            <RefreshCw className={updating ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            {t("更新")}
+          </Button>
+        ) : null}
+        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} disabled={updating} size="sm" variant="secondary">
           {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
           {script.enabled ? t("禁用") : t("启用")}
         </Button>
         {canDelete ? (
-          <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
+          <Button onClick={() => void actions.deleteUserScript(script.key)} disabled={updating} size="sm" variant="outline">
             <Trash2 className="h-4 w-4" />
             {t("删除")}
           </Button>
