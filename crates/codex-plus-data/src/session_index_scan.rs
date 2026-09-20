@@ -31,6 +31,8 @@ pub(crate) struct Candidate {
     pub created: i64,
     pub goal: bool,
     #[serde(default)]
+    pub goal_key: Option<String>,
+    #[serde(default)]
     pub projection: Option<(String, i64)>,
     #[serde(default)]
     pub following_turn: Option<(String, i64)>,
@@ -38,6 +40,12 @@ pub(crate) struct Candidate {
     pub turn_boundary: Option<TurnBoundary>,
     #[serde(default)]
     pub start_ordinal: Option<i64>,
+    #[serde(default)]
+    pub first_user_projection: Option<(String, i64)>,
+    #[serde(default)]
+    pub first_user_response_ordinal: Option<i64>,
+    #[serde(default)]
+    pub first_user_evidence_valid: bool,
 }
 
 fn event_time(row: &Value, field: &str) -> Option<i64> {
@@ -68,15 +76,16 @@ fn text_content(value: &Value) -> Option<String> {
 
 fn ordinary(text: &str) -> bool {
     let text = text.trim_start();
-    ![
-        "<codex_internal_context",
-        "<environment_context",
-        "<permissions instructions>",
-        "# AGENTS.md instructions",
-        "<INSTRUCTIONS>",
-    ]
-    .iter()
-    .any(|prefix| text.starts_with(prefix))
+    !text.is_empty()
+        && ![
+            "<codex_internal_context",
+            "<environment_context",
+            "<permissions instructions>",
+            "# AGENTS.md instructions",
+            "<INSTRUCTIONS>",
+        ]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
 }
 
 pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
@@ -94,24 +103,26 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
     let mut start_ordinals = HashMap::<String, i64>::new();
     let mut ended_turns = HashSet::<String>::new();
     let mut invalid_boundaries = HashSet::<String>::new();
+    let mut invalid_first_user_evidence = HashSet::<String>::new();
     let mut boundaries = HashMap::<String, TurnBoundary>::new();
     let mut first_user_projections = HashMap::<String, (String, i64)>::new();
     let mut first_user_responses = HashMap::<String, i64>::new();
-    let mut responses = HashMap::<String, Vec<Candidate>>::new();
-    let mut evidence = HashSet::<(String, String)>::new();
+    let mut responses = HashMap::<String, Vec<(Candidate, usize)>>::new();
+    let mut evidence = HashMap::<(String, String), Vec<usize>>::new();
     let mut projections = HashMap::<(String, String), Vec<(String, i64)>>::new();
-    let mut goal = None::<(String, i64, Option<String>)>;
-    let mut seen_goals = HashSet::new();
+    let mut goal = None::<(String, i64, String, Option<String>)>;
+    let mut seen_goals = HashSet::<(String, String)>::new();
     let mut result = Vec::new();
+    let mut stream_position = 0usize;
     loop {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
             break;
         }
+        stream_position = stream_position.saturating_add(1);
         let row: Value = match serde_json::from_str(&line) {
             Ok(row) => row,
-            // 正在写入的尾行留给下一次扫描，不丢弃已核验的记录。
-            Err(_) if !line.ends_with('\n') => break,
+            Err(_) if !line.ends_with('\n') => bail!("会话记录尾行不完整"),
             Err(error) => return Err(error).context("会话记录包含无效 JSON 行"),
         };
         let p = &row["payload"];
@@ -179,12 +190,15 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                                 *first = (id.to_owned(), ordinal);
                             } else if ordinal == first.1 && id != first.0 {
                                 invalid_boundaries.insert(turn.to_owned());
+                                invalid_first_user_evidence.insert(turn.to_owned());
                             }
                         } else {
                             invalid_boundaries.insert(turn.to_owned());
+                            invalid_first_user_evidence.insert(turn.to_owned());
                         }
                     } else {
                         invalid_boundaries.insert(turn.to_owned());
+                        invalid_first_user_evidence.insert(turn.to_owned());
                     }
                 }
             }
@@ -228,7 +242,7 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                         }
                     }
                     last_started_turn = started.cloned();
-                    if let Some((_, _, turn)) = goal.as_mut() {
+                    if let Some((_, _, _, turn)) = goal.as_mut() {
                         if turn.is_none() {
                             *turn = current_turn.clone();
                         }
@@ -292,10 +306,17 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                         p["goal"]["objective"].as_str(),
                         p["goal"]["createdAt"].as_i64(),
                     ) {
-                        if !text.is_empty() && !seen_goals.contains(text) {
+                        let goal_key = p["goal"]["id"]
+                            .as_str()
+                            .filter(|id| !id.is_empty())
+                            .map(|id| format!("id:{id}:created:{created}"))
+                            .unwrap_or_else(|| format!("created:{created}"));
+                        if !text.is_empty()
+                            && !seen_goals.contains(&(goal_key.clone(), text.to_owned()))
+                        {
                             goal = created
                                 .checked_mul(1000)
-                                .map(|created| (text.to_owned(), created, None));
+                                .map(|created| (text.to_owned(), created, goal_key, None));
                         }
                     }
                 }
@@ -303,7 +324,10 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     let turn = p["turn_id"].as_str().or(current_turn.as_deref());
                     if let (Some(turn), Some(text)) = (turn, p["message"].as_str()) {
                         if ordinary(text) {
-                            evidence.insert((turn.to_owned(), text.to_owned()));
+                            evidence
+                                .entry((turn.to_owned(), text.to_owned()))
+                                .or_default()
+                                .push(stream_position);
                         }
                     }
                 }
@@ -328,7 +352,6 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                                         .push((id.to_owned(), ordinal));
                                 }
                             }
-                            evidence.insert((turn.to_owned(), text));
                         }
                     }
                 }
@@ -340,8 +363,8 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
         }
         let meta = &p["internal_chat_message_metadata_passthrough"];
         // 附件消息也占据首条用户输入位置，不能因无法恢复为纯文本而被后续 steering 越过。
-        let visible_text = p["content"]
-            .as_array()
+        let parts = p["content"].as_array();
+        let visible_text = parts
             .map(|parts| {
                 parts
                     .iter()
@@ -349,7 +372,12 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        if ordinary(&visible_text) {
+        let has_attachment = parts.is_some_and(|parts| {
+            parts
+                .iter()
+                .any(|part| !matches!(part["type"].as_str(), Some("text" | "input_text" | "Text")))
+        });
+        if ordinary(&visible_text) || has_attachment {
             if let Some(turn) = meta["turn_id"].as_str().or(current_turn.as_deref()) {
                 if let Some(ordinal) = row["ordinal"].as_i64().filter(|ordinal| *ordinal >= 0) {
                     if meta["turn_id"].as_str() == Some(turn) {
@@ -359,9 +387,11 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                         *first = (*first).min(ordinal);
                     } else {
                         invalid_boundaries.insert(turn.to_owned());
+                        invalid_first_user_evidence.insert(turn.to_owned());
                     }
                 } else {
                     invalid_boundaries.insert(turn.to_owned());
+                    invalid_first_user_evidence.insert(turn.to_owned());
                 }
             }
         }
@@ -375,7 +405,7 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
         if ordinal < 0 {
             continue;
         }
-        if let Some((objective, created, Some(goal_turn))) = &goal {
+        if let Some((objective, created, goal_key, Some(goal_turn))) = &goal {
             if turn == goal_turn
                 && text.starts_with("<codex_internal_context")
                 && (text.contains(&format!("<objective>\n{objective}\n</objective>"))
@@ -388,12 +418,16 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     ordinal,
                     created: *created,
                     goal: true,
+                    goal_key: Some(goal_key.clone()),
                     projection: None,
                     following_turn: None,
                     turn_boundary: None,
                     start_ordinal: None,
+                    first_user_projection: None,
+                    first_user_response_ordinal: None,
+                    first_user_evidence_valid: false,
                 });
-                seen_goals.insert(objective.clone());
+                seen_goals.insert((goal_key.clone(), objective.clone()));
                 goal = None;
                 continue;
             }
@@ -411,40 +445,75 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     .map(|t| t.timestamp_millis())
             });
         if let Some(created) = created {
-            responses
-                .entry(turn.to_owned())
-                .or_default()
-                .push(Candidate {
+            responses.entry(turn.to_owned()).or_default().push((
+                Candidate {
                     thread: thread.clone(),
                     turn: turn.to_owned(),
                     text,
                     ordinal,
                     created,
                     goal: false,
+                    goal_key: None,
                     projection: None,
                     following_turn: None,
                     turn_boundary: None,
                     start_ordinal: None,
-                });
+                    first_user_projection: None,
+                    first_user_response_ordinal: None,
+                    first_user_evidence_valid: false,
+                },
+                stream_position,
+            ));
         }
     }
     for candidates in responses.into_values() {
-        for (index, source) in candidates.iter().enumerate() {
+        let mut response_counts = HashMap::<String, usize>::new();
+        for (candidate, _) in &candidates {
+            *response_counts.entry(candidate.text.clone()).or_default() += 1;
+        }
+        if let Some((first, _)) = candidates.first() {
+            for (text, expected) in &response_counts {
+                if evidence
+                    .get(&(first.turn.clone(), text.clone()))
+                    .is_some_and(|items| items.len() != *expected)
+                {
+                    bail!("重复文本用户事件数量与响应不一致，无法可靠匹配");
+                }
+            }
+        }
+        for (index, (source, _)) in candidates.iter().enumerate() {
             let mut candidate = source.clone();
             let key = (candidate.turn.clone(), candidate.text.clone());
             let next = candidates[index + 1..]
                 .iter()
-                .find(|c| c.text == candidate.text)
-                .map(|c| c.ordinal);
+                .find(|(c, _)| c.text == candidate.text)
+                .map(|(c, _)| c.ordinal);
             if let Some(items) = projections.get_mut(&key) {
                 // 每条 response 只匹配其后、下一次同文 response 之前的完成事件。
+                let matches = items
+                    .iter()
+                    .filter(|(_, ordinal)| {
+                        *ordinal > candidate.ordinal && next.is_none_or(|next| *ordinal < next)
+                    })
+                    .count();
+                if matches > 1 {
+                    bail!("同一用户响应对应多个完成事件，无法可靠确认原生消息身份");
+                }
                 if let Some(index) = items.iter().position(|(_, ordinal)| {
                     *ordinal > candidate.ordinal && next.is_none_or(|next| *ordinal < next)
                 }) {
                     candidate.projection = Some(items.remove(index));
                 }
             }
-            if candidate.projection.is_some() || evidence.remove(&key) {
+            let matched_event = if let Some(items) = evidence.get_mut(&key) {
+                // 独立 user_message 与同文 response 按各自出现次数一一对应；
+                // 事件在 response 前后的历史格式都可匹配，但任何事件只消费一次。
+                items.remove(0);
+                true
+            } else {
+                false
+            };
+            if candidate.projection.is_some() || matched_event {
                 result.push(candidate);
             }
         }
@@ -472,6 +541,24 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                 !duplicate_starts.contains(&candidate.turn) && **ordinal < candidate.ordinal
             })
             .copied();
+        candidate.first_user_projection = first_user_projections.get(&candidate.turn).cloned();
+        candidate.first_user_response_ordinal = first_user_responses.get(&candidate.turn).copied();
+        candidate.first_user_evidence_valid = if candidate.goal {
+            candidate.start_ordinal.is_some()
+                && !duplicate_starts.contains(&candidate.turn)
+                && !invalid_first_user_evidence.contains(&candidate.turn)
+        } else {
+            candidate
+                .first_user_response_ordinal
+                .is_some_and(|response| {
+                    !invalid_first_user_evidence.contains(&candidate.turn)
+                        && candidate.start_ordinal.is_none_or(|start| start < response)
+                        && candidate
+                            .first_user_projection
+                            .as_ref()
+                            .is_none_or(|(_, projection)| response < *projection)
+                })
+        };
         candidate.turn_boundary = boundaries
             .get(&candidate.turn)
             .filter(|boundary| {
@@ -540,7 +627,10 @@ mod tests {
         json!({"type":"event_msg","payload":{"type":"task_started","turn_id":turn}})
     }
     fn goal(thread: &str) -> Value {
-        json!({"type":"event_msg","payload":{"type":"thread_goal_updated","threadId":thread,"goal":{"objective":"原文","createdAt":100}}})
+        goal_at(thread, 100)
+    }
+    fn goal_at(thread: &str, created: i64) -> Value {
+        json!({"type":"event_msg","payload":{"type":"thread_goal_updated","threadId":thread,"goal":{"objective":"原文","createdAt":created}}})
     }
     fn meta() -> Value {
         json!({"type":"session_meta","payload":{"id":"t"}})
@@ -645,6 +735,10 @@ mod tests {
         assert!(candidate.following_turn.is_none());
         assert!(candidate.turn_boundary.is_none());
         assert!(candidate.start_ordinal.is_none());
+        assert!(candidate.goal_key.is_none());
+        assert!(candidate.first_user_projection.is_none());
+        assert!(candidate.first_user_response_ordinal.is_none());
+        assert!(!candidate.first_user_evidence_valid);
     }
 
     #[test]
@@ -925,12 +1019,133 @@ mod tests {
     }
 
     #[test]
+    fn repeated_goal_text_uses_goal_identity_instead_of_body() {
+        let body = "<codex_internal_context source=\"goal\"><objective>\n原文\n</objective></codex_internal_context>";
+        let rows = vec![
+            meta(),
+            goal_at("t", 100),
+            start_at("a", 2),
+            message("a", body, 3),
+            start_at("continuation", 4),
+            message("continuation", body, 5),
+            goal_at("t", 200),
+            start_at("b", 7),
+            message("b", body, 8),
+        ];
+        let items = scan_rows(rows, "").unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].goal_key.as_deref(), Some("created:100"));
+        assert_eq!(items[1].goal_key.as_deref(), Some("created:200"));
+        assert_eq!(items[0].text, items[1].text);
+    }
+
+    #[test]
+    fn completed_item_and_user_message_evidence_are_consumed_once() {
+        let completed = vec![
+            meta(),
+            start_at("a", 1),
+            message("a", "重复", 2),
+            message("a", "重复", 3),
+            json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"one","type":"UserMessage","content":[{"type":"text","text":"重复"}]}}}),
+        ];
+        let items = scan_rows(completed, "").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].ordinal, 3);
+        assert_eq!(items[0].projection, Some(("one".into(), 4)));
+
+        let event = vec![
+            meta(),
+            start_at("a", 1),
+            message("a", "重复", 2),
+            json!({"type":"event_msg","payload":{"type":"user_message","turn_id":"a","message":"重复"}}),
+            message("a", "重复", 4),
+        ];
+        let error = scan_rows(event, "").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("重复文本用户事件数量与响应不一致")
+        );
+
+        let balanced = vec![
+            meta(),
+            start_at("a", 1),
+            json!({"type":"event_msg","payload":{"type":"user_message","turn_id":"a","message":"重复"}}),
+            message("a", "重复", 3),
+            message("a", "重复", 4),
+            json!({"type":"event_msg","payload":{"type":"user_message","turn_id":"a","message":"重复"}}),
+        ];
+        let items = scan_rows(balanced, "").unwrap();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn multiple_completions_for_one_response_require_review() {
+        let mut rows = confirmed_message_rows();
+        for (id, ordinal) in [("native-a", 4), ("native-b", 5)] {
+            rows.push(json!({"type":"event_msg","ordinal":ordinal,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":id,"type":"UserMessage","content":[{"type":"text","text":"原文"}]}}}));
+        }
+        assert!(
+            scan_rows(rows, "")
+                .unwrap_err()
+                .to_string()
+                .contains("多个完成事件")
+        );
+    }
+
+    #[test]
+    fn first_user_evidence_survives_missing_terminal_boundary() {
+        let rows = vec![
+            meta(),
+            start_at("a", 1),
+            json!({"type":"response_item","ordinal":2,"payload":{"role":"user","content":[{"type":"input_image","image_url":"local"}],"internal_chat_message_metadata_passthrough":{"turn_id":"a"}}}),
+            json!({"type":"event_msg","ordinal":3,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"attachment","type":"UserMessage","content":[{"type":"image","image_url":"local"}]}}}),
+            message("a", "后续文本", 4),
+            json!({"type":"event_msg","ordinal":5,"payload":{"type":"user_message","turn_id":"a","message":"后续文本"}}),
+        ];
+        let items = scan_rows(rows, "").unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].turn_boundary.is_none());
+        assert_eq!(
+            items[0].first_user_projection,
+            Some(("attachment".into(), 3))
+        );
+        assert_eq!(items[0].first_user_response_ordinal, Some(2));
+        assert!(items[0].first_user_evidence_valid);
+    }
+
+    #[test]
+    fn missing_first_user_identity_or_ordinal_marks_evidence_invalid() {
+        for invalid in 0..2 {
+            let mut first = json!({"type":"response_item","ordinal":2,"payload":{"role":"user","content":[{"type":"input_image","image_url":"local"}],"internal_chat_message_metadata_passthrough":{"turn_id":"a"}}});
+            if invalid == 0 {
+                first.as_object_mut().unwrap().remove("ordinal");
+            } else {
+                first["payload"]["internal_chat_message_metadata_passthrough"] = json!({});
+            }
+            let rows = vec![
+                meta(),
+                start_at("a", 1),
+                first,
+                message("a", "后续文本", 4),
+                json!({"type":"event_msg","ordinal":5,"payload":{"type":"user_message","turn_id":"a","message":"后续文本"}}),
+            ];
+            let items = scan_rows(rows, "").unwrap();
+            assert_eq!(items.len(), 1);
+            assert!(
+                !items[0].first_user_evidence_valid,
+                "invalid case {invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_messages_need_corroboration_in_same_turn_and_exclude_environment() {
         let rows = vec![
             meta(),
             start("a"),
             message("a", "第一条", 2),
-            json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"type":"UserMessage","content":[{"type":"text","text":"第一条"}]}}}),
+            json!({"type":"event_msg","ordinal":3,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"first","type":"UserMessage","content":[{"type":"text","text":"第一条"}]}}}),
             start("b"),
             message("b", "第二条", 5),
             json!({"type":"event_msg","payload":{"type":"user_message","message":"第二条"}}),
@@ -939,7 +1154,7 @@ mod tests {
             message("b", "<environment_context>环境</environment_context>", 9),
             json!({"type":"event_msg","payload":{"type":"user_message","message":"<environment_context>环境</environment_context>"}}),
         ];
-        let items = scan_rows(rows, "{\"type\":").unwrap();
+        let items = scan_rows(rows, "").unwrap();
         assert_eq!(
             items.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(),
             ["第一条", "第二条"]
@@ -994,6 +1209,8 @@ mod tests {
             .is_err()
         );
         assert!(scan_rows(vec![meta()], "bad\n").is_err());
+        let error = scan_rows(vec![meta()], "{\"type\":").unwrap_err();
+        assert!(error.to_string().contains("会话记录尾行不完整"));
     }
 
     #[test]

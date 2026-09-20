@@ -1,5 +1,12 @@
 # 整合核验
 
+## 二次审查 2026-09-21
+- 原生thread_items唯一位置索引按(thread_id,rollout_ordinal)，旧inspect仅查turn内冲突会导致整批事务失败；已与原生约束对齐。
+- 原先item_completed既用于原生ID匹配又加入普通事件集合，重复正文可消费同一证据两次。现在两类证据分开消费，普通事件数量不匹配明确核查。
+- 目标按正文去重不能区分同文新目标；现在按目标ID和createdAt（无ID时createdAt）+原文识别，并生成稳定恢复ID。
+- 已有空轮次也必须核对首条附件/响应/原生投影身份，后续文字不能借用悬空首条ID。截断JSON尾行不再成功缓存。
+- 安装前追加审核发现并修复：单响应区间多个完成事件的身份歧义、旧版目标恢复跨分片重复；均有最小回归测试，审核代理复核通过。
+
 - 起始分支 codex/local-combined-2250，HEAD b2993b9。
 - 初始未提交 App.tsx 和 i18n-en.ts：本地脚本更新计数和更新按钮，全部保留。
 - 备份 C:/Users/lucy/Desktop/codex-combined-backup-20260920-035620。

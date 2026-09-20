@@ -263,15 +263,77 @@ enum Action {
     Skip(&'static str),
 }
 
+fn recovery_id(c: &Candidate) -> String {
+    if c.goal {
+        if let Some(key) = &c.goal_key {
+            return format!(
+                "recovered-goal-{:x}",
+                Sha256::digest(
+                    serde_json::to_vec(&(&c.thread, key, &c.text))
+                        .expect("serializable goal identity")
+                )
+            );
+        }
+    }
+    format!("recovered-user-{}-{}", c.turn, c.ordinal)
+}
+
+fn is_original_first(c: &Candidate) -> bool {
+    if !c.first_user_evidence_valid {
+        return false;
+    }
+    if c.goal {
+        c.first_user_response_ordinal.is_none_or(|n| c.ordinal < n)
+            && c.first_user_projection
+                .as_ref()
+                .is_none_or(|(_, n)| c.ordinal < *n)
+    } else {
+        c.first_user_response_ordinal == Some(c.ordinal)
+            && c.first_user_projection
+                .as_ref()
+                .is_none_or(|p| c.projection.as_ref() == Some(p))
+    }
+}
+
+fn deduplicate_goals(
+    db: &Connection,
+    mut candidates: Vec<Candidate>,
+) -> anyhow::Result<Vec<Candidate>> {
+    candidates.sort_by_key(|c| (c.created, c.ordinal));
+    let mut goals = HashMap::new();
+    let mut unique: Vec<Candidate> = Vec::new();
+    for c in candidates {
+        if let Some(key) = c.goal_key.as_ref().filter(|_| c.goal) {
+            let identity = (c.thread.clone(), key.clone(), c.text.clone());
+            if let Some(&index) = goals.get(&identity) {
+                // 旧版恢复ID不含goal身份。先用每个分片自己的轮次/位置核验，
+                // 保留已经恢复的那个分片，不能因更早分片后来出现而再次插入。
+                if matches!(inspect(db, &c)?, Action::Present | Action::Link(_))
+                    && !matches!(
+                        inspect(db, &unique[index])?,
+                        Action::Present | Action::Link(_)
+                    )
+                {
+                    unique[index] = c;
+                }
+                continue;
+            }
+            goals.insert(identity, unique.len());
+        }
+        unique.push(c);
+    }
+    Ok(unique)
+}
+
 fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
     let position = c
         .projection
         .as_ref()
         .map_or(c.ordinal, |(_, ordinal)| *ordinal);
-    if c.goal {
+    if c.goal && c.goal_key.is_some() {
         let exists: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM thread_items i JOIN thread_turns t ON t.thread_id=i.thread_id AND t.turn_id=i.turn_id AND t.first_user_item_id=i.item_id WHERE i.thread_id=?1 AND i.item_type='userMessage' AND json_valid(i.item_json) AND json_extract(i.item_json,'$.content[0].text')=?2)",
-            params![c.thread,c.text], |r| r.get(0))?;
+            "SELECT EXISTS(SELECT 1 FROM thread_items i JOIN thread_turns t ON t.thread_id=i.thread_id AND t.turn_id=i.turn_id AND t.first_user_item_id=i.item_id WHERE i.thread_id=?1 AND i.item_id=?2 AND i.item_type='userMessage' AND json_valid(i.item_json) AND json_extract(i.item_json,'$.content[0].text')=?3)",
+            params![c.thread,recovery_id(c),c.text], |r| r.get(0))?;
         if exists {
             return Ok(Action::Present);
         }
@@ -309,18 +371,23 @@ fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
     let valid_first = rows.iter().find(|(id, _, _)| first.as_ref() == Some(id));
     for (id, raw, ordinal) in &rows {
         let text = item_text(raw);
-        let same_source = c.projection.as_ref().is_none_or(|(source, _)| source == id)
+        let same_source = c
+            .projection
+            .as_ref()
+            .map_or(*ordinal == c.ordinal, |(source, n)| {
+                source == id && *n == *ordinal
+            })
             || (id.starts_with("recovered-") && *ordinal == c.ordinal);
         if same_source && text.as_deref() == Some(c.text.as_str()) {
             let conflict: bool = db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM thread_items WHERE thread_id=?1 AND turn_id=?2 AND rollout_ordinal=?3 AND item_id<>?4)",
+                "SELECT EXISTS(SELECT 1 FROM thread_items WHERE thread_id=?1 AND rollout_ordinal=?3 AND NOT(turn_id=?2 AND item_id=?4))",
                 params![c.thread, c.turn, position, id], |r| r.get(0))?;
             if conflict {
                 return Ok(Action::Skip("相同记录位置已有不同内容"));
             }
             return Ok(if first.as_ref() == Some(id) {
                 Action::Present
-            } else if first.is_none() && rows.len() == 1 {
+            } else if first.is_none() && rows.len() == 1 && is_original_first(c) {
                 if finished {
                     Action::Link(id.clone())
                 } else {
@@ -338,7 +405,7 @@ fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
         return Ok(Action::Wait("原生轮次仍在执行或状态未知，暂不补入消息"));
     }
     let occupied: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM thread_items WHERE thread_id=?1 AND turn_id=?2 AND (rollout_ordinal=?3 OR item_id=?4))",
+        "SELECT EXISTS(SELECT 1 FROM thread_items WHERE thread_id=?1 AND (rollout_ordinal=?3 OR (turn_id=?2 AND item_id=?4)))",
         params![c.thread, c.turn, position, c.projection.as_ref().map(|(id, _)| id)], |r| r.get(0))?;
     if occupied {
         return Ok(Action::Skip("相同记录位置已有不同内容"));
@@ -346,13 +413,10 @@ fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
     if !rows.is_empty() {
         // 目标有目标事件与内部 objective 双重证据，位置又早于全部用户消息。
         // 补回目标并调整首条指针，完整保留其后的选项回复和 steering。
-        if c.goal && rows.iter().all(|(_, _, n)| *n > position) {
+        if c.goal && is_original_first(c) && rows.iter().all(|(_, _, n)| *n > position) {
             if let Some((first_id, _, first_ordinal)) = valid_first {
                 if rows.iter().all(|(_, _, n)| n >= first_ordinal) {
-                    return Ok(Action::Prepend(
-                        format!("recovered-user-{}-{}", c.turn, c.ordinal),
-                        first_id.clone(),
-                    ));
+                    return Ok(Action::Prepend(recovery_id(c), first_id.clone()));
                 }
             }
         }
@@ -362,19 +426,30 @@ fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
         }
         return Ok(Action::Insert(c.projection.as_ref().unwrap().0.clone()));
     }
+    if !is_original_first(c) {
+        // 同一批次可能先扫描到后续 steering，再扫描到首条消息；暂缓到写入阶段
+        // 重新核验，避免把后续内容提升为首条，同时保留首条出现后可恢复的机会。
+        return Ok(Action::Wait("等待同轮次已确认的首条用户消息"));
+    }
     if let Some(id) = first {
         let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM thread_items WHERE thread_id=?1 AND turn_id=?2 AND item_id=?3)",params![c.thread,c.turn,id],|r|r.get(0))?;
         return Ok(if exists {
             Action::Skip("首条消息指针指向不同类型的记录")
-        } else {
+        } else if c
+            .projection
+            .as_ref()
+            .is_some_and(|(native, _)| native == &id)
+        {
             Action::Insert(id)
+        } else {
+            Action::Skip("悬空首条指针与候选消息身份不一致")
         });
     }
     Ok(Action::Insert(
         c.projection
             .as_ref()
             .map(|(id, _)| id.clone())
-            .unwrap_or_else(|| format!("recovered-user-{}-{}", c.turn, c.ordinal)),
+            .unwrap_or_else(|| recovery_id(c)),
     ))
 }
 
@@ -501,7 +576,7 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
         let result: anyhow::Result<Vec<Candidate>> = (|| {
             let meta = fs::metadata(&path)?;
             let stamp = format!(
-                "v6:{}:{}",
+                "v7:{}:{}",
                 meta.len(),
                 meta.modified()?.duration_since(UNIX_EPOCH)?.as_nanos()
             );
@@ -565,24 +640,48 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
                 }
                 candidates.extend(items);
             }
-            Err(error) if error.to_string().contains("文件扫描期间仍在写入") => {
+            Err(error)
+                if error.to_string().contains("文件扫描期间仍在写入")
+                    || error.to_string().contains("会话记录尾行不完整") =>
+            {
+                let modified = fs::metadata(&path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_millis() as i64);
+                let reason = if error.to_string().contains("会话记录尾行不完整") {
+                    "会话记录尾行不完整"
+                } else {
+                    "文件扫描期间仍在写入"
+                };
+                if reason == "会话记录尾行不完整"
+                    && modified > 0
+                    && report.checked_at_ms.saturating_sub(modified) >= OLD_SOURCE_MS
+                {
+                    issue(
+                        &mut report,
+                        format!(
+                            "{}：尾行截断且超过24小时未更新，需核查原始日志",
+                            path.display()
+                        ),
+                    );
+                    continue;
+                }
                 pending_issue(
                     &mut report,
                     &cache_tx,
                     None,
-                    "文件扫描期间仍在写入",
+                    reason,
                     &path.to_string_lossy(),
-                    0,
+                    modified,
                 )?
             }
             Err(error) => issue(&mut report, format!("{}：{}", path.display(), error)),
         }
     }
     cache_tx.commit()?;
-    // 分片可能重复保存目标事件，只保留该目标最早的可信轮次。
-    candidates.sort_by_key(|c| (c.created, c.ordinal));
-    let mut goals = std::collections::HashSet::new();
-    candidates.retain(|c| !c.goal || goals.insert((c.thread.clone(), c.text.clone())));
+    // 同目标优先保留已有原生投影；尚未恢复时才选择最早分片。
+    candidates = deduplicate_goals(&db, candidates)?;
     candidates
         .sort_by(|a, b| (&a.thread, &a.turn, a.ordinal).cmp(&(&b.thread, &b.turn, b.ordinal)));
     candidates.dedup_by(|a, b| {
@@ -781,6 +880,8 @@ mod tests {
         schema(&db);
         let mut c = candidate();
         c.goal = true;
+        c.goal_key = Some("goal-identity".into());
+        c.first_user_response_ordinal = None;
         apply(&db, &c, inspect(&db, &c).unwrap()).unwrap();
         db.execute("UPDATE thread_turns SET first_user_item_id=NULL", [])
             .unwrap();
@@ -822,6 +923,7 @@ mod tests {
         schema(&db);
         let mut reply = candidate();
         reply.ordinal = 10;
+        reply.first_user_response_ordinal = Some(10);
         reply.text="<send_user_message_question_reply>model question + user answer</send_user_message_question_reply>".into();
         apply(&db, &reply, inspect(&db, &reply).unwrap()).unwrap();
         let before: String = db
@@ -829,6 +931,7 @@ mod tests {
             .unwrap();
         let mut goal = candidate();
         goal.goal = true;
+        goal.first_user_response_ordinal = None;
         goal.ordinal = 3;
         assert!(matches!(
             inspect(&db, &goal).unwrap(),
@@ -908,6 +1011,7 @@ mod tests {
         let mut c = candidate();
         c.goal = true;
         c.following_turn = Some(("next".into(), 20));
+        c.first_user_response_ordinal = None;
         c.start_ordinal = Some(1);
         assert!(matches!(inspect(&db, &c).unwrap(), Action::Insert(_)));
         apply(&db, &c, inspect(&db, &c).unwrap()).unwrap();
@@ -990,7 +1094,7 @@ mod tests {
         let home = home_with_rollout();
         fs::create_dir(home.path().join("archived_sessions")).unwrap();
         let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
-        for (turn, created) in [("goal-a", 100), ("goal-b", 200)] {
+        for (turn, created) in [("goal-a", 100), ("goal-b", 100)] {
             db.execute(
                 "INSERT INTO thread_turns VALUES('thread',?1,'completed',NULL)",
                 [turn],
@@ -999,7 +1103,7 @@ mod tests {
             let rows = [
                 json!({"type":"session_meta","payload":{"id":"thread"}}),
                 json!({"type":"event_msg","payload":{"type":"thread_goal_updated","threadId":"thread","goal":{"objective":"目标全文","createdAt":created}}}),
-                json!({"type":"event_msg","payload":{"type":"task_started","turn_id":turn}}),
+                json!({"type":"event_msg","ordinal":1,"payload":{"type":"task_started","turn_id":turn}}),
                 json!({"type":"response_item","ordinal":4,"payload":{"role":"user","content":[{"type":"input_text","text":"<codex_internal_context source=\"goal\"><objective>\n目标全文\n</objective></codex_internal_context>"}],"internal_chat_message_metadata_passthrough":{"turn_id":turn}}}),
             ];
             fs::write(
@@ -1029,16 +1133,186 @@ mod tests {
             [],
         )
         .unwrap();
-        let c = candidate();
+        let mut c = candidate();
+        c.projection = Some(("original-id".into(), 3));
+        c.first_user_projection = c.projection.clone();
         assert!(apply(&db, &c, inspect(&db, &c).unwrap()).unwrap());
         assert_eq!(counts(&db), (1, Some("original-id".into())));
         assert!(matches!(inspect(&db, &c).unwrap(), Action::Present));
+    }
+
+    #[test]
+    fn legacy_goal_in_later_fragment_prevents_duplicate_repair() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        db.execute_batch("CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordinal); INSERT INTO thread_turns VALUES('thread','earlier','completed',NULL)").unwrap();
+        let mut legacy = candidate();
+        legacy.goal = true;
+        legacy.ordinal = 40;
+        legacy.first_user_response_ordinal = None;
+        // 使用旧版没有goal_key时的恢复ID，正文与位置保持原样。
+        apply(&db, &legacy, inspect(&db, &legacy).unwrap()).unwrap();
+        legacy.goal_key = Some("created:100".into());
+        let mut earlier = legacy.clone();
+        earlier.turn = "earlier".into();
+        earlier.ordinal = 4;
+        let selected = deduplicate_goals(&db, vec![earlier.clone(), legacy.clone()]).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].turn, legacy.turn);
+        assert!(matches!(
+            inspect(&db, &selected[0]).unwrap(),
+            Action::Present
+        ));
+        // 同文但不同身份的新目标仍然独立保留。
+        earlier.goal_key = Some("created:200".into());
+        assert_eq!(
+            deduplicate_goals(&db, vec![earlier, legacy]).unwrap().len(),
+            2
+        );
+        assert_eq!(counts(&db).0, 1);
     }
 
     fn schema(db: &Connection) {
         db.execute_batch("CREATE TABLE thread_turns(thread_id TEXT,turn_id TEXT,status TEXT,first_user_item_id TEXT,PRIMARY KEY(thread_id,turn_id));
             CREATE TABLE thread_items(thread_id TEXT,turn_id TEXT,item_id TEXT,rollout_ordinal INTEGER,created_at_ms INTEGER,item_json TEXT,item_type TEXT,updated_at_ordinal INTEGER,PRIMARY KEY(thread_id,turn_id,item_id));
             INSERT INTO thread_turns VALUES('thread','turn','completed',NULL);").unwrap();
+    }
+
+    #[test]
+    fn existing_empty_turn_does_not_promote_steering_or_borrow_dangling_id() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        let mut c = candidate();
+        c.ordinal = 7;
+        c.projection = Some(("steering-native".into(), 8));
+        c.first_user_response_ordinal = Some(2);
+        c.first_user_projection = Some(("image-native".into(), 4));
+        for first in [None, Some("image-native")] {
+            db.execute("UPDATE thread_turns SET first_user_item_id=?1", [first])
+                .unwrap();
+            assert!(matches!(inspect(&db, &c).unwrap(), Action::Wait(_)));
+            assert_eq!(counts(&db).0, 0);
+        }
+        c.ordinal = 2;
+        c.projection = Some(("different-native".into(), 4));
+        c.first_user_projection = c.projection.clone();
+        assert!(matches!(inspect(&db, &c).unwrap(), Action::Skip(_)));
+        db.execute(
+            "UPDATE thread_turns SET first_user_item_id='different-native'",
+            [],
+        )
+        .unwrap();
+        assert!(apply(&db, &c, inspect(&db, &c).unwrap()).unwrap());
+        assert!(matches!(inspect(&db, &c).unwrap(), Action::Present));
+    }
+
+    #[test]
+    fn thread_wide_ordinal_conflict_does_not_abort_other_repairs() {
+        let home = home_with_rollout();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute_batch("CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordinal); INSERT INTO thread_turns VALUES('thread','other','completed',NULL);").unwrap();
+        db.execute("INSERT INTO thread_items VALUES('thread','other','occupied',3,1,'{}','agentMessage',3)",[]).unwrap();
+        let original = fs::read_to_string(home.path().join("sessions/rollout.jsonl")).unwrap();
+        let other = original
+            .replace("\"turn\"", "\"good\"")
+            .replace("\"ordinal\":3", "\"ordinal\":9")
+            .replace("完整原文", "独立可修消息");
+        db.execute(
+            "INSERT INTO thread_turns VALUES('thread','good','completed',NULL)",
+            [],
+        )
+        .unwrap();
+        fs::write(home.path().join("sessions/good.jsonl"), other).unwrap();
+        let report = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((report.repaired_items, report.skipped_items), (1, 1));
+        assert!(
+            load_session_index_repair_report(Some(home.path()))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM thread_items WHERE item_type='userMessage'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn goals_with_same_text_but_different_identity_both_survive() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        db.execute_batch("CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordinal); INSERT INTO thread_turns VALUES('thread','second','completed',NULL);").unwrap();
+        let mut a = candidate();
+        a.goal = true;
+        a.goal_key = Some("goal-one:100".into());
+        a.first_user_response_ordinal = None;
+        apply(&db, &a, inspect(&db, &a).unwrap()).unwrap();
+        let mut b = a.clone();
+        b.turn = "second".into();
+        b.ordinal = 20;
+        b.goal_key = Some("goal-two:200".into());
+        assert!(apply(&db, &b, inspect(&db, &b).unwrap()).unwrap());
+        assert_ne!(recovery_id(&a), recovery_id(&b));
+        for c in [&a, &b] {
+            assert!(matches!(inspect(&db, c).unwrap(), Action::Present));
+        }
+        b.turn = "continuation".into();
+        assert!(matches!(inspect(&db, &b).unwrap(), Action::Present));
+        assert_eq!(counts(&db).0, 2);
+    }
+
+    #[test]
+    fn incomplete_tail_is_never_success_cached_and_rechecks_when_completed() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let original = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("{original}{{\"type\":")).unwrap();
+        for _ in 0..2 {
+            let r = repair_session_index(Some(home.path())).unwrap();
+            assert_eq!(
+                (r.cached_files, r.repaired_items, r.deferred_items),
+                (0, 0, 1)
+            );
+            assert!(r.pending_details[0].reason.contains("尾行不完整"));
+        }
+        let cache =
+            Connection::open(home.path().join("session-index-repair/scan-cache.sqlite")).unwrap();
+        cache
+            .execute("UPDATE pending SET first_seen=0", [])
+            .unwrap();
+        let r = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((r.deferred_items, r.skipped_items), (0, 1));
+        fs::write(&path,format!("{original}{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"turn\"}}}}\n")).unwrap();
+        let r = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!(
+            (r.repaired_items, r.skipped_items, r.deferred_items),
+            (1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn single_completion_event_cannot_insert_two_repeated_messages() {
+        let home = home_with_rollout();
+        let rows = [
+            json!({"type":"session_meta","ordinal":0,"payload":{"id":"thread"}}),
+            json!({"type":"event_msg","ordinal":1,"payload":{"type":"task_started","turn_id":"turn"}}),
+            json!({"type":"response_item","ordinal":2,"timestamp":"2026-09-20T01:00:00Z","payload":{"role":"user","content":[{"type":"input_text","text":"重复文本"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}}),
+            json!({"type":"response_item","ordinal":5,"timestamp":"2026-09-20T01:00:00Z","payload":{"role":"user","content":[{"type":"input_text","text":"重复文本"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}}),
+            json!({"type":"event_msg","ordinal":6,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn","item":{"type":"UserMessage","id":"native","content":[{"type":"text","text":"重复文本"}]}}}),
+        ];
+        fs::write(
+            home.path().join("sessions/rollout.jsonl"),
+            rows.iter().map(|r| format!("{r}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let report = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((report.repaired_items, report.skipped_items), (0, 0));
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        assert_eq!(counts(&db), (0, None));
     }
 
     fn candidate() -> Candidate {
@@ -1053,6 +1327,10 @@ mod tests {
             following_turn: None,
             turn_boundary: None,
             start_ordinal: None,
+            goal_key: None,
+            first_user_projection: None,
+            first_user_response_ordinal: Some(3),
+            first_user_evidence_valid: true,
         }
     }
 
@@ -1106,7 +1384,7 @@ mod tests {
             .unwrap();
         assert_eq!(ordinal, 9);
         first.projection = None;
-        assert!(matches!(inspect(&db, &first).unwrap(), Action::Present));
+        assert!(matches!(inspect(&db, &first).unwrap(), Action::Skip(_)));
         repeated.projection = None;
         repeated.text = "没有完成事件的待补消息".into();
         assert!(matches!(inspect(&db, &repeated).unwrap(), Action::Skip(_)));
@@ -1117,6 +1395,8 @@ mod tests {
         let home = home_with_rollout();
         let path = home.path().join("sessions/rollout.jsonl");
         let mut raw = fs::read_to_string(&path).unwrap();
+        let first_completed = json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn","item":{"id":"first","type":"UserMessage","content":[{"type":"Text","text":"完整原文"}]}}});
+        raw.push_str(&format!("{first_completed}\n"));
         for (ordinal, text) in [(5, "补充要求"), (7, "再次补充")] {
             for row in [
                 json!({"type":"event_msg","payload":{"type":"user_message","message":text}}),
@@ -1245,7 +1525,7 @@ mod tests {
         fs::create_dir(home.path().join("sessions")).unwrap();
         let rows = [
             json!({"type":"session_meta","payload":{"id":"thread"}}),
-            json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn"}}),
+            json!({"type":"event_msg","ordinal":1,"payload":{"type":"task_started","turn_id":"turn"}}),
             json!({"type":"event_msg","payload":{"type":"user_message","message":"完整原文"}}),
             json!({"type":"response_item","ordinal":3,"timestamp":"2026-09-14T12:24:30Z","payload":{"role":"user","content":[{"type":"input_text","text":"完整原文"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}}),
         ];
