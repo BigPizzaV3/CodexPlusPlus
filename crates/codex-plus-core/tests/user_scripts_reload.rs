@@ -39,13 +39,15 @@ window.__codexPlusUserScripts.registerCleanup(() => { window.active--; });
     manager.set_global_enabled(false).unwrap();
     let globally_disabled = manager.build_reload_bundle().unwrap();
     manager.set_global_enabled(true).unwrap();
-    fs::write(&path, "window.legacy = true;").unwrap();
+    fs::write(&path, "window.legacy = (window.legacy || 0) + 1;").unwrap();
     let legacy = manager.build_reload_bundle().unwrap();
+    let initial = manager.build_initial_bundle().unwrap();
     manager.delete_user_script("user:demo.js").unwrap();
     let deleted = manager.build_reload_bundle().unwrap();
+    let empty_initial = manager.build_initial_bundle().unwrap();
     let input = json!({"first": first, "updated": updated, "disabled": disabled,
         "globallyDisabled": globally_disabled, "legacy": legacy, "deleted": deleted,
-        "bootstrap": BOOTSTRAP_SCRIPT});
+        "bootstrap": BOOTSTRAP_SCRIPT, "initial": initial, "emptyInitial": empty_initial});
     let fixture = temp.path().join("bundles.json");
     fs::write(&fixture, input.to_string()).unwrap();
     let output = Command::new("node").arg("-e").arg(r#"
@@ -89,7 +91,7 @@ assert.equal(window.active, 0);
 // 新页面启动只请求一次当前脚本，且不在子框架执行。
 let requests = 0;
 const fresh = { location: window.location, electronBridge: {},
-  __codexSessionDeleteBridge(path) { assert.equal(path, '/user-scripts/reload'); requests++; return Promise.resolve({}); } };
+  __codexSessionDeleteBridge(path) { assert.equal(path, '/user-scripts/load'); requests++; return Promise.resolve({}); } };
 fresh.self = fresh.top = fresh;
 const startup = vm.createContext({window: fresh, document: {readyState: 'complete'}, console});
 vm.runInContext(bundles.bootstrap, startup);
@@ -99,6 +101,33 @@ fresh.__codexPlusUserScriptsBootstrap = false;
 fresh.top = {};
 vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 1);
+
+// 重复启动请求、桥接恢复及刷新后的新页面均不得再次刷新或叠加旧脚本。
+for (let page = 0; page < 3; page++) {
+  let pageReloads = 0;
+  const scheduled = [];
+  const pageWindow = { electronBridge: {}, __codexPlusUserScriptsBootstrap: true,
+    location: { href: 'app://-/index.html', reload() { pageReloads++; } },
+    setTimeout(fn) { scheduled.push(fn); } };
+  pageWindow.top = pageWindow.self = pageWindow;
+  const pageContext = vm.createContext({window: pageWindow, console});
+  for (let repeat = 0; repeat < 20; repeat++) vm.runInContext(bundles.initial, pageContext);
+  assert.equal(pageWindow.legacy, 1);
+  assert.equal(scheduled.length, 0);
+  assert.equal(JSON.parse(vm.runInContext(bundles.legacy, pageContext)).mode, 'page');
+  vm.runInContext(bundles.initial, pageContext); // 刷新在途时仍不追加实例。
+  assert.equal(pageWindow.legacy, 1);
+  assert.equal(scheduled.length, 1);
+  scheduled.shift()();
+  assert.equal(pageReloads, 1); // 只有显式重载产生一次刷新。
+}
+
+// 即便第一次无脚本，自动初始化也不能随重复请求变成隐式热重载。
+const emptyWindow = {};
+const emptyContext = vm.createContext({window: emptyWindow, console});
+vm.runInContext(bundles.emptyInitial, emptyContext);
+vm.runInContext(bundles.initial, emptyContext);
+assert.equal(emptyWindow.legacy, undefined);
 "#).arg(&fixture).output().unwrap();
     assert!(
         output.status.success(),

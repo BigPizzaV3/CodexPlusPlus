@@ -4,7 +4,7 @@
   window.__codexPlusUserScriptsBootstrap = true;
   const load = () => {
     // 每次页面加载都读取当前文件与开关，不保留启动时的旧脚本副本。
-    window.__codexSessionDeleteBridge("/user-scripts/reload", {}).then((result) => {
+    window.__codexSessionDeleteBridge("/user-scripts/load", {}).then((result) => {
       if (result?.status === "failed") console.warn("[Codex++] user scripts:", result.message);
     }).catch((error) => console.warn("[Codex++] user scripts:", error));
   };
