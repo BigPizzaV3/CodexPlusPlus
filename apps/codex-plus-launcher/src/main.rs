@@ -107,7 +107,7 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     run_periodic_until_exit(
         handle.wait_for_codex_exit(),
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(30 * 60),
         || repair_session_index_automatically(true),
     )
     .await?;

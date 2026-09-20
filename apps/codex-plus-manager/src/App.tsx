@@ -6392,7 +6392,7 @@ function SessionsScreen({
               />
               <span>
                 <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{t("启动前整理会话归属并检查缺失消息；运行期间自动检查索引。保存设置后生效。")}</small>
+                <small>{t("启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -6474,7 +6474,7 @@ function SessionsScreen({
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
-              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
+              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
               <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
               {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
               {sessionIndexRepairReport.pendingDetails?.length ? (

@@ -15,8 +15,10 @@ export const EN_PLAIN: Record<string, string> = {
   "原因：": "Reason: ",
   "首次发现：": "First seen: ",
   "检查次数：": "Checks: ",
-  "自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":
-    "Automatic checks require the Codex++ launcher to be running and automatic repair to be enabled and saved. This page refreshes the report every 15 seconds without starting a repair; another check does not guarantee recovery.",
+  "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。":
+    "Repair session ownership and check for missing messages before launch; recheck the index every 30 minutes while running. Save settings to apply.",
+  "自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":
+    "Automatic checks require the Codex++ launcher to be running and automatic repair to be enabled and saved; checks repeat 30 minutes after the previous check finishes. This page refreshes the report every 15 seconds without starting a repair; another check does not guarantee recovery.",
   "短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。":
     "Items wait for up to 30 minutes; when both the original message and its record file have been unchanged for more than 24 hours, the item goes directly to review. A missing native turn or completion state means there is insufficient evidence to safely restore it; later checks will still verify it.",
   "主导航": "Main navigation",
