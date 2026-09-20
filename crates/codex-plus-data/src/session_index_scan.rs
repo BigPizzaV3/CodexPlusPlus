@@ -593,23 +593,19 @@ mod tests {
 
     /// 只读现场核验，路径与目标轮次均由调用方显式提供；不输出消息原文。
     #[test]
-    #[ignore = "需要显式指定 CODEX_INDEX_VERIFY_ROLLOUT 和 CODEX_INDEX_VERIFY_TURN"]
+    #[ignore = "需要显式指定 CODEX_INDEX_VERIFY_ROLLOUT、CODEX_INDEX_VERIFY_TURN 和 CODEX_INDEX_VERIFY_TEXT"]
     fn verify_real_rollout_read_only() {
         let path = std::env::var_os("CODEX_INDEX_VERIFY_ROLLOUT")
             .expect("需要 CODEX_INDEX_VERIFY_ROLLOUT");
         let turn = std::env::var("CODEX_INDEX_VERIFY_TURN").expect("需要 CODEX_INDEX_VERIFY_TURN");
+        let text = std::env::var("CODEX_INDEX_VERIFY_TEXT").expect("需要 CODEX_INDEX_VERIFY_TEXT");
+        assert!(!text.is_empty(), "核验原文不能为空");
         let candidates = scan(Path::new(&path)).unwrap();
-        let found = candidates.iter().any(|candidate| {
-            candidate.turn == turn
-                && candidate.text.starts_with(
-                    "我看了下，现在的英文稿完全和我之前的中文稿件相差巨大，完全偏离了之前的语义",
-                )
-        });
-        eprintln!(
-            "candidates={}, confirmed_paper_goal={found}",
-            candidates.len()
-        );
-        assert!(found, "未找到指定轮次已确认论文指令");
+        let found = candidates
+            .iter()
+            .any(|candidate| candidate.turn == turn && candidate.text.starts_with(&text));
+        eprintln!("candidates={}, confirmed_message={found}", candidates.len());
+        assert!(found, "未找到指定轮次的待核验原文");
     }
 
     fn scan_rows(rows: Vec<Value>, tail: &str) -> anyhow::Result<Vec<Candidate>> {
