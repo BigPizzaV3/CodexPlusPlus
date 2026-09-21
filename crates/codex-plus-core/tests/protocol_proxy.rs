@@ -3979,3 +3979,193 @@ key = "value"
     );
     assert!(preserved.contains("https://mcp.context7.com/mcp"));
 }
+
+/// #2263：tool_search_output 先于对应 call 出现（压缩/截断后的回放常见）
+/// 时走孤儿输出路径，不能 panic 也不能丢内容。
+#[test]
+fn responses_input_handles_orphan_tool_search_output() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] },
+            {
+                "type": "tool_search_output",
+                "call_id": "search-orphan",
+                "status": "completed",
+                "execution": "client",
+                "tools": [
+                    { "name": "mcp__calendar__list", "description": "List events" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let orphan = messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("search-orphan"))
+        })
+        .expect("孤儿输出必须降级为 user 消息");
+    let content = orphan["content"].as_str().unwrap();
+    assert!(
+        content.contains("search-orphan"),
+        "孤儿输出消息必须携带 call_id，实际：{content}"
+    );
+    assert!(content.contains("mcp__calendar__list"));
+}
+
+/// #2263：模型吐出畸形 arguments JSON 时，tool_search_call 还原必须兜底成
+/// 空对象而不是产出非法 item 或 panic。
+#[test]
+fn chat_response_tool_search_call_tolerates_malformed_arguments() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_ts_bad",
+            "model": "gpt-5-mini",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_ts_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": "{\"query\": truncated"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    )
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_call")
+        .expect("畸形 arguments 也必须还原成 tool_search_call");
+    // arguments 走 chat 侧参数归一：解析失败包装成 {"input": 原文} 保真传递，
+    // 客户端反序列化失败会按检索空结果处理，不会产出非法 item。
+    let arguments = item["arguments"].as_object().expect("arguments 必须是对象");
+    assert!(
+        arguments.contains_key("input"),
+        "解析失败的 arguments 必须走 {{\"input\": ...}} 包装兜底，实际 {:?}",
+        item["arguments"]
+    );
+    assert_eq!(item["call_id"], "call_ts_bad");
+    assert_eq!(item["execution"], "client");
+}
+
+/// #2263：tool_search_call 缺 call_id 时回退用 id 字段；两者皆空则整个
+/// item 被丢弃（与 function_call 分支的防御行为一致）。
+#[test]
+fn responses_input_tool_search_call_falls_back_to_id_and_drops_empty() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "tool_search_call",
+                "id": "tsc_fallback",
+                "execution": "client",
+                "arguments": { "query": "calendar" }
+            },
+            {
+                "type": "tool_search_output",
+                "call_id": "tsc_fallback",
+                "status": "completed",
+                "execution": "client",
+                "tools": []
+            },
+            {
+                "type": "tool_search_call",
+                "execution": "client",
+                "arguments": { "query": "no id at all" }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_calls: Vec<Value> = messages
+        .iter()
+        .filter_map(|m| m.get("tool_calls").and_then(Value::as_array))
+        .flatten()
+        .cloned()
+        .collect();
+    assert_eq!(
+        tool_calls.len(),
+        1,
+        "只允许一条有效 tool_search 调用，实际 {tool_calls:?}"
+    );
+    assert_eq!(tool_calls[0]["id"], "tsc_fallback");
+    assert_eq!(tool_calls[0]["function"]["name"], "tool_search");
+}
+
+/// #2263：上游模型在未声明 tool_search 工具时越权调用它，退化为普通
+/// function_call item 转发给客户端——这是选定的默认行为，测试钉住防漂移。
+#[test]
+fn chat_response_keeps_undeclared_tool_search_as_plain_function_call() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_undeclared",
+        "model": "gpt-5-mini",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_undeclared",
+                    "type": "function",
+                    "function": {
+                        "name": "tool_search",
+                        "arguments": "{\"query\":\"x\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .expect("未声明的 tool_search 调用按普通 function_call 转发");
+    assert_eq!(item["name"], "tool_search");
+    assert_eq!(item["call_id"], "call_undeclared");
+}
+
+/// #2263 附带问题负例：live 配置里本来就没有 mcp_servers 时，重写
+/// 不能凭空注入空段。
+#[test]
+fn preserve_live_app_settings_does_not_invent_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+
+    let preserved =
+        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
+            .unwrap();
+
+    assert!(
+        !preserved.contains("mcp_servers"),
+        "live 无 mcp_servers 时不得注入该段，实际：{preserved}"
+    );
+}
