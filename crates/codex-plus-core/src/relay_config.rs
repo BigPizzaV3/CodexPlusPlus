@@ -518,11 +518,135 @@ pub fn apply_relay_profile_files_to_home_with_context(
     })
 }
 
+/// issue #2264：用户未声明默认模型时，重启后 Codex 会把默认 model 回落到
+/// model_list 第一条，目标模式任务自动继续时被静默换模型。这里在 apply 时把
+/// 未归档目标任务的持久化模型注入 profile.model（config_contents 不动），使
+/// 回落链变为 profile.model → 目标任务模型 → model_list 第一条。
+/// 显式配置了默认模型的用户不受影响——唯一的例外是值恰好等于 model_list
+/// 第一条的存量污染（旧版把第一条写进 config.toml 后被 backfill 固化进
+/// profile，并非用户显式意图），此时目标任务对齐优先。
+fn align_profile_model_with_active_goal_thread(home: &Path, profile: &RelayProfile) -> RelayProfile {
+    if profile.model_list.trim().is_empty() {
+        return profile.clone();
+    }
+    let Some(goal_model) = crate::codex_sqlite::latest_unarchived_goal_thread_model(home)
+        .filter(|model| !model.trim().is_empty())
+        .map(|model| model.trim().to_string())
+    else {
+        return profile.clone();
+    };
+    let declared = relay_profile_model(profile).trim().to_string();
+    if !declared.is_empty() && declared != model_list_head(profile) && declared != goal_model {
+        return profile.clone();
+    }
+    let mut next = profile.clone();
+    next.model = goal_model;
+    // config_contents 里的工具写入 model 行会盖过注入的 profile.model
+    // （relay_profile_model 是 config 优先），需要剥掉让注入生效。
+    next.config_contents =
+        strip_tool_written_model_from_config(home, profile, &next.config_contents);
+    next
+}
+
+/// model_list 第一条（剥 catalog 后缀），与写入 config.toml 时的隐式默认一致。
+fn model_list_head(profile: &RelayProfile) -> String {
+    profile
+        .model_list
+        .split(['\r', '\n', ','])
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(|first| crate::model_suffix::parse_model_suffix(first).0)
+        .unwrap_or_default()
+}
+
+/// issue #2264：config.toml 根部的 `model =` 可能是工具写入的隐式默认——
+/// model_list 第一条，或目标任务对齐值——而非用户显式意图。backfill 时这类
+/// 值不得固化进 profile（config_contents / profile.model），否则会反过来挡住
+/// 后续的目标任务对齐，模型漂移重现。值与当前目标任务模型相等时视为工具
+/// 写入是安全的：apply 每次都会按最新目标模型重新注入，不需要 backfill 保存。
+fn live_model_is_tool_written(home: &Path, profile: &RelayProfile, model: &str) -> bool {
+    let model = model.trim();
+    if model.is_empty() {
+        return false;
+    }
+    if model == model_list_head(profile) {
+        return true;
+    }
+    crate::codex_sqlite::latest_unarchived_goal_thread_model(home)
+        .map(|goal_model| goal_model.trim() == model)
+        .unwrap_or(false)
+}
+
+/// backfill 场景下剥掉 config 文本里工具写入的隐式默认 `model =` 根键。
+fn strip_tool_written_model_from_config(
+    home: &Path,
+    profile: &RelayProfile,
+    config_text: &str,
+) -> String {
+    let Some(model) = root_key_string(config_text, "model") else {
+        return config_text.to_string();
+    };
+    if !live_model_is_tool_written(home, profile, &model) {
+        return config_text.to_string();
+    }
+    match parse_toml_document(config_text) {
+        Ok(mut doc) => {
+            doc.as_table_mut().remove("model");
+            normalize_optional_toml(doc)
+        }
+        Err(_) => config_text.to_string(),
+    }
+}
+
+/// issue #2264：重启链路上的模型漂移修复点。launcher 启动时不重放完整 apply
+/// （避免覆盖 Codex 在 UI 选择后回写的 live 值），但 config.toml 里若还是
+/// 「工具写入的隐式默认」——为空、等于 profile 模板声明值、或等于 model_list
+/// 第一条——且存在未归档目标任务，就把根 model 改写为目标任务模型。返回是否
+/// 发生了改写。用户/Codex 回写的 live 值不属于工具写入集合，一律保留。
+pub fn align_live_config_model_with_goal_thread(
+    home: &Path,
+    profile: &RelayProfile,
+) -> anyhow::Result<bool> {
+    let config_path = home.join("config.toml");
+    let Ok(text) = std::fs::read_to_string(&config_path) else {
+        return Ok(false);
+    };
+    let live_model = root_key_string(&text, "model").unwrap_or_default();
+    let live = live_model.trim();
+    let declared = relay_profile_model(profile).trim().to_string();
+    let head = model_list_head(profile);
+    if !live.is_empty() && live != declared && live != head {
+        return Ok(false);
+    }
+    let Some(goal_model) = crate::codex_sqlite::latest_unarchived_goal_thread_model(home)
+        .filter(|model| !model.trim().is_empty())
+        .map(|model| model.trim().to_string())
+    else {
+        return Ok(false);
+    };
+    if goal_model == live {
+        return Ok(false);
+    }
+    let mut doc = parse_toml_document(&text)?;
+    doc["model"] = toml_edit::value(goal_model.as_str());
+    crate::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "launcher.goal_thread_model_aligned",
+        serde_json::json!({
+            "from": live,
+            "to": goal_model,
+        }),
+    );
+    Ok(true)
+}
+
 pub fn apply_relay_profile_to_home_with_switch_rules(
     home: &Path,
     profile: &RelayProfile,
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    let profile = align_profile_model_with_active_goal_thread(home, profile);
+    let profile = &profile;
     let selected_common = if profile.use_common_config {
         prepare_common_config_for_apply(common_config_contents)?
     } else {
@@ -892,12 +1016,13 @@ pub fn backfill_relay_profile_from_home(
     home: &Path,
     profile: &mut RelayProfile,
 ) -> anyhow::Result<()> {
-    profile.config_contents = read_optional_text(&home.join("config.toml"))?;
+    let live_contents = read_optional_text(&home.join("config.toml"))?;
+    profile.config_contents = strip_tool_written_model_from_config(home, profile, &live_contents);
     profile.auth_contents = read_optional_text(&home.join("auth.json"))?;
     let live_config = profile.config_contents.clone();
     sync_context_limits_from_config(profile, &live_config);
     if profile.model.trim().is_empty() {
-        if let Some(model) = root_key_string(&profile.config_contents, "model") {
+        if let Some(model) = root_key_string(&live_config, "model") {
             profile.model = model;
         }
     }
@@ -921,6 +1046,8 @@ pub fn backfill_relay_profile_from_home_with_common(
     };
     profile.config_contents =
         restore_profile_provider_id_for_backfill(&profile.config_contents, &template_config)?;
+    profile.config_contents =
+        strip_tool_written_model_from_config(home, profile, &profile.config_contents);
     if profile.protocol == RelayProtocol::Responses
         && provider_string_from_config(&profile.config_contents, "base_url").as_deref()
             == Some(
@@ -947,8 +1074,11 @@ pub fn backfill_relay_profile_from_home_with_common(
     )?;
     sync_profile_mode_from_backfilled_live(profile);
     sync_context_limits_from_config(profile, &live_config);
+    // 回填源用剥离工具写入 model 后的 config_contents：live_config 里的
+    // `model =` 可能是 apply 写入的隐式默认/目标任务对齐值，固化进
+    // profile.model 会挡住后续对齐（issue #2264）。
     if profile.model.trim().is_empty() {
-        if let Some(model) = root_key_string(&live_config, "model") {
+        if let Some(model) = root_key_string(&profile.config_contents, "model") {
             profile.model = model;
         }
     }
@@ -3685,6 +3815,341 @@ cwd = \"/tmp\"
             ..RelayProfile::default()
         };
         assert!(relay_profile_model(&empty).trim().is_empty());
+    }
+
+    /// 伪造一个带 threads / automation_runs 表的 Codex 会话库。
+    /// 列名与真实 Codex schema 对齐（threads: id+model；automation_runs 至少含
+    /// thread_id / updated_at / archived_reason）。
+    fn write_goal_thread_fixture_db(home: &Path, threads: &[(&str, &str)], runs: &[(&str, &str, Option<&str>)]) {
+        let sqlite_dir = home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let conn = rusqlite::Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, model TEXT)",
+            [],
+        )
+        .unwrap();
+        for (id, model) in threads {
+            conn.execute(
+                "INSERT OR REPLACE INTO threads (id, model) VALUES (?1, ?2)",
+                [id, model],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS automation_runs (\
+                thread_id TEXT, automation_id TEXT, status TEXT, read_at TEXT, \
+                thread_title TEXT, source_cwd TEXT, inbox_title TEXT, inbox_summary TEXT, \
+                created_at TEXT, updated_at TEXT, archived_user_message TEXT, \
+                archived_assistant_message TEXT, archived_reason TEXT\
+             )",
+            [],
+        )
+        .unwrap();
+        for (thread_id, updated_at, archived_reason) in runs {
+            conn.execute(
+                "INSERT INTO automation_runs (thread_id, updated_at, archived_reason) VALUES (?1, ?2, ?3)",
+                rusqlite::params![thread_id, updated_at, archived_reason],
+            )
+            .unwrap();
+        }
+    }
+
+    fn goal_drift_test_profile() -> RelayProfile {
+        RelayProfile {
+            relay_mode: crate::settings::RelayMode::PureApi,
+            protocol: crate::settings::RelayProtocol::Responses,
+            config_contents: "model_provider = \"ai\"\n\n[model_providers.ai]\nname = \"ai\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://ahg.codes\"\n"
+                .to_string(),
+            auth_contents: "{}\n".to_string(),
+            model_list: "astra-6-high\ngpt-5.6-luna-max".to_string(),
+            ..RelayProfile::default()
+        }
+    }
+
+    fn apply_and_read_model(home: &Path, profile: &RelayProfile) -> String {
+        apply_relay_profile_to_home_with_switch_rules(home, profile, "").unwrap();
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        config
+            .lines()
+            .find_map(|line| line.strip_prefix("model = "))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// issue #2264：重启后目标模式任务自动继续，但默认 model 回落到
+    /// model_list 第一条（astra-6-high），长线任务被静默换模型烧额度。
+    /// 修复预期：profile 未声明默认模型时，优先对齐未归档目标任务的持久化模型。
+    #[test]
+    fn apply_aligns_default_model_with_unarchived_goal_thread() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max"), ("t-old", "astra-6-high")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+
+        let model = apply_and_read_model(temp.path(), &goal_drift_test_profile());
+        assert_eq!(
+            model, "\"gpt-5.6-luna-max\"",
+            "未归档目标任务的模型应优先于 model_list 第一条"
+        );
+    }
+
+    /// 对照组：没有未归档目标任务时保持旧行为（model_list 第一条），
+    /// 无目标任务的用户不受本次修复影响。
+    #[test]
+    fn apply_keeps_model_list_head_without_unarchived_goal_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max")],
+            &[("t-goal", "2026-09-21T02:00:00Z", Some("done"))],
+        );
+
+        let model = apply_and_read_model(temp.path(), &goal_drift_test_profile());
+        assert_eq!(model, "\"astra-6-high\"");
+    }
+
+    /// 用户显式声明的默认模型优先级最高，不被目标任务模型覆盖。
+    #[test]
+    fn apply_keeps_explicit_profile_model_over_goal_thread_model() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+
+        let mut profile = goal_drift_test_profile();
+        profile.model = "my-explicit-model".to_string();
+        let model = apply_and_read_model(temp.path(), &profile);
+        assert_eq!(model, "\"my-explicit-model\"");
+    }
+
+    /// threads 表缺 model 列（schema 漂移）时静默回落旧行为。
+    #[test]
+    fn apply_falls_back_when_threads_table_lacks_model_column() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        let sqlite_dir = temp.path().join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let conn = rusqlite::Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
+        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", [])
+            .unwrap();
+        conn.execute(
+            "CREATE TABLE automation_runs (thread_id TEXT, updated_at TEXT, archived_reason TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO automation_runs VALUES ('t-goal', '2026-09-21T02:00:00Z', NULL)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let model = apply_and_read_model(temp.path(), &goal_drift_test_profile());
+        assert_eq!(model, "\"astra-6-high\"");
+    }
+
+    /// 完全没有会话库时回落旧行为。
+    #[test]
+    fn apply_falls_back_without_session_db() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        let model = apply_and_read_model(temp.path(), &goal_drift_test_profile());
+        assert_eq!(model, "\"astra-6-high\"");
+    }
+
+    /// 目标任务的持久化模型带 catalog 后缀语法时，写入 config 前剥掉后缀。
+    #[test]
+    fn apply_strips_suffix_from_goal_thread_model() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max[1M]")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+
+        let model = apply_and_read_model(temp.path(), &goal_drift_test_profile());
+        assert_eq!(model, "\"gpt-5.6-luna-max\"");
+    }
+
+    /// 多条未归档目标任务时取 updated_at 最新的一条。
+    #[test]
+    fn apply_prefers_most_recent_unarchived_goal_run() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-old", "qwen4-max"), ("t-new", "gpt-5.6-luna-max")],
+            &[
+                ("t-old", "2026-09-20T01:00:00Z", None),
+                ("t-new", "2026-09-21T02:00:00Z", None),
+            ],
+        );
+
+        let model = apply_and_read_model(temp.path(), &goal_drift_test_profile());
+        assert_eq!(model, "\"gpt-5.6-luna-max\"");
+    }
+
+    /// 存量污染救援：旧版把 model_list 第一条写进 config.toml 后，切换供应商时
+    /// backfill 又把它固化进 profile（profile.model 或 config_contents 的 model =）。
+    /// 该值是工具写入的隐式默认而非用户显式意图，目标任务存在且模型不同时
+    /// 必须重新对齐，否则修复对存量用户无效。
+    #[test]
+    fn apply_rescues_profile_model_polluted_by_legacy_model_list_head() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+
+        // 污染形态一：profile.model 字段被 backfill 固化成 model_list 第一条
+        let mut polluted_field = goal_drift_test_profile();
+        polluted_field.model = "astra-6-high".to_string();
+        let model = apply_and_read_model(temp.path(), &polluted_field);
+        assert_eq!(
+            model, "\"gpt-5.6-luna-max\"",
+            "被固化的 model_list 第一条不应挡住目标任务对齐"
+        );
+
+        // 污染形态二：config_contents 里被固化了 model = 第一条
+        let mut polluted_config = goal_drift_test_profile();
+        polluted_config.config_contents = format!(
+            "model = \"astra-6-high\"\n{}",
+            polluted_config.config_contents
+        );
+        let model = apply_and_read_model(temp.path(), &polluted_config);
+        assert_eq!(
+            model, "\"gpt-5.6-luna-max\"",
+            "config_contents 里固化的 model_list 第一条不应挡住目标任务对齐"
+        );
+    }
+
+    /// 完整时间线（issue #2264 的长期使用形态）：apply 对齐写入目标任务模型 →
+    /// 切换供应商触发 backfill → 用户把目标任务换到新模型 → 再次 apply。
+    /// backfill 不得把工具写入的目标任务模型固化进 profile，否则第二次 apply
+    /// 会被固化值挡住、漂移重现。
+    #[test]
+    fn apply_realigns_after_backfill_when_goal_model_changed() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+
+        let mut profile = goal_drift_test_profile();
+        // 第一次 apply：对齐写入 gpt-5.6-luna-max
+        assert_eq!(
+            apply_and_read_model(temp.path(), &profile),
+            "\"gpt-5.6-luna-max\""
+        );
+
+        // 切换供应商：backfill 把 live config 固化回 profile
+        let mut common = String::new();
+        backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut common)
+            .unwrap();
+
+        // 目标任务换到新模型继续跑
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max"), ("t-goal-2", "kimi-k3")],
+            &[("t-goal-2", "2026-09-21T23:00:00Z", None)],
+        );
+
+        // 第二次 apply：必须对齐到新目标任务模型
+        let model = apply_and_read_model(temp.path(), &profile);
+        assert_eq!(
+            model, "\"kimi-k3\"",
+            "backfill 固化的旧目标任务模型不应挡住重新对齐"
+        );
+    }
+
+    /// launcher 启动时的 live config 对齐：issue #2264 的漂移发生在重启链路上，
+    /// 而 manager apply 不在重启路径里（launcher 不重放完整 apply，避免覆盖
+    /// Codex 回写的 live 值）。这一步只接管「工具写入的隐式默认」——live model
+    /// 为空、等于 profile 模板声明值、或等于 model_list 第一条——且有未归档
+    /// 目标任务时，把 config.toml 根 model 改写为目标任务模型。用户/Codex 在
+    /// UI 选择后回写的 live 值（不属于以上集合）一律不动。
+    #[test]
+    fn align_live_config_rewrites_tool_written_default_to_goal_model() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model = \"astra-6-high\"\nmodel_provider = \"ai\"\n",
+        )
+        .unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+
+        let profile = goal_drift_test_profile();
+        assert!(align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+        let model = apply_and_read_model_config_line(temp.path());
+        assert_eq!(model, "\"gpt-5.6-luna-max\"");
+    }
+
+    /// Codex 在 UI 选择后回写的 live 值（不属于工具写入集合）必须保留。
+    #[test]
+    fn align_live_config_preserves_user_written_live_model() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model = \"gpt-5.6-sol\"\nmodel_provider = \"ai\"\n",
+        )
+        .unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "gpt-5.6-luna-max")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+
+        let profile = goal_drift_test_profile();
+        assert!(!align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+        let model = apply_and_read_model_config_line(temp.path());
+        assert_eq!(model, "\"gpt-5.6-sol\"");
+    }
+
+    /// 无未归档目标任务时不改写；live 值已等于目标任务模型时也不改写。
+    #[test]
+    fn align_live_config_noop_without_goal_or_when_matching() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model = \"astra-6-high\"\nmodel_provider = \"ai\"\n",
+        )
+        .unwrap();
+        let profile = goal_drift_test_profile();
+        assert!(!align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "astra-6-high")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+        assert!(!align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+    }
+
+    fn apply_and_read_model_config_line(home: &Path) -> String {
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        config
+            .lines()
+            .find_map(|line| line.strip_prefix("model = "))
+            .unwrap_or_default()
+            .to_string()
     }
 }
 
