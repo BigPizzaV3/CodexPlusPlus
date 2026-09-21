@@ -958,3 +958,117 @@ describe("Stepwise generation mode contracts", () => {
     );
   });
 });
+
+// issue #2256/#2255：app-server model request patch 的 miss 熔断以前被 provider
+// 重试路径提前 return 绕过，失败变成 250ms 无限重试（每轮全量 fetch 全部 app asset）。
+describe("renderer injection app-server model request patch", () => {
+  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  interface AppServerPatchHarness {
+    install: () => void;
+    sweeps: () => number;
+    diagnostics: () => string[];
+    settle: () => Promise<void>;
+  }
+
+  function appServerPatchRuntime(renderer: string, patchSucceeds: boolean): AppServerPatchHarness {
+    const start = renderer.indexOf("  const appServerModelRequestPatchMaxMisses = ");
+    const end = renderer.indexOf("\n  function ensureCodexModelWhitelistInstalls(", start);
+    assert.ok(start >= 0 && end > start, "app-server model request patch block not found");
+    const source = renderer.slice(start, end);
+
+    let sweeps = 0;
+    let pending: Array<() => void> = [];
+    const diagnostics: string[] = [];
+    const timers: Array<number> = [];
+    const fakeWindow: Record<string, unknown> = {
+      setTimeout: ((fn: () => void) => {
+        timers.push(0);
+        pending.push(fn);
+        return 0;
+      }) as unknown,
+      clearTimeout: () => {},
+    };
+
+    const factory = new Function(
+      "window",
+      "codexAppServerModelRequestPatchVersion",
+      "codexRemoteSessionProviderPatchEnabled",
+      "loadAppServerRequestCandidates",
+      "patchAppServerModelRequestClient",
+      "sendCodexPlusDiagnostic",
+      "Date",
+      `${source}\nreturn installAppServerModelRequestPatch;`,
+    );
+
+    const install = factory(
+      fakeWindow,
+      1,
+      // provider patch 开关两态都要测：以前 enabled 时走提前 return 绕过熔断。
+      () => true,
+      () =>
+        new Promise((resolve) => {
+          sweeps += 1;
+          pending.push(() => resolve({ modules: [{}], candidates: [{}], sources: [], discovery: "fallback" }));
+        }),
+      () => patchSucceeds,
+      (event: string) => diagnostics.push(event),
+      Date,
+    ) as () => void;
+
+    const settle = async () => {
+      // 重试定时器是挂起的回调：排空 sweep 再触发到期的 retry，直到没有新定时器。
+      for (let round = 0; round < 32; round += 1) {
+        if (!pending.length) break;
+        const flushSweeps = pending;
+        pending = [];
+        flushSweeps.forEach((resolve) => resolve());
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+    };
+
+    return { install, sweeps: () => sweeps, diagnostics: () => diagnostics, settle };
+  }
+
+  it("does not start a new sweep while the previous one is still running", async () => {
+    const harness = appServerPatchRuntime(await readFile(rendererPath, "utf8"), false);
+
+    for (let i = 0; i < 20; i += 1) harness.install();
+
+    assert.equal(harness.sweeps(), 1);
+    await harness.settle();
+  });
+
+  it("stops retrying via the provider path once maxMisses is reached", async () => {
+    const harness = appServerPatchRuntime(await readFile(rendererPath, "utf8"), false);
+
+    // 反复 install + settle，让每轮 miss 走完 provider 重试调度。
+    for (let i = 0; i < 40; i += 1) {
+      harness.install();
+      await harness.settle();
+    }
+
+    // 关键回归断言：以前 provider 路径无限重试（40 轮 = 40 次 sweep），
+    // 现在到 maxMisses(8) 就熔断停手。
+    assert.equal(harness.sweeps(), 8);
+    assert.equal(harness.diagnostics().filter((e) => e === "model_app_server_request_patch_not_found").length, 1);
+    assert.deepEqual(harness.diagnostics().at(-1), "model_app_server_request_patch_skipped");
+    const settled = harness.sweeps();
+    harness.install();
+    await harness.settle();
+    assert.equal(harness.sweeps(), settled);
+  });
+
+  it("keeps working normally when the patch actually lands", async () => {
+    const harness = appServerPatchRuntime(await readFile(rendererPath, "utf8"), true);
+
+    harness.install();
+    await harness.settle();
+    for (let i = 0; i < 10; i += 1) harness.install();
+
+    assert.equal(harness.sweeps(), 1);
+    assert.deepEqual(harness.diagnostics(), ["model_app_server_request_patch_installed"]);
+  });
+});
