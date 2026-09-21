@@ -3772,3 +3772,210 @@ fn converted_message_item_id_uses_msg_prefix() {
     );
     assert!(!id.ends_with("_msg"), "不能是 resp_*_msg 形态，实际 {id}");
 }
+
+/// #2263：Codex 发出的 `type: "tool_search"` 工具必须透传为 chat 的 function 工具，
+/// 不能落入 `_ => {}` 被静默丢弃，否则模型永远检索不到 mcp__* 工具。
+#[test]
+fn responses_request_passes_tool_search_through_to_chat_tools() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "number" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            { "type": "function", "name": "exec_command", "parameters": { "type": "object" } }
+        ]
+    }))
+    .unwrap();
+
+    let tools = converted["tools"].as_array().unwrap();
+    let tool_search = tools
+        .iter()
+        .find(|tool| tool["function"]["name"] == "tool_search")
+        .expect("tool_search 必须出现在转换后的 tools 里");
+    assert_eq!(tool_search["type"], "function");
+    assert_eq!(tool_search["function"]["name"], "tool_search");
+    assert_eq!(tool_search["function"]["description"], "Search exposed tools");
+    assert_eq!(
+        tool_search["function"]["parameters"]["properties"]["query"]["type"],
+        "string"
+    );
+    assert_eq!(
+        tool_search["function"]["parameters"]["required"][0],
+        "query"
+    );
+    // 其它工具不受影响
+    assert!(tools.iter().any(|tool| tool["function"]["name"] == "exec_command"));
+}
+
+/// #2263：模型调用回 tool_search 时必须还原成 `tool_search_call` item，
+/// 官方客户端的 handler 只接受这个类型（function_call 形态会被拒绝）。
+#[test]
+fn chat_response_restores_tool_search_call_item() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_search",
+            "model": "gpt-5-mini",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": "{\"query\":\"calendar create\",\"limit\":1}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    )
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_call")
+        .expect("必须还原成 tool_search_call item");
+    assert_eq!(item["call_id"], "call_search_1");
+    assert_eq!(item["execution"], "client");
+    assert_eq!(item["arguments"]["query"], "calendar create");
+    assert_eq!(item["arguments"]["limit"], 1);
+    assert!(
+        item["id"].as_str().unwrap().starts_with("tsc_"),
+        "tool_search_call 的 item id 必须是 tsc_ 前缀，实际 {:?}",
+        item["id"]
+    );
+}
+
+/// #2263：流式路径同样要还原成 tool_search_call，且 id 前缀为 tsc_。
+#[test]
+fn chat_sse_restores_tool_search_call_item() {
+    let converted = chat_sse_to_responses_sse_with_request(
+        r#"data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_ts","type":"function","function":{"name":"tool_search"}}]}}]}
+
+data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]}}]}
+
+data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"calendar\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    );
+
+    assert!(converted.contains("\"type\":\"tool_search_call\""));
+    assert!(converted.contains("\"id\":\"tsc_call_ts\""));
+    assert!(converted.contains("\"item_id\":\"tsc_call_ts\""));
+    assert!(converted.contains("response.function_call_arguments.delta"));
+    assert!(converted.contains("response.function_call_arguments.done"));
+    assert!(converted.contains("\"execution\":\"client\""));
+    // 不应把 tool_search 当成 custom/apply_patch 代理
+    assert!(!converted.contains("custom_tool_call_input.delta"));
+}
+
+/// #2263：历史回放时 tool_search_call / tool_search_output 要映射成
+/// chat 的 assistant tool_call + role:tool 消息，保持调用配对完整。
+#[test]
+fn responses_input_maps_tool_search_history_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "find calendar tools" }] },
+            {
+                "type": "tool_search_call",
+                "call_id": "search-1",
+                "execution": "client",
+                "arguments": { "query": "calendar create", "limit": 1 }
+            },
+            {
+                "type": "tool_search_output",
+                "call_id": "search-1",
+                "status": "completed",
+                "execution": "client",
+                "tools": [
+                    { "name": "mcp__calendar__create_event", "description": "Create event" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_call_msg = messages
+        .iter()
+        .find(|m| m.get("tool_calls").is_some())
+        .expect("必须有 assistant 的 tool_call 消息");
+    let tool_call = &tool_call_msg["tool_calls"][0];
+    assert_eq!(tool_call["function"]["name"], "tool_search");
+    let args: Value = serde_json::from_str(tool_call["function"]["arguments"].as_str().unwrap())
+        .expect("arguments 必须是合法 JSON 字符串");
+    assert_eq!(args["query"], "calendar create");
+
+    let tool_msg = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("必须有 role:tool 的检索结果消息");
+    assert_eq!(tool_msg["tool_call_id"], "search-1");
+    let content = tool_msg["content"].as_str().unwrap();
+    assert!(content.contains("mcp__calendar__create_event"));
+}
+
+/// #2263 附带问题：重写 config.toml 时必须保留 live 配置里的 mcp_servers 段。
+#[test]
+fn preserve_live_app_settings_keeps_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp_signals.marker]
+key = "value"
+"#,
+    )
+    .unwrap();
+
+    let preserved =
+        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
+            .unwrap();
+
+    assert!(
+        preserved.contains("[mcp_servers.context7]"),
+        "mcp_servers 段必须保留，实际：{preserved}"
+    );
+    assert!(preserved.contains("https://mcp.context7.com/mcp"));
+}

@@ -1713,8 +1713,13 @@ fn normalize_config_text_for_write(config_text: &str) -> String {
     config_text.trim_start_matches('\u{feff}').to_string()
 }
 
-fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
-    let normalized = normalize_config_text_for_write(config_text);
+/// 供集成测试直接验证 live 设置保留逻辑。
+#[doc(hidden)]
+pub fn preserve_live_app_settings_for_test(home: &Path, config_text: &str) -> anyhow::Result<String> {
+    preserve_live_app_settings(home, config_text)
+}
+
+fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {    let normalized = normalize_config_text_for_write(config_text);
     let mut target_doc = parse_toml_document(&normalized)?;
     remove_unsupported_approval_policies(&mut target_doc);
     let live_text = read_optional_text(&home.join("config.toml"))?;
@@ -1730,16 +1735,15 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
         }
     }
     // Windows 沙盒实现属于本机设置，切换模板时保留，避免重启后重新要求设置。
-    for key in [
-        "sandbox_mode",
-        "approval_policy",
-        "sandbox_workspace_write",
-        "windows",
-    ] {
+    for key in ["sandbox_mode", "approval_policy", "sandbox_workspace_write", "windows"] {
         if let Some(live_value) = live_doc.get(key).cloned() {
             merge_toml_item(&mut target_doc[key], &live_value);
         }
     }
+    // MCP server 条目由用户/Codex 桌面端直接管理：模板与通用配置里已有的
+    // 条目优先，live 里多出来的条目原样补回，避免每次重写后 server 逐个
+    // 消失（#2263）。整体合并会覆盖通用配置的新值，所以只补缺。
+    preserve_missing_table_keys(&mut target_doc, &live_doc, "mcp_servers");
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
     remove_unsupported_approval_policies(&mut target_doc);
