@@ -407,7 +407,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "18";
+  const codexDeleteStyleVersion = "19";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -832,9 +832,8 @@
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
-      body.codex-plus-hide-usage-alert [data-codex-composer-root] aside:not([data-codex-plus-usage-alert-hidden="false"]):has([role="heading"], h1, h2, h3, h4, h5),
-      body.codex-plus-hide-usage-alert [data-codex-composer-root] div:not([data-codex-plus-usage-alert-hidden="false"]):has(> aside [role="heading"], > aside h1, > aside h2, > aside h3, > aside h4, > aside h5),
-      body.codex-plus-hide-usage-alert aside.app-shell-left-panel:not([data-codex-plus-usage-alert-hidden="false"]) [role="status"][aria-live="polite"]:has(progress) { display: none !important; }
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel [role="status"][aria-live="polite"]:has(progress[max="100"]):has(button[aria-label="Dismiss usage alert" i], button[aria-label="关闭使用量提醒"], button[aria-label="關閉用量提示"], button[aria-label="關閉使用量警示"]),
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel div.w-full:has(> [role="status"][aria-live="polite"]:has(progress[max="100"]):has(button[aria-label="Dismiss usage alert" i], button[aria-label="关闭使用量提醒"], button[aria-label="關閉用量提示"], button[aria-label="關閉使用量警示"])) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
@@ -9728,6 +9727,8 @@
     return window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ === true;
   }
 
+  const officialUsageAlertDismissLabelRe = /dismiss usage alert|关闭使用量提醒|關閉用量提示|關閉使用量警示/i;
+
   function officialUsageAlertCards(scope = document) {
     const root = scope?.querySelectorAll ? scope : document;
     return Array.from(root.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]')).filter((card) => {
@@ -9735,22 +9736,35 @@
       const progress = card.querySelector('progress[max="100"]');
       if (!progress) return false;
       const dismissButton = Array.from(card.querySelectorAll("button")).find((button) =>
-        /dismiss usage alert|关闭使用量提醒/i.test(button.getAttribute("aria-label") || ""),
+        officialUsageAlertDismissLabelRe.test(button.getAttribute("aria-label") || ""),
       );
       return !!dismissButton;
     });
   }
 
+  function normalizeUsageAlertText(text) {
+    return String(text || "").replace(/[\s\u00a0]+/g, " ").trim();
+  }
+
+  function isOfficialUsageAlertHeading(text) {
+    const value = normalizeUsageAlertText(text);
+    if (!value || value.length > 48) return false;
+    if (/agents|智能代理|智慧体|子智能/.test(value)) return false;
+    if (/^(?:you(?:['’]re| are)|you['’]ve)\b/i.test(value) && /\b(?:usage|limit|messages)\b/i.test(value) && /\b(?:out of|used all|reached|approaching|hit)\b/i.test(value)) {
+      return true;
+    }
+    if (/^(?:this|selected) model is out of usage\.?$/i.test(value)) return true;
+    if (!/(Codex|模型|使用)/.test(value)) return false;
+    if (!/(额度|額度|用量|限额|限額|上限)/.test(value)) return false;
+    return /(已用完|已用尽|已用盡|已耗尽|已耗盡|已达|已達|即将|即將|超出|用罄|用完|用尽|用盡)/.test(value);
+  }
+
   function composerUsageAlertBanners(scope = document) {
     const root = scope?.querySelectorAll ? scope : document;
-    const titleRe = /^You['\u2019]re\s+out\s+of\s+Codex\s+and\s+Work\s+usage$|^You['\u2019]ve\s+used\s+all\s+Codex\s+and\s+Work\s+usage$|^You['\u2019]ve\s+reached\s+your\s+(?:usage\s+)?limit$|^(?:你的\s*)?Codex\s*(?:和|及|與|与)\s*(?:工作|「工作」)\s*(?:使用额度|使用額度|使用量|额度|額度|用量)\s*(?:已用完|已用盡|已耗尽)$|^已达到使用量上限$|^你已達到用量限額$|^(?:This|Selected)\s+model\s+is\s+out\s+of\s+usage$/i;
     return Array.from(root.querySelectorAll("[data-codex-composer-root] aside")).filter((aside) => {
       if (!(aside instanceof HTMLElement)) return false;
       const heading = aside.querySelector("h1, h2, h3, h4, h5, [role='heading']");
-      const headingText = heading?.textContent ? heading.textContent.trim().replace(/\s+/g, " ") : "";
-      if (headingText && titleRe.test(headingText)) return true;
-      const hasUpgradeAction = !!aside.querySelector('a[href*="billing" i], a[href*="upgrade" i], [data-testid*="upgrade" i], [data-testid*="billing" i]');
-      return hasUpgradeAction && /usage|limit|额度|用量/i.test(headingText);
+      return isOfficialUsageAlertHeading(heading?.textContent || "");
     });
   }
 
@@ -9768,11 +9782,17 @@
     return card;
   }
 
+  function markOfficialUsageAlertTarget(targets, node) {
+    if (!node || node === document.body || node === document.documentElement) return;
+    targets.add(node);
+  }
+
   function refreshOfficialUsageAlertVisibility() {
     const hidden = officialUsageAlertHidden();
-    // body class 控制 CSS 预隐藏，防止切换会话时闪烁
+    // 旧版左下角卡片有稳定的进度条和关闭按钮，body class 让 CSS 在首帧就挡住。
+    // 新版输入框横幅只能靠标题识别，不能用「有标题就隐藏」，否则会误伤其它提示。
     document.body?.classList.toggle("codex-plus-hide-usage-alert", hidden);
-    
+
     if (!hidden) {
       document.querySelectorAll('[data-codex-plus-usage-alert-hidden]').forEach((el) => {
         delete el.dataset.codexPlusUsageAlertHidden;
@@ -9780,30 +9800,20 @@
       return;
     }
 
-    const targetCards = officialUsageAlertCards();
-    const allSidebarAlerts = Array.from(document.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]'));
-    allSidebarAlerts.forEach(card => {
-      const isTarget = targetCards.includes(card);
-      const state = isTarget ? "true" : "false";
-      if (card.dataset.codexPlusUsageAlertHidden !== state) card.dataset.codexPlusUsageAlertHidden = state;
-      const container = officialUsageAlertContainer(card);
-      if (container !== card && container.dataset.codexPlusUsageAlertHidden !== state) {
-        container.dataset.codexPlusUsageAlertHidden = state;
-      }
+    const targets = new Set();
+    officialUsageAlertCards().forEach((card) => {
+      markOfficialUsageAlertTarget(targets, card);
+      markOfficialUsageAlertTarget(targets, officialUsageAlertContainer(card));
     });
-
-    const targetBanners = composerUsageAlertBanners();
-    const allComposerAsides = Array.from(document.querySelectorAll("[data-codex-composer-root] aside"));
-    allComposerAsides.forEach((aside) => {
-      const isTarget = targetBanners.includes(aside);
-      const state = isTarget ? "true" : "false";
-      
-      if (aside.dataset.codexPlusUsageAlertHidden !== state) aside.dataset.codexPlusUsageAlertHidden = state;
-      
-      const container = officialUsageAlertContainer(aside);
-      if (container !== aside && container.dataset.codexPlusUsageAlertHidden !== state) {
-         container.dataset.codexPlusUsageAlertHidden = state;
-      }
+    composerUsageAlertBanners().forEach((banner) => {
+      markOfficialUsageAlertTarget(targets, banner);
+      markOfficialUsageAlertTarget(targets, officialUsageAlertContainer(banner));
+    });
+    document.querySelectorAll("[data-codex-plus-usage-alert-hidden]").forEach((el) => {
+      if (!targets.has(el)) delete el.dataset.codexPlusUsageAlertHidden;
+    });
+    targets.forEach((el) => {
+      if (el.dataset.codexPlusUsageAlertHidden !== "true") el.dataset.codexPlusUsageAlertHidden = "true";
     });
   }
 
@@ -10808,10 +10818,39 @@
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
+    // 全量 scan 有 200ms 防抖。额度横幅要在这次变更绘制前就藏掉，所以这里同步识别。
+    if (officialUsageAlertHidden() && mutationTouchesUsageAlert(mutations)) {
+      try {
+        refreshOfficialUsageAlertVisibility();
+      } catch {}
+    }
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
+  }
+
+  function nodeMayContainUsageAlert(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const host = node.matches?.("aside, [role='status']")
+      ? node
+      : node.closest?.("aside, [role='status']");
+    if (host) return !!host.closest?.("[data-codex-composer-root], aside.app-shell-left-panel");
+    return !!node.querySelector?.("[data-codex-composer-root] aside, aside.app-shell-left-panel [role='status'][aria-live='polite']");
+  }
+
+  function mutationTouchesUsageAlert(mutations) {
+    if (!mutations) return false;
+    for (const mutation of mutations) {
+      if (nodeMayContainUsageAlert(mutation.target)) return true;
+      for (const node of mutation.addedNodes || []) {
+        if (nodeMayContainUsageAlert(node)) return true;
+      }
+      for (const node of mutation.removedNodes || []) {
+        if (nodeMayContainUsageAlert(node)) return true;
+      }
+    }
+    return false;
   }
 
   /**
