@@ -229,9 +229,35 @@ async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
+        // 单次 read() 只保证拿到「一部分」字节：头与 body 分在不同 TCP 段到达时
+        // 只会读到头部（实测读到 187 字节 = 仅有头部），断言就看不到请求体。
+        // 本测试注入的摘要指令约 425 字符、body 约 700 字节，使这个竞态从偶发
+        // 变成常态（修复前连跑 12 次失败 10 次）。按 Content-Length 读满整个请求。
+        let mut raw = Vec::new();
         let mut buffer = [0; 8192];
-        let read = stream.read(&mut buffer).await.unwrap();
-        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&raw);
+            let Some(header_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            if raw.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&raw).to_string();
         let body = json!({
             "id": "resp_up",
             "object": "response",
