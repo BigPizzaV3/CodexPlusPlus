@@ -1435,31 +1435,51 @@ pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinCo
 
 #[tauri::command]
 pub fn find_desktop_codex_cli() -> CommandResult<Value> {
-    let settings = match SettingsStore::default().load() {
-        Ok(settings) => settings,
-        Err(error) => {
+    // Windows 标准路径：桌面版在用户目录维护、可直接运行的 CLI。
+    // Store 包目录（WindowsApps）内的资源受系统保护，第三方进程无法执行（#2028），
+    // 因此这里不再返回包内路径，避免把必然失败的路径写进设置。
+    #[cfg(windows)]
+    {
+        return match codex_plus_core::app_paths::find_desktop_managed_codex_cli() {
+            Some(path) => ok(
+                "已填入桌面版内置 Codex CLI。",
+                json!({ "path": path.to_string_lossy() }),
+            ),
+            None => failed(
+                "未找到可运行的桌面版内置 Codex CLI。请先通过 Codex++ 启动一次 Codex 桌面版后重试，\
+                 或将「Codex CLI 路径」留空自动查找。",
+                json!({ "path": null }),
+            ),
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let settings = match SettingsStore::default().load() {
+            Ok(settings) => settings,
+            Err(error) => {
+                return failed(
+                    &format!("读取 Codex 应用设置失败：{error}"),
+                    json!({ "path": null }),
+                );
+            }
+        };
+        let Some(app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+            None,
+            Some(settings.codex_app_path.as_str()),
+        ) else {
+            return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
+        };
+        let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
             return failed(
-                &format!("读取 Codex 应用设置失败：{error}"),
+                "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
                 json!({ "path": null }),
             );
-        }
-    };
-    let Some(app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
-        None,
-        Some(settings.codex_app_path.as_str()),
-    ) else {
-        return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
-    };
-    let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
-        return failed(
-            "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
-            json!({ "path": null }),
-        );
-    };
-    ok(
-        "已填入桌面版内置 Codex CLI。",
-        json!({ "path": path.to_string_lossy() }),
-    )
+        };
+        ok(
+            "已填入桌面版内置 Codex CLI。",
+            json!({ "path": path.to_string_lossy() }),
+        )
+    }
 }
 
 fn spawn_weixin_connect(

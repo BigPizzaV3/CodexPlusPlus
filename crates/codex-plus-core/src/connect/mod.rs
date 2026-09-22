@@ -207,8 +207,17 @@ pub async fn run_weixin_connect_with_codex_path(
             if !message.is_finished_user_message()
                 || message.is_older_than(now_ms(), MAX_INBOUND_MESSAGE_AGE_MS)
                 || state.is_processed(&message_key)
-                || !is_allowed_peer(&config.allow_from, &message.from_user_id)
             {
+                continue;
+            }
+            // 白名单外的消息以前完全静默：不回复也没有任何提示，
+            // 用户无法区分「消息没到」和「被过滤了」。
+            if !is_allowed_peer(&config.allow_from, &message.from_user_id) {
+                update_status(&status, |current| {
+                    current.state = "running".to_string();
+                    current.message =
+                        format!("已忽略来自非白名单发送方的消息：{}", message.from_user_id);
+                });
                 continue;
             }
             let Some(text) = message.text() else {
@@ -301,6 +310,9 @@ async fn process_weixin_message(
     text: &str,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
+    if let Some(reason) = local_model_endpoint_unreachable_reason().await {
+        bail!("{reason}");
+    }
     if app_server
         .as_ref()
         .map(|server| !server.is_running())
@@ -405,6 +417,41 @@ fn is_allowed_peer(allow_from: &str, peer: &str) -> bool {
             .any(|allowed| !allowed.is_empty() && allowed == peer)
 }
 
+/// 模型流量若走本地代理（config.toml 的 openai_base_url 指向 127.0.0.1，
+/// 由 Codex++ 的单模型路由写入），该代理只随从 Codex++ 启动的桌面版存在。
+/// 提前探测，避免 turn 失败后只剩一句模糊的「处理失败」。
+async fn local_model_endpoint_unreachable_reason() -> Option<String> {
+    let base_url = std::fs::read_to_string(
+        crate::relay_config::default_codex_home_dir().join("config.toml"),
+    )
+    .ok()
+    .and_then(|contents| crate::relay_config::root_key_string(&contents, "openai_base_url"))?;
+    let (host, port) = localhost_endpoint(&base_url)?;
+    let connect = tokio::net::TcpStream::connect((host.as_str(), port));
+    if tokio::time::timeout(std::time::Duration::from_millis(300), connect)
+        .await
+        .is_ok_and(|result| result.is_ok())
+    {
+        return None;
+    }
+    Some(
+        "Codex 桌面版当前未运行，微信连接暂时无法调用模型。\
+         请先从 Codex++ 启动 Codex 桌面版后重试。"
+            .to_string(),
+    )
+}
+
+/// 只对「本地回环 + 显式端口」的 base_url 预检；
+/// 直连中转站或未带端口的地址不属于桌面版代理，返回 None 表示跳过。
+fn localhost_endpoint(base_url: &str) -> Option<(String, u16)> {
+    let url = reqwest::Url::parse(base_url.trim()).ok()?;
+    let host = url.host_str()?;
+    if host != "127.0.0.1" && host != "localhost" {
+        return None;
+    }
+    Some((host.to_string(), url.port()?))
+}
+
 fn normalize_sandbox(value: &str) -> String {
     match value.trim() {
         "workspace-write" => "workspace-write",
@@ -470,6 +517,97 @@ mod tests {
         assert!(is_allowed_peer("*", "a@im.wechat"));
         assert!(is_allowed_peer("a@im.wechat, b@im.wechat", "b@im.wechat"));
         assert!(!is_allowed_peer("a@im.wechat", "b@im.wechat"));
+    }
+
+    /// 白名单外的消息不再无声消失：状态栏要能看到「已忽略」，
+    /// 否则用户无法区分「消息没到」和「被过滤」（群内真实发生过）。
+    /// 用 wiremock 假微信网关驱动真实消息循环验证。
+    #[tokio::test]
+    async fn non_allowlisted_message_updates_status_and_is_dropped() {
+        let server = wiremock::MockServer::start().await;
+        let message = serde_json::json!({
+            "seq": 1,
+            "message_id": (now_ms() % 1_000_000) as i64,
+            "from_user_id": "stranger@im.wechat",
+            "client_id": "unit-test",
+            "create_time_ms": now_ms() as i64,
+            "message_type": 1,
+            "message_state": 2,
+            "item_list": [{ "type": 1, "text_item": { "text": "hi" } }],
+            "context_token": "ctx"
+        });
+        let updates = serde_json::json!({
+            "ret": 0,
+            "errcode": 0,
+            "errmsg": "",
+            "msgs": [message],
+            "get_updates_buf": "YnVm",
+            "longpolling_timeout_ms": 1000
+        });
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/ilink/bot/getupdates"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(updates)
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let work_dir = tempfile::tempdir().unwrap();
+        let config = WeixinConnectConfig {
+            base_url: server.uri(),
+            token: "tok".to_string(),
+            account_id: "unit-test-ignore".to_string(),
+            allow_from: "only-me@im.wechat".to_string(),
+            route_tag: String::new(),
+            work_dir: work_dir.path().display().to_string(),
+            model: String::new(),
+            sandbox: "read-only".to_string(),
+            codex_path: String::new(),
+        };
+        let status: SharedWeixinConnectStatus = Arc::new(Mutex::new(Default::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(run_weixin_connect_with_codex_path(
+            config,
+            Arc::clone(&stop),
+            Arc::clone(&status),
+            WeixinCodexPath::new(""),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        // 循环正常退出时会写「微信连接已停止」，必须在停止前快照处理状态
+        let snapshot = status
+            .lock()
+            .map(|current| current.message.clone())
+            .unwrap_or_default();
+        stop.store(true, Ordering::SeqCst);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+
+        let message = snapshot;
+        assert!(
+            message.contains("已忽略来自非白名单发送方的消息"),
+            "状态栏应提示已忽略，实际：{message}"
+        );
+        // 清理循环写入真实 app state 目录的测试状态文件
+        let _ = std::fs::remove_file(
+            crate::paths::default_app_state_dir().join("weixin-connect-state-unit-test-ignore.json"),
+        );
+    }
+
+    #[test]
+    fn localhost_endpoint_only_matches_explicit_local_ports() {
+        assert_eq!(
+            localhost_endpoint("http://127.0.0.1:57321/v1"),
+            Some(("127.0.0.1".to_string(), 57321))
+        );
+        assert_eq!(
+            localhost_endpoint("http://localhost:8080/v1"),
+            Some(("localhost".to_string(), 8080))
+        );
+        // 直连中转站不属于桌面版代理，不预检
+        assert_eq!(localhost_endpoint("https://api.example.com/v1"), None);
+        // 无显式端口的本地地址也不预检，避免误判成「桌面版未运行」
+        assert_eq!(localhost_endpoint("http://127.0.0.1/v1"), None);
     }
 
     #[test]
