@@ -27,7 +27,11 @@ pub fn switch_relay_profile_in_home(
     }
     crate::codex_app_state::capture_app_state_snapshot_nonfatal(home, "relay_switch.before");
 
-    let original_settings = store.load().unwrap_or_default();
+    // 读不到当前设置时不要用默认值继续：回滚分支会把「仅剩默认供应商」写回磁盘，
+    // 这正是供应商列表被清空的成因。读失败直接中止切换，保住原文件。
+    let original_settings = store
+        .load()
+        .context("读取当前供应商设置失败，已中止切换以免覆盖用户配置")?;
     let live_snapshot = LiveFilesSnapshot::capture(home).context("读取当前 Codex 实时配置失败")?;
     if !previous_active_relay_id.trim().is_empty()
         && previous_active_relay_id != selected_settings.active_relay_id

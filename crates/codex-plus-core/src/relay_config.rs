@@ -1544,17 +1544,30 @@ fn merge_duplicate_toml_blocks(contents: &str) -> Option<DocumentMut> {
     let mut current = String::new();
     let mut current_in_root = true;
     let mut current_root_keys: HashSet<String> = HashSet::new();
+    // 当前块的表头路径。父表头与它的真子表必须留在同一块里一起解析：子表
+    // 如果单独成块，toml_edit 会把父级数组表隐式降级成普通表，合并阶段整棵
+    // 数组表被覆盖，外层表头随之不再打印。
+    let mut current_header_path: Option<String> = None;
 
     for line in contents.lines() {
         let trimmed = line.trim();
         let is_new_table_header = trimmed.starts_with('[') && trimmed.ends_with(']');
 
         if is_new_table_header {
-            if !current.trim().is_empty() {
-                blocks.push(std::mem::take(&mut current));
+            let header_path = toml_header_path_of_line(trimmed);
+            let is_strict_child = match (current_header_path.as_deref(), header_path) {
+                (Some(parent), Some(child)) => is_strict_toml_child_path(parent, child),
+                _ => false,
+            };
+
+            if !is_strict_child {
+                if !current.trim().is_empty() {
+                    blocks.push(std::mem::take(&mut current));
+                }
+                current_in_root = false;
+                current_root_keys.clear();
+                current_header_path = header_path.map(str::to_string);
             }
-            current_in_root = false;
-            current_root_keys.clear();
         } else if current_in_root && !trimmed.is_empty() && !trimmed.starts_with('#') {
             if let Some((key, _)) = trimmed.split_once('=') {
                 let key = key.trim().to_string();
@@ -1582,6 +1595,27 @@ fn merge_duplicate_toml_blocks(contents: &str) -> Option<DocumentMut> {
         merge_toml_table_like(merged.as_table_mut(), block_doc.as_table());
     }
     Some(merged)
+}
+
+/// 取出表头行括号里的路径；不是表头行时返回 None。
+fn toml_header_path_of_line(trimmed: &str) -> Option<&str> {
+    let inner = if let Some(rest) = trimmed.strip_prefix("[[") {
+        rest.strip_suffix("]]")?
+    } else if let Some(rest) = trimmed.strip_prefix('[') {
+        rest.strip_suffix(']')?
+    } else {
+        return None;
+    };
+    let path = inner.trim();
+    if path.is_empty() { None } else { Some(path) }
+}
+
+/// 子表路径判定必须按点分段多出一级，而不是字符串前缀。
+fn is_strict_toml_child_path(parent: &str, child: &str) -> bool {
+    match child.strip_prefix(parent) {
+        Some(rest) => rest.strip_prefix('.').is_some_and(|tail| !tail.is_empty()),
+        None => false,
+    }
 }
 
 /// 逐块合并失败时的保底路径：原历史实现，逐行文本去重（丢弃后出现的重复表头/
@@ -1713,8 +1747,13 @@ fn normalize_config_text_for_write(config_text: &str) -> String {
     config_text.trim_start_matches('\u{feff}').to_string()
 }
 
-fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
-    let normalized = normalize_config_text_for_write(config_text);
+/// 供集成测试直接验证 live 设置保留逻辑。
+#[doc(hidden)]
+pub fn preserve_live_app_settings_for_test(home: &Path, config_text: &str) -> anyhow::Result<String> {
+    preserve_live_app_settings(home, config_text)
+}
+
+fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {    let normalized = normalize_config_text_for_write(config_text);
     let mut target_doc = parse_toml_document(&normalized)?;
     remove_unsupported_approval_policies(&mut target_doc);
     let live_text = read_optional_text(&home.join("config.toml"))?;
@@ -1730,16 +1769,15 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
         }
     }
     // Windows 沙盒实现属于本机设置，切换模板时保留，避免重启后重新要求设置。
-    for key in [
-        "sandbox_mode",
-        "approval_policy",
-        "sandbox_workspace_write",
-        "windows",
-    ] {
+    for key in ["sandbox_mode", "approval_policy", "sandbox_workspace_write", "windows"] {
         if let Some(live_value) = live_doc.get(key).cloned() {
             merge_toml_item(&mut target_doc[key], &live_value);
         }
     }
+    // MCP server 条目由用户/Codex 桌面端直接管理：模板与通用配置里已有的
+    // 条目优先，live 里多出来的条目原样补回，避免每次重写后 server 逐个
+    // 消失（#2263）。整体合并会覆盖通用配置的新值，所以只补缺。
+    preserve_missing_table_keys(&mut target_doc, &live_doc, "mcp_servers");
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
     remove_unsupported_approval_policies(&mut target_doc);
@@ -3599,6 +3637,46 @@ cwd = \"/tmp\"
         let normalized = normalize_duplicate_toml_text(contents);
         let doc = normalized.parse::<DocumentMut>().expect("must stay valid TOML");
         assert_eq!(doc["model"].as_str(), Some("b"));
+    }
+
+    /// 回归真实故障：数组表父表头与它的子表头被切块逻辑拆开后，子表片段单独解析
+    /// 会把父级隐式降级成普通表，合并时整棵数组表被覆盖，外层表头不再打印。
+    #[test]
+    fn normalize_duplicate_toml_text_keeps_array_table_parent_headers() {
+        let contents = "\
+[hooks]
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = \"command\"
+command = \"pwsh -File ups.ps1\"
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = \"command\"
+command = \"pwsh -File stop.ps1\"
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = \"command\"
+command = \"pwsh -File end.ps1\"
+";
+
+        let normalized = normalize_duplicate_toml_text(contents);
+        let doc = normalized
+            .parse::<DocumentMut>()
+            .expect("normalized output must stay valid TOML");
+
+        let hooks = doc["hooks"].as_table().expect("hooks must stay a table");
+        for key in ["UserPromptSubmit", "Stop", "SessionEnd"] {
+            let tables = hooks[key]
+                .as_array_of_tables()
+                .unwrap_or_else(|| panic!("hooks.{key} must stay an array of tables"));
+            assert_eq!(tables.len(), 1, "hooks.{key} must have exactly one element");
+        }
+
+        for header in ["[[hooks.UserPromptSubmit]]", "[[hooks.Stop]]", "[[hooks.SessionEnd]]"] {
+            assert!(normalized.contains(header), "missing outer array-table header {header}");
+        }
     }
 
     #[test]
