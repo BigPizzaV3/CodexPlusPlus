@@ -1739,6 +1739,12 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     .to_string();
     settings.weixin_connect_codex_path = settings.weixin_connect_codex_path.trim().to_string();
+    // #2028 存量迁移：系统保护目录（WindowsApps）里的 CLI 无法被第三方进程执行，
+    // 早期版本点「使用桌面版内置 CLI」写入过这类路径；置空后启动时会自动
+    // 选用桌面版维护的标准 CLI，用户无需手动清理。
+    if crate::app_paths::is_windows_store_cli_path(&settings.weixin_connect_codex_path) {
+        settings.weixin_connect_codex_path = String::new();
+    }
     settings.codex_app_stepwise_max_items =
         clamp_stepwise_max_items(settings.codex_app_stepwise_max_items);
     settings.codex_app_stepwise_max_input_chars =
@@ -2954,6 +2960,25 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.weixin_connect_sandbox, "workspace-write");
         assert_eq!(updated.weixin_connect_codex_path, "/usr/local/bin/codex");
         assert_eq!(store.load().unwrap(), updated);
+    }
+
+    /// #2028 存量迁移：系统保护目录（WindowsApps）里的 CLI 无法被第三方进程执行，
+    /// 旧版点「使用桌面版内置 CLI」写入过这类路径；归一化时置空，
+    /// 让连接启动时自动选用桌面版维护的标准 CLI。
+    #[test]
+    fn windows_store_codex_path_is_cleared_for_auto_resolution() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "weixinConnectCodexPath":
+                    r"C:\Program Files\WindowsApps\OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0\app\resources\codex.exe"
+            }))
+            .unwrap();
+
+        assert_eq!(updated.weixin_connect_codex_path, "");
+        assert_eq!(store.load().unwrap().weixin_connect_codex_path, "");
     }
 
     #[test]

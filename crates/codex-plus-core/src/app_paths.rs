@@ -568,6 +568,52 @@ pub fn find_bundled_codex_cli(app_dir: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
+/// 是否指向 Store 版安装目录（WindowsApps）里的可执行文件。
+///
+/// MSIX 包目录受系统保护，第三方进程不能直接执行其中的 exe，
+/// 改文件夹权限也不会生效（#2028：微信连接填「桌面版内置 CLI」必然 os error 5）。
+/// macOS 的 .app/Contents/Resources/codex 是普通可执行文件，不受此限制。
+pub fn is_windows_store_cli_path(executable: &str) -> bool {
+    executable
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+        .contains("\\windowsapps\\")
+}
+
+/// 桌面版在用户目录维护的 Codex CLI——Windows 上的标准路径。
+///
+/// Store 版桌面应用会把可独立执行的 CLI 放在
+/// `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe` 并随桌面版一起更新；
+/// 该目录在系统保护目录之外，第三方进程可以直接运行。目录名是内容哈希，
+/// 每次更新都会变，所以不能缓存、只按「含 codex.exe 的最新子目录」解析；
+/// 兼容旧的平铺布局 `bin\codex.exe`（#2028/#1879 的根治路径）。
+pub fn find_desktop_managed_codex_cli() -> Option<PathBuf> {
+    find_desktop_managed_codex_cli_from_var(
+        std::env::var_os("LOCALAPPDATA").as_deref().map(Path::new),
+    )
+}
+
+fn find_desktop_managed_codex_cli_from_var(local_appdata: Option<&Path>) -> Option<PathBuf> {
+    let bin = local_appdata?.join("OpenAI").join("Codex").join("bin");
+    let mut candidates = vec![bin.join("codex.exe")];
+    if let Ok(entries) = std::fs::read_dir(&bin) {
+        for entry in entries.filter_map(Result::ok) {
+            candidates.push(entry.path().join("codex.exe"));
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|exe| exe.is_file())
+        .filter_map(|exe| {
+            let modified = std::fs::metadata(&exe)
+                .and_then(|metadata| metadata.modified())
+                .ok()?;
+            Some((modified, exe))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+        .map(|(_, exe)| exe)
+}
+
 pub fn codex_app_version(app_dir: &Path) -> Option<String> {
     if app_dir.extension() == Some(OsStr::new("app")) {
         return macos_app_version(app_dir);
@@ -853,5 +899,80 @@ mod tests {
             resolve_saved_store_path(saved.clone(), Err(anyhow::anyhow!("query failed"))),
             saved
         );
+    }
+}
+
+#[cfg(test)]
+mod cli_path_tests {
+    use super::{find_desktop_managed_codex_cli_from_var, is_windows_store_cli_path};
+    use std::path::Path;
+    use std::time::{Duration, SystemTime};
+
+    fn touch(path: &Path, ago_secs: u64) {
+        let file = std::fs::File::options().append(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(ago_secs))
+            .unwrap();
+    }
+
+    /// #2028：桌面版把 CLI 维护在 bin\<哈希>\ 下，哈希目录随更新变化，
+    /// 解析必须挑含 codex.exe 的最新子目录，跳过只放辅助工具的目录。
+    #[test]
+    fn picks_newest_hash_dir_containing_codex_exe() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("OpenAI").join("Codex").join("bin");
+        let old = bin.join("aaa111");
+        let new = bin.join("bbb222");
+        let rg_only = bin.join("ccc333");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::create_dir_all(&rg_only).unwrap();
+        std::fs::write(old.join("codex.exe"), "old").unwrap();
+        std::fs::write(new.join("codex.exe"), "new").unwrap();
+        std::fs::write(rg_only.join("rg.exe"), "rg").unwrap();
+        touch(&old.join("codex.exe"), 10_000);
+        touch(&new.join("codex.exe"), 60);
+        touch(&rg_only.join("rg.exe"), 1);
+
+        let found = find_desktop_managed_codex_cli_from_var(Some(temp.path()));
+        assert_eq!(found.as_deref(), Some(new.join("codex.exe").as_path()));
+    }
+
+    #[test]
+    fn flat_bin_layout_is_still_accepted() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("OpenAI").join("Codex").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("codex.exe"), "flat").unwrap();
+
+        let found = find_desktop_managed_codex_cli_from_var(Some(temp.path()));
+        assert_eq!(found.as_deref(), Some(bin.join("codex.exe").as_path()));
+    }
+
+    #[test]
+    fn missing_bin_directory_returns_none() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            find_desktop_managed_codex_cli_from_var(Some(temp.path())),
+            None
+        );
+        assert_eq!(find_desktop_managed_codex_cli_from_var(None), None);
+    }
+
+    #[test]
+    fn detects_windows_store_paths_across_separators_and_cases() {
+        assert!(is_windows_store_cli_path(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0_x64__p\app\resources\codex.exe"
+        ));
+        assert!(is_windows_store_cli_path(
+            "c:/program files/windowsapps/someapp/app/codex.exe"
+        ));
+        // 桌面版维护的 bin 目录 / macOS 内置路径 / 裸命令名都不能误伤
+        assert!(!is_windows_store_cli_path(
+            r"C:\Users\a\AppData\Local\OpenAI\Codex\bin\abc123\codex.exe"
+        ));
+        assert!(!is_windows_store_cli_path(
+            "/Applications/ChatGPT.app/Contents/Resources/codex"
+        ));
+        assert!(!is_windows_store_cli_path("codex"));
     }
 }

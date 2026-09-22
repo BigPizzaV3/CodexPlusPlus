@@ -51,6 +51,19 @@ fn collect_stderr_tail(sink: &Arc<Mutex<VecDeque<String>>>) -> String {
         .unwrap_or_default()
 }
 
+/// 留空时不让用户猜路径：Windows 直接选用桌面版维护的标准 CLI，
+/// 其余平台沿用 PATH 里的 codex（macOS 桌面版内置路径本来就可执行）。
+fn resolve_startup_executable(configured: &str) -> String {
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+    #[cfg(windows)]
+    if let Some(path) = crate::app_paths::find_desktop_managed_codex_cli() {
+        return path.to_string_lossy().into_owned();
+    }
+    "codex".to_string()
+}
+
 /// 启动前先把「路径本身就不对」的情况挑出来。
 ///
 /// 之前不管什么原因失败，用户只会看到一句「请检查 Codex CLI 路径」——填的是目录、
@@ -64,6 +77,13 @@ fn validate_codex_executable(executable: &str) -> anyhow::Result<()> {
         || Path::new(executable).is_absolute();
     if !looks_like_path {
         return Ok(());
+    }
+    if crate::app_paths::is_windows_store_cli_path(executable) {
+        bail!(
+            "Codex CLI 路径位于系统保护的安装目录内，Codex++ 无法直接运行它：{executable}\n\
+             请清空「Codex CLI 路径」保存（留空时自动查找），\
+             或点击「使用桌面版内置 CLI」重新选择。"
+        );
     }
     let path = Path::new(executable);
     if !path.exists() {
@@ -91,15 +111,34 @@ fn validate_codex_executable(executable: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// spawn 失败按错误类别给出对应提示，不再一律归成「请检查路径」。
+fn spawn_failure_hint(executable: &str, kind: std::io::ErrorKind) -> &'static str {
+    match kind {
+        std::io::ErrorKind::NotFound => {
+            if cfg!(windows) && !executable.contains('/') && !executable.contains('\\') {
+                // CreateProcess 解析裸命令名只补 .exe，npm 生成的 codex.cmd 不在其列（#1879）
+                "：找不到可运行的 Codex CLI；请点击「使用桌面版内置 CLI」自动填入，\
+                 或将「Codex CLI 路径」留空自动查找"
+            } else {
+                "：找不到该文件；填 Codex CLI 可执行文件的完整路径，或确保 codex 在 PATH 里"
+            }
+        }
+        std::io::ErrorKind::PermissionDenied
+            if crate::app_paths::is_windows_store_cli_path(executable) =>
+        {
+            "：此路径位于系统保护的安装目录，无法直接运行；\
+             请清空「Codex CLI 路径」自动查找，或点击「使用桌面版内置 CLI」重新选择"
+        }
+        std::io::ErrorKind::PermissionDenied => "：没有执行权限",
+        _ => "",
+    }
+}
+
 impl CodexAppServer {
     pub async fn start(config: AppServerConfig) -> anyhow::Result<Self> {
-        let executable = if config.executable.trim().is_empty() {
-            "codex"
-        } else {
-            config.executable.trim()
-        };
-        validate_codex_executable(executable)?;
-        let mut command = Command::new(executable);
+        let executable = resolve_startup_executable(config.executable.trim());
+        validate_codex_executable(&executable)?;
+        let mut command = Command::new(&executable);
         command
             .arg("app-server")
             .current_dir(&config.work_dir)
@@ -108,13 +147,7 @@ impl CodexAppServer {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = command.spawn().map_err(|error| {
-            let hint = match error.kind() {
-                std::io::ErrorKind::NotFound => {
-                    "：找不到该文件；填 Codex CLI 可执行文件的完整路径，或确保 codex 在 PATH 里"
-                }
-                std::io::ErrorKind::PermissionDenied => "：没有执行权限",
-                _ => "",
-            };
+            let hint = spawn_failure_hint(&executable, error.kind());
             anyhow::anyhow!("无法启动 Codex app-server（{executable}）{hint}（{error}）")
         })?;
         let stdin = child
@@ -671,6 +704,56 @@ mod tests {
 
         // 裸命令名交给 PATH 解析，不该在这里被拦下
         assert!(validate_codex_executable("codex").is_ok());
+    }
+
+    /// #2028：系统保护目录（WindowsApps）路径在启动前就被拦下，
+    /// 并直接告诉用户怎么改，而不是等 spawn 失败后一句「没有执行权限」。
+    #[test]
+    fn windows_store_cli_path_is_rejected_with_actionable_message() {
+        let error = validate_codex_executable(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0\app\resources\codex.exe",
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("系统保护"), "{message}");
+        assert!(message.contains("留空"), "{message}");
+        assert!(message.contains("使用桌面版内置 CLI"), "{message}");
+    }
+
+    /// 留空即自动选用：显式填写的路径原样透传；空值在 Windows 上优先
+    /// 桌面版维护的标准 CLI，取不到时退回 PATH（#2028 的零配置路径）。
+    #[test]
+    fn empty_executable_resolves_to_standard_cli_or_path() {
+        assert_eq!(
+            resolve_startup_executable("C:/x/codex.exe"),
+            "C:/x/codex.exe"
+        );
+        let fallback = resolve_startup_executable("");
+        assert!(
+            fallback == "codex" || fallback.to_ascii_lowercase().ends_with("codex.exe"),
+            "{fallback}"
+        );
+    }
+
+    #[test]
+    fn spawn_hints_distinguish_windows_store_and_missing_cli_cases() {
+        let store = spawn_failure_hint(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0\app\resources\codex.exe",
+            std::io::ErrorKind::PermissionDenied,
+        );
+        assert!(store.contains("系统保护"), "{store}");
+        assert!(store.contains("清空"), "{store}");
+
+        let plain =
+            spawn_failure_hint(r"C:\codex\codex.exe", std::io::ErrorKind::PermissionDenied);
+        assert_eq!(plain, "：没有执行权限");
+
+        let missing = spawn_failure_hint("codex", std::io::ErrorKind::NotFound);
+        if cfg!(windows) {
+            assert!(missing.contains("使用桌面版内置 CLI"), "{missing}");
+        } else {
+            assert!(missing.contains("PATH"), "{missing}");
+        }
     }
 
     #[cfg(unix)]

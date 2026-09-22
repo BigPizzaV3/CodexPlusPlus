@@ -207,8 +207,17 @@ pub async fn run_weixin_connect_with_codex_path(
             if !message.is_finished_user_message()
                 || message.is_older_than(now_ms(), MAX_INBOUND_MESSAGE_AGE_MS)
                 || state.is_processed(&message_key)
-                || !is_allowed_peer(&config.allow_from, &message.from_user_id)
             {
+                continue;
+            }
+            // 白名单外的消息以前完全静默：不回复也没有任何提示，
+            // 用户无法区分「消息没到」和「被过滤了」。
+            if !is_allowed_peer(&config.allow_from, &message.from_user_id) {
+                update_status(&status, |current| {
+                    current.state = "running".to_string();
+                    current.message =
+                        format!("已忽略来自非白名单发送方的消息：{}", message.from_user_id);
+                });
                 continue;
             }
             let Some(text) = message.text() else {
@@ -301,6 +310,9 @@ async fn process_weixin_message(
     text: &str,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
+    if let Some(reason) = local_model_endpoint_unreachable_reason().await {
+        bail!("{reason}");
+    }
     if app_server
         .as_ref()
         .map(|server| !server.is_running())
@@ -405,6 +417,41 @@ fn is_allowed_peer(allow_from: &str, peer: &str) -> bool {
             .any(|allowed| !allowed.is_empty() && allowed == peer)
 }
 
+/// 模型流量若走本地代理（config.toml 的 openai_base_url 指向 127.0.0.1，
+/// 由 Codex++ 的单模型路由写入），该代理只随从 Codex++ 启动的桌面版存在。
+/// 提前探测，避免 turn 失败后只剩一句模糊的「处理失败」。
+async fn local_model_endpoint_unreachable_reason() -> Option<String> {
+    let base_url = std::fs::read_to_string(
+        crate::relay_config::default_codex_home_dir().join("config.toml"),
+    )
+    .ok()
+    .and_then(|contents| crate::relay_config::root_key_string(&contents, "openai_base_url"))?;
+    let (host, port) = localhost_endpoint(&base_url)?;
+    let connect = tokio::net::TcpStream::connect((host.as_str(), port));
+    if tokio::time::timeout(std::time::Duration::from_millis(300), connect)
+        .await
+        .is_ok_and(|result| result.is_ok())
+    {
+        return None;
+    }
+    Some(
+        "Codex 桌面版当前未运行，微信连接暂时无法调用模型。\
+         请先从 Codex++ 启动 Codex 桌面版后重试。"
+            .to_string(),
+    )
+}
+
+/// 只对「本地回环 + 显式端口」的 base_url 预检；
+/// 直连中转站或未带端口的地址不属于桌面版代理，返回 None 表示跳过。
+fn localhost_endpoint(base_url: &str) -> Option<(String, u16)> {
+    let url = reqwest::Url::parse(base_url.trim()).ok()?;
+    let host = url.host_str()?;
+    if host != "127.0.0.1" && host != "localhost" {
+        return None;
+    }
+    Some((host.to_string(), url.port()?))
+}
+
 fn normalize_sandbox(value: &str) -> String {
     match value.trim() {
         "workspace-write" => "workspace-write",
@@ -470,6 +517,22 @@ mod tests {
         assert!(is_allowed_peer("*", "a@im.wechat"));
         assert!(is_allowed_peer("a@im.wechat, b@im.wechat", "b@im.wechat"));
         assert!(!is_allowed_peer("a@im.wechat", "b@im.wechat"));
+    }
+
+    #[test]
+    fn localhost_endpoint_only_matches_explicit_local_ports() {
+        assert_eq!(
+            localhost_endpoint("http://127.0.0.1:57321/v1"),
+            Some(("127.0.0.1".to_string(), 57321))
+        );
+        assert_eq!(
+            localhost_endpoint("http://localhost:8080/v1"),
+            Some(("localhost".to_string(), 8080))
+        );
+        // 直连中转站不属于桌面版代理，不预检
+        assert_eq!(localhost_endpoint("https://api.example.com/v1"), None);
+        // 无显式端口的本地地址也不预检，避免误判成「桌面版未运行」
+        assert_eq!(localhost_endpoint("http://127.0.0.1/v1"), None);
     }
 
     #[test]
