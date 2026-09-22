@@ -1,0 +1,33 @@
+{
+  "models": [
+    {
+      "slug": "MiniMax-M3",
+      "display_name": "MiniMax-M3",
+      "description": "MiniMax",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "none", "description": "Think-Off" },
+        { "effort": "high", "description": "Deep" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"],
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "max_output_tokens": 131072,
+      "effective_context_window_percent": 95
+    },
+    {"slug":"MiniMax-M2.7","display_name":"MiniMax-M2.7","description":"MiniMax M2.7, self-evolving agent flagship (204K context, always-on reasoning)","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low","description":"Fast responses with lighter reasoning"},{"effort":"medium","description":"Balances speed and reasoning depth"},{"effort":"high","description":"Greater reasoning depth for complex problems"},{"effort":"xhigh","description":"Extra high reasoning depth for complex problems"}],"context_window":204800,"max_context_window":204800,"effective_context_window_percent":95,"supports_parallel_tool_calls":false,"supports_image_detail_original":false,"input_modalities":["text"],"shell_type":"default","visibility":"list","supported_in_api":true,"priority":1,"base_instructions":"","support_verbosity":false,"apply_patch_tool_type":"freeform","supports_reasoning_summaries":false,"experimental_supported_tools":[],"truncation_policy":{"mode":"bytes","limit":10000}},
+    {"slug":"MiniMax-M2.5","display_name":"MiniMax-M2.5","description":"MiniMax M2.5, 204K context text model with always-on reasoning","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low","description":"Fast responses with lighter reasoning"},{"effort":"medium","description":"Balances speed and reasoning depth"},{"effort":"high","description":"Greater reasoning depth for complex problems"},{"effort":"xhigh","description":"Extra high reasoning depth for complex problems"}],"context_window":204800,"max_context_window":204800,"effective_context_window_percent":95,"max_output_tokens":131072,"supports_parallel_tool_calls":false,"supports_image_detail_original":false,"input_modalities":["text"],"shell_type":"default","visibility":"list","supported_in_api":true,"priority":2,"base_instructions":"","support_verbosity":false,"apply_patch_tool_type":"freeform","supports_reasoning_summaries":false,"experimental_supported_tools":[],"truncation_policy":{"mode":"bytes","limit":10000}}
+  ]
+}
