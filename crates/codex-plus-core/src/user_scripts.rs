@@ -30,8 +30,22 @@ pub async fn reload_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
-    let response =
-        crate::bridge::evaluate_script(websocket, &manager.build_reload_bundle()?).await?;
+    apply_scripts_at(websocket, manager, &manager.build_reload_bundle()?).await
+}
+
+pub async fn load_scripts_at(
+    websocket: &str,
+    manager: &UserScriptManager,
+) -> anyhow::Result<Value> {
+    apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?).await
+}
+
+async fn apply_scripts_at(
+    websocket: &str,
+    manager: &UserScriptManager,
+    bundle: &str,
+) -> anyhow::Result<Value> {
+    let response = crate::bridge::evaluate_script(websocket, bundle).await?;
     if let Some(exception) = response.pointer("/result/exceptionDetails") {
         anyhow::bail!(
             "脚本重载失败：{}",
@@ -285,6 +299,22 @@ impl UserScriptManager {
             blocks.push(wrap_script(&script, &source));
         }
         Ok(blocks.join("\n"))
+    }
+
+    /// 页面启动与桥接恢复只能初始化一次，不能清理旧脚本或触发刷新。
+    pub fn build_initial_bundle(&self) -> anyhow::Result<String> {
+        let bundle = self.build_enabled_bundle()?;
+        Ok(format!(
+            r#"(() => {{
+  {RUNTIME_SCRIPT}
+  const runtime = window.__codexPlusUserScripts;
+  if (!runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
+    runtime.initialized = true;
+    {bundle}
+  }}
+  return JSON.stringify({{ mode: "scripts", scripts: runtime.scripts }});
+}})()"#
+        ))
     }
 
     /// 即便全部禁用也必须清理上一次运行的脚本。

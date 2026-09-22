@@ -952,6 +952,16 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         self.user_scripts.inventory()
     }
 
+    async fn load_user_scripts(&self) -> anyhow::Result<Value> {
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        codex_plus_core::user_scripts::load_scripts_at(&websocket_url, &self.user_scripts).await
+    }
+
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
         let websocket_url = self
             .websocket_url

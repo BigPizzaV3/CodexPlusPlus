@@ -82,6 +82,9 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value>;
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
+    async fn load_user_scripts(&self) -> anyhow::Result<Value> {
+        self.user_script_inventory().await
+    }
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self, payload: Value) -> anyhow::Result<Value>;
     async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
@@ -180,6 +183,7 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.runtime.delete_user_script(key).await
         }
+        "/user-scripts/load" => ctx.runtime.load_user_scripts().await,
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager(payload.clone()).await,
@@ -427,6 +431,19 @@ impl BridgeRuntimeService for CoreRuntimeService {
             }
             None => Ok(empty_user_script_inventory()),
         }
+    }
+
+    async fn load_user_scripts(&self) -> anyhow::Result<Value> {
+        if let (Some(user_scripts), Some(websocket_url), Some(evaluator)) = (
+            &self.user_scripts,
+            self.websocket_url.as_deref(),
+            &self.user_script_evaluator,
+        ) {
+            evaluator(websocket_url, &user_scripts.build_initial_bundle()?)?;
+        } else {
+            anyhow::bail!("Codex 页面尚未连接");
+        }
+        self.user_script_inventory().await
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
