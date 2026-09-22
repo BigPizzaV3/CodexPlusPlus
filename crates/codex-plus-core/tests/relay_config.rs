@@ -4598,6 +4598,10 @@ base_url = "https://relay.example/v1"
     )
     .unwrap();
     for model in catalog["models"].as_array().unwrap() {
+        let mut expected_efforts = vec!["none", "low", "medium", "high", "xhigh", "max"];
+        if model["slug"] == "gpt-6-sol" {
+            expected_efforts.push("ultra");
+        }
         assert_eq!(model["context_window"], 272_000);
         assert_eq!(model["max_context_window"], 872_000);
         assert_eq!(model["use_responses_lite"], false);
@@ -4611,7 +4615,7 @@ base_url = "https://relay.example/v1"
                 .iter()
                 .map(|level| level["effort"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            vec!["none", "low", "medium", "high", "xhigh", "max"]
+            expected_efforts
         );
     }
     assert_eq!(catalog["models"][0]["slug"], "gpt-6-sol");

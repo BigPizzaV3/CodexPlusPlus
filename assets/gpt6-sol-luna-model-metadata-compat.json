@@ -11,7 +11,8 @@
         { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
         { "effort": "high", "description": "Greater reasoning depth for complex problems" },
         { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
-        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" }
+        { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
+        { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
       ],
       "context_window": 272000,
       "max_context_window": 872000,

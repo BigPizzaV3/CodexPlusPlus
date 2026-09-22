@@ -260,9 +260,11 @@ fn gpt6_sol_luna_metadata_matches_official_efforts_fast_and_default_window() {
     );
     let catalog: serde_json::Value =
         serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
-    let expected_efforts = ["none", "low", "medium", "high", "xhigh", "max"];
-
     for slug in ["gpt-6-sol", "gpt-6-luna"] {
+        let mut expected_efforts = vec!["none", "low", "medium", "high", "xhigh", "max"];
+        if slug == "gpt-6-sol" {
+            expected_efforts.push("ultra");
+        }
         assert!(requires_bundled_metadata_catalog(slug));
         let model = catalog["models"]
             .as_array()
