@@ -519,6 +519,81 @@ mod tests {
         assert!(!is_allowed_peer("a@im.wechat", "b@im.wechat"));
     }
 
+    /// 白名单外的消息不再无声消失：状态栏要能看到「已忽略」，
+    /// 否则用户无法区分「消息没到」和「被过滤」（群内真实发生过）。
+    /// 用 wiremock 假微信网关驱动真实消息循环验证。
+    #[tokio::test]
+    async fn non_allowlisted_message_updates_status_and_is_dropped() {
+        let server = wiremock::MockServer::start().await;
+        let message = serde_json::json!({
+            "seq": 1,
+            "message_id": (now_ms() % 1_000_000) as i64,
+            "from_user_id": "stranger@im.wechat",
+            "client_id": "unit-test",
+            "create_time_ms": now_ms() as i64,
+            "message_type": 1,
+            "message_state": 2,
+            "item_list": [{ "type": 1, "text_item": { "text": "hi" } }],
+            "context_token": "ctx"
+        });
+        let updates = serde_json::json!({
+            "ret": 0,
+            "errcode": 0,
+            "errmsg": "",
+            "msgs": [message],
+            "get_updates_buf": "YnVm",
+            "longpolling_timeout_ms": 1000
+        });
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/ilink/bot/getupdates"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(updates)
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let work_dir = tempfile::tempdir().unwrap();
+        let config = WeixinConnectConfig {
+            base_url: server.uri(),
+            token: "tok".to_string(),
+            account_id: "unit-test-ignore".to_string(),
+            allow_from: "only-me@im.wechat".to_string(),
+            route_tag: String::new(),
+            work_dir: work_dir.path().display().to_string(),
+            model: String::new(),
+            sandbox: "read-only".to_string(),
+            codex_path: String::new(),
+        };
+        let status: SharedWeixinConnectStatus = Arc::new(Mutex::new(Default::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(run_weixin_connect_with_codex_path(
+            config,
+            Arc::clone(&stop),
+            Arc::clone(&status),
+            WeixinCodexPath::new(""),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        // 循环正常退出时会写「微信连接已停止」，必须在停止前快照处理状态
+        let snapshot = status
+            .lock()
+            .map(|current| current.message.clone())
+            .unwrap_or_default();
+        stop.store(true, Ordering::SeqCst);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+
+        let message = snapshot;
+        assert!(
+            message.contains("已忽略来自非白名单发送方的消息"),
+            "状态栏应提示已忽略，实际：{message}"
+        );
+        // 清理循环写入真实 app state 目录的测试状态文件
+        let _ = std::fs::remove_file(
+            crate::paths::default_app_state_dir().join("weixin-connect-state-unit-test-ignore.json"),
+        );
+    }
+
     #[test]
     fn localhost_endpoint_only_matches_explicit_local_ports() {
         assert_eq!(
