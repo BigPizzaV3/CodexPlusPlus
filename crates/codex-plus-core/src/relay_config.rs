@@ -296,24 +296,65 @@ pub fn ensure_active_protocol_proxy_config_in_home(
         == RelaySessionProvider::Openai
         || (profile.relay_mode == crate::settings::RelayMode::Official
             && profile.official_mix_api_key);
-    if !transport_uses_proxy && !openai_identity_uses_proxy {
-        return Ok(false);
-    }
 
     let config_path = home.join("config.toml");
-    let existing = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("读取 {} 失败", config_path.display()))?;
+    let existing = match std::fs::read_to_string(&config_path) {
+        Ok(existing) => existing,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && !transport_uses_proxy
+                && !openai_identity_uses_proxy =>
+        {
+            return Ok(false);
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("读取 {} 失败", config_path.display()));
+        }
+    };
     let mut doc = parse_toml_document(&existing)?;
     let managed = managed_openai_base_url();
     let mut changed = false;
+    let session_provider_id = active_session_provider_id(&doc);
+    let transport_provider_id = if session_provider_id == "openai" {
+        RELAY_PROVIDER.to_string()
+    } else {
+        active_or_default_provider_id(&doc)
+    };
+
+    // Existing configs can retain the built-in OpenAI display name after an
+    // upgrade. Codex uses that name to enable remote compaction v2, which
+    // third-party relays do not implement, so repair it before launch.
+    let provider_name_needs_repair = session_provider_id != "openai"
+        && doc
+            .get("model_providers")
+            .and_then(Item::as_table)
+            .and_then(|providers| providers.get(&transport_provider_id))
+            .and_then(Item::as_table)
+            .and_then(|provider| provider.get("name"))
+            .and_then(Item::as_str)
+            .map(str::trim)
+            == Some("OpenAI");
+    if provider_name_needs_repair {
+        let provider = doc
+            .get_mut("model_providers")
+            .and_then(Item::as_table_mut)
+            .and_then(|providers| providers.get_mut(&transport_provider_id))
+            .and_then(Item::as_table_mut)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "活动 provider 需要修复 model_providers.{transport_provider_id}.name"
+                )
+            })?;
+        provider["name"] = toml_edit::value(transport_provider_id.as_str());
+        changed = true;
+    }
+
+    if !transport_uses_proxy && !openai_identity_uses_proxy && !changed {
+        return Ok(false);
+    }
 
     if transport_uses_proxy {
-        let session_provider_id = active_session_provider_id(&doc);
-        let transport_provider_id = if session_provider_id == "openai" {
-            RELAY_PROVIDER.to_string()
-        } else {
-            active_or_default_provider_id(&doc)
-        };
         let provider = doc
             .get_mut("model_providers")
             .and_then(Item::as_table_mut)
