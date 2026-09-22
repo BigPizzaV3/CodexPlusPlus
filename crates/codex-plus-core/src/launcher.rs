@@ -466,6 +466,24 @@ where
         }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
             || remote_control_provider_proxy_enabled(&settings);
+        // issue #2264：重启链路上的模型漂移修复。launcher 不重放完整 apply（那会
+        // 覆盖 Codex 在 UI 选择后回写的 live 值），只在 live config 的 model 仍是
+        // 工具写入的隐式默认且有未归档目标任务时，对齐到目标任务模型。
+        if settings.relay_profiles_enabled {
+            let profile = settings.active_relay_profile();
+            if profile.relay_mode != crate::settings::RelayMode::Official {
+                if let Err(error) =
+                    crate::relay_config::align_live_config_model_with_goal_thread(&home, &profile)
+                {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.goal_thread_model_align_failed",
+                        serde_json::json!({
+                            "message": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
         if protocol_proxy_enabled {
             hooks.ensure_active_protocol_proxy_config(&settings).await?;
             helper_port = crate::protocol_proxy::protocol_proxy_port();
