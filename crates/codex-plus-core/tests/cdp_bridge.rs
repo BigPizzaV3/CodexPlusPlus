@@ -4278,6 +4278,7 @@ fn injection_script_restores_thread_scroll_positions() {
     assert!(script.contains("codexThreadScroll"));
     assert!(script.contains("installThreadScrollRouteHooks"));
     assert!(script.contains("scheduleThreadScrollSync"));
+    assert!(script.contains("localStorage.removeItem(codexThreadScrollKey)"));
 }
 
 #[test]
@@ -4442,6 +4443,7 @@ fn bridge_health_check_script_uses_persisted_real_probe_result() {
     assert!(script.contains("__codexPlusBridgeHealth"));
     assert!(script.contains("lastSuccessAt"));
     assert!(script.contains("lastInjectionAt"));
+    assert!(script.contains("lastAttemptAt"));
     assert!(!script.contains("/backend/status"));
 }
 
@@ -4463,6 +4465,8 @@ if (run({{ lastInjectionAt: 0, lastSuccessAt: now }}) !== true) process.exit(2);
 if (run({{ lastInjectionAt: now, lastSuccessAt: 0 }}) !== true) process.exit(3);
 if (run({{ lastInjectionAt: now - 6000, lastSuccessAt: 0 }}) !== false) process.exit(4);
 if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000 }}) !== false) process.exit(5);
+if (run({{ lastInjectionAt: 0, lastSuccessAt: 0, lastAttemptAt: now }}) !== true) process.exit(7);
+if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000, lastAttemptAt: now - 16000 }}) !== false) process.exit(8);
 if (run({{ lastInjectionAt: now, lastSuccessAt: now }}, false) !== false) process.exit(6);
 "#,
         script = script

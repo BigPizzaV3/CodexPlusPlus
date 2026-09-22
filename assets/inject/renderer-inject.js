@@ -191,7 +191,10 @@
       try {
         if (window.sessionStorage.getItem(localeReloadStorageKey) === marker) return;
         window.sessionStorage.setItem(localeReloadStorageKey, marker);
+        // 标记写不进去就不要刷新，否则下次加载读不到标记，会再次刷新。
+        if (window.sessionStorage.getItem(localeReloadStorageKey) !== marker) return;
       } catch {
+        return;
       }
       window.location.reload();
     };
@@ -3946,10 +3949,18 @@
   const codexPlusBackendGeneration = (Number(window.__codexPlusBackendGeneration) || 0) + 1;
   window.__codexPlusBackendGeneration = codexPlusBackendGeneration;
 
-  function recordCodexPlusBridgeSuccess() {
+  function recordCodexPlusBridgeHealth(field) {
     if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
     const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
-    health.lastSuccessAt = Date.now();
+    health[field] = Date.now();
+  }
+
+  function recordCodexPlusBridgeSuccess() {
+    recordCodexPlusBridgeHealth("lastSuccessAt");
+  }
+
+  function recordCodexPlusBridgeAttempt() {
+    recordCodexPlusBridgeHealth("lastAttemptAt");
   }
 
   function renderBackendStatus() {
@@ -5768,7 +5779,22 @@
         if (safeKey) pruned[safeKey] = value;
       });
     window.__codexThreadScrollEntries = pruned;
-    localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: pruned }));
+    const payload = JSON.stringify({ version: codexThreadScrollVersion, entries: pruned });
+    try {
+      localStorage.setItem(codexThreadScrollKey, payload);
+    } catch {
+      // 本地存储配额已满时不能把异常抛到页面全局，否则滚动保存会把渲染进程打进刷新循环。
+      try {
+        const newestKey = Object.keys(pruned)[0];
+        const emergency = Object.create(null);
+        if (newestKey) emergency[newestKey] = pruned[newestKey];
+        window.__codexThreadScrollEntries = emergency;
+        localStorage.removeItem(codexThreadScrollKey);
+        localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: emergency }));
+      } catch {
+        try { localStorage.removeItem(codexThreadScrollKey); } catch { /* 放弃持久化，内存副本仍可用 */ }
+      }
+    }
   }
 
   function currentThreadScroller() {
@@ -6359,7 +6385,10 @@
           recordCodexPlusBridgeSuccess();
           return result;
         }
-        if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        if (result?.timeout) {
+          recordCodexPlusBridgeAttempt();
+          sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        }
         const fallback = await fetchBackendStatusFromHelper(path, payload);
         if (fallback?.status === "ok") {
           sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
