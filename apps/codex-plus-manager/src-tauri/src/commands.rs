@@ -7055,10 +7055,16 @@ base_url = "https://example.invalid/v1"
         let parsed = config.parse::<toml_edit::DocumentMut>().unwrap();
         let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
         assert!(parsed.get("model_provider").is_none());
-        assert_eq!(
-            parsed["model_providers"]["custom"]["base_url"].as_str(),
-            Some("https://old.example/v1")
+        // 切回官方后残留的 base_url 会让请求继续发往中转站（issue #2216），
+        // 所以整段中转站 provider 都要清掉，而不是只清掉「选择」。
+        assert!(
+            parsed
+                .get("model_providers")
+                .and_then(|providers| providers.get("custom"))
+                .is_none(),
+            "leftover relay provider must be removed: {config}"
         );
+        assert!(!config.contains("old.example/v1"));
         assert!(!auth.contains("OPENAI_API_KEY"));
         assert!(auth.contains("auth_mode"));
     }
