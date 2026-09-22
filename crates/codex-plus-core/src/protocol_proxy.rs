@@ -151,6 +151,8 @@ enum CodexCustomToolKind {
     Raw,
     ApplyPatch,
     BuiltIn,
+    /// Codex 的 tool_search 工具（MCP 延迟加载检索，execution: client）。
+    ToolSearch,
 }
 
 impl Default for CodexCustomToolKind {
@@ -183,6 +185,11 @@ impl CodexPatchProxyAction {
 impl CodexToolContext {
     fn is_custom_tool_proxy(&self, upstream_name: &str) -> bool {
         self.custom_tools.contains_key(upstream_name)
+    }
+
+    fn is_tool_search_proxy(&self, upstream_name: &str) -> bool {
+        self.custom_tools.get(upstream_name).map(|spec| spec.kind)
+            == Some(CodexCustomToolKind::ToolSearch)
     }
 
     fn original_custom_tool_name(&self, upstream_name: &str) -> String {
@@ -2938,6 +2945,48 @@ fn append_responses_item(
                 }
             }));
         }
+        Some("tool_search_call") => {
+            // Codex 的 tool_search 是客户端执行的代理工具，历史回放时按
+            // function tool_call 形态映射进 chat 消息流。
+            let call_id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            seen_tool_call_ids.insert(call_id.to_string());
+            pending_tool_calls.push(json!({
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "tool_search",
+                    "arguments": responses_arguments_to_chat(
+                        item.get("arguments").unwrap_or(&json!({}))
+                    )
+                }
+            }));
+        }
+        Some("tool_search_output") => {
+            let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            let output = item.get("tools").unwrap_or(&Value::Null);
+            if !seen_tool_call_ids.contains(call_id) {
+                flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+                flush_reasoning(messages, pending_reasoning);
+                messages.push(orphan_tool_output_message(call_id, output));
+                return;
+            }
+            flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": tool_output_content(output)
+            }));
+        }
         Some("custom_tool_call_output") => {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
             if call_id.is_empty() {
@@ -3612,6 +3661,25 @@ fn build_codex_tool_context(tools: Option<&Value>) -> CodexToolContext {
                 }
             }
             "namespace" => add_namespace_tools_to_context(&mut context, tool),
+            // Codex 的 tool_search（MCP 延迟加载检索）是客户端执行的代理工具：
+            // 转发层把它当作 custom 代理工具登记，模型调用回来时还原成
+            // tool_search_call item，检索本身仍由 Codex 客户端执行。
+            "tool_search" => {
+                let name = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("tool_search");
+                context.custom_tools.insert(
+                    name.to_string(),
+                    CodexCustomToolSpec {
+                        openai_name: name.to_string(),
+                        kind: CodexCustomToolKind::ToolSearch,
+                        proxy_action: None,
+                    },
+                );
+                context.has_custom_tools = true;
+            }
             "web_search" | "local_shell" | "computer_use" => {
                 let name = tool
                     .get("name")
@@ -3711,6 +3779,31 @@ fn responses_tools_to_chat_tools(tools: &[Value], context: &CodexToolContext) ->
                 }
             }
             "namespace" => converted.extend(namespace_tool_to_chat_tools(tool, context)),
+            // tool_search 透传为 chat 的 function 工具，名字保持 tool_search，
+            // 检索由 Codex 客户端执行（execution: client），转发层只做搬运。
+            "tool_search" => {
+                let name = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("tool_search");
+                let description = tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let parameters = tool
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                converted.push(json!({
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": description,
+                        "parameters": parameters
+                    }
+                }));
+            }
             _ => {}
         }
     }
@@ -4384,6 +4477,20 @@ fn tool_call_added_item(
     tool_context: &CodexToolContext,
 ) -> Value {
     if tool_context.is_custom_tool_proxy(&state.name) {
+        if tool_context.is_tool_search_proxy(&state.name) {
+            return json!({
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": {
+                    "id": tool_call_item_id(&state.call_id, &state.name, tool_context),
+                    "type": "tool_search_call",
+                    "status": "in_progress",
+                    "call_id": state.call_id,
+                    "execution": "client",
+                    "arguments": {}
+                }
+            });
+        }
         return json!({
             "type": "response.output_item.added",
             "output_index": output_index,
@@ -4423,7 +4530,19 @@ fn push_tool_call_delta_sse(
     delta: &str,
     tool_context: &CodexToolContext,
 ) {
-    if tool_context.is_custom_tool_proxy(&state.name) {
+    if tool_context.is_tool_search_proxy(&state.name) {
+        // tool_search 走 function 参数流，客户端按 tool_search_call.arguments 聚合。
+        push_sse(
+            output,
+            "response.function_call_arguments.delta",
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": state.item_id,
+                "output_index": output_index,
+                "delta": delta
+            }),
+        );
+    } else if tool_context.is_custom_tool_proxy(&state.name) {
         let _ = delta;
     } else {
         push_sse(
@@ -4445,6 +4564,19 @@ fn push_tool_call_done_sse(
     output_index: u32,
     tool_context: &CodexToolContext,
 ) {
+    if tool_context.is_tool_search_proxy(&state.name) {
+        push_sse(
+            output,
+            "response.function_call_arguments.done",
+            json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": state.item_id,
+                "output_index": output_index,
+                "arguments": state.arguments
+            }),
+        );
+        return;
+    }
     if tool_context.is_custom_tool_proxy(&state.name) {
         push_sse(
             output,
@@ -4486,6 +4618,19 @@ fn response_tool_call_item(
     tool_context: &CodexToolContext,
 ) -> Value {
     if tool_context.is_custom_tool_proxy(name) {
+        if tool_context.is_tool_search_proxy(name) {
+            // 官方客户端的 tool_search handler 只接受 tool_search_call item，
+            // function_call 形态会被拒绝，因此必须还原成专属 item 类型；
+            // arguments 转发层原样搬运（对象字符串双向保真）。
+            return json!({
+                "id": format!("tsc_{call_id}"),
+                "type": "tool_search_call",
+                "status": "completed",
+                "call_id": call_id,
+                "execution": "client",
+                "arguments": responses_arguments_to_chat_parse(arguments)
+            });
+        }
         return json!({
             "id": tool_call_item_id(call_id, name, tool_context),
             "type": "custom_tool_call",
@@ -4512,6 +4657,10 @@ fn response_tool_call_item(
 
 fn tool_call_item_id(call_id: &str, name: &str, tool_context: &CodexToolContext) -> String {
     let prefix = if tool_context.is_custom_tool_proxy(name) {
+        if tool_context.is_tool_search_proxy(name) {
+            // 官方客户端给 tool_search_call 分配的 item id 前缀（见 codex id_prefix）。
+            return format!("tsc_{call_id}");
+        }
         "ctc_"
     } else {
         "fc_"
@@ -5290,6 +5439,16 @@ fn responses_arguments_to_chat(value: &Value) -> String {
         Value::Null => "{}".to_string(),
         other => canonical_json_string(&json!({ "input": other })),
     }
+}
+
+/// 把 chat 侧的 arguments 字符串解析回 JSON Value，供需要对象形态参数的
+/// item（如 tool_search_call）使用；解析失败时退回空对象，避免构造非法 item。
+fn responses_arguments_to_chat_parse(arguments: &str) -> Value {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return json!({});
+    }
+    serde_json::from_str(trimmed).unwrap_or_else(|_| json!({}))
 }
 
 fn normalize_chat_tool_arguments_string(text: &str) -> String {
