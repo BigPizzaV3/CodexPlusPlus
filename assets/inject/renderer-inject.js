@@ -410,7 +410,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "17";
+  const codexDeleteStyleVersion = "19";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -835,6 +835,8 @@
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel [role="status"][aria-live="polite"]:has(progress[max="100"]):has(button[aria-label="Dismiss usage alert" i], button[aria-label="关闭使用量提醒"], button[aria-label="關閉用量提示"], button[aria-label="關閉使用量警示"]),
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel div.w-full:has(> [role="status"][aria-live="polite"]:has(progress[max="100"]):has(button[aria-label="Dismiss usage alert" i], button[aria-label="关闭使用量提醒"], button[aria-label="關閉用量提示"], button[aria-label="關閉使用量警示"])) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
@@ -9764,6 +9766,8 @@
     return window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ === true;
   }
 
+  const officialUsageAlertDismissLabelRe = /dismiss usage alert|关闭使用量提醒|關閉用量提示|關閉使用量警示/i;
+
   function officialUsageAlertCards(scope = document) {
     const root = scope?.querySelectorAll ? scope : document;
     return Array.from(root.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]')).filter((card) => {
@@ -9771,26 +9775,84 @@
       const progress = card.querySelector('progress[max="100"]');
       if (!progress) return false;
       const dismissButton = Array.from(card.querySelectorAll("button")).find((button) =>
-        /dismiss usage alert|关闭使用量提醒/i.test(button.getAttribute("aria-label") || ""),
+        officialUsageAlertDismissLabelRe.test(button.getAttribute("aria-label") || ""),
       );
       return !!dismissButton;
     });
   }
 
+  function normalizeUsageAlertText(text) {
+    return String(text || "").replace(/[\s\u00a0]+/g, " ").trim();
+  }
+
+  function isOfficialUsageAlertHeading(text) {
+    const value = normalizeUsageAlertText(text);
+    if (!value || value.length > 48) return false;
+    if (/agents|智能代理|智慧体|子智能/.test(value)) return false;
+    if (/^(?:you(?:['’]re| are)|you['’]ve)\b/i.test(value) && /\b(?:usage|limit|messages)\b/i.test(value) && /\b(?:out of|used all|reached|approaching|hit)\b/i.test(value)) {
+      return true;
+    }
+    if (/^(?:this|selected) model is out of usage\.?$/i.test(value)) return true;
+    if (!/(Codex|模型|使用)/.test(value)) return false;
+    if (!/(额度|額度|用量|限额|限額|上限)/.test(value)) return false;
+    return /(已用完|已用尽|已用盡|已耗尽|已耗盡|已达|已達|即将|即將|超出|用罄|用完|用尽|用盡)/.test(value);
+  }
+
+  function composerUsageAlertBanners(scope = document) {
+    const root = scope?.querySelectorAll ? scope : document;
+    return Array.from(root.querySelectorAll("[data-codex-composer-root] aside")).filter((aside) => {
+      if (!(aside instanceof HTMLElement)) return false;
+      const heading = aside.querySelector("h1, h2, h3, h4, h5, [role='heading']");
+      return isOfficialUsageAlertHeading(heading?.textContent || "");
+    });
+  }
+
   function officialUsageAlertContainer(card) {
     const parent = card.parentElement;
-    return parent?.children.length === 1 && parent.matches("div.w-full") ? parent : card;
+    if (parent?.children.length === 1) {
+      if (parent.matches?.("div.w-full")) return parent;
+      if (
+        parent.closest?.("[data-codex-composer-root]") &&
+        !parent.matches?.("[data-codex-composer-root], form, main")
+      ) {
+        return parent;
+      }
+    }
+    return card;
+  }
+
+  function markOfficialUsageAlertTarget(targets, node) {
+    if (!node || node === document.body || node === document.documentElement) return;
+    targets.add(node);
   }
 
   function refreshOfficialUsageAlertVisibility() {
     const hidden = officialUsageAlertHidden();
-    document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]').forEach((container) => {
-      delete container.dataset.codexPlusUsageAlertHidden;
-    });
-    if (!hidden) return;
+    // 旧版左下角卡片有稳定的进度条和关闭按钮，body class 让 CSS 在首帧就挡住。
+    // 新版输入框横幅只能靠标题识别，不能用「有标题就隐藏」，否则会误伤其它提示。
+    document.body?.classList.toggle("codex-plus-hide-usage-alert", hidden);
+
+    if (!hidden) {
+      document.querySelectorAll('[data-codex-plus-usage-alert-hidden]').forEach((el) => {
+        delete el.dataset.codexPlusUsageAlertHidden;
+      });
+      return;
+    }
+
+    const targets = new Set();
     officialUsageAlertCards().forEach((card) => {
-      const container = officialUsageAlertContainer(card);
-      container.dataset.codexPlusUsageAlertHidden = "true";
+      markOfficialUsageAlertTarget(targets, card);
+      markOfficialUsageAlertTarget(targets, officialUsageAlertContainer(card));
+    });
+    composerUsageAlertBanners().forEach((banner) => {
+      markOfficialUsageAlertTarget(targets, banner);
+      markOfficialUsageAlertTarget(targets, officialUsageAlertContainer(banner));
+    });
+    document.querySelectorAll("[data-codex-plus-usage-alert-hidden]").forEach((el) => {
+      if (!targets.has(el)) delete el.dataset.codexPlusUsageAlertHidden;
+    });
+    targets.forEach((el) => {
+      if (el.dataset.codexPlusUsageAlertHidden !== "true") el.dataset.codexPlusUsageAlertHidden = "true";
     });
   }
 
@@ -10795,10 +10857,39 @@
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
+    // 全量 scan 有 200ms 防抖。额度横幅要在这次变更绘制前就藏掉，所以这里同步识别。
+    if (officialUsageAlertHidden() && mutationTouchesUsageAlert(mutations)) {
+      try {
+        refreshOfficialUsageAlertVisibility();
+      } catch {}
+    }
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
+  }
+
+  function nodeMayContainUsageAlert(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const host = node.matches?.("aside, [role='status']")
+      ? node
+      : node.closest?.("aside, [role='status']");
+    if (host) return !!host.closest?.("[data-codex-composer-root], aside.app-shell-left-panel");
+    return !!node.querySelector?.("[data-codex-composer-root] aside, aside.app-shell-left-panel [role='status'][aria-live='polite']");
+  }
+
+  function mutationTouchesUsageAlert(mutations) {
+    if (!mutations) return false;
+    for (const mutation of mutations) {
+      if (nodeMayContainUsageAlert(mutation.target)) return true;
+      for (const node of mutation.addedNodes || []) {
+        if (nodeMayContainUsageAlert(node)) return true;
+      }
+      for (const node of mutation.removedNodes || []) {
+        if (nodeMayContainUsageAlert(node)) return true;
+      }
+    }
+    return false;
   }
 
   /**

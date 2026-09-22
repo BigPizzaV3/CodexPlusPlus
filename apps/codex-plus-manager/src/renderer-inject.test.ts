@@ -57,8 +57,11 @@ it("only reveals floating-panel content after the shell has settled open", async
 
 type FakeElementOptions = {
   className?: string;
+  closestMatch?: string;
   dismissLabel?: string;
   hasProgress?: boolean;
+  hasUpgradeAction?: boolean;
+  headingText?: string;
   styleDisplay?: string;
 };
 
@@ -68,19 +71,29 @@ class FakeElement {
   parentElement: FakeElement | null = null;
   style: { display: string };
   private readonly className: string;
+  private readonly closestMatch?: string;
   private readonly dismissLabel: string;
   private readonly hasProgress: boolean;
+  private readonly hasUpgradeAction: boolean;
+  private readonly headingText?: string;
 
   constructor(options: FakeElementOptions = {}) {
     this.className = options.className ?? "";
+    this.closestMatch = options.closestMatch;
     this.dismissLabel = options.dismissLabel ?? "";
     this.hasProgress = options.hasProgress ?? false;
+    this.hasUpgradeAction = options.hasUpgradeAction ?? false;
+    this.headingText = options.headingText;
     this.style = { display: options.styleDisplay ?? "" };
   }
 
   appendChild(child: FakeElement) {
     child.parentElement = this;
     this.children.push(child);
+  }
+
+  closest(selector: string) {
+    return this.closestMatch === selector ? this : null;
   }
 
   getAttribute(name: string) {
@@ -92,7 +105,16 @@ class FakeElement {
   }
 
   querySelector(selector: string) {
-    return selector === 'progress[max="100"]' && this.hasProgress ? new FakeElement() : null;
+    if (selector === 'progress[max="100"]') {
+      return this.hasProgress ? new FakeElement() : null;
+    }
+    if (/heading|h[1-5]/.test(selector) && this.headingText) {
+      return { textContent: this.headingText };
+    }
+    if (/billing|upgrade/i.test(selector) && this.hasUpgradeAction) {
+      return new FakeElement();
+    }
+    return null;
   }
 
   querySelectorAll(selector: string) {
@@ -100,18 +122,47 @@ class FakeElement {
   }
 }
 
-function usageAlertRuntime(renderer: string, cards: FakeElement[], managed: FakeElement[]) {
+function usageAlertRuntime(
+  renderer: string,
+  cards: FakeElement[],
+  managed: FakeElement[],
+  composerBanners: FakeElement[] = [],
+) {
   const start = renderer.indexOf("  function officialUsageAlertHidden(");
   const end = renderer.indexOf("\n  let zedRemoteStatusPromise", start);
   assert.ok(start >= 0 && end > start);
   const source = renderer.slice(start, end);
   const selectors: string[] = [];
+  const bodyClasses = new Set<string>();
   const document = {
+    body: {
+      classList: {
+        contains(cls: string) {
+          return bodyClasses.has(cls);
+        },
+        toggle(cls: string, force?: boolean) {
+          const next = force === undefined ? !bodyClasses.has(cls) : !!force;
+          if (next) {
+            bodyClasses.add(cls);
+          } else {
+            bodyClasses.delete(cls);
+          }
+          return next;
+        },
+      },
+    },
     querySelectorAll(selector: string) {
       selectors.push(selector);
-      return selector === '[data-codex-plus-usage-alert-hidden="true"]'
-        ? managed.filter((node) => node.dataset.codexPlusUsageAlertHidden === "true")
-        : cards;
+      if (selector === '[data-codex-plus-usage-alert-hidden="true"]') {
+        return managed.filter((node) => node.dataset.codexPlusUsageAlertHidden === "true");
+      }
+      if (selector === '[data-codex-plus-usage-alert-hidden]') {
+        return [...managed, ...cards, ...composerBanners].filter((node) => "codexPlusUsageAlertHidden" in node.dataset);
+      }
+      if (selector === '[data-codex-composer-root] aside') {
+        return composerBanners;
+      }
+      return cards;
     },
   };
   const windowValue: Record<string, unknown> = {};
@@ -128,7 +179,7 @@ function usageAlertRuntime(renderer: string, cards: FakeElement[], managed: Fake
     officialUsageAlertHidden: () => boolean;
     refreshOfficialUsageAlertVisibility: () => void;
   };
-  return { runtime: create(windowValue, document, FakeElement), selectors, windowValue };
+  return { runtime: create(windowValue, document, FakeElement), selectors, windowValue, bodyClasses };
 }
 
 function installRendererStyle(renderer: string) {
@@ -300,8 +351,9 @@ describe("renderer injection header compatibility", () => {
     assert.equal(wrapper.style.display, "grid");
     assert.equal(otherStatus.dataset.codexPlusUsageAlertHidden, undefined);
     assert.deepEqual(selectors, [
-      '[data-codex-plus-usage-alert-hidden="true"]',
       'aside.app-shell-left-panel [role="status"][aria-live="polite"]',
+      '[data-codex-composer-root] aside',
+      '[data-codex-plus-usage-alert-hidden]',
     ]);
 
     windowValue.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;
@@ -310,7 +362,105 @@ describe("renderer injection header compatibility", () => {
     assert.equal(wrapper.dataset.codexPlusUsageAlertHidden, undefined);
     assert.equal(wrapper.style.display, "grid");
     assert.equal(wrapper.children[0], usageAlert);
-    assert.equal(selectors.at(-1), '[data-codex-plus-usage-alert-hidden="true"]');
+    assert.equal(selectors.pop(), '[data-codex-plus-usage-alert-hidden]');
+  });
+
+  it("hides modern composer usage alert banners and restores them without hiding unrelated asides", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const composerWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const matchingBanner = new FakeElement({ headingText: "Codex 和工作使用额度已用完" });
+    composerWrapper.appendChild(matchingBanner);
+
+    const englishWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const englishBanner = new FakeElement({ headingText: "You're out of\nCodex and Work usage" });
+    englishWrapper.appendChild(englishBanner);
+
+    const workspaceWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const workspaceBanner = new FakeElement({ headingText: "你的 Codex 和工作用量均已用完" });
+    workspaceWrapper.appendChild(workspaceBanner);
+
+    const approachingWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const approachingBanner = new FakeElement({ headingText: "您即将达到使用限额" });
+    approachingWrapper.appendChild(approachingBanner);
+
+    const modelWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const modelBanner = new FakeElement({ headingText: "所选模型已超出使用限额" });
+    modelWrapper.appendChild(modelBanner);
+
+    const unrelatedWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const unrelatedNotice = new FakeElement({ headingText: "Network disconnected" });
+    unrelatedWrapper.appendChild(unrelatedNotice);
+
+    const fileErrorWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const fileErrorNotice = new FakeElement({ headingText: "File upload failed" });
+    fileErrorWrapper.appendChild(fileErrorNotice);
+
+    const ultraWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const ultraNotice = new FakeElement({
+      headingText: "Ultra with up to 5 agents can use your usage limits quickly",
+    });
+    ultraWrapper.appendChild(ultraNotice);
+
+    const sharedWrapper = new FakeElement({ closestMatch: "[data-codex-composer-root]" });
+    const sharedBanner = new FakeElement({ headingText: "此模型的使用额度已用完" });
+    const sharedSibling = new FakeElement({ headingText: "Sandbox ready" });
+    sharedWrapper.appendChild(sharedBanner);
+    sharedWrapper.appendChild(sharedSibling);
+
+    const { runtime, windowValue, bodyClasses } = usageAlertRuntime(
+      renderer,
+      [],
+      [
+        composerWrapper,
+        englishWrapper,
+        workspaceWrapper,
+        approachingWrapper,
+        modelWrapper,
+        unrelatedWrapper,
+        fileErrorWrapper,
+        ultraWrapper,
+        sharedWrapper,
+      ],
+      [
+        matchingBanner,
+        englishBanner,
+        workspaceBanner,
+        approachingBanner,
+        modelBanner,
+        unrelatedNotice,
+        fileErrorNotice,
+        ultraNotice,
+        sharedBanner,
+        sharedSibling,
+      ],
+    );
+
+    windowValue.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;
+    runtime.refreshOfficialUsageAlertVisibility();
+
+    assert.equal(composerWrapper.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(englishWrapper.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(workspaceWrapper.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(approachingWrapper.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(modelWrapper.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(unrelatedWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(fileErrorWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(ultraWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(sharedWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(sharedBanner.dataset.codexPlusUsageAlertHidden, "true");
+    assert.equal(sharedSibling.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(bodyClasses.has("codex-plus-hide-usage-alert"), true);
+
+    windowValue.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;
+    runtime.refreshOfficialUsageAlertVisibility();
+
+    assert.equal(composerWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(englishWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(workspaceWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(approachingWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(modelWrapper.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(sharedBanner.dataset.codexPlusUsageAlertHidden, undefined);
+    assert.equal(bodyClasses.has("codex-plus-hide-usage-alert"), false);
   });
 
   it("refreshes active-profile usage alert settings through the existing backend heartbeat", async () => {
@@ -319,6 +469,15 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /typeof nextStatus\.hideOfficialUsageAlert === "boolean"/);
     assert.match(renderer, /window\.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus\.hideOfficialUsageAlert/);
     assert.match(renderer, /\[data-codex-plus-usage-alert-hidden="true"\] \{ display: none !important; \}/);
+    assert.match(
+      renderer,
+      /body\.codex-plus-hide-usage-alert aside\.app-shell-left-panel \[role="status"\]\[aria-live="polite"\]:has\(progress\[max="100"\]\):has\(/,
+    );
+    assert.match(renderer, /button\[aria-label="关闭使用量提醒"\]/);
+    assert.match(renderer, /button\[aria-label="關閉用量提示"\]/);
+    assert.doesNotMatch(renderer, /\[data-codex-composer-root\] aside:not\(\[data-codex-plus-usage-alert-hidden="false"\]\):has/);
+    assert.doesNotMatch(renderer, /:has\(\[role="heading"\], h1, h2, h3, h4, h5\)/);
+    assert.match(renderer, /if \(officialUsageAlertHidden\(\) && mutationTouchesUsageAlert\(mutations\)\)/);
     assert.doesNotMatch(renderer, /container\.style\.(?:setProperty|removeProperty)\("display"/);
   });
 
