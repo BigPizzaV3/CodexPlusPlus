@@ -2658,19 +2658,23 @@ model = "gpt-5-mini"
             .as_ref()
             .is_some_and(|path| path.contains("codex-plus-live-"))
     );
-    assert!(updated.contains(r#"model = "gpt-5""#));
+    assert!(updated.contains(r#"model = "gpt-5-mini""#));
     assert!(!updated.contains("model_provider ="));
     assert!(!updated.contains("model_catalog_json"));
     assert!(!updated.contains("model_context_window"));
     assert!(!updated.contains("model_auto_compact_token_limit"));
     assert!(!updated.contains("OPENAI_API_KEY"));
-    assert!(updated.contains("[model_providers.custom]"));
-    assert!(updated.contains(r#"wire_api = "responses""#));
-    assert!(updated.contains(r#"base_url = "https://relay.example.test/v1""#));
+    // 激活的中转站 provider 整段移除（#2216）：只删认证字段会留下 base_url，
+    // 切回官方后请求仍发往中转站。
+    assert!(!updated.contains("[model_providers.custom]"));
+    assert!(!updated.contains(r#"base_url = "https://relay.example.test/v1""#));
+    // 根级 model 由中转站写入，也要清掉，否则模型选择器仍显示中转站模型。
+    assert!(!updated.contains(r#"model = "gpt-5""#));
     assert!(!updated.contains("[model_providers.CodexPP]"));
     assert!(!updated.contains("experimental_bearer_token"));
     assert!(!updated.contains("requires_openai_auth"));
     assert!(!updated.contains("env_key"));
+    // 未被激活的用户自定义 provider 不受影响。
     assert!(updated.contains("[model_providers.custom1]"));
     assert!(updated.contains(r#"base_url = "https://keep.example.test/v1""#));
     assert!(updated.contains("[profiles.default]"));

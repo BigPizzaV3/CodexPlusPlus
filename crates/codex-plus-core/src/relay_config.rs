@@ -817,14 +817,23 @@ pub fn clear_relay_config_to_home_with_auth(
     };
     let config_path = home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut without_tables = existing;
+    // 必须在删除 model_provider 之前读：下面的根键清理会把判断依据删掉。
+    // 用它决定要不要连 model 一起清——中转站选的模型名留在官方模式下，
+    // 模型选择器仍会显示它（issue #2216）。
+    let active_provider = parse_toml_document(&existing)
+        .ok()
+        .and_then(|doc| active_provider_id(&doc));
+    let mut doc = parse_toml_document(&existing)?;
+    // 中转站与旧版 provider 的整段配置一律移除，不看它是否当前激活：
+    // 只删认证字段会留下 base_url（切回官方后请求仍发往中转站，issue #2216），
+    // 而「未被激活就跳过」会让切走时残留的 token 继续留在文件里。
+    // 这里清的是 Codex++ 自己管理的 provider（custom / 旧版名），
+    // 用户自定义的其它 provider（如 custom1）不受影响。
     for legacy_provider in LEGACY_RELAY_PROVIDERS {
-        without_tables = remove_table(
-            &without_tables,
-            &format!("model_providers.{legacy_provider}"),
-        );
+        remove_provider_table(&mut doc, legacy_provider);
     }
-    let mut updated = without_tables;
+    remove_provider_table(&mut doc, RELAY_PROVIDER);
+    let mut updated = normalize_optional_toml(doc);
     for key in [
         "OPENAI_API_KEY",
         "model_provider",
@@ -838,7 +847,14 @@ pub fn clear_relay_config_to_home_with_auth(
     ] {
         updated = remove_root_key(&updated, key);
     }
-    updated = remove_model_provider_auth_fields(&updated, RELAY_PROVIDER)?;
+    // 只用在中转站 provider 名下时才清 model；用户手写的官方模型名要保留。
+    if active_provider.as_deref() == Some(RELAY_PROVIDER)
+        || active_provider
+            .as_deref()
+            .is_some_and(|provider| LEGACY_RELAY_PROVIDERS.contains(&provider))
+    {
+        updated = remove_root_key(&updated, "model");
+    }
     updated = remove_managed_remote_control_openai_base_url(&updated)?;
     let backup_path = write_codex_live_atomic(home, Some(&updated), auth_bytes.as_deref())?;
     let status = relay_config_status_from_home(home);
@@ -847,25 +863,6 @@ pub fn clear_relay_config_to_home_with_auth(
         backup_path,
         configured: status.configured,
     })
-}
-
-fn remove_model_provider_auth_fields(contents: &str, provider_id: &str) -> anyhow::Result<String> {
-    let mut doc = parse_toml_document(contents)?;
-    if let Some(provider) = doc
-        .get_mut("model_providers")
-        .and_then(Item::as_table_mut)
-        .and_then(|providers| providers.get_mut(provider_id))
-        .and_then(Item::as_table_mut)
-    {
-        for key in [
-            "experimental_bearer_token",
-            "env_key",
-            "requires_openai_auth",
-        ] {
-            provider.remove(key);
-        }
-    }
-    Ok(normalize_optional_toml(doc))
 }
 
 fn pure_api_auth_json_removed(home: &Path) -> anyhow::Result<Option<Vec<u8>>> {
@@ -3755,26 +3752,6 @@ fn upsert_model_provider_config_with_session_provider(
     Ok(move_model_providers_before_profiles(
         &ensure_trailing_newline(doc.to_string()),
     ))
-}
-
-fn remove_table(contents: &str, table: &str) -> String {
-    let header = format!("[{table}]");
-    let mut lines = Vec::new();
-    let mut skipping = false;
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if trimmed == header {
-                skipping = true;
-                continue;
-            }
-            skipping = false;
-        }
-        if !skipping {
-            lines.push(line.to_string());
-        }
-    }
-    lines.join("\n")
 }
 
 fn remove_root_key(contents: &str, key: &str) -> String {
