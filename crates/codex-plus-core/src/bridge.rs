@@ -18,6 +18,10 @@ use tokio_tungstenite::tungstenite::Message;
 pub const BRIDGE_BINDING_NAME: &str = "codexSessionDeleteV2";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+/// 陈旧会话的 generation 轮询间隔。旧会话只会在"socket 再收到消息"时走到循环顶部的
+/// generation 检查；bridge 失效场景下旧 socket 不会再有任何消息，没有这个轮询，
+/// 被顶替的会话会带着 Runtime.enable 订阅和脚本注册无限期滞留。
+pub const BRIDGE_GENERATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub type BridgeHandler = Arc<
     dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>
@@ -141,8 +145,12 @@ pub fn bridge_health_check_script() -> &'static str {
   const now = Date.now();
   const lastSuccessAt = Number(health.lastSuccessAt) || 0;
   const lastInjectionAt = Number(health.lastInjectionAt) || 0;
+  const lastAttemptAt = Number(health.lastAttemptAt) || 0;
   if (lastInjectionAt > 0 && now - lastInjectionAt <= 5000) return true;
-  return lastSuccessAt > 0 && now - lastSuccessAt <= 15000;
+  if (lastSuccessAt > 0 && now - lastSuccessAt <= 15000) return true;
+  // 页面忙碌时状态请求会超时，但心跳仍在调用桥接。最近一次尝试也算活着，
+  // 避免看门狗把整份脚本反复注入并触发整页刷新。
+  return lastAttemptAt > 0 && now - lastAttemptAt <= 15000;
 })()
 "#
 }
@@ -459,48 +467,62 @@ pub async fn install_bridge(
     let mut session = CdpSession::new(socket).with_handler(handler);
     let generation = next_bridge_generation(websocket_url);
     session = session.with_generation(generation.clone());
+    let mut registered_script_ids = Vec::new();
 
-    session.send_command(1, "Runtime.enable", json!({})).await?;
-    session
-        .send_command(2, "Runtime.removeBinding", json!({ "name": binding_name }))
-        .await?;
-    session
-        .send_command(3, "Runtime.addBinding", json!({ "name": binding_name }))
-        .await?;
-
-    let bridge_script = build_bridge_script(binding_name);
-    session
-        .send_command(
-            4,
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": bridge_script }),
-        )
-        .await?;
-    session
-        .send_command(
-            5,
-            "Runtime.evaluate",
-            runtime_evaluate_params(&bridge_script),
-        )
-        .await?;
-
-    for script in new_document_scripts {
-        let message_id = next_message_id();
+    let install_result: anyhow::Result<()> = async {
+        session.send_command(1, "Runtime.enable", json!({})).await?;
         session
+            .send_command(2, "Runtime.removeBinding", json!({ "name": binding_name }))
+            .await?;
+        session
+            .send_command(3, "Runtime.addBinding", json!({ "name": binding_name }))
+            .await?;
+
+        let bridge_script = build_bridge_script(binding_name);
+        let response = session
             .send_command(
-                message_id,
+                4,
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": script }),
+                json!({ "source": bridge_script }),
             )
             .await?;
-        let message_id = next_message_id();
+        collect_script_identifier(&response, &mut registered_script_ids);
         session
             .send_command(
-                message_id,
+                5,
                 "Runtime.evaluate",
-                runtime_evaluate_params(script),
+                runtime_evaluate_params(&bridge_script),
             )
             .await?;
+
+        for script in new_document_scripts {
+            let message_id = next_message_id();
+            let response = session
+                .send_command(
+                    message_id,
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({ "source": script }),
+                )
+                .await?;
+            collect_script_identifier(&response, &mut registered_script_ids);
+            let message_id = next_message_id();
+            session
+                .send_command(
+                    message_id,
+                    "Runtime.evaluate",
+                    runtime_evaluate_params(script),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = install_result {
+        session
+            .remove_registered_scripts(&registered_script_ids)
+            .await;
+        session.close().await;
+        return Err(error);
     }
 
     if !publish_bridge_generation(&generation) {
@@ -508,6 +530,9 @@ pub async fn install_bridge(
             "bridge.generation_superseded_before_publish",
             json!({ "generation": generation.id }),
         );
+        session
+            .remove_registered_scripts(&registered_script_ids)
+            .await;
         session.close().await;
         return Ok(());
     }
@@ -546,13 +571,30 @@ pub async fn install_bridge(
                         Ok(None) | Err(_) => break,
                     }
                 }
+                // 不依赖 socket 消息也能发现 generation 过期：旧会话最多
+                // 一个轮询间隔内主动退出，避免失效场景下会话无限堆积。
+                _ = tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL) => {}
             }
         }
+        session
+            .remove_registered_scripts(&registered_script_ids)
+            .await;
         session.close().await;
         release_bridge_generation(&generation);
     });
 
     Ok(())
+}
+
+fn collect_script_identifier(response: &Value, identifiers: &mut Vec<String>) {
+    if let Some(identifier) = response
+        .get("result")
+        .and_then(|result| result.get("identifier"))
+        .and_then(Value::as_str)
+        && !identifier.is_empty()
+    {
+        identifiers.push(identifier.to_string());
+    }
 }
 
 pub fn runtime_evaluate_params(script: &str) -> Value {
@@ -651,6 +693,18 @@ where
     async fn close(&mut self) {
         let _ = self.socket.send(Message::Close(None)).await;
         let _ = self.socket.close().await;
+    }
+
+    async fn remove_registered_scripts(&mut self, identifiers: &[String]) {
+        for identifier in identifiers {
+            let _ = self
+                .send_command_without_wait(
+                    next_message_id(),
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    json!({ "identifier": identifier }),
+                )
+                .await;
+        }
     }
 
     async fn send_command(

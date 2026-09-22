@@ -22,6 +22,46 @@ use crate::status::{LaunchStatus, StatusStore};
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
 const BRIDGE_HEALTH_FAILURE_THRESHOLD: u8 = 2;
+/// 重注入退避：首次重注入立即执行，此后若桥仍不健康，重注入间隔按
+/// 10s → 20s → 40s … 指数增长并封顶。对重注入修不好的失效（如应用更新
+/// 改变了页面上下文），避免每 10~15 秒重发一次完整注入脚本（issue #2169）。
+const BRIDGE_REINJECT_BACKOFF_BASE_SECS: u64 = 10;
+const BRIDGE_REINJECT_BACKOFF_CAP_SECS: u64 = 300;
+
+/// 看门狗内跟踪重注入退避状态；健康恢复或应用实例更换时重置。
+#[derive(Debug, Default)]
+struct BridgeReinjectBackoff {
+    consecutive_attempts: u32,
+    next_allowed_at: Option<std::time::Instant>,
+}
+
+fn reinject_backoff_delay(consecutive_attempts: u32) -> std::time::Duration {
+    let factor = 1u64
+        .checked_shl(consecutive_attempts.min(u64::BITS - 1))
+        .unwrap_or(u64::MAX);
+    std::time::Duration::from_secs(
+        BRIDGE_REINJECT_BACKOFF_BASE_SECS
+            .saturating_mul(factor)
+            .min(BRIDGE_REINJECT_BACKOFF_CAP_SECS),
+    )
+}
+
+impl BridgeReinjectBackoff {
+    fn ready(&self, now: std::time::Instant) -> bool {
+        self.next_allowed_at.is_none_or(|deadline| now >= deadline)
+    }
+
+    fn record_attempt(&mut self, now: std::time::Instant) {
+        let delay = reinject_backoff_delay(self.consecutive_attempts);
+        self.next_allowed_at = Some(now + delay);
+        self.consecutive_attempts = self.consecutive_attempts.saturating_add(1);
+    }
+
+    fn reset(&mut self) {
+        self.consecutive_attempts = 0;
+        self.next_allowed_at = None;
+    }
+}
 const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 5_000;
 const MACOS_DEBUG_TAKEOVER_INTERVAL_MS: u64 = 100;
 
@@ -466,6 +506,24 @@ where
         }
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
             || remote_control_provider_proxy_enabled(&settings);
+        // issue #2264：重启链路上的模型漂移修复。launcher 不重放完整 apply（那会
+        // 覆盖 Codex 在 UI 选择后回写的 live 值），只在 live config 的 model 仍是
+        // 工具写入的隐式默认且有未归档目标任务时，对齐到目标任务模型。
+        if settings.relay_profiles_enabled {
+            let profile = settings.active_relay_profile();
+            if profile.relay_mode != crate::settings::RelayMode::Official {
+                if let Err(error) =
+                    crate::relay_config::align_live_config_model_with_goal_thread(&home, &profile)
+                {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.goal_thread_model_align_failed",
+                        serde_json::json!({
+                            "message": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
         if protocol_proxy_enabled {
             hooks.ensure_active_protocol_proxy_config(&settings).await?;
             helper_port = crate::protocol_proxy::protocol_proxy_port();
@@ -1017,6 +1075,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
             let mut observed_browser_id: Option<String> = None;
             let mut bridge_health_failures = 0u8;
+            let mut bridge_reinject_backoff = BridgeReinjectBackoff::default();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
@@ -1042,6 +1101,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                                 identity_changed,
                                 bridge_reinjector.clone(),
                                 &mut bridge_health_failures,
+                                &mut bridge_reinject_backoff,
                             ),
                         );
                         record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
@@ -1694,6 +1754,42 @@ async fn handle_protocol_proxy_connection(
     }
     if upstream.is_stream {
         write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
+        if upstream.compaction {
+            // v2 远程压缩：无论上游协议都重组为恰好一个 compaction 输出项，
+            // 压缩无增量展示诉求，收齐上游文本后一次性下发。
+            // SSE 事件可能跨网络 chunk 拆开，converter 内部按事件边界缓冲。
+            let mut converter = crate::protocol_proxy::CompactionSseConverter::new(
+                request_json
+                    .as_ref()
+                    .and_then(|request| request.get("model"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            );
+            if upstream.wire_api != crate::protocol_proxy::UpstreamWireApi::Responses {
+                converter = converter.with_chat_upstream();
+            }
+            let mut bytes_stream = upstream.response.bytes_stream();
+            while let Some(chunk) = bytes_stream.next().await {
+                match chunk {
+                    Ok(bytes) => converter.push_upstream_bytes(&bytes),
+                    Err(error) => {
+                        converter.fail(format!("Stream error: {error}"), None);
+                        break;
+                    }
+                }
+            }
+            let payload = converter.finish();
+            stream.write_all(&payload).await?;
+            log_helper_response(
+                "helper.protocol_proxy_compaction_ok",
+                method,
+                path,
+                "200 OK",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
         if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
             let mut bytes_stream = upstream.response.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
@@ -1757,6 +1853,27 @@ async fn handle_protocol_proxy_connection(
         return Ok(());
     }
     let upstream_body = upstream.response.bytes().await?;
+    if upstream.compaction {
+        // v2 远程压缩非流式路径：同样重组为单个 compaction 输出项。
+        let body = crate::protocol_proxy::wrap_non_stream_response_as_compaction(
+            &upstream_body,
+            request_json
+                .as_ref()
+                .and_then(|request| request.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
+        )?;
+        write_http_response(stream, "200 OK", "text/event-stream; charset=utf-8", &body).await?;
+        log_helper_response(
+            "helper.protocol_proxy_compaction_ok",
+            method,
+            path,
+            "200 OK",
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
     if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
         write_http_response(
             stream,
@@ -2601,8 +2718,16 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
     // This one-shot entry point preserves its historical immediate-repair behavior.
     let mut health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD.saturating_sub(1);
-    check_and_reinject_bridge_inner(debug_port, helper_port, false, None, &mut health_failures)
-        .await
+    let mut backoff = BridgeReinjectBackoff::default();
+    check_and_reinject_bridge_inner(
+        debug_port,
+        helper_port,
+        false,
+        None,
+        &mut health_failures,
+        &mut backoff,
+    )
+    .await
 }
 
 pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
@@ -2644,6 +2769,7 @@ async fn check_and_reinject_bridge_inner(
     browser_identity_changed: bool,
     bridge_reinjector: Option<BridgeReinjector>,
     health_failures: &mut u8,
+    backoff: &mut BridgeReinjectBackoff,
 ) -> bool {
     let healthy = if browser_identity_changed {
         Some(false)
@@ -2667,9 +2793,34 @@ async fn check_and_reinject_bridge_inner(
             }
         }
     };
+    match healthy {
+        // 健康恢复或探测不确定时清掉退避；失效计数由 should_reinject_* 统一管理。
+        Some(true) | None => backoff.reset(),
+        Some(false) => {}
+    }
     if !should_reinject_after_health_result(healthy, browser_identity_changed, health_failures) {
         return false;
     }
+    if browser_identity_changed {
+        // 应用实例更换：旧退避针对的是旧页面，新页面需要立即注入。
+        backoff.reset();
+    }
+    let now = std::time::Instant::now();
+    if !backoff.ready(now) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.reinject_backoff_skipped",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "helper_port": helper_port,
+                "consecutive_reinjections": backoff.consecutive_attempts,
+                "next_reinject_allowed_in_ms": backoff
+                    .next_allowed_at
+                    .map(|deadline| deadline.saturating_duration_since(now).as_millis() as u64),
+            }),
+        );
+        return false;
+    }
+    backoff.record_attempt(now);
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "bridge.reinject_start",
@@ -3367,6 +3518,39 @@ mod tests {
             true,
             &mut failures
         ));
+    }
+
+    #[test]
+    fn reinject_backoff_delay_doubles_and_caps() {
+        assert_eq!(reinject_backoff_delay(0), std::time::Duration::from_secs(10));
+        assert_eq!(reinject_backoff_delay(1), std::time::Duration::from_secs(20));
+        assert_eq!(reinject_backoff_delay(2), std::time::Duration::from_secs(40));
+        assert_eq!(reinject_backoff_delay(4), std::time::Duration::from_secs(160));
+        assert_eq!(reinject_backoff_delay(5), std::time::Duration::from_secs(300));
+        assert_eq!(reinject_backoff_delay(32), std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn reinject_backoff_blocks_until_deadline_and_resets_on_recovery() {
+        let now = std::time::Instant::now();
+        let mut backoff = BridgeReinjectBackoff::default();
+        assert!(backoff.ready(now), "首次重注入应立即允许");
+
+        backoff.record_attempt(now);
+        assert_eq!(backoff.consecutive_attempts, 1);
+        assert!(!backoff.ready(now), "重注入后应进入退避窗口");
+        assert!(backoff.ready(now + reinject_backoff_delay(0)));
+
+        backoff.record_attempt(now + reinject_backoff_delay(0));
+        assert_eq!(backoff.consecutive_attempts, 2);
+        assert!(!backoff.ready(now + reinject_backoff_delay(0)));
+        assert!(backoff.ready(
+            now + reinject_backoff_delay(0) + reinject_backoff_delay(1)
+        ));
+
+        backoff.reset();
+        assert_eq!(backoff.consecutive_attempts, 0);
+        assert!(backoff.ready(now), "健康恢复后应立即允许重注入");
     }
 
     #[test]

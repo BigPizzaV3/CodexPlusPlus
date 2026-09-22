@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Conversation canvas
 // @description  可缩放的任务树画布与原文定位
-// @version      0.3.2
+// @version      0.3.3
 // ==/UserScript==
 (function installCanvas() {
   if(!document.body){window.addEventListener('DOMContentLoaded',installCanvas,{once:true});return;}
@@ -351,6 +351,7 @@ function persistentHistoryCache(){
 const nativeBuilds={
   'app-initial-f87238153a19.js':{ESt:'ESt',kr:'kr',Mr:'Mr',Q1:'Q1',lGt:'lGt',cGt:'cGt',jR:'jR'},
   'app-initial-bcc2ff475eb6.js':{ESt:'EDt',kr:'MDt',lGt:'hJt',cGt:'mJt',jR:'TW'},
+  'app-initial-f61fcec072b5.js':{ESt:'Yqt',kr:'tJt',lGt:'_in',cGt:'hin',jR:'Y9'},
 };
 function nativeAssetCandidates(doc=globalThis.document,perf=globalThis.performance){
   const urls=[...Array.from(doc?.querySelectorAll?.('script[src],link[rel="modulepreload"][href]')||[],e=>e.src||e.href),
@@ -874,7 +875,7 @@ function createTaskCanvas(viewport,{onNode,onCollapse,onCamera}){
 
   const annotationIndex={};
   function diagnostic(stage,detail={}){
-    try{window.__codexSessionDeleteBridge?.('/diagnostics/log',{event:'conversation_canvas',detail:{version:'0.3.2',stage,...detail}})?.catch(()=>{});}catch{}
+    try{window.__codexSessionDeleteBridge?.('/diagnostics/log',{event:'conversation_canvas',detail:{version:'0.3.3',stage,...detail}})?.catch(()=>{});}catch{}
   }
   diagnostic('native_installed',{pageOrigin:location.origin});
   const host=document.createElement('div');host.id='conversation-canvas-host';
@@ -934,10 +935,10 @@ function createTaskCanvas(viewport,{onNode,onCollapse,onCamera}){
 #source-view{width:min(920px,100%);margin:0 auto}#organization-status{flex-shrink:0;margin:0}
 @media(max-width:750px){.map-heading{max-width:100%}.map-topbar{padding:10px 14px}.canvas-bottom{padding:8px 12px}.canvas-help{display:none}.panel-header{padding:10px 14px}}
 
-  </style><aside role="complementary" aria-label="对话脉络" data-version="0.3.2"><div class="panel-header"><div class="heading"><strong>对话脉络</strong><p id="connection" role="status">当前对话的主线与分支</p></div><button id="retry" aria-label="重新连接" title="重新连接">↻</button><button id="close" aria-label="关闭画布" title="关闭">×</button></div><div class="canvas-body"><div class="canvas-toolbar"><button id="map-tab" class="active">任务树</button><button id="source-tab">对话原文</button><button id="pause-organize" hidden>暂停整理</button><button id="organize" title="GPT-5.6 Luna · 中 · 后台分批整理">整理脉络</button></div><p id="organization-status" role="status" hidden></p><div class="canvas-scroll"><section id="map-view"><div class="map-topbar"><div class="map-heading"><h2 id="title">当前对话</h2><div id="subtitle"></div></div><div class="tree-actions"><button id="expand-tree">展开全部</button><button id="collapse-tree">收起分支</button><button id="locate-current">当前推进</button><button id="fit-canvas">适应视图</button></div></div><div id="graph" role="region" aria-label="任务树画布，滚轮缩放，拖拽平移" tabindex="0"></div><div id="pending-tray"></div><div class="canvas-bottom"><span class="canvas-help">拖动画布平移 · 滚轮缩放 · 点击节点查看依据</span><div class="zoom-tools"><button id="zoom-out" aria-label="缩小画布">−</button><button id="canvas-zoom" title="恢复 100% 缩放">100%</button><button id="zoom-in" aria-label="放大画布">+</button></div></div></section><section id="source-view" hidden><div class="tree-actions"><button id="source-prev">上一页</button><span id="source-page-info"></span><button id="source-next">下一页</button><button id="source-list">消息列表</button></div><div id="transcript"></div></section></div><section id="details" aria-label="节点详情" hidden><div class="detail-head"><small id="detail-status"></small><button id="close-detail" aria-label="关闭节点详情">×</button></div><h2 id="detail-title"></h2><p id="detail-path"></p><p id="detail-description"></p><div id="source-actions"></div><p id="jump-status" role="status"></p></section></div></aside>`;
+  </style><aside role="complementary" aria-label="对话脉络" data-version="0.3.3"><div class="panel-header"><div class="heading"><strong>对话脉络</strong><p id="connection" role="status">当前对话的主线与分支</p></div><button id="retry" aria-label="重新连接" title="重新连接">↻</button><button id="close" aria-label="关闭画布" title="关闭">×</button></div><div class="canvas-body"><div class="canvas-toolbar"><button id="map-tab" class="active">任务树</button><button id="source-tab">对话原文</button><button id="pause-organize" hidden>暂停整理</button><button id="organize" title="GPT-5.6 Luna · 中 · 后台分批整理">整理脉络</button></div><p id="organization-status" role="status" hidden></p><div class="canvas-scroll"><section id="map-view"><div class="map-topbar"><div class="map-heading"><h2 id="title">当前对话</h2><div id="subtitle"></div></div><div class="tree-actions"><button id="expand-tree">展开全部</button><button id="collapse-tree">收起分支</button><button id="locate-current">当前推进</button><button id="fit-canvas">适应视图</button></div></div><div id="graph" role="region" aria-label="任务树画布，滚轮缩放，拖拽平移" tabindex="0"></div><div id="pending-tray"></div><div class="canvas-bottom"><span class="canvas-help">拖动画布平移 · 滚轮缩放 · 点击节点查看依据</span><div class="zoom-tools"><button id="zoom-out" aria-label="缩小画布">−</button><button id="canvas-zoom" title="恢复 100% 缩放">100%</button><button id="zoom-in" aria-label="放大画布">+</button></div></div></section><section id="source-view" hidden><div class="tree-actions"><button id="source-prev">上一页</button><span id="source-page-info"></span><button id="source-next">下一页</button><button id="source-list">消息列表</button></div><div id="transcript"></div></section></div><section id="details" aria-label="节点详情" hidden><div class="detail-head"><small id="detail-status"></small><button id="close-detail" aria-label="关闭节点详情">×</button></div><h2 id="detail-title"></h2><p id="detail-path"></p><p id="detail-description"></p><div id="source-actions"></div><p id="jump-status" role="status"></p></section></div></aside>`;
   document.body.append(host);
   const pane=shadow.querySelector('aside');
-  pane.dataset.version='0.3.2';
+  pane.dataset.version='0.3.3';
   const settingsButton=document.createElement('button');settingsButton.id='organizer-settings';settingsButton.textContent='⚙';settingsButton.title='整理设置';settingsButton.setAttribute('aria-label','整理设置');
   shadow.getElementById('retry').before(settingsButton);
   const settingsForm=document.createElement('form');settingsForm.id='api-settings';settingsForm.hidden=true;settingsForm.setAttribute('aria-label','整理设置');

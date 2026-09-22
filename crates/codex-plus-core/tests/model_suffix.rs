@@ -1,9 +1,40 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::sync::Mutex;
 
 use codex_plus_core::model_suffix::{
     build_model_catalog_json, build_model_catalog_json_with_template, collect_catalog_entries,
     model_ui_metadata, parse_model_suffix,
 };
+
+/// CODEX_HOME 环境变量是进程级全局，运行时缓存测试必须串行执行。
+static RUNTIME_CACHE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// 保存并恢复 CODEX_HOME 的守卫，参照 codex_home.rs 内部测试的模式。
+struct CodexHomeEnvGuard {
+    previous: Option<OsString>,
+}
+
+impl CodexHomeEnvGuard {
+    fn set(path: &std::path::Path) -> Self {
+        let previous = std::env::var_os("CODEX_HOME");
+        unsafe {
+            std::env::set_var("CODEX_HOME", path);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for CodexHomeEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var("CODEX_HOME", value),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+}
 
 #[test]
 fn parse_suffix_extracts_k_and_m_units() {
@@ -287,4 +318,59 @@ fn migrate_model_list_with_suffixes_splits_slug_and_window() {
     );
     assert_eq!(windows.get("deepseek-v4-pro"), None);
     assert_eq!(windows.get("nvidia/...:free"), Some(&"200000".to_string()));
+}
+
+#[test]
+fn build_catalog_json_prefers_runtime_models_cache_entry() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache = serde_json::json!({
+        "models": [{
+            "slug": "gpt-5.5",
+            "display_name": "GPT-5.5 Runtime",
+            "description": "runtime cache wins",
+            "context_window": 272000u64,
+            "max_context_window": 872000u64,
+            "shell_type": "unified_exec"
+        }]
+    });
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(
+        temp.path().join("models_cache.json"),
+        serde_json::to_string(&cache).unwrap(),
+    )
+    .unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+
+    let entries = collect_catalog_entries("gpt-5.5", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let model = &catalog["models"][0];
+
+    assert_eq!(model["slug"], "gpt-5.5");
+    // 运行时缓存命中：display_name / shell_type 来自 models_cache.json（issue #2141）
+    assert_eq!(model["display_name"], "GPT-5.5 Runtime");
+    assert_eq!(model["shell_type"], "unified_exec");
+    // 窗口仍由 builder 权威生成：未显式配置时保留缓存的上限（#2191 语义）
+    assert_eq!(model["context_window"], 272_000);
+    assert_eq!(model["max_context_window"], 872_000);
+}
+
+#[test]
+fn build_catalog_json_falls_back_to_bundled_without_runtime_cache() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(&temp).unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+
+    let entries = collect_catalog_entries("gpt-5.5", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let model = &catalog["models"][0];
+
+    // 无运行时缓存时回落静态资产，字段仍然齐全
+    assert_eq!(model["slug"], "gpt-5.5");
+    assert_eq!(model["display_name"], "GPT-5.5");
+    assert_eq!(model["context_window"], 272_000);
+    assert!(model["supported_reasoning_levels"].as_array().is_some());
 }

@@ -193,12 +193,12 @@ fn explicit_lite_metadata_still_overrides_managed_defaults() {
 }
 
 #[test]
-fn native_legacy_and_aggregate_catalog_defaults_are_not_broadened() {
+fn native_legacy_and_aggregate_catalogs_follow_effective_upstream_capability() {
     for (_, apply) in APPLY_PATHS {
         for (mode, identity, expected_lite) in [
-            (RelayMode::Official, "openai", true),
+            (RelayMode::Official, "openai", false),
             (RelayMode::Official, "custom", false),
-            (RelayMode::Aggregate, "openai", true),
+            (RelayMode::Aggregate, "openai", false),
             (RelayMode::Aggregate, "custom", false),
         ] {
             let temp = tempfile::tempdir().unwrap();
@@ -237,10 +237,7 @@ fn responses_chat_responses_roundtrip_uses_real_upstream_protocol() {
                 };
                 assert_eq!(provider["base_url"].as_str(), Some(expected_url.as_str()));
                 for model in catalog(temp.path())["models"].as_array().unwrap() {
-                    assert_eq!(
-                        model["use_responses_lite"],
-                        protocol == RelayProtocol::ChatCompletions
-                    );
+                    assert_eq!(model["use_responses_lite"], false);
                 }
             }
         }

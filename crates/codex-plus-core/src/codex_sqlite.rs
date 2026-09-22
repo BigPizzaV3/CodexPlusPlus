@@ -157,6 +157,63 @@ pub struct SanitizeModelSuffixResult {
     pub updated: usize,
 }
 
+fn connection_has_table(db: &Connection, table: &str) -> bool {
+    db.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+        [table],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+fn connection_has_column(db: &Connection, table: &str, column: &str) -> bool {
+    db.query_row(
+        &format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1 LIMIT 1"),
+        [column],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// 读出「未归档目标模式任务」对应 thread 的持久化模型（取 updated_at 最新一条）。
+/// 用于重启后把 config.toml 的默认 model 对齐到长线目标任务实际使用的模型，
+/// 防止恢复任务静默回落到 model_list 第一条（issue #2264）。
+/// 任何 schema 不匹配 / 库不可读都返回 None，由调用端回落旧行为。
+pub fn latest_unarchived_goal_thread_model(home: &Path) -> Option<String> {
+    for db_path in codex_session_db_paths_from_home(home) {
+        if !db_path.exists() {
+            continue;
+        }
+        let Ok(db) = Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
+            continue;
+        };
+        if !connection_has_table(&db, "automation_runs") || !connection_has_table(&db, "threads") {
+            continue;
+        }
+        if !connection_has_column(&db, "threads", "model") {
+            continue;
+        }
+        let Ok(model) = db.query_row(
+            "SELECT t.model FROM automation_runs a \
+             JOIN threads t ON t.id = a.thread_id \
+             WHERE COALESCE(a.archived_reason, '') = '' AND COALESCE(t.model, '') != '' \
+             ORDER BY a.updated_at DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        ) else {
+            continue;
+        };
+        let model = model.trim();
+        if !model.is_empty() {
+            return Some(model.to_string());
+        }
+    }
+    None
+}
+
 /// 扫描 codex session 数据库中的 threads 表，把 model 字段里带合法后缀的
 /// 记录改写为剥离后缀的 slug，使 codex 模型选择器不再显示带后缀的历史项。
 pub fn sanitize_thread_model_suffixes(home: &Path) -> anyhow::Result<SanitizeModelSuffixResult> {

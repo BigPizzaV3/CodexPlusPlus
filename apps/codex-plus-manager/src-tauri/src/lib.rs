@@ -52,6 +52,8 @@ pub fn run() {
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
                     .title("Codex++ 管理工具")
+                    .visible(!startup_is_background())
+                    .focused(!startup_is_background())
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -127,6 +129,7 @@ pub fn run() {
             commands::load_ads,
             commands::refresh_script_market,
             commands::refresh_user_script_inventory,
+            commands::reload_user_scripts,
             commands::install_market_script,
             commands::set_user_script_enabled,
             commands::delete_user_script,
@@ -317,18 +320,16 @@ fn register_main_window_events<R: tauri::Runtime>(
     transient: bool,
 ) {
     let event_window = window.clone();
-    let minimized_window = event_window.clone();
     let close_event_window = event_window.clone();
     let close_event_app = event_window.app_handle().clone();
     let focus_event_window = event_window.clone();
 
     event_window.on_window_event(move |event| match event {
-        WindowEvent::Resized(_) => {
-            if matches!(minimized_window.is_minimized(), Ok(true)) {
-                let _ = minimized_window.hide();
-            }
-        }
         WindowEvent::Focused(true) => {
+            // 外部实例通过 Win32 ShowWindow 唤起时，Tao 的 VISIBLE 标记可能仍为 false。
+            // 同步框架状态，否则后续 hide() 会被当作重复操作而跳过。
+            #[cfg(windows)]
+            let _ = focus_event_window.show();
             let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
         }
         WindowEvent::CloseRequested { api, .. } => {
@@ -351,6 +352,29 @@ fn register_main_window_events<R: tauri::Runtime>(
 
 fn startup_is_transient() -> bool {
     std::env::args().any(|arg| arg == "--transient")
+}
+
+fn startup_is_background() -> bool {
+    is_background_launch(std::env::args())
+}
+
+fn is_background_launch(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter().any(|arg| arg == "--background")
+}
+
+#[cfg(test)]
+mod manager_launch_mode_tests {
+    use super::is_background_launch;
+
+    #[test]
+    fn explicit_open_is_visible_and_only_background_flag_hides() {
+        for args in [vec!["manager"], vec!["manager", "--transient"], vec!["manager", "--show-update"]] {
+            assert!(!is_background_launch(args.into_iter().map(String::from)));
+        }
+        for args in [vec!["manager", "--background"], vec!["manager", "--show-update", "--background"]] {
+            assert!(is_background_launch(args.into_iter().map(String::from)));
+        }
+    }
 }
 
 #[tauri::command]
@@ -513,7 +537,9 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                     "guard_port": codex_plus_core::ports::manager_guard_port()
                 }),
             );
-            focus_existing_manager_window();
+            if !startup_is_background() {
+                focus_existing_manager_window();
+            }
             None
         }
         Err(error) => {

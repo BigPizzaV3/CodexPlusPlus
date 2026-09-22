@@ -191,7 +191,10 @@
       try {
         if (window.sessionStorage.getItem(localeReloadStorageKey) === marker) return;
         window.sessionStorage.setItem(localeReloadStorageKey, marker);
+        // 标记写不进去就不要刷新，否则下次加载读不到标记，会再次刷新。
+        if (window.sessionStorage.getItem(localeReloadStorageKey) !== marker) return;
       } catch {
+        return;
       }
       window.location.reload();
     };
@@ -407,7 +410,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "17";
+  const codexDeleteStyleVersion = "19";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -832,6 +835,8 @@
         white-space: nowrap;
       }
       [data-codex-plus-usage-alert-hidden="true"] { display: none !important; }
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel [role="status"][aria-live="polite"]:has(progress[max="100"]):has(button[aria-label="Dismiss usage alert" i], button[aria-label="关闭使用量提醒"], button[aria-label="關閉用量提示"], button[aria-label="關閉使用量警示"]),
+      body.codex-plus-hide-usage-alert aside.app-shell-left-panel div.w-full:has(> [role="status"][aria-live="polite"]:has(progress[max="100"]):has(button[aria-label="Dismiss usage alert" i], button[aria-label="关闭使用量提醒"], button[aria-label="關閉用量提示"], button[aria-label="關閉使用量警示"])) { display: none !important; }
       .codex-archive-delete-all {
         border: 1px solid var(--color-border-danger, #dc2626);
         border-radius: var(--border-radius-sm, 6px);
@@ -957,6 +962,7 @@
       .codex-plus-backend-indicator[data-status="ok"] { background: var(--codex-plus-success); }
       .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
       .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
+      .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
       #${codexPlusSidebarNavId} {
         position: relative;
         flex: 0 0 auto;
@@ -1191,6 +1197,7 @@
       .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
+      .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
       .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
       .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
       .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
@@ -1370,6 +1377,8 @@
       .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="checking"],
       .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
+      #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="degraded"],
+      .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
       .${codexServiceTierBadgeClass} {
         height: 24px;
         border-color: var(--codex-plus-border);
@@ -1393,6 +1402,7 @@
       .codex-plus-ad-empty { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); color: var(--codex-plus-text-tertiary); }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"], .codex-plus-user-script-error { color: var(--codex-plus-danger); }
+      .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
       .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-user-script-warning, .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
     `;
     document.documentElement.appendChild(style);
@@ -2513,7 +2523,7 @@
     const urls = codexAppAssetCandidateUrls();
     const preferred = urls.filter((url) => {
       const name = (url.split("/").pop() || "").toLowerCase();
-      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager|gwqc41kz|c1urrgy0|hsvsqcnf/.test(name);
+      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager/.test(name);
     });
     // Prefer known request-client modules, then the larger application bundles.
     preferred.sort((left, right) => {
@@ -2521,7 +2531,6 @@
         const name = (url.split("/").pop() || "").toLowerCase();
         if (name.includes("use-host-config")) return 0;
         if (name.includes("app-server-manager-signals")) return 1;
-        if (name.includes("gwqc41kz") || name.includes("c1urrgy0") || name.includes("hsvsqcnf")) return 2;
         if (name.includes("app-initial") && name.includes("app-main")) return 3;
         if (name.includes("app-main")) return 4;
         return 5;
@@ -3934,36 +3943,56 @@
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
+  // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
+  // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
+  let codexPlusBridgeFailureCount = 0;
+  const CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD = 3;
   const codexPlusBackendGeneration = (Number(window.__codexPlusBackendGeneration) || 0) + 1;
   window.__codexPlusBackendGeneration = codexPlusBackendGeneration;
 
-  function recordCodexPlusBridgeSuccess() {
+  function recordCodexPlusBridgeHealth(field) {
     if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
     const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
-    health.lastSuccessAt = Date.now();
+    health[field] = Date.now();
+  }
+
+  function recordCodexPlusBridgeSuccess() {
+    recordCodexPlusBridgeHealth("lastSuccessAt");
+    codexPlusBridgeFailureCount = 0;
+  }
+
+  function recordCodexPlusBridgeAttempt() {
+    recordCodexPlusBridgeHealth("lastAttemptAt");
+  }
+
+  function recordCodexPlusBridgeFailure() {
+    codexPlusBridgeFailureCount += 1;
   }
 
   function renderBackendStatus() {
-    const status = codexPlusBackendStatus.status || "failed";
+    const bridgeDegraded = codexPlusBridgeFailureCount >= CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD;
+    const rawStatus = codexPlusBackendStatus.status || "failed";
+    const status = bridgeDegraded && rawStatus === "ok" ? "degraded" : rawStatus;
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
         node.textContent = `Codex++ ${codexPlusVersion}`;
       });
     }
+    const labelFallback = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，自动修复中" : status === "checking" ? "正在检查后端…" : "未连接";
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
-      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? "后端已连接" : "未连接");
+      label.textContent = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
       indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      indicator.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     });
     const sidebarStatus = document.querySelector(`#${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status`);
     if (sidebarStatus) {
       sidebarStatus.dataset.status = status;
-      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
     refreshCodexServiceTierControls();
   }
@@ -5759,7 +5788,22 @@
         if (safeKey) pruned[safeKey] = value;
       });
     window.__codexThreadScrollEntries = pruned;
-    localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: pruned }));
+    const payload = JSON.stringify({ version: codexThreadScrollVersion, entries: pruned });
+    try {
+      localStorage.setItem(codexThreadScrollKey, payload);
+    } catch {
+      // 本地存储配额已满时不能把异常抛到页面全局，否则滚动保存会把渲染进程打进刷新循环。
+      try {
+        const newestKey = Object.keys(pruned)[0];
+        const emergency = Object.create(null);
+        if (newestKey) emergency[newestKey] = pruned[newestKey];
+        window.__codexThreadScrollEntries = emergency;
+        localStorage.removeItem(codexThreadScrollKey);
+        localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: emergency }));
+      } catch {
+        try { localStorage.removeItem(codexThreadScrollKey); } catch { /* 放弃持久化，内存副本仍可用 */ }
+      }
+    }
   }
 
   function currentThreadScroller() {
@@ -6328,6 +6372,7 @@
       }
     }
     if (!window.__codexSessionDeleteBridge) {
+      recordCodexPlusBridgeFailure();
       if (path === "/backend/status") {
         return await fetchBackendStatusFromHelper(path, payload);
       }
@@ -6339,6 +6384,7 @@
       try {
         request = window.__codexSessionDeleteBridge(path, payload);
       } catch (error) {
+        recordCodexPlusBridgeFailure();
         return Promise.resolve({ status: "failed", message: error?.message || "未连接" });
       }
       return withBackendTimeout(request);
@@ -6350,7 +6396,13 @@
           recordCodexPlusBridgeSuccess();
           return result;
         }
-        if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        recordCodexPlusBridgeFailure();
+        if (result?.timeout) {
+          // 超时也要记 lastAttemptAt：15 秒内的尝试视为桥还活着，
+          // 避免页面忙碌时被看门狗误判为桥已死而重复注入整份脚本（issue #2169 / #2274）。
+          recordCodexPlusBridgeAttempt();
+          sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        }
         const fallback = await fetchBackendStatusFromHelper(path, payload);
         if (fallback?.status === "ok") {
           sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
@@ -6367,8 +6419,11 @@
         });
         return fallback;
       }
-      return await window.__codexSessionDeleteBridge(path, payload);
+      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
+      recordCodexPlusBridgeSuccess();
+      return bridgeResult;
     } catch (error) {
+      recordCodexPlusBridgeFailure();
       sendCodexPlusDiagnostic("bridge_call_failed", {
         path,
         errorName: error?.name || "",
@@ -7243,18 +7298,23 @@
   }
 
   const appServerModelRequestPatchMaxMisses = 8;
+  const appServerModelRequestPatchMaxRetryDelayMs = 30000;
   let appServerModelRequestPatchMissCount = 0;
   let appServerModelRequestPatchDisabled = false;
   let appServerModelRequestPatchPromise = null;
   let appServerModelRequestPatchRetryTimer = 0;
+  let appServerModelRequestPatchRetryDelayMs = 250;
 
   function scheduleAppServerModelRequestPatchRetry() {
     if (!codexRemoteSessionProviderPatchEnabled()) return;
     if (appServerModelRequestPatchRetryTimer) return;
+    // issue #2256/#2255：固定 250ms 重试在 Codex 改 asset 命名后变成每秒 4 轮的全量
+    // rescan（每轮 fetch 全部 app asset）。改为指数退避， miss 计满后由熔断停掉。
     appServerModelRequestPatchRetryTimer = window.setTimeout(() => {
       appServerModelRequestPatchRetryTimer = 0;
       installAppServerModelRequestPatch();
-    }, 250);
+    }, appServerModelRequestPatchRetryDelayMs);
+    appServerModelRequestPatchRetryDelayMs = Math.min(appServerModelRequestPatchRetryDelayMs * 4, appServerModelRequestPatchMaxRetryDelayMs);
   }
 
   function noteAppServerModelRequestPatchMiss(event, detail) {
@@ -7271,16 +7331,21 @@
     if (appServerModelRequestPatchMissCount === 1) {
       sendCodexPlusDiagnostic(event, detail);
     }
-    if (codexRemoteSessionProviderPatchEnabled()) {
-      scheduleAppServerModelRequestPatchRetry();
-      return;
-    }
+    // issue #2256：provider 重试路径以前在这里提前 return，绕过下面的 maxMisses
+    // 熔断，失败变成 250ms 无限重试（每轮全量 rescan 全部 app assets）。
+    // 现在两个路径统一计数：先按 maxMisses 熔断，未熔断时再走指数退避重试。
     if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
       appServerModelRequestPatchDisabled = true;
+      clearTimeout(appServerModelRequestPatchRetryTimer);
+      appServerModelRequestPatchRetryTimer = 0;
       sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
         misses: appServerModelRequestPatchMissCount,
         lastEvent: event,
       });
+      return;
+    }
+    if (!appServerModelRequestPatchDisabled) {
+      scheduleAppServerModelRequestPatchRetry();
     }
   }
 
@@ -7305,6 +7370,7 @@
           clearTimeout(appServerModelRequestPatchRetryTimer);
           appServerModelRequestPatchRetryTimer = 0;
           appServerModelRequestPatchMissCount = 0;
+          appServerModelRequestPatchRetryDelayMs = 250;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
             moduleCount: modules.length,
@@ -9725,6 +9791,8 @@
     return window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ === true;
   }
 
+  const officialUsageAlertDismissLabelRe = /dismiss usage alert|关闭使用量提醒|關閉用量提示|關閉使用量警示/i;
+
   function officialUsageAlertCards(scope = document) {
     const root = scope?.querySelectorAll ? scope : document;
     return Array.from(root.querySelectorAll('aside.app-shell-left-panel [role="status"][aria-live="polite"]')).filter((card) => {
@@ -9732,26 +9800,84 @@
       const progress = card.querySelector('progress[max="100"]');
       if (!progress) return false;
       const dismissButton = Array.from(card.querySelectorAll("button")).find((button) =>
-        /dismiss usage alert|关闭使用量提醒/i.test(button.getAttribute("aria-label") || ""),
+        officialUsageAlertDismissLabelRe.test(button.getAttribute("aria-label") || ""),
       );
       return !!dismissButton;
     });
   }
 
+  function normalizeUsageAlertText(text) {
+    return String(text || "").replace(/[\s\u00a0]+/g, " ").trim();
+  }
+
+  function isOfficialUsageAlertHeading(text) {
+    const value = normalizeUsageAlertText(text);
+    if (!value || value.length > 48) return false;
+    if (/agents|智能代理|智慧体|子智能/.test(value)) return false;
+    if (/^(?:you(?:['’]re| are)|you['’]ve)\b/i.test(value) && /\b(?:usage|limit|messages)\b/i.test(value) && /\b(?:out of|used all|reached|approaching|hit)\b/i.test(value)) {
+      return true;
+    }
+    if (/^(?:this|selected) model is out of usage\.?$/i.test(value)) return true;
+    if (!/(Codex|模型|使用)/.test(value)) return false;
+    if (!/(额度|額度|用量|限额|限額|上限)/.test(value)) return false;
+    return /(已用完|已用尽|已用盡|已耗尽|已耗盡|已达|已達|即将|即將|超出|用罄|用完|用尽|用盡)/.test(value);
+  }
+
+  function composerUsageAlertBanners(scope = document) {
+    const root = scope?.querySelectorAll ? scope : document;
+    return Array.from(root.querySelectorAll("[data-codex-composer-root] aside")).filter((aside) => {
+      if (!(aside instanceof HTMLElement)) return false;
+      const heading = aside.querySelector("h1, h2, h3, h4, h5, [role='heading']");
+      return isOfficialUsageAlertHeading(heading?.textContent || "");
+    });
+  }
+
   function officialUsageAlertContainer(card) {
     const parent = card.parentElement;
-    return parent?.children.length === 1 && parent.matches("div.w-full") ? parent : card;
+    if (parent?.children.length === 1) {
+      if (parent.matches?.("div.w-full")) return parent;
+      if (
+        parent.closest?.("[data-codex-composer-root]") &&
+        !parent.matches?.("[data-codex-composer-root], form, main")
+      ) {
+        return parent;
+      }
+    }
+    return card;
+  }
+
+  function markOfficialUsageAlertTarget(targets, node) {
+    if (!node || node === document.body || node === document.documentElement) return;
+    targets.add(node);
   }
 
   function refreshOfficialUsageAlertVisibility() {
     const hidden = officialUsageAlertHidden();
-    document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]').forEach((container) => {
-      delete container.dataset.codexPlusUsageAlertHidden;
-    });
-    if (!hidden) return;
+    // 旧版左下角卡片有稳定的进度条和关闭按钮，body class 让 CSS 在首帧就挡住。
+    // 新版输入框横幅只能靠标题识别，不能用「有标题就隐藏」，否则会误伤其它提示。
+    document.body?.classList.toggle("codex-plus-hide-usage-alert", hidden);
+
+    if (!hidden) {
+      document.querySelectorAll('[data-codex-plus-usage-alert-hidden]').forEach((el) => {
+        delete el.dataset.codexPlusUsageAlertHidden;
+      });
+      return;
+    }
+
+    const targets = new Set();
     officialUsageAlertCards().forEach((card) => {
-      const container = officialUsageAlertContainer(card);
-      container.dataset.codexPlusUsageAlertHidden = "true";
+      markOfficialUsageAlertTarget(targets, card);
+      markOfficialUsageAlertTarget(targets, officialUsageAlertContainer(card));
+    });
+    composerUsageAlertBanners().forEach((banner) => {
+      markOfficialUsageAlertTarget(targets, banner);
+      markOfficialUsageAlertTarget(targets, officialUsageAlertContainer(banner));
+    });
+    document.querySelectorAll("[data-codex-plus-usage-alert-hidden]").forEach((el) => {
+      if (!targets.has(el)) delete el.dataset.codexPlusUsageAlertHidden;
+    });
+    targets.forEach((el) => {
+      if (el.dataset.codexPlusUsageAlertHidden !== "true") el.dataset.codexPlusUsageAlertHidden = "true";
     });
   }
 
@@ -10756,10 +10882,39 @@
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
+    // 全量 scan 有 200ms 防抖。额度横幅要在这次变更绘制前就藏掉，所以这里同步识别。
+    if (officialUsageAlertHidden() && mutationTouchesUsageAlert(mutations)) {
+      try {
+        refreshOfficialUsageAlertVisibility();
+      } catch {}
+    }
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
+  }
+
+  function nodeMayContainUsageAlert(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const host = node.matches?.("aside, [role='status']")
+      ? node
+      : node.closest?.("aside, [role='status']");
+    if (host) return !!host.closest?.("[data-codex-composer-root], aside.app-shell-left-panel");
+    return !!node.querySelector?.("[data-codex-composer-root] aside, aside.app-shell-left-panel [role='status'][aria-live='polite']");
+  }
+
+  function mutationTouchesUsageAlert(mutations) {
+    if (!mutations) return false;
+    for (const mutation of mutations) {
+      if (nodeMayContainUsageAlert(mutation.target)) return true;
+      for (const node of mutation.addedNodes || []) {
+        if (nodeMayContainUsageAlert(node)) return true;
+      }
+      for (const node of mutation.removedNodes || []) {
+        if (nodeMayContainUsageAlert(node)) return true;
+      }
+    }
+    return false;
   }
 
   /**

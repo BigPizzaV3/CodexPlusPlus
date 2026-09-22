@@ -4208,6 +4208,7 @@ fn injection_script_restores_thread_scroll_positions() {
     assert!(script.contains("codexThreadScroll"));
     assert!(script.contains("installThreadScrollRouteHooks"));
     assert!(script.contains("scheduleThreadScrollSync"));
+    assert!(script.contains("localStorage.removeItem(codexThreadScrollKey)"));
 }
 
 #[test]
@@ -4372,6 +4373,7 @@ fn bridge_health_check_script_uses_persisted_real_probe_result() {
     assert!(script.contains("__codexPlusBridgeHealth"));
     assert!(script.contains("lastSuccessAt"));
     assert!(script.contains("lastInjectionAt"));
+    assert!(script.contains("lastAttemptAt"));
     assert!(!script.contains("/backend/status"));
 }
 
@@ -4393,6 +4395,8 @@ if (run({{ lastInjectionAt: 0, lastSuccessAt: now }}) !== true) process.exit(2);
 if (run({{ lastInjectionAt: now, lastSuccessAt: 0 }}) !== true) process.exit(3);
 if (run({{ lastInjectionAt: now - 6000, lastSuccessAt: 0 }}) !== false) process.exit(4);
 if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000 }}) !== false) process.exit(5);
+if (run({{ lastInjectionAt: 0, lastSuccessAt: 0, lastAttemptAt: now }}) !== true) process.exit(7);
+if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000, lastAttemptAt: now - 16000 }}) !== false) process.exit(8);
 if (run({{ lastInjectionAt: now, lastSuccessAt: now }}, false) !== false) process.exit(6);
 "#,
         script = script
@@ -5450,6 +5454,106 @@ async fn superseded_bridge_session_stops_answering_binding_calls() {
         .expect("fresh server task should finish without panicking");
 }
 
+/// 被顶替的旧会话不能依赖"socket 再收到消息"来发现 generation 过期：
+/// bridge 失效场景下旧 socket 不会再有任何消息（binding 事件只投递给最新会话），
+/// 旧会话必须靠 generation 轮询在一个间隔内主动关闭，否则会带着
+/// Runtime.enable 订阅与脚本注册无限期滞留（issue #2169 的会话堆积来源）。
+#[tokio::test]
+async fn superseded_bridge_session_closes_socket_without_incoming_messages() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let url = websocket_url(address);
+    let (stale_closed_tx, stale_closed_rx) = oneshot::channel();
+    let (fresh_alive_tx, fresh_alive_rx) = oneshot::channel();
+
+    tokio::spawn(async move {
+        let (stale_stream, _) = listener
+            .accept()
+            .await
+            .expect("stale client should connect");
+        let mut stale = accept_async(stale_stream)
+            .await
+            .expect("stale websocket should upgrade");
+        acknowledge_bridge_install(&mut stale).await;
+
+        let (fresh_stream, _) = listener
+            .accept()
+            .await
+            .expect("fresh client should connect");
+        let mut fresh = accept_async(fresh_stream)
+            .await
+            .expect("fresh websocket should upgrade");
+        acknowledge_bridge_install(&mut fresh).await;
+
+        // 旧会话会先移除自己注册的 new-document 脚本，再由 generation 轮询关闭 socket。
+        let stale_cleanup = tokio::time::timeout(
+            bridge::BRIDGE_GENERATION_POLL_INTERVAL + Duration::from_millis(1500),
+            async {
+                let mut removed = false;
+                loop {
+                    match recv_text_message(&mut stale).await {
+                        Some(text) => {
+                            let message: serde_json::Value = serde_json::from_str(&text)
+                                .expect("bridge cleanup message should be JSON");
+                            if message["method"] == "Page.removeScriptToEvaluateOnNewDocument" {
+                                removed = true;
+                            }
+                        }
+                        None => break removed,
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap_or(false);
+        let _ = stale_closed_tx.send(stale_cleanup);
+
+        // 新会话不受影响，仍应正常应答 binding 调用。
+        send_json(
+            &mut fresh,
+            json!({
+                "method": "Runtime.bindingCalled",
+                "params": {
+                    "payload": serde_json::to_string(&json!({
+                        "id": "fresh",
+                        "path": "/backend/status",
+                        "payload": {},
+                    })).unwrap(),
+                },
+            }),
+        )
+        .await;
+        let fresh_resolved = tokio::time::timeout(Duration::from_secs(2), recv_text_message(&mut fresh))
+            .await
+            .is_ok_and(|message| {
+                message.is_some_and(|text| text.contains("__codexSessionDeleteResolve"))
+            });
+        let _ = fresh_alive_tx.send(fresh_resolved);
+    });
+
+    bridge::install_bridge(&url, BRIDGE_BINDING_NAME, noop_handler(), &[])
+        .await
+        .expect("first bridge install should succeed");
+    bridge::install_bridge(&url, BRIDGE_BINDING_NAME, noop_handler(), &[])
+        .await
+        .expect("second bridge install should succeed");
+
+    assert!(
+        stale_closed_rx
+            .await
+            .expect("stale server task should finish without panicking"),
+        "superseded session must close its socket without any incoming message"
+    );
+    assert!(
+        fresh_alive_rx
+            .await
+            .expect("fresh server task should finish without panicking"),
+        "fresh session must keep resolving bridge requests"
+    );
+}
+
 #[tokio::test]
 async fn failed_bridge_reinstall_keeps_existing_session_current() {
     let (url, active_rx, failed_rx) = spawn_failed_reinstall_cdp_server().await;
@@ -5609,7 +5713,12 @@ async fn acknowledge_bridge_install(socket: &mut TestSocket) {
     for expected_id in 1..=5 {
         let command = recv_json(socket).await;
         assert_eq!(command["id"], expected_id);
-        send_json(socket, json!({ "id": expected_id, "result": {} })).await;
+        let result = if expected_id == 4 {
+            json!({ "identifier": "bridge-script-test" })
+        } else {
+            json!({})
+        };
+        send_json(socket, json!({ "id": expected_id, "result": result })).await;
     }
 }
 

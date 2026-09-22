@@ -1,18 +1,19 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
-    chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, image_edits_url, image_generations_url,
-    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
-    is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
-    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
-    open_chat_completions_proxy_request, open_image_edits_proxy_request,
-    open_image_generations_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    ChatSseToResponsesConverter, CompactionSseConverter, audio_transcriptions_url,
+    chat_completion_to_response, chat_completion_to_response_with_request, chat_completions_url,
+    chat_sse_to_responses_sse, chat_sse_to_responses_sse_with_request, image_edits_url,
+    image_generations_url, is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path,
+    is_image_edits_proxy_path, is_image_generations_proxy_path, is_models_proxy_path,
+    is_responses_compact_proxy_path, is_responses_proxy_path, models_url,
+    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
+    open_image_edits_proxy_request, open_image_generations_proxy_request,
+    open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
-    open_responses_proxy_request_with_settings_for_path, responses_compact_url,
-    responses_error_from_upstream, responses_to_chat_completions,
-    responses_to_chat_completions_with_options,
-    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
-    upstream_stream_header_timeout,
+    open_responses_proxy_request_with_settings_for_path, request_has_compaction_trigger,
+    responses_compact_url, responses_error_from_upstream, responses_to_chat_completions,
+    responses_to_chat_completions_with_options, send_upstream_request_with_header_timeout,
+    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
+    wrap_non_stream_response_as_compaction,
 };
 use codex_plus_core::relay_config::test_relay_profile;
 use codex_plus_core::settings::{
@@ -41,6 +42,280 @@ fn contains_problematic_local_ref_siblings(value: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+#[test]
+fn compaction_trigger_detection() {
+    let with_trigger = json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "x" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    assert!(request_has_compaction_trigger(&with_trigger));
+
+    let without_trigger = json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "x" }] }
+        ]
+    });
+    assert!(!request_has_compaction_trigger(&without_trigger));
+
+    let string_input = json!({ "model": "m", "input": "hi" });
+    assert!(!request_has_compaction_trigger(&string_input));
+}
+
+#[test]
+fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "latest question" }] },
+            { "type": "compaction", "encrypted_content": "PRIOR_SUMMARY" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let replayed = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("PRIOR_SUMMARY"))
+        })
+        .expect("compaction item 应展开为摘要 user 消息");
+    assert_eq!(replayed["role"], "user");
+}
+
+#[test]
+fn wrap_non_stream_response_produces_single_compaction_item() {
+    let upstream = json!({
+        "id": "resp_up",
+        "object": "response",
+        "output": [
+            { "type": "reasoning", "summary": [] },
+            { "type": "message", "role": "assistant",
+              "content": [{ "type": "output_text", "text": "SUMMARYfromRESPONSES" }] }
+        ]
+    })
+    .to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("event: response.completed"));
+    assert!(text.contains("\"type\":\"compaction\""));
+    assert!(text.contains("SUMMARYfromRESPONSES"));
+    assert!(text.contains("data: [DONE]"));
+    // 恰好一个 compaction 输出项
+    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+}
+
+#[test]
+fn wrap_non_stream_chat_response_produces_single_compaction_item() {
+    let upstream = json!({
+        "choices": [
+            { "message": { "role": "assistant", "content": "SUMMARYfromCHAT" } }
+        ]
+    })
+    .to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("SUMMARYfromCHAT"));
+    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+}
+
+#[test]
+fn wrap_empty_upstream_yields_failed_compaction_response() {
+    let upstream = json!({ "choices": [] }).to_string();
+    let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
+    let text = String::from_utf8(wrapped).unwrap();
+    assert!(text.contains("\"status\":\"failed\""));
+    assert!(text.contains("compaction_empty_summary") || text.contains("空摘要"));
+}
+
+#[test]
+fn compaction_converter_extracts_output_text_deltas_and_ignores_reasoning() {
+    let sse = "event: response.reasoning_text.delta\ndata: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking...\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"llo\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_upstream_bytes(sse.as_bytes());
+    assert_eq!(converter.summary_text(), "Hello");
+
+    let mut silent = CompactionSseConverter::new("deepseek");
+    silent.push_upstream_bytes(b"not sse");
+    assert_eq!(silent.summary_text(), "");
+}
+
+#[test]
+fn compaction_converter_buffers_sse_events_across_chunks() {
+    // 同一 SSE 事件被 TCP 拆成两个 chunk，中间还断了 UTF-8 字符边界（中文摘要）。
+    let full = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"摘要\"}\n\n";
+    let (first, second) = full.split_at(full.len() - 10);
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_upstream_bytes(first.as_bytes());
+    assert_eq!(converter.summary_text(), "", "残缺事件不应提前产出增量");
+    converter.push_upstream_bytes(second.as_bytes());
+    assert_eq!(converter.summary_text(), "摘要");
+}
+
+#[test]
+fn compaction_converter_strips_leading_think_block_from_chat_stream() {
+    // DeepSeek 类 thinking 模型把推理塞在 delta.content 的 <think> 块里。
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"<think>step by step\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" reasoning...\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"</think>\\n真实摘要内容\"}}]}\n\ndata: [DONE]\n\n";
+    let mut converter = CompactionSseConverter::new("deepseek").with_chat_upstream();
+    converter.push_upstream_bytes(sse.as_bytes());
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("真实摘要内容"));
+    assert!(!payload.contains("step by step"));
+    assert!(!payload.contains("reasoning..."));
+}
+
+#[test]
+fn compaction_converter_strips_think_block_from_direct_text() {
+    // 非流式路径直接 push 文本，think 剥离同样在 finish 生效。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>internal reasoning</think>\nSUMMARY_BODY");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("SUMMARY_BODY"));
+    assert!(!payload.contains("internal reasoning"));
+}
+
+#[test]
+fn compaction_converter_unclosed_think_block_drops_reasoning_fragment() {
+    // 上游截断导致 think 块未闭合：宁可丢掉残片也不要污染摘要。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>half written reasoning");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(!payload.contains("half written reasoning"));
+    // 剥完 think 后没有答案，按失败返回而非空 compaction item。
+    assert!(payload.contains("\"status\":\"failed\""));
+}
+
+#[test]
+fn compaction_converter_pure_think_block_yields_failed_response() {
+    // 闭合的纯 think 块（无答案文本）：原文非空能通过调用方预检，
+    // 剥完 think 后为空，finish 必须兜底转 failed，
+    // 杜绝 `completed + 空 encrypted_content` 的空 checkpoint。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("<think>internal reasoning</think>");
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(!payload.contains("internal reasoning"));
+    assert!(payload.contains("\"status\":\"failed\""));
+    // finish() 的 error 输出只带 message，error_type 供调用方分类、不进入响应体。
+    assert!(payload.contains("空摘要"));
+    assert!(!payload.contains("\"status\":\"completed\""));
+}
+
+#[test]
+fn compaction_converter_stream_error_yields_failed_response() {
+    // 上游流中断：failed 状态优先于空摘要兜底。
+    let mut converter = CompactionSseConverter::new("deepseek");
+    converter.push_summary_text("some partial summary");
+    converter.fail("Stream error: broken pipe".to_string(), None);
+    let payload = String::from_utf8(converter.finish()).unwrap();
+    assert!(payload.contains("\"status\":\"failed\""));
+    assert!(payload.contains("Stream error: broken pipe"));
+    // failed 状态已阻止 codex 安装空 checkpoint，无需判断 encrypted_content 内容。
+    assert!(!payload.contains("\"status\":\"completed\""));
+}
+
+#[tokio::test]
+async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // 单次 read() 只保证拿到「一部分」字节：头与 body 分在不同 TCP 段到达时
+        // 只会读到头部（实测读到 187 字节 = 仅有头部），断言就看不到请求体。
+        // 本测试注入的摘要指令约 425 字符、body 约 700 字节，使这个竞态从偶发
+        // 变成常态（修复前连跑 12 次失败 10 次）。按 Content-Length 读满整个请求。
+        let mut raw = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&raw);
+            let Some(header_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            if raw.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&raw).to_string();
+        let body = json!({
+            "id": "resp_up",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                { "type": "message", "role": "assistant",
+                  "content": [{ "type": "output_text", "text": "COMPACTED_SUMMARY_TEXT" }] }
+            ]
+        });
+        let body_text = serde_json::to_string(&body).unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body_text.len(),
+            body_text
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+    let settings = BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+
+    let request_body = json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "long history" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    let result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request_body).unwrap(),
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+
+    // 上游端点保持普通 /v1/responses，请求体剥离了 trigger 并注入了摘要指令。
+    assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
+    assert!(request.contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(!request.contains("compaction_trigger"));
+
+    // 标记为压缩请求，交给响应包装层重组。
+    assert!(result.compaction);
+    assert_eq!(result.status_code, 200);
 }
 
 #[test]
@@ -1225,6 +1500,276 @@ fn responses_request_normalizes_function_tool_parameters() {
     assert_eq!(params["type"], "object");
     assert_eq!(params["properties"], json!({}));
     assert_eq!(params["required"], json!([]));
+}
+
+#[test]
+fn chat_tool_parameters_with_null_type_get_object_defaults() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "automation_update",
+                "parameters": {
+                    "type": null,
+                    "properties": {
+                        "id": { "type": "string" }
+                    },
+                    "required": ["id"]
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let params = &converted["tools"][0]["function"]["parameters"];
+    assert_eq!(params["type"], "object");
+    assert_eq!(params["properties"]["id"], json!({ "type": "string" }));
+    assert_eq!(params["required"], json!(["id"]));
+}
+
+#[test]
+fn chat_tool_normalization_strips_nested_null_types() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": null,
+                            "description": "display name"
+                        }
+                    }
+                }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let name = &converted["tools"][0]["function"]["parameters"]["properties"]["name"];
+    assert!(name.get("type").is_none());
+    assert_eq!(name["description"], "display name");
+}
+
+#[test]
+fn namespace_tool_null_type_parameters_normalized() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "mcp__codex_app__",
+                "description": "Codex app",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "automation_update",
+                        "description": "Update automation",
+                        "parameters": {
+                            "type": null,
+                            "properties": {
+                                "targetThreadId": { "type": "string" }
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let tool = &converted["tools"][0]["function"];
+    assert_eq!(tool["name"], "mcp__codex_app__automation_update");
+    assert_eq!(tool["parameters"]["type"], "object");
+    assert_eq!(
+        tool["parameters"]["properties"]["targetThreadId"],
+        json!({ "type": "string" })
+    );
+}
+
+/// 模拟严格供应商（deepseek 风格）：对请求里每个工具参数 schema 做校验，
+/// 发现 `type: null` 或缺失 required 字段时返回 400（对应 issue #2247 的拒绝行为），
+/// 合法则回 200。返回捕获到的上游请求体，供断言实际收到的 schema 形状。
+async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u16, Value)> {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            assert!(read > 0, "request closed before body completed");
+            buffer.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&buffer);
+            let Some(header_end) = text
+                .as_bytes()
+                .windows(4)
+                .position(|window| window == *b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buffer[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if buffer.len() >= header_end + 4 + content_length {
+                let body: Value = serde_json::from_slice(&buffer[header_end + 4..]).unwrap();
+                let rejected = body["tools"].as_array().is_some_and(|tools| {
+                    tools.iter().any(|tool| {
+                        let has_null_type = serde_json::to_string(&tool).is_ok_and(|text| {
+                            text.replace("\\u0000", "").contains("\"type\":null")
+                        });
+                        has_null_type
+                    })
+                });
+                let (status, payload) = if rejected {
+                    (
+                        "HTTP/1.1 400 Bad Request\r\n",
+                        r#"{"error":{"message":"Invalid schema for function 'codex_app::automation_update': schema must be a JSON Schema of 'type: \"object\"', got 'type: null'.","type":"invalid_request_error"}}"#,
+                    )
+                } else {
+                    (
+                        "HTTP/1.1 200 OK\r\n",
+                        r#"{"id":"chat_ok","object":"chat.completion","model":"deepseek-chat","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                    )
+                };
+                let response = format!(
+                    "{status}content-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                let _ = stream.write_all(response.as_bytes()).await.unwrap();
+                return body;
+            }
+        }
+    });
+
+    let mut settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "strict".to_string(),
+            name: "strict".to_string(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "sk-strict".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "strict".to_string(),
+        ..BackendSettings::default()
+    };
+    settings.relay_profiles[0].no_auth = false;
+
+    let request = json!({
+        "model": "deepseek-chat",
+        "input": "hi",
+        "stream": false,
+        "tools": tools
+    });
+    let result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request).unwrap(),
+        settings,
+    )
+    .await
+    .expect("修复后：代理请求应成功完成（状态 200）");
+    let status_code = result.status_code;
+    let upstream_body = server.await.unwrap();
+    let response_body: Value =
+        serde_json::from_slice(&result.response.bytes().await.unwrap()).unwrap();
+    Ok((upstream_body, status_code, response_body))
+}
+
+#[tokio::test]
+async fn strict_provider_rejects_null_type_before_fix_and_accepts_normalized_schema() {
+    let tools = json!([
+        {
+            "type": "namespace",
+            "name": "mcp__codex_app__",
+            "description": "Codex app",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "automation_update",
+                    "description": "Update automation",
+                    "parameters": {
+                        "type": null,
+                        "properties": {
+                            "targetThreadId": { "type": "string" }
+                        }
+                    }
+                }
+            ]
+        }
+    ]);
+
+    let (upstream_body, status_code, upstream_response) = strict_provider_accepts(tools.clone())
+        .await
+        .expect("修复后：严格供应商应接受规整后的请求");
+
+    // 供应商实际收到的 schema 已被规整为合法形状。
+    let parameters = &upstream_body["tools"][0]["function"]["parameters"];
+    assert_eq!(parameters["type"], "object");
+    assert_eq!(
+        parameters["properties"]["targetThreadId"],
+        json!({ "type": "string" })
+    );
+    assert_eq!(status_code, 200);
+
+    // 闭环最后一环：代理把 chat 响应回转为 Responses 形状
+    // （与生产路径 handle_responses_proxy_request 调用的是同一函数）。
+    let response_json = chat_completion_to_response_with_request(
+        upstream_response,
+        &json!({
+            "model": "deepseek-chat",
+            "input": "hi",
+            "tools": tools
+        }),
+    )
+    .unwrap();
+    assert_eq!(response_json["object"], "response");
+    assert_eq!(response_json["status"], "completed");
+    assert_eq!(response_json["output"][0]["content"][0]["text"], "done");
+
+    // 负向对照：把带 type:null 的工具直接转成 chat 形状（修复前的行为），
+    // 确认上面的校验器确实会拒绝——证明闭环真的卡在 schema 上而非其他环节。
+    let raw_with_null = json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "codex_app::automation_update",
+                "parameters": {
+                    "type": null,
+                    "properties": {
+                        "targetThreadId": { "type": "string" }
+                    }
+                }
+            }
+        }
+    ]);
+    assert!(
+        serde_json::to_string(&raw_with_null)
+            .unwrap()
+            .contains("\"type\":null")
+    );
 }
 
 #[test]
@@ -2524,7 +3069,20 @@ async fn model_route_preserves_responses_compact_endpoint() {
     let (headers, upstream_body) = target_server.await.unwrap();
 
     assert!(headers.starts_with("POST /v1/responses/compact HTTP/1.1"));
-    assert_eq!(upstream_body, request);
+    // legacy compact 请求同样被改写为摘要生成：注入摘要指令并禁用工具，
+    // 端点与 model/stream 字段保持不变。
+    assert_eq!(
+        upstream_body["input"].as_array().unwrap().last().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("CONTEXT CHECKPOINT COMPACTION"),
+        true
+    );
+    assert_eq!(upstream_body["tools"], json!([]));
+    assert_eq!(upstream_body["tool_choice"], json!("none"));
+    assert_eq!(upstream_body["parallel_tool_calls"], json!(false));
+    assert_eq!(upstream_body["model"], request["model"]);
+    assert_eq!(upstream_body["stream"], request["stream"]);
 }
 
 #[tokio::test]
@@ -3771,4 +4329,401 @@ fn converted_message_item_id_uses_msg_prefix() {
         "message item id 必须是 msg_ 前缀，实际 {id}"
     );
     assert!(!id.ends_with("_msg"), "不能是 resp_*_msg 形态，实际 {id}");
+}
+
+/// #2263：Codex 发出的 `type: "tool_search"` 工具必须透传为 chat 的 function 工具，
+/// 不能落入 `_ => {}` 被静默丢弃，否则模型永远检索不到 mcp__* 工具。
+#[test]
+fn responses_request_passes_tool_search_through_to_chat_tools() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "number" }
+                    },
+                    "required": ["query"]
+                }
+            },
+            { "type": "function", "name": "exec_command", "parameters": { "type": "object" } }
+        ]
+    }))
+    .unwrap();
+
+    let tools = converted["tools"].as_array().unwrap();
+    let tool_search = tools
+        .iter()
+        .find(|tool| tool["function"]["name"] == "tool_search")
+        .expect("tool_search 必须出现在转换后的 tools 里");
+    assert_eq!(tool_search["type"], "function");
+    assert_eq!(tool_search["function"]["name"], "tool_search");
+    assert_eq!(tool_search["function"]["description"], "Search exposed tools");
+    assert_eq!(
+        tool_search["function"]["parameters"]["properties"]["query"]["type"],
+        "string"
+    );
+    assert_eq!(
+        tool_search["function"]["parameters"]["required"][0],
+        "query"
+    );
+    // 其它工具不受影响
+    assert!(tools.iter().any(|tool| tool["function"]["name"] == "exec_command"));
+}
+
+/// #2263：模型调用回 tool_search 时必须还原成 `tool_search_call` item，
+/// 官方客户端的 handler 只接受这个类型（function_call 形态会被拒绝）。
+#[test]
+fn chat_response_restores_tool_search_call_item() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_search",
+            "model": "gpt-5-mini",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": "{\"query\":\"calendar create\",\"limit\":1}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    )
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_call")
+        .expect("必须还原成 tool_search_call item");
+    assert_eq!(item["call_id"], "call_search_1");
+    assert_eq!(item["execution"], "client");
+    assert_eq!(item["arguments"]["query"], "calendar create");
+    assert_eq!(item["arguments"]["limit"], 1);
+    assert!(
+        item["id"].as_str().unwrap().starts_with("tsc_"),
+        "tool_search_call 的 item id 必须是 tsc_ 前缀，实际 {:?}",
+        item["id"]
+    );
+}
+
+/// #2263：流式路径同样要还原成 tool_search_call，且 id 前缀为 tsc_。
+#[test]
+fn chat_sse_restores_tool_search_call_item() {
+    let converted = chat_sse_to_responses_sse_with_request(
+        r#"data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_ts","type":"function","function":{"name":"tool_search"}}]}}]}
+
+data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]}}]}
+
+data: {"id":"chatcmpl_ts","model":"gpt-5-mini","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"calendar\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search exposed tools",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    );
+
+    assert!(converted.contains("\"type\":\"tool_search_call\""));
+    assert!(converted.contains("\"id\":\"tsc_call_ts\""));
+    assert!(converted.contains("\"item_id\":\"tsc_call_ts\""));
+    assert!(converted.contains("response.function_call_arguments.delta"));
+    assert!(converted.contains("response.function_call_arguments.done"));
+    assert!(converted.contains("\"execution\":\"client\""));
+    // 不应把 tool_search 当成 custom/apply_patch 代理
+    assert!(!converted.contains("custom_tool_call_input.delta"));
+}
+
+/// #2263：历史回放时 tool_search_call / tool_search_output 要映射成
+/// chat 的 assistant tool_call + role:tool 消息，保持调用配对完整。
+#[test]
+fn responses_input_maps_tool_search_history_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "find calendar tools" }] },
+            {
+                "type": "tool_search_call",
+                "call_id": "search-1",
+                "execution": "client",
+                "arguments": { "query": "calendar create", "limit": 1 }
+            },
+            {
+                "type": "tool_search_output",
+                "call_id": "search-1",
+                "status": "completed",
+                "execution": "client",
+                "tools": [
+                    { "name": "mcp__calendar__create_event", "description": "Create event" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_call_msg = messages
+        .iter()
+        .find(|m| m.get("tool_calls").is_some())
+        .expect("必须有 assistant 的 tool_call 消息");
+    let tool_call = &tool_call_msg["tool_calls"][0];
+    assert_eq!(tool_call["function"]["name"], "tool_search");
+    let args: Value = serde_json::from_str(tool_call["function"]["arguments"].as_str().unwrap())
+        .expect("arguments 必须是合法 JSON 字符串");
+    assert_eq!(args["query"], "calendar create");
+
+    let tool_msg = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("必须有 role:tool 的检索结果消息");
+    assert_eq!(tool_msg["tool_call_id"], "search-1");
+    let content = tool_msg["content"].as_str().unwrap();
+    assert!(content.contains("mcp__calendar__create_event"));
+}
+
+/// #2263 附带问题：重写 config.toml 时必须保留 live 配置里的 mcp_servers 段。
+#[test]
+fn preserve_live_app_settings_keeps_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp_signals.marker]
+key = "value"
+"#,
+    )
+    .unwrap();
+
+    let preserved =
+        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
+            .unwrap();
+
+    assert!(
+        preserved.contains("[mcp_servers.context7]"),
+        "mcp_servers 段必须保留，实际：{preserved}"
+    );
+    assert!(preserved.contains("https://mcp.context7.com/mcp"));
+}
+
+/// #2263：tool_search_output 先于对应 call 出现（压缩/截断后的回放常见）
+/// 时走孤儿输出路径，不能 panic 也不能丢内容。
+#[test]
+fn responses_input_handles_orphan_tool_search_output() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] },
+            {
+                "type": "tool_search_output",
+                "call_id": "search-orphan",
+                "status": "completed",
+                "execution": "client",
+                "tools": [
+                    { "name": "mcp__calendar__list", "description": "List events" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let orphan = messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("search-orphan"))
+        })
+        .expect("孤儿输出必须降级为 user 消息");
+    let content = orphan["content"].as_str().unwrap();
+    assert!(
+        content.contains("search-orphan"),
+        "孤儿输出消息必须携带 call_id，实际：{content}"
+    );
+    assert!(content.contains("mcp__calendar__list"));
+}
+
+/// #2263：模型吐出畸形 arguments JSON 时，tool_search_call 还原必须兜底成
+/// 空对象而不是产出非法 item 或 panic。
+#[test]
+fn chat_response_tool_search_call_tolerates_malformed_arguments() {
+    let converted = chat_completion_to_response_with_request(
+        json!({
+            "id": "chatcmpl_ts_bad",
+            "model": "gpt-5-mini",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_ts_bad",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_search",
+                            "arguments": "{\"query\": truncated"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &json!({
+            "model": "gpt-5-mini",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "parameters": { "type": "object" }
+            }]
+        }),
+    )
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_call")
+        .expect("畸形 arguments 也必须还原成 tool_search_call");
+    // arguments 走 chat 侧参数归一：解析失败包装成 {"input": 原文} 保真传递，
+    // 客户端反序列化失败会按检索空结果处理，不会产出非法 item。
+    let arguments = item["arguments"].as_object().expect("arguments 必须是对象");
+    assert!(
+        arguments.contains_key("input"),
+        "解析失败的 arguments 必须走 {{\"input\": ...}} 包装兜底，实际 {:?}",
+        item["arguments"]
+    );
+    assert_eq!(item["call_id"], "call_ts_bad");
+    assert_eq!(item["execution"], "client");
+}
+
+/// #2263：tool_search_call 缺 call_id 时回退用 id 字段；两者皆空则整个
+/// item 被丢弃（与 function_call 分支的防御行为一致）。
+#[test]
+fn responses_input_tool_search_call_falls_back_to_id_and_drops_empty() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "tool_search_call",
+                "id": "tsc_fallback",
+                "execution": "client",
+                "arguments": { "query": "calendar" }
+            },
+            {
+                "type": "tool_search_output",
+                "call_id": "tsc_fallback",
+                "status": "completed",
+                "execution": "client",
+                "tools": []
+            },
+            {
+                "type": "tool_search_call",
+                "execution": "client",
+                "arguments": { "query": "no id at all" }
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool_calls: Vec<Value> = messages
+        .iter()
+        .filter_map(|m| m.get("tool_calls").and_then(Value::as_array))
+        .flatten()
+        .cloned()
+        .collect();
+    assert_eq!(
+        tool_calls.len(),
+        1,
+        "只允许一条有效 tool_search 调用，实际 {tool_calls:?}"
+    );
+    assert_eq!(tool_calls[0]["id"], "tsc_fallback");
+    assert_eq!(tool_calls[0]["function"]["name"], "tool_search");
+}
+
+/// #2263：上游模型在未声明 tool_search 工具时越权调用它，退化为普通
+/// function_call item 转发给客户端——这是选定的默认行为，测试钉住防漂移。
+#[test]
+fn chat_response_keeps_undeclared_tool_search_as_plain_function_call() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_undeclared",
+        "model": "gpt-5-mini",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_undeclared",
+                    "type": "function",
+                    "function": {
+                        "name": "tool_search",
+                        "arguments": "{\"query\":\"x\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .unwrap();
+
+    let item = converted["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .expect("未声明的 tool_search 调用按普通 function_call 转发");
+    assert_eq!(item["name"], "tool_search");
+    assert_eq!(item["call_id"], "call_undeclared");
+}
+
+/// #2263 附带问题负例：live 配置里本来就没有 mcp_servers 时，重写
+/// 不能凭空注入空段。
+#[test]
+fn preserve_live_app_settings_does_not_invent_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+
+    let preserved =
+        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
+            .unwrap();
+
+    assert!(
+        !preserved.contains("mcp_servers"),
+        "live 无 mcp_servers 时不得注入该段，实际：{preserved}"
+    );
 }
