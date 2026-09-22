@@ -249,6 +249,64 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
 }
 
 #[test]
+fn gpt6_sol_luna_metadata_matches_official_efforts_fast_and_default_window() {
+    use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
+
+    let entries = collect_catalog_entries(
+        "gpt-6-sol\ngpt-6-luna",
+        &HashMap::new(),
+        &HashMap::new(),
+        "gpt-6-sol",
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let expected_efforts = ["none", "low", "medium", "high", "xhigh", "max"];
+
+    for slug in ["gpt-6-sol", "gpt-6-luna"] {
+        assert!(requires_bundled_metadata_catalog(slug));
+        let model = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == slug)
+            .unwrap();
+        let ui = model_ui_metadata(slug).unwrap();
+        for (levels, key) in [
+            (&model["supported_reasoning_levels"], "effort"),
+            (&ui["supportedReasoningEfforts"], "reasoningEffort"),
+        ] {
+            let efforts = levels
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level[key].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(efforts, expected_efforts);
+        }
+        assert_eq!(ui["displayName"], model["display_name"]);
+        assert_eq!(model["default_reasoning_level"], "medium");
+        assert_eq!(ui["defaultReasoningEffort"], "medium");
+        assert_eq!(model["context_window"], 272_000);
+        assert_eq!(model["max_context_window"], 872_000);
+        assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+        assert_eq!(ui["additionalSpeedTiers"], model["additional_speed_tiers"]);
+        assert_eq!(model["service_tiers"][0]["id"], "priority");
+        assert_eq!(ui["serviceTiers"], model["service_tiers"]);
+        assert_eq!(model["supports_search_tool"], true);
+        assert_eq!(model["use_responses_lite"], false);
+    }
+
+    assert!(!requires_bundled_metadata_catalog("gpt-6-sol-custom"));
+    assert!(model_ui_metadata("gpt-6-luna-custom").is_none());
+    let overridden: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();
+    for model in overridden["models"].as_array().unwrap() {
+        assert_eq!(model["context_window"], 200_000);
+        assert_eq!(model["max_context_window"], 200_000);
+    }
+}
+
+#[test]
 fn model_ui_metadata_exposes_fast_service_tier_capability() {
     let metadata = model_ui_metadata("gpt-5.6-sol").expect("Sol metadata should exist");
 

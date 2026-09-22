@@ -4569,6 +4569,56 @@ base_url = "https://relay.example/v1"
 }
 
 #[test]
+fn apply_relay_profile_generates_gpt6_sol_luna_catalog_without_suffix() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-gpt6".to_string(),
+        model: "gpt-6-sol".to_string(),
+        model_list: "gpt-6-sol\ngpt-6-luna".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-6-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-gpt6.json""#));
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs/relay-gpt6.json")).unwrap(),
+    )
+    .unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(model["context_window"], 272_000);
+        assert_eq!(model["max_context_window"], 872_000);
+        assert_eq!(model["use_responses_lite"], false);
+        assert_eq!(model["multi_agent_version"], "v2");
+        assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+        assert_eq!(model["service_tiers"][0]["id"], "priority");
+        assert_eq!(
+            model["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["none", "low", "medium", "high", "xhigh", "max"]
+        );
+    }
+    assert_eq!(catalog["models"][0]["slug"], "gpt-6-sol");
+    assert_eq!(catalog["models"][1]["slug"], "gpt-6-luna");
+}
+
+#[test]
 fn apply_deepseek_responses_official_mix_writes_official_tool_compatibility() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {

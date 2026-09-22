@@ -194,6 +194,11 @@ const ASTRA_METADATA_JSON: &str = include_str!(concat!(
     "/../../assets/astra-model-metadata-compat.json"
 ));
 
+const GPT6_SOL_LUNA_METADATA_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/gpt6-sol-luna-model-metadata-compat.json"
+));
+
 pub fn requires_bundled_metadata_catalog(slug: &str) -> bool {
     compatibility_metadata_entry(slug).is_some()
 }
@@ -431,6 +436,7 @@ fn first_bundled_template_entry() -> Option<Value> {
 fn compatibility_metadata_entry(slug: &str) -> Option<Value> {
     catalog_metadata_entry(GPT56_METADATA_JSON, slug)
         .or_else(|| catalog_metadata_entry(ASTRA_METADATA_JSON, slug))
+        .or_else(|| catalog_metadata_entry(GPT6_SOL_LUNA_METADATA_JSON, slug))
 }
 
 fn catalog_metadata_entry(catalog_json: &str, slug: &str) -> Option<Value> {
