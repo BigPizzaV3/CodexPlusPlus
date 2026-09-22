@@ -1076,6 +1076,46 @@ mod tests {
     }
 
     #[test]
+    fn plain_path_rejects_symlinked_ancestors_and_accepts_plain_directories() {
+        // 这条校验此前没有任何测试覆盖：既挡住了正常用法（macOS 的 /var 系统软链），
+        // 又没有回归保护。这里补上两侧——真软链必须被拒，普通目录必须通过。
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp_root(&temp);
+
+        let plain = root.join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        assert!(plain_path(&plain).is_ok(), "普通目录应通过");
+        assert!(plain_path(&plain.join("state")).is_ok(), "尚不存在的子路径应通过");
+
+        // 路径本身是软链
+        #[cfg(unix)]
+        {
+            let target = root.join("target");
+            fs::create_dir_all(&target).unwrap();
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let error = plain_path(&link).unwrap_err();
+            assert!(error.to_string().contains("Linked paths"), "{error}");
+
+            // 祖先链上有软链（等价于 macOS 的 /var 情形，必须一并拒绝）
+            let nested = link.join("state");
+            let error = plain_path(&nested).unwrap_err();
+            assert!(error.to_string().contains("Linked paths"), "{error}");
+
+            // 拒绝的是「路径里有软链」，不是「指向的目标不可用」：
+            // 走真实路径访问同一目录应当通过。
+            assert!(plain_path(&target.join("state")).is_ok());
+        }
+
+        // 相对路径与含 .. 的路径
+        assert!(plain_path(Path::new("relative/path")).is_err(), "相对路径应被拒");
+        assert!(
+            plain_path(&root.join("a").join("..").join("b")).is_err(),
+            "含 .. 的路径应被拒"
+        );
+    }
+
+    #[test]
     fn binding_requires_unique_anchor_and_preserves_other_code() {
         let path = Path::new("C:/unicode-\u{4e2d}/control.json");
         for source in ["no binding".to_string(), ANCHOR.repeat(2)] {
