@@ -4686,11 +4686,17 @@ fn collect_catalog_repair_plan(
         let git_branch = text_expr(&columns, "git_branch", "NULL");
         let thread_source = text_expr(&columns, "thread_source", "NULL");
         let archived = text_expr(&columns, "archived", "0");
-        let has_user_event = text_expr(&columns, "has_user_event", "1");
+        // Current app-server listing uses preview; paginated histories can retain a zero
+        // legacy user-event flag even when they contain real user messages.
+        let has_user_content = if columns.contains("preview") {
+            "CASE WHEN COALESCE(preview, '') <> '' THEN 1 ELSE 0 END".to_string()
+        } else {
+            text_expr(&columns, "has_user_event", "1")
+        };
         let agent_role = text_expr(&columns, "agent_role", "''");
         let subagent_filter = subagent_filter(&db, "threads.id")?;
         let sql = format!(
-            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_event}, {agent_role} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
+            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_content}, {agent_role} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
         );
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
@@ -4715,7 +4721,7 @@ fn collect_catalog_repair_plan(
             ))
         })?;
         for item in rows {
-            let (thread, archived, has_user_event, agent_role) = item?;
+            let (thread, archived, has_user_content, agent_role) = item?;
             let marked_non_user = columns.contains("thread_source")
                 && thread.thread_source.as_deref().is_some_and(|value| {
                     let value = value.trim();
@@ -4725,7 +4731,7 @@ fn collect_catalog_repair_plan(
             let source_is_exec = thread.source_kind.trim().eq_ignore_ascii_case("exec");
             let rollout_exists = catalog_rollout_path_exists(home, &thread.source_detail);
             let eligible = archived == 0
-                && has_user_event == 1
+                && has_user_content == 1
                 && agent_role.trim().is_empty()
                 && !marked_non_user
                 && !source_is_exec

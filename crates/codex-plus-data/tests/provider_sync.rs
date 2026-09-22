@@ -1881,6 +1881,166 @@ fn provider_sync_prunes_existing_local_subagent_catalog_rows() {
 }
 
 #[test]
+fn provider_sync_catalog_uses_preview_on_modern_schema_without_rewriting_history() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    write_provider_config(&home, "custom");
+    let global_state = json!({
+        "thread-project-assignments": {"missing": {"projectId":"project","projectKind":"local"}},
+        "projectless-thread-ids": ["projectless"]
+    })
+    .to_string();
+    fs::write(home.join(".codex-global-state.json"), &global_state).unwrap();
+    let state_db = home.join("state_5.sqlite");
+    let db = Connection::open(&state_db).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, git_branch TEXT, agent_role TEXT,
+            preview TEXT, history_mode TEXT, project_id TEXT
+        );",
+    )
+    .unwrap();
+    let rollout_dir = home.join("sessions");
+    for (id, preview, user_event, archived, source, thread_source, role) in [
+        ("retained", Some("User message"), 0, 0, "vscode", "user", ""),
+        ("missing", Some("User message"), 0, 0, "vscode", "user", ""),
+        ("projectless", Some("User message"), 0, 0, "cli", "user", ""),
+        ("empty", Some(""), 1, 0, "vscode", "user", ""),
+        ("null", None, 1, 0, "vscode", "user", ""),
+        ("archived", Some("User message"), 0, 1, "vscode", "user", ""),
+        (
+            "child",
+            Some("User message"),
+            0,
+            0,
+            "subagent",
+            "subagent",
+            "",
+        ),
+        (
+            "role",
+            Some("User message"),
+            0,
+            0,
+            "vscode",
+            "user",
+            "reviewer",
+        ),
+        (
+            "ambient",
+            Some("User message"),
+            0,
+            0,
+            "vscode",
+            "ambient_suggestions",
+            "",
+        ),
+        ("exec", Some("User message"), 0, 0, "exec", "user", ""),
+    ] {
+        let path = rollout_dir.join(format!("{id}.jsonl"));
+        fs::create_dir_all(&rollout_dir).unwrap();
+        // Paginated history has no legacy event_msg/user_message record.
+        let meta = json!({"type":"session_meta","payload":{"id":id,"model_provider":"custom"}});
+        let message = json!({"type":"response_item","payload":{
+            "type":"message","role":"user","content":[{"type":"input_text","text":"User message"}]
+        }});
+        fs::write(&path, format!("{meta}\n{message}\n")).unwrap();
+        db.execute(
+            "INSERT INTO threads VALUES (
+                ?1, 'custom', ?2, ?3, ?4, ?1, ?5, ?6, 100000, 300000, ?7,
+                'main', ?8, ?9, 'paginated', NULL
+            )",
+            rusqlite::params![
+                id,
+                archived,
+                user_event,
+                if id == "projectless" {
+                    "C:/original-output"
+                } else {
+                    "E:/project"
+                },
+                path.to_string_lossy(),
+                source,
+                thread_source,
+                role,
+                preview
+            ],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let threads_before = catalog_eligibility_thread_snapshot(&state_db);
+    let rollouts_before = rollout_files_snapshot(&rollout_dir);
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    create_local_thread_catalog_db(
+        &catalog_db,
+        &[
+            ("retained", "custom"),
+            ("empty", "custom"),
+            ("null", "custom"),
+            ("archived", "custom"),
+            ("child", "custom"),
+            ("role", "custom"),
+            ("ambient", "custom"),
+            ("exec", "custom"),
+        ],
+    );
+
+    let result = run_provider_sync(Some(&home));
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+    assert!(
+        catalog_rows_snapshot(&catalog_db).contains(&("local".into(), "retained".into())),
+        "a visible paginated user thread must not be deleted from the sidebar catalog"
+    );
+    assert_eq!(result.sqlite_catalog_rows_inserted, 2);
+    assert_eq!(result.sqlite_catalog_rows_removed, 7);
+    assert_eq!(
+        catalog_rows_snapshot(&catalog_db),
+        vec![
+            ("local".into(), "missing".into()),
+            ("local".into(), "projectless".into()),
+            ("local".into(), "retained".into()),
+        ]
+    );
+    assert_eq!(
+        catalog_eligibility_thread_snapshot(&state_db),
+        threads_before
+    );
+    assert_eq!(rollout_files_snapshot(&rollout_dir), rollouts_before);
+    assert_eq!(
+        fs::read_to_string(home.join(".codex-global-state.json")).unwrap(),
+        global_state
+    );
+
+    let second = run_provider_sync(Some(&home));
+    assert_eq!(second.status, ProviderSyncStatus::Synced);
+    assert_eq!(second.sqlite_rows_updated, 0);
+    assert!(second.backup_dir.is_none());
+
+    // A future schema may remove the deprecated flag entirely.
+    Connection::open(&state_db)
+        .unwrap()
+        .execute("ALTER TABLE threads DROP COLUMN has_user_event", [])
+        .unwrap();
+    Connection::open(&catalog_db)
+        .unwrap()
+        .execute(
+            "DELETE FROM local_thread_catalog WHERE thread_id = 'missing'",
+            [],
+        )
+        .unwrap();
+    let without_legacy_flag = run_provider_sync(Some(&home));
+    assert_eq!(without_legacy_flag.status, ProviderSyncStatus::Synced);
+    assert_eq!(without_legacy_flag.sqlite_catalog_rows_inserted, 1);
+    assert_eq!(without_legacy_flag.sqlite_catalog_rows_removed, 0);
+    assert_eq!(rollout_files_snapshot(&rollout_dir), rollouts_before);
+}
+
+#[test]
 fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
     let tmp = tempdir().unwrap();
     let home = tmp.path().join(".codex");
