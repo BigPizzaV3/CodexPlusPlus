@@ -3,7 +3,7 @@
     {
       "slug": "gemini-3.8-flash",
       "display_name": "Gemini 3.8 Flash",
-      "description": "Google workhorse model for long coding and agent tasks (1M context, multimodal)",
+      "description": "Google workhorse model for long coding and agent tasks (1M context, 64K output; accepts text, image, video, audio and PDF)",
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         { "effort": "low", "description": "Light thinking for fast responses" },
@@ -22,6 +22,7 @@
       "truncation_policy": { "mode": "bytes", "limit": 10000 },
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 65536,
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
@@ -30,7 +31,7 @@
     {
       "slug": "gemini-3.5-flash-lite",
       "display_name": "Gemini 3.5 Flash-Lite",
-      "description": "Google low-latency, cost-effective model for high-throughput tasks (1M context, multimodal)",
+      "description": "Google low-latency, cost-effective model for high-throughput tasks (1M context, 64K output; accepts text, image, video, audio and PDF)",
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         { "effort": "low", "description": "Light thinking for fast responses" },
@@ -49,6 +50,7 @@
       "truncation_policy": { "mode": "bytes", "limit": 10000 },
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 65536,
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
@@ -57,7 +59,7 @@
     {
       "slug": "gemini-3.7-flash",
       "display_name": "Gemini 3.7 Flash",
-      "description": "Google workhorse model, previous generation (1M context, multimodal)",
+      "description": "Google workhorse model, previous generation (1M context, 64K output; accepts text, image, video, audio and PDF)",
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         { "effort": "low", "description": "Light thinking for fast responses" },
@@ -76,6 +78,7 @@
       "truncation_policy": { "mode": "bytes", "limit": 10000 },
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 65536,
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],

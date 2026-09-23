@@ -90,6 +90,8 @@ pub fn run() {
             commands::weixin_connect_start,
             commands::weixin_connect_stop,
             commands::find_desktop_codex_cli,
+            commands::query_builtin_model_metadata,
+            commands::builtin_model_metadata_index,
             commands::dream_skin_status,
             commands::import_dream_skin_image,
             commands::reset_dream_skin_image,
