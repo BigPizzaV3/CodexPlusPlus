@@ -1081,6 +1081,14 @@ pub fn default_relay_profiles() -> Vec<RelayProfile> {
     vec![RelayProfile::default()]
 }
 
+/// 判断一份供应商列表是否退化成了「仅剩默认 profile」。
+///
+/// 这是 `load` 失败后退回默认设置、再被原样回写磁盘的典型形态。
+/// `RelayProfile::default()` 的 id 固定为 `default`，用户手工创建的条目不会长这样。
+pub fn is_default_single_profile(profiles: &[RelayProfile]) -> bool {
+    profiles.len() == 1 && profiles[0] == RelayProfile::default()
+}
+
 pub fn default_aggregate_member_weight() -> u32 {
     1
 }
@@ -1221,12 +1229,42 @@ impl SettingsStore {
             }
         };
 
-        Ok(normalize_settings_config_sections(
-            serde_json::from_str(&contents).unwrap_or_default(),
-        ))
+        let parsed = serde_json::from_str(&contents).with_context(|| {
+            format!(
+                "settings {} 解析失败，拒绝退回默认设置以免覆盖用户配置",
+                self.path.display()
+            )
+        })?;
+        Ok(normalize_settings_config_sections(parsed))
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        // `save()` 是整体覆盖写，manager 的 save_settings 走的就是这条路。
+        // 历史事故：load 失败退回默认设置（只剩 1 条默认 profile），前端把它原样
+        // 回写，用户的 N 条供应商配置被清空。这里在写盘前比一次条数。
+        // 读不到旧文件（不存在/解析失败）时按 0 处理，不拦——整体覆盖语义下
+        // 不能因为旧文件读不出来就拒绝写入。
+        let existing_profile_count = self
+            .load_raw_object()
+            .ok()
+            .and_then(|raw| {
+                raw.get("relayProfiles")
+                    .and_then(Value::as_array)
+                    .map(|items| items.len())
+            })
+            .unwrap_or(0);
+        if settings.relay_profiles.is_empty() && existing_profile_count > 0 {
+            anyhow::bail!(
+                "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存的列表为空；为避免清空用户配置，已保持原文件不变",
+                existing_profile_count
+            );
+        }
+        if is_default_single_profile(&settings.relay_profiles) && existing_profile_count > 1 {
+            anyhow::bail!(
+                "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存退化为仅剩默认供应商；为避免覆盖用户配置，已保持原文件不变",
+                existing_profile_count
+            );
+        }
         let mut settings = normalize_settings_config_sections(settings.clone());
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
         let bytes = serde_json::to_vec_pretty(&settings)?;
@@ -1239,6 +1277,11 @@ impl SettingsStore {
         };
 
         let mut raw = self.load_raw_object()?;
+        let existing_profile_count = raw
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
         merge_known_setting_fields(&mut raw, &payload);
         let settings = normalize_settings_config_sections(
             serde_json::from_value(Value::Object(raw.clone())).unwrap_or_default(),
@@ -1257,6 +1300,17 @@ impl SettingsStore {
             "tools".to_string(),
             serde_json::to_value(&settings.tools).unwrap_or_else(|_| Value::Object(Map::new())),
         );
+        let new_profile_count = raw
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if new_profile_count == 0 && existing_profile_count > 0 {
+            anyhow::bail!(
+                "拒绝写入 settings：本次更新会把供应商列表从 {} 条清空为 0 条，已保持原文件不变",
+                existing_profile_count
+            );
+        }
         let bytes = serde_json::to_vec_pretty(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
         Ok(settings)
@@ -1276,7 +1330,16 @@ impl SettingsStore {
 
         match serde_json::from_str::<Value>(&contents) {
             Ok(Value::Object(map)) => Ok(map),
-            Ok(_) | Err(_) => Ok(settings_to_object(&BackendSettings::default())),
+            Ok(_) => Err(anyhow::anyhow!(
+                "settings {} 顶层不是 JSON 对象，拒绝用默认值覆盖",
+                self.path.display()
+            )),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "settings {} 解析失败，拒绝用默认值覆盖；请先修复该文件",
+                    self.path.display()
+                )
+            }),
         }
     }
 }
@@ -1522,13 +1585,45 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("relayApiKey".to_string(), Value::String(value.to_string()));
     }
     if let Some(value) = source.get("relayProfiles").and_then(Value::as_array) {
-        let mut profiles = serde_json::from_value::<Vec<RelayProfile>>(Value::Array(value.clone()))
-            .unwrap_or_default();
-        preserve_official_mix_bearer_tokens(&mut profiles, target);
-        target.insert(
-            "relayProfiles".to_string(),
-            serde_json::to_value(profiles).unwrap_or_else(|_| Value::Array(Vec::new())),
-        );
+        // 逐个反序列化：单个坏条目只丢自己，不能把整份供应商列表清空。
+        // 历史实现用 serde_json::from_value::<Vec<RelayProfile>>(...).unwrap_or_default()，
+        // 任一 profile 字段不匹配就会让整个数组变空，随后被 update 写回磁盘。
+        let mut profiles = Vec::with_capacity(value.len());
+        let mut dropped = 0usize;
+        for entry in value {
+            match serde_json::from_value::<RelayProfile>(entry.clone()) {
+                Ok(profile) => profiles.push(profile),
+                Err(_) => dropped += 1,
+            }
+        }
+        if dropped > 0 {
+            eprintln!(
+                "codex-plus settings: {dropped} 个供应商条目反序列化失败已跳过（共 {} 个）",
+                value.len()
+            );
+        }
+        // 新列表为空、或退化为仅剩默认 profile，而现有列表非空时，保留现有列表。
+        // 空列表和「默认单条」都是 load 失败后默认设置被原样回写的形态。
+        let existing_count = target
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|existing| existing.len())
+            .unwrap_or(0);
+        let should_reject = (profiles.is_empty() && existing_count > 0)
+            || (is_default_single_profile(&profiles) && existing_count > 1);
+        if should_reject {
+            eprintln!(
+                "codex-plus settings: 新供应商列表退化为 {} 条，现有 {} 条，已拒绝覆盖",
+                profiles.len(),
+                existing_count
+            );
+        } else {
+            preserve_official_mix_bearer_tokens(&mut profiles, target);
+            target.insert(
+                "relayProfiles".to_string(),
+                serde_json::to_value(profiles).unwrap_or_else(|_| Value::Array(Vec::new())),
+            );
+        }
     }
     if let Some(value) = source
         .get("relayCommonConfigContents")
@@ -2567,14 +2662,116 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(store.load().unwrap(), normalized_default_settings());
     }
 
+    /// 坏 JSON 不再静默退回默认设置：解析失败必须报错，避免拿默认值把磁盘上的
+    /// 供应商列表覆盖掉。原文件内容必须原样保留。
     #[test]
-    fn settings_store_load_bad_json_returns_default() {
+    fn settings_store_load_bad_json_returns_error_and_keeps_file() {
         let dir = temp_dir();
         let path = dir.join("settings.json");
         std::fs::write(&path, "{bad json").unwrap();
-        let store = SettingsStore::new(path);
+        let store = SettingsStore::new(path.clone());
 
-        assert_eq!(store.load().unwrap(), normalized_default_settings());
+        let error = store.load().expect_err("坏 JSON 必须报错，而不是退回默认值");
+        assert!(
+            error.to_string().contains("解析失败"),
+            "错误信息应指出解析失败，实际是: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{bad json");
+    }
+
+    /// 回归：一次把 relayProfiles 传空的 update，不得清掉磁盘上已有的供应商配置。
+    /// 这就是「供应商配置一个都不剩」那次故障的核心防护。
+    #[test]
+    fn settings_store_update_does_not_wipe_existing_relay_profiles() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "relayProfiles": [
+    {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+    {"id": "relay-b", "name": "B", "relayMode": "pureApi"}
+  ],
+  "activeRelayId": "relay-a"
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        assert_eq!(store.load().unwrap().relay_profiles.len(), 2);
+
+        let _ = store.update(json!({ "relayProfiles": [] }));
+
+        let after = store.load().unwrap();
+        assert_eq!(
+            after.relay_profiles.len(),
+            2,
+            "传空 relayProfiles 不得覆盖磁盘上已有的供应商配置"
+        );
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("relay-a"), "原条目不得被清空: {raw}");
+        assert!(raw.contains("relay-b"), "原条目不得被清空: {raw}");
+    }
+
+    /// 回归：数组里混入一条反序列化失败的条目时，好条目必须保留，
+    /// 而不是像旧实现那样整个列表退化成空。
+    #[test]
+    fn settings_store_update_keeps_good_profiles_when_one_entry_is_broken() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"relayProfiles":[]}"#).unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let _ = store.update(json!({
+            "relayProfiles": [
+                {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+                {"id": 12345, "name": "broken"}
+            ]
+        }));
+
+        let after = store.load().unwrap();
+        assert_eq!(
+            after.relay_profiles.len(),
+            1,
+            "坏条目应被跳过，好条目必须保留"
+        );
+        assert_eq!(after.relay_profiles[0].id, "relay-a");
+    }
+
+    /// 回归：一次把 relayProfiles 退化为「仅默认 profile」的 save，不得覆盖磁盘上
+    /// 多条供应商配置。这就是「20 条变 1 条」那次故障的核心防护。
+    #[test]
+    fn settings_store_save_does_not_collapse_to_default_single_profile() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "relayProfiles": [
+    {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+    {"id": "relay-b", "name": "B", "relayMode": "pureApi"},
+    {"id": "relay-c", "name": "C", "relayMode": "pureApi"}
+  ]
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let collapsed = BackendSettings {
+            relay_profiles: vec![RelayProfile::default()],
+            ..BackendSettings::default()
+        };
+        let error = store
+            .save(&collapsed)
+            .expect_err("退化为默认单条必须被拒绝");
+        assert!(
+            error.to_string().contains("退化为仅剩默认"),
+            "实际错误: {error}"
+        );
+
+        let after = store.load().unwrap();
+        assert_eq!(after.relay_profiles.len(), 3, "原 3 条不得被覆盖");
+        assert_eq!(after.relay_profiles[0].id, "relay-a");
     }
 
     #[test]
