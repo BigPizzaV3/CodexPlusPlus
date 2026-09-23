@@ -1800,6 +1800,70 @@ fn normalize_config_text_for_write(config_text: &str) -> String {
     config_text.trim_start_matches('\u{feff}').to_string()
 }
 
+/// 用 live 的键补齐 target 里缺的键，不覆盖 target 已有的值。
+fn fill_missing_toml_item(target: &mut Item, source: &Item) {
+    if let Some(source_table) = source.as_table_like() {
+        if let Some(target_table) = target.as_table_like_mut() {
+            for (key, source_item) in source_table.iter() {
+                match target_table.get_mut(key) {
+                    Some(target_item) => fill_missing_toml_item(target_item, source_item),
+                    None => {
+                        target_table.insert(key, source_item.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// mcp_servers 的形状权威在 live。模板里可能留着被压平的残形（启动键缺失、
+/// env 键混进父表），这里在写盘前用 live 补齐缺键，并把与 env 子表重复的父表键移除。
+fn repair_mcp_servers_from_live(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
+    let Some(live_servers) = live_doc.get("mcp_servers").and_then(Item::as_table_like) else {
+        return;
+    };
+    if target_doc
+        .get("mcp_servers")
+        .and_then(Item::as_table_like)
+        .is_none()
+    {
+        target_doc["mcp_servers"] = toml_edit::table();
+    }
+    let Some(target_servers) = target_doc["mcp_servers"].as_table_like_mut() else {
+        return;
+    };
+    for (id, live_item) in live_servers.iter() {
+        match target_servers.get_mut(id) {
+            Some(existing) => fill_missing_toml_item(existing, live_item),
+            None => {
+                target_servers.insert(id, live_item.clone());
+            }
+        }
+    }
+    let ids: Vec<String> = target_servers
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .collect();
+    for id in ids {
+        let Some(table) = target_servers
+            .get_mut(id.as_str())
+            .and_then(Item::as_table_like_mut)
+        else {
+            continue;
+        };
+        let env_keys: Vec<String> = table
+            .get("env")
+            .and_then(Item::as_table_like)
+            .map(|env| env.iter().map(|(key, _)| key.to_string()).collect())
+            .unwrap_or_default();
+        for key in env_keys {
+            if key != "env" {
+                table.remove(key.as_str());
+            }
+        }
+    }
+}
+
 /// 供集成测试直接验证 live 设置保留逻辑。
 #[doc(hidden)]
 pub fn preserve_live_app_settings_for_test(home: &Path, config_text: &str) -> anyhow::Result<String> {
@@ -1830,7 +1894,9 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     // MCP server 条目由用户/Codex 桌面端直接管理：模板与通用配置里已有的
     // 条目优先，live 里多出来的条目原样补回，避免每次重写后 server 逐个
     // 消失（#2263）。整体合并会覆盖通用配置的新值，所以只补缺。
-    preserve_missing_table_keys(&mut target_doc, &live_doc, "mcp_servers");
+    // 同一个 server 在模板里可能是被压平的残形，这时只补整条不够，
+    // 还要用 live 补齐条目内缺失的键，并清掉混进父表的 env 键。
+    repair_mcp_servers_from_live(&mut target_doc, &live_doc);
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
     // hooks 的定义部分（除 state 外的键）同样由用户/桌面端管理，模板里没有时
