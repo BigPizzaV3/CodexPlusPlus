@@ -1942,6 +1942,11 @@ fn preserve_live_hook_definitions(target_doc: &mut DocumentMut, live_doc: &Docum
         if key == "state" {
             continue;
         }
+        // 只搬运定义类子表（hooks.X 形式），不搬运 live 独有的标量键，
+        // 否则会把本机个性化设置带进 profile 模板。
+        if value.as_table_like().is_none() {
+            continue;
+        }
         if target_hooks.get(key).is_none() {
             target_hooks.insert(key, value.clone());
         }
