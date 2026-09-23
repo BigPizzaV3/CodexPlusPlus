@@ -10,7 +10,7 @@
 //! 步骤：
 //! 1. 用三家 vendor 元数据（kimi/minimax/qwen，含修复后的 freeform apply_patch）
 //!    走 `apply_relay_profile_to_home_with_switch_rules` 生成真实 catalog；
-//! 2. 用真实 codex 执行 `debug models`，验证 catalog 被完整解析、20 个 slug 全部可见；
+//! 2. 用真实 codex 执行 `debug models`，验证 catalog 被完整解析、全部 slug 可见；
 //! 3. 阴性对照：把生成 catalog 里一条 apply_patch_tool_type 改回 "function"，
 //!    codex 必须解析失败（0.144+ 的枚举只认 freeform）。
 
@@ -25,7 +25,9 @@ const KIMI_JSON: &str = include_str!("../../../assets/kimi-model-metadata.json")
 const MINIMAX_JSON: &str = include_str!("../../../assets/minimax-model-metadata.json");
 const QWEN_JSON: &str = include_str!("../../../assets/qwen-model-metadata.json");
 
-const DEFAULT_CODEX_BIN: &str = r"C:\Users\1\.vscode\extensions\openai.chatgpt-26.803.61601-win32-x64\bin\windows-x86_64\codex.exe";
+// 不写死本机路径：默认置空，要求显式提供 CODEX_E2E_CODEX_BIN。写死作者机器的
+// 绝对路径既对别人无用，也会在扩展升级后变成误导性的失效默认值。
+const DEFAULT_CODEX_BIN: &str = "";
 
 /// 镜像前端 filteredMetadata：窗口/压缩四个字段由生成器管辖，不进 metadata map。
 fn vendor_metadata_map(vendor_json: &str, map: &mut BTreeMap<String, serde_json::Value>) {
@@ -77,7 +79,10 @@ fn e2e_vendor_catalog_loads_in_real_codex() {
     vendor_metadata_map(MINIMAX_JSON, &mut metadata);
     vendor_metadata_map(QWEN_JSON, &mut metadata);
     let slugs: Vec<&str> = metadata.keys().map(String::as_str).collect();
-    assert_eq!(slugs.len(), 20, "kimi(8)+minimax(3)+qwen(9) 共 20 条");
+    // 不写死条数：资产随时会新增/下架模型，写死会让这条唯一「真实 codex 解析」
+    // 验证路径在资产正常演进时误红。改用不变量：条数与 catalog 一致、且确实非空，
+    // 具体数量只在日志里留痕，方便人工核对漂移幅度。
+    assert!(!slugs.is_empty(), "vendor 元数据不应为空");
 
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
@@ -120,7 +125,11 @@ base_url = "https://relay.example.test/v1"
     let catalog: serde_json::Value = serde_json::from_str(&catalog_text).unwrap();
 
     let models = catalog["models"].as_array().unwrap();
-    assert_eq!(models.len(), 20);
+    assert_eq!(
+        models.len(),
+        slugs.len(),
+        "catalog 条目数应与 vendor 元数据一致"
+    );
     for model in models {
         assert_eq!(
             model["apply_patch_tool_type"], "freeform",
@@ -133,10 +142,17 @@ base_url = "https://relay.example.test/v1"
         .find(|m| m["slug"] == "kimi-k3")
         .expect("kimi-k3 应在 catalog 中");
     assert_eq!(k3["context_window"], 1_048_576, "每模型窗口应写入 catalog");
-    println!("[E2E] catalog 生成 OK：20 条，apply_patch 全部 freeform，kimi-k3 窗口 1048576");
+    println!(
+        "[E2E] catalog 生成 OK：{} 条，apply_patch 全部 freeform，kimi-k3 窗口 1048576",
+        models.len()
+    );
 
     // ── 真实 codex 解析 ──
     let codex = codex_bin();
+    if codex.as_os_str().is_empty() {
+        panic!("请设置 CODEX_E2E_CODEX_BIN 指向本机 codex 二进制，例如：
+  CODEX_E2E_CODEX_BIN=/path/to/codex cargo test -p codex-plus-core --test e2e_codex_real_cli -- --ignored --nocapture");
+    }
     assert!(codex.exists(), "codex 二进制不存在：{}", codex.display());
     let (ok, text) = run_codex_debug_models(&codex, temp.path());
     assert!(
@@ -147,7 +163,10 @@ base_url = "https://relay.example.test/v1"
     for slug in &slugs {
         assert!(text.contains(slug), "codex debug models 输出应包含 {slug}");
     }
-    println!("[E2E] codex debug models OK：20 个 slug 全部被真实 codex 加载");
+    println!(
+        "[E2E] codex debug models OK：{} 个 slug 全部被真实 codex 加载",
+        slugs.len()
+    );
 
     // ── 阴性对照：一条改回 function，codex 必须拒绝 ──
     let poisoned = catalog_text.replacen(

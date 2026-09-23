@@ -102,7 +102,7 @@
       "truncation_policy": { "mode": "bytes", "limit": 10000 },
       "context_window": 1048576,
       "max_context_window": 1048576,
-      "max_output_tokens": 32768,
+      "max_output_tokens": 131072,
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],

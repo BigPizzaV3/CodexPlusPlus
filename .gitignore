@@ -31,3 +31,11 @@ pnpm-workspace.yaml
 plan.md
 plan_v2.md
 
+# agent 工作区产物：调试脚本 / 计划 / 临时提交信息，一律不入库
+.zcode/
+.tmp-commit-msg.txt
+.tmp-*.cjs
+assets/example.json
+issue*-repro.md
+stepfun-*-stall-bugreport.md
+
