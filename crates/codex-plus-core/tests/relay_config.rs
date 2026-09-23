@@ -6109,3 +6109,47 @@ base_url = "https://chatgpt.com/backend-api/codex"
         true
     );
 }
+
+/// 供应商 slug 已由内置元数据链命中时，粘贴导入的 metadata 仍应覆盖展示类
+/// 字段（display_name 等），而窗口字段继续由生成器管辖（issue #2191）。
+#[test]
+fn pasted_metadata_overrides_embedded_vendor_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        model: "kimi-k3".to_string(),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        config_contents: r#"model = "kimi-k3"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        model_list: "kimi-k3".to_string(),
+        model_metadata: r#"{"kimi-k3":{"display_name":"我的K3","priority":3}}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    let catalog: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(temp.path().join("model-catalogs/relay-a.json")).unwrap(),
+    )
+    .unwrap();
+    let model = &catalog["models"][0];
+    assert_eq!(model["slug"], "kimi-k3");
+    // 粘贴导入的展示字段覆盖内置供应商元数据
+    assert_eq!(model["display_name"], "我的K3");
+    assert_eq!(model["priority"], 3);
+    // 窗口仍按生成器管辖：未显式配置时取供应商元数据的 1M（而非粘贴残留值）
+    assert_eq!(model["context_window"], 1_048_576);
+    assert_eq!(model["max_context_window"], 1_048_576);
+}

@@ -1,0 +1,112 @@
+{
+  "models": [
+    {
+      "slug": "gemini-3.8-flash",
+      "display_name": "Gemini 3.8 Flash",
+      "description": "Google workhorse model for long coding and agent tasks (1M context, multimodal)",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light thinking for fast responses" },
+        { "effort": "medium", "description": "Balanced thinking (default)" },
+        { "effort": "high", "description": "Deep thinking for multi-step reasoning and coding" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "gemini-3.5-flash-lite",
+      "display_name": "Gemini 3.5 Flash-Lite",
+      "description": "Google low-latency, cost-effective model for high-throughput tasks (1M context, multimodal)",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light thinking for fast responses" },
+        { "effort": "medium", "description": "Balanced thinking (default)" },
+        { "effort": "high", "description": "Deep thinking for multi-step reasoning and coding" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 2,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "gemini-3.7-flash",
+      "display_name": "Gemini 3.7 Flash",
+      "description": "Google workhorse model, previous generation (1M context, multimodal)",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light thinking for fast responses" },
+        { "effort": "medium", "description": "Balanced thinking (default)" },
+        { "effort": "high", "description": "Deep thinking for multi-step reasoning and coding" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "gemini-3.1-pro",
+      "display_name": "Gemini 3.1 Pro",
+      "description": "Google flagship thinking model for complex coding and reasoning (1M context, 64K output)",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light thinking for fast responses" },
+        { "effort": "high", "description": "Deep thinking (default)" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 3,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "max_output_tokens": 65536,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    }
+  ]
+}

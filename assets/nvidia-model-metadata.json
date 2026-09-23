@@ -1,0 +1,31 @@
+{
+  "models": [
+    {
+      "slug": "nemotron-3-ultra",
+      "display_name": "Nemotron 3 Ultra",
+      "description": "NVIDIA 550B/55B-active Hybrid Mamba-Transformer MoE open model for agentic reasoning (1M context)",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balanced reasoning for general multi-step tasks" },
+        { "effort": "high", "description": "Deep reasoning for complex coding and agent workloads" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"]
+    }
+  ]
+}

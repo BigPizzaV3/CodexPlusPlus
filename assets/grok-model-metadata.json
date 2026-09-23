@@ -1,0 +1,87 @@
+{
+  "models": [
+    {
+      "slug": "grok-4.7",
+      "display_name": "Grok 4.7",
+      "description": "SpaceXAI flagship model for coding and knowledge work, larger base with longer RL (500K context)",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light reasoning for fast responses" },
+        { "effort": "medium", "description": "Balanced reasoning for general tasks" },
+        { "effort": "high", "description": "Deep reasoning for complex coding and agent workloads" },
+        { "effort": "xhigh", "description": "Extra deep reasoning for the hardest long-horizon tasks" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 500000,
+      "max_context_window": 500000,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "grok-4.6",
+      "display_name": "Grok 4.6",
+      "description": "SpaceXAI flagship model for coding, long-running agents and knowledge work (500K context)",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light reasoning for fast responses" },
+        { "effort": "medium", "description": "Balanced reasoning for general tasks" },
+        { "effort": "high", "description": "Deep reasoning for complex coding and agent workloads" },
+        { "effort": "xhigh", "description": "Extra deep reasoning for the hardest long-horizon tasks" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 500000,
+      "max_context_window": 500000,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "grok-4.5",
+      "display_name": "Grok 4.5",
+      "description": "SpaceXAI model co-trained with Cursor for coding and agentic tasks (500K context)",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light reasoning for fast responses" },
+        { "effort": "medium", "description": "Balanced reasoning for general tasks" },
+        { "effort": "high", "description": "Deep reasoning for complex coding and agent workloads" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 2,
+      "base_instructions": "",
+      "supports_reasoning_summaries": false,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 500000,
+      "max_context_window": 500000,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
+    }
+  ]
+}

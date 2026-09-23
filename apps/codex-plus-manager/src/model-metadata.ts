@@ -219,6 +219,13 @@ function unwrapJsonCompatibleDocument(source: string): string {
   return text.replace(/;\s*$/, "").trim();
 }
 
+// 供应商 Model Key 大小写不统一（如智谱 GLM-5.3-FlashX），上游 API 对大小写宽容，
+// 本地 slug 匹配若用严格相等会漏配元数据。
+function slugMatchesIgnoreCase(candidateSlug: unknown, targetSlug: string): boolean {
+  return typeof candidateSlug === "string"
+    && candidateSlug.toLowerCase() === targetSlug.toLowerCase();
+}
+
 function documentCandidates(root: unknown): ModelMetadata[] | null {
   if (Array.isArray(root)) return root.filter(isRecord);
   if (isRecord(root) && Array.isArray(root.models)) return root.models.filter(isRecord);
@@ -252,7 +259,7 @@ export function synchronizeModelMetadataDocumentContextWindow(
   }
   const candidates = documentCandidates(root);
   if (!candidates) return null;
-  const matches = candidates.filter((candidate) => candidate.slug === targetSlug);
+  const matches = candidates.filter((candidate) => slugMatchesIgnoreCase(candidate.slug, targetSlug));
   if (matches.length !== 1) return null;
   const trimmed = contextWindow.trim();
   const tokens = contextWindowToTokens(trimmed);
@@ -291,7 +298,7 @@ export function synchronizeModelMetadataDocumentLimits(
   }
   const candidates = documentCandidates(root);
   if (!candidates) return null;
-  const matches = candidates.filter((candidate) => candidate.slug === targetSlug);
+  const matches = candidates.filter((candidate) => slugMatchesIgnoreCase(candidate.slug, targetSlug));
   if (matches.length !== 1) return null;
   const compactTokenLimit = autoCompactPercentToTokenLimit(contextWindow, autoCompactPercent);
   if (compactTokenLimit) matches[0].auto_compact_token_limit = compactTokenLimit;
@@ -376,7 +383,7 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
   }
   const candidates = documentCandidates(root);
   if (!candidates) return { ok: false, error: "配置中没有找到 models 数组或带 slug 的模型对象。" };
-  const matches = candidates.filter((model) => model.slug === targetSlug);
+  const matches = candidates.filter((model) => slugMatchesIgnoreCase(model.slug, targetSlug));
   if (matches.length === 0) {
     const available = candidates
       .map((model) => model.slug)

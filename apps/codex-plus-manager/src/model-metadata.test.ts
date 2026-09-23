@@ -281,4 +281,42 @@ describe("model metadata helpers", () => {
   it("坏 metadata map 在 UI 侧不抛异常", () => {
     assert.deepStrictEqual(parseModelMetadataMap("not-json"), {});
   });
+
+  it("导入时 slug 匹配忽略大小写", () => {
+    // 供应商 Model Key 大小写不统一（GLM-5.3-FlashX），界面填大写也应匹配。
+    const result = parseModelMetadataDocument(
+      JSON.stringify({
+        models: [{ slug: "glm-5.3-flashx", context_window: 1_048_576, max_context_window: 1_048_576 }],
+      }),
+      "GLM-5.3-FlashX",
+    );
+    assert.strictEqual(result.ok, true);
+    if (!result.ok) return;
+    assert.strictEqual(result.value.slug, "GLM-5.3-FlashX");
+    assert.strictEqual(result.value.contextWindow, "1048576");
+  });
+
+  it("同步文档窗口时 slug 匹配也忽略大小写", () => {
+    const synchronized = synchronizeModelMetadataDocumentLimits(
+      '{"slug":"glm-5.3-flashx","context_window":262144}',
+      "GLM-5.3-FlashX",
+      "1M",
+      "80%",
+    );
+    assert.ok(synchronized);
+    const parsed = JSON.parse(synchronized!);
+    assert.strictEqual(parsed.slug, "glm-5.3-flashx");
+    assert.strictEqual(parsed.context_window, 1_000_000);
+    assert.strictEqual(parsed.auto_compact_token_limit, 800_000);
+  });
+
+  it("文档内多个大小写变体 slug 视为歧义", () => {
+    const result = parseModelMetadataDocument(
+      JSON.stringify({ models: [{ slug: "model-a" }, { slug: "MODEL-A" }] }),
+      "model-a",
+    );
+    assert.strictEqual(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /多个/);
+  });
 });
