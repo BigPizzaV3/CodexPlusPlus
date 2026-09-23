@@ -316,6 +316,129 @@ fn spawn_app_server_client_capture(websocket_url: &str, generation: BridgeGenera
     });
 }
 
+pub fn external_api_quota_breakpoint_condition(value: &Value) -> Option<String> {
+    let quota = value.get("quotaVariable")?.as_str()?;
+    let host = value.get("hostVariable")?.as_str()?;
+    let identifier = |text: &str| {
+        !text.is_empty()
+            && text.chars().enumerate().all(|(index, ch)| {
+                ch == '_'
+                    || ch == '$'
+                    || ch.is_ascii_alphabetic()
+                    || (index > 0 && ch.is_ascii_digit())
+            })
+    };
+    if !identifier(quota) || !identifier(host) {
+        return None;
+    }
+    Some(format!(
+        "({quota}&&window.__codexPlusExternalApiQuotaAllowed?.({host})===true&&({quota}=false),false)"
+    ))
+}
+
+fn spawn_external_api_quota_gate(websocket_url: &str, generation: BridgeGeneration) {
+    let websocket_url = websocket_url.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = run_external_api_quota_gate(&websocket_url, generation).await {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.external_api_quota_gate_failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+    });
+}
+
+async fn run_external_api_quota_gate(
+    websocket_url: &str,
+    generation: BridgeGeneration,
+) -> anyhow::Result<()> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    let mut installed: Option<(Value, String)> = None;
+    let mut debugger_enabled = false;
+    while bridge_generation_is_current(&generation) {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let response = session
+            .send_command(
+                next_message_id(),
+                "Runtime.evaluate",
+                runtime_evaluate_params(
+                    "JSON.stringify(window.__codexPlusApiQuotaBreakpoint || null)",
+                ),
+            )
+            .await?;
+        let Some(text) = response
+            .pointer("/result/result/value")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            continue;
+        };
+        if installed
+            .as_ref()
+            .is_some_and(|(previous, _)| previous == &value)
+        {
+            continue;
+        }
+        let Some(condition) = external_api_quota_breakpoint_condition(&value) else {
+            continue;
+        };
+        let Some((url_regex, line_number, column_number)) =
+            parse_app_server_client_capture_location(&Value::String(text.to_string()))
+        else {
+            continue;
+        };
+        if !debugger_enabled {
+            session
+                .send_command(next_message_id(), "Debugger.enable", json!({}))
+                .await?;
+            debugger_enabled = true;
+        }
+        if let Some((_, id)) = installed.take() {
+            session
+                .send_command(
+                    next_message_id(),
+                    "Debugger.removeBreakpoint",
+                    json!({ "breakpointId": id }),
+                )
+                .await?;
+        }
+        let result = session
+            .send_command(
+                next_message_id(),
+                "Debugger.setBreakpointByUrl",
+                json!({
+                    "urlRegex": url_regex,
+                    "lineNumber": line_number,
+                    "columnNumber": column_number,
+                    "condition": condition,
+                }),
+            )
+            .await?;
+        let Some(id) = result.pointer("/result/breakpointId").and_then(Value::as_str) else {
+            bail!("external API quota gate breakpoint was not installed");
+        };
+        installed = Some((value, id.to_string()));
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.external_api_quota_gate_armed",
+            json!({}),
+        );
+    }
+    if let Some((_, id)) = installed {
+        let _ = session
+            .send_command(
+                next_message_id(),
+                "Debugger.removeBreakpoint",
+                json!({ "breakpointId": id }),
+            )
+            .await;
+    }
+    session.close().await;
+    Ok(())
+}
+
 async fn run_app_server_client_capture(
     websocket_url: &str,
     generation: BridgeGeneration,
@@ -542,6 +665,7 @@ pub async fn install_bridge(
     );
 
     spawn_app_server_client_capture(websocket_url, generation.clone());
+    spawn_external_api_quota_gate(websocket_url, generation.clone());
 
     let mut pending_calls = FuturesUnordered::new();
     session.enqueue_binding_calls(&mut pending_calls);
