@@ -60,6 +60,9 @@ pub fn run() {
                 main_window_builder = main_window_builder.icon(icon)?;
             }
             let main_window = main_window_builder.build()?;
+            if startup_is_background() {
+                main_window.hide()?;
+            }
             install_tray(app)?;
             commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window, startup_is_transient());
