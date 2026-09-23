@@ -146,6 +146,361 @@ export function serializeModelMetadataDocument(
   }, null, 2);
 }
 
+export type BuiltinModelMetadataEntry = {
+  slug: string;
+  display_name?: string;
+  context_window?: number | null;
+  max_context_window?: number | null;
+  auto_compact_token_limit?: number | null;
+  [key: string]: unknown;
+};
+
+// ── [1M] 后缀的检测与适配 ────────────────────────────────────────────────
+// 模型行里用户原样输入的 `deepseek-v4-pro[1M]` 带窗口后缀，后缀的含义就是
+// 「该模型的上下文窗口大小」（1M=1000000、256K=256000），由 Rust 侧
+// parse_model_suffix 在生成 catalog 时剥离并换算。导入面板、标签、实时同步
+// 都在 Slug 层面工作，必须先把后缀剥掉再做任何 slug 比较，否则后端返回的
+// 规范 slug 与行名永远对不上（issue #2279 回归）。
+// 这里集中放一处，四个入口（内置预填、parseModelMetadataDocument、
+// synchronize*、metadataMatchesBuiltin）共用，避免各自实现再次分叉。
+const MODEL_SUFFIX_PATTERN = /^(.*?)\[(\d+(?:[KkMm])?)\]$/;
+
+/// 从模型行名拆出规范 slug；无后缀或后缀非法时返回去掉首尾空白的原串。
+export function modelSlugFromRowName(rowName: string): string {
+  const trimmed = rowName.trim();
+  const match = MODEL_SUFFIX_PATTERN.exec(trimmed);
+  if (!match) return trimmed;
+  if (suffixWindowTokens(match[2]) === null) return trimmed;
+  return match[1].trim();
+}
+
+/// 把后缀文字换算成 token 数：`[1M]`→1000000、`[256K]`→256000、`[123]`→123。
+/// 仅识别纯数字 + 可选 K/M 单位（大小写均可），其余一律 null。
+export function suffixWindowTokens(suffix: string): number | null {
+  const match = /^(\d+)([KkMm])?$/.exec(suffix.trim());
+  if (!match) return null;
+  const multiplier = match[2]
+    ? (match[2].toLowerCase() === "m" ? 1_000_000 : 1_000)
+    : 1;
+  const tokens = Number(match[1]) * multiplier;
+  if (!Number.isSafeInteger(tokens) || tokens <= 0) return null;
+  return tokens;
+}
+
+/// 后缀对应的窗口字符串（供「上下文窗口」列初值/写回用）；无有效后缀返回 null。
+export function suffixWindowString(rowName: string): string | null {
+  const match = MODEL_SUFFIX_PATTERN.exec(rowName.trim());
+  if (!match) return null;
+  const tokens = suffixWindowTokens(match[2]);
+  return tokens === null ? null : String(tokens);
+}
+
+export type BuiltinModelMetadataMatch = {
+  matched: boolean;
+  source?: string;
+  entry?: BuiltinModelMetadataEntry;
+  fallback?: { slug: string; context_window: number };
+};
+
+/// 内置条目 → 导入文档文本：剥掉窗口/压缩四个托管字段（serialize 会按
+/// 窗口参数重写），保留供应商事实字段。窗口取 context_window 优先——它是
+/// codex 的默认运行窗口（官方 gpt 系为 272000/872000，导入 872000 会把
+/// 运行窗口改成上限，改变默认行为）；max 仅作 context 缺失时的回退。
+export function builtinEntryToImportDocument(entry: BuiltinModelMetadataEntry): string {
+  const contextWindow = entry.context_window ?? entry.max_context_window;
+  return serializeModelMetadataDocument(
+    entry.slug,
+    entry as ModelMetadata,
+    contextWindow ? String(contextWindow) : "",
+  );
+}
+
+/// 标签文案以「中文 key + 插值参数」下发，由调用方过 t()/tf()：
+/// 裸字符串会被 i18n-verify.mjs 漏掉（它只扫调用点），英文模式直接露中文。
+/// key 全部登记在 i18n-en.ts 的 EN_TEMPLATE/EN_PLAIN 里。
+export type MetadataSourceTag = {
+  kind: "match" | "fallback" | "custom";
+  tone: "builtin" | "fallback" | "custom";
+  textKey: string;
+  textArgs: Array<string | number>;
+  titleKey: string;
+  titleArgs: Array<string | number>;
+};
+
+/// 元数据来源标签（覆盖全部用户场景）：
+/// - 自定义存在 → 内置命中与否都显示 [自定义]；同时命中内置时并列 [匹配：来源]
+///   （内置仍是底层事实）；未命中内置时只显示 [自定义]（自定义已覆盖，无"回退"可言）
+/// - 无自定义 → 命中内置 [匹配：来源]，否则 [回退：<fallbackSlug>]
+export function metadataSourceTags(options: {
+  slug: string;
+  imported: boolean;
+  builtinMatch: BuiltinModelMetadataMatch | null;
+  builtinIndexSlug: { source: string } | undefined;
+  /// 无内置时的回退模板名；由调用方从后端 fallback 字段实时取，不写死。
+  fallbackSlug?: string;
+}): MetadataSourceTag[] {
+  const { imported, builtinMatch, builtinIndexSlug } = options;
+  const fallbackSlug = options.fallbackSlug ?? options.builtinMatch?.fallback?.slug ?? "";
+  const matchedSource = builtinMatch?.matched && builtinMatch.entry
+    ? builtinMatch.source ?? ""
+    : builtinIndexSlug?.source;
+  const tags: MetadataSourceTag[] = [];
+  if (matchedSource) {
+    tags.push({
+      kind: "match",
+      tone: "builtin",
+      textKey: "匹配：{0}",
+      textArgs: [matchedSource],
+      titleKey: "内置元数据：{0}",
+      titleArgs: [matchedSource],
+    });
+  } else if (!imported) {
+    tags.push({
+      kind: "fallback",
+      tone: "fallback",
+      textKey: "回退：{0}",
+      textArgs: [fallbackSlug],
+      titleKey: "无内置元数据，生成时回退 {0} 官方模板",
+      titleArgs: [fallbackSlug],
+    });
+  }
+  if (imported) {
+    tags.push({
+      kind: "custom",
+      tone: "custom",
+      textKey: "自定义",
+      textArgs: [],
+      titleKey: matchedSource
+        ? "已导入自定义元数据，生成时覆盖内置（{0}）"
+        : "已导入自定义元数据，生成时以该配置为准",
+      titleArgs: matchedSource ? [matchedSource] : [],
+    });
+  }
+  return tags;
+}
+
+export type ModelRowSyncPatch = { window?: string; autoCompact?: string };
+
+/// 导入文档解析结果 → 模型行补丁（JSON→行 的实时写回规则）：
+/// - 窗口：解析出有效值且与行现值不同才写（相同不写，避免多余 state 更新）
+/// - 压缩比：解析出显示值且与行现值不同才写；null（JSON 未声明）不动行，
+///   避免粘贴别的模型 JSON 时清掉用户行里的值
+export function importDocumentSyncPatch(
+  row: { window: string; autoCompact: string },
+  preview: { contextWindow: string | null; autoCompactPercent: string | null },
+): ModelRowSyncPatch {
+  const patch: ModelRowSyncPatch = {};
+  if (preview.contextWindow && preview.contextWindow !== row.window) {
+    patch.window = preview.contextWindow;
+  }
+  if (preview.autoCompactPercent && preview.autoCompactPercent !== row.autoCompact) {
+    patch.autoCompact = preview.autoCompactPercent;
+  }
+  return patch;
+}
+
+export type ImportSaveDecision = {
+  /// 是否需要写 profile.modelMetadata（false = 当前配置已是目标态）
+  needsSave: boolean;
+  /// 保存动作的语义：写自定义覆盖 / 清掉自定义改用内置 / 无需操作
+  effect: "custom" | "builtin" | "none";
+  /// 按钮文案
+  label: string;
+  /// hover 说明：为什么可点或为什么不可点
+  title: string;
+};
+
+/// 元数据对象的稳定序列化（键排序）——用于两套元数据的相等比较，
+/// 不受字段书写顺序影响，只比内容。
+function stableMetadataKey(metadata: ModelMetadata): string {
+  return JSON.stringify(metadata, (_key, value) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)));
+    }
+    return value;
+  });
+}
+
+/// 面板里的元数据与内置条目是否等价（键排序后深比较）。
+/// 只比供应商事实字段：窗口字段由「上下文窗口」列管辖，不参与判断——
+/// 否则仅改窗口就会被误判成「要存成自定义」。这里显式剥掉被托管的字段，
+/// 不依赖调用方恰好已经过滤：即便上游某一侧漏过滤，判定也不会被窗口值带偏
+/// （否则 c00177e 修掉的「重新匹配后保存变成自定义」会静默回归）。
+export function metadataMatchesBuiltin(
+  metadata: ModelMetadata | null | undefined,
+  builtinMetadata: ModelMetadata | null | undefined,
+): boolean {
+  if (!metadata || !builtinMetadata) return false;
+  return stableMetadataKey(filteredMetadata(metadata))
+    === stableMetadataKey(filteredMetadata(builtinMetadata));
+}
+
+/// 「保存此模型」按钮的判定。核心原则：**保存匹配到的内置数据不该产生自定义覆盖**。
+/// 面板内容与内置条目等价时，目标态就是「用内置」——本来就已经在用，无需写入；
+/// 只有当用户真的改了内容，才写成自定义覆盖。
+export function importSaveDecision(options: {
+  /// 当前文本是否可解析出有效模型（false = 解析失败）
+  parseOk: boolean;
+  /// 文本是否为空
+  documentBlank: boolean;
+  /// 当前是否已存有该模型的自定义配置
+  imported: boolean;
+  /// 面板元数据与内置条目是否等价（无内置匹配时为 false）
+  matchesBuiltin: boolean;
+}): ImportSaveDecision {
+  const label = "保存此模型";
+
+  if (!options.parseOk) {
+    return { needsSave: false, effect: "none", label, title: "JSON 无法解析，修复后即可保存" };
+  }
+  // 空文本：没有内容可写成自定义；若已有自定义则等于「放弃自定义」
+  if (options.documentBlank) {
+    return options.imported
+      ? { needsSave: true, effect: "builtin", label: "恢复内置", title: "保存后清除该模型的自定义配置，改用内置元数据" }
+      : { needsSave: false, effect: "none", label, title: "没有可保存的内容" };
+  }
+  // 内容与内置一致：目标态就是内置，本来就已经在用，不写覆盖
+  if (options.matchesBuiltin) {
+    return options.imported
+      ? { needsSave: true, effect: "builtin", label: "恢复内置", title: "内容与内置元数据一致，保存后改用内置元数据" }
+      : { needsSave: false, effect: "none", label, title: "已在使用内置元数据，无需保存" };
+  }
+  // 内容与内置不同：写成自定义覆盖
+  return {
+    needsSave: true,
+    effect: "custom",
+    label: options.imported ? "更新此模型配置" : "保存为自定义配置",
+    title: options.imported
+      ? "保存当前内容为该模型的自定义配置"
+      : "当前为内置元数据预览的修改版；保存后将成为该模型的自定义配置，生成时覆盖内置",
+  };
+}
+
+/// 导入区四个按钮 + 状态行的唯一判定来源。
+/// 存在意义：把原先散在 JSX 里的四组显隐/置灰条件收成一處，使按钮「始终在同一
+/// 位置、只是能不能点」——不会再出现点一个键就少一个键的情况。
+export type ImportPanelControls = {
+  rematch: { disabled: boolean; title: string };
+  clear: { disabled: boolean; title: string };
+  cancel: { disabled: boolean; title: string };
+  save: { disabled: boolean; label: string; title: string };
+  status: ImportPanelStatus;
+};
+
+export type ImportPanelStatus = {
+  tone: "builtin" | "custom" | "fallback";
+  text: string;
+  title: string;
+};
+
+/// fallbackSlug：无内置元数据时生成所用的官方模板名，由调用方从后端
+/// fallback 字段实时取（不写死，随 bundled 静态资产首条演进）。
+export function importPanelControls(options: {
+  slug: string;
+  document: string;
+  imported: boolean;
+  parseOk: boolean;
+  matched: boolean;
+  /// 面板元数据与内置条目是否等价（由调用方用 metadataMatchesBuiltin 算出）
+  matchesBuiltin: boolean;
+  matchedSource?: string;
+  /// 无内置时的回退模板名；由调用方从后端 fallback 字段实时取，不写死。
+  fallbackSlug?: string;
+}): ImportPanelControls {
+  const fallbackSlug = options.fallbackSlug ?? "";
+  const slugBlank = !options.slug.trim();
+  const documentBlank = !options.document.trim();
+  const decision = importSaveDecision({
+    parseOk: options.parseOk,
+    documentBlank,
+    imported: options.imported,
+    matchesBuiltin: options.matchesBuiltin,
+  });
+  const save = {
+    disabled: !decision.needsSave,
+    label: decision.label,
+    title: decision.title,
+  };
+
+  return {
+    rematch: {
+      disabled: slugBlank || !options.matched,
+      title: slugBlank
+        ? "请先填写模型名称"
+        : (options.matched
+          ? "按当前模型名重新匹配内置元数据并重填下方内容"
+          : "当前模型名没有内置元数据可匹配"),
+    },
+    clear: {
+      disabled: !options.imported,
+      title: options.imported
+        ? "清除该模型的自定义元数据与未保存内容，生成时改用内置"
+        : "该模型没有自定义元数据可清除",
+    },
+    cancel: { disabled: false, title: "放弃本次在面板里的改动，不写入任何配置" },
+    save,
+    status: importPanelStatus(options, fallbackSlug, decision),
+  };
+}
+
+function importPanelStatus(
+  options: {
+    imported: boolean;
+    matched: boolean;
+    matchedSource?: string;
+  },
+  fallbackSlug: string,
+  decision: ImportSaveDecision,
+): ImportPanelStatus {
+  // matched 为真但来源缺失时不编造供应商名：只声称「内置」，具体来源留空。
+  const source = options.matchedSource || "内置";
+  const hasSource = Boolean(options.matched);
+  // 无内置时：命中不到就是回退，来源写清楚避免用户猜
+  const effectiveSource = hasSource ? source : fallbackSlug;
+
+  if (!hasSource && !options.imported) {
+    return {
+      tone: "fallback",
+      text: `无内置元数据，生成时回退 ${fallbackSlug}`,
+      title: `没有内置元数据可用，生成时回退 ${fallbackSlug} 官方模板；可粘贴供应商 JSON 或手动编辑`,
+    };
+  }
+
+  const savedLabel = options.imported
+    ? "当前使用自定义配置"
+    : `当前使用内置元数据（${effectiveSource}）`;
+  const liveHint = "窗口与压缩比随编辑实时生效，取消可撤销";
+
+  // 清空文本 / 内容与内置一致 且已有自定义：预告保存后会恢复内置
+  if (decision.effect === "builtin") {
+    return {
+      tone: "custom",
+      text: `${savedLabel} · 保存后恢复内置`,
+      title: `保存后清除该模型的自定义配置，改用${hasSource ? `内置元数据（${source}）` : `${fallbackSlug} 官方模板`}`,
+    };
+  }
+
+  // 内容与内置不同：保存后才变成自定义
+  if (decision.effect === "custom") {
+    const overridden = options.imported ? "覆盖当前自定义配置" : `覆盖内置（${effectiveSource}）`;
+    return {
+      tone: "custom",
+      text: `保存后：该模型改用这份自定义配置，${overridden}`,
+      title: `窗口与压缩比已实时写回模型行；元数据保存后覆盖${options.imported ? "当前自定义配置" : "内置"}`,
+    };
+  }
+
+  // 无可保存：如实说明当前就在用什么
+  return {
+    // 自定义优先：内置只是底层事实，用户看到的是「当前用它自己的配置」
+    tone: options.imported ? "custom" : (hasSource ? "builtin" : "fallback"),
+    text: `${savedLabel} · ${liveHint}`,
+    title: hasSource
+      ? `已匹配内置元数据（${source}）；不导入时生成也会自动使用内置数据`
+      : `没有内置元数据，生成时回退 ${fallbackSlug} 官方模板；当前为自定义配置`,
+  };
+}
+
 export function replaceModelMetadataForSlug(
   value: string,
   slug: string,
@@ -222,8 +577,10 @@ function unwrapJsonCompatibleDocument(source: string): string {
 // 供应商 Model Key 大小写不统一（如智谱 GLM-5.3-FlashX），上游 API 对大小写宽容，
 // 本地 slug 匹配若用严格相等会漏配元数据。
 function slugMatchesIgnoreCase(candidateSlug: unknown, targetSlug: string): boolean {
+  // targetSlug 允许是带 [1M] 后缀的模型行名：先剥成规范 slug 再比较，
+  // 否则带后缀的行名永远匹配不到不带后缀的文档条目。
   return typeof candidateSlug === "string"
-    && candidateSlug.toLowerCase() === targetSlug.toLowerCase();
+    && candidateSlug.toLowerCase() === modelSlugFromRowName(targetSlug).toLowerCase();
 }
 
 function documentCandidates(root: unknown): ModelMetadata[] | null {

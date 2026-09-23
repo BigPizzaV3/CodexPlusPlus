@@ -188,6 +188,34 @@
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
       "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "glm-5v-turbo",
+      "display_name": "GLM-5V-Turbo",
+      "description": "Zhipu native multimodal coding base model (2026-04), vision + coding, 200K context; not part of GLM Coding Plan",
+      "default_reasoning_level": "max",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Light reasoning" },
+        { "effort": "high", "description": "Enhanced reasoning" },
+        { "effort": "max", "description": "Deep reasoning (default)" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 7,
+      "base_instructions": "",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": false,
+      "apply_patch_tool_type": "freeform",
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 204800,
+      "max_context_window": 204800,
+      "max_output_tokens": 131072,
+      "effective_context_window_percent": 95,
+      "supports_parallel_tool_calls": true,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"]
     }
   ]
 }

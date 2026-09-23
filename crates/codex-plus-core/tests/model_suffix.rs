@@ -7,8 +7,22 @@ use codex_plus_core::model_suffix::{
     model_ui_metadata, parse_model_suffix,
 };
 
-/// CODEX_HOME 环境变量是进程级全局，运行时缓存测试必须串行执行。
-static RUNTIME_CACHE_ENV_LOCK: Mutex<()> = Mutex::new(());
+/// CODEX_HOME 是进程级环境变量，而 `model_suffix` 下面几乎所有公开 API 都会顺着
+/// `default_codex_home_dir()` 去读本机 models_cache.json。cargo test 默认按线程
+/// 并行跑这些测试，于是 A 测试设的临时 CODEX_HOME 会被 B 测试读到；一旦本机真有
+/// ~/.codex/models_cache.json，断言就会随机器、随调度顺序随机变红。
+///
+/// 所以这里不用「每个测试记得持锁」这种容易漏的约定，而是让每个会走查找链的测试
+/// 都持这把进程级锁。 poisoned 时仍交出内部数据：某条断言失败应当只失败自己，
+/// 而不是让同文件其它测试全部连锁 panic，把真实原因埋进一片 PoisonError 噪音里。
+struct SerializeCodexHomeTests;
+
+impl SerializeCodexHomeTests {
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
 
 /// 保存并恢复 CODEX_HOME 的守卫，参照 codex_home.rs 内部测试的模式。
 struct CodexHomeEnvGuard {
@@ -85,6 +99,7 @@ fn parse_suffix_rejects_zero_and_negative() {
 
 #[test]
 fn collect_entries_includes_current_model_and_strips_suffix() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     let mut windows = HashMap::new();
     windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
     let entries =
@@ -99,13 +114,20 @@ fn collect_entries_includes_current_model_and_strips_suffix() {
 
 #[test]
 fn collect_entries_deduplicates() {
-    let entries =
-        collect_catalog_entries("qwen3-coder\nqwen3-coder", &HashMap::new(), &HashMap::new(), "qwen3-coder");
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+    let entries = collect_catalog_entries(
+        "qwen3-coder
+qwen3-coder",
+        &HashMap::new(),
+        &HashMap::new(),
+        "qwen3-coder",
+    );
     assert_eq!(entries.len(), 1);
 }
 
 #[test]
 fn build_catalog_json_writes_context_window_and_strips_suffix() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     let mut windows = HashMap::new();
     windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
     windows.insert("claude-sonnet-4".to_string(), "200K".to_string());
@@ -125,6 +147,7 @@ fn build_catalog_json_writes_context_window_and_strips_suffix() {
 
 #[test]
 fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     let entries = collect_catalog_entries("qwen3-coder", &HashMap::new(), &HashMap::new(), "");
     let catalog = build_model_catalog_json(&entries, Some(272_000));
     assert!(catalog.contains(r#""slug": "qwen3-coder""#));
@@ -133,6 +156,7 @@ fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
 
 #[test]
 fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     let entries = collect_catalog_entries(
         "gpt-5.6-sol\ngpt-5.6-terra\ngpt-5.6-luna",
         &HashMap::new(),
@@ -182,7 +206,13 @@ fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
 
 #[test]
 fn build_catalog_json_preserves_template_responses_lite_behavior() {
-    let entries = collect_catalog_entries("official-model", &HashMap::new(), &HashMap::new(), "official-model");
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+    let entries = collect_catalog_entries(
+        "official-model",
+        &HashMap::new(),
+        &HashMap::new(),
+        "official-model",
+    );
     let template = serde_json::json!({
         "slug": "official-template",
         "supports_search_tool": true,
@@ -201,6 +231,7 @@ fn build_catalog_json_preserves_template_responses_lite_behavior() {
 
 #[test]
 fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
 
     assert!(requires_bundled_metadata_catalog("gpt-6-astra"));
@@ -310,6 +341,7 @@ fn gpt6_sol_luna_metadata_matches_official_efforts_fast_and_default_window() {
 
 #[test]
 fn model_ui_metadata_exposes_fast_service_tier_capability() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     let metadata = model_ui_metadata("gpt-5.6-sol").expect("Sol metadata should exist");
 
     assert_eq!(
@@ -321,6 +353,7 @@ fn model_ui_metadata_exposes_fast_service_tier_capability() {
 
 #[test]
 fn collect_entries_adopts_suffix_for_current_model_from_list() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     // 当前 model 本身无后缀，但 model_list 中靠后位置有同名带后缀条目。
     let mut windows = HashMap::new();
     windows.insert("deepseek-v4-pro".to_string(), "1M".to_string());
@@ -333,6 +366,7 @@ fn collect_entries_adopts_suffix_for_current_model_from_list() {
 
 #[test]
 fn collect_entries_prefers_later_suffix_for_duplicate_slug() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     // 同一 slug 先出现无后缀条目，后出现带后缀条目，应采纳后者窗口。
     let mut windows = HashMap::new();
     windows.insert("deepseek/deepseek-v4-flash".to_string(), "1M".to_string());
@@ -349,6 +383,7 @@ fn collect_entries_prefers_later_suffix_for_duplicate_slug() {
 
 #[test]
 fn collect_entries_prefers_later_suffix_when_reversed() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     // 同一 slug 先出现 [1M]，后出现 [200K]，后者应覆盖前者。
     let mut windows = HashMap::new();
     windows.insert("deepseek/deepseek-v4-flash".to_string(), "200K".to_string());
@@ -382,7 +417,7 @@ fn migrate_model_list_with_suffixes_splits_slug_and_window() {
 
 #[test]
 fn build_catalog_json_prefers_runtime_models_cache_entry() {
-    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     let temp = tempfile::tempdir().unwrap();
     let cache = serde_json::json!({
         "models": [{
@@ -418,7 +453,7 @@ fn build_catalog_json_prefers_runtime_models_cache_entry() {
 
 #[test]
 fn build_catalog_json_falls_back_to_bundled_without_runtime_cache() {
-    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(&temp).unwrap();
     let _guard = CodexHomeEnvGuard::set(temp.path());
@@ -437,6 +472,7 @@ fn build_catalog_json_falls_back_to_bundled_without_runtime_cache() {
 
 #[test]
 fn catalog_metadata_matches_slug_case_insensitively() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
 
     // 供应商 Model Key 大小写不统一（GLM-5.3-FlashX），界面填大写也应命中内置元数据。
@@ -448,10 +484,10 @@ fn catalog_metadata_matches_slug_case_insensitively() {
 
 #[test]
 fn bundled_template_matches_slug_case_insensitively() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     // codex bundled catalog 全小写 slug，界面填大写（GPT-5.4）也应命中模板：
     // 命中时保留官方 max_context_window 1000000，未命中回落首条模板的 272000。
     // 隔离 CODEX_HOME：否则查找链会先命中本机官方 models_cache.json，机器相关。
-    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
     let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
     let entries = collect_catalog_entries("GPT-5.4", &HashMap::new(), &HashMap::new(), "GPT-5.4");
     let catalog: serde_json::Value =
@@ -463,6 +499,7 @@ fn bundled_template_matches_slug_case_insensitively() {
 
 #[test]
 fn vendor_metadata_chain_matches_all_providers() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
 
     // 未配置窗口时，供应商元数据直接提供窗口与展示字段（#2191：未显式配置
@@ -525,6 +562,7 @@ fn effort_list(model: &serde_json::Value) -> Vec<&str> {
 
 #[test]
 fn vendor_metadata_chain_matches_case_insensitively() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     // 界面填大写供应商 slug（GLM-5.3）也应命中内置供应商元数据。
     let entries = collect_catalog_entries("GLM-5.3", &HashMap::new(), &HashMap::new(), "GLM-5.3");
     let catalog: serde_json::Value =
@@ -536,9 +574,9 @@ fn vendor_metadata_chain_matches_case_insensitively() {
 
 #[test]
 fn compat_overlay_composes_with_runtime_cache_base() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
     // 精调层与官方 App 热更新的冲突裁决：官方缓存做基座（未被精调覆盖的字段
     // 流入官方最新值），精调字段覆盖其上（产品特性不被官方数据冲掉）。
-    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let cache = serde_json::json!({
         "models": [{
@@ -565,4 +603,181 @@ fn compat_overlay_composes_with_runtime_cache_base() {
     assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
     // 官方流入：精调未定义的截断策略取缓存最新值
     assert_eq!(model["truncation_policy"]["limit"], 999);
+}
+
+#[test]
+fn builtin_model_metadata_matches_with_source() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+
+    // 供应商事实层：附带来源名
+    let kimi = builtin_model_metadata("kimi-k3").expect("kimi-k3 内置");
+    assert_eq!(kimi.source, "Kimi");
+    assert_eq!(kimi.entry["display_name"], "Kimi K3");
+    // 大小写不敏感 + [1M] 后缀剥除
+    let sol = builtin_model_metadata("GPT-5.6-SOL[1M]").expect("gpt-5.6-sol 内置");
+    assert_eq!(sol.source, "gpt-5.6 兼容");
+    assert_eq!(sol.entry["slug"], "gpt-5.6-sol");
+    // 官方 bundled 层
+    let official = builtin_model_metadata("gpt-5.5").expect("gpt-5.5 官方内置");
+    assert_eq!(official.source, "官方内置");
+    // 未命中 → None（生成时回退 gpt-5.5 模板）
+    assert!(builtin_model_metadata("unknown-model-xyz").is_none());
+    assert!(builtin_model_metadata("").is_none());
+}
+
+#[test]
+fn builtin_model_metadata_index_covers_all_embedded_entries() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+
+    let index = builtin_model_metadata_index();
+    // 60 条精调/供应商全量 + 官方 bundled 静态资产（随 sync_official_models.py
+    // 增长，与精调层重叠的官方 slug 以精调来源优先去重）——不锁死总数，
+    // 只断言结构完整与已知覆盖。
+    assert!(index.len() >= 60, "内置索引至少覆盖 60 条精调/供应商条目");
+    let mut seen = std::collections::HashSet::new();
+    for entry in &index {
+        let slug = entry["slug"].as_str().expect("slug");
+        assert!(seen.insert(slug.to_ascii_lowercase()), "slug 重复：{slug}");
+        assert!(entry["source"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+    for expected in [
+        "kimi-k3",
+        "gpt-5.6-sol",
+        "gpt-6-astra",
+        "gpt-5.5",
+        "deepseek-v4.1-flash",
+    ] {
+        assert!(
+            seen.contains(&expected.to_ascii_lowercase()),
+            "缺少 {expected}"
+        );
+    }
+    let kimi = index.iter().find(|e| e["slug"] == "kimi-k3").unwrap();
+    assert_eq!(kimi["source"], "Kimi");
+    assert_eq!(kimi["context_window"], 1_048_576);
+}
+
+#[test]
+fn builtin_model_metadata_hits_runtime_cache_layer() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+    // 运行时官方缓存（models_cache.json）命中的模型：来源标为官方内置，
+    // 且预填/查询用运行时的窗口数据而不是静态资产的。
+    // slug 必须避开 vendor 静态资产（vendor 层优先级高于运行时缓存）。
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path()).unwrap();
+    std::fs::write(
+        temp.path().join("models_cache.json"),
+        serde_json::json!({
+            "models": [{
+                "slug": "runtime-only-model",
+                "display_name": "Runtime Only Model",
+                "context_window": 1_048_222u64,
+                "max_context_window": 1_048_222u64,
+                "truncation_policy": { "mode": "tokens", "limit": 12345 }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+
+    let metadata = builtin_model_metadata("runtime-only-model").expect("运行时缓存命中");
+    assert_eq!(metadata.source, "官方内置");
+    assert_eq!(metadata.entry["display_name"], "Runtime Only Model");
+    // 运行时数据（非静态资产）被取到
+    assert_eq!(metadata.entry["truncation_policy"]["limit"], 12345);
+
+    // 索引同样收录运行时层 slug
+    let index = builtin_model_metadata_index();
+    assert!(
+        index.iter().any(|e| e["slug"] == "runtime-only-model"),
+        "索引应覆盖运行时官方缓存条目"
+    );
+}
+
+#[test]
+fn builtin_model_metadata_index_dedupes_case_variants_and_skips_invalid() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+    // 大小写变体去重 + 无 slug / 非对象条目跳过（脏数据防御）
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path()).unwrap();
+    std::fs::write(
+        temp.path().join("models_cache.json"),
+        serde_json::json!({
+            "models": [
+                { "slug": "Glm-5.3", "display_name": "case variant dup" },
+                { "display_name": "no slug, must be skipped" },
+                "not-an-object"
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+
+    let index = builtin_model_metadata_index();
+    // glm-5.3 静态层先命中（Kimi 等供应商顺序在前），大小写变体被去重
+    let glm: Vec<_> = index
+        .iter()
+        .filter(|e| {
+            e["slug"]
+                .as_str()
+                .is_some_and(|s| s.eq_ignore_ascii_case("glm-5.3"))
+        })
+        .collect();
+    assert_eq!(glm.len(), 1, "大小写变体只应保留首次命中的来源");
+    assert_eq!(glm[0]["source"], "GLM");
+}
+
+#[test]
+fn find_catalog_entry_prefers_exact_match_over_case_variant() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+    // 同一 catalog 同时存在 Foo 与 foo 时，查询 "Foo" 必须精确命中 Foo 本身，
+    // 不能被大小写不敏感回退带到 foo——这条优先级规则一旦改反（比如换成单一
+    // eq_ignore_ascii_case 扫描），用户配置会静默指向另一条元数据。
+    let models = vec![
+        serde_json::json!({"slug": "Foo", "display_name": "exact Foo"}),
+        serde_json::json!({"slug": "foo", "display_name": "lowercase foo"}),
+    ];
+    let hit = codex_plus_core::model_suffix::find_catalog_entry_for_test(&models, "Foo").unwrap();
+    assert_eq!(hit["display_name"], "exact Foo", "查询 Foo 应精确命中 Foo");
+    let hit_lower =
+        codex_plus_core::model_suffix::find_catalog_entry_for_test(&models, "foo").unwrap();
+    assert_eq!(
+        hit_lower["display_name"], "lowercase foo",
+        "查询 foo 应精确命中 foo"
+    );
+    // 大小写变体在精确未命中时仍可回退命中
+    let hit_mixed =
+        codex_plus_core::model_suffix::find_catalog_entry_for_test(&models, "FOO").unwrap();
+    assert_eq!(
+        hit_mixed["display_name"], "exact Foo",
+        "FOO 未精确命中时按出现顺序回退到首个大小写变体"
+    );
+}
+
+#[test]
+fn runtime_models_cache_entry_matches_slug_case_insensitively() {
+    let _codex_home_serial = SerializeCodexHomeTests::lock();
+    // 运行时官方缓存层也要走大小写不敏感匹配：供应商 Model Key 大小写不统一，
+    // 用户按供应商文档填大写（GPT-5.5-RUNTIME）时同样应命中缓存条目。
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path()).unwrap();
+    std::fs::write(
+        temp.path().join("models_cache.json"),
+        serde_json::json!({
+            "models": [{
+                "slug": "gpt-5.5-runtime",
+                "display_name": "GPT-5.5 Runtime Case Probe",
+                "context_window": 123_456u64
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+
+    let metadata = builtin_model_metadata("GPT-5.5-RUNTIME").expect("大写查询应命中运行时缓存");
+    assert_eq!(metadata.source, "官方内置");
+    assert_eq!(metadata.entry["display_name"], "GPT-5.5 Runtime Case Probe");
 }

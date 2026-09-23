@@ -30,7 +30,7 @@
     {
       "slug": "step-5-preview",
       "display_name": "Step-5-Preview",
-      "description": "StepFun flagship MoE model (600B/27B active) for agentic work, 1M context with vision input",
+      "description": "StepFun flagship MoE model (600B/27B active) for agentic work, 1M context with vision input (text, image and video)",
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         { "effort": "low", "description": "Light reasoning for Q&A, summarization and extraction" },
@@ -49,6 +49,7 @@
       "truncation_policy": { "mode": "bytes", "limit": 10000 },
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 65536,
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],
