@@ -178,6 +178,14 @@ detach_dmg() {
   local attempt
   local device_info
 
+  # target: /dev/disk4 或一个挂载点。判「设备是否仍注册」只在 /dev/* 时成立，
+  # 挂载点路径不会出现在 hdiutil info 的设备列里。
+  target_is_gone() {
+    [[ "$target" == /dev/* ]] || return 1
+    device_info="$(hdiutil info 2>/dev/null)" || return 1
+    ! printf '%s\n' "$device_info" | awk -v t="$target" '$1 == t { found = 1 } END { exit !found }'
+  }
+
   [ -z "$target" ] && return 0
   for attempt in 1 2 3 4; do
     if hdiutil detach "$target" >/dev/null 2>&1; then
@@ -186,21 +194,22 @@ detach_dmg() {
 
     # hdiutil can report a transient failure even though the device detached
     # while the command was returning. Treat an already-gone device as done.
-    if [[ "$target" == /dev/* ]] && device_info="$(hdiutil info 2>/dev/null)" &&
-      ! printf '%s\n' "$device_info" | awk -v target="$target" '$1 == target { found = 1 } END { exit !found }'; then
+    if target_is_gone; then
+      return 0
+    fi
+
+    # 普通 detach 失败后立刻补一次强制卸载：CI runner 上常见「卷已消失、
+    # 设备仍注册」的中间态，只靠普通的 detach 重试永远不会成功，必须 -force。
+    # 这一步曾在 e55c58b1 被移出循环，导致 macOS x64 打包稳定失败。
+    if hdiutil detach "$target" -force >/dev/null 2>&1; then
+      return 0
+    fi
+    if target_is_gone; then
       return 0
     fi
 
     sleep "$attempt"
   done
-
-  if hdiutil detach "$target" -force >/dev/null 2>&1; then
-    return 0
-  fi
-  if [[ "$target" == /dev/* ]] && device_info="$(hdiutil info 2>/dev/null)" &&
-    ! printf '%s\n' "$device_info" | awk -v target="$target" '$1 == target { found = 1 } END { exit !found }'; then
-    return 0
-  fi
 
   echo "error: failed to detach DMG device: $target" >&2
   return 1
