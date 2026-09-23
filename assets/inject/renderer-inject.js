@@ -3880,7 +3880,31 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
+    if (loaded) void installExternalApiQuotaGate();
     return loaded;
+  }
+
+  let externalApiQuotaGateAttempted = false;
+  async function installExternalApiQuotaGate() {
+    window.__codexPlusExternalApiQuotaAllowed = (hostId) =>
+      codexPlusBackendSettingsLoaded
+      && window.__codexPlusApiQuotaGate?.permitsExternalApi(codexPlusBackendSettings, hostId) === true;
+    if (externalApiQuotaGateAttempted || !window.__codexPlusApiQuotaGate) return;
+    externalApiQuotaGateAttempted = true;
+    try {
+      const url = codexAppAssetUrl("app-primary-") || await codexAppAssetUrlFromScriptText("app-primary-");
+      if (!url) return;
+      const response = await fetch(url);
+      if (!response.ok) return;
+      const location = window.__codexPlusApiQuotaGate.locate(await response.text(), url);
+      if (!location) return;
+      window.__codexPlusApiQuotaBreakpoint = {
+        ...location,
+        condition: window.__codexPlusApiQuotaGate.condition(location),
+      };
+    } catch {
+      // 客户端结构变更时保留原始门禁，不循环扫描或强行启用按钮。
+    }
   }
 
   function loadBackendSettingsForStartup(attempt = 0) {

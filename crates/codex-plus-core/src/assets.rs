@@ -470,7 +470,11 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&fast_startup).expect("fast startup config should serialize"),
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
-        renderer_script(),
+        format!(
+            "{}\n{}",
+            include_str!("../../../assets/inject/api-quota-gate.js"),
+            renderer_script()
+        ),
         stepwise_runtime,
         dream_skin_target_runtime,
     )

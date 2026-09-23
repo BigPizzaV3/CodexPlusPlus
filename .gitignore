@@ -26,6 +26,7 @@ pnpm-lock.yaml
 pnpm-workspace.yaml
 
 # project-specific
+/temp/
 .trae/
 plan.md
 plan_v2.md
