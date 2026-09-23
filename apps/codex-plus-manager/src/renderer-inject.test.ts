@@ -232,6 +232,9 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /tagName !== "ASIDE"/);
     assert.match(renderer, /rounded-3xl/);
     assert.match(renderer, /officialUsagePolicy\(\)\.hideAlerts/);
+    assert.match(renderer, /function codexPlusPublishUsageData/);
+    assert.match(renderer, /unlockSend/);
+    assert.doesNotMatch(renderer, /installExternalApiQuotaGate|__codexPlusApiQuotaBreakpoint|refreshComposers/);
   });
 
   // issue #2169：HTTP 回落成功不得掩盖桥接通道故障。桥接失败计数独立于后端状态，

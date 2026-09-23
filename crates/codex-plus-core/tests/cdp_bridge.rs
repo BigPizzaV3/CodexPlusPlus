@@ -622,12 +622,13 @@ fn usage_status_rewrite_targets_the_main_rate_limit_cache() {
 }
 
 #[test]
-fn official_usage_status_unlocks_every_official_login_and_hides_alerts_only_when_enabled() {
+fn official_usage_status_unlocks_external_relay_and_hides_alerts_only_when_enabled() {
     let cases = run_official_usage_status_harness();
 
     assert_eq!(cases["pureApiAllowed"], false);
     assert_eq!(cases["pureApiWarning"], "low");
-    assert_eq!(cases["officialAllowed"], true);
+    assert_eq!(cases["officialAllowed"], false);
+    assert_eq!(cases["officialUpstreamAllowed"], false);
     assert_eq!(cases["officialMixAllowed"], true);
     assert_eq!(cases["officialWarning"], "low");
     assert!(cases["officialModelPicker"].is_null());
@@ -646,9 +647,11 @@ fn official_usage_status_unlocks_every_official_login_and_hides_alerts_only_when
     assert_eq!(cases["unrelatedAllowed"], false);
     assert!(cases["openUnchanged"].as_bool().unwrap());
     assert_eq!(cases["imageQueryAllowed"], false);
-    assert_eq!(cases["mainQueryAllowed"], true);
+    assert_eq!(cases["mainQueryAllowed"], false);
     assert!(cases["mainQueryWarning"].is_null());
     assert_eq!(cases["mainQueryPercent"], 100);
+    assert_eq!(cases["publishedAllowed"], true);
+    assert_eq!(cases["imagePublishedAllowed"], false);
     assert_eq!(cases["invalidatedMain"], 1);
     assert_eq!(cases["invalidatedImage"], 0);
     assert_eq!(cases["imageKeyIgnored"], true);
@@ -717,10 +720,10 @@ const status = () => ({{
     primary_window: {{ used_percent: 100, reset_at: 1700000000 }},
   }},
 }});
-const profile = (relayMode, officialMixApiKey) => ({{
+const profile = (relayMode, officialMixApiKey, upstreamBaseUrl) => ({{
   relayProfilesEnabled: true,
   activeRelayId: "active",
-  relayProfiles: [{{ id: "active", relayMode, officialMixApiKey }}],
+  relayProfiles: [{{ id: "active", relayMode, officialMixApiKey, upstreamBaseUrl }}],
 }});
 const warningTitle = (value) => value?.rate_limit_warning?.title ?? null;
 
@@ -731,7 +734,9 @@ const pureApi = api.rewrite(status());
 api.setBackendSettings(profile("official", false));
 api.setHideAlerts(false);
 const official = api.rewrite(status());
-api.setBackendSettings(profile("official", true));
+api.setBackendSettings(profile("official", true, "https://api.openai.com/v1"));
+const officialUpstream = api.rewrite(status());
+api.setBackendSettings(profile("official", true, "https://proxy.example/v1"));
 const officialMix = api.rewrite(status());
 api.setHideAlerts(true);
 const hidden = api.rewrite(status());
@@ -751,6 +756,18 @@ const openUnchanged = api.rewrite(openStatus) === openStatus;
 
 let invalidatedMain = 0;
 let invalidatedImage = 0;
+function PublicationQuery(queryKey) {{
+  this.queryKey = queryKey;
+  this.state = {{ data: null }};
+  this.stored = null;
+}}
+PublicationQuery.prototype.setData = function(data) {{
+  this.stored = data;
+  this.state.data = data;
+  return data;
+}};
+const publicationQuery = new PublicationQuery(["rate-limit-status", "user-1"]);
+const imagePublicationQuery = new PublicationQuery(["rate-limit-status", "image-generation"]);
 const queries = [
   {{ queryKey: ["rate-limit-status", "user-1", "acct-1"], state: {{ data: status() }} }},
   {{ queryKey: ["rate-limit-status", "image-generation", "sig"], state: {{ data: status() }} }},
@@ -759,6 +776,7 @@ const client = {{
   getQueryCache() {{
     return {{
       findAll() {{ return queries; }},
+      getAll() {{ return [publicationQuery, imagePublicationQuery]; }},
       subscribe() {{ return () => {{}}; }},
     }};
   }},
@@ -780,11 +798,15 @@ api.install();
 api.setBackendSettings(profile("pureApi", false));
 api.setHideAlerts(false);
 api.install();
+api.setBackendSettings(profile("official", true, "https://proxy.example/v1"));
+publicationQuery.setData(status());
+imagePublicationQuery.setData(status());
 
 console.log(JSON.stringify({{
   pureApiAllowed: pureApi.rate_limit.allowed,
   pureApiWarning: warningTitle(pureApi),
   officialAllowed: official.rate_limit.allowed,
+  officialUpstreamAllowed: officialUpstream.rate_limit.allowed,
   officialMixAllowed: officialMix.rate_limit.allowed,
   officialWarning: warningTitle(official),
   officialModelPicker: official.model_picker_upsell,
@@ -806,6 +828,8 @@ console.log(JSON.stringify({{
   mainQueryAllowed: queries[0].state.data.rate_limit.allowed,
   mainQueryWarning: warningTitle(queries[0].state.data),
   mainQueryPercent: queries[0].state.data.rate_limit.primary_window.used_percent,
+  publishedAllowed: publicationQuery.stored?.rate_limit?.allowed ?? null,
+  imagePublishedAllowed: imagePublicationQuery.stored?.rate_limit?.allowed ?? null,
   invalidatedMain,
   invalidatedImage,
   imageKeyIgnored: api.isRateLimitQueryKey(["rate-limit-status", "image-generation"]) === false,
