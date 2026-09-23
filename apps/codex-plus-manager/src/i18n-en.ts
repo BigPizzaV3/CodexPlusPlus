@@ -786,8 +786,8 @@ export const EN_PLAIN: Record<string, string> = {
   "混入 API": "Mixed-in API",
   "混入 API KEY": "Mix in API KEY",
   "关闭官方低额度提示": "Hide official low-usage alert",
-  "关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。":
-    "When hidden, you can still view the official quota from the account menu in the lower-left corner of Codex.",
+  "只隐藏低额度和已用完提示，不改变发送限制。左下角账户菜单仍显示官方剩余额度。":
+    "Only hides low-usage and exhausted prompts. It does not change send restrictions. The account menu in Codex's lower-left corner still shows the official remaining quota.",
   "混入 API Key": "Mix in API Key",
   "添加供应商": "Add provider",
   "添加模型": "Add model",

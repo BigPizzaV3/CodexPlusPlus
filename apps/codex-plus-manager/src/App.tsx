@@ -7802,7 +7802,7 @@ function RelayProfileEditor({
               <span>{t("关闭官方低额度提示")}</span>
             </label>
             <p className="field-hint">
-              {t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}
+              {t("只隐藏低额度和已用完提示，不改变发送限制。左下角账户菜单仍显示官方剩余额度。")}
             </p>
           </Field>
         ) : null}

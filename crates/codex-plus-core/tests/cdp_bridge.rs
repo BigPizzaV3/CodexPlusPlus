@@ -610,13 +610,227 @@ fn official_login_usage_alert_setting_controls_renderer_injection() {
 }
 
 #[test]
-fn usage_alert_hider_uses_sidebar_semantics_instead_of_percentage_copy() {
+fn usage_status_rewrite_targets_the_main_rate_limit_cache() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("officialUsageAlertCards"));
-    assert!(script.contains("progress[max=\"100\"]"));
-    assert!(script.contains("dismiss usage alert|关闭使用量提醒"));
-    assert!(script.contains("codexPlusUsageAlertHidden"));
+    assert!(script.contains("function syncOfficialUsagePolicy"));
+    assert!(script.contains("image_generation_limit_reached"));
+    assert!(script.contains("queryKey[1] !== \"image-generation\""));
+    assert!(!script.contains("officialUsageAlertCards"));
+    assert!(!script.contains("codex-plus-hide-usage-alert"));
+    assert!(!script.contains("refreshOfficialUsageAlertVisibility"));
+}
+
+#[test]
+fn official_usage_status_unlocks_every_official_login_and_hides_alerts_only_when_enabled() {
+    let cases = run_official_usage_status_harness();
+
+    assert_eq!(cases["pureApiAllowed"], false);
+    assert_eq!(cases["pureApiWarning"], "low");
+    assert_eq!(cases["officialAllowed"], true);
+    assert_eq!(cases["officialMixAllowed"], true);
+    assert_eq!(cases["officialWarning"], "low");
+    assert!(cases["officialModelPicker"].is_null());
+    assert!(cases["hiddenTextUpsell"].is_null());
+    assert_eq!(cases["officialPercent"], 100);
+    assert!(cases["hiddenWarning"].is_null());
+    assert_eq!(cases["hiddenAllowed"], true);
+    assert_eq!(cases["hiddenPercent"], 100);
+    assert_eq!(cases["hiddenResetAt"], 1_700_000_000);
+    assert_eq!(cases["hiddenImageUpsell"], "image_generation_limit_reached");
+    assert!(cases["hiddenModelPicker"].is_null());
+    assert_eq!(cases["hiddenSpendReached"], true);
+    assert_eq!(cases["hiddenCredits"], false);
+    assert_eq!(cases["streamAllowed"], true);
+    assert_eq!(cases["streamId"], "stream-1");
+    assert_eq!(cases["unrelatedAllowed"], false);
+    assert!(cases["openUnchanged"].as_bool().unwrap());
+    assert_eq!(cases["imageQueryAllowed"], false);
+    assert_eq!(cases["mainQueryAllowed"], true);
+    assert!(cases["mainQueryWarning"].is_null());
+    assert_eq!(cases["mainQueryPercent"], 100);
+    assert_eq!(cases["invalidatedMain"], 1);
+    assert_eq!(cases["invalidatedImage"], 0);
+    assert_eq!(cases["imageKeyIgnored"], true);
+    assert_eq!(cases["plainKeyMatched"], true);
+    assert_eq!(cases["scopedKeyMatched"], true);
+}
+
+fn run_official_usage_status_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("usage-status-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }}, getAttribute() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_RATE_LIMIT_UNLOCK__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.MutationObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.ResizeObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.IntersectionObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{ getItem: () => null, setItem() {{}}, removeItem() {{}} }};
+globalThis.location = {{ href: "app://-/index.html", pathname: "/", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test" }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+require(scriptPath);
+const api = window.__codexPlusRateLimitUnlockTest;
+if (!api) throw new Error("usage status test api missing");
+
+const status = () => ({{
+  plan_type: "plus",
+  user_id: "user-1",
+  account_id: "acct-1",
+  rate_limit_reached_type: {{ type: "rate_limit_reached" }},
+  sidebar_usage_warnings: {{ default: {{ title: "low" }} }},
+  rate_limit_warning: {{ title: "low" }},
+  rate_limit_upsell: {{ banner_type: "image_generation_limit_reached", title: "image" }},
+  model_picker_upsell: {{ title: "picker" }},
+  spend_control: {{ reached: true }},
+  credits: {{ has_credits: false }},
+  rate_limit: {{
+    allowed: false,
+    limit_reached: true,
+    primary_window: {{ used_percent: 100, reset_at: 1700000000 }},
+  }},
+}});
+const profile = (relayMode, officialMixApiKey) => ({{
+  relayProfilesEnabled: true,
+  activeRelayId: "active",
+  relayProfiles: [{{ id: "active", relayMode, officialMixApiKey }}],
+}});
+const warningTitle = (value) => value?.rate_limit_warning?.title ?? null;
+
+api.setBackendSettings(profile("pureApi", true));
+api.setHideAlerts(true);
+const pureApi = api.rewrite(status());
+
+api.setBackendSettings(profile("official", false));
+api.setHideAlerts(false);
+const official = api.rewrite(status());
+api.setBackendSettings(profile("official", true));
+const officialMix = api.rewrite(status());
+api.setHideAlerts(true);
+const hidden = api.rewrite(status());
+const textBanner = api.rewrite({{
+  ...status(),
+  rate_limit_upsell: {{ banner_type: "plus_rate_limit_reached", title: "upgrade" }},
+}});
+const stream = api.rewrite({{ stream_id: "stream-1", usage: status() }});
+const unrelated = api.rewrite({{ ok: true, allowed: false }});
+const openStatus = {{
+  plan_type: "plus",
+  user_id: "user-1",
+  account_id: "acct-1",
+  rate_limit: {{ allowed: true, limit_reached: false, primary_window: {{ used_percent: 12, reset_at: 10 }} }},
+}};
+const openUnchanged = api.rewrite(openStatus) === openStatus;
+
+let invalidatedMain = 0;
+let invalidatedImage = 0;
+const queries = [
+  {{ queryKey: ["rate-limit-status", "user-1", "acct-1"], state: {{ data: status() }} }},
+  {{ queryKey: ["rate-limit-status", "image-generation", "sig"], state: {{ data: status() }} }},
+];
+const client = {{
+  getQueryCache() {{
+    return {{
+      findAll() {{ return queries; }},
+      subscribe() {{ return () => {{}}; }},
+    }};
+  }},
+  setQueryData(queryKey, updater) {{
+    const query = queries.find((item) => JSON.stringify(item.queryKey) === JSON.stringify(queryKey));
+    if (!query) return;
+    query.state.data = typeof updater === "function" ? updater(query.state.data) : updater;
+  }},
+  invalidateQueries(filter) {{
+    const key = filter?.queryKey || [];
+    if (key[1] === "image-generation") invalidatedImage += 1;
+    else invalidatedMain += 1;
+  }},
+}};
+window.__REACT_QUERY_CLIENT__ = client;
+api.setBackendSettings(profile("official", false));
+api.setHideAlerts(true);
+api.install();
+api.setBackendSettings(profile("pureApi", false));
+api.setHideAlerts(false);
+api.install();
+
+console.log(JSON.stringify({{
+  pureApiAllowed: pureApi.rate_limit.allowed,
+  pureApiWarning: warningTitle(pureApi),
+  officialAllowed: official.rate_limit.allowed,
+  officialMixAllowed: officialMix.rate_limit.allowed,
+  officialWarning: warningTitle(official),
+  officialModelPicker: official.model_picker_upsell,
+  hiddenTextUpsell: textBanner.rate_limit_upsell,
+  officialPercent: official.rate_limit.primary_window.used_percent,
+  hiddenWarning: warningTitle(hidden),
+  hiddenAllowed: hidden.rate_limit.allowed,
+  hiddenPercent: hidden.rate_limit.primary_window.used_percent,
+  hiddenResetAt: hidden.rate_limit.primary_window.reset_at,
+  hiddenImageUpsell: hidden.rate_limit_upsell?.banner_type ?? null,
+  hiddenModelPicker: hidden.model_picker_upsell,
+  hiddenSpendReached: hidden.spend_control.reached,
+  hiddenCredits: hidden.credits.has_credits,
+  streamAllowed: stream.usage.rate_limit.allowed,
+  streamId: stream.stream_id,
+  unrelatedAllowed: unrelated.allowed,
+  openUnchanged,
+  imageQueryAllowed: queries[1].state.data.rate_limit.allowed,
+  mainQueryAllowed: queries[0].state.data.rate_limit.allowed,
+  mainQueryWarning: warningTitle(queries[0].state.data),
+  mainQueryPercent: queries[0].state.data.rate_limit.primary_window.used_percent,
+  invalidatedMain,
+  invalidatedImage,
+  imageKeyIgnored: api.isRateLimitQueryKey(["rate-limit-status", "image-generation"]) === false,
+  plainKeyMatched: api.isRateLimitQueryKey(["rate-limit-status"]) === true,
+  scopedKeyMatched: api.isRateLimitQueryKey(["rate-limit-status", "user-1", "acct-1"]) === true,
+}}));
+process.exit(0);
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run official usage status harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON")
 }
 
 #[test]
