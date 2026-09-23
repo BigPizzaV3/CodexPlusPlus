@@ -6415,7 +6415,34 @@ select {
   grid-column: 1 / -1;
 }
 
+.relay-field-custom-headers {
+  grid-column: 1 / -1;
+}
+
 @media (max-width: 860px) {
+.relay-custom-headers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.relay-custom-header-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+}
+
+.relay-custom-headers-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.relay-custom-headers-error {
+  color: hsl(var(--destructive));
+}
+
   .relay-advanced-fields,
   .relay-api-fields,
   .relay-vlm-section {
