@@ -228,6 +228,9 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /function isOfficialLowQuotaSidebarCard/);
     assert.match(renderer, /function isOfficialLowQuotaComposerBanner/);
     assert.match(renderer, /upsell-banner-title-/);
+    assert.match(renderer, /function isOfficialLowQuotaComposerAside/);
+    assert.match(renderer, /tagName !== "ASIDE"/);
+    assert.match(renderer, /rounded-3xl/);
     assert.match(renderer, /officialUsagePolicy\(\)\.hideAlerts/);
   });
 

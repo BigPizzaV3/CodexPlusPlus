@@ -9800,6 +9800,10 @@
   }
 
   function isOfficialLowQuotaComposerBanner(node) {
+    return isOfficialLowQuotaUpsellBanner(node) || isOfficialLowQuotaComposerAside(node);
+  }
+
+  function isOfficialLowQuotaUpsellBanner(node) {
     if (node?.nodeType !== Node.ELEMENT_NODE || node.getAttribute("role") !== "status") return false;
     const labelledBy = node.getAttribute("aria-labelledby") || "";
     const describedBy = node.getAttribute("aria-describedby") || "";
@@ -9810,6 +9814,17 @@
       || content.includes("You're out of Codex and Work usage")
       || content.includes("立即升级以获取更多使用量")
       || content.includes("Upgrade for more now");
+  }
+
+  function isOfficialLowQuotaComposerAside(node) {
+    if (node?.nodeType !== Node.ELEMENT_NODE || node.tagName !== "ASIDE") return false;
+    const className = typeof node.className === "string" ? node.className : "";
+    if (!className.includes("rounded-3xl")) return false;
+    const content = node.textContent || "";
+    if (content.length > 400) return false;
+    return content.includes("Codex 和工作使用额度已用完")
+      || content.includes("You’re out of Codex and Work usage")
+      || content.includes("You're out of Codex and Work usage");
   }
 
   function isOfficialLowQuotaWindow(node) {
@@ -9829,9 +9844,9 @@
   }
 
   function syncOfficialUsageWindows(root = document.body) {
-    if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
+    if (typeof Node === "undefined" || !root || root.nodeType !== Node.ELEMENT_NODE) return;
     const hidden = officialUsagePolicy().hideAlerts === true;
-    const nodes = [root, ...root.querySelectorAll('[role="status"]')];
+    const nodes = [root, ...root.querySelectorAll('[role="status"], aside')];
     for (const node of nodes) setOfficialUsageWindowHidden(node, hidden);
   }
 
