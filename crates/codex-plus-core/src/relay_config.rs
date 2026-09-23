@@ -456,9 +456,10 @@ pub fn apply_relay_config_to_home_with_session_provider(
         true,
         session_provider,
     )?;
-    let auth_contents = serde_json::to_string_pretty(&json!({
-        "OPENAI_API_KEY": bearer_token
-    }))?;
+    // 保留 live auth.json 里已有的其它凭据（尤其是官方 OAuth `tokens`）：
+    // 整体覆盖成只含代理 Key 的 JSON 会清掉登录态，重启后 Codex 退回登录页
+    // （issue #1604 / PR #1813 的数据完整性风险）。
+    let auth_contents = auth_contents_with_proxy_key(home, "", bearer_token)?;
     let backup_path =
         write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
     let status = relay_config_status_from_home(home);
@@ -555,7 +556,18 @@ pub fn apply_relay_profile_files_to_home_with_context(
             apply_model_catalog_to_config(home, profile, &config_with_limits)?;
         let compatible_config =
             apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
-        apply_relay_files_to_home(home, &compatible_config, &profile.auth_contents)
+        // 聚合 profile 的快照里没有凭据，必须现生成一份含代理 token 的合法 JSON，
+        // 否则会把 auth.json 写成空文件（issue #1604）。
+        let auth_contents = if profile.relay_mode == crate::settings::RelayMode::Aggregate {
+            auth_contents_with_proxy_key(
+                home,
+                &profile.auth_contents,
+                &relay_profile_api_key(profile),
+            )?
+        } else {
+            profile.auth_contents.clone()
+        };
+        apply_relay_files_to_home(home, &compatible_config, &auth_contents)
     })
 }
 
@@ -710,6 +722,16 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
 
         if profile.relay_mode == crate::settings::RelayMode::PureApi {
             apply_relay_files_to_home(home, &compatible_config, &profile.auth_contents)
+        } else if profile.relay_mode == crate::settings::RelayMode::Aggregate {
+            // 聚合模式的实际请求发往本地代理，它需要 API 模式的凭据。
+            // 不能走 Official 分支删 OPENAI_API_KEY，否则 auth.json 会被清成空文件/空对象，
+            // Codex 判定未登录而弹登录页（issue #1604）。
+            let auth_contents = auth_contents_with_proxy_key(
+                home,
+                &profile.auth_contents,
+                &relay_profile_api_key(profile),
+            )?;
+            apply_relay_files_to_home(home, &compatible_config, &auth_contents)
         } else {
             let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
             apply_relay_files_to_home(home, &compatible_config, &auth_contents)
@@ -3089,6 +3111,63 @@ fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow:
         auth_contents.to_string()
     };
     remove_openai_api_key_from_auth_contents(&source)
+}
+
+/// 生成写入 live 的 auth.json 内容：把本地代理的 bearer token 放进 `OPENAI_API_KEY`，
+/// 同时保留已有凭据（官方 OAuth `tokens` 等）。聚合切换与代理注入共用（issue #1604）。
+///
+/// 来源优先级：**live 优先**，profile 快照只在 live 为空或损坏时回退——Codex 运行中可能
+/// 刚刷新过 OAuth token，用旧快照回退会静默覆盖更新的凭据。
+/// 因此：1) 不清掉 live 里已有的其它凭据；2) 输出永远是合法 JSON 对象，绝不写空文件
+/// （Codex 解析空文件会报 EOF 并退回登录页）；3) live 与快照都不可用时直接报错中止，
+/// 不静默覆盖用户凭据。
+fn auth_contents_with_proxy_key(
+    home: &Path,
+    auth_contents: &str,
+    bearer_token: &str,
+) -> anyhow::Result<String> {
+    let auth_path = home.join("auth.json");
+    let live = read_optional_text(&auth_path)?;
+    if let Some(merged) = merge_proxy_key_into_auth_json(&live, bearer_token) {
+        return Ok(merged);
+    }
+    // live 为空或损坏时才退回已验证的 profile 快照。
+    if let Some(merged) = merge_proxy_key_into_auth_json(auth_contents, bearer_token) {
+        return Ok(merged);
+    }
+    if !live.trim().is_empty() {
+        anyhow::bail!(
+            "{} 不是有效 JSON 对象，已停止切换以避免覆盖当前登录凭据",
+            auth_path.display()
+        );
+    }
+    if !auth_contents.trim().is_empty() {
+        anyhow::bail!(
+            "供应商快照里的 auth.json 不是有效 JSON 对象，已停止切换以避免写入损坏内容"
+        );
+    }
+    // 两边都没有凭据：生成只含代理 token 的合法 JSON，绝不产出空文件。
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&json!({ "OPENAI_API_KEY": bearer_token }))?
+    ))
+}
+
+/// 把代理 token 合进一份 auth.json 文本；来源为空或不是 JSON 对象时返回 None，
+/// 由调用方决定是报错还是换一份来源。
+fn merge_proxy_key_into_auth_json(source: &str, bearer_token: &str) -> Option<String> {
+    if source.trim().is_empty() {
+        return None;
+    }
+    let mut value = serde_json::from_str::<Value>(source).ok()?;
+    let object = value.as_object_mut()?;
+    object.insert(
+        "OPENAI_API_KEY".to_string(),
+        Value::String(bearer_token.to_string()),
+    );
+    serde_json::to_string_pretty(&value)
+        .ok()
+        .map(|text| format!("{text}\n"))
 }
 
 fn codex_auth_api_key(auth_contents: &str) -> Option<String> {

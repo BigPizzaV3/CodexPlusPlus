@@ -7161,6 +7161,42 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
+    /// 回归（issue #1604）：用户点「重启 Codex++」走的就是这条同步路径。
+    /// 现场遗留的 0 字节 auth.json 必须被修复成合法 JSON，否则仍然停在登录页。
+    #[test]
+    fn active_aggregate_sync_repairs_empty_auth_json() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "").unwrap();
+        let settings = BackendSettings {
+            active_relay_id: "aggregate".to_string(),
+            active_aggregate_relay_id: "aggregate".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "aggregate".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Aggregate,
+                ..RelayProfile::default()
+            }],
+            aggregate_relay_profiles: vec![codex_plus_core::settings::AggregateRelayProfile {
+                id: "aggregate".to_string(),
+                name: "Aggregate".to_string(),
+                session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
+                strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
+                members: Vec::new(),
+                routes: Vec::new(),
+            }],
+            ..BackendSettings::default()
+        };
+
+        sync_active_relay_to_home(&settings, temp.path()).unwrap();
+
+        let raw = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+        let auth: serde_json::Value =
+            serde_json::from_str(&raw).expect("重启同步后 auth.json 必须是合法 JSON");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|item| item.as_str()),
+            Some("codex-plus-aggregate")
+        );
+    }
+
     fn failed_active_relay_sync_does_not_spawn_or_change_live_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
