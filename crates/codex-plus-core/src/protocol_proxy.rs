@@ -1573,11 +1573,8 @@ fn with_relay_auth(
     request: reqwest::RequestBuilder,
     relay: &crate::settings::RelayProfile,
 ) -> reqwest::RequestBuilder {
-    if relay.uses_no_auth() {
-        request
-    } else {
-        request.bearer_auth(relay.api_key.trim())
-    }
+    // 认证（API Key / 无认证）+ 供应商自定义请求头，统一在 relay_headers 里决定优先级。
+    crate::relay_headers::apply(request, relay)
 }
 
 fn conversation_id_from_responses_request(body: &Value) -> Option<String> {
@@ -5697,4 +5694,66 @@ fn is_openai_o_series(model: &str) -> bool {
             .as_bytes()
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+/// 供应商自定义请求头必须真正写进发往上游的请求（issue #1685）。
+#[cfg(test)]
+mod relay_custom_header_tests {
+    use super::*;
+    use crate::settings::{RelayHeaderKeyValue, RelayMode, RelayProfile};
+
+    fn header(key: &str, value: &str) -> RelayHeaderKeyValue {
+        RelayHeaderKeyValue {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn relay_with(headers: Vec<RelayHeaderKeyValue>) -> RelayProfile {
+        RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            api_key: "sk-upstream".to_string(),
+            custom_headers: headers,
+            ..RelayProfile::default()
+        }
+    }
+
+    fn build_upstream_request(relay: &RelayProfile) -> reqwest::Request {
+        upstream_request_builder(
+            reqwest::Client::new(),
+            "http://upstream.example/v1/responses",
+            relay,
+            false,
+            &serde_json::json!({ "model": "m" }),
+        )
+        .build()
+        .unwrap()
+    }
+
+    #[test]
+    fn upstream_request_carries_custom_headers() {
+        let request = build_upstream_request(&relay_with(vec![header("X-Tenant", "acme")]));
+        assert_eq!(request.headers().get("x-tenant").unwrap(), "acme");
+        assert_eq!(
+            request.headers().get("authorization").unwrap(),
+            "Bearer sk-upstream"
+        );
+    }
+
+    /// 代理路径与测试连接、模型列表一致：显式 Authorization 优先于 API Key。
+    #[test]
+    fn upstream_request_prefers_custom_authorization() {
+        let request = build_upstream_request(&relay_with(vec![header(
+            "Authorization",
+            "Bearer explicit",
+        )]));
+        assert_eq!(
+            request.headers().get_all("authorization").iter().count(),
+            1
+        );
+        assert_eq!(
+            request.headers().get("authorization").unwrap(),
+            "Bearer explicit"
+        );
+    }
 }

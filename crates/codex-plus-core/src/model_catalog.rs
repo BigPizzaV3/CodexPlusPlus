@@ -25,6 +25,8 @@ struct ModelSource {
     name: String,
     base_url: String,
     api_key: String,
+    /// 供应商自定义请求头（issue #1685）。非供应商来源为空。
+    headers: Vec<crate::settings::RelayHeaderKeyValue>,
 }
 
 #[derive(Debug, Default)]
@@ -429,6 +431,7 @@ fn model_sources_from_environment(
         } else {
             api_key
         },
+        headers: Vec::new(),
     }]
 }
 
@@ -465,6 +468,7 @@ fn model_source_from_config(
         },
         base_url,
         api_key,
+        headers: Vec::new(),
     })
 }
 
@@ -543,9 +547,11 @@ async fn fetch_models_from_source_with_timeout(
     let mut request = client
         .get(&endpoint)
         .header(reqwest::header::ACCEPT, "application/json");
-    if !source.api_key.is_empty() {
+    // 与协议代理、供应商测试共用 relay_headers：显式 Authorization 优先于 API Key。
+    if !source.api_key.is_empty() && !crate::relay_headers::has_authorization(&source.headers) {
         request = request.bearer_auth(&source.api_key);
     }
+    request = crate::relay_headers::apply_headers(request, &source.headers);
 
     match tokio::time::timeout(timeout, async move {
         let response = request.send().await?;
@@ -721,6 +727,7 @@ pub async fn fetch_relay_profile_model_ids(
             profile.upstream_base_url.trim().to_string()
         },
         api_key: profile.api_key.trim().to_string(),
+        headers: profile.custom_headers.clone(),
     };
     if source.base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
@@ -1174,6 +1181,7 @@ mod model_fetch_tests {
             name: "Test".to_string(),
             base_url: format!("http://{address}"),
             api_key: "key".to_string(),
+            headers: Vec::new(),
         };
         let (_, status) = fetch_models_from_source_with_timeout(
             &client,

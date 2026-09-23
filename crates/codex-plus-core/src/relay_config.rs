@@ -848,14 +848,9 @@ pub async fn test_relay_profile(
     }
 
     let payload = relay_profile_test_payload(profile.protocol, test_model);
-    let mut request = client
-        .post(&endpoint)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&payload);
-    if !profile.uses_no_auth() {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send().await?;
+    let response = relay_test_request(&client, &endpoint, profile, api_key, &payload)
+        .send()
+        .await?;
     let http_status = response.status().as_u16();
 
     // 如果 404 且 base_url 末尾没有 /v1，尝试自动补 /v1 后再发一次。
@@ -867,14 +862,9 @@ pub async fn test_relay_profile(
             RelayProtocol::Responses => format!("{v1_url}/responses"),
             RelayProtocol::ChatCompletions => format!("{v1_url}/chat/completions"),
         };
-        let mut request = client
-            .post(&v1_endpoint)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&payload);
-        if !profile.uses_no_auth() {
-            request = request.bearer_auth(api_key);
-        }
-        let v1_response = request.send().await?;
+        let v1_response = relay_test_request(&client, &v1_endpoint, profile, api_key, &payload)
+            .send()
+            .await?;
         let v1_status = v1_response.status().as_u16();
         if v1_status < 400 {
             let response_text = v1_response.text().await.unwrap_or_default();
@@ -895,6 +885,26 @@ pub async fn test_relay_profile(
         endpoint,
         response_preview: response_text.chars().take(320).collect(),
     })
+}
+
+/// 供应商测试请求：Content-Type + 认证 + 供应商自定义请求头。
+///
+/// 自定义头走 `relay_headers`，与协议代理、模型列表共用同一套优先级与过滤规则，
+/// 避免三处行为不一致（issue #1685）。
+fn relay_test_request(
+    client: &reqwest::Client,
+    endpoint: &str,
+    profile: &RelayProfile,
+    api_key: &str,
+    payload: &Value,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .post(endpoint)
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if !profile.uses_no_auth() && !crate::relay_headers::has_authorization(&profile.custom_headers) {
+        request = request.bearer_auth(api_key);
+    }
+    crate::relay_headers::apply_headers(request, &profile.custom_headers).json(payload)
 }
 
 fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
@@ -2274,6 +2284,22 @@ fn apply_model_catalog_to_config(
     Ok(normalize_optional_toml(doc))
 }
 
+/// 自定义请求头条数上限：防止设置文件被撑爆以及表单渲染卡顿。
+const MAX_RELAY_CUSTOM_HEADERS: usize = 64;
+
+/// 保存前规范化自定义请求头：去掉空行、压缩首尾空白、并做结构校验。
+///
+/// 校验规则统一在 `relay_headers` 里，测试连接 / 模型列表 / 协议代理三处共用。
+fn normalize_relay_headers(
+    headers: &mut Vec<crate::settings::RelayHeaderKeyValue>,
+) -> anyhow::Result<()> {
+    *headers = crate::relay_headers::normalized(headers);
+    if headers.len() > MAX_RELAY_CUSTOM_HEADERS {
+        anyhow::bail!("自定义请求头最多 {MAX_RELAY_CUSTOM_HEADERS} 条");
+    }
+    crate::relay_headers::validate(headers)
+}
+
 fn parse_model_string_map(
     value: &str,
     field_name: &str,
@@ -3328,6 +3354,8 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
             }
         })
         .collect();
+    normalize_relay_headers(&mut profile.custom_headers)?;
+
     if profile.model_list.contains('[') {
         let (clean_list, migrated_windows) =
             crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);

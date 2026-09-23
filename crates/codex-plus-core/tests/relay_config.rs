@@ -17,6 +17,44 @@ use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
 };
 
+/// 回归（issue #1685）：自定义请求头在保存时做结构校验，传输头不允许覆盖。
+#[test]
+fn normalize_relay_profile_rejects_forbidden_custom_headers() {
+    let mut profile = RelayProfile {
+        custom_headers: vec![codex_plus_core::settings::RelayHeaderKeyValue {
+            key: "Host".to_string(),
+            value: "evil.example".to_string(),
+        }],
+        ..RelayProfile::default()
+    };
+
+    let error = normalize_relay_profile_for_storage(&mut profile).unwrap_err();
+    assert!(format!("{error:#}").contains("不允许覆盖"));
+}
+
+/// 回归（issue #1685）：合法自定义头保留，空行被丢掉，首尾空白被压缩。
+#[test]
+fn normalize_relay_profile_keeps_custom_headers() {
+    let mut profile = RelayProfile {
+        custom_headers: vec![
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: " X-Tenant ".to_string(),
+                value: " acme ".to_string(),
+            },
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: String::new(),
+                value: String::new(),
+            },
+        ],
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+    assert_eq!(profile.custom_headers.len(), 1);
+    assert_eq!(profile.custom_headers[0].key, "X-Tenant");
+    assert_eq!(profile.custom_headers[0].value, "acme");
+}
+
 fn write_remote_plugin_marketplace_snapshot(home: &std::path::Path) {
     let root = home.join(".tmp").join("plugins-remote");
     std::fs::create_dir_all(root.join(".agents").join("plugins")).unwrap();
