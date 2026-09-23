@@ -3904,8 +3904,11 @@
     try {
       const previousConversationView = !!codexPlusSettings().conversationView;
       const loaded = await loadBackendSettingsState();
-      if (loaded && previousConversationView !== !!codexPlusSettings().conversationView) {
-        refreshConversationView();
+      if (loaded) {
+        installOfficialMixRateLimitUnlock();
+        if (previousConversationView !== !!codexPlusSettings().conversationView) {
+          refreshConversationView();
+        }
       }
     } finally {
       syncBackendSettingsInFlight = false;
@@ -9763,6 +9766,7 @@
   function scanLightweight() {
     installStyle();
     refreshOfficialUsageAlertVisibility();
+    installOfficialMixRateLimitUnlock();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
     installCodexRemoteSessionRecoveryListener();
@@ -9785,6 +9789,213 @@
     installThreadScrollRouteHooks();
     scheduleThreadScrollSync(true);
     refreshCodexServiceTierControls();
+  }
+
+  function officialMixRateLimitUnlockEnabled() {
+    const profile = codexRemoteSessionActiveProfile();
+    return String(profile?.relayMode || "") === "official" && !!profile?.officialMixApiKey;
+  }
+
+  function isOfficialUsageStatus(value) {
+    if (!value || typeof value !== "object") return false;
+    const rateLimit = value.rate_limit;
+    if (!rateLimit || typeof rateLimit !== "object" || typeof rateLimit.allowed !== "boolean") return false;
+    return typeof value.plan_type === "string"
+      || typeof value.user_id === "string"
+      || typeof value.account_id === "string";
+  }
+
+  function officialRateLimitBlocksComposer(rateLimit) {
+    return rateLimit.allowed !== true || rateLimit.limit_reached === true;
+  }
+
+  // 26.917 有两道锁：hardBlocked 只看 rate_limit.allowed，uma() 则在
+  // rate_limit_reached_type 非空时直接判死。混入 key 不消耗官方额度，
+  // 所以这两处都放开；用量百分比仍留给侧边栏展示。
+  function officialUsageStatusBlocksComposer(value) {
+    if (value?.rate_limit_reached_type != null) return true;
+    const rateLimit = value?.rate_limit;
+    return !!rateLimit && typeof rateLimit === "object" && officialRateLimitBlocksComposer(rateLimit);
+  }
+
+  function unlockedOfficialUsageStatus(value) {
+    if (!isOfficialUsageStatus(value) || !officialUsageStatusBlocksComposer(value)) return null;
+    return {
+      ...value,
+      rate_limit_reached_type: null,
+      rate_limit: {
+        ...value.rate_limit,
+        allowed: true,
+        limit_reached: false,
+      },
+    };
+  }
+
+  function unlockOfficialUsagePayloadInPlace(value) {
+    if (!value || typeof value !== "object") return false;
+    const targets = [value];
+    if (value.usage && value.usage !== value) targets.push(value.usage);
+    let changed = false;
+    for (const target of targets) {
+      const next = unlockedOfficialUsageStatus(target);
+      if (!next) continue;
+      target.rate_limit = next.rate_limit;
+      target.rate_limit_reached_type = null;
+      changed = true;
+    }
+    return changed;
+  }
+
+  function isComposerRateLimitQueryKey(queryKey) {
+    return Array.isArray(queryKey)
+      && queryKey[0] === "rate-limit-status"
+      && queryKey[1] !== "image-generation";
+  }
+
+  function looksLikeQueryClient(value) {
+    return !!value
+      && typeof value.getQueryCache === "function"
+      && typeof value.setQueryData === "function";
+  }
+
+  function queryClientFromFiber(fiber) {
+    const seen = new Set();
+    const stack = [fiber];
+    let visited = 0;
+    while (stack.length && visited < 8000) {
+      const node = stack.pop();
+      if (!node || typeof node !== "object" || seen.has(node)) continue;
+      seen.add(node);
+      visited += 1;
+      const props = node.memoizedProps || node.pendingProps;
+      if (looksLikeQueryClient(props?.client)) return props.client;
+      if (looksLikeQueryClient(props?.value)) return props.value;
+      if (looksLikeQueryClient(node.stateNode)) return node.stateNode;
+      const state = node.memoizedState;
+      if (state && typeof state === "object" && looksLikeQueryClient(state.memoizedState)) return state.memoizedState;
+      if (node.child) stack.push(node.child);
+      if (node.sibling) stack.push(node.sibling);
+    }
+    return null;
+  }
+
+  let officialMixCachedQueryClient = null;
+
+  function findCodexQueryClient() {
+    const explicit = window.__REACT_QUERY_CLIENT__ || window.__codexQueryClient;
+    if (looksLikeQueryClient(explicit)) return explicit;
+    if (looksLikeQueryClient(officialMixCachedQueryClient)) return officialMixCachedQueryClient;
+    const roots = [document.getElementById?.("root"), document.body, document.documentElement].filter(Boolean);
+    for (const root of roots) {
+      let key = "";
+      try {
+        key = Object.keys(root).find((name) => name.startsWith("__reactContainer$") || name.startsWith("__reactFiber$")) || "";
+      } catch {
+        key = "";
+      }
+      if (!key) continue;
+      let fiber = root[key];
+      if (fiber?.stateNode?.current) fiber = fiber.stateNode.current;
+      const client = queryClientFromFiber(fiber);
+      if (client) {
+        officialMixCachedQueryClient = client;
+        return client;
+      }
+    }
+    return null;
+  }
+
+  function composerRateLimitQueries(client) {
+    const cache = client.getQueryCache?.();
+    if (cache && typeof cache.findAll === "function") {
+      return cache.findAll({ queryKey: ["rate-limit-status"] }).filter((query) => isComposerRateLimitQueryKey(query?.queryKey));
+    }
+    if (typeof client.getQueriesData === "function") {
+      return client.getQueriesData({ queryKey: ["rate-limit-status"] })
+        .filter(([queryKey]) => isComposerRateLimitQueryKey(queryKey))
+        .map(([queryKey, data]) => ({ queryKey, state: { data } }));
+    }
+    return [];
+  }
+
+  let officialMixRateLimitRewriteDepth = 0;
+  let officialMixRateLimitUnlockWasEnabled = false;
+
+  function rewriteOfficialRateLimitQuery(client, queryKey, data) {
+    if (!officialMixRateLimitUnlockEnabled() || officialMixRateLimitRewriteDepth > 0) return false;
+    const next = unlockedOfficialUsageStatus(data);
+    if (!next || typeof client.setQueryData !== "function") return false;
+    officialMixRateLimitRewriteDepth += 1;
+    try {
+      client.setQueryData(queryKey, next);
+    } finally {
+      officialMixRateLimitRewriteDepth -= 1;
+    }
+    return true;
+  }
+
+  function rewriteCachedOfficialRateLimits(client) {
+    if (!client || !officialMixRateLimitUnlockEnabled()) return;
+    for (const query of composerRateLimitQueries(client)) {
+      rewriteOfficialRateLimitQuery(client, query.queryKey, query.state?.data);
+    }
+  }
+
+  function installOfficialUsageJsonParsePatch() {
+    if (JSON.parse.__codexPlusOfficialUsageUnlock) return;
+    const originalParse = JSON.parse;
+    const patchedParse = function codexPlusOfficialUsageJsonParse(text, reviver) {
+      const value = originalParse.call(this, text, reviver);
+      try {
+        if (officialMixRateLimitUnlockEnabled()) unlockOfficialUsagePayloadInPlace(value);
+      } catch {
+      }
+      return value;
+    };
+    patchedParse.__codexPlusOfficialUsageUnlock = true;
+    JSON.parse = patchedParse;
+  }
+
+  function subscribeOfficialRateLimitQueryClient(client) {
+    if (!client || client.__codexPlusRateLimitUnlockSubscribed) return;
+    const cache = client.getQueryCache?.();
+    if (!cache || typeof cache.subscribe !== "function") return;
+    cache.subscribe((event) => {
+      if (!officialMixRateLimitUnlockEnabled()) return;
+      const query = event?.query;
+      if (!isComposerRateLimitQueryKey(query?.queryKey)) return;
+      rewriteOfficialRateLimitQuery(client, query.queryKey, query.state?.data);
+    });
+    client.__codexPlusRateLimitUnlockSubscribed = true;
+  }
+
+  function installOfficialMixRateLimitUnlock() {
+    installOfficialUsageJsonParsePatch();
+    const enabled = officialMixRateLimitUnlockEnabled();
+    const client = findCodexQueryClient();
+    if (enabled) {
+      subscribeOfficialRateLimitQueryClient(client);
+      rewriteCachedOfficialRateLimits(client);
+    } else if (officialMixRateLimitUnlockWasEnabled && client && typeof client.invalidateQueries === "function") {
+      try {
+        client.invalidateQueries({ queryKey: ["rate-limit-status"] });
+      } catch {
+      }
+    }
+    officialMixRateLimitUnlockWasEnabled = enabled;
+  }
+
+  if (window.__CODEX_PLUS_TEST_RATE_LIMIT_UNLOCK__) {
+    window.__codexPlusRateLimitUnlockTest = {
+      setBackendSettings: (settings) => {
+        codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      },
+      install: () => installOfficialMixRateLimitUnlock(),
+      enabled: () => officialMixRateLimitUnlockEnabled(),
+      isRateLimitQueryKey: (queryKey) => isComposerRateLimitQueryKey(queryKey),
+      unlockedStatus: (value) => unlockedOfficialUsageStatus(value),
+      parse: (text) => JSON.parse(text),
+    };
   }
 
   function officialUsageAlertHidden() {

@@ -620,6 +620,192 @@ fn usage_alert_hider_uses_sidebar_semantics_instead_of_percentage_copy() {
 }
 
 #[test]
+fn official_mix_unlocks_local_composer_when_official_quota_is_exhausted() {
+    let cases = run_official_mix_rate_limit_unlock_harness();
+
+    assert_eq!(cases["officialWithoutMixAllowed"], false);
+    assert_eq!(cases["officialMixAllowed"], true);
+    assert_eq!(cases["officialMixLimitReached"], false);
+    assert_eq!(cases["officialMixUsedPercent"], 100);
+    assert_eq!(cases["officialWithoutMixReachedType"], "rate_limit_reached");
+    assert!(cases["officialMixReachedType"].is_null());
+    assert!(cases["typeOnlyCleared"].as_bool().unwrap());
+    assert_eq!(cases["pureApiAllowed"], false);
+    assert_eq!(cases["unrelatedUntouched"], true);
+    assert_eq!(cases["streamUsageAllowed"], true);
+    assert_eq!(cases["imageQueryUntouched"], true);
+    assert_eq!(cases["mainQueryAllowed"], true);
+    assert_eq!(cases["mainQueryUsedPercent"], 100);
+    assert!(cases["mainQueryReachedType"].is_null());
+    assert_eq!(cases["imageQueryReachedType"], "rate_limit_reached");
+    assert_eq!(cases["setQueryDataCount"], 1);
+    assert_eq!(cases["alreadyOpenSkipped"], true);
+    assert_eq!(cases["imageKeyIgnored"], true);
+    assert_eq!(cases["plainKeyMatched"], true);
+    assert_eq!(cases["scopedKeyMatched"], true);
+    assert_eq!(cases["invalidatedAfterDisable"], 1);
+}
+
+fn run_official_mix_rate_limit_unlock_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("rate-limit-unlock-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }}, getAttribute() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_RATE_LIMIT_UNLOCK__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.MutationObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.ResizeObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.IntersectionObserver = class {{ observe() {{}} disconnect() {{}} }};
+globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{ getItem: () => null, setItem() {{}}, removeItem() {{}} }};
+globalThis.location = {{ href: "app://-/index.html", pathname: "/", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test" }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+require(scriptPath);
+const api = window.__codexPlusRateLimitUnlockTest;
+if (!api) throw new Error("rate limit unlock test api missing");
+
+const blocked = () => ({{
+  plan_type: "plus",
+  user_id: "user-1",
+  account_id: "acct-1",
+  rate_limit_reached_type: {{ type: "rate_limit_reached" }},
+  rate_limit: {{ allowed: false, limit_reached: true, primary_window: {{ used_percent: 100 }} }},
+}});
+const profile = (relayMode, officialMixApiKey) => ({{
+  relayProfilesEnabled: true,
+  activeRelayId: "active",
+  relayProfiles: [{{ id: "active", relayMode, officialMixApiKey }}],
+}});
+
+api.setBackendSettings(profile("official", false));
+api.install();
+const officialWithoutMix = api.parse(JSON.stringify(blocked()));
+
+api.setBackendSettings(profile("official", true));
+const officialMix = api.parse(JSON.stringify(blocked()));
+const unrelated = api.parse(JSON.stringify({{ ok: true, allowed: false }}));
+const streamPayload = api.parse(JSON.stringify({{
+  version: 1,
+  usage: blocked(),
+}}));
+
+api.setBackendSettings(profile("pureApi", true));
+const pureApi = api.parse(JSON.stringify(blocked()));
+
+api.setBackendSettings(profile("official", true));
+let setQueryDataCount = 0;
+let invalidatedAfterDisable = 0;
+const queries = [
+  {{ queryKey: ["rate-limit-status", "user-1", "acct-1"], state: {{ data: blocked() }} }},
+  {{ queryKey: ["rate-limit-status", "image-generation", "sig"], state: {{ data: blocked() }} }},
+];
+const subscribers = [];
+const client = {{
+  getQueryCache() {{
+    return {{
+      findAll() {{ return queries; }},
+      subscribe(listener) {{ subscribers.push(listener); return () => {{}}; }},
+    }};
+  }},
+  setQueryData(queryKey, data) {{
+    setQueryDataCount += 1;
+    const query = queries.find((item) => JSON.stringify(item.queryKey) === JSON.stringify(queryKey));
+    if (query) query.state.data = data;
+    for (const listener of subscribers) listener({{ query }});
+  }},
+  invalidateQueries() {{ invalidatedAfterDisable += 1; }},
+}};
+window.__REACT_QUERY_CLIENT__ = client;
+api.install();
+const openStatus = {{
+  plan_type: "plus",
+  user_id: "user-1",
+  account_id: "acct-1",
+  rate_limit: {{ allowed: true, limit_reached: false, primary_window: {{ used_percent: 12 }} }},
+}};
+const alreadyOpenSkipped = api.unlockedStatus(openStatus) === null;
+const typeOnly = api.unlockedStatus({{
+  plan_type: "plus",
+  user_id: "user-1",
+  account_id: "acct-1",
+  rate_limit_reached_type: {{ type: "rate_limit_reached" }},
+  rate_limit: {{ allowed: true, limit_reached: false, primary_window: {{ used_percent: 12 }} }},
+}});
+const typeOnlyCleared = typeOnly?.rate_limit_reached_type == null && typeOnly?.rate_limit?.allowed === true;
+api.setBackendSettings(profile("official", false));
+api.install();
+
+console.log(JSON.stringify({{
+  officialWithoutMixAllowed: officialWithoutMix.rate_limit.allowed,
+  officialMixAllowed: officialMix.rate_limit.allowed,
+  officialMixLimitReached: officialMix.rate_limit.limit_reached,
+  officialMixUsedPercent: officialMix.rate_limit.primary_window.used_percent,
+  officialWithoutMixReachedType: officialWithoutMix.rate_limit_reached_type?.type ?? null,
+  officialMixReachedType: officialMix.rate_limit_reached_type,
+  pureApiAllowed: pureApi.rate_limit.allowed,
+  unrelatedUntouched: unrelated.allowed === false && unrelated.ok === true,
+  streamUsageAllowed: streamPayload.usage.rate_limit.allowed,
+  imageQueryUntouched: queries[1].state.data.rate_limit.allowed === false,
+  mainQueryAllowed: queries[0].state.data.rate_limit.allowed,
+  mainQueryUsedPercent: queries[0].state.data.rate_limit.primary_window.used_percent,
+  mainQueryReachedType: queries[0].state.data.rate_limit_reached_type,
+  imageQueryReachedType: queries[1].state.data.rate_limit_reached_type?.type ?? null,
+  typeOnlyCleared,
+  setQueryDataCount,
+  alreadyOpenSkipped,
+  imageKeyIgnored: api.isRateLimitQueryKey(["rate-limit-status", "image-generation"]) === false,
+  plainKeyMatched: api.isRateLimitQueryKey(["rate-limit-status"]) === true,
+  scopedKeyMatched: api.isRateLimitQueryKey(["rate-limit-status", "user-1", "acct-1"]) === true,
+  invalidatedAfterDisable,
+}}));
+process.exit(0);
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run official mix rate-limit harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON")
+}
+
+#[test]
 fn injection_script_installs_image_overlay_from_data_uri() {
     let script = assets::injection_script(57321);
 
