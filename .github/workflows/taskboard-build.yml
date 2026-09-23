@@ -1,0 +1,48 @@
+name: Taskboard checks
+
+on:
+  pull_request:
+    paths:
+      - "apps/codex-taskboard/**"
+      - ".github/workflows/taskboard-build.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/codex-taskboard/**"
+      - ".github/workflows/taskboard-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  taskboard:
+    name: Taskboard checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/codex-taskboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/codex-taskboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build:web
+
+      - name: Test
+        run: npm test
