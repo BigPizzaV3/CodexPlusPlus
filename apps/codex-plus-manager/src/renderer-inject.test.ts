@@ -225,6 +225,10 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /if \(loaded\) syncOfficialUsagePolicy\(\);/);
     assert.doesNotMatch(renderer, /officialUsageAlertCards|refreshOfficialUsageAlertVisibility|codex-plus-hide-usage-alert/);
     assert.doesNotMatch(renderer, /mutationTouchesUsageAlert/);
+    assert.match(renderer, /function isOfficialLowQuotaSidebarCard/);
+    assert.match(renderer, /function isOfficialLowQuotaComposerBanner/);
+    assert.match(renderer, /upsell-banner-title-/);
+    assert.match(renderer, /officialUsagePolicy\(\)\.hideAlerts/);
   });
 
   // issue #2169：HTTP 回落成功不得掩盖桥接通道故障。桥接失败计数独立于后端状态，
