@@ -2171,12 +2171,18 @@ fn apply_model_catalog_to_config(
         || entries
             .iter()
             .any(|entry| entry.suffix_window.is_some() || entry.auto_compact_percent.is_some());
-    // custom_responses_provider(&config_text) 读取的是生成后 config 里的 wire_api；
-    // 自对 Codex 恒写 "responses" 起，该信号已失真（chat 上游也会读到 responses）。
-    // catalog 是否按 Responses 语义生成取决于真实上游协议，只能由 profile.protocol 判定。
-    let custom_responses = profile.protocol == RelayProtocol::Responses
-        && active_provider_id(&parse_toml_document(&config_text)?)
-            .is_some_and(|provider_id| is_custom_provider_id(&provider_id));
+    // Codex 侧 wire_api 恒为 Responses，真实上游协议仍以 profile 为准。
+    // API 传输的外部目录副本和模型路由不能随会话身份改变。
+    let managed_api_mode = matches!(
+        profile.relay_mode,
+        crate::settings::RelayMode::PureApi | crate::settings::RelayMode::MixedApi
+    ) || (profile.relay_mode == crate::settings::RelayMode::Official
+        && profile.official_mix_api_key);
+    // 保留仅配置 custom provider、未同步模式字段的旧调用方及既有聚合策略。
+    let standard_responses = profile.protocol == RelayProtocol::Responses
+        && (managed_api_mode
+            || active_provider_id(&parse_toml_document(&config_text)?)
+                .is_some_and(|provider_id| is_custom_provider_id(&provider_id)));
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
@@ -2213,7 +2219,7 @@ fn apply_model_catalog_to_config(
                 if official_deepseek_responses {
                     return Ok(config_text.to_string());
                 }
-                if custom_responses
+                if standard_responses
                     && copy_standard_responses_catalog(
                         home,
                         &existing,
@@ -2240,7 +2246,7 @@ fn apply_model_catalog_to_config(
             );
         }
         let mut doc = parse_toml_document(&config_text)?;
-        if custom_responses
+        if standard_responses
             && copy_standard_responses_catalog(
                 home,
                 &external_catalog,
@@ -2257,7 +2263,7 @@ fn apply_model_catalog_to_config(
         return Ok(normalize_optional_toml(doc));
     }
     // Known bundled metadata entries need a catalog even without a user-supplied window.
-    // 自定义 Responses provider 走 model_routes 时需要 catalog，才能给路由目标暴露模型元数据；
+    // 托管 Responses 传输走 model_routes 时需要 catalog，与会话身份无关；
     // 纯平铺 model_list 且无窗口/元数据的仍保持"不生成"契约（无后缀不落盘，见既有测试）。
     if !has_metadata_overrides
         && !entries.iter().any(|entry| {
@@ -2266,7 +2272,7 @@ fn apply_model_catalog_to_config(
                 || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
                 || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
         })
-        && !(custom_responses && profile.has_model_routes())
+        && !(standard_responses && profile.has_model_routes())
     {
         let mut doc = parse_toml_document(&config_text)?;
         if root_key_string(&config_text, "model_catalog_json").as_deref()
