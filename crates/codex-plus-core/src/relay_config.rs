@@ -909,7 +909,11 @@ pub fn backfill_relay_profile_from_home_with_common(
     profile: &mut RelayProfile,
     common_config_contents: &mut String,
 ) -> anyhow::Result<()> {
-    let live_config = read_optional_text(&home.join("config.toml"))?;
+    // Normalize before backfilling: the live config may carry a corrupted shape
+    // (for example two [mcp_servers.node_repl] headers under one parent), and
+    // copying it verbatim into the profile template would freeze that forever.
+    let live_config =
+        normalize_duplicate_toml_text(&read_optional_text(&home.join("config.toml"))?);
     let template_config = profile.config_contents.clone();
     let template_auth = profile.auth_contents.clone();
     let template_api_key = relay_profile_api_key(profile);
@@ -1548,6 +1552,9 @@ fn merge_duplicate_toml_blocks(contents: &str) -> Option<DocumentMut> {
     // 如果单独成块，toml_edit 会把父级数组表隐式降级成普通表，合并阶段整棵
     // 数组表被覆盖，外层表头随之不再打印。
     let mut current_header_path: Option<String> = None;
+    // 当前块内已声明过的标准表（非数组表）路径。同一个块里重复声明同一个
+    // 标准表会让整块 TOML 解析失败，随后整体退回逐行去重、丢掉后出现的字段。
+    let mut current_declared_headers: HashSet<String> = HashSet::new();
 
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -1559,14 +1566,28 @@ fn merge_duplicate_toml_blocks(contents: &str) -> Option<DocumentMut> {
                 (Some(parent), Some(child)) => is_strict_toml_child_path(parent, child),
                 _ => false,
             };
+            let is_array_table = trimmed.starts_with("[[");
+            // 同一块里重复声明同一个标准表会让整块解析失败（真实故障：两个
+            // [mcp_servers.node_repl] 各写一部分键），随后整体退回逐行去重，
+            // 把后出现的那段字段整段丢掉。数组表允许重复声明，不参与判定。
+            let is_repeated_standard_table = match header_path {
+                Some(path) if !is_array_table => current_declared_headers.contains(path),
+                _ => false,
+            };
 
-            if !is_strict_child {
+            if !is_strict_child || is_repeated_standard_table {
                 if !current.trim().is_empty() {
                     blocks.push(std::mem::take(&mut current));
                 }
                 current_in_root = false;
                 current_root_keys.clear();
+                current_declared_headers.clear();
                 current_header_path = header_path.map(str::to_string);
+            }
+            if let Some(path) = header_path {
+                if !is_array_table {
+                    current_declared_headers.insert(path.to_string());
+                }
             }
         } else if current_in_root && !trimmed.is_empty() && !trimmed.starts_with('#') {
             if let Some((key, _)) = trimmed.split_once('=') {
@@ -1591,10 +1612,42 @@ fn merge_duplicate_toml_blocks(contents: &str) -> Option<DocumentMut> {
 
     let mut merged = DocumentMut::new();
     for block in blocks {
-        let block_doc: DocumentMut = block.parse().ok()?;
+        if let Ok(block_doc) = block.parse::<DocumentMut>() {
+            merge_toml_table_like(merged.as_table_mut(), block_doc.as_table());
+            continue;
+        }
+        // 单块解析失败时只降级这一块（块内逐行去重后再试），而不是让整体退回
+        // 全局逐行去重，避免一处坏块把其它块里已经解析好的字段一起丢掉。
+        let repaired = dedupe_duplicate_headers_within_block(&block);
+        let block_doc: DocumentMut = repaired.parse().ok()?;
         merge_toml_table_like(merged.as_table_mut(), block_doc.as_table());
     }
     Some(merged)
+}
+
+/// 单块级别的降级：在这一个块内部按整行表头字符串去重，保留首次出现的表头
+/// 及其表体，丢弃重复表头与它后面的表体。只在整块解析失败时对该块使用，
+/// 不改变其它块已经解析好的结果。
+fn dedupe_duplicate_headers_within_block(block: &str) -> String {
+    let mut seen_headers = HashSet::new();
+    let mut kept = Vec::new();
+    let mut skipping_duplicate_table = false;
+    for line in block.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            skipping_duplicate_table = !seen_headers.insert(trimmed.to_string());
+            if skipping_duplicate_table {
+                continue;
+            }
+            kept.push(line);
+            continue;
+        }
+        if skipping_duplicate_table {
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
 }
 
 /// 取出表头行括号里的路径；不是表头行时返回 None。
@@ -1780,6 +1833,9 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     preserve_missing_table_keys(&mut target_doc, &live_doc, "mcp_servers");
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
+    // hooks 的定义部分（除 state 外的键）同样由用户/桌面端管理，模板里没有时
+    // 从 live 补回，否则切换供应商会把定义整段丢掉，只剩 hooks.state。
+    preserve_live_hook_definitions(&mut target_doc, &live_doc);
     remove_unsupported_approval_policies(&mut target_doc);
     preserve_live_hook_state(&mut target_doc, &live_doc);
     let context_usage_configured = target_doc
@@ -1867,6 +1923,29 @@ fn windows_process_is_elevated() -> bool {
 #[cfg(not(windows))]
 fn windows_process_is_elevated() -> bool {
     true
+}
+
+/// hooks 的定义部分（UserPromptSubmit / Stop / SessionEnd 等数组表）属于
+/// 用户/桌面端管理的本机设置。模板里没有时从 live 补回，只补缺、不覆盖，
+/// 避免切换供应商后 hooks 定义整段消失、只剩 hooks.state。
+fn preserve_live_hook_definitions(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
+    let Some(live_hooks) = live_doc.get("hooks").and_then(Item::as_table_like) else {
+        return;
+    };
+    if target_doc.get("hooks").and_then(Item::as_table_like).is_none() {
+        target_doc["hooks"] = toml_edit::table();
+    }
+    let Some(target_hooks) = target_doc["hooks"].as_table_like_mut() else {
+        return;
+    };
+    for (key, value) in live_hooks.iter() {
+        if key == "state" {
+            continue;
+        }
+        if target_hooks.get(key).is_none() {
+            target_hooks.insert(key, value.clone());
+        }
+    }
 }
 
 fn preserve_live_hook_state(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
@@ -3580,6 +3659,45 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归 09-23 现场故障：裸的 [mcp_servers] 父表头把切块锚点钉在 mcp_servers，
+    /// 之后两个重复的 [mcp_servers.node_repl] 落在同一块里，整块解析失败后退回
+    /// 逐行去重，后出现的那段四键被整段丢掉。修复后重复标准表头必须触发切块。
+    #[test]
+    fn normalize_duplicate_toml_text_keeps_node_repl_keys_under_repeated_header() {
+        let contents = r#"[mcp_servers]
+[mcp_servers.search]
+command = "search"
+
+[mcp_servers.node_repl]
+NODE_REPL_NODE_PATH = "n"
+
+[mcp_servers.node_repl.env]
+CODEX_HOME = "h"
+
+[mcp_servers.node_repl]
+args = []
+command = "node_repl"
+env_vars = ["CODEX_WINDOWS_REGISTERED_CORE"]
+startup_timeout_sec = 120
+
+[mcp_servers.cua_repl]
+command = "cua"
+"#;
+
+        let normalized = normalize_duplicate_toml_text(contents);
+        let doc = normalized
+            .parse::<DocumentMut>()
+            .expect("normalized output must stay valid TOML");
+
+        let node = &doc["mcp_servers"]["node_repl"];
+        assert_eq!(node["command"].as_str(), Some("node_repl"));
+        assert_eq!(node["startup_timeout_sec"].as_integer(), Some(120));
+        assert_eq!(node["env_vars"].as_array().map(|a| a.len()), Some(1));
+        assert_eq!(node["NODE_REPL_NODE_PATH"].as_str(), Some("n"));
+        assert_eq!(node["env"]["CODEX_HOME"].as_str(), Some("h"));
+        assert_eq!(doc["mcp_servers"]["cua_repl"]["command"].as_str(), Some("cua"));
+    }
 
     /// 回归真实故障：`[mcp_servers.node_repl]`（带正确的 `.env` 子表）之后又混入
     /// 一个裸的空 `[mcp_servers]` 表头。行级去重会把两者当成互不相干的字符串，
