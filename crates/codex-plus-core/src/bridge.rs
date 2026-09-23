@@ -339,13 +339,72 @@ pub fn external_api_quota_breakpoint_condition(value: &Value) -> Option<String> 
 fn spawn_external_api_quota_gate(websocket_url: &str, generation: BridgeGeneration) {
     let websocket_url = websocket_url.to_string();
     tokio::spawn(async move {
-        if let Err(error) = run_external_api_quota_gate(&websocket_url, generation).await {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "bridge.external_api_quota_gate_failed",
-                json!({ "message": error.to_string() }),
-            );
-        }
+        supervise_external_api_quota_gate(&websocket_url, generation).await;
     });
+}
+
+async fn supervise_external_api_quota_gate(websocket_url: &str, generation: BridgeGeneration) {
+    let mut retry_seconds = 2;
+    while bridge_generation_is_current(&generation) {
+        let started = std::time::Instant::now();
+        match run_external_api_quota_gate(websocket_url, generation.clone()).await {
+            Ok(()) => break,
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.external_api_quota_gate_failed",
+                    json!({ "message": error.to_string(), "retry_seconds": retry_seconds }),
+                );
+            }
+        }
+        if !bridge_generation_is_current(&generation) {
+            break;
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            retry_seconds = 2;
+        }
+        tokio::time::sleep(Duration::from_secs(retry_seconds)).await;
+        retry_seconds = (retry_seconds * 2).min(30);
+    }
+}
+
+#[cfg(test)]
+mod external_api_quota_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn quota_gate_reconnects_after_timeout_and_stops_when_superseded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "ws://{}/devtools/page/quota-test",
+            listener.local_addr().unwrap()
+        );
+        let generation = next_bridge_generation(&url);
+        assert!(publish_bridge_generation(&generation));
+        let task_generation = generation.clone();
+        let task = tokio::spawn(async move {
+            supervise_external_api_quota_gate(&url, task_generation).await;
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut first = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let command = tokio::time::timeout(Duration::from_secs(5), first.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let command: Value = serde_json::from_str(command.to_text().unwrap()).unwrap();
+        assert_eq!(command["method"], "Runtime.evaluate");
+        // 模拟启动繁忙：连接保持，但首个 CDP 命令不返回。
+        let (stream, _) = tokio::time::timeout(Duration::from_secs(12), listener.accept())
+            .await
+            .expect("quota gate should reconnect after command timeout")
+            .unwrap();
+        let _second = tokio_tungstenite::accept_async(stream).await.unwrap();
+        release_bridge_generation(&generation);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("superseded supervisor must stop")
+            .unwrap();
+    }
 }
 
 async fn run_external_api_quota_gate(
@@ -358,13 +417,19 @@ async fn run_external_api_quota_gate(
     let mut debugger_enabled = false;
     while bridge_generation_is_current(&generation) {
         tokio::time::sleep(Duration::from_secs(2)).await;
+        if !bridge_generation_is_current(&generation) {
+            break;
+        }
+        let expression = if installed.is_some() {
+            "window.__codexPlusApiQuotaGate?.refreshComposers?.(window.__codexPlusApiQuotaBreakpoint); JSON.stringify(window.__codexPlusApiQuotaBreakpoint || null)"
+        } else {
+            "JSON.stringify(window.__codexPlusApiQuotaBreakpoint || null)"
+        };
         let response = session
             .send_command(
                 next_message_id(),
                 "Runtime.evaluate",
-                runtime_evaluate_params(
-                    "JSON.stringify(window.__codexPlusApiQuotaBreakpoint || null)",
-                ),
+                runtime_evaluate_params(expression),
             )
             .await?;
         let Some(text) = response
@@ -421,6 +486,16 @@ async fn run_external_api_quota_gate(
             bail!("external API quota gate breakpoint was not installed");
         };
         installed = Some((value, id.to_string()));
+        // 断点不会重跑已经完成的 render。安装后必须触发等价状态重绘。
+        session
+            .send_command(
+                next_message_id(),
+                "Runtime.evaluate",
+                runtime_evaluate_params(
+                    "window.__codexPlusApiQuotaGate?.refreshComposers?.(window.__codexPlusApiQuotaBreakpoint, true)",
+                ),
+            )
+            .await?;
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "bridge.external_api_quota_gate_armed",
             json!({}),

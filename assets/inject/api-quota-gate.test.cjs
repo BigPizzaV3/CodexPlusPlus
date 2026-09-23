@@ -44,3 +44,38 @@ for (const allowed of [false, true]) {
   assert.equal(vm.runInNewContext("busy||quota", context), true, "other composer blocks must survive");
 }
 console.log("API quota gate policy, source matching, fail-closed behavior and other blocks passed");
+
+const fs = require("node:fs");
+let allowed = true;
+const calls = [];
+const dispatch = value => calls.push(value);
+const hook = { memoizedState: new Set(), queue: {dispatch}, next: null };
+const type = () => {};
+type.toString = () => "function Adapter(){let quota=read(Q)&&host===`local`,disabled=busy||quota,next;render({submitDisabled:disabled})}";
+const root = {__reactFiber$test: {type:"div", return:{type, memoizedState:hook, return:null}}};
+const context = {
+  Set, WeakMap, URL,
+  window: {__codexPlusExternalApiQuotaAllowed:()=>allowed},
+  document: {querySelectorAll:()=>[root]},
+};
+vm.runInNewContext(fs.readFileSync(require.resolve("./api-quota-gate.js"), "utf8"), context);
+const refresh = context.window.__codexPlusApiQuotaGate.refreshComposers;
+assert.equal(refresh(found), 1, "already mounted composer must render after installation");
+assert.equal(calls[0].size, 0);
+assert.equal(refresh(found), 0, "polls must not keep rerendering");
+allowed = false;
+assert.equal(refresh(found), 1, "switching back must restore the official gate");
+assert.equal(refresh(found), 0);
+assert.equal(refresh(found, true), 1, "rearming in official mode must restore original render");
+allowed = true;
+assert.equal(refresh(found), 1);
+assert.equal(refresh(found, true), 1, "reconnected breakpoint must invalidate stale render");
+hook.memoizedState = new Set(["active-stop"]);
+assert.equal(refresh(found, true), 0, "never change active stop state");
+hook.memoizedState = new Set();
+hook.next = {memoizedState:new Set(),queue:{dispatch:()=>{}},next:null};
+assert.equal(refresh(found, true), 0, "ambiguous hooks fail closed");
+hook.next = null;
+type.toString = () => "function unrelated(){}";
+assert.equal(refresh(found, true), 0);
+console.log("Composer startup refresh, reconnect, policy changes and deduplication passed");

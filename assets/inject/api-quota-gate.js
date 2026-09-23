@@ -51,7 +51,40 @@
     return `(${quota}&&window.__codexPlusExternalApiQuotaAllowed?.(${host})===true&&(${quota}=false),false)`;
   }
 
-  const api = { permitsExternalApi, locate, condition };
+  let refreshedComposers = new WeakMap();
+  function refreshComposers(location, force = false) {
+    if (!condition(location)) return 0;
+    if (force) refreshedComposers = new WeakMap();
+    const allowed = window.__codexPlusExternalApiQuotaAllowed?.("local") === true;
+    let refreshed = 0;
+    for (const root of document.querySelectorAll("[data-codex-composer-root]")) {
+      let fiber = root[Object.keys(root).find(key => key.startsWith("__reactFiber$"))];
+      for (let depth = 0; fiber && depth < 80; depth++, fiber = fiber.return) {
+        if (typeof fiber.type !== "function") continue;
+        const source = fiber.type.toString();
+        if (!source.includes(`&&${location.hostVariable}===\`local\``)
+          || !source.includes(`||${location.quotaVariable},`)
+          || !source.includes("submitDisabled:")) continue;
+        const hooks = [];
+        for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+          if (hook.memoizedState instanceof Set && hook.memoizedState.size === 0
+            && typeof hook.queue?.dispatch === "function") hooks.push(hook);
+        }
+        // 只重绘唯一可识别的空 Set 状态；不修改草稿或非空停止队列。
+        if (hooks.length !== 1) break;
+        const dispatch = hooks[0].queue.dispatch;
+        const previous = refreshedComposers.get(dispatch);
+        if (previous === allowed || (previous === undefined && !allowed && !force)) break;
+        refreshedComposers.set(dispatch, allowed);
+        dispatch(new Set());
+        refreshed++;
+        break;
+      }
+    }
+    return refreshed;
+  }
+
+  const api = { permitsExternalApi, locate, condition, refreshComposers };
   if (typeof module === "object" && module.exports) module.exports = api;
   else window.__codexPlusApiQuotaGate = api;
 })();
