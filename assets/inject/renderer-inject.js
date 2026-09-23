@@ -3880,31 +3880,7 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
-    if (loaded) void installExternalApiQuotaGate();
     return loaded;
-  }
-
-  let externalApiQuotaGateAttempted = false;
-  async function installExternalApiQuotaGate() {
-    window.__codexPlusExternalApiQuotaAllowed = (hostId) =>
-      codexPlusBackendSettingsLoaded
-      && window.__codexPlusApiQuotaGate?.permitsExternalApi(codexPlusBackendSettings, hostId) === true;
-    if (externalApiQuotaGateAttempted || !window.__codexPlusApiQuotaGate) return;
-    externalApiQuotaGateAttempted = true;
-    try {
-      const url = codexAppAssetUrl("app-primary-") || await codexAppAssetUrlFromScriptText("app-primary-");
-      if (!url) return;
-      const response = await fetch(url);
-      if (!response.ok) return;
-      const location = window.__codexPlusApiQuotaGate.locate(await response.text(), url);
-      if (!location) return;
-      window.__codexPlusApiQuotaBreakpoint = {
-        ...location,
-        condition: window.__codexPlusApiQuotaGate.condition(location),
-      };
-    } catch {
-      // 客户端结构变更时保留原始门禁，不循环扫描或强行启用按钮。
-    }
   }
 
   function loadBackendSettingsForStartup(attempt = 0) {
@@ -9817,6 +9793,7 @@
     return {
       official,
       hideAlerts: official && window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ === true,
+      unlockSend: window.__codexPlusApiQuotaGate?.permitsExternalApi(codexPlusBackendSettings, "local") === true,
     };
   }
 
@@ -9844,8 +9821,9 @@
       && queryKey[1] !== "image-generation";
   }
 
-  // 低额度卡片、输入框横幅和发送锁都读 /wham/usage 这份状态。
-  // 官登模式一律放开功能锁；提示字段只在勾选「关闭官方低额度提示」时清掉。
+  // 低额度提示仍由提示字段控制。发送锁只读 rate_limit.allowed。
+  // 外部中转的官登混合模式在查询发布前把 allowed 设为 true。纯官登保持原值。
+  // 提示字段只在勾选「关闭官方低额度提示」时清掉。
   // 百分比、重置时间、账号、积分和消费上限不动。图片额度横幅单独留下。
   function rewriteOfficialUsageStatus(value, policy = officialUsagePolicy()) {
     if (!policy.official || !isOfficialUsageStatus(value)) return null;
@@ -9860,12 +9838,8 @@
       changed = true;
     }
     const rateLimit = value.rate_limit;
-    if (rateLimit.allowed !== true || rateLimit.limit_reached === true) {
-      next.rate_limit = {
-        ...rateLimit,
-        allowed: true,
-        limit_reached: false,
-      };
+    if (policy.unlockSend && rateLimit.allowed !== true) {
+      next.rate_limit = { ...rateLimit, allowed: true };
       changed = true;
     }
     if (policy.hideAlerts) {
@@ -9965,8 +9939,34 @@
 
   let officialUsageRewriteDepth = 0;
 
+  // Query.setData 是 GET /wham/usage 和 SSE snapshot 共用的发布点。
+  // 在通知订阅者之前改写，RK 第一次读到的 allowed 就是结果。
+  function patchOfficialUsageQueryPublication(client) {
+    const cache = client.getQueryCache?.();
+    if (!cache) return;
+    const listed = typeof cache.getAll === "function"
+      ? cache.getAll()
+      : (typeof cache.findAll === "function" ? cache.findAll({ queryKey: ["rate-limit-status"] }) : []);
+    const query = listed.find((item) => typeof Object.getPrototypeOf(item)?.setData === "function");
+    if (!query) return;
+    const proto = Object.getPrototypeOf(query);
+    if (typeof proto.setData !== "function" || proto.setData.__codexPlusUsagePublication) return;
+    const original = proto.setData;
+    function codexPlusPublishUsageData(data, ...rest) {
+      if (isMainRateLimitQueryKey(this?.queryKey)) {
+        const next = rewriteOfficialUsagePayload(data);
+        if (next !== data) data = next;
+      }
+      return original.call(this, data, ...rest);
+    }
+    codexPlusPublishUsageData.__codexPlusUsagePublication = true;
+    proto.setData = codexPlusPublishUsageData;
+  }
+
   function patchOfficialUsageQueryClient(client) {
-    if (!client || client.__codexPlusUsageRewrite || typeof client.setQueryData !== "function") return;
+    if (!client || typeof client.setQueryData !== "function") return;
+    patchOfficialUsageQueryPublication(client);
+    if (client.__codexPlusUsageRewrite) return;
     const original = client.setQueryData;
     client.setQueryData = function codexPlusSetUsageQueryData(queryKey, updater, ...rest) {
       if (officialUsageRewriteDepth > 0 || !isMainRateLimitQueryKey(queryKey) || !officialUsagePolicy().official) {
