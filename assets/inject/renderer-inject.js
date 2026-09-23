@@ -101,12 +101,13 @@
     if (!config) return;
     const enabled = config.enabled === true;
     const locale = typeof config.locale === "string" && config.locale ? config.locale : "zh-CN";
-    const installationKey = `2:${enabled ? "on" : "off"}:${locale}`;
+    const installationKey = `3:${enabled ? "on" : "off"}:${locale}`;
     if (window.__codexPlusForceChineseLocaleInstalled === installationKey) return;
     window.__codexPlusForceChineseLocaleInstalled = installationKey;
     const languages = [locale, "zh", "en-US", "en"];
     const managedLocaleStorageKey = "codexPlus.forceChineseLocale.managed.v1";
     const localeReloadStorageKey = "codexPlus.forceChineseLocale.reload.v1";
+    const startupReloadStorageKey = "codexPlus.forceChineseLocale.startup.v1";
 
     const readManagedLocale = () => {
       try {
@@ -145,7 +146,7 @@
       check();
     });
 
-    const callCodexSettingApi = (bridge, method, params) => new Promise((resolve, reject) => {
+    const callCodexSettingApiOnce = (bridge, method, body) => new Promise((resolve, reject) => {
       const requestId = typeof crypto?.randomUUID === "function"
         ? crypto.randomUUID()
         : `codex-plus-locale-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -178,13 +179,52 @@
         requestId,
         method: "POST",
         url: `vscode://codex/${method}`,
-        body: JSON.stringify({ params }),
+        body: JSON.stringify(body),
       };
       Promise.resolve(bridge.sendMessageFromView(message)).catch((error) => {
         cleanup();
         reject(error);
       });
     });
+
+    const callCodexSettingApi = async (bridge, method, params) => {
+      try {
+        return await callCodexSettingApiOnce(bridge, method, { params });
+      } catch (legacyError) {
+        const response = await callCodexSettingApiOnce(bridge, method, params);
+        sendCodexPlusDiagnostic("official_locale_api_envelope_fallback", {
+          method,
+          errorName: legacyError?.name || "Error",
+          errorMessage: legacyError?.message || String(legacyError),
+        });
+        return response;
+      }
+    };
+
+    const readStartupReloadMarker = () => {
+      try {
+        const value = JSON.parse(window.localStorage.getItem(startupReloadStorageKey) || "null");
+        return value && typeof value === "object" ? value : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const writeStartupReloadMarker = (value) => {
+      try {
+        window.localStorage.setItem(startupReloadStorageKey, JSON.stringify(value));
+      } catch {
+      }
+    };
+
+    const officialCodexVersion = (bridge) => {
+      try {
+        const value = bridge?.getSentryInitOptions?.()?.appVersion;
+        return typeof value === "string" && value.trim() ? value.trim() : "unknown";
+      } catch {
+        return "unknown";
+      }
+    };
 
     const reloadAfterLocaleChange = (value) => {
       const marker = JSON.stringify(value);
@@ -213,12 +253,30 @@
       if (!bridge) return;
       const response = await callCodexSettingApi(bridge, "get-setting", { key: "localeOverride" });
       const currentValue = response?.value ?? null;
+      const appVersion = officialCodexVersion(bridge);
+      const startupMarker = readStartupReloadMarker();
 
       if (enabled) {
         if (currentValue === locale) {
+          if (startupMarker?.appVersion !== appVersion || startupMarker?.locale !== locale) {
+            writeStartupReloadMarker({ appVersion, locale });
+            sendCodexPlusDiagnostic("official_locale_startup_reload", {
+              appVersion,
+              locale,
+              currentValue,
+            });
+            reloadAfterLocaleChange({ appVersion, locale, reason: "startup-i18n" });
+            return;
+          }
           clearLocaleReloadMarker();
+          sendCodexPlusDiagnostic("official_locale_synced", {
+            appVersion,
+            locale,
+            currentValue,
+          });
           return;
         }
+        writeStartupReloadMarker({ appVersion, locale });
         if (!managed) {
           writeManagedLocale({ appliedLocale: locale, previousValue: currentValue });
         }
@@ -241,7 +299,12 @@
       reloadAfterLocaleChange(previousValue);
     };
 
-    syncOfficialLocaleSetting().catch(() => {});
+    syncOfficialLocaleSetting().catch((error) => {
+      sendCodexPlusDiagnostic("official_locale_sync_failed", {
+        errorName: error?.name || "Error",
+        errorMessage: error?.message || String(error),
+      });
+    });
     if (!enabled) return;
 
     const defineNavigatorGetter = (name, value) => {
@@ -428,6 +491,7 @@
   const codexServiceTierBadgeVersion = "3";
   const codexMenuLocalizationVersion = "1";
   const codexMenuLocalizationMap = new Map([
+    ["New chat", "新建对话"],
     ["Toggle Sidebar", "切换侧边栏"],
     ["Toggle Bottom Panel", "切换底部面板"],
     ["Toggle Pinned Summary", "切换置顶摘要"],
@@ -462,6 +526,11 @@
     ["Close Tab", "关闭标签页"],
     ["Close", "关闭"],
     ["New Window", "新建窗口"],
+    ["Add new project", "添加新项目"],
+    ["Scheduled tasks", "计划任务"],
+    ["Pull requests", "拉取请求"],
+    ["Plugins", "插件"],
+    ["Projects", "项目"],
     ["Copy conversation path", "复制对话路径"],
     ["Copy deeplink", "复制深层链接"],
     ["Copy session id", "复制会话 ID"],
@@ -8051,6 +8120,7 @@
       "[data-radix-menu-content]",
       "[data-radix-popper-content-wrapper]",
       "[data-testid='app-shell-header-context-menu-surface']",
+      "aside.app-shell-left-panel button.sidebar-item",
       "[data-codex-keyboard-shortcuts]",
       "[class*='command']",
       "[class*='Command']",

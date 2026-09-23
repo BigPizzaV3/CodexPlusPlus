@@ -2289,6 +2289,7 @@ fn injection_script_localizes_codex_menu_commands() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("const codexMenuLocalizationMap = new Map"));
+    assert!(script.contains("[\"New chat\", \"新建对话\"]"));
     assert!(script.contains("[\"Toggle Sidebar\", \"切换侧边栏\"]"));
     assert!(script.contains("[\"Toggle Bottom Panel\", \"切换底部面板\"]"));
     assert!(script.contains("[\"Toggle Pinned Summary\", \"切换置顶摘要\"]"));
@@ -2299,6 +2300,7 @@ fn injection_script_localizes_codex_menu_commands() {
     assert!(script.contains("[\"Toggle Side Panel\", \"切换侧边面板\"]"));
     assert!(script.contains("[\"Actual Size\", \"实际大小\"]"));
     assert!(script.contains("function localizeCodexMenus"));
+    assert!(script.contains("aside.app-shell-left-panel button.sidebar-item"));
     assert!(script.contains("localizeCodexMenus();"));
 }
 
