@@ -4485,6 +4485,50 @@ if (run({{ lastInjectionAt: now, lastSuccessAt: now }}, false) !== false) proces
 }
 
 #[test]
+fn bridge_health_check_defers_stale_heartbeat_repair_only_for_initialized_hidden_pages() {
+    let script = serde_json::to_string(bridge::bridge_health_check_script()).unwrap();
+    let harness = format!(
+        r#"
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const now = 1800000000000;
+const health = {{ lastInjectionAt: now - 3600000, lastSuccessAt: now - 600000 }};
+const context = vm.createContext({{
+  Date: {{ now: () => now }},
+  document: {{ visibilityState: "hidden" }},
+  window: {{ __codexSessionDeleteBridge: () => {{}}, __codexPlusBridgeHealth: health }},
+}});
+const run = () => vm.runInContext({script}, context);
+assert.equal(run(), true);
+assert.equal(health.lastSuccessAt, now - 600000);
+context.document.visibilityState = "visible";
+assert.equal(run(), false);
+health.lastSuccessAt = now;
+assert.equal(run(), true);
+context.document.visibilityState = "hidden";
+health.lastSuccessAt = now - 600000;
+health.lastAttemptAt = now - 300000;
+assert.equal(run(), false);
+health.lastAttemptAt = now - 900000;
+assert.equal(run(), true);
+context.window.__codexSessionDeleteBridge = null;
+assert.equal(run(), false);
+context.window.__codexSessionDeleteBridge = () => {{}};
+health.lastSuccessAt = 0;
+assert.equal(run(), false);
+context.window.__codexPlusBridgeHealth = undefined;
+assert.equal(run(), false);
+"#
+    );
+    let output = Command::new("node").arg("-e").arg(harness).output().unwrap();
+    assert!(
+        output.status.success(),
+        "hidden heartbeat harness failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn bridge_result_expressions_json_escape_inputs() {
     let resolve = bridge::resolve_bridge_expression("request\"1", &json!({"status": "ok"}))
         .expect("resolve expression should build");
