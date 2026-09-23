@@ -9785,8 +9785,80 @@
     scheduleConversationViewAlign();
   }
 
+
+  const officialUsageWindowMarker = "data-codex-plus-official-usage-window";
+
+  function isOfficialLowQuotaSidebarCard(node) {
+    if (node?.nodeType !== Node.ELEMENT_NODE || node.getAttribute("role") !== "status") return false;
+    const className = typeof node.className === "string" ? node.className : "";
+    if (!className.includes("rounded-2xl") || !className.includes("ring-border")) return false;
+    const content = node.textContent || "";
+    return content.includes("usage remaining")
+      || (content.includes("剩余") && content.includes("使用量"))
+      || content.includes("重新加入 Plus")
+      || content.includes("Rejoin Plus");
+  }
+
+  function isOfficialLowQuotaComposerBanner(node) {
+    if (node?.nodeType !== Node.ELEMENT_NODE || node.getAttribute("role") !== "status") return false;
+    const labelledBy = node.getAttribute("aria-labelledby") || "";
+    const describedBy = node.getAttribute("aria-describedby") || "";
+    if (!labelledBy.startsWith("upsell-banner-title-") || !describedBy.startsWith("upsell-banner-description-")) return false;
+    const content = node.textContent || "";
+    return content.includes("Codex 和工作使用额度已用完")
+      || content.includes("You’re out of Codex and Work usage")
+      || content.includes("You're out of Codex and Work usage")
+      || content.includes("立即升级以获取更多使用量")
+      || content.includes("Upgrade for more now");
+  }
+
+  function isOfficialLowQuotaWindow(node) {
+    return isOfficialLowQuotaSidebarCard(node) || isOfficialLowQuotaComposerBanner(node);
+  }
+
+  function setOfficialUsageWindowHidden(node, hidden) {
+    if (!isOfficialLowQuotaWindow(node)) return;
+    if (hidden) {
+      node.setAttribute(officialUsageWindowMarker, "hidden");
+      node.style.setProperty("display", "none", "important");
+      return;
+    }
+    if (node.getAttribute(officialUsageWindowMarker) !== "hidden") return;
+    node.removeAttribute(officialUsageWindowMarker);
+    node.style.removeProperty("display");
+  }
+
+  function syncOfficialUsageWindows(root = document.body) {
+    if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
+    const hidden = officialUsagePolicy().hideAlerts === true;
+    const nodes = [root, ...root.querySelectorAll('[role="status"]')];
+    for (const node of nodes) setOfficialUsageWindowHidden(node, hidden);
+  }
+
+  function installOfficialUsageWindowBlock() {
+    if (window.__codexPlusOfficialUsageWindowBlock) return;
+    window.__codexPlusOfficialUsageWindowBlock = true;
+    const observer = new MutationObserver((records) => {
+      if (!officialUsagePolicy().hideAlerts) return;
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node?.nodeType !== Node.ELEMENT_NODE) continue;
+          syncOfficialUsageWindows(node);
+        }
+      }
+    });
+    const start = () => {
+      if (!document.body) return;
+      observer.observe(document.body, { childList: true, subtree: true });
+      syncOfficialUsageWindows(document.body);
+    };
+    if (document.body) start();
+    else document.addEventListener("DOMContentLoaded", start, { once: true });
+  }
+
   function scanLightweight() {
     installStyle();
+    installOfficialUsageWindowBlock();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
     installCodexRemoteSessionRecoveryListener();
@@ -10047,6 +10119,7 @@
     }
     if (key === officialUsagePolicyApplied) {
       if (key !== "off") rewriteCachedOfficialUsage(client);
+      syncOfficialUsageWindows();
       return;
     }
     const previous = officialUsagePolicyApplied;
@@ -10056,6 +10129,7 @@
       return;
     }
     rewriteCachedOfficialUsage(client);
+    syncOfficialUsageWindows();
     if (previous) invalidateMainRateLimitQueries(client);
   }
 
