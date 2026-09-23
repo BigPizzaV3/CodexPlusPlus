@@ -610,46 +610,56 @@ fn official_login_usage_alert_setting_controls_renderer_injection() {
 }
 
 #[test]
-fn usage_alert_hider_uses_sidebar_semantics_instead_of_percentage_copy() {
+fn usage_status_rewrite_targets_the_main_rate_limit_cache() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("officialUsageAlertCards"));
-    assert!(script.contains("progress[max=\"100\"]"));
-    assert!(script.contains("dismiss usage alert|关闭使用量提醒"));
-    assert!(script.contains("codexPlusUsageAlertHidden"));
+    assert!(script.contains("function syncOfficialUsagePolicy"));
+    assert!(script.contains("image_generation_limit_reached"));
+    assert!(script.contains("queryKey[1] !== \"image-generation\""));
+    assert!(!script.contains("officialUsageAlertCards"));
+    assert!(!script.contains("codex-plus-hide-usage-alert"));
+    assert!(!script.contains("refreshOfficialUsageAlertVisibility"));
 }
 
 #[test]
-fn official_mix_unlocks_local_composer_when_official_quota_is_exhausted() {
-    let cases = run_official_mix_rate_limit_unlock_harness();
+fn official_usage_status_unlocks_every_official_login_and_hides_alerts_only_when_enabled() {
+    let cases = run_official_usage_status_harness();
 
-    assert_eq!(cases["officialWithoutMixAllowed"], false);
-    assert_eq!(cases["officialMixAllowed"], true);
-    assert_eq!(cases["officialMixLimitReached"], false);
-    assert_eq!(cases["officialMixUsedPercent"], 100);
-    assert_eq!(cases["officialWithoutMixReachedType"], "rate_limit_reached");
-    assert!(cases["officialMixReachedType"].is_null());
-    assert!(cases["typeOnlyCleared"].as_bool().unwrap());
     assert_eq!(cases["pureApiAllowed"], false);
-    assert_eq!(cases["unrelatedUntouched"], true);
-    assert_eq!(cases["streamUsageAllowed"], true);
-    assert_eq!(cases["imageQueryUntouched"], true);
+    assert_eq!(cases["pureApiWarning"], "low");
+    assert_eq!(cases["officialAllowed"], true);
+    assert_eq!(cases["officialMixAllowed"], true);
+    assert_eq!(cases["officialWarning"], "low");
+    assert!(cases["officialModelPicker"].is_null());
+    assert!(cases["hiddenTextUpsell"].is_null());
+    assert_eq!(cases["officialPercent"], 100);
+    assert!(cases["hiddenWarning"].is_null());
+    assert_eq!(cases["hiddenAllowed"], true);
+    assert_eq!(cases["hiddenPercent"], 100);
+    assert_eq!(cases["hiddenResetAt"], 1_700_000_000);
+    assert_eq!(cases["hiddenImageUpsell"], "image_generation_limit_reached");
+    assert!(cases["hiddenModelPicker"].is_null());
+    assert_eq!(cases["hiddenSpendReached"], true);
+    assert_eq!(cases["hiddenCredits"], false);
+    assert_eq!(cases["streamAllowed"], true);
+    assert_eq!(cases["streamId"], "stream-1");
+    assert_eq!(cases["unrelatedAllowed"], false);
+    assert!(cases["openUnchanged"].as_bool().unwrap());
+    assert_eq!(cases["imageQueryAllowed"], false);
     assert_eq!(cases["mainQueryAllowed"], true);
-    assert_eq!(cases["mainQueryUsedPercent"], 100);
-    assert!(cases["mainQueryReachedType"].is_null());
-    assert_eq!(cases["imageQueryReachedType"], "rate_limit_reached");
-    assert_eq!(cases["setQueryDataCount"], 1);
-    assert_eq!(cases["alreadyOpenSkipped"], true);
+    assert!(cases["mainQueryWarning"].is_null());
+    assert_eq!(cases["mainQueryPercent"], 100);
+    assert_eq!(cases["invalidatedMain"], 1);
+    assert_eq!(cases["invalidatedImage"], 0);
     assert_eq!(cases["imageKeyIgnored"], true);
     assert_eq!(cases["plainKeyMatched"], true);
     assert_eq!(cases["scopedKeyMatched"], true);
-    assert_eq!(cases["invalidatedAfterDisable"], 1);
 }
 
-fn run_official_mix_rate_limit_unlock_harness() -> serde_json::Value {
+fn run_official_usage_status_harness() -> serde_json::Value {
     let temp = tempfile::tempdir().expect("temp dir should be created");
     let script_path = temp.path().join("renderer-inject.js");
-    let harness_path = temp.path().join("rate-limit-unlock-harness.cjs");
+    let harness_path = temp.path().join("usage-status-harness.cjs");
     std::fs::write(&script_path, assets::injection_script(57321))
         .expect("injection script should be written");
     let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
@@ -688,101 +698,119 @@ globalThis.navigator = {{ userAgent: "node-test" }};
 globalThis.performance = {{ getEntriesByType: () => [] }};
 require(scriptPath);
 const api = window.__codexPlusRateLimitUnlockTest;
-if (!api) throw new Error("rate limit unlock test api missing");
+if (!api) throw new Error("usage status test api missing");
 
-const blocked = () => ({{
+const status = () => ({{
   plan_type: "plus",
   user_id: "user-1",
   account_id: "acct-1",
   rate_limit_reached_type: {{ type: "rate_limit_reached" }},
-  rate_limit: {{ allowed: false, limit_reached: true, primary_window: {{ used_percent: 100 }} }},
+  sidebar_usage_warnings: {{ default: {{ title: "low" }} }},
+  rate_limit_warning: {{ title: "low" }},
+  rate_limit_upsell: {{ banner_type: "image_generation_limit_reached", title: "image" }},
+  model_picker_upsell: {{ title: "picker" }},
+  spend_control: {{ reached: true }},
+  credits: {{ has_credits: false }},
+  rate_limit: {{
+    allowed: false,
+    limit_reached: true,
+    primary_window: {{ used_percent: 100, reset_at: 1700000000 }},
+  }},
 }});
 const profile = (relayMode, officialMixApiKey) => ({{
   relayProfilesEnabled: true,
   activeRelayId: "active",
   relayProfiles: [{{ id: "active", relayMode, officialMixApiKey }}],
 }});
-
-api.setBackendSettings(profile("official", false));
-api.install();
-const officialWithoutMix = api.parse(JSON.stringify(blocked()));
-
-api.setBackendSettings(profile("official", true));
-const officialMix = api.parse(JSON.stringify(blocked()));
-const unrelated = api.parse(JSON.stringify({{ ok: true, allowed: false }}));
-const streamPayload = api.parse(JSON.stringify({{
-  version: 1,
-  usage: blocked(),
-}}));
+const warningTitle = (value) => value?.rate_limit_warning?.title ?? null;
 
 api.setBackendSettings(profile("pureApi", true));
-const pureApi = api.parse(JSON.stringify(blocked()));
+api.setHideAlerts(true);
+const pureApi = api.rewrite(status());
 
+api.setBackendSettings(profile("official", false));
+api.setHideAlerts(false);
+const official = api.rewrite(status());
 api.setBackendSettings(profile("official", true));
-let setQueryDataCount = 0;
-let invalidatedAfterDisable = 0;
-const queries = [
-  {{ queryKey: ["rate-limit-status", "user-1", "acct-1"], state: {{ data: blocked() }} }},
-  {{ queryKey: ["rate-limit-status", "image-generation", "sig"], state: {{ data: blocked() }} }},
-];
-const subscribers = [];
-const client = {{
-  getQueryCache() {{
-    return {{
-      findAll() {{ return queries; }},
-      subscribe(listener) {{ subscribers.push(listener); return () => {{}}; }},
-    }};
-  }},
-  setQueryData(queryKey, data) {{
-    setQueryDataCount += 1;
-    const query = queries.find((item) => JSON.stringify(item.queryKey) === JSON.stringify(queryKey));
-    if (query) query.state.data = data;
-    for (const listener of subscribers) listener({{ query }});
-  }},
-  invalidateQueries() {{ invalidatedAfterDisable += 1; }},
-}};
-window.__REACT_QUERY_CLIENT__ = client;
-api.install();
+const officialMix = api.rewrite(status());
+api.setHideAlerts(true);
+const hidden = api.rewrite(status());
+const textBanner = api.rewrite({{
+  ...status(),
+  rate_limit_upsell: {{ banner_type: "plus_rate_limit_reached", title: "upgrade" }},
+}});
+const stream = api.rewrite({{ stream_id: "stream-1", usage: status() }});
+const unrelated = api.rewrite({{ ok: true, allowed: false }});
 const openStatus = {{
   plan_type: "plus",
   user_id: "user-1",
   account_id: "acct-1",
-  rate_limit: {{ allowed: true, limit_reached: false, primary_window: {{ used_percent: 12 }} }},
+  rate_limit: {{ allowed: true, limit_reached: false, primary_window: {{ used_percent: 12, reset_at: 10 }} }},
 }};
-const alreadyOpenSkipped = api.unlockedStatus(openStatus) === null;
-const typeOnly = api.unlockedStatus({{
-  plan_type: "plus",
-  user_id: "user-1",
-  account_id: "acct-1",
-  rate_limit_reached_type: {{ type: "rate_limit_reached" }},
-  rate_limit: {{ allowed: true, limit_reached: false, primary_window: {{ used_percent: 12 }} }},
-}});
-const typeOnlyCleared = typeOnly?.rate_limit_reached_type == null && typeOnly?.rate_limit?.allowed === true;
+const openUnchanged = api.rewrite(openStatus) === openStatus;
+
+let invalidatedMain = 0;
+let invalidatedImage = 0;
+const queries = [
+  {{ queryKey: ["rate-limit-status", "user-1", "acct-1"], state: {{ data: status() }} }},
+  {{ queryKey: ["rate-limit-status", "image-generation", "sig"], state: {{ data: status() }} }},
+];
+const client = {{
+  getQueryCache() {{
+    return {{
+      findAll() {{ return queries; }},
+      subscribe() {{ return () => {{}}; }},
+    }};
+  }},
+  setQueryData(queryKey, updater) {{
+    const query = queries.find((item) => JSON.stringify(item.queryKey) === JSON.stringify(queryKey));
+    if (!query) return;
+    query.state.data = typeof updater === "function" ? updater(query.state.data) : updater;
+  }},
+  invalidateQueries(filter) {{
+    const key = filter?.queryKey || [];
+    if (key[1] === "image-generation") invalidatedImage += 1;
+    else invalidatedMain += 1;
+  }},
+}};
+window.__REACT_QUERY_CLIENT__ = client;
 api.setBackendSettings(profile("official", false));
+api.setHideAlerts(true);
+api.install();
+api.setBackendSettings(profile("pureApi", false));
+api.setHideAlerts(false);
 api.install();
 
 console.log(JSON.stringify({{
-  officialWithoutMixAllowed: officialWithoutMix.rate_limit.allowed,
-  officialMixAllowed: officialMix.rate_limit.allowed,
-  officialMixLimitReached: officialMix.rate_limit.limit_reached,
-  officialMixUsedPercent: officialMix.rate_limit.primary_window.used_percent,
-  officialWithoutMixReachedType: officialWithoutMix.rate_limit_reached_type?.type ?? null,
-  officialMixReachedType: officialMix.rate_limit_reached_type,
   pureApiAllowed: pureApi.rate_limit.allowed,
-  unrelatedUntouched: unrelated.allowed === false && unrelated.ok === true,
-  streamUsageAllowed: streamPayload.usage.rate_limit.allowed,
-  imageQueryUntouched: queries[1].state.data.rate_limit.allowed === false,
+  pureApiWarning: warningTitle(pureApi),
+  officialAllowed: official.rate_limit.allowed,
+  officialMixAllowed: officialMix.rate_limit.allowed,
+  officialWarning: warningTitle(official),
+  officialModelPicker: official.model_picker_upsell,
+  hiddenTextUpsell: textBanner.rate_limit_upsell,
+  officialPercent: official.rate_limit.primary_window.used_percent,
+  hiddenWarning: warningTitle(hidden),
+  hiddenAllowed: hidden.rate_limit.allowed,
+  hiddenPercent: hidden.rate_limit.primary_window.used_percent,
+  hiddenResetAt: hidden.rate_limit.primary_window.reset_at,
+  hiddenImageUpsell: hidden.rate_limit_upsell?.banner_type ?? null,
+  hiddenModelPicker: hidden.model_picker_upsell,
+  hiddenSpendReached: hidden.spend_control.reached,
+  hiddenCredits: hidden.credits.has_credits,
+  streamAllowed: stream.usage.rate_limit.allowed,
+  streamId: stream.stream_id,
+  unrelatedAllowed: unrelated.allowed,
+  openUnchanged,
+  imageQueryAllowed: queries[1].state.data.rate_limit.allowed,
   mainQueryAllowed: queries[0].state.data.rate_limit.allowed,
-  mainQueryUsedPercent: queries[0].state.data.rate_limit.primary_window.used_percent,
-  mainQueryReachedType: queries[0].state.data.rate_limit_reached_type,
-  imageQueryReachedType: queries[1].state.data.rate_limit_reached_type?.type ?? null,
-  typeOnlyCleared,
-  setQueryDataCount,
-  alreadyOpenSkipped,
+  mainQueryWarning: warningTitle(queries[0].state.data),
+  mainQueryPercent: queries[0].state.data.rate_limit.primary_window.used_percent,
+  invalidatedMain,
+  invalidatedImage,
   imageKeyIgnored: api.isRateLimitQueryKey(["rate-limit-status", "image-generation"]) === false,
   plainKeyMatched: api.isRateLimitQueryKey(["rate-limit-status"]) === true,
   scopedKeyMatched: api.isRateLimitQueryKey(["rate-limit-status", "user-1", "acct-1"]) === true,
-  invalidatedAfterDisable,
 }}));
 process.exit(0);
 "#,
@@ -795,7 +823,7 @@ process.exit(0);
     let output = Command::new("node")
         .arg(&harness_path)
         .output()
-        .expect("node should run official mix rate-limit harness");
+        .expect("node should run official usage status harness");
     assert!(
         output.status.success(),
         "node harness failed\nstdout:\n{}\nstderr:\n{}",
