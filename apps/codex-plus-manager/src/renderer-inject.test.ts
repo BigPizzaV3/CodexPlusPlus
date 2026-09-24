@@ -231,9 +231,22 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /function isOfficialLowQuotaComposerAside/);
     assert.match(renderer, /tagName !== "ASIDE"/);
     assert.match(renderer, /rounded-3xl/);
-    assert.match(renderer, /officialUsagePolicy\(\)\.hideAlerts/);
+    assert.match(renderer, /function syncOfficialUsageWindowMode/);
+    assert.match(renderer, /key === "official-hide"/);
+    assert.match(renderer, /officialUsageWindowObserver\?\.disconnect\(\)/);
+    assert.match(renderer, /officialUsageWindowMarker\}="hidden"/);
+    assert.doesNotMatch(scan, /startOfficialUsageWindowBlock|hideOfficialUsageWindowsWithin/);
+    const policyStart = renderer.indexOf("  function syncOfficialUsagePolicy()");
+    const policyEnd = renderer.indexOf("  if (window.__CODEX_PLUS_TEST_RATE_LIMIT_UNLOCK__)", policyStart);
+    assert.ok(policyStart >= 0 && policyEnd > policyStart);
+    const policy = renderer.slice(policyStart, policyEnd);
+    const sameKey = policy.slice(policy.indexOf("if (key === officialUsagePolicyApplied)"), policy.indexOf("const previous"));
+    assert.match(sameKey, /rewriteCachedOfficialUsage/);
+    assert.doesNotMatch(sameKey, /hideOfficialUsageWindowsWithin|querySelectorAll/);
     assert.match(renderer, /function codexPlusPublishUsageData/);
-    assert.match(renderer, /unlockSend/);
+    assert.match(renderer, /unlockSend: mixed/);
+    assert.match(renderer, /limit_reached: false/);
+    assert.doesNotMatch(renderer, /__codexPlusApiQuotaGate/);
     assert.doesNotMatch(renderer, /installExternalApiQuotaGate|__codexPlusApiQuotaBreakpoint|refreshComposers/);
   });
 

@@ -429,7 +429,7 @@ pub fn injection_script(helper_port: u16) -> String {
 
 pub fn hide_official_usage_alert_config(settings: &BackendSettings) -> bool {
     let profile = settings.active_relay_profile();
-    profile.relay_mode == crate::settings::RelayMode::Official && profile.hide_official_usage_alert
+    profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
 
 pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettings) -> String {
@@ -472,7 +472,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             .expect("usage alert config should serialize"),
         format!(
             "{}\n{}",
-            include_str!("../../../assets/inject/api-quota-gate.js"),
+            include_str!("../../../assets/inject/composer-readiness.js"),
             renderer_script()
         ),
         stepwise_runtime,

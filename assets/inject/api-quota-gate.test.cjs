@@ -8,11 +8,15 @@ for (const host of ["remote", "durable", "", null]) assert.equal(permitsExternal
 for (const patch of [{relayProfilesEnabled:false}, {activeRelayId:"missing"}, {relayProfiles:null}, {relayProfiles:{}}]) {
   assert.equal(permitsExternalApi({...settings,...patch}, "local"), false);
 }
+for (const upstreamBaseUrl of [
+  "https://api.openai.com/v1",
+  "https://chatgpt.com/backend-api",
+  "https://sub.openai.com/v1",
+  "https://proxy.example/v1",
+  "file:///tmp",
+  "",
+]) assert.equal(permitsExternalApi({...settings,relayProfiles:[{...profile,upstreamBaseUrl}]}, "local"), true);
 for (const patch of [
   {officialMixApiKey:false}, {relayMode:"pureApi"},
-  {upstreamBaseUrl:"https://api.openai.com/v1"},
-  {upstreamBaseUrl:"https://chatgpt.com/backend-api"},
-  {upstreamBaseUrl:"https://sub.openai.com/v1"},
-  {upstreamBaseUrl:"file:///tmp"}, {upstreamBaseUrl:""},
 ]) assert.equal(permitsExternalApi({...settings,relayProfiles:[{...profile,...patch}]}, "local"), false);
 console.log("external relay official-mix policy passed");
