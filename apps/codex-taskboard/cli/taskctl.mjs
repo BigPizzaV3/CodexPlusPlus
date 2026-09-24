@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 
 import { normalizeCloudUrl } from "../server/cloud-config.mjs";
 import {
-  DEFAULT_PROJECT_ID,
   TASK_STATUSES,
   isTaskPriority,
   isTaskStatus,
@@ -67,7 +66,7 @@ const COMMAND_OPTIONS = new Map([
       "json",
     ]),
   ],
-  ["issue move", new Set(["status", "thread-id", "if-version", "json"])],
+  ["issue move", new Set(["status", "project", "thread-id", "if-version", "json"])],
   ["issue archive", new Set(["thread-id", "if-version", "json"])],
   ["issue restore", new Set(["thread-id", "if-version", "json"])],
   ["issue relation", new Set(["type", "issue", "thread-id", "if-version", "json"])],
@@ -493,8 +492,9 @@ async function createIssue(api, options, overrides) {
   const developmentContext = developmentContextFromOptions(options, overrides);
   const recurrence = recurrenceFromOptions(options);
   const threadId = resolveThreadId(options, overrides);
+  const projectId = await resolveProjectId(api, options, overrides);
   return api.request("POST", "/api/tasks", {
-    projectId: requiredOption(options, "project"),
+    projectId,
     title: requiredOption(options, "title"),
     description: await resolveDescription(options, overrides),
     status,
@@ -541,6 +541,7 @@ async function moveIssue(api, taskId, options, overrides) {
   const threadId = resolveThreadId(options, overrides);
   return api.request("POST", `${taskPath(taskId)}/move`, {
     status,
+    ...optionalField("projectId", options.project),
     threadId,
     version: await resolveVersion(api, taskId, options["if-version"]),
   });
@@ -579,11 +580,37 @@ async function currentContext(api, options, overrides) {
   const matchingProjects = projects
     .filter((candidate) => workspaceContains(candidate?.workspacePath, cwd))
     .sort((left, right) => right.workspacePath.length - left.workspacePath.length);
-  const project = matchingProjects[0]
-    ?? projects.find((candidate) => candidate?.id === DEFAULT_PROJECT_ID)
-    ?? projects[0]
-    ?? null;
+  if (matchingProjects[0]) return { cwd, project: matchingProjects[0] };
+
+  // A packaged Codex runtime can use a compatibility checkout path while the
+  // Taskboard project mapping keeps the canonical source path. Match the
+  // device's Codex project roots by project id before declaring no context.
+  const deviceResponse = await api.request("GET", "/api/device-workspaces");
+  const deviceWorkspaces = deviceResponse.workspaces && typeof deviceResponse.workspaces === "object"
+    ? deviceResponse.workspaces
+    : {};
+  const deviceMatches = projects
+    .filter((candidate) => workspaceContains(deviceWorkspaces[candidate?.id], cwd))
+    .sort((left, right) => (
+      deviceWorkspaces[right.id].length - deviceWorkspaces[left.id].length
+    ));
+  const project = deviceMatches[0] ?? null;
   return { cwd, project };
+}
+
+async function resolveProjectId(api, options, overrides) {
+  if (options.project !== undefined) return requiredOption(options, "project");
+
+  const context = await currentContext(api, {}, overrides);
+  if (context.project?.id) return context.project.id;
+
+  throw new TaskctlError(
+    `No Taskboard project is mapped to the current directory: ${context.cwd}. Pass --project explicitly or map the workspace first.`,
+    {
+      code: "PROJECT_CONTEXT_NOT_FOUND",
+      exitCode: 2,
+    },
+  );
 }
 
 function workspaceContains(workspacePath, cwd) {

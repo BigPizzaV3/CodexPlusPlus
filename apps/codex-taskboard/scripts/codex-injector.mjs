@@ -6,7 +6,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { resolvePort } from "../server/app.mjs";
+import { resolvePort, resolveServerOptions } from "../server/app.mjs";
 import {
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
@@ -23,7 +23,10 @@ const injectorPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(injectorPath), "..");
 const defaultCodexDebuggingPort = 9229;
 const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js");
-const automationPoliciesPath = path.join(projectRoot, ".data", "codex-automation-policies.json");
+const automationPoliciesPath = path.join(
+  resolveServerOptions().dataDirectory,
+  "codex-automation-policies.json",
+);
 const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardPageUrl = `${taskboardOrigin}/?host=codex`;

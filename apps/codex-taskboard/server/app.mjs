@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
@@ -8,7 +9,6 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import {
-  DEFAULT_PROJECT_ID,
   TASK_STATUSES,
   isTaskPriority,
   isTaskStatus,
@@ -671,7 +671,10 @@ function parseTaskCreate(body) {
     "projectId", "title", "description", "status", "priority", "labels", "sortOrder", "threadId",
     "assigneeTarget", "workflowId", "developmentContext", "dueDate", "recurrence",
   ]));
-  const projectId = validateProjectId(body.projectId ?? DEFAULT_PROJECT_ID);
+  if (body.projectId === undefined) {
+    throw new ApiError(400, "INVALID_FIELD", "'projectId' is required");
+  }
+  const projectId = validateProjectId(body.projectId);
   const task = {
     projectId,
     title: stringField(body.title, "title", { required: true, maxLength: 240 }),
@@ -1498,13 +1501,18 @@ async function discoverWorkflowCapabilities(resolved, workspacePath) {
 }
 
 export function resolveServerOptions(options = {}) {
+  const codexHome = path.resolve(
+    options.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"),
+  );
   const configuredDataDirectory = options.dataDirectory ?? process.env.CODEX_TASKBOARD_DATA_DIR;
   const dataDirectory = configuredDataDirectory
     ? path.resolve(configuredDataDirectory)
-    : path.join(PROJECT_ROOT, ".data");
-  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    : path.join(codexHome, "taskboard");
   return {
     dataDirectory,
+    legacyDataDirectory: configuredDataDirectory === undefined
+      ? path.resolve(options.legacyDataDirectory ?? path.join(PROJECT_ROOT, ".data"))
+      : null,
     databasePath: options.databasePath ?? path.join(dataDirectory, "taskboard.sqlite"),
     attachmentsDirectory: options.attachmentsDirectory ?? path.join(dataDirectory, "attachments"),
     cloudConfigPath: options.cloudConfigPath ?? path.join(dataDirectory, "cloud-companion.json"),
@@ -1520,6 +1528,23 @@ export function resolveServerOptions(options = {}) {
     codexProcessesPath: options.codexProcessesPath
       ?? path.join(codexHome, "process_manager", "chat_processes.json"),
   };
+}
+
+function migrateLegacyDataDirectory({ dataDirectory, databasePath, legacyDataDirectory }) {
+  if (
+    !legacyDataDirectory
+    || legacyDataDirectory === dataDirectory
+    || existsSync(databasePath)
+    || !existsSync(path.join(legacyDataDirectory, "taskboard.sqlite"))
+  ) return;
+
+  mkdirSync(dataDirectory, { recursive: true });
+  for (const entry of readdirSync(legacyDataDirectory)) {
+    const destination = path.join(dataDirectory, entry);
+    if (!existsSync(destination)) {
+      cpSync(path.join(legacyDataDirectory, entry), destination, { recursive: true });
+    }
+  }
 }
 
 export function resolvePort(value = process.env.CODEX_TASKBOARD_PORT ?? "47823") {
@@ -1540,6 +1565,7 @@ export function resolveHost(value = process.env.CODEX_TASKBOARD_HOST ?? LOOPBACK
 
 export function createTaskboardServer(options = {}) {
   const resolved = resolveServerOptions(options);
+  migrateLegacyDataDirectory(resolved);
   const sharedSecret = resolveSharedSecret(options.sharedSecret);
   const database = new TaskboardDatabase(resolved.databasePath);
   const events = new EventHub();

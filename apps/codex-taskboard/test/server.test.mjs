@@ -6,7 +6,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 
-import { createTaskboardServer } from "../server/index.mjs";
+import { createTaskboardServer, resolveServerOptions } from "../server/index.mjs";
 
 const runningApps = [];
 const LAN_SHARED_SECRET = "test-taskboard-secret";
@@ -124,6 +124,61 @@ test("health and the default local project are available", async () => {
   assert.equal(result.body.projects[0].name, "无项目");
   assert.equal(result.body.projects[0].workspacePath, null);
   assert.equal(result.body.projects[0].issueCount, 0);
+});
+
+test("default data persists under Codex home instead of the application directory", async () => {
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), "codex-taskboard-home-"));
+  try {
+    const resolved = resolveServerOptions({ codexHome });
+    assert.equal(resolved.dataDirectory, path.join(codexHome, "taskboard"));
+    assert.equal(resolved.databasePath, path.join(codexHome, "taskboard", "taskboard.sqlite"));
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("default data directory imports an existing application-local database once", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "codex-taskboard-data-migration-"));
+  const legacyDataDirectory = path.join(directory, "old-package", ".data");
+  const codexHome = path.join(directory, "codex-home");
+  const legacyApp = createTaskboardServer({ dataDirectory: legacyDataDirectory });
+  legacyApp.database.createProject({ id: "project", name: "Project", workspacePath: "/workspace" });
+  legacyApp.database.createTask({
+    projectId: "project",
+    title: "Preserved issue",
+    description: "",
+    status: "todo",
+    priority: "none",
+    labels: [],
+    actor: { type: "agent", id: "agent", name: "Agent", avatarUrl: null },
+    assignee: { type: "agent", id: "agent", name: "Agent", avatarUrl: null },
+    workflowId: null,
+    developmentContext: null,
+    dueDate: null,
+    recurrence: null,
+  });
+  await legacyApp.close();
+
+  const migratedApp = createTaskboardServer({ codexHome, legacyDataDirectory });
+  try {
+    assert.equal(migratedApp.options.dataDirectory, path.join(codexHome, "taskboard"));
+    assert.equal(migratedApp.database.listTasks({ projectId: "project" })[0].title, "Preserved issue");
+  } finally {
+    await migratedApp.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("task creation requires an explicit project", async () => {
+  const baseUrl = await startServer();
+  const result = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Missing project" },
+  });
+
+  assert.equal(result.response.status, 400);
+  assert.equal(result.body.error.code, "INVALID_FIELD");
+  assert.match(result.body.error.message, /projectId.*required/i);
 });
 
 test("workflow workspaces persist centrally with optimistic concurrency", async () => {
@@ -1279,7 +1334,7 @@ test("moving a task updates its status and sort order", async () => {
   const baseUrl = await startServer();
   const createResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Move me" },
+    body: { projectId: "local", title: "Move me" },
   });
   const task = createResult.body.task;
 
@@ -1304,7 +1359,7 @@ test("moving a task can transfer it to another project", async () => {
 
   const createResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Move projects" },
+    body: { projectId: "local", title: "Move projects" },
   });
   const task = createResult.body.task;
   assert.equal(task.projectId, "local");
@@ -1356,6 +1411,7 @@ test("tasks can bind, change, and unbind one project workflow", async () => {
   const createResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
     body: {
+      projectId: "local",
       title: "Bind workflow",
       workflowId: "issue-delivery",
     },
@@ -1511,11 +1567,11 @@ test("issue relationship changes are broadcast in realtime", async () => {
   const baseUrl = await startServer();
   const first = (await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Realtime source" },
+    body: { projectId: "local", title: "Realtime source" },
   })).body.task;
   const second = (await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Realtime target" },
+    body: { projectId: "local", title: "Realtime target" },
   })).body.task;
 
   const eventResponse = await fetch(`${baseUrl}/api/events`);
@@ -1555,7 +1611,7 @@ test("all task statuses are accepted, filtered, and listed in workflow order", a
   for (const status of statuses) {
     const createResult = await request(baseUrl, "/api/tasks", {
       method: "POST",
-      body: { title: status, status },
+      body: { projectId: "local", title: status, status },
     });
     assert.equal(createResult.response.status, 201);
     assert.equal(createResult.body.task.status, status);
@@ -1578,7 +1634,7 @@ test("task and comment mutations keep content-specific conversation attribution"
   const baseUrl = await startServer();
   const createResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Keep attribution", threadId: "thread-original" },
+    body: { projectId: "local", title: "Keep attribution", threadId: "thread-original" },
   });
   const task = createResult.body.task;
   const updateResult = await request(baseUrl, `/api/tasks/${task.id}`, {
@@ -1611,7 +1667,7 @@ test("stale updates receive a version conflict", async () => {
   const baseUrl = await startServer();
   const createResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Concurrent edit" },
+    body: { projectId: "local", title: "Concurrent edit" },
   });
   const task = createResult.body.task;
 
@@ -1637,7 +1693,7 @@ test("issue comments can be created, edited, listed, and deleted", async () => {
   const baseUrl = await startServer();
   const createTaskResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Discuss me" },
+    body: { projectId: "local", title: "Discuss me" },
   });
   const task = createTaskResult.body.task;
 
@@ -1706,7 +1762,7 @@ test("taskctl issue creation and comments use the Codex Agent identity", async (
   const createTaskResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
     headers: agentHeaders,
-    body: { title: "Created by Codex", threadId: "thread-agent-create" },
+    body: { projectId: "local", title: "Created by Codex", threadId: "thread-agent-create" },
   });
   assert.equal(createTaskResult.response.status, 201);
   const task = createTaskResult.body.task;
@@ -1745,7 +1801,7 @@ test("Codex-hosted user mutations persist the current account identity and avata
   const createTaskResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
     headers: userHeaders,
-    body: { title: "Created in Codex UI" },
+    body: { projectId: "local", title: "Created in Codex UI" },
   });
   assert.equal(createTaskResult.response.status, 201);
   const task = createTaskResult.body.task;
@@ -1831,7 +1887,7 @@ test("issue attachments can be uploaded, listed, opened, downloaded, and deleted
   const baseUrl = await startServer();
   const createTaskResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Attach files" },
+    body: { projectId: "local", title: "Attach files" },
   });
   const task = createTaskResult.body.task;
 
@@ -1900,7 +1956,7 @@ test("comments support attachments and deleting a comment removes its files", as
   const baseUrl = await startServer();
   const createTaskResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Comment files" },
+    body: { projectId: "local", title: "Comment files" },
   });
   const task = createTaskResult.body.task;
   const createCommentResult = await request(baseUrl, `/api/tasks/${task.id}/comments`, {
@@ -1950,7 +2006,7 @@ test("attachment uploads reject unsafe filenames", async () => {
   const baseUrl = await startServer();
   const createTaskResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Validate attachments" },
+    body: { projectId: "local", title: "Validate attachments" },
   });
   const task = createTaskResult.body.task;
 
@@ -1971,14 +2027,14 @@ test("request boundaries reject unknown fields and invalid values", async () => 
 
   const unknown = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Invalid", unexpected: true },
+    body: { projectId: "local", title: "Invalid", unexpected: true },
   });
   assert.equal(unknown.response.status, 400);
   assert.equal(unknown.body.error.code, "UNKNOWN_FIELD");
 
   const invalid = await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Invalid", status: "started" },
+    body: { projectId: "local", title: "Invalid", status: "started" },
   });
   assert.equal(invalid.response.status, 400);
   assert.equal(invalid.body.error.code, "INVALID_FIELD");
@@ -1989,6 +2045,7 @@ test("request boundaries reject unknown fields and invalid values", async () => 
   const invalidWorktree = await request(baseUrl, "/api/tasks", {
     method: "POST",
     body: {
+      projectId: "local",
       title: "Invalid",
       developmentContext: { type: "worktree", path: "/tmp/bad\0path", branch: null },
     },
@@ -2012,7 +2069,7 @@ test("task changes from one LAN client are broadcast to another client", async (
   const createResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
     headers: lanHeaders,
-    body: { title: "Broadcast me" },
+    body: { projectId: "local", title: "Broadcast me" },
   });
   assert.equal(createResult.response.status, 201);
 

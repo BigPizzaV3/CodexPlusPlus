@@ -75,6 +75,18 @@ test("Basic authentication requires an exact shared-secret match", async () => {
   assert.match(rejected.response.headers.get("www-authenticate") ?? "", /^Basic\b/i);
 });
 
+test("cloud task creation requires an explicit project", async () => {
+  const result = await cloud.request("/api/tasks", {
+    method: "POST",
+    actorName: alice,
+    json: { title: "Missing project" },
+  });
+
+  assert.equal(result.response.status, 400);
+  assert.equal(result.body.error.code, "INVALID_FIELD");
+  assert.match(result.body.error.message, /projectId.*required/i);
+});
+
 test("the Basic username becomes the trusted actor while the shared password grants access", async () => {
   const project = await createProject("alpha");
   assert.equal(project.response.status, 201);

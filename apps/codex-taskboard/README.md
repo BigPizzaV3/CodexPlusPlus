@@ -23,7 +23,10 @@ npm run build
 npm start
 ```
 
-Open <http://127.0.0.1:47823>. The SQLite database is stored at `.data/taskboard.sqlite`.
+Open <http://127.0.0.1:47823>. The SQLite database is stored at
+`$CODEX_HOME/taskboard/taskboard.sqlite` (normally `~/.codex/taskboard/taskboard.sqlite`).
+On first start after upgrading, an existing application-local `.data` directory is imported
+when the stable database does not exist.
 
 For development with live frontend reload:
 
@@ -44,12 +47,18 @@ npm run taskctl -- project create \
   --workspace-path /absolute/path/to/repository
 
 npm run taskctl -- issue create \
-  --project my-project \
   --title "Implement the next slice" \
   --status todo \
   --priority high \
   --labels product,mvp
 ```
+
+When run inside a mapped project workspace, `taskctl` resolves the project
+automatically. Use `--project` when creating from another directory or when
+you intentionally want a different project. If the current directory is not
+mapped, creation fails instead of silently filing the issue under `local`.
+Use `issue move ID --project PROJECT_ID --status STATUS` to migrate an existing
+issue between projects.
 
 Use `npm link` if you want `taskctl` on your shell path. Set `CODEX_TASKBOARD_URL` to point the CLI at another local service. Cloud deployments are configured through the loopback companion with `taskctl cloud login`.
 
@@ -118,7 +127,7 @@ To use a different UI origin, set `window.__CODEX_TASKBOARD_URL__` before the us
 | `CODEX_TASKBOARD_HOST` | `127.0.0.1` | HTTP bind address; set `0.0.0.0` only to explicitly share on a private LAN |
 | `TASKBOARD_SHARED_SECRET` | unset | Required for `0.0.0.0`; protects every request with Basic authentication |
 | `CODEX_TASKBOARD_PORT` | `47823` | Local HTTP port |
-| `CODEX_TASKBOARD_DATA_DIR` | `.data` | SQLite data directory |
+| `CODEX_TASKBOARD_DATA_DIR` | `$CODEX_HOME/taskboard` | SQLite data directory |
 | `CODEX_TASKBOARD_URL` | `http://127.0.0.1:47823` | CLI API origin |
 
 By default, the service binds only to `127.0.0.1`. LAN sharing is opt-in: set `CODEX_TASKBOARD_HOST=0.0.0.0` and a non-empty `TASKBOARD_SHARED_SECRET`. Startup prints a warning before binding and then lists detected LAN URLs. Every LAN request must use Basic authentication and an HTTP `Origin` matching its `Host`; cross-origin requests are rejected and the server does not emit wildcard CORS headers. Do not expose the service to the public internet.

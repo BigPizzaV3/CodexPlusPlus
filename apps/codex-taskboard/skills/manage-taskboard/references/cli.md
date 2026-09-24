@@ -42,7 +42,7 @@ taskctl issue get ID [--json]
 
 ```bash
 taskctl issue create \
-  --project PROJECT_ID \
+  [--project PROJECT_ID] \
   --title TITLE \
   [--description TEXT | --description-file FILE] \
   [--status STATUS] \
@@ -60,6 +60,14 @@ taskctl issue create \
 Statuses are `backlog`, `todo`, `in_progress`, `in_review`, `blocked`, `done`, and `canceled`. Priorities are `none`, `urgent`, `high`, `medium`, and `low`.
 
 Issues created through `taskctl` are assigned to Codex Agent by default. Other CLI writes preserve the existing assignee.
+
+When `issue create` omits `--project`, `taskctl` resolves the most specific project
+whose mapped workspace contains its current directory. If no workspace matches,
+creation fails and asks for an explicit `--project` or a workspace mapping; it
+does not silently use the `local` project.
+
+`issue move` accepts `--project PROJECT_ID` to migrate an existing issue to
+another project while changing its status.
 
 ## Update issues
 
@@ -81,7 +89,7 @@ taskctl issue update ID \
   [--if-version N] \
   [--json]
 
-taskctl issue move ID --status STATUS [--thread-id ID] [--if-version N] [--json]
+taskctl issue move ID --status STATUS [--project PROJECT_ID] [--thread-id ID] [--if-version N] [--json]
 taskctl issue archive ID [--thread-id ID] [--if-version N] [--json]
 taskctl issue restore ID [--thread-id ID] [--if-version N] [--json]
 ```

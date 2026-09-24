@@ -727,8 +727,11 @@ function parseTaskCreate(body) {
     "dueDate",
     "recurrence",
   ]));
+  if (body.projectId === undefined) {
+    throw new ApiError(400, "INVALID_FIELD", "'projectId' is required");
+  }
   const input = {
-    projectId: validateProjectId(body.projectId ?? "local"),
+    projectId: validateProjectId(body.projectId),
     title: stringField(body.title, "title", { required: true, maxLength: 240 }),
     description: stringField(body.description ?? "", "description", { maxLength: 100_000 }),
     status: parseStatus(body.status, "backlog"),

@@ -451,17 +451,94 @@ test("context current selects the project with the most specific matching worksp
   });
 });
 
-test("context current falls back to the local project", async () => {
+test("context current returns no project when the directory is unmapped", async () => {
   const result = await run(
     ["context", "current", "--cwd", "/unmatched"],
-    async () => response({ projects: [
-      { id: "other", workspacePath: "/work/other" },
-      { id: "local", name: "Local", workspacePath: null },
-    ] }),
+    async (url) => url.pathname === "/api/projects"
+      ? response({ projects: [
+        { id: "other", workspacePath: "/work/other" },
+        { id: "local", name: "Local", workspacePath: null },
+      ] })
+      : response({ workspaces: {} }),
   );
 
   assert.equal(result.exitCode, 0);
-  assert.equal(result.stdout.project.id, "local");
+  assert.equal(result.stdout.project, null);
+});
+
+test("context current matches a Codex compatibility checkout by project id", async () => {
+  const result = await run(
+    ["context", "current", "--cwd", "D:\\codex\\dashi-taskboard"],
+    async (url) => url.pathname === "/api/projects"
+      ? response({ projects: [
+        { id: "local", name: "无项目", workspacePath: null },
+        { id: "repo", name: "codex-taskboard", workspacePath: "D:\\codex\\canonical\\apps\\codex-taskboard" },
+      ] })
+      : response({ workspaces: { repo: "D:\\codex\\dashi-taskboard" } }),
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.project.id, "repo");
+});
+
+test("issue create resolves the project from the current workspace when omitted", async () => {
+  const repoWorkspace = path.join(path.parse(process.cwd()).root, "work", "repo");
+  let calls = 0;
+  let requestBody;
+  const result = await run(
+    ["issue", "create", "--title", "Auto-project"],
+    async (url, init) => {
+      calls += 1;
+      if (url.pathname === "/api/projects") {
+        return response({
+          projects: [
+            { id: "local", name: "无项目", workspacePath: null },
+            { id: "repo", name: "Repo", workspacePath: repoWorkspace },
+          ],
+        });
+      }
+      requestBody = JSON.parse(init.body);
+      return response({ task: { id: "TASK-1", ...requestBody, version: 1 } }, 201);
+    },
+    { cwd: path.join(repoWorkspace, "packages", "app") },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls, 2);
+  assert.equal(requestBody.projectId, "repo");
+});
+
+test("issue create refuses to fall back to the local project when unmapped", async () => {
+  const result = await run(
+    ["issue", "create", "--title", "Unmapped"],
+    async (url) => url.pathname === "/api/projects"
+      ? response({ projects: [{ id: "local", name: "无项目", workspacePath: null }] })
+      : response({ workspaces: {} }),
+    { cwd: "/unmatched" },
+  );
+
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.stderr.error.code, "PROJECT_CONTEXT_NOT_FOUND");
+  assert.match(result.stderr.error.message, /--project/);
+});
+
+test("issue move can migrate an issue to another project", async () => {
+  let requestBody;
+  const result = await run(
+    ["issue", "move", "LOCAL-1", "--status", "todo", "--project", "repo", "--if-version", "3"],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return response({ task: { id: "LOCAL-1", projectId: "repo", status: "todo", version: 4 } });
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(requestBody, {
+    status: "todo",
+    projectId: "repo",
+    threadId: "thread-current",
+    version: 3,
+  });
 });
 
 test("issue and comment writes require Codex conversation attribution", async () => {
