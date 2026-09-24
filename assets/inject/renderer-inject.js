@@ -382,8 +382,6 @@
   const taskboardPanelUrl = "http://127.0.0.1:47823/?host=codex";
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
-  const projectMoveButtonClass = "codex-project-move-button";
-  const projectMoveOverlayClass = "codex-project-move-overlay";
   const actionButtonClass = "codex-session-action-button";
   const actionGroupClass = "codex-session-actions";
   const moreButtonClass = "codex-session-more-button";
@@ -416,14 +414,11 @@
   const codexDeleteStyleVersion = "20";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
-  const codexPlusMenuRightReservePx = 120;
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
   const codexPlusPageClass = "codex-plus-page-overlay";
-  const codexPlusSurfaceVersion = "2";
-  const codexDeleteVersion = "10";
+  const codexDeleteVersion = "7";
   const codexExportVersion = "1";
-  const codexProjectMoveVersion = "1";
-  const codexActionGroupVersion = "10";
+  const codexActionGroupVersion = "6";
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationViewVersion = "1";
@@ -475,9 +470,6 @@
   ]);
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
-  document.querySelectorAll(`.${codexPlusPageClass}, .codex-plus-modal-overlay`).forEach((node) => {
-    if (node.dataset.codexPlusSurfaceVersion !== codexPlusSurfaceVersion) node.remove();
-  });
   let lastSessionActionTrigger = null;
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
@@ -595,8 +587,6 @@
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
     appHeader: '[class*="ApplicationMenuTopBar"], .app-header-tint',
-    nativeMenuBar: '[class*="menubar"], [class*="menu-bar"]',
-    headerContextMenuSurface: '[class*="context-menu"], [role="menu"]',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
     disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
@@ -625,15 +615,6 @@
         gap: 2px;
         background: transparent;
       }
-      .${actionGroupClass}[data-codex-action-native-slot="true"] {
-        position: relative;
-        right: auto;
-        top: auto;
-        transform: none;
-        z-index: auto;
-        flex: 0 0 auto;
-        gap: 8px;
-      }
       .${actionButtonClass} {
         width: 20px;
         height: 20px;
@@ -643,7 +624,7 @@
         border: 0;
         border-radius: 6px;
         background: transparent;
-        color: var(--color-token-text-secondary, color-mix(in srgb, CanvasText 58%, transparent));
+        color: var(--codex-session-action-color, var(--token-text-tertiary, rgba(255,255,255,.5)));
         font: 14px/1 system-ui, sans-serif;
         padding: 0;
         cursor: default;
@@ -653,41 +634,12 @@
         display: block;
         width: 16px;
         height: 16px;
-        fill: currentColor;
-        stroke: none;
       }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
-        background: var(--color-token-list-hover-background, color-mix(in srgb, currentColor 8%, transparent));
-        color: var(--color-token-foreground, CanvasText);
+        background: var(--codex-session-action-hover-background, transparent);
+        color: var(--codex-session-action-hover-color, var(--codex-session-action-color, var(--token-text-default, #f4f4f5)));
         outline: none;
-      }
-      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass} {
-        width: var(--codex-session-native-action-width, 20px);
-        height: var(--codex-session-native-action-height, 20px);
-        border-radius: var(--codex-session-native-action-radius, 10px);
-        background: transparent;
-        color: var(--codex-session-native-action-color, inherit);
-        font: inherit;
-      }
-      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass} svg {
-        fill: none;
-        stroke: none;
-      }
-      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass}:hover,
-      .${actionGroupClass}[data-codex-action-native-slot="true"] .${actionButtonClass}:focus-visible {
-        background: var(--color-token-list-hover-background, color-mix(in srgb, currentColor 8%, transparent));
-        color: var(--color-token-foreground, CanvasText);
-      }
-      .codex-session-action-row:hover .codex-session-action-rail,
-      .codex-session-action-row:focus-within .codex-session-action-rail {
-        min-width: var(--codex-session-action-rail-width, 48px);
-      }
-      .codex-session-action-row:hover .codex-session-action-native-container,
-      .codex-session-action-row:focus-within .codex-session-action-native-container,
-      .codex-session-action-row.codex-session-more-open .codex-session-action-native-container {
-        width: var(--codex-session-action-container-width, 52px);
-        min-width: var(--codex-session-action-container-width, 52px);
       }
       .${moreMenuClass} {
         position: fixed;
@@ -963,158 +915,9 @@
         outline: none;
       }
       .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-        border-color: #ef4444;
-        background: #dc2626;
-        color: #ffffff;
-      }
-      /* Dark theme overrides for delete-confirm and project-move dialogs.
-         Triggered either by Codex applying a "dark" class / data-theme="dark"
-         on its document root, or by the OS-level prefers-color-scheme hint.
-         Palette matches the existing Codex++ dark modal (.codex-plus-modal-content). */
-      html.dark .codex-delete-confirm-overlay,
-      html[data-theme="dark"] .codex-delete-confirm-overlay,
-      :root[data-theme="dark"] .codex-delete-confirm-overlay {
-        background: rgba(0,0,0,.55);
-      }
-      html.dark .codex-delete-confirm-content,
-      html[data-theme="dark"] .codex-delete-confirm-content,
-      :root[data-theme="dark"] .codex-delete-confirm-content {
-        border-color: rgba(255,255,255,.12);
-        background: #2b2b2b;
-        color: #f3f4f6;
-        box-shadow: 0 24px 80px rgba(0,0,0,.55);
-      }
-      html.dark .codex-delete-confirm-message,
-      html[data-theme="dark"] .codex-delete-confirm-message,
-      :root[data-theme="dark"] .codex-delete-confirm-message {
-        color: #d1d5db;
-      }
-      html.dark .codex-delete-confirm-actions button,
-      html[data-theme="dark"] .codex-delete-confirm-actions button,
-      :root[data-theme="dark"] .codex-delete-confirm-actions button {
-        border-color: rgba(255,255,255,.18);
-        background: #3f3f46;
-        color: #f3f4f6;
-      }
-      html.dark .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
-      html[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"],
-      :root[data-theme="dark"] .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-        border-color: #ef4444;
-        background: #dc2626;
-        color: #ffffff;
-      }
-      html.dark .${projectMoveOverlayClass},
-      html[data-theme="dark"] .${projectMoveOverlayClass},
-      :root[data-theme="dark"] .${projectMoveOverlayClass} {
-        background: rgba(0,0,0,.55);
-      }
-      html.dark .codex-project-move-panel,
-      html[data-theme="dark"] .codex-project-move-panel,
-      :root[data-theme="dark"] .codex-project-move-panel {
-        border-color: rgba(255,255,255,.12);
-        background: #2b2b2b;
-        color: #f3f4f6;
-        box-shadow: 0 18px 60px rgba(0,0,0,.55);
-      }
-      html.dark .codex-project-move-header,
-      html[data-theme="dark"] .codex-project-move-header,
-      :root[data-theme="dark"] .codex-project-move-header {
-        border-bottom-color: rgba(255,255,255,.1);
-      }
-      html.dark .codex-project-move-item,
-      html[data-theme="dark"] .codex-project-move-item,
-      :root[data-theme="dark"] .codex-project-move-item {
-        color: #f3f4f6;
-      }
-      html.dark .codex-project-move-item:hover,
-      html.dark .codex-project-move-item:focus-visible,
-      html[data-theme="dark"] .codex-project-move-item:hover,
-      html[data-theme="dark"] .codex-project-move-item:focus-visible,
-      :root[data-theme="dark"] .codex-project-move-item:hover,
-      :root[data-theme="dark"] .codex-project-move-item:focus-visible {
-        background: rgba(255,255,255,.08);
-      }
-      html.dark .codex-project-move-item-path,
-      html[data-theme="dark"] .codex-project-move-item-path,
-      :root[data-theme="dark"] .codex-project-move-item-path,
-      html.dark .codex-project-move-empty,
-      html[data-theme="dark"] .codex-project-move-empty,
-      :root[data-theme="dark"] .codex-project-move-empty {
-        color: #9ca3af;
-      }
-      @media (prefers-color-scheme: dark) {
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-overlay {
-          background: rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-content {
-          border-color: rgba(255,255,255,.12);
-          background: #2b2b2b;
-          color: #f3f4f6;
-          box-shadow: 0 24px 80px rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-message {
-          color: #d1d5db;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions button {
-          border-color: rgba(255,255,255,.18);
-          background: #3f3f46;
-          color: #f3f4f6;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
-          border-color: #ef4444;
-          background: #dc2626;
-          color: #ffffff;
-        }
-        html:not(.light):not([data-theme="light"]) .${projectMoveOverlayClass} {
-          background: rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-panel {
-          border-color: rgba(255,255,255,.12);
-          background: #2b2b2b;
-          color: #f3f4f6;
-          box-shadow: 0 18px 60px rgba(0,0,0,.55);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-header {
-          border-bottom-color: rgba(255,255,255,.1);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item {
-          color: #f3f4f6;
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item:hover,
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item:focus-visible {
-          background: rgba(255,255,255,.08);
-        }
-        html:not(.light):not([data-theme="light"]) .codex-project-move-item-path,
-        html:not(.light):not([data-theme="light"]) .codex-project-move-empty {
-          color: #9ca3af;
-        }
-      }
-      #${codexPlusMenuId}.${codexPlusMenuFloatingClass} {
-        position: fixed;
-        top: var(--codex-plus-menu-top, 0);
-        right: var(--codex-plus-menu-right, ${140 + codexPlusMenuRightReservePx}px);
-        left: auto;
-        z-index: 2147483645;
-        height: var(--codex-plus-menu-height, 30px);
-        color: #d1d5db;
-        font: 13px system-ui, sans-serif;
-        text-align: right;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-      }
-      #${codexPlusMenuId}:not(.${codexPlusMenuFloatingClass}) {
-        margin-right: ${codexPlusMenuRightReservePx}px;
-      }
-      #${codexPlusMenuId} {
-        display: inline-flex;
-        align-items: center;
-        height: 100%;
-        flex: 0 0 auto;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
+        border-color: var(--color-border-danger, #dc2626);
+        background: var(--color-background-danger-solid, #dc2626);
+        color: var(--color-text-danger-solid, #fff);
       }
       .codex-plus-modal-overlay {
         position: fixed;
@@ -1457,7 +1260,7 @@
       }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
-        background: var(--codex-session-action-hover-background, transparent);
+        background: var(--codex-session-action-hover-background, var(--codex-plus-bg-hover));
         color: var(--codex-session-action-hover-color, var(--codex-plus-text));
       }
       .${sessionShareButtonClass}:hover,
@@ -1604,7 +1407,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, taskboard: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, taskboard: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1623,7 +1426,6 @@
     stepwise: "codexAppStepwiseEnabled",
     taskboard: "codexTaskboardEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
-    taskboard: "codexTaskboardEnabled",
     pasteFix: "codexAppPasteFix",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
@@ -1664,7 +1466,6 @@
         stepwise: false,
         taskboard: false,
         answerOutline: false,
-        taskboard: false,
         dreamSkinEnabled: false,
         dreamSkinPaused: false,
         dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {},
@@ -4296,9 +4097,7 @@
   }
 
   async function openTaskboardFromCodex() {
-    if (openCodexTaskboardInlinePage()) {
-      return;
-    }
+    if (openCodexTaskboardInlinePage()) return;
     const taskboardWindow = window.open(taskboardPanelUrl, "_blank");
     const result = await postJson("/taskboard/open", {});
     if (result.status === "ok") {
@@ -4312,9 +4111,7 @@
       showToast("任务面板已打开", null);
       return;
     }
-    if (taskboardWindow && !taskboardWindow.closed) {
-      taskboardWindow.close();
-    }
+    if (taskboardWindow && !taskboardWindow.closed) taskboardWindow.close();
     showToast(result.message || "打开任务面板失败", null);
   }
 
@@ -4575,7 +4372,6 @@
     const overlay = document.createElement("div");
     overlay.className = pageMode ? codexPlusPageClass : "codex-plus-modal-overlay";
     overlay.dataset.codexPlusPage = String(pageMode);
-    overlay.dataset.codexPlusSurfaceVersion = codexPlusSurfaceVersion;
     applyCodexPlusTheme(overlay);
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
@@ -4948,7 +4744,6 @@
       button.removeAttribute("disabled");
       button.removeAttribute("aria-disabled");
       button.setAttribute("aria-label", "Codex++");
-      button.dataset.codexPlusOpenHandlerVersion = codexPlusBuild;
       button.textContent = "";
       button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="truncate">Codex++</span><span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`;
       button.addEventListener("click", (event) => {
@@ -4963,113 +4758,10 @@
         parent.appendChild(wrapper);
       }
     }
-    const sidebarButton = wrapper.querySelector("button");
-    if (sidebarButton instanceof HTMLElement && sidebarButton.dataset.codexPlusOpenHandlerVersion !== codexPlusBuild) {
-      const replacement = sidebarButton.cloneNode(true);
-      if (replacement instanceof HTMLElement) {
-        replacement.dataset.codexPlusOpenHandlerVersion = codexPlusBuild;
-        replacement.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          openCodexPlusPage();
-        }, true);
-        sidebarButton.replaceWith(replacement);
-      }
-    }
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
     setCodexPlusSidebarNavActive(active);
-  }
-
-  function normalizeCodexPlusTriggerClassName(className) {
-    const classes = String(className || "").split(/\s+/).filter(Boolean);
-    const incompatibleNativeGroupClasses = new Set(["gap-0", "rounded-l-none", "border-l-0", "pl-0.5", "pr-1.5"]);
-    const hasIncompatibleNativeGroupClass = classes.some((name) => incompatibleNativeGroupClasses.has(name));
-    const normalized = classes.filter((name) => !incompatibleNativeGroupClasses.has(name));
-    if (hasIncompatibleNativeGroupClass) {
-      ["gap-1", "rounded-lg", "border-l", "px-2"].forEach((name) => {
-        if (!normalized.includes(name)) normalized.push(name);
-      });
-    }
-    return normalized.join(" ");
-  }
-
-  function configureCodexPlusTrigger(menu, trigger, nativeButtonClass) {
-    if (!trigger) return;
-    if (nativeButtonClass) trigger.className = normalizeCodexPlusTriggerClassName(nativeButtonClass);
-    if (!trigger.querySelector(".codex-plus-backend-indicator")) {
-      const indicator = document.createElement("span");
-      indicator.className = "codex-plus-backend-indicator";
-      indicator.dataset.codexBackendIndicator = "true";
-      indicator.dataset.status = codexPlusBackendStatus.status || "checking";
-      trigger.prepend(indicator);
-    }
-    if (trigger.dataset.codexPlusTriggerInstalled === "5") return;
-    trigger.dataset.codexPlusTriggerInstalled = "5";
-    trigger.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openCodexPlusModal();
-    }, true);
-  }
-
-  function numericCssValue(value) {
-    const parsed = Number.parseFloat(value || "");
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-
-  function setCssPropIfChanged(menu, prop, value) {
-    if (menu.style.getPropertyValue(prop) !== value) {
-      menu.style.setProperty(prop, value);
-    }
-  }
-
-  function headerTitleRegion(header) {
-    const candidates = Array.from(header?.querySelectorAll?.('[data-state], [class*="truncate"], [class*="text-base"]') || []);
-    return candidates.find((node) => {
-      if (!node?.querySelector?.('[data-state], button')) return false;
-      if (!node.textContent?.trim()) return false;
-      return node.closest?.(".draggable") || node.closest?.('[class*="grid-cols-[minmax(0,1fr)]"]');
-    }) || null;
-  }
-
-  function isHeaderToolbarButton(button, header, rect) {
-    if (!button || button.closest?.(`#${codexPlusMenuId}`)) return false;
-    if (!(rect.width > 0 && rect.height > 0 && rect.left > window.innerWidth / 2)) return false;
-    const buttonCluster = button.closest(".ms-auto.flex.shrink-0.items-center");
-    if (buttonCluster && header?.contains(buttonCluster)) return true;
-    const titleRegion = headerTitleRegion(header);
-    if (titleRegion?.contains?.(button)) return false;
-    return !!button.closest?.('[class*="ms-auto"][class*="shrink-0"][class*="items-center"]');
-  }
-
-  function updateFloatingCodexPlusMenuPosition(menu) {
-    if (!menu?.classList?.contains(codexPlusMenuFloatingClass)) return;
-    const header = document.querySelector(selectors.appHeader);
-    if (!header) return;
-    const toolbarButtons = Array.from(header.querySelectorAll("button"))
-      .map((button) => ({ button, rect: button.getBoundingClientRect() }))
-      .filter(({ button, rect }) => isHeaderToolbarButton(button, header, rect))
-      .sort((left, right) => left.rect.left - right.rect.left);
-    const anchor = toolbarButtons[0];
-    if (anchor) {
-      const measuredGap = toolbarButtons[1] ? toolbarButtons[1].rect.left - toolbarButtons[0].rect.right : 0;
-      const styles = anchor.button.parentElement ? getComputedStyle(anchor.button.parentElement) : null;
-      const gap = Math.max(numericCssValue(styles?.columnGap || styles?.gap), measuredGap, 0);
-      setCssPropIfChanged(menu, "--codex-plus-menu-top", `${anchor.rect.top}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-height", `${anchor.rect.height}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-right", `${Math.max(0, window.innerWidth - anchor.rect.left + gap + codexPlusMenuRightReservePx)}px`);
-      return;
-    }
-
-    const headerRect = header.getBoundingClientRect();
-    if (headerRect.height) {
-      const isApplicationMenuTopBar = header.matches?.('[class*="ApplicationMenuTopBar"]');
-      setCssPropIfChanged(menu, "--codex-plus-menu-top", `${isApplicationMenuTopBar ? Math.max(4, headerRect.top) : headerRect.top}px`);
-      setCssPropIfChanged(menu, "--codex-plus-menu-height", `${isApplicationMenuTopBar ? 28 : headerRect.height}px`);
-    }
-    menu.style.removeProperty("--codex-plus-menu-right");
   }
 
   const codexPluginRemoteOnlyMarketplaceKinds = new Set(["created-by-me-remote", "shared-with-me"]);
@@ -9259,6 +8951,7 @@
       .filter((node) => !node.closest(`.${actionGroupClass}`))
       .filter((node) => {
         const rect = node.getBoundingClientRect();
+        if (rect.width < 12 || rect.height < 12) return false;
         const label = [
           node.getAttribute("aria-label"),
           node.getAttribute("title"),
@@ -9269,76 +8962,13 @@
           .join(" ")
           .toLowerCase();
         if (/(pin|archive|置顶|归档)/i.test(label)) return true;
-        if (rect.width < 12 || rect.height < 12) return false;
         const rowRect = row.getBoundingClientRect();
         return rect.left > rowRect.left + rowRect.width * 0.68;
       });
   }
 
-  function nativeActionContainerFromRow(row) {
-    const buttons = nativeActionButtonsFromRow(row);
-    if (!buttons.length) return null;
-    const needed = Math.min(2, buttons.length);
-    for (const button of buttons) {
-      for (let node = button.parentElement; node && node !== row; node = node.parentElement) {
-        if (node.querySelector?.(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`)) continue;
-        if (buttons.filter((candidate) => node.contains(candidate)).length >= needed) return node;
-      }
-    }
-    return null;
-  }
-
-  function nativeActionRailFromRow(row) {
-    const nativeContainer = nativeActionContainerFromRow(row);
-    return [...row.querySelectorAll("div")].find((node) =>
-      node !== nativeContainer &&
-      node.classList.contains("group-hover:min-w-12") &&
-      node.classList.contains("group-has-[:focus-visible]:min-w-12")
-    ) || null;
-  }
-
-  function syncNativeActionGroupStyle(row, group) {
-    group.style.removeProperty("--codex-session-action-mask-background");
-    const nativeButton = nativeActionButtonsFromRow(row)[0];
-    const nativeContainer = nativeActionContainerFromRow(row);
-    if (nativeButton) {
-      const style = getComputedStyle(nativeButton);
-      group.style.setProperty("--codex-session-native-action-width", style.width);
-      group.style.setProperty("--codex-session-native-action-height", style.height);
-      group.style.setProperty("--codex-session-native-action-radius", style.borderRadius);
-      group.style.setProperty("--codex-session-native-action-color", style.color);
-    }
-    const rail = nativeActionRailFromRow(row);
-    if (!nativeContainer || !rail) return;
-    const groupWidth = group.getBoundingClientRect().width || 0;
-    const containerGap = parseFloat(getComputedStyle(nativeContainer).gap) || 8;
-    const nativeButtons = nativeActionButtonsFromRow(row);
-    const nativeButtonsWidth = nativeButtons.reduce(
-      (total, button) => total + button.getBoundingClientRect().width,
-      Math.max(0, nativeButtons.length - 1) * containerGap
-    );
-    const containerWidth = Math.max(52, nativeButtonsWidth);
-    const actionWidth = Math.ceil(Math.max(48, groupWidth + containerWidth + containerGap));
-    row.classList.add("codex-session-action-row");
-    nativeContainer.classList.add("codex-session-action-native-container");
-    nativeContainer.style.setProperty("--codex-session-action-container-width", `${actionWidth}px`);
-    rail.classList.add("codex-session-action-rail");
-    rail.style.setProperty(
-      "--codex-session-action-rail-width",
-      `${actionWidth}px`
-    );
-  }
-
   function syncActionGroupLayout(row, group) {
     if (!row || !group) return;
-    if (group.dataset.codexActionNativeSlot === "true") {
-      syncNativeActionGroupStyle(row, group);
-      group.style.removeProperty("--codex-session-actions-right");
-      row.style.removeProperty("--codex-session-title-mask");
-      row.style.removeProperty("--codex-session-title-max-width");
-      group.dataset.codexActionLayoutStable = "true";
-      return;
-    }
     if (group.dataset.codexActionLayoutStable === "true") return;
     const rowRect = row.getBoundingClientRect();
     const nativeButtons = nativeActionButtonsFromRow(row);
@@ -9390,13 +9020,6 @@
       if (menu.__codexSessionMoreRow === row) menu.remove();
     });
     row.querySelectorAll(`.${actionGroupClass}`).forEach((group) => group.remove());
-    row.classList.remove("codex-session-action-row");
-    const rail = nativeActionRailFromRow(row);
-    rail?.classList.remove("codex-session-action-rail");
-    rail?.style.removeProperty("--codex-session-action-rail-width");
-    const nativeContainer = nativeActionContainerFromRow(row);
-    nativeContainer?.classList.remove("codex-session-action-native-container");
-    nativeContainer?.style.removeProperty("--codex-session-action-container-width");
   }
 
   function stopActionButtonEvent(row, button, event) {
@@ -9527,18 +9150,21 @@
     return replacement;
   }
 
-  function moreIconSvg() {
-    return `
-      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none">
-        <path fill="currentColor" d="M5 8.333a1.667 1.667 0 1 0 0 3.334 1.667 1.667 0 0 0 0-3.334Zm5 0a1.667 1.667 0 1 0 0 3.334 1.667 1.667 0 0 0 0-3.334Zm5 0a1.667 1.667 0 1 0 0 3.334 1.667 1.667 0 0 0 0-3.334Z"></path>
-      </svg>
-    `;
+  function configureActionButton(button, label, icon) {
+    button.setAttribute("aria-label", label);
+    button.dataset.codexActionLabel = label;
+    button.removeAttribute("title");
+    button.textContent = icon;
   }
 
   function trashIconSvg() {
     return `
-      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false" fill="none">
-        <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12.369 6.5a.5.5 0 0 1 .486.615l-1.492 6.343A2 2 0 0 1 9.416 15H6.584a2 2 0 0 1-1.947-1.542L3.145 7.115A.5.5 0 0 1 3.63 6.5zM8.5 1A2.5 2.5 0 0 1 11 3.5h2a1 1 0 0 1 1 1V5a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 2 5v-.5a1 1 0 0 1 1-1h2A2.5 2.5 0 0 1 7.5 1zm0 1.5h-1a1 1 0 0 0-1 1h3a1 1 0 0 0-1-1"></path>
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 6h18"></path>
+        <path d="M8 6V4h8v2"></path>
+        <path d="M19 6l-1 14H6L5 6"></path>
+        <path d="M10 11v5"></path>
+        <path d="M14 11v5"></path>
       </svg>
     `;
   }
@@ -9562,9 +9188,7 @@
     const existingDeleteButton = existingGroup?.querySelector(`.${buttonClass}`);
     const existingMoreButton = existingGroup?.querySelector(`.${moreButtonClass}`);
     const existingExportButton = existingGroup?.querySelector(`.${exportButtonClass}`);
-    const existingMoveButton = existingGroup?.querySelector(`.${projectMoveButtonClass}`);
-    const nativeContainer = nativeActionContainerFromRow(row);
-    const needsMoreMenu = settings.markdownExport || settings.projectMove;
+    const needsMoreMenu = sessionMenuEnabled;
     const hasUnexpectedDelete = !settings.sessionDelete && !!existingDeleteButton;
     const hasUnexpectedMore = !needsMoreMenu && !!existingMoreButton;
     const hasUnexpectedExport = !!existingExportButton;
@@ -9572,9 +9196,7 @@
     const missingMore = needsMoreMenu && !existingMoreButton;
     const deleteReady = !settings.sessionDelete || existingDeleteButton?.dataset.codexDeleteVersion === codexDeleteVersion;
     const groupReady = existingGroup?.dataset.codexActionGroupVersion === codexActionGroupVersion;
-    const needsNativeSlotMove = !!nativeContainer && existingGroup?.parentElement !== nativeContainer;
-    const hasUnexpectedMove = !!existingMoveButton;
-    if (groupReady && deleteReady && !needsNativeSlotMove && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !hasUnexpectedMove && !missingDelete && !missingMore) {
+    if (groupReady && deleteReady && !hasUnexpectedDelete && !hasUnexpectedMore && !hasUnexpectedExport && !missingDelete && !missingMore) {
       return;
     }
     removeActionGroups(row);
@@ -9591,7 +9213,7 @@
       moreButton.className = `${actionButtonClass} ${moreButtonClass}`;
       moreButton.setAttribute("aria-haspopup", "menu");
       moreButton.setAttribute("aria-expanded", "false");
-      configureSvgActionButton(moreButton, "更多操作", moreIconSvg());
+      configureActionButton(moreButton, "更多操作", "…");
       const moreMenu = document.createElement("div");
       moreMenu.className = moreMenuClass;
       moreMenu.setAttribute("role", "menu");
@@ -9641,13 +9263,7 @@
       group.appendChild(deleteButton);
       setTimeout(() => refreshActionButton(deleteButton, row, openDeleteConfirm), 0);
     }
-    if (nativeContainer?.isConnected && row.contains(nativeContainer)) {
-      group.dataset.codexActionNativeSlot = "true";
-      nativeContainer.insertBefore(group, nativeContainer.firstChild);
-    } else {
-      group.dataset.codexActionNativeSlot = "false";
-      row.appendChild(group);
-    }
+    row.appendChild(group);
     syncActionGroupLayout(row, group);
   }
 

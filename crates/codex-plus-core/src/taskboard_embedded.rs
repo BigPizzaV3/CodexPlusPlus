@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::V
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -39,20 +39,33 @@ struct ActiveAiRun {
 #[derive(Clone, Debug)]
 pub struct EmbeddedTaskboardPaths {
     static_dir: PathBuf,
+    data_dir: PathBuf,
     database_path: PathBuf,
     attachments_dir: PathBuf,
+    legacy_data_dir: Option<PathBuf>,
+    codex_state_path: PathBuf,
     skill_path: PathBuf,
 }
 
 impl EmbeddedTaskboardPaths {
     pub fn from_root(root: PathBuf) -> Self {
-        let data_dir = std::env::var_os("CODEX_TASKBOARD_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| root.join(".data"));
+        Self::resolve(
+            root,
+            crate::codex_home::default_codex_home_dir(),
+            std::env::var_os("CODEX_TASKBOARD_DATA_DIR").map(PathBuf::from),
+        )
+    }
+
+    fn resolve(root: PathBuf, codex_home: PathBuf, explicit_data_dir: Option<PathBuf>) -> Self {
+        let legacy_data_dir = explicit_data_dir.is_none().then(|| root.join(".data"));
+        let data_dir = explicit_data_dir.unwrap_or_else(|| codex_home.join("taskboard"));
         Self {
             static_dir: root.join("dist").join("web"),
             database_path: data_dir.join("taskboard.sqlite"),
             attachments_dir: data_dir.join("attachments"),
+            data_dir,
+            legacy_data_dir,
+            codex_state_path: codex_home.join(".codex-global-state.json"),
             skill_path: root
                 .join("skills")
                 .join("manage-taskboard")
@@ -73,7 +86,9 @@ pub fn spawn(paths: EmbeddedTaskboardPaths) -> Result<bool> {
         return Ok(true);
     }
 
-    if let Err(error) = init_database(&paths.database_path) {
+    if let Err(error) =
+        migrate_legacy_data_directory(&paths).and_then(|_| init_database(&paths.database_path))
+    {
         STARTED.store(false, Ordering::SeqCst);
         return Err(error);
     }
@@ -161,7 +176,10 @@ fn route(request: &HttpRequest, state: &EmbeddedTaskboardState) -> Result<Respon
     }
     if request.path == "/api/device-workspaces" {
         method(request, &["GET"])?;
-        return Ok(Response::Json(200, json!({ "workspaces": {} })));
+        return Ok(Response::Json(
+            200,
+            json!({ "workspaces": read_codex_project_workspaces(&paths.codex_state_path) }),
+        ));
     }
     if request.path == "/api/workflow-capabilities" {
         method(request, &["GET"])?;
@@ -302,12 +320,12 @@ fn route(request: &HttpRequest, state: &EmbeddedTaskboardState) -> Result<Respon
         ));
     }
     if request.path == "/api/tasks" && request.method == "POST" {
+        let body = json_body(request)?;
+        if task_project_id_is_missing(&body) {
+            return Ok(api_error(400, "INVALID_FIELD", "'projectId' is required"));
+        }
         let connection = open_database(&paths.database_path)?;
-        return create_task(
-            &connection,
-            &json_body(request)?,
-            actor_from_request(request),
-        );
+        return create_task(&connection, &body, actor_from_request(request));
     }
     if request.path == "/api/events" {
         method(request, &["GET"])?;
@@ -511,6 +529,116 @@ fn route_tail(path: &str, prefix: &str, suffix: &str) -> Result<Option<String>> 
         return Ok(None);
     }
     Ok(Some(decode_route_segment(encoded, "route segment")?))
+}
+
+fn migrate_legacy_data_directory(paths: &EmbeddedTaskboardPaths) -> Result<()> {
+    migrate_legacy_data_directory_with(paths, copy_file_without_overwrite)
+}
+
+fn migrate_legacy_data_directory_with<F>(
+    paths: &EmbeddedTaskboardPaths,
+    mut copy_file: F,
+) -> Result<()>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    let Some(legacy_data_dir) = paths.legacy_data_dir.as_deref() else {
+        return Ok(());
+    };
+    let legacy_database_path = legacy_data_dir.join("taskboard.sqlite");
+    if paths.database_path.exists() || !legacy_database_path.is_file() {
+        return Ok(());
+    }
+
+    let mut legacy_files = Vec::new();
+    collect_files(legacy_data_dir, &mut legacy_files)
+        .with_context(|| format!("failed to inspect {}", legacy_data_dir.display()))?;
+    legacy_files.sort();
+    fs::create_dir_all(&paths.data_dir)
+        .with_context(|| format!("failed to create {}", paths.data_dir.display()))?;
+
+    for source in legacy_files
+        .iter()
+        .filter(|source| source.as_path() != legacy_database_path)
+    {
+        let relative = source.strip_prefix(legacy_data_dir)?;
+        copy_file(source, &paths.data_dir.join(relative)).with_context(|| {
+            format!("failed to migrate Taskboard data file {}", source.display())
+        })?;
+    }
+
+    copy_file(&legacy_database_path, &paths.database_path).with_context(|| {
+        format!(
+            "failed to migrate Taskboard database {}",
+            legacy_database_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_files(&entry.path(), files)?;
+        } else if file_type.is_file() {
+            files.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+fn copy_file_without_overwrite(source: &Path, target: &Path) -> io::Result<()> {
+    if target.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut source_file = fs::File::open(source)?;
+    let mut target_file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if let Err(error) =
+        io::copy(&mut source_file, &mut target_file).and_then(|_| target_file.sync_all())
+    {
+        drop(target_file);
+        let _ = fs::remove_file(target);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn read_codex_project_workspaces(path: &Path) -> HashMap<String, String> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(state) = serde_json::from_str::<Value>(&raw) else {
+        return HashMap::new();
+    };
+    let Some(projects) = state.get("local-projects").and_then(Value::as_object) else {
+        return HashMap::new();
+    };
+
+    projects
+        .iter()
+        .filter_map(|(project_id, project)| {
+            let root = project.get("rootPaths")?.as_array()?.first()?.as_str()?;
+            (!root.trim().is_empty()).then(|| (project_id.clone(), root.to_string()))
+        })
+        .collect()
+}
+
+fn task_project_id_is_missing(body: &Value) -> bool {
+    matches!(body.get("projectId"), None | Some(Value::Null))
 }
 
 fn init_database(path: &Path) -> Result<()> {
@@ -2268,8 +2396,9 @@ fn save_workflow_workspace(
 }
 
 fn create_task(connection: &Connection, body: &Value, actor: Actor) -> Result<Response> {
-    let project_id =
-        string_value(body, "projectId", 64)?.unwrap_or_else(|| DEFAULT_PROJECT_ID.into());
+    let Some(project_id) = string_value(body, "projectId", 64)? else {
+        return Ok(api_error(400, "INVALID_FIELD", "'projectId' is required"));
+    };
     if !is_project_id(&project_id) {
         return Ok(api_error(400, "INVALID_FIELD", "Project id is invalid"));
     }
@@ -3943,6 +4072,184 @@ mod tests {
     use super::*;
 
     #[test]
+    fn taskboard_paths_default_to_codex_home_and_honor_explicit_data_dir() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let runtime_root = test_dir.path().join("runtime");
+        let codex_home = test_dir.path().join("codex-home");
+
+        let default_paths =
+            EmbeddedTaskboardPaths::resolve(runtime_root.clone(), codex_home.clone(), None);
+        assert_eq!(default_paths.data_dir, codex_home.join("taskboard"));
+        assert_eq!(
+            default_paths.database_path,
+            codex_home.join("taskboard").join("taskboard.sqlite")
+        );
+        assert_eq!(
+            default_paths.legacy_data_dir,
+            Some(runtime_root.join(".data"))
+        );
+        assert_eq!(
+            default_paths.codex_state_path,
+            codex_home.join(".codex-global-state.json")
+        );
+
+        let explicit_data_dir = test_dir.path().join("explicit-data");
+        let explicit_paths = EmbeddedTaskboardPaths::resolve(
+            runtime_root,
+            codex_home,
+            Some(explicit_data_dir.clone()),
+        );
+        assert_eq!(explicit_paths.data_dir, explicit_data_dir);
+        assert!(explicit_paths.legacy_data_dir.is_none());
+    }
+
+    #[test]
+    fn legacy_data_migration_preserves_files_and_retries_database_last() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let runtime_root = test_dir.path().join("runtime");
+        let codex_home = test_dir.path().join("codex-home");
+        let legacy_data_dir = runtime_root.join(".data");
+        let legacy_attachments = legacy_data_dir.join("attachments");
+        fs::create_dir_all(&legacy_attachments).unwrap();
+        fs::write(legacy_data_dir.join("taskboard.sqlite"), b"legacy-database").unwrap();
+        fs::write(legacy_data_dir.join("taskboard.sqlite-wal"), b"legacy-wal").unwrap();
+        fs::write(legacy_attachments.join("existing"), b"legacy-existing").unwrap();
+        fs::write(legacy_attachments.join("new"), b"legacy-new").unwrap();
+
+        let paths = EmbeddedTaskboardPaths::resolve(runtime_root, codex_home, None);
+        fs::create_dir_all(&paths.attachments_dir).unwrap();
+        fs::write(paths.attachments_dir.join("existing"), b"target-existing").unwrap();
+
+        let legacy_database_path = legacy_data_dir.join("taskboard.sqlite");
+        let mut attempted = Vec::new();
+        let error = migrate_legacy_data_directory_with(&paths, |source, target| {
+            attempted.push(source.to_path_buf());
+            if source == legacy_database_path {
+                return Err(io::Error::other("simulated database copy failure"));
+            }
+            copy_file_without_overwrite(source, target)
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("failed to migrate Taskboard database")
+        );
+        assert_eq!(attempted.last(), Some(&legacy_database_path));
+        assert!(!paths.database_path.exists());
+        assert_eq!(
+            fs::read(paths.attachments_dir.join("existing")).unwrap(),
+            b"target-existing"
+        );
+        assert_eq!(
+            fs::read(paths.attachments_dir.join("new")).unwrap(),
+            b"legacy-new"
+        );
+
+        migrate_legacy_data_directory(&paths).unwrap();
+        assert_eq!(fs::read(&paths.database_path).unwrap(), b"legacy-database");
+        assert_eq!(
+            fs::read(paths.data_dir.join("taskboard.sqlite-wal")).unwrap(),
+            b"legacy-wal"
+        );
+        assert_eq!(
+            fs::read(paths.attachments_dir.join("existing")).unwrap(),
+            b"target-existing"
+        );
+        assert_eq!(
+            fs::read(legacy_attachments.join("new")).unwrap(),
+            b"legacy-new"
+        );
+        assert_eq!(
+            fs::read(legacy_data_dir.join("taskboard.sqlite")).unwrap(),
+            b"legacy-database"
+        );
+    }
+
+    #[test]
+    fn legacy_data_migration_stops_when_target_database_exists() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let runtime_root = test_dir.path().join("runtime");
+        let codex_home = test_dir.path().join("codex-home");
+        let legacy_data_dir = runtime_root.join(".data");
+        fs::create_dir_all(legacy_data_dir.join("attachments")).unwrap();
+        fs::write(legacy_data_dir.join("taskboard.sqlite"), b"legacy-database").unwrap();
+        fs::write(
+            legacy_data_dir.join("attachments").join("legacy"),
+            b"legacy",
+        )
+        .unwrap();
+
+        let paths = EmbeddedTaskboardPaths::resolve(runtime_root, codex_home, None);
+        fs::create_dir_all(&paths.data_dir).unwrap();
+        fs::write(&paths.database_path, b"target-database").unwrap();
+
+        migrate_legacy_data_directory(&paths).unwrap();
+        assert_eq!(fs::read(&paths.database_path).unwrap(), b"target-database");
+        assert!(!paths.attachments_dir.join("legacy").exists());
+    }
+
+    #[test]
+    fn device_workspaces_read_first_valid_codex_project_root() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let state_path = test_dir.path().join(".codex-global-state.json");
+        fs::write(
+            &state_path,
+            serde_json::to_vec(&json!({
+                "local-projects": {
+                    "alpha": { "rootPaths": ["D:/work/alpha", "D:/work/ignored"] },
+                    "blank": { "rootPaths": ["   "] },
+                    "non-string": { "rootPaths": [42, "D:/work/not-first"] },
+                    "missing": {},
+                    "invalid": null
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_codex_project_workspaces(&state_path),
+            HashMap::from([("alpha".to_string(), "D:/work/alpha".to_string())])
+        );
+        assert!(read_codex_project_workspaces(&test_dir.path().join("missing.json")).is_empty());
+        fs::write(&state_path, b"not-json").unwrap();
+        assert!(read_codex_project_workspaces(&state_path).is_empty());
+    }
+
+    #[test]
+    fn device_workspaces_route_returns_codex_state_mapping() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let runtime_root = test_dir.path().join("runtime");
+        let codex_home = test_dir.path().join("codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(
+            codex_home.join(".codex-global-state.json"),
+            br#"{"local-projects":{"project":{"rootPaths":["D:/work/project"]}}}"#,
+        )
+        .unwrap();
+        let state = EmbeddedTaskboardState {
+            paths: EmbeddedTaskboardPaths::resolve(
+                runtime_root,
+                codex_home,
+                Some(test_dir.path().join("data")),
+            ),
+            active_ai_runs: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let request = HttpRequest {
+            method: "GET".into(),
+            path: "/api/device-workspaces".into(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+        };
+
+        let (status, value) = response_status_and_value(route(&request, &state).unwrap());
+        assert_eq!(status, 200);
+        assert_eq!(value["workspaces"]["project"], "D:/work/project");
+    }
+
+    #[test]
     fn static_paths_reject_parent_segments() {
         let root = Path::new("dist").join("web");
         assert!(static_file_path(&root, "/../taskboard.sqlite").is_err());
@@ -4053,6 +4360,68 @@ mod tests {
     }
 
     #[test]
+    fn create_task_rejects_missing_project_before_database_access() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let state = EmbeddedTaskboardState {
+            paths: EmbeddedTaskboardPaths::resolve(
+                test_dir.path().join("runtime"),
+                test_dir.path().join("codex-home"),
+                Some(test_dir.path().join("data")),
+            ),
+            active_ai_runs: Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        for body in [
+            json!({ "title": "Missing" }),
+            json!({ "projectId": null, "title": "Null" }),
+        ] {
+            let request = HttpRequest {
+                method: "POST".into(),
+                path: "/api/tasks".into(),
+                query: HashMap::new(),
+                headers: HashMap::new(),
+                body: serde_json::to_vec(&body).unwrap(),
+            };
+            let (status, value) = response_status_and_value(route(&request, &state).unwrap());
+            assert_eq!(status, 400);
+            assert_eq!(value["error"]["code"], "INVALID_FIELD");
+            assert_eq!(value["error"]["message"], "'projectId' is required");
+            assert!(!state.paths.database_path.exists());
+        }
+    }
+
+    #[test]
+    fn create_task_missing_project_does_not_advance_local_number() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let database_path = test_dir.path().join("taskboard.sqlite");
+        init_database(&database_path).unwrap();
+        let connection = open_database(&database_path).unwrap();
+
+        for body in [
+            json!({ "title": "Missing" }),
+            json!({ "projectId": null, "title": "Null" }),
+        ] {
+            let (status, value) =
+                response_status_and_value(create_task(&connection, &body, test_actor()).unwrap());
+            assert_eq!(status, 400);
+            assert_eq!(value["error"]["code"], "INVALID_FIELD");
+        }
+
+        let task_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        let next_task_number: i64 = connection
+            .query_row(
+                "SELECT next_task_number FROM projects WHERE id = ?1",
+                params![DEFAULT_PROJECT_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_count, 0);
+        assert_eq!(next_task_number, 1);
+    }
+
+    #[test]
     fn ai_chat_roundtrip_matches_frontend_shape() {
         let test_dir = tempfile::tempdir().unwrap();
         let database_path = test_dir.path().join("taskboard.sqlite");
@@ -4123,6 +4492,22 @@ mod tests {
         match response {
             Response::Json(_, value) => value,
             _ => panic!("expected json response"),
+        }
+    }
+
+    fn response_status_and_value(response: Response) -> (u16, Value) {
+        match response {
+            Response::Json(status, value) => (status, value),
+            _ => panic!("expected json response"),
+        }
+    }
+
+    fn test_actor() -> Actor {
+        Actor {
+            kind: "agent",
+            id: "codex-agent",
+            name: "Codex Agent",
+            avatar_url: None,
         }
     }
 }
