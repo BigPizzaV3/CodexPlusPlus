@@ -492,6 +492,7 @@ pub struct CompactionSseConverter {
     compaction_id: String,
     model: String,
     summary: String,
+    final_summary: Option<String>,
     failed: Option<(String, Option<String>)>,
     /// 跨网络 chunk 攒 SSE 事件的缓冲（见 push_upstream_bytes）。
     sse_buffer: String,
@@ -506,6 +507,7 @@ impl CompactionSseConverter {
             compaction_id: format!("cmp_{}", uuid::Uuid::new_v4().simple()),
             model: model.to_string(),
             summary: String::new(),
+            final_summary: None,
             failed: None,
             sse_buffer: String::new(),
             sse_utf8_remainder: Vec::new(),
@@ -577,22 +579,61 @@ impl CompactionSseConverter {
             return;
         }
         if self.responses_wire {
-            // Responses 流只取正文增量，排除携带同名 delta 字段的推理事件。
-            if event_type == "response.output_text.delta" {
-                if let Some(delta) = chunk.get("delta").and_then(Value::as_str) {
-                    self.summary.push_str(delta);
+            match event_type {
+                // Responses 流优先读取正文增量，排除携带同名 delta 字段的推理事件。
+                "response.output_text.delta" => {
+                    if let Some(delta) = chunk.get("delta").and_then(Value::as_str) {
+                        self.summary.push_str(delta);
+                    }
                 }
+                // 部分兼容实现不发送 delta，只在完成事件里携带完整正文。
+                "response.output_text.done" => {
+                    self.capture_final_summary(chunk.get("text"));
+                }
+                "response.content_part.done" => {
+                    self.capture_final_summary(chunk.pointer("/part/text"));
+                }
+                "response.output_item.done" => {
+                    let text = chunk
+                        .get("item")
+                        .map(extract_summary_text_from_response_item)
+                        .unwrap_or_default();
+                    self.capture_final_summary(Some(&json!(text)));
+                }
+                "response.completed" => {
+                    let text = chunk
+                        .get("response")
+                        .map(extract_summary_text_from_responses)
+                        .unwrap_or_default();
+                    self.capture_final_summary(Some(&json!(text)));
+                }
+                _ => {}
             }
-        } else if let Some(content) = chunk
+        } else if let Some(choice) = chunk
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("delta"))
-            .and_then(|delta| delta.get("content"))
-            .and_then(Value::as_str)
         {
-            self.summary.push_str(content);
+            if let Some(content) = choice
+                .get("delta")
+                .and_then(|delta| delta.get("content"))
+                .and_then(Value::as_str)
+            {
+                self.summary.push_str(content);
+            }
+            self.capture_final_summary(
+                choice
+                    .get("message")
+                    .and_then(|message| message.get("content")),
+            );
         }
+    }
+
+    fn capture_final_summary(&mut self, text: Option<&Value>) {
+        let Some(text) = text.and_then(Value::as_str).filter(|text| !text.trim().is_empty()) else {
+            return;
+        };
+        self.final_summary = Some(text.to_string());
     }
 
     pub fn fail(&mut self, message: String, error_type: Option<String>) -> Vec<u8> {
@@ -605,6 +646,9 @@ impl CompactionSseConverter {
     /// 混进正文，这里统一剥掉首部完整 think 块，只保留真正的摘要答案；
     /// think 块未闭合（上游截断）时整个丢弃——剩下的只有推理残片。
     pub fn finish(mut self) -> Vec<u8> {
+        if let Some(final_summary) = self.final_summary.take() {
+            self.summary = final_summary;
+        }
         if let Some((_reasoning, answer)) = split_leading_think_block(&self.summary) {
             self.summary = answer;
         } else if self.summary.trim_start().starts_with(THINK_OPEN_TAG) {
@@ -735,22 +779,32 @@ fn extract_summary_text_from_responses(response: &Value) -> String {
     };
     let mut texts = Vec::new();
     for item in items {
-        if item.get("type").and_then(Value::as_str) != Some("message") {
-            continue;
-        }
-        if let Some(content) = item.get("content").and_then(Value::as_array) {
-            for part in content {
-                if let Some(text) = part
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-                {
-                    texts.push(text.to_string());
-                }
-            }
+        let text = extract_summary_text_from_response_item(item);
+        if !text.is_empty() {
+            texts.push(text);
         }
     }
     texts.join("\n")
+}
+
+fn extract_summary_text_from_response_item(item: &Value) -> String {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") => item
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(COMPACTION_OUTPUT_TYPE) => item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    }
 }
 
 /// 从 Chat Completions JSON 响应提取 assistant 文本。
