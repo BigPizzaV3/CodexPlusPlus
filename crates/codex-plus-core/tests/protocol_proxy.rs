@@ -214,6 +214,55 @@ fn compaction_converter_accepts_data_only_responses_events() {
 }
 
 #[test]
+fn compaction_converter_accepts_complete_text_from_done_events() {
+    let upstream = concat!(
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"Summary from done\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Summary from item\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Summary from completed\"}]}]}}\n\n",
+    );
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(upstream.as_bytes());
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_eq!(
+        compaction["item"]["encrypted_content"],
+        "Summary from completed"
+    );
+}
+
+#[test]
+fn compaction_converter_accepts_native_compaction_item_without_deltas() {
+    let upstream = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque-summary\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+    );
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(upstream.as_bytes());
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_eq!(compaction["item"]["encrypted_content"], "opaque-summary");
+}
+
+#[test]
+fn compaction_converter_accepts_complete_chat_message_without_delta() {
+    let upstream = b"data: {\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Chat summary\"}}]}\n\n";
+    let mut converter = CompactionSseConverter::new("custom-model").with_chat_upstream();
+    converter.push_upstream_bytes(upstream);
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_eq!(compaction["item"]["encrypted_content"], "Chat summary");
+}
+
+#[test]
 fn compaction_converter_never_completes_a_failed_partial_summary() {
     for upstream_error in [
         json!({"type":"response.failed","response":{"error":{"code":"upstream_failed","message":"Upstream failed"}}}),
