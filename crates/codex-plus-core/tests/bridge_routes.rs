@@ -591,7 +591,8 @@ async fn backend_status_includes_active_official_usage_alert_setting() {
         relay_profiles: vec![codex_plus_core::settings::RelayProfile {
             id: "official".to_string(),
             relay_mode: codex_plus_core::settings::RelayMode::Official,
-            hide_official_usage_alert: true,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
             ..Default::default()
         }],
         ..Default::default()

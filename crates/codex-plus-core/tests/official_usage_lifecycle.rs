@@ -1,10 +1,11 @@
 use std::process::Command;
 
 #[test]
-fn external_api_quota_gate_keeps_external_relay_policy() {
+fn official_usage_policy_lifecycle_preserves_native_state() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/inject/api-quota-gate.test.cjs");
+        .join("../../assets/inject/official-usage-lifecycle.test.cjs");
     let output = Command::new("node")
+        .arg("--test")
         .arg(path)
         .output()
         .expect("node is required for renderer tests");
