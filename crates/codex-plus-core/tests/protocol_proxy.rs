@@ -112,6 +112,13 @@ fn compaction_stream_emits_one_done_item_before_completed() {
     assert_eq!(items.len(), 1, "compact v2 must receive one output-item event");
     assert_eq!(items[0]["type"], "compaction");
     assert_eq!(items[0]["encrypted_content"], "Preserve this summary.");
+    assert!(
+        items[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("cmp_")),
+        "compaction item id must use the cmp_ prefix: {}",
+        items[0]["id"]
+    );
     assert_eq!(completed.unwrap()["output"], json!(items));
     assert_eq!(
         events.iter().map(|event| event["type"].as_str().unwrap()).collect::<Vec<_>>(),
@@ -4307,6 +4314,8 @@ fn responses_item_id_normalization_repairs_legacy_prefixes() {
             { "type": "message", "id": "msg_01a03855-357e-7b40-a", "role": "assistant", "content": "ok" },
             { "type": "reasoning", "id": "06b2506d2a33704f5737670841d1a928_rs", "summary": [] },
             { "type": "reasoning", "id": "rs_0ded2efd183d1065", "summary": [] },
+            { "type": "compaction", "id": "cp_resp_compact_1790246125219", "encrypted_content": "summary" },
+            { "type": "compaction", "id": "cmp_01a03855-357e-7b40-a", "encrypted_content": "summary" },
             { "type": "function_call", "id": "item_c270d5511c7129adc7475632", "call_id": "call_a", "name": "wait", "arguments": "{}" },
             { "type": "function_call_output", "id": "fc_call_a", "call_id": "call_a", "output": "ok" },
             { "type": "custom_tool_call", "id": "fc_call_b", "call_id": "call_b", "name": "exec", "input": "{}" },
@@ -4327,14 +4336,19 @@ fn responses_item_id_normalization_repairs_legacy_prefixes() {
     assert_eq!(ids[1], "msg_01a03855-357e-7b40-a", "已正确的前缀不该被改动");
     assert_eq!(ids[2], "rs_06b2506d2a33704f5737670841d1a928_rs");
     assert_eq!(ids[3], "rs_0ded2efd183d1065");
-    assert_eq!(ids[4], "fc_c270d5511c7129adc7475632");
-    assert_eq!(ids[5], "fco_call_a", "fco 不能被剥成 fc_");
     assert_eq!(
-        ids[6], "ctc_call_b",
+        ids[4], "cmp_resp_compact_1790246125219",
+        "旧 cp_ 压缩项必须修复为 cmp_"
+    );
+    assert_eq!(ids[5], "cmp_01a03855-357e-7b40-a");
+    assert_eq!(ids[6], "fc_c270d5511c7129adc7475632");
+    assert_eq!(ids[7], "fco_call_a", "fco 不能被剥成 fc_");
+    assert_eq!(
+        ids[8], "ctc_call_b",
         "fc_ 要剥掉再换成 ctc_，不能叠成 fc_ctc_"
     );
-    assert_eq!(ids[7], "ctco_call_b");
-    assert_eq!(ids[8], "whatever_external", "未知类型必须原样通过");
+    assert_eq!(ids[9], "ctco_call_b");
+    assert_eq!(ids[10], "whatever_external", "未知类型必须原样通过");
 }
 
 /// id 恰好等于某个前缀时，剥完是空串，应退回 call_id 而不是产出裸前缀。
