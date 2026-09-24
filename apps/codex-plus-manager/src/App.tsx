@@ -8268,14 +8268,14 @@ function RelayProfileEditor({
                         title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
                       />
                       <Button
-                        className="relay-model-import-button"
+                        className={`relay-model-import-button${imported ? " relay-model-import-custom" : builtinIndex.has(slug.toLowerCase()) ? " relay-model-import-builtin" : ""}`}
                         aria-expanded={importing}
                         disabled={!slug}
                         onClick={() => (importing ? cancelModelMetadataImport() : beginModelMetadataImport(index, slug))}
                         size="icon"
                         title={imported ? t("查看或重新导入 models.json") : t("导入 models.json")}
                         type="button"
-                        variant={importing || imported ? "secondary" : "ghost"}
+                        variant="ghost"
                       >
                         <FileCode2 className="h-4 w-4" />
                       </Button>
@@ -8292,13 +8292,6 @@ function RelayProfileEditor({
                     </div>
                     {importing ? (
                       <section className="relay-model-import-workbench">
-                        <div
-                          className={`relay-model-import-status relay-model-import-status-${importControls.status.tone}`}
-                          role="status"
-                          title={t(importControls.status.title)}
-                        >
-                          {t(importControls.status.text)}
-                        </div>
                         <Textarea
                           autoFocus
                           value={metadataImportDocument}
