@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 
 pub const TASKBOARD_PORT: u16 = 47823;
 pub const TASKBOARD_URL: &str = "http://127.0.0.1:47823/?host=codex";
@@ -61,6 +61,10 @@ pub fn wait_for_taskboard_health(timeout: Duration) -> bool {
 }
 
 pub fn taskboard_health_ok() -> bool {
+    taskboard_health_endpoint_ok() && taskboard_page_entry_ok()
+}
+
+fn taskboard_health_endpoint_ok() -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], TASKBOARD_PORT));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
         return false;
@@ -76,6 +80,21 @@ pub fn taskboard_health_ok() -> bool {
         && taskboard_health_response_matches(&response, taskboard_expected_host())
 }
 
+fn taskboard_page_entry_ok() -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], TASKBOARD_PORT));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(750)));
+    let request = taskboard_page_entry_request(taskboard_shared_secret().as_deref());
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok() && taskboard_page_entry_response_matches(&response)
+}
+
 fn taskboard_health_request(shared_secret: Option<&str>) -> String {
     let authorization = shared_secret
         .map(|secret| {
@@ -85,6 +104,18 @@ fn taskboard_health_request(shared_secret: Option<&str>) -> String {
         .unwrap_or_default();
     format!(
         "GET /health HTTP/1.1\r\nHost: 127.0.0.1:47823\r\n{authorization}Connection: close\r\n\r\n"
+    )
+}
+
+fn taskboard_page_entry_request(shared_secret: Option<&str>) -> String {
+    let authorization = shared_secret
+        .map(|secret| {
+            let token = general_purpose::STANDARD.encode(format!("codex:{secret}"));
+            format!("Authorization: Basic {token}\r\n")
+        })
+        .unwrap_or_default();
+    format!(
+        "GET /?host=codex HTTP/1.1\r\nHost: 127.0.0.1:47823\r\n{authorization}Connection: close\r\n\r\n"
     )
 }
 
@@ -98,6 +129,15 @@ fn taskboard_health_response_matches(response: &str, expected_host: &str) -> boo
         };
         name.eq_ignore_ascii_case(TASKBOARD_BIND_HOST_HEADER) && value.trim() == expected_host
     })
+}
+
+fn taskboard_page_entry_response_matches(response: &str) -> bool {
+    response.contains(" 200 ")
+        && response.lines().any(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("content-type: text/html")
+        })
+        && response.contains("<div id=\"root\"")
 }
 
 pub fn spawn_taskboard_service() -> anyhow::Result<()> {
@@ -364,10 +404,40 @@ mod tests {
     }
 
     #[test]
+    fn page_entry_must_serve_taskboard_html() {
+        let taskboard_html = concat!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\n\r\n",
+            "<!doctype html><html><body><div id=\"root\"></div></body></html>"
+        );
+        let stale_health_only_service = concat!(
+            "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\n\r\n",
+            "{\"error\":{\"code\":\"NOT_FOUND\"}}"
+        );
+        let wrong_content_type = concat!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n",
+            "{\"status\":\"ok\"}"
+        );
+
+        assert!(taskboard_page_entry_response_matches(taskboard_html));
+        assert!(!taskboard_page_entry_response_matches(
+            stale_health_only_service
+        ));
+        assert!(!taskboard_page_entry_response_matches(wrong_content_type));
+    }
+
+    #[test]
     fn lan_health_request_carries_shared_secret_authentication() {
         let request = taskboard_health_request(Some("test-secret"));
         assert!(request.contains("Authorization: Basic Y29kZXg6dGVzdC1zZWNyZXQ="));
         assert!(!taskboard_health_request(None).contains("Authorization:"));
+    }
+
+    #[test]
+    fn lan_page_entry_request_carries_shared_secret_authentication() {
+        let request = taskboard_page_entry_request(Some("test-secret"));
+        assert!(request.starts_with("GET /?host=codex HTTP/1.1"));
+        assert!(request.contains("Authorization: Basic Y29kZXg6dGVzdC1zZWNyZXQ="));
+        assert!(!taskboard_page_entry_request(None).contains("Authorization:"));
     }
 
     fn taskboard_env_lock() -> std::sync::MutexGuard<'static, ()> {
