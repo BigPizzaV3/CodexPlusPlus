@@ -7797,21 +7797,6 @@ function RelayProfileEditor({
             <p className="field-hint">{t("当前继承公共配置；修改后将为该供应商保存独立设置。")}</p>
           ) : null}
         </Field>
-        {profile.relayMode === "official" ? (
-          <Field className="relay-field-official-usage-alert" label={t("官方登录")}>
-            <label className="inline-check">
-              <input
-                checked={profile.hideOfficialUsageAlert}
-                onChange={(event) => updateDraft({ hideOfficialUsageAlert: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>{t("关闭官方低额度提示")}</span>
-            </label>
-            <p className="field-hint">
-              {t("只隐藏低额度和已用完提示，不改变发送限制。左下角账户菜单仍显示官方剩余额度。")}
-            </p>
-          </Field>
-        ) : null}
         <div className="relay-advanced-toggle">
           <Button
             aria-expanded={showAdvanced}

@@ -9763,6 +9763,14 @@
 
 
   const officialUsageWindowMarker = "data-codex-plus-official-usage-window";
+  // 重新注入会替换局部配置；已有 Query 钩子必须通过同一个运行时读取新策略。
+  const officialUsageRuntime = window.__codexPlusOfficialUsageRuntime ||= {
+    rawPayloads: new WeakMap(),
+    rewriteDepth: 0,
+  };
+  officialUsageRuntime.pendingPublications ||= new WeakMap();
+  officialUsageRuntime.rewrite = rewriteTrackedOfficialUsagePayload;
+  window.__codexPlusOfficialUsageWindowCleanup?.();
 
   function isOfficialLowQuotaSidebarCard(node) {
     if (node?.nodeType !== Node.ELEMENT_NODE || node.getAttribute("role") !== "status") return false;
@@ -9807,49 +9815,116 @@
     return isOfficialLowQuotaSidebarCard(node) || isOfficialLowQuotaComposerBanner(node);
   }
 
-  function setOfficialUsageWindowHidden(node, hidden) {
-    if (!isOfficialLowQuotaWindow(node)) return;
-    if (hidden) {
-      node.setAttribute(officialUsageWindowMarker, "hidden");
-      node.style.setProperty("display", "none", "important");
-      return;
-    }
+  let officialUsageWindowObserver = null;
+  let officialUsageWindowHidden = false;
+  let officialUsageWindowStartPending = false;
+  let officialUsageWindowActive = true;
+  const officialUsageWindowDisplays = new WeakMap();
+
+  function restoreOfficialUsageWindow(node) {
     if (node.getAttribute(officialUsageWindowMarker) !== "hidden") return;
     node.removeAttribute(officialUsageWindowMarker);
-    node.style.removeProperty("display");
+    const display = officialUsageWindowDisplays.get(node);
+    if (display?.value) node.style.setProperty("display", display.value, display.priority);
+    else node.style.removeProperty("display");
+    officialUsageWindowDisplays.delete(node);
   }
 
-  function syncOfficialUsageWindows(root = document.body) {
+  function syncOfficialUsageWindow(node) {
+    if (!isOfficialLowQuotaWindow(node)) {
+      restoreOfficialUsageWindow(node);
+      return;
+    }
+    if (node.getAttribute(officialUsageWindowMarker) !== "hidden") {
+      officialUsageWindowDisplays.set(node, {
+        value: node.style.getPropertyValue("display"),
+        priority: node.style.getPropertyPriority("display"),
+      });
+      node.setAttribute(officialUsageWindowMarker, "hidden");
+      node.style.setProperty("display", "none", "important");
+    }
+  }
+
+  function hideOfficialUsageWindowsWithin(root) {
     if (typeof Node === "undefined" || !root || root.nodeType !== Node.ELEMENT_NODE) return;
-    const hidden = officialUsagePolicy().hideAlerts === true;
-    const nodes = [root, ...root.querySelectorAll('[role="status"], aside')];
-    for (const node of nodes) setOfficialUsageWindowHidden(node, hidden);
+    const nodes = [root, ...root.querySelectorAll(`[role="status"], aside, [${officialUsageWindowMarker}]`)];
+    for (const node of nodes) syncOfficialUsageWindow(node);
   }
 
-  function installOfficialUsageWindowBlock() {
-    if (window.__codexPlusOfficialUsageWindowBlock) return;
-    window.__codexPlusOfficialUsageWindowBlock = true;
-    const observer = new MutationObserver((records) => {
-      if (!officialUsagePolicy().hideAlerts) return;
+  function restoreOfficialUsageWindows() {
+    for (const node of document.querySelectorAll(`[${officialUsageWindowMarker}="hidden"]`)) {
+      restoreOfficialUsageWindow(node);
+    }
+  }
+
+  function startOfficialUsageWindowBlock() {
+    if (officialUsageWindowObserver || typeof MutationObserver !== "function" || !document.body) return;
+    officialUsageWindowObserver = new MutationObserver((records) => {
+      if (!officialUsageWindowActive || !officialUsageWindowHidden) return;
+      const changedContainers = new Set();
       for (const record of records) {
-        for (const node of record.addedNodes) {
+        // React 可只更新已有文本或插入卡片内部节点，因此也检查变更目标的祖先。
+        let parent = record.target?.nodeType === Node.ELEMENT_NODE ? record.target : record.target?.parentElement;
+        for (; parent; parent = parent.parentElement) {
+          if (parent.matches?.(`[role="status"], aside, [${officialUsageWindowMarker}]`)) changedContainers.add(parent);
+        }
+        for (const node of record.addedNodes || []) {
           if (node?.nodeType !== Node.ELEMENT_NODE) continue;
-          syncOfficialUsageWindows(node);
+          hideOfficialUsageWindowsWithin(node);
         }
       }
+      for (const node of changedContainers) syncOfficialUsageWindow(node);
     });
-    const start = () => {
-      if (!document.body) return;
-      observer.observe(document.body, { childList: true, subtree: true });
-      syncOfficialUsageWindows(document.body);
-    };
-    if (document.body) start();
-    else document.addEventListener("DOMContentLoaded", start, { once: true });
+    officialUsageWindowObserver.observe(document.body, {
+      childList: true, subtree: true, characterData: true,
+      attributes: true, attributeFilter: ["role", "class", "aria-labelledby", "aria-describedby"],
+    });
+    hideOfficialUsageWindowsWithin(document.body);
+  }
+
+  function stopOfficialUsageWindowBlock() {
+    officialUsageWindowObserver?.disconnect();
+    officialUsageWindowObserver = null;
+    restoreOfficialUsageWindows();
+  }
+
+  function startOfficialUsageWindowsAfterReady() {
+    officialUsageWindowStartPending = false;
+    if (officialUsageWindowActive) syncOfficialUsageWindowMode(officialUsagePolicyKey());
+  }
+
+  window.__codexPlusOfficialUsageWindowCleanup = () => {
+    officialUsageWindowActive = false;
+    officialUsageWindowHidden = false;
+    document.removeEventListener("DOMContentLoaded", startOfficialUsageWindowsAfterReady);
+    stopOfficialUsageWindowBlock();
+  };
+
+  // 卡片不读用量字段。观察器只在开关打开时挂一次；心跳不查页面。
+  // 关掉或离开官登时只按标记恢复，不再整页重认。
+  function syncOfficialUsageWindowMode(key) {
+    if (!officialUsageWindowActive) return;
+    const hide = key === "official-hide";
+    if (!hide) {
+      if (!officialUsageWindowHidden && !officialUsageWindowObserver) return;
+      officialUsageWindowHidden = false;
+      officialUsageWindowStartPending = false;
+      stopOfficialUsageWindowBlock();
+      return;
+    }
+    officialUsageWindowHidden = true;
+    if (officialUsageWindowObserver) return;
+    if (!document.body) {
+      if (officialUsageWindowStartPending) return;
+      officialUsageWindowStartPending = true;
+      document.addEventListener("DOMContentLoaded", startOfficialUsageWindowsAfterReady, { once: true });
+      return;
+    }
+    startOfficialUsageWindowBlock();
   }
 
   function scanLightweight() {
     installStyle();
-    installOfficialUsageWindowBlock();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
     installCodexRemoteSessionRecoveryListener();
@@ -9875,18 +9950,23 @@
   }
 
   function officialUsagePolicy() {
+    // 新一代设置尚未返回时沿用最后一次真实配置，避免重新注入短暂恢复额度锁。
+    if (!codexPlusBackendSettingsLoaded && officialUsageRuntime.lastPolicy) return officialUsageRuntime.lastPolicy;
     const profile = codexRemoteSessionActiveProfile();
     const official = String(profile?.relayMode || "") === "official";
-    return {
+    const mixed = official && profile?.officialMixApiKey === true;
+    const policy = {
       official,
-      hideAlerts: official && window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ === true,
-      unlockSend: window.__codexPlusApiQuotaGate?.permitsExternalApi(codexPlusBackendSettings, "local") === true,
+      hideAlerts: mixed,
+      unlockSend: mixed,
     };
+    if (codexPlusBackendSettingsLoaded) officialUsageRuntime.lastPolicy = policy;
+    return policy;
   }
 
   function officialUsagePolicyKey(policy = officialUsagePolicy()) {
-    if (!policy.official) return "off";
-    return policy.hideAlerts ? "official-hide" : "official";
+    if (!policy.hideAlerts && !policy.unlockSend) return "off";
+    return "official-hide";
   }
 
   function isOfficialUsageStatus(value) {
@@ -9908,12 +9988,12 @@
       && queryKey[1] !== "image-generation";
   }
 
-  // 低额度提示仍由提示字段控制。发送锁只读 rate_limit.allowed。
-  // 外部中转的官登混合模式在查询发布前把 allowed 设为 true。纯官登保持原值。
-  // 提示字段只在勾选「关闭官方低额度提示」时清掉。
+  // 低额度提示和发送锁都只看当前是不是官登混入 Key。纯官登不改这份用量。
+  // 桌面端发送按钮读 rate_limit.allowed；limit_reached 为 true 也会被当成已用完。
+  // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached。
   // 百分比、重置时间、账号、积分和消费上限不动。图片额度横幅单独留下。
   function rewriteOfficialUsageStatus(value, policy = officialUsagePolicy()) {
-    if (!policy.official || !isOfficialUsageStatus(value)) return null;
+    if (!policy.official || (!policy.hideAlerts && !policy.unlockSend) || !isOfficialUsageStatus(value)) return null;
     const next = { ...value };
     let changed = false;
     if (value.rate_limit_reached_type != null) {
@@ -9925,8 +10005,8 @@
       changed = true;
     }
     const rateLimit = value.rate_limit;
-    if (policy.unlockSend && rateLimit.allowed !== true) {
-      next.rate_limit = { ...rateLimit, allowed: true };
+    if (policy.unlockSend && (rateLimit.allowed !== true || rateLimit.limit_reached === true)) {
+      next.rate_limit = { ...rateLimit, allowed: true, limit_reached: false };
       changed = true;
     }
     if (policy.hideAlerts) {
@@ -9954,6 +10034,14 @@
       return usage ? { ...value, usage } : value;
     }
     return value;
+  }
+
+  function rewriteTrackedOfficialUsagePayload(value) {
+    const raw = officialUsageRuntime.rawPayloads.get(value) || value;
+    if (officialUsagePolicyKey() === "off") return raw;
+    const next = rewriteOfficialUsagePayload(value);
+    if (next !== value) officialUsageRuntime.rawPayloads.set(next, raw);
+    return next;
   }
 
   function looksLikeQueryClient(value) {
@@ -10024,8 +10112,6 @@
     return [];
   }
 
-  let officialUsageRewriteDepth = 0;
-
   // Query.setData 是 GET /wham/usage 和 SSE snapshot 共用的发布点。
   // 在通知订阅者之前改写，RK 第一次读到的 allowed 就是结果。
   function patchOfficialUsageQueryPublication(client) {
@@ -10040,11 +10126,28 @@
     if (typeof proto.setData !== "function" || proto.setData.__codexPlusUsagePublication) return;
     const original = proto.setData;
     function codexPlusPublishUsageData(data, ...rest) {
-      if (isMainRateLimitQueryKey(this?.queryKey)) {
-        const next = rewriteOfficialUsagePayload(data);
-        if (next !== data) data = next;
+      if (!isMainRateLimitQueryKey(this?.queryKey)) return original.call(this, data, ...rest);
+      const raw = officialUsageRuntime.rawPayloads.get(data) || data;
+      const next = officialUsageRuntime.rewrite(data);
+      const previousPublication = officialUsageRuntime.pendingPublications.get(this);
+      const publication = { raw };
+      officialUsageRuntime.pendingPublications.set(this, publication);
+      officialUsageRuntime.rewriteDepth += 1;
+      try {
+        const stored = original.call(this, next, ...rest);
+        // TanStack 结构共享可能返回另一对象；快照绑定实际缓存对象，不绑定输入副本。
+        // 若订阅者已嵌套发布更新，沿用它登记的快照，不能用外层旧值覆盖。
+        if (publication.raw === raw && stored && typeof stored === "object") {
+          if (next !== raw) officialUsageRuntime.rawPayloads.set(stored, raw);
+          else officialUsageRuntime.rawPayloads.delete(stored);
+        }
+        if (previousPublication) previousPublication.raw = publication.raw;
+        return stored;
+      } finally {
+        officialUsageRuntime.rewriteDepth -= 1;
+        if (previousPublication) officialUsageRuntime.pendingPublications.set(this, previousPublication);
+        else officialUsageRuntime.pendingPublications.delete(this);
       }
-      return original.call(this, data, ...rest);
     }
     codexPlusPublishUsageData.__codexPlusUsagePublication = true;
     proto.setData = codexPlusPublishUsageData;
@@ -10056,27 +10159,33 @@
     if (client.__codexPlusUsageRewrite) return;
     const original = client.setQueryData;
     client.setQueryData = function codexPlusSetUsageQueryData(queryKey, updater, ...rest) {
-      if (officialUsageRewriteDepth > 0 || !isMainRateLimitQueryKey(queryKey) || !officialUsagePolicy().official) {
+      if (!isMainRateLimitQueryKey(queryKey)) {
         return original.call(this, queryKey, updater, ...rest);
       }
       const nextUpdater = typeof updater === "function"
-        ? (previous) => rewriteOfficialUsagePayload(updater(previous))
-        : rewriteOfficialUsagePayload(updater);
-      officialUsageRewriteDepth += 1;
+        ? (previous) => {
+          // setData 的同步订阅者可能马上写回，此时结构共享对象尚未返回。
+          const query = this.getQueryCache?.()?.find?.({ queryKey, exact: true });
+          const publishing = query && officialUsageRuntime.pendingPublications.get(query);
+          const raw = publishing ? publishing.raw : (officialUsageRuntime.rawPayloads.get(previous) || previous);
+          return officialUsageRuntime.rewrite(updater(raw));
+        }
+        : officialUsageRuntime.rewrite(updater);
+      officialUsageRuntime.rewriteDepth += 1;
       try {
         return original.call(this, queryKey, nextUpdater, ...rest);
       } finally {
-        officialUsageRewriteDepth -= 1;
+        officialUsageRuntime.rewriteDepth -= 1;
       }
     };
     const cache = client.getQueryCache?.();
     if (cache && typeof cache.subscribe === "function") {
       cache.subscribe((event) => {
-        if (officialUsageRewriteDepth > 0 || !officialUsagePolicy().official) return;
+        if (officialUsageRuntime.rewriteDepth > 0) return;
         const query = event?.query;
         if (!isMainRateLimitQueryKey(query?.queryKey)) return;
         const current = query.state?.data;
-        const next = rewriteOfficialUsagePayload(current);
+        const next = officialUsageRuntime.rewrite(current);
         if (next === current) return;
         client.setQueryData(query.queryKey, next);
       });
@@ -10088,7 +10197,7 @@
     if (!client || !officialUsagePolicy().official) return;
     for (const query of mainRateLimitQueries(client)) {
       const current = query.state?.data;
-      const next = rewriteOfficialUsagePayload(current);
+      const next = officialUsageRuntime.rewrite(current);
       if (next !== current) client.setQueryData(query.queryKey, next);
     }
   }
@@ -10097,7 +10206,7 @@
     if (!client || typeof client.invalidateQueries !== "function") return;
     for (const query of mainRateLimitQueries(client)) {
       try {
-        client.invalidateQueries({ queryKey: query.queryKey });
+        Promise.resolve(client.invalidateQueries({ queryKey: query.queryKey, exact: true })).catch(() => {});
       } catch {
       }
     }
@@ -10108,6 +10217,7 @@
 
   function syncOfficialUsagePolicy() {
     const key = officialUsagePolicyKey();
+    syncOfficialUsageWindowMode(key);
     const client = findCodexQueryClient();
     if (client) {
       officialUsageClient = client;
@@ -10132,19 +10242,26 @@
     } else {
       return;
     }
+    const recoveredHomeReads = window.__codexPlusComposerReadiness?.tick(client, officialUsagePolicy().unlockSend) || 0;
+    if (recoveredHomeReads > 0) {
+      sendCodexPlusDiagnostic("composer_home_read_retried", { count: recoveredHomeReads });
+    }
     if (key === officialUsagePolicyApplied) {
       if (key !== "off") rewriteCachedOfficialUsage(client);
-      syncOfficialUsageWindows();
       return;
     }
     const previous = officialUsagePolicyApplied;
     officialUsagePolicyApplied = key;
     if (key === "off") {
+      // 先同步恢复真实用量；断网或刷新悬挂时也不能沿用混入模式的解锁结果。
+      for (const query of mainRateLimitQueries(client)) {
+        const raw = officialUsageRuntime.rawPayloads.get(query.state?.data);
+        if (raw) client.setQueryData(query.queryKey, raw);
+      }
       if (previous) invalidateMainRateLimitQueries(client);
       return;
     }
     rewriteCachedOfficialUsage(client);
-    syncOfficialUsageWindows();
     if (previous) invalidateMainRateLimitQueries(client);
   }
 
