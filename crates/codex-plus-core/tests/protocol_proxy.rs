@@ -92,6 +92,47 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
 }
 
 #[test]
+fn compaction_stream_emits_one_done_item_before_completed() {
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_summary_text("Preserve this summary.");
+    let events = compaction_sse_events(&converter.finish());
+    let mut items = Vec::new();
+    let mut completed = None;
+    for event in &events {
+        match event["type"].as_str() {
+            Some("response.output_item.done") => items.push(event["item"].clone()),
+            Some("response.completed") => {
+                completed = Some(&event["response"]);
+                break;
+            }
+            _ => {}
+        }
+    }
+    // Match Codex compact v2: collect done events, not completed.response.output.
+    assert_eq!(items.len(), 1, "compact v2 must receive one output-item event");
+    assert_eq!(items[0]["type"], "compaction");
+    assert_eq!(items[0]["encrypted_content"], "Preserve this summary.");
+    assert_eq!(completed.unwrap()["output"], json!(items));
+    assert_eq!(
+        events.iter().map(|event| event["type"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["response.created", "response.output_item.added", "response.output_item.done", "response.completed"]
+    );
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], index);
+    }
+}
+
+fn compaction_sse_events(payload: &[u8]) -> Vec<Value> {
+    std::str::from_utf8(payload)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect()
+}
+
+#[test]
 fn wrap_non_stream_response_produces_single_compaction_item() {
     let upstream = json!({
         "id": "resp_up",
@@ -109,8 +150,8 @@ fn wrap_non_stream_response_produces_single_compaction_item() {
     assert!(text.contains("\"type\":\"compaction\""));
     assert!(text.contains("SUMMARYfromRESPONSES"));
     assert!(text.contains("data: [DONE]"));
-    // 恰好一个 compaction 输出项
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    assert_eq!(compaction_sse_events(text.as_bytes()).iter()
+        .filter(|event| event["type"] == "response.output_item.done").count(), 1);
 }
 
 #[test]
@@ -124,7 +165,8 @@ fn wrap_non_stream_chat_response_produces_single_compaction_item() {
     let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
     let text = String::from_utf8(wrapped).unwrap();
     assert!(text.contains("SUMMARYfromCHAT"));
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    assert_eq!(compaction_sse_events(text.as_bytes()).iter()
+        .filter(|event| event["type"] == "response.output_item.done").count(), 1);
 }
 
 #[test]
@@ -134,6 +176,10 @@ fn wrap_empty_upstream_yields_failed_compaction_response() {
     let text = String::from_utf8(wrapped).unwrap();
     assert!(text.contains("\"status\":\"failed\""));
     assert!(text.contains("compaction_empty_summary") || text.contains("空摘要"));
+    let events = compaction_sse_events(text.as_bytes());
+    assert_eq!(events.last().unwrap()["type"], "response.failed");
+    assert!(events.iter().all(|event| event["type"] != "response.output_item.done"
+        && event["type"] != "response.completed"));
 }
 
 #[test]
@@ -146,6 +192,37 @@ fn compaction_converter_extracts_output_text_deltas_and_ignores_reasoning() {
     let mut silent = CompactionSseConverter::new("deepseek");
     silent.push_upstream_bytes(b"not sse");
     assert_eq!(silent.summary_text(), "");
+}
+
+#[test]
+fn compaction_converter_accepts_data_only_responses_events() {
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(
+        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Summary\"}\n\n",
+    );
+    assert_eq!(converter.summary_text(), "Summary");
+    assert!(compaction_sse_events(&converter.finish()).iter().any(|event|
+        event["type"] == "response.output_item.done"
+        && event["item"]["encrypted_content"] == "Summary"));
+}
+
+#[test]
+fn compaction_converter_never_completes_a_failed_partial_summary() {
+    for upstream_error in [
+        json!({"type":"response.failed","response":{"error":{"code":"upstream_failed","message":"Upstream failed"}}}),
+        json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}),
+        json!({"error":{"code":"upstream_failed","message":"Upstream failed"}}),
+    ] {
+        let mut converter = CompactionSseConverter::new("custom-model");
+        converter.push_summary_text("Partial summary must not become a checkpoint.");
+        converter.push_upstream_bytes(format!("data: {upstream_error}\n\n").as_bytes());
+        let events = compaction_sse_events(&converter.finish());
+        let failed = events.last().unwrap();
+        assert_eq!(failed["type"], "response.failed");
+        assert_eq!(failed["response"]["output"], json!([]));
+        assert!(events.iter().all(|event| event["type"] != "response.output_item.done"
+            && event["type"] != "response.completed"));
+    }
 }
 
 #[test]
@@ -203,7 +280,6 @@ fn compaction_converter_pure_think_block_yields_failed_response() {
     let payload = String::from_utf8(converter.finish()).unwrap();
     assert!(!payload.contains("internal reasoning"));
     assert!(payload.contains("\"status\":\"failed\""));
-    // finish() 的 error 输出只带 message，error_type 供调用方分类、不进入响应体。
     assert!(payload.contains("空摘要"));
     assert!(!payload.contains("\"status\":\"completed\""));
 }
@@ -217,7 +293,8 @@ fn compaction_converter_stream_error_yields_failed_response() {
     let payload = String::from_utf8(converter.finish()).unwrap();
     assert!(payload.contains("\"status\":\"failed\""));
     assert!(payload.contains("Stream error: broken pipe"));
-    // failed 状态已阻止 codex 安装空 checkpoint，无需判断 encrypted_content 内容。
+    assert!(!payload.contains("event: response.completed"));
+    assert!(!payload.contains("\"type\":\"compaction\""));
     assert!(!payload.contains("\"status\":\"completed\""));
 }
 
