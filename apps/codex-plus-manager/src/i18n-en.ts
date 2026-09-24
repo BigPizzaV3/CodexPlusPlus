@@ -459,6 +459,11 @@ export const EN_PLAIN: Record<string, string> = {
   "内置": "Built-in",
   "自定义": "Custom",
   "回退": "Fallback",
+  "已导入自定义元数据，生成时覆盖内置": "Custom metadata imported; overrides built-in data at generation",
+  "内置元数据：{0}": "Built-in metadata: {0}",
+  "无内置元数据，生成时回退 gpt-5.5 官方模板": "No built-in metadata; generation falls back to the gpt-5.5 official template",
+  "匹配：{0}": "Matched: {0}",
+  "回退：{0}": "Fallback: {0}",
   "重新匹配": "Re-match",
   "清除": "Clear",
   "按当前模型名重新匹配内置元数据并重填下方内容": "Re-match built-in metadata by the current model name and refill the content below",
@@ -1253,13 +1258,6 @@ export const EN_PLAIN: Record<string, string> = {
 export const EN_TEMPLATE: Record<string, string> = {
   "读取会话索引修复报告失败：{0}": "Failed to read the session index repair report: {0}",
   "另有 {0} 条检查详情因报告上限未显示。": "{0} additional issue(s) are not shown because of the report limit.",
-  // 模型元数据来源徽标（metadataSourceTags 下发，经 tf() 渲染，不能放 EN_PLAIN）
-  "匹配：{0}": "Matched: {0}",
-  "回退：{0}": "Fallback: {0}",
-  "内置元数据：{0}": "Built-in metadata: {0}",
-  "无内置元数据，生成时回退 {0} 官方模板": "No built-in metadata; generation falls back to the {0} official template",
-  "已导入自定义元数据，生成时覆盖内置（{0}）": "Custom metadata imported; overrides the built-in data ({0}) at generation",
-  "已导入自定义元数据，生成时以该配置为准": "Custom metadata imported; this configuration takes precedence at generation",
   "路由规则「{0}」的优先级必须是大于等于 0 的整数。":
     "Route rule \"{0}\" priority must be an integer greater than or equal to 0.",
   "路由规则「{0}」的目标供应商必须是聚合成员，请先将其勾选为成员。":

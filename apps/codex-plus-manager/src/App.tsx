@@ -93,14 +93,12 @@ import {
   importSaveDecision,
   metadataMatchesBuiltin,
   metadataSourceTags,
-  modelSlugFromRowName, (fix(models): [1M] 后缀全链路适配 + 内置元数据健壮性修复 (issue #2279))
   parseModelMetadataDocument,
   parseModelMetadataMap,
   remapModelMetadataSlugs,
   replaceModelMetadataForSlug,
   retainModelMetadataForSlugs,
   serializeModelMetadataDocument,
-  suffixWindowString,
   synchronizeModelMetadataDocumentLimitsPreview,
   type BuiltinModelMetadataMatch,
   type ImportedModelMetadata,
@@ -123,7 +121,6 @@ import {
 } from "./model-windows";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
-import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
 import { resolveProviderName } from "./provider-name";
 import {
@@ -384,7 +381,6 @@ export type RelayProfile = {
   vlmModel: string;
   vlmBaseUrl: string;
   userAgent: string;
-  customHeaders: { key: string; value: string }[];
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
   noAuth: boolean;
@@ -1130,7 +1126,6 @@ const defaultSettings: BackendSettings = {
       vlmModel: "",
       vlmBaseUrl: "",
       userAgent: "",
-      customHeaders: [],
       sub2apiEnabled: false,
       noAuth: false,
       sub2apiMultiplier: "",
@@ -1381,15 +1376,6 @@ export function App() {
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
     }
     return result;
-  };
-
-  const reloadUserScripts = async () => {
-    const result = await run(() => call<SettingsResult>("reload_user_scripts"));
-    if (result) {
-      setSettings(result);
-      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
-    }
   };
 
   const installMarketScript = async (id: string) => {
@@ -3485,7 +3471,6 @@ export function App() {
       refreshAds,
       refreshScriptMarket,
       refreshUserScriptInventory,
-      reloadUserScripts,
       installMarketScript,
       setUserScriptEnabled,
       deleteUserScript,
@@ -3911,7 +3896,6 @@ type Actions = {
   refreshAds: () => Promise<void>;
   refreshScriptMarket: () => Promise<void>;
   refreshUserScriptInventory: () => Promise<SettingsResult | null>;
-  reloadUserScripts: () => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
@@ -6151,16 +6135,6 @@ function ZedRemoteProjectSection({
 }
 
 function UserScriptsScreen({ settings, market, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; actions: Actions }) {
-  const [reloading, setReloading] = useState(false);
-  const reload = async () => {
-    if (reloading) return;
-    setReloading(true);
-    try {
-      await actions.reloadUserScripts();
-    } finally {
-      setReloading(false);
-    }
-  };
   const inventory = settings?.user_scripts;
   const scripts = inventory?.scripts ?? [];
   const marketScripts = market?.market.scripts ?? [];
@@ -6208,10 +6182,6 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
             <Button onClick={() => void actions.refreshCurrent()} variant="secondary">
               <RefreshCw className="h-4 w-4" />
               {t("刷新本地")}
-            </Button>
-            <Button onClick={() => void reload()} disabled={reloading} variant="secondary" title={t("应用本地脚本及开关；旧脚本可能需要刷新 Codex 页面")}>
-              <RefreshCw className={reloading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              {t("热重载脚本")}
             </Button>
           </Toolbar>
         </CardContent>
@@ -7514,7 +7484,6 @@ function RelayProfileDetail({
       ? aggregateRelayProfileValidation(draft)
       : relayModelRoutesSettingsValidation(validationSettings));
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
-  const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     const validSlugs = serializedRows.modelList.split("\n").map((slug) => slug.trim()).filter(Boolean);
@@ -7524,7 +7493,6 @@ function RelayProfileDetail({
       modelWindows: serializedRows.modelWindows,
       modelAutoCompact: serializedRows.modelAutoCompact,
       modelMetadata: retainModelMetadataForSlugs(draft.modelMetadata, validSlugs),
-      customHeaders: serializeRelayHeaders(draft.customHeaders || []),
       modelVlm: serializedRows.modelVlm,
     };
   };
@@ -7746,9 +7714,11 @@ function RelayProfileEditor({
     slug: string;
     originalWindow: string;
     originalAutoCompact: string;
+    /// 打开面板时的 modelMetadata 快照：取消时连同清除/重新匹配/保存的写入一起撤回，
+    /// 让「取消」名副实得（否则面板里点过的写操作无法反悔）。
+    originalModelMetadata: string;
   } | null>(null);
   const [metadataImportDocument, setMetadataImportDocument] = useState("");
-  const [metadataImportOriginalDocument, setMetadataImportOriginalDocument] = useState("");
   const [metadataImportError, setMetadataImportError] = useState("");
   const [metadataImportPreview, setMetadataImportPreview] = useState<ImportedModelMetadata | null>(null);
   const [channelStatusInput, setChannelStatusInput] = useState("");
@@ -7797,9 +7767,7 @@ function RelayProfileEditor({
       // 内置预填态（用户尚未编辑）跟随新名字重新预填；已编辑/自有内容不动。
       if (importPrefillSource === "builtin" && match?.matched && match.entry) {
         const document = builtinEntryToImportDocument(match.entry);
-        // 文档写的是后端返回的规范 slug，匹配时也要用规范 slug（剥掉 [1M] 后缀），
-        // 否则带后缀的行名永远匹配不到，面板一打开就报「找不到 slug」。
-        const preview = parseModelMetadataDocument(document, modelSlugFromRowName(activeImportSlug));
+        const preview = parseModelMetadataDocument(document, activeImportSlug);
         setMetadataImportDocument(document);
         setMetadataImportError("");
         setMetadataImportPreview(preview.ok ? preview.value : null);
@@ -7811,7 +7779,6 @@ function RelayProfileEditor({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeImportSlug, builtinMatchSlug, metadataImportTarget, importPrefillSource]);
-
   const modelSlugOriginsRef = useRef(modelWindowRows.map((row) => row.model.trim()));
   useEffect(() => {
     modelSlugOriginsRef.current = modelWindowRows.map((row) => row.model.trim());
@@ -7916,9 +7883,13 @@ function RelayProfileEditor({
   const closeModelMetadataImport = () => {
     setMetadataImportTarget(null);
     setMetadataImportDocument("");
-    setMetadataImportOriginalDocument("");
     setMetadataImportError("");
     setMetadataImportPreview(null);
+    setBuiltinMatch(null);
+    // 这两个也必须清：builtinMatchSlug 保留会让下次打开同名模型时跟随 effect 被
+    // 「slug 未变」早退挡住，importPrefillSource 保留会让改名时的预填分支用错来源。
+    setBuiltinMatchSlug("");
+    setImportPrefillSource(null);
   };
   const cancelModelMetadataImport = () => {
     if (metadataImportTarget) {
@@ -7926,6 +7897,11 @@ function RelayProfileEditor({
         window: metadataImportTarget.originalWindow,
         autoCompact: metadataImportTarget.originalAutoCompact,
       });
+      // 面板里点过的清除/重新匹配/保存都已即时写进 draft.modelMetadata，
+      // 取消要连这些一起撤回，否则「取消」名不副实。
+      if (profile.modelMetadata !== metadataImportTarget.originalModelMetadata) {
+        commitModelMetadata(metadataImportTarget.originalModelMetadata);
+      }
     }
     closeModelMetadataImport();
   };
@@ -7939,7 +7915,7 @@ function RelayProfileEditor({
           modelWindowRows[index]?.autoCompact ?? "",
         )
       : "";
-    // \论无论有无已导入配置都查询内置匹配（标签需要准确的匹配状态）；
+    // 无论有无已导入配置都查询内置匹配（标签需要准确的匹配状态）；
     // 无已导入配置且命中内置时，把内置条目预填为可编辑底稿（预填 ≠ 导入）。
     let match: BuiltinModelMetadataMatch | null = null;
     if (slug.trim()) {
@@ -7956,9 +7932,7 @@ function RelayProfileEditor({
       setBuiltinMatch(match);
       setBuiltinMatchSlug(slug);
     }
-    const existingPreview = document
-      ? parseModelMetadataDocument(document, modelSlugFromRowName(slug))
-      : null;
+    const existingPreview = document ? parseModelMetadataDocument(document, slug) : null;
     setMetadataImportTarget({
       index,
       slug,
@@ -8022,7 +7996,7 @@ function RelayProfileEditor({
       commitModelMetadata(clearModelMetadataForSlug(profile.modelMetadata, slug));
     }
     const document = builtinEntryToImportDocument(match.entry);
-    const preview = parseModelMetadataDocument(document, modelSlugFromRowName(slug));
+    const preview = parseModelMetadataDocument(document, slug);
     setMetadataImportDocument(document);
     setMetadataImportError("");
     setMetadataImportPreview(preview.ok ? preview.value : null);
@@ -8040,7 +8014,6 @@ function RelayProfileEditor({
     setMetadataImportError("");
     setMetadataImportPreview(null);
     void refreshBuiltinMatch(slug);
-  };
   };
   const removeModelWindowRow = (index: number) => {
     const removedSlug = modelWindowRows[index]?.model.trim() || modelSlugOriginsRef.current[index] || "";
@@ -8074,7 +8047,6 @@ function RelayProfileEditor({
     setModelWindowRows([...modelWindowRows, { model: "", window: "", autoCompact: "", imageHandling: "" }]);
   };
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
-  const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
   const fetchSub2ApiRate = async () => {
     const result = await actions.fetchSub2ApiBilling(deriveRelayProfileFromFiles(profile));
     if (!result) return;
@@ -8149,7 +8121,7 @@ function RelayProfileEditor({
               <span>{t("关闭官方低额度提示")}</span>
             </label>
             <p className="field-hint">
-              {t("只隐藏低额度和已用完提示，不改变发送限制。左下角账户菜单仍显示官方剩余额度。")}
+              {t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}
             </p>
           </Field>
         ) : null}
@@ -8448,7 +8420,7 @@ function RelayProfileEditor({
               </div>
               {modelWindowRows.map((row, index) => {
                 const slug = row.model.trim();
-                const importing = metadataImportTarget?.index === index && metadataImportTarget.slug === slug;
+                const importing = metadataImportTarget?.index === index;
                 const imported = Boolean(importedModelMetadata[slug]);
                 // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
                 // 面板未打开时 controls 无意义，但仍计算以保持代码简单。
@@ -8464,10 +8436,7 @@ function RelayProfileEditor({
                     ? metadataMatchesBuiltin(metadataImportPreview.metadata, builtinMetadata)
                     : false,
                   matchedSource: builtinMatch?.matched ? builtinMatch.source : undefined,
-                  // 回退模板名从后端 fallback 字段实时取（bundled 静态资产首条），不写死
-                  fallbackSlug: builtinMatch?.fallback?.slug,
                 });
-
                 return (
                   <div className="relay-model-entry" key={index}>
                     <div className="relay-model-row">
@@ -8549,14 +8518,14 @@ function RelayProfileEditor({
                         title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
                       />
                       <Button
-                        className="relay-model-import-button"
+                        className={`relay-model-import-button${imported ? " relay-model-import-custom" : builtinIndex.has(slug.toLowerCase()) ? " relay-model-import-builtin" : ""}`}
                         aria-expanded={importing}
                         disabled={!slug}
                         onClick={() => (importing ? cancelModelMetadataImport() : beginModelMetadataImport(index, slug))}
                         size="icon"
                         title={imported ? t("查看或重新导入 models.json") : t("导入 models.json")}
                         type="button"
-                        variant={importing || imported ? "secondary" : "ghost"}
+                        variant="ghost"
                       >
                         <FileCode2 className="h-4 w-4" />
                       </Button>
@@ -8572,6 +8541,7 @@ function RelayProfileEditor({
                       </Button>
                     </div>
                     {importing ? (
+                      <section className="relay-model-import-workbench">
                         <div
                           className={`relay-model-import-status relay-model-import-status-${importControls.status.tone}`}
                           role="status"
@@ -8621,15 +8591,13 @@ function RelayProfileEditor({
                               imported,
                               builtinMatch,
                               builtinIndexSlug: builtinIndex.get(slug.toLowerCase()),
-                              // 回退模板名从后端 fallback 字段实时取，不写死
-                              fallbackSlug: builtinMatch?.fallback?.slug,
                             }).map((tag) => (
                               <span
                                 key={tag.kind}
                                 className={`relay-model-source-badge relay-model-source-${tag.tone}`}
-                                title={tf(tag.titleKey, tag.titleArgs)}
+                                title={tag.title}
                               >
-                                {tf(tag.textKey, tag.textArgs)}
+                                {tag.text}
                               </span>
                             ))}
                           </div>
@@ -8827,73 +8795,6 @@ function RelayProfileEditor({
               onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
               placeholder={t("留空使用默认值")}
             />
-          </Field>
-        ) : null}
-        {showApiFields ? (
-          <Field className="relay-field-custom-headers" label={t("自定义请求头")}>
-            <div className="relay-custom-headers">
-              {(profile.customHeaders || []).map((row, index) => (
-                <div className="relay-custom-header-row" key={`custom-header-${index}`}>
-                  <Input
-                    aria-label={t("请求头名称")}
-                    value={row.key}
-                    onChange={(event) => {
-                      const next = (profile.customHeaders || []).slice();
-                      next[index] = { ...next[index], key: event.currentTarget.value };
-                      updateDraft({ customHeaders: next });
-                    }}
-                    placeholder="X-Tenant"
-                  />
-                  <Input
-                    aria-label={t("请求头值")}
-                    value={row.value}
-                    onChange={(event) => {
-                      const next = (profile.customHeaders || []).slice();
-                      next[index] = { ...next[index], value: event.currentTarget.value };
-                      updateDraft({ customHeaders: next });
-                    }}
-                    placeholder={t("请求头值")}
-                  />
-                  <Button
-                    aria-label={t("删除这一项")}
-                    onClick={() =>
-                      updateDraft({
-                        customHeaders: (profile.customHeaders || []).filter((_, i) => i !== index),
-                      })
-                    }
-                    size="sm"
-                    type="button"
-                    variant="secondary"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-              <div className="relay-custom-headers-actions">
-                <Button
-                  onClick={() =>
-                    updateDraft({
-                      customHeaders: [...(profile.customHeaders || []), { key: "", value: "" }],
-                    })
-                  }
-                  size="sm"
-                  type="button"
-                  variant="secondary"
-                >
-                  <Plus className="h-4 w-4" />
-                  {t("添加请求头")}
-                </Button>
-              </div>
-              <span className="hint-line">
-                {t("自定义请求头会同时用于测试连接、模型列表与实际代理请求。")}
-              </span>
-              <span className="hint-line">
-                {t("Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。")}
-              </span>
-              {customHeadersError ? (
-                <span className="hint-line relay-custom-headers-error">{customHeadersError}</span>
-              ) : null}
-            </div>
           </Field>
         ) : null}
       </div>
@@ -11605,7 +11506,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             vlmModel: "",
             vlmBaseUrl: "",
             userAgent: "",
-            customHeaders: [],
             sub2apiEnabled: false,
             noAuth: false,
             sub2apiMultiplier: "",
@@ -11763,7 +11663,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelMetadata: profile.modelMetadata || "",
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
-    customHeaders: profile.customHeaders || [],
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
@@ -12135,13 +12034,19 @@ function codexModelFromConfig(contents: string): string {
 }
 
 /// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
-/// 非法或没有后缀时返回原串作为 slug。剥离与换算统一走 model-metadata.ts 的
-/// suffixWindowString/modelSlugFromRowName，避免两处实现对「什么算合法后缀」
-/// 的判断分叉。
+/// 非法或没有后缀时返回原串作为 slug。
 function parseModelSuffix(raw: string): { slug: string; window?: number } {
-  const window = suffixWindowString(raw);
-  if (window === null) return { slug: raw.trim() };
-  return { slug: modelSlugFromRowName(raw), window: Number(window) };
+  const trimmed = raw.trim();
+  const match = /^(.*?)\[(\d+(?:[KkMm])?)\]$/.exec(trimmed);
+  if (!match) return { slug: trimmed };
+  const inner = match[2];
+  const numPart = inner.replace(/[KkMm]$/, "");
+  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_000
+    : inner.endsWith("M") || inner.endsWith("m") ? 1_000_000
+    : 1;
+  const window = Number.parseInt(numPart, 10) * multiplier;
+  if (!Number.isFinite(window) || window <= 0) return { slug: trimmed };
+  return { slug: match[1].trim(), window };
 }
 
 function codexBaseUrlFromConfig(contents: string): string {
@@ -12576,7 +12481,6 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     vlmModel: "",
     vlmBaseUrl: "",
     userAgent: "",
-    customHeaders: [],
     sub2apiEnabled: false,
     noAuth: false,
     sub2apiMultiplier: "",
@@ -12624,7 +12528,6 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       vlmModel: "",
       vlmBaseUrl: "",
       userAgent: "",
-      customHeaders: [],
       sub2apiEnabled: false,
       noAuth: false,
       sub2apiMultiplier: "",
