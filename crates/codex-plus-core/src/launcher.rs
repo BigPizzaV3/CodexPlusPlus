@@ -1246,6 +1246,8 @@ async fn handle_helper_connection(
     let raw_path = parts.next().unwrap_or_default();
     let path = raw_path.split('?').next().unwrap_or(raw_path);
     let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
+    let request_beta_features =
+        header_value_from_headers(&request_headers, "x-codex-beta-features");
     let request_content_type = header_value_from_headers(&request_headers, "content-type");
     let request_content_encoding = header_value_from_headers(&request_headers, "content-encoding");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
@@ -1357,6 +1359,7 @@ async fn handle_helper_connection(
             &mut stream,
             &request_body,
             request_user_agent.as_deref(),
+            request_beta_features.as_deref(),
             method,
             path,
             remote_addr_text,
@@ -1696,15 +1699,17 @@ async fn handle_protocol_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
     request_user_agent: Option<&str>,
+    request_beta_features: Option<&str>,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path(
+    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path_with_beta(
         request_body,
         request_user_agent,
         path,
+        request_beta_features,
     )
     .await
     {
@@ -3522,12 +3527,30 @@ mod tests {
 
     #[test]
     fn reinject_backoff_delay_doubles_and_caps() {
-        assert_eq!(reinject_backoff_delay(0), std::time::Duration::from_secs(10));
-        assert_eq!(reinject_backoff_delay(1), std::time::Duration::from_secs(20));
-        assert_eq!(reinject_backoff_delay(2), std::time::Duration::from_secs(40));
-        assert_eq!(reinject_backoff_delay(4), std::time::Duration::from_secs(160));
-        assert_eq!(reinject_backoff_delay(5), std::time::Duration::from_secs(300));
-        assert_eq!(reinject_backoff_delay(32), std::time::Duration::from_secs(300));
+        assert_eq!(
+            reinject_backoff_delay(0),
+            std::time::Duration::from_secs(10)
+        );
+        assert_eq!(
+            reinject_backoff_delay(1),
+            std::time::Duration::from_secs(20)
+        );
+        assert_eq!(
+            reinject_backoff_delay(2),
+            std::time::Duration::from_secs(40)
+        );
+        assert_eq!(
+            reinject_backoff_delay(4),
+            std::time::Duration::from_secs(160)
+        );
+        assert_eq!(
+            reinject_backoff_delay(5),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            reinject_backoff_delay(32),
+            std::time::Duration::from_secs(300)
+        );
     }
 
     #[test]
@@ -3544,9 +3567,7 @@ mod tests {
         backoff.record_attempt(now + reinject_backoff_delay(0));
         assert_eq!(backoff.consecutive_attempts, 2);
         assert!(!backoff.ready(now + reinject_backoff_delay(0)));
-        assert!(backoff.ready(
-            now + reinject_backoff_delay(0) + reinject_backoff_delay(1)
-        ));
+        assert!(backoff.ready(now + reinject_backoff_delay(0) + reinject_backoff_delay(1)));
 
         backoff.reset();
         assert_eq!(backoff.consecutive_attempts, 0);
