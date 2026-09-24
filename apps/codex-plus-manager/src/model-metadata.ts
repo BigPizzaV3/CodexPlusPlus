@@ -155,46 +155,6 @@ export type BuiltinModelMetadataEntry = {
   [key: string]: unknown;
 };
 
-// ── [1M] 后缀的检测与适配 ────────────────────────────────────────────────
-// 模型行里用户原样输入的 `deepseek-v4-pro[1M]` 带窗口后缀，后缀的含义就是
-// 「该模型的上下文窗口大小」（1M=1000000、256K=256000），由 Rust 侧
-// parse_model_suffix 在生成 catalog 时剥离并换算。导入面板、标签、实时同步
-// 都在 Slug 层面工作，必须先把后缀剥掉再做任何 slug 比较，否则后端返回的
-// 规范 slug 与行名永远对不上（issue #2279 回归）。
-// 这里集中放一处，四个入口（内置预填、parseModelMetadataDocument、
-// synchronize*、metadataMatchesBuiltin）共用，避免各自实现再次分叉。
-const MODEL_SUFFIX_PATTERN = /^(.*?)\[(\d+(?:[KkMm])?)\]$/;
-
-/// 从模型行名拆出规范 slug；无后缀或后缀非法时返回去掉首尾空白的原串。
-export function modelSlugFromRowName(rowName: string): string {
-  const trimmed = rowName.trim();
-  const match = MODEL_SUFFIX_PATTERN.exec(trimmed);
-  if (!match) return trimmed;
-  if (suffixWindowTokens(match[2]) === null) return trimmed;
-  return match[1].trim();
-}
-
-/// 把后缀文字换算成 token 数：`[1M]`→1000000、`[256K]`→256000、`[123]`→123。
-/// 仅识别纯数字 + 可选 K/M 单位（大小写均可），其余一律 null。
-export function suffixWindowTokens(suffix: string): number | null {
-  const match = /^(\d+)([KkMm])?$/.exec(suffix.trim());
-  if (!match) return null;
-  const multiplier = match[2]
-    ? (match[2].toLowerCase() === "m" ? 1_000_000 : 1_000)
-    : 1;
-  const tokens = Number(match[1]) * multiplier;
-  if (!Number.isSafeInteger(tokens) || tokens <= 0) return null;
-  return tokens;
-}
-
-/// 后缀对应的窗口字符串（供「上下文窗口」列初值/写回用）；无有效后缀返回 null。
-export function suffixWindowString(rowName: string): string | null {
-  const match = MODEL_SUFFIX_PATTERN.exec(rowName.trim());
-  if (!match) return null;
-  const tokens = suffixWindowTokens(match[2]);
-  return tokens === null ? null : String(tokens);
-}
-
 export type BuiltinModelMetadataMatch = {
   matched: boolean;
   source?: string;
@@ -215,32 +175,24 @@ export function builtinEntryToImportDocument(entry: BuiltinModelMetadataEntry): 
   );
 }
 
-/// 标签文案以「中文 key + 插值参数」下发，由调用方过 t()/tf()：
-/// 裸字符串会被 i18n-verify.mjs 漏掉（它只扫调用点），英文模式直接露中文。
-/// key 全部登记在 i18n-en.ts 的 EN_TEMPLATE/EN_PLAIN 里。
-export type MetadataSourceTag = {
-  kind: "match" | "fallback" | "custom";
-  tone: "builtin" | "fallback" | "custom";
-  textKey: string;
-  textArgs: Array<string | number>;
-  titleKey: string;
-  titleArgs: Array<string | number>;
-};
+export type MetadataSourceTag =
+  | { kind: "match"; text: string; title: string; tone: "builtin" }
+  | { kind: "fallback"; text: string; title: string; tone: "fallback" }
+  | { kind: "custom"; text: string; title: string; tone: "custom" };
 
 /// 元数据来源标签（覆盖全部用户场景）：
 /// - 自定义存在 → 内置命中与否都显示 [自定义]；同时命中内置时并列 [匹配：来源]
 ///   （内置仍是底层事实）；未命中内置时只显示 [自定义]（自定义已覆盖，无"回退"可言）
-/// - 无自定义 → 命中内置 [匹配：来源]，否则 [回退：<fallbackSlug>]
+/// - 无自定义 → 命中内置 [匹配：来源]，否则 [回退：gpt-5.5]
 export function metadataSourceTags(options: {
   slug: string;
   imported: boolean;
   builtinMatch: BuiltinModelMetadataMatch | null;
   builtinIndexSlug: { source: string } | undefined;
-  /// 无内置时的回退模板名；由调用方从后端 fallback 字段实时取，不写死。
   fallbackSlug?: string;
 }): MetadataSourceTag[] {
-  const { imported, builtinMatch, builtinIndexSlug } = options;
-  const fallbackSlug = options.fallbackSlug ?? options.builtinMatch?.fallback?.slug ?? "";
+  const { slug, imported, builtinMatch, builtinIndexSlug } = options;
+  const fallbackSlug = options.fallbackSlug ?? "gpt-5.5";
   const matchedSource = builtinMatch?.matched && builtinMatch.entry
     ? builtinMatch.source ?? ""
     : builtinIndexSlug?.source;
@@ -248,32 +200,26 @@ export function metadataSourceTags(options: {
   if (matchedSource) {
     tags.push({
       kind: "match",
+      text: `匹配：${matchedSource}`,
+      title: `内置元数据：${matchedSource}`,
       tone: "builtin",
-      textKey: "匹配：{0}",
-      textArgs: [matchedSource],
-      titleKey: "内置元数据：{0}",
-      titleArgs: [matchedSource],
     });
   } else if (!imported) {
     tags.push({
       kind: "fallback",
+      text: `回退：${fallbackSlug}`,
+      title: `无内置元数据，生成时回退 ${fallbackSlug} 官方模板`,
       tone: "fallback",
-      textKey: "回退：{0}",
-      textArgs: [fallbackSlug],
-      titleKey: "无内置元数据，生成时回退 {0} 官方模板",
-      titleArgs: [fallbackSlug],
     });
   }
   if (imported) {
     tags.push({
       kind: "custom",
-      tone: "custom",
-      textKey: "自定义",
-      textArgs: [],
-      titleKey: matchedSource
-        ? "已导入自定义元数据，生成时覆盖内置（{0}）"
+      text: "自定义",
+      title: matchedSource
+        ? `已导入自定义元数据，生成时覆盖内置（${matchedSource}）`
         : "已导入自定义元数据，生成时以该配置为准",
-      titleArgs: matchedSource ? [matchedSource] : [],
+      tone: "custom",
     });
   }
   return tags;
@@ -323,16 +269,13 @@ function stableMetadataKey(metadata: ModelMetadata): string {
 
 /// 面板里的元数据与内置条目是否等价（键排序后深比较）。
 /// 只比供应商事实字段：窗口字段由「上下文窗口」列管辖，不参与判断——
-/// 否则仅改窗口就会被误判成「要存成自定义」。这里显式剥掉被托管的字段，
-/// 不依赖调用方恰好已经过滤：即便上游某一侧漏过滤，判定也不会被窗口值带偏
-/// （否则 c00177e 修掉的「重新匹配后保存变成自定义」会静默回归）。
+/// 否则仅改窗口就会被误判成「要存成自定义」。
 export function metadataMatchesBuiltin(
   metadata: ModelMetadata | null | undefined,
   builtinMetadata: ModelMetadata | null | undefined,
 ): boolean {
   if (!metadata || !builtinMetadata) return false;
-  return stableMetadataKey(filteredMetadata(metadata))
-    === stableMetadataKey(filteredMetadata(builtinMetadata));
+  return stableMetadataKey(metadata) === stableMetadataKey(builtinMetadata);
 }
 
 /// 「保存此模型」按钮的判定。核心原则：**保存匹配到的内置数据不该产生自定义覆盖**。
@@ -393,8 +336,7 @@ export type ImportPanelStatus = {
   title: string;
 };
 
-/// fallbackSlug：无内置元数据时生成所用的官方模板名，由调用方从后端
-/// fallback 字段实时取（不写死，随 bundled 静态资产首条演进）。
+/// fallbackSlug：无内置元数据时生成所用的官方模板（gpt-5.5）。
 export function importPanelControls(options: {
   slug: string;
   document: string;
@@ -404,10 +346,9 @@ export function importPanelControls(options: {
   /// 面板元数据与内置条目是否等价（由调用方用 metadataMatchesBuiltin 算出）
   matchesBuiltin: boolean;
   matchedSource?: string;
-  /// 无内置时的回退模板名；由调用方从后端 fallback 字段实时取，不写死。
   fallbackSlug?: string;
 }): ImportPanelControls {
-  const fallbackSlug = options.fallbackSlug ?? "";
+  const fallbackSlug = options.fallbackSlug ?? "gpt-5.5";
   const slugBlank = !options.slug.trim();
   const documentBlank = !options.document.trim();
   const decision = importSaveDecision({
@@ -452,8 +393,7 @@ function importPanelStatus(
   fallbackSlug: string,
   decision: ImportSaveDecision,
 ): ImportPanelStatus {
-  // matched 为真但来源缺失时不编造供应商名：只声称「内置」，具体来源留空。
-  const source = options.matchedSource || "内置";
+  const source = options.matchedSource || "gpt-5.6 兼容";
   const hasSource = Boolean(options.matched);
   // 无内置时：命中不到就是回退，来源写清楚避免用户猜
   const effectiveSource = hasSource ? source : fallbackSlug;
@@ -577,10 +517,8 @@ function unwrapJsonCompatibleDocument(source: string): string {
 // 供应商 Model Key 大小写不统一（如智谱 GLM-5.3-FlashX），上游 API 对大小写宽容，
 // 本地 slug 匹配若用严格相等会漏配元数据。
 function slugMatchesIgnoreCase(candidateSlug: unknown, targetSlug: string): boolean {
-  // targetSlug 允许是带 [1M] 后缀的模型行名：先剥成规范 slug 再比较，
-  // 否则带后缀的行名永远匹配不到不带后缀的文档条目。
   return typeof candidateSlug === "string"
-    && candidateSlug.toLowerCase() === modelSlugFromRowName(targetSlug).toLowerCase();
+    && candidateSlug.toLowerCase() === targetSlug.toLowerCase();
 }
 
 function documentCandidates(root: unknown): ModelMetadata[] | null {
