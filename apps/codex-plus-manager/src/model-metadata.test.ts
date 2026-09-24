@@ -9,12 +9,15 @@ import {
   importSaveDecision,
   metadataMatchesBuiltin,
   metadataSourceTags,
+  modelSlugFromRowName,
   parseModelMetadataDocument,
   parseModelMetadataMap,
   remapModelMetadataSlugs,
   replaceModelMetadataForSlug,
   retainModelMetadataForSlugs,
   serializeModelMetadataDocument,
+  suffixWindowString,
+  suffixWindowTokens,
   synchronizeModelMetadataDocumentContextWindow,
   synchronizeModelMetadataDocumentLimits,
   synchronizeModelMetadataDocumentLimitsPreview,
@@ -360,48 +363,75 @@ describe("model metadata helpers", () => {
     });
   });
 
+  it("预填文档的 slug 与用户输入的模型名拼写一致", () => {
+    // 用户行名拼写（如 DeepSeek-V4-Flash）与资产 slug（deepseek-v4-flash）
+    // 大小写不同时，预填文档与解析结果都应保留用户的拼写；
+    // 保存到 metadata map 的 key 由调用方用行名，链路全程与行名一致。
+    const entry = { slug: "deepseek-v4-flash", display_name: "DeepSeek-V4-Flash", context_window: 1_048_576 };
+    const document = builtinEntryToImportDocument(entry, "DeepSeek-V4-Flash");
+    assert.match(document, /"slug": "DeepSeek-V4-Flash"/);
+    const parsed = parseModelMetadataDocument(document, "DeepSeek-V4-Flash");
+    assert.strictEqual(parsed.ok, true);
+    if (parsed.ok) assert.strictEqual(parsed.value.slug, "DeepSeek-V4-Flash");
+
+    // 带后缀的行名：剥成规范 slug 后同样保留用户拼写
+    const suffixed = builtinEntryToImportDocument(entry, "DeepSeek-V4-Flash[1M]");
+    assert.match(suffixed, /"slug": "DeepSeek-V4-Flash"/);
+
+    // 不传行名时保持资产行为（bundled 展示等场景）
+    const fallbackDocument = builtinEntryToImportDocument(entry);
+    assert.match(fallbackDocument, /"slug": "deepseek-v4-flash"/);
+  });
+
   it("元数据来源标签覆盖全部用户场景", () => {
     const match = { matched: true, source: "GLM", entry: { slug: "glm-5.3" } };
     const fallback = { matched: false, fallback: { slug: "gpt-5.5", context_window: 272_000 } };
+    // 标签直接下发纯文本（不再过 t()/tf()），原样透传即可
+    const render = (tags: ReturnType<typeof metadataSourceTags>) => tags.map((tag) => ({
+      kind: tag.kind,
+      tone: tag.tone,
+      text: tag.text,
+      title: tag.title,
+    }));
 
     // 纯命中（打开导入区，内置预填）：只显示匹配标签
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: match, builtinIndexSlug: { source: "GLM" } }),
+      render(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: match, builtinIndexSlug: { source: "GLM" } })),
       [{ kind: "match", text: "匹配：GLM", title: "内置元数据：GLM", tone: "builtin" }],
     );
     // 命中 + 自定义（保存过/老版本已配置）：匹配与自定义并列
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "glm-5.3", imported: true, builtinMatch: match, builtinIndexSlug: { source: "GLM" } }).map(t => t.text),
+      render(metadataSourceTags({ slug: "glm-5.3", imported: true, builtinMatch: match, builtinIndexSlug: { source: "GLM" } })).map(t => t.text),
       ["匹配：GLM", "自定义"],
     );
     // 回退态（无内置）：回退标签
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "nope", imported: false, builtinMatch: fallback, builtinIndexSlug: undefined }).map(t => t.text),
+      render(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: fallback, builtinIndexSlug: undefined })).map(t => t.text),
       ["回退：gpt-5.5"],
     );
     // 回退 + 自定义：自定义已覆盖，不再显示"回退"（避免误导为还在用 gpt-5.5）
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "nope", imported: true, builtinMatch: fallback, builtinIndexSlug: undefined }).map(t => t.text),
+      render(metadataSourceTags({ slug: "nope", imported: true, builtinMatch: fallback, builtinIndexSlug: undefined })).map(t => t.text),
       ["自定义"],
     );
     // match 数据未返回时用索引兜底（行级渲染路径）
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: null, builtinIndexSlug: { source: "GLM" } }).map(t => t.text),
+      render(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: null, builtinIndexSlug: { source: "GLM" } })).map(t => t.text),
       ["匹配：GLM"],
     );
-    // 全无：回退
+    // 全无：回退（fallbackSlug 由后端实时下发，不写死）
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined }).map(t => t.text),
+      render(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.5" })).map(t => t.text),
       ["回退：gpt-5.5"],
     );
     // 自定义 fallback 标签文案可定制（fallback 源变化时）
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.4" }).map(t => t.text),
+      render(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.4" })).map(t => t.text),
       ["回退：gpt-5.4"],
     );
     // match 未命中但 entry 缺失时不应产生匹配标签（脏数据防御）
     assert.deepStrictEqual(
-      metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: { matched: false, source: "GLM" }, builtinIndexSlug: undefined }).map(t => t.text),
+      render(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: { matched: false, source: "GLM" }, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.5" })).map(t => t.text),
       ["回退：gpt-5.5"],
     );
   });
@@ -447,7 +477,7 @@ describe("model metadata helpers", () => {
     // 2) 内置预填、未编辑、已有自定义 → 内容是内置，保存 = 放弃自定义
     assert.deepStrictEqual(
       importSaveDecision({ parseOk: true, documentBlank: false, imported: true, matchesBuiltin: true }),
-      { needsSave: true, effect: "builtin", label: "恢复内置", title: "内容与内置元数据一致，保存后改用内置元数据" },
+      { needsSave: true, effect: "builtin", label: "保存此模型", title: "内容与内置元数据一致，保存后使用内置元数据" },
     );
 
     // 3) 真的改过内容（与内置不等价）+ 无自定义 → 写成自定义覆盖
@@ -464,7 +494,7 @@ describe("model metadata helpers", () => {
     // 5) 空文本 + 已有自定义 → 放弃自定义（与 2 等效，都是恢复内置）
     assert.deepStrictEqual(
       importSaveDecision({ parseOk: true, documentBlank: true, imported: true, matchesBuiltin: false }),
-      { needsSave: true, effect: "builtin", label: "恢复内置", title: "保存后清除该模型的自定义配置，改用内置元数据" },
+      { needsSave: true, effect: "builtin", label: "保存此模型", title: "保存后清除该模型的自定义配置，生成时回退默认模板" },
     );
     // 6) 空文本 + 无自定义 → 没有可保存的内容
     assert.deepStrictEqual(
@@ -525,7 +555,7 @@ describe("model metadata helpers", () => {
     const withCustom = control({ imported: true });
     assert.strictEqual(withCustom.clear.disabled, false);
     assert.strictEqual(withCustom.save.disabled, false);
-    assert.strictEqual(withCustom.save.label, "恢复内置");
+    assert.strictEqual(withCustom.save.label, "保存此模型");
     assert.match(withCustom.status.text, /保存后恢复内置/);
 
     // 内容真的改过（与内置不等价）：保存变可点，文案「保存为自定义配置」
@@ -535,7 +565,8 @@ describe("model metadata helpers", () => {
     assert.match(edited.status.text, /保存后：该模型改用这份自定义配置/);
 
     // 改了模型名导致未命中内置：重新匹配置灰，但按钮本身不消失
-    const unmatched = control({ matched: false, matchedSource: undefined });
+    // （fallbackSlug 由后端实时下发，不写死；断言传入值即可）
+    const unmatched = control({ matched: false, matchedSource: undefined, fallbackSlug: "gpt-5.5" });
     assert.strictEqual(unmatched.rematch.disabled, true);
     assert.match(unmatched.rematch.title, /没有内置元数据可匹配/);
     assert.strictEqual(unmatched.rematch.title.length > 0, true);
@@ -553,7 +584,7 @@ describe("model metadata helpers", () => {
 
     // 文本框被清空且已有自定义：保存变「恢复内置」，状态行预告恢复内置
     const cleared = control({ document: "", imported: true, matchesBuiltin: false });
-    assert.strictEqual(cleared.save.label, "恢复内置");
+    assert.strictEqual(cleared.save.label, "保存此模型");
     assert.strictEqual(cleared.save.disabled, false);
     assert.match(cleared.status.text, /保存后恢复内置/);
     // 清空且没有自定义：没什么可做的，保存置灰
@@ -564,5 +595,150 @@ describe("model metadata helpers", () => {
       control({ matched: false, matchedSource: undefined, fallbackSlug: "gpt-5.4" }).status.text,
       /回退 gpt-5\.4/,
     );
+  });
+
+  // ── [1M] 后缀检测与适配（issue #2279）────────────────────────────────
+  // 模型行名是用户原样输入的字符串，[1M] 后缀的含义就是「该模型上下文窗口」。
+  // 导入面板/标签/实时同步都在 slug 层面工作，必须先剥后缀再比较。
+  it("suffixWindowTokens 解析 [1M]/[256K]/[123] 并拒绝非法写法", () => {
+    assert.strictEqual(suffixWindowTokens("1M"), 1_000_000);
+    assert.strictEqual(suffixWindowTokens("256K"), 256_000);
+    assert.strictEqual(suffixWindowTokens("128k"), 128_000);
+    assert.strictEqual(suffixWindowTokens("123"), 123);
+    // 非法后缀一律 null：不能把非法值悄悄当成 0 或 NaN 传下去
+    assert.strictEqual(suffixWindowTokens(""), null);
+    assert.strictEqual(suffixWindowTokens("0K"), null);
+    assert.strictEqual(suffixWindowTokens("abc"), null);
+    assert.strictEqual(suffixWindowTokens("1.5M"), null);
+    assert.strictEqual(suffixWindowTokens("-1M"), null);
+  });
+
+  it("modelSlugFromRowName 剥掉合法后缀、保留非法后缀原文", () => {
+    assert.strictEqual(modelSlugFromRowName("deepseek-v4-pro[1M]"), "deepseek-v4-pro");
+    assert.strictEqual(modelSlugFromRowName("  glm-5.3[256K]  "), "glm-5.3");
+    assert.strictEqual(modelSlugFromRowName("GPT-5.6-SOL[1M]"), "GPT-5.6-SOL");
+    // 无后缀：trim 后原样返回
+    assert.strictEqual(modelSlugFromRowName("  kimi-k3 "), "kimi-k3");
+    // 非法后缀不当成后缀处理，整串当 slug（与 Rust parse_model_suffix 一致）
+    assert.strictEqual(modelSlugFromRowName("foo[bar]"), "foo[bar]");
+    assert.strictEqual(modelSlugFromRowName("foo[1M"), "foo[1M");
+    assert.strictEqual(modelSlugFromRowName("foo[0K]"), "foo[0K]");
+    // 空串
+    assert.strictEqual(modelSlugFromRowName(""), "");
+  });
+
+  it("suffixWindowString 给出后缀对应的窗口字符串", () => {
+    assert.strictEqual(suffixWindowString("deepseek-v4-pro[1M]"), "1000000");
+    assert.strictEqual(suffixWindowString("glm-5.3[256K]"), "256000");
+    assert.strictEqual(suffixWindowString("kimi-k3"), null);
+    assert.strictEqual(suffixWindowString("foo[bar]"), null);
+  });
+
+  it("内置预填 + parse 全链路支持带 [1M] 后缀的模型行名", () => {
+    // 复现 issue #2279：行名带后缀时，内置文档写规范 slug，而 parse 的 targetSlug
+    // 曾是带后缀行名 → 必然报「文档中没有找到当前模型 slug」。
+    const entry = {
+      slug: "deepseek-v4-pro",
+      display_name: "DeepSeek-V4-Pro",
+      context_window: 1_048_576,
+      max_context_window: 1_048_576,
+      apply_patch_tool_type: "freeform",
+    };
+    const document = builtinEntryToImportDocument(entry);
+    const parsed = parseModelMetadataDocument(document, "deepseek-v4-pro[1M]");
+    assert.ok(parsed.ok, "带 [1M] 后缀的行名应能匹配到内置文档");
+    assert.strictEqual(parsed.value.slug, "deepseek-v4-pro[1M]");
+    assert.strictEqual(parsed.value.metadata.display_name, "DeepSeek-V4-Pro");
+    assert.strictEqual(parsed.value.contextWindow, "1048576");
+
+    // 大小写 + 后缀组合也要命中
+    const sol = parseModelMetadataDocument(
+      builtinEntryToImportDocument({ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol" }),
+      "GPT-5.6-SOL[1M]",
+    );
+    assert.ok(sol.ok, "大小写变体 + 后缀应命中");
+  });
+
+  it("实时同步（窗口/压缩）同样按规范 slug 匹配带后缀行名", () => {
+    const entry = { slug: "glm-5.3", display_name: "glm-5.3" };
+    const document = builtinEntryToImportDocument(entry);
+    const synced = synchronizeModelMetadataDocumentContextWindow(document, "glm-5.3[1M]", "512000");
+    assert.ok(synced, "窗口同步应命中带后缀的行名");
+    const doc = JSON.parse(synced!);
+    assert.strictEqual(doc.models[0].context_window, 512000);
+
+    const limits = synchronizeModelMetadataDocumentLimits(document, "glm-5.3[1M]", "512000", "80%");
+    assert.ok(limits, "压缩同步应命中带后缀的行名");
+    assert.strictEqual(JSON.parse(limits!).models[0].auto_compact_token_limit, 409600);
+  });
+
+  it("metadataMatchesBuiltin 忽略窗口字段差异，只比供应商事实字段", () => {
+    const base = { display_name: "Kimi K3", prefer_websockets: false };
+    // 两侧窗口字段不同也判等：窗口由「上下文窗口」列管辖
+    assert.strictEqual(metadataMatchesBuiltin(
+      { ...base, context_window: 1_048_576, max_context_window: 1_048_576, auto_compact_token_limit: 943718 },
+      { ...base, context_window: 272_000, max_context_window: 872_000 },
+    ), true);
+    // 供应商事实字段不同 → 不等价
+    assert.strictEqual(metadataMatchesBuiltin(
+      { ...base, context_window: 272_000 },
+      { ...base, context_window: 1_048_576, apply_patch_tool_type: "freeform" },
+    ), false);
+    // 字段顺序不影响
+    assert.strictEqual(metadataMatchesBuiltin(
+      { context_window: 1, display_name: "Kimi K3", prefer_websockets: false },
+      { display_name: "Kimi K3", context_window: 2, prefer_websockets: false },
+    ), true);
+  });
+
+  it("来源徽标直接下发纯文本，文案由 helper 统一维护", () => {
+    const [match] = metadataSourceTags({
+      slug: "kimi-k3[1M]",
+      imported: false,
+      builtinMatch: { matched: true, source: "Kimi", entry: { slug: "kimi-k3" } },
+      builtinIndexSlug: undefined,
+    });
+    assert.deepStrictEqual(match, {
+      kind: "match",
+      tone: "builtin",
+      text: "匹配：Kimi",
+      title: "内置元数据：Kimi",
+    });
+    const [fallback] = metadataSourceTags({
+      slug: "unknown",
+      imported: false,
+      builtinMatch: { matched: false },
+      builtinIndexSlug: undefined,
+      fallbackSlug: "gpt-5.5",
+    });
+    assert.deepStrictEqual(fallback, {
+      kind: "fallback",
+      tone: "fallback",
+      text: "回退：gpt-5.5",
+      title: "无内置元数据，生成时回退 gpt-5.5 官方模板",
+    });
+    // 命中内置 + 有自定义时并列两个标签，custom 在第二个
+    const tags = metadataSourceTags({
+      slug: "kimi-k3",
+      imported: true,
+      builtinMatch: { matched: true, source: "Kimi", entry: { slug: "kimi-k3" } },
+      builtinIndexSlug: undefined,
+    });
+    assert.strictEqual(tags.length, 2);
+    const custom = tags[1];
+    assert.strictEqual(custom.kind, "custom");
+    assert.strictEqual(custom.text, "自定义");
+    assert.strictEqual(custom.title, "已导入自定义元数据，生成时覆盖内置（Kimi）");
+
+    // 命中内置但无自定义：只有 match 一个标签
+    const onlyMatch = metadataSourceTags({
+      slug: "kimi-k3",
+      imported: false,
+      builtinMatch: { matched: true, source: "Kimi", entry: { slug: "kimi-k3" } },
+      builtinIndexSlug: undefined,
+    });
+    assert.strictEqual(onlyMatch.length, 1);
+    assert.strictEqual(onlyMatch[0].kind, "match");
+    assert.strictEqual(onlyMatch[0].text, "匹配：Kimi");
   });
 });
