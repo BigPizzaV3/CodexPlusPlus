@@ -245,7 +245,6 @@ type BackendSettings = {
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
   codexTaskboardEnabled: boolean;
-  computerUseGuardEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
@@ -1017,7 +1016,6 @@ const defaultSettings: BackendSettings = {
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
   codexTaskboardEnabled: false,
-  computerUseGuardEnabled: false,
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
@@ -3229,9 +3227,7 @@ export function App() {
 
   const actions = useMemo(
     () => ({
-      refreshCurrent: async () => {
-        await navigate(route);
-      },
+      refreshCurrent: () => navigate(route),
       launch,
       restart,
       repairPluginMarketplace,
@@ -4388,7 +4384,7 @@ function WeixinConnectScreen({
           </section>
         </CardContent>
       </Panel>
-  </div>
+    </div>
   );
 }
 
@@ -11230,7 +11226,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...settings,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexTaskboardEnabled: settings.codexTaskboardEnabled === true,
-    computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
     codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,

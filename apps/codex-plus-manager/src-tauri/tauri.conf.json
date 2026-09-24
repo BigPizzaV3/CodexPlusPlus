@@ -32,7 +32,7 @@
     }
   },
   "bundle": {
-    "active": true,
+    "active": false,
     "targets": "all",
     "macOS": {
       "infoPlist": "Info.plist"

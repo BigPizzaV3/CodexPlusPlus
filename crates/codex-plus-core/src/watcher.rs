@@ -419,18 +419,8 @@ pub fn find_codex_processes() -> Vec<u32> {
 pub fn find_codex_processes_from_snapshot(
     processes: &[crate::windows_integration::WindowsProcessInfo],
 ) -> Vec<u32> {
-    let app_process_ids = processes
-        .iter()
-        .filter(|process| is_codex_app_process_snapshot(process))
-        .map(|process| process.process_id)
-        .collect::<HashSet<_>>();
-    let root_processes = processes
-        .iter()
-        .filter(|process| !app_process_ids.contains(&process.parent_process_id))
-        .collect::<Vec<_>>();
-
     let mut ids = codex_process_ids(
-        root_processes
+        processes
             .iter()
             .filter_map(|process| {
                 process
@@ -447,7 +437,7 @@ pub fn find_codex_processes_from_snapshot(
     // lowercase codex.exe here; that is commonly the CLI binary. ChatGPT.exe is accepted
     // only for packaged Store apps above, because the standalone ChatGPT app can be a
     // normal ChatGPT session rather than Codex.
-    for process in root_processes {
+    for process in processes {
         if process.exe_file == "Codex.exe" {
             ids.push(process.process_id);
         }
@@ -456,15 +446,6 @@ pub fn find_codex_processes_from_snapshot(
     ids.sort_unstable();
     ids.dedup();
     ids
-}
-
-#[cfg(windows)]
-fn is_codex_app_process_snapshot(process: &crate::windows_integration::WindowsProcessInfo) -> bool {
-    process.exe_file == "Codex.exe"
-        || process
-            .executable_path
-            .as_deref()
-            .is_some_and(|path| is_windowsapps_codex_app_process(path.to_string_lossy().as_ref()))
 }
 
 /// Return desktop processes that can write Codex task state while a destructive

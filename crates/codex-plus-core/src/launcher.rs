@@ -689,39 +689,6 @@ fn apply_codexplusplus_window_icon_after_launch(process_id: u32) {
 #[cfg(not(windows))]
 fn apply_codexplusplus_window_icon_after_launch(_process_id: u32) {}
 
-#[cfg(windows)]
-pub fn activate_codex_window_after_launch(process_id: Option<u32>) {
-    tokio::spawn(async move {
-        for attempt in 1..=30 {
-            let mut process_ids = Vec::new();
-            if let Some(process_id) = process_id {
-                process_ids.push(process_id);
-            }
-            process_ids.extend(crate::watcher::find_codex_processes());
-            process_ids.sort_unstable();
-            process_ids.dedup();
-            if process_ids
-                .into_iter()
-                .any(crate::windows_activate_process_window)
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            if attempt == 30 {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.window_activation.failed",
-                    serde_json::json!({
-                        "process_id": process_id
-                    }),
-                );
-            }
-        }
-    });
-}
-
-#[cfg(not(windows))]
-pub fn activate_codex_window_after_launch(_process_id: Option<u32>) {}
-
 pub trait IntoLaunchHooks {
     fn into_launch_hooks(self) -> Arc<dyn LaunchHooks>;
 }
@@ -979,7 +946,6 @@ impl LaunchHooks for DefaultLaunchHooks {
                 match activate_packaged_app(app_user_model_id, arguments).await {
                     Ok(process_id) => {
                         apply_codexplusplus_window_icon_after_launch(process_id);
-                        activate_codex_window_after_launch(Some(process_id));
                         if let Some(inspector_port) = native_menu_inspector_port {
                             start_native_menu_localizer(inspector_port);
                         }

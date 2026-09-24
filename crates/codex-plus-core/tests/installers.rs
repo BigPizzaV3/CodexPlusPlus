@@ -61,15 +61,6 @@ fn windows_entrypoint_plan_can_request_owned_data_removal_without_shell_script()
 }
 
 #[test]
-fn windows_companion_spawn_grants_foreground_permission() {
-    let install_source = include_str!("../src/install/mod.rs");
-    let windows_source = include_str!("../src/windows_integration.rs");
-
-    assert!(install_source.contains("windows_allow_set_foreground_window(child.id())"));
-    assert!(windows_source.contains("AllowSetForegroundWindow(process_id)"));
-}
-
-#[test]
 fn macos_bundle_metadata_contains_silent_and_manager_apps() {
     let options = InstallOptions {
         install_root: Some("/Applications".into()),
@@ -90,11 +81,7 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
             .contains("<string>Codex++ 管理工具</string>")
     );
     assert!(manager.info_plist.contains("<string>dreamskin</string>"));
-    assert!(
-        manager
-            .info_plist
-            .contains("<string>codexplusplus</string>")
-    );
+    assert!(manager.info_plist.contains("<string>codexplusplus</string>"));
     assert!(!silent.info_plist.contains("<string>dreamskin</string>"));
     assert_eq!(
         silent.binary_target_name.as_deref(),
