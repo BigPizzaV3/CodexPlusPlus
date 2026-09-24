@@ -65,6 +65,15 @@ fn compaction_trigger_detection() {
 
     let string_input = json!({ "model": "m", "input": "hi" });
     assert!(!request_has_compaction_trigger(&string_input));
+
+    let trigger_not_last = json!({
+        "model": "m",
+        "input": [
+            { "type": "compaction_trigger" },
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "after" }] }
+        ]
+    });
+    assert!(request_has_compaction_trigger(&trigger_not_last));
 }
 
 #[test]
@@ -300,7 +309,7 @@ async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
             { "type": "compaction_trigger" }
         ]
     });
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         &serde_json::to_string(&request_body).unwrap(),
         settings,
     )
@@ -308,14 +317,156 @@ async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
     .unwrap();
     let request = server.await.unwrap();
 
-    // 上游端点保持普通 /v1/responses，请求体剥离了 trigger 并注入了摘要指令。
+    // 上游已经回了普通摘要文本：保留原始 compaction_trigger，不再发第二次改写请求。
     assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
-    assert!(request.contains("CONTEXT CHECKPOINT COMPACTION"));
-    assert!(!request.contains("compaction_trigger"));
-
-    // 标记为压缩请求，交给响应包装层重组。
+    assert!(request.contains("compaction_trigger"));
+    assert!(!request.contains("CONTEXT CHECKPOINT COMPACTION"));
     assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
     assert_eq!(result.status_code, 200);
+    let buffered = result.read_body().await.unwrap();
+    let buffered = String::from_utf8(buffered).unwrap();
+    assert!(buffered.contains("COMPACTED_SUMMARY_TEXT"));
+}
+
+#[tokio::test]
+async fn compaction_v2_passthrough_keeps_native_compaction_item() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        let body = r#"{"id":"resp_native","object":"response","status":"completed","output":[{"type":"compaction","encrypted_content":"NATIVE_CHECKPOINT"}]}"#;
+        write_json_response(&mut stream, body).await;
+        request
+    });
+    let settings = compaction_proxy_settings(&format!("http://{addr}/v1"));
+    let request_body = json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "history" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request_body).unwrap(),
+        settings,
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+    assert!(request.contains("compaction_trigger"));
+    assert!(!request.contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(result.native_compaction_passthrough);
+    assert!(result.compaction);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("NATIVE_CHECKPOINT"));
+    assert_eq!(body.matches("\"type\":\"compaction\"").count(), 1);
+}
+
+#[tokio::test]
+async fn compaction_v2_empty_output_falls_back_without_stripping_native_success() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = if index == 0 {
+                r#"{"id":"resp_empty","object":"response","status":"completed","output":[]}"#
+            } else {
+                r#"{"id":"resp_fallback","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"FALLBACK_SUMMARY"}]}]}"#
+            };
+            write_json_response(&mut stream, body).await;
+            requests.push(request);
+        }
+        requests
+    });
+    let settings = compaction_proxy_settings(&format!("http://{addr}/v1"));
+    let request_body = json!({
+        "model": "grok-4.7",
+        "stream": false,
+        "input": [
+            { "type": "compaction_trigger" },
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "history" }] }
+        ]
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request_body).unwrap(),
+        settings,
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[0].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("FALLBACK_SUMMARY"));
+}
+
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&raw);
+        let Some(header_end) = text.find("\r\n\r\n") else {
+            continue;
+        };
+        let content_length = text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0);
+        if raw.len() >= header_end + 4 + content_length {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&raw).to_string()
+}
+
+async fn write_json_response(stream: &mut tokio::net::TcpStream, body: &str) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+fn compaction_proxy_settings(base_url: &str) -> BackendSettings {
+    BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            base_url: base_url.to_string(),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
 }
 
 #[test]
@@ -1685,7 +1836,7 @@ async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u
         "stream": false,
         "tools": tools
     });
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         &serde_json::to_string(&request).unwrap(),
         settings,
     )
@@ -1693,8 +1844,7 @@ async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u
     .expect("修复后：代理请求应成功完成（状态 200）");
     let status_code = result.status_code;
     let upstream_body = server.await.unwrap();
-    let response_body: Value =
-        serde_json::from_slice(&result.response.bytes().await.unwrap()).unwrap();
+    let response_body: Value = serde_json::from_slice(&result.read_body().await.unwrap()).unwrap();
     Ok((upstream_body, status_code, response_body))
 }
 
@@ -2878,16 +3028,16 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         relay.api_key.clear();
     }
 
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
         settings,
     )
     .await
     .unwrap();
-    let body = result.response.bytes().await.unwrap();
+    let body = result.read_body().await.unwrap();
 
     assert_eq!(result.status_code, 200);
-    assert_eq!(body.as_ref(), br#"{"id":"resp_1","object":"response"}"#);
+    assert_eq!(body.as_slice(), br#"{"id":"resp_1","object":"response"}"#);
     let first_request = first_server.await.unwrap();
     let second_request = second_server.await.unwrap();
     assert!(
@@ -3509,13 +3659,13 @@ async fn image_generations_proxy_forwards_json_and_upstream_error() {
     });
     write_image_relay_settings(temp.path(), &format!("http://{addr}/v1"));
     let body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
-    let upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
+    let mut upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
         .await
         .unwrap();
     assert_eq!(upstream.status_code, 429);
     assert_eq!(upstream.content_type, "application/problem+json");
     assert_eq!(
-        upstream.response.bytes().await.unwrap().as_ref(),
+        upstream.read_body().await.unwrap().as_slice(),
         br#"{"error":{"message":"rate limited"}}"#
     );
     let request = server.await.unwrap();
@@ -4364,7 +4514,10 @@ fn responses_request_passes_tool_search_through_to_chat_tools() {
         .expect("tool_search 必须出现在转换后的 tools 里");
     assert_eq!(tool_search["type"], "function");
     assert_eq!(tool_search["function"]["name"], "tool_search");
-    assert_eq!(tool_search["function"]["description"], "Search exposed tools");
+    assert_eq!(
+        tool_search["function"]["description"],
+        "Search exposed tools"
+    );
     assert_eq!(
         tool_search["function"]["parameters"]["properties"]["query"]["type"],
         "string"
@@ -4374,7 +4527,11 @@ fn responses_request_passes_tool_search_through_to_chat_tools() {
         "query"
     );
     // 其它工具不受影响
-    assert!(tools.iter().any(|tool| tool["function"]["name"] == "exec_command"));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "exec_command")
+    );
 }
 
 /// #2263：模型调用回 tool_search 时必须还原成 `tool_search_call` item，
@@ -4527,9 +4684,11 @@ key = "value"
     )
     .unwrap();
 
-    let preserved =
-        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
-            .unwrap();
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
 
     assert!(
         preserved.contains("[mcp_servers.context7]"),
@@ -4718,9 +4877,11 @@ fn preserve_live_app_settings_does_not_invent_mcp_servers() {
     let home = dir.path();
     std::fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
 
-    let preserved =
-        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
-            .unwrap();
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
 
     assert!(
         !preserved.contains("mcp_servers"),
