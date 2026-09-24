@@ -403,7 +403,7 @@ pub struct UpstreamProxyResponse {
     pub content_type: String,
     pub is_stream: bool,
     pub wire_api: UpstreamWireApi,
-    /// 请求是 codex v2 远程压缩（input 末尾带 compaction_trigger），
+    /// 仅标记 Chat Completions 的合成摘要兼容路径；原生 Responses 保持透传。
     /// 响应必须由代理重组为单个 `compaction` 输出项。
     pub compaction: bool,
     pub response: reqwest::Response,
@@ -565,15 +565,27 @@ impl CompactionSseConverter {
         let Ok(chunk) = serde_json::from_str::<Value>(&data) else {
             return;
         };
-        let event_type = chunk.get("type").and_then(Value::as_str).unwrap_or(event_name);
-        if matches!(event_type, "response.failed" | "response.incomplete" | "error")
-            || chunk.get("error").is_some_and(|error| !error.is_null())
+        let event_type = chunk
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or(event_name);
+        if matches!(
+            event_type,
+            "response.failed" | "response.incomplete" | "error"
+        ) || chunk.get("error").is_some_and(|error| !error.is_null())
         {
-            let error = chunk.pointer("/response/error").or_else(|| chunk.get("error"));
+            let error = chunk
+                .pointer("/response/error")
+                .or_else(|| chunk.get("error"));
             self.fail(
-                error.and_then(|error| error.get("message")).and_then(Value::as_str)
-                    .unwrap_or("Compaction upstream stream failed or was incomplete").to_string(),
-                error.and_then(|error| error.get("code")).and_then(Value::as_str)
+                error
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Compaction upstream stream failed or was incomplete")
+                    .to_string(),
+                error
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str)
                     .map(str::to_string),
             );
             return;
@@ -630,7 +642,10 @@ impl CompactionSseConverter {
     }
 
     fn capture_final_summary(&mut self, text: Option<&Value>) {
-        let Some(text) = text.and_then(Value::as_str).filter(|text| !text.trim().is_empty()) else {
+        let Some(text) = text
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+        else {
             return;
         };
         self.final_summary = Some(text.to_string());
@@ -1009,12 +1024,24 @@ pub async fn open_responses_proxy_request_for_path(
     original_user_agent: Option<&str>,
     request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_for_path_with_beta(body, original_user_agent, request_path, None)
+        .await
+}
+
+/// 只转发客户端声明的 beta 能力，不转发客户端鉴权。
+pub async fn open_responses_proxy_request_for_path_with_beta(
+    body: &str,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+    beta_features: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
         settings,
         original_user_agent,
         request_path,
+        beta_features,
     )
     .await
 }
@@ -1023,8 +1050,14 @@ pub async fn open_responses_proxy_request_with_settings(
     body: &str,
     settings: crate::settings::BackendSettings,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None, "/responses")
-        .await
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        None,
+        "/responses",
+        None,
+    )
+    .await
 }
 
 pub async fn open_responses_proxy_request_with_settings_for_path(
@@ -1032,8 +1065,30 @@ pub async fn open_responses_proxy_request_with_settings_for_path(
     settings: crate::settings::BackendSettings,
     request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None, request_path)
-        .await
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        None,
+        request_path,
+        None,
+    )
+    .await
+}
+
+pub async fn open_responses_proxy_request_with_settings_for_path_and_beta(
+    body: &str,
+    settings: crate::settings::BackendSettings,
+    request_path: &str,
+    beta_features: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        None,
+        request_path,
+        beta_features,
+    )
+    .await
 }
 
 async fn open_responses_proxy_request_with_settings_and_user_agent(
@@ -1041,6 +1096,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,
     request_path: &str,
+    beta_features: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
@@ -1112,21 +1168,22 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 }))
             }),
         );
-        let upstream = match send_upstream_request_for_responses(
-            upstream_request_builder(
-                crate::http_client::proxied_client(&effective_user_agent(
-                    &relay.user_agent,
-                    original_user_agent,
-                ))?,
-                &endpoint,
-                &relay,
-                is_stream,
-                &upstream_body,
-            ),
+        let mut builder = upstream_request_builder(
+            crate::http_client::proxied_client(&effective_user_agent(
+                &relay.user_agent,
+                original_user_agent,
+            ))?,
+            &endpoint,
+            &relay,
             is_stream,
-        )
-        .await
-        {
+            &upstream_body,
+        );
+        if wire_api == UpstreamWireApi::Responses {
+            if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
+                builder = builder.header("x-codex-beta-features", value);
+            }
+        }
+        let upstream = match send_upstream_request_for_responses(builder, is_stream).await {
             Ok(upstream) => upstream,
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1557,11 +1614,9 @@ async fn upstream_request_parts(
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
-    if compact && relay.protocol == RelayProtocol::ChatCompletions {
-        // v2 压缩在剥离 compaction_trigger 后就是普通生成请求，
-        // Responses→Chat 转换可以照常处理；真正的失败兜底在响应包装层。
-    }
-    if compact {
+    // 原生 Responses 状态必须来自上游，不能以普通摘要冒充加密状态。
+    let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
+    if synthetic_compaction {
         request_json = rewrite_request_for_compaction(strip_compaction_trigger(request_json));
     }
     if let Some(model) = model_override
@@ -1642,7 +1697,7 @@ async fn upstream_request_parts(
     Ok((
         match relay.protocol {
             // v2 压缩请求走普通 /responses 端点（compaction_trigger 在 input 里）；
-            // 旧版 /responses/compact 端点官方已下线，仅对显式路径保留改写。
+            // 显式 legacy compact 保留原端点。
             RelayProtocol::Responses if compact && !is_v2_compaction => {
                 responses_compact_url(&relay.base_url)
             }
@@ -1651,7 +1706,7 @@ async fn upstream_request_parts(
         },
         body,
         wire_api,
-        compact,
+        synthetic_compaction,
     ))
 }
 
@@ -1718,8 +1773,8 @@ fn effective_user_agent(configured_user_agent: &str, original_user_agent: Option
 
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
     let request_json: Value = serde_json::from_str(body)?;
-    let is_compaction = request_has_compaction_trigger(&request_json);
     let upstream = open_responses_proxy_request(body, None).await?;
+    let is_compaction = upstream.compaction;
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
     let is_stream = upstream.is_stream;
@@ -1738,7 +1793,10 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
 
     if is_compaction {
         // v2 压缩：无论上游协议/是否流式，都重组为单个 compaction 输出项。
-        let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
+        let model = request_json
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if !is_stream {
             return Ok(ProxyHttpResponse {
                 status: "200 OK".to_string(),
@@ -3895,10 +3953,7 @@ fn responses_tools_to_chat_tools(tools: &[Value], context: &CodexToolContext) ->
                     .get("description")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let parameters = tool
-                    .get("parameters")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
+                let parameters = tool.get("parameters").cloned().unwrap_or_else(|| json!({}));
                 converted.push(json!({
                     "type": "function",
                     "function": {
@@ -4284,13 +4339,15 @@ fn collect_tool_search_output_namespaces(body: &Value) -> Vec<Value> {
 /// chat tools 按函数名去重，保留首次出现。
 fn dedup_chat_tools_by_name(tools: &mut Vec<Value>) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    tools.retain(|tool| match tool
-        .get("function")
-        .and_then(|function| function.get("name"))
-        .and_then(Value::as_str)
-    {
-        Some(name) => seen.insert(name.to_string()),
-        None => true,
+    tools.retain(|tool| {
+        match tool
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+        {
+            Some(name) => seen.insert(name.to_string()),
+            None => true,
+        }
     });
 }
 
@@ -5904,10 +5961,7 @@ mod relay_custom_header_tests {
             "Authorization",
             "Bearer explicit",
         )]));
-        assert_eq!(
-            request.headers().get_all("authorization").iter().count(),
-            1
-        );
+        assert_eq!(request.headers().get_all("authorization").iter().count(), 1);
         assert_eq!(
             request.headers().get("authorization").unwrap(),
             "Bearer explicit"
