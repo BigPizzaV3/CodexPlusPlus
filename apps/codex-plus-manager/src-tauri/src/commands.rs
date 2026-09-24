@@ -1461,8 +1461,21 @@ pub fn query_builtin_model_metadata(slug: String) -> CommandResult<Value> {
                 }),
             )
         }
+    }
+}
 
 
+#[tauri::command]
+pub fn builtin_model_metadata_index() -> CommandResult<Value> {
+    let index = codex_plus_core::model_suffix::builtin_model_metadata_index();
+    let count = index.len();
+    ok(
+        "内置元数据索引已读取。",
+        json!({ "entries": index, "count": count }),
+    )
+}
+
+#[tauri::command]
 pub fn find_desktop_codex_cli() -> CommandResult<Value> {
     // Windows 标准路径：桌面版在用户目录维护、可直接运行的 CLI。
     // Store 包目录（WindowsApps）内的资源受系统保护，第三方进程无法执行（#2028），
