@@ -9,7 +9,10 @@ const source = await readFile(new URL("../../../scripts/installer/macos/package-
 const start = source.indexOf('DMG_WORK_DIR="$(mktemp');
 assert.ok(start >= 0, "the real DMG lifecycle must be exercised");
 const bash = process.platform === "win32"
-  ? join(process.env.ProgramFiles || "C:\\Program Files", "Git", "bin", "bash.exe")
+  ? spawnSync("where.exe", ["bash.exe"], { encoding: "utf8" }).stdout
+      .split(/\r?\n/)
+      .find((path) => /\\Git\\(?:usr\\)?bin\\bash\.exe$/i.test(path))
+      ?? join(process.env.ProgramFiles || "C:\\Program Files", "Git", "bin", "bash.exe")
   : "/bin/bash";
 
 // Run the actual packaging tail with synthetic disk commands, never real mounts.
