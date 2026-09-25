@@ -4,6 +4,7 @@ import { isValidAutoCompactPercent, normalizeAutoCompactEditing, normalizeAutoCo
 import {
   builtinEntryToImportDocument,
   builtinMetadataQueryState,
+  builtinRowBackfillValue,
   cancelActiveImportDraft,
   createActiveImportDraft,
   rematchActiveImportDraft,
@@ -21,6 +22,7 @@ import {
   parseModelMetadataMap,
   remapModelMetadataSlugs,
   replaceModelMetadataForSlug,
+  resolveModelMetadataRowKey,
   retainModelMetadataForSlugs,
   serializeModelMetadataDocument,
   suffixWindowString,
@@ -535,7 +537,8 @@ describe("model metadata helpers", () => {
       { needsSave: false, effect: "none", label: "保存此模型", title: "JSON 无法解析，修复后即可保存" },
     );
 
-    // metadataMatchesBuiltin：字段顺序不影响相等；窗口字段不参与（由行管辖）
+    // metadataMatchesBuiltin：字段顺序不影响相等；基线与面板同走 parse 管道时
+    // 两侧形状一致（含窗口字段），全字段比较（见「全字段等价」用例）
     assert.strictEqual(metadataMatchesBuiltin(builtin, { ...builtin }), true);
     assert.strictEqual(metadataMatchesBuiltin(builtin, { prefer_websockets: false, display_name: "Kimi K3" }), true);
     assert.strictEqual(metadataMatchesBuiltin(builtin, { display_name: "Kimi K3", prefer_websockets: true }), false);
@@ -567,9 +570,11 @@ describe("model metadata helpers", () => {
     }
 
     // 「重新匹配后保存」的最常见路径：内容是内置复刻、无自定义 →
-    // 保存键保持可点（点=确认用内置并关闭面板，不写自定义），状态行保持内置态
+    // 保存键保持可点（点=确认用内置并关闭面板，不写自定义），状态行保持内置态。
+    // 清除恒可点（2026-09-26 语义：只清空面板文档，不摘配置、不关面板）
     assert.strictEqual(base.rematch.disabled, false);
-    assert.strictEqual(base.clear.disabled, true);
+    assert.strictEqual(base.clear.disabled, false);
+    assert.strictEqual(base.clear.title, "清空面板内容（不影响已保存的配置）");
     assert.strictEqual(base.cancel.disabled, false);
     assert.strictEqual(base.save.disabled, false);
     assert.strictEqual(base.save.title, "内容与内置元数据一致，保存后继续使用内置元数据");
@@ -578,9 +583,8 @@ describe("model metadata helpers", () => {
     // 状态行必须点明实时写回与可撤销，避免用户以为只有保存才生效
     assert.match(base.status.text, /实时生效/);
 
-    // 已有自定义 + 内容是内置复刻：清除可用、保存变「恢复内置」，状态行预告保存后恢复内置
+    // 已有自定义 + 内容是内置复刻：保存变「恢复内置」，状态行预告保存后恢复内置
     const withCustom = control({ imported: true });
-    assert.strictEqual(withCustom.clear.disabled, false);
     assert.strictEqual(withCustom.save.disabled, false);
     assert.strictEqual(withCustom.save.label, "保存此模型");
     assert.match(withCustom.status.text, /保存后恢复内置/);
@@ -714,23 +718,151 @@ describe("model metadata helpers", () => {
     assert.strictEqual(JSON.parse(limits!).models[0].auto_compact_token_limit, 409600);
   });
 
-  it("metadataMatchesBuiltin 忽略窗口字段差异，只比供应商事实字段", () => {
-    const base = { display_name: "Kimi K3", prefer_websockets: false };
-    // 两侧窗口字段不同也判等：窗口由「上下文窗口」列管辖
+  it("metadataMatchesBuiltin 全字段等价：窗口/压缩偏离内置值同样算编辑", () => {
+    const base = { display_name: "Kimi K3", prefer_websockets: false, context_window: 1_048_576 };
+    // 内容一致（键顺序无关）→ 内置复刻
     assert.strictEqual(metadataMatchesBuiltin(
-      { ...base, context_window: 1_048_576, max_context_window: 1_048_576, auto_compact_token_limit: 943718 },
-      { ...base, context_window: 272_000, max_context_window: 872_000 },
+      base,
+      { prefer_websockets: false, context_window: 1_048_576, display_name: "Kimi K3" },
     ), true);
-    // 供应商事实字段不同 → 不等价
+    // 修复核心回归：仅改窗口/压缩也是用户编辑 → 自定义（旧口径只比事实字段，误判 true）
+    assert.strictEqual(metadataMatchesBuiltin({ ...base, context_window: 999_999 }, base), false);
+    assert.strictEqual(metadataMatchesBuiltin({ ...base, max_context_window: 872_000 }, base), false);
+    assert.strictEqual(metadataMatchesBuiltin({ ...base, auto_compact_token_limit: 943_718 }, base), false);
+    // 事实字段不同 → 不等价
+    assert.strictEqual(metadataMatchesBuiltin({ ...base, prefer_websockets: true }, base), false);
+    assert.strictEqual(metadataMatchesBuiltin({ ...base, apply_patch_tool_type: "freeform" }, base), false);
+    // 空对象不是合法基线：否则「纯模板条目」会与任意窗口-only 编辑判等
+    assert.strictEqual(metadataMatchesBuiltin({}, base), false);
+    assert.strictEqual(metadataMatchesBuiltin(base, {}), false);
+    assert.strictEqual(metadataMatchesBuiltin({}, {}), false);
+    // null / undefined 任一侧 → false
+    assert.strictEqual(metadataMatchesBuiltin(null, base), false);
+    assert.strictEqual(metadataMatchesBuiltin(base, null), false);
+  });
+
+  it("仅改窗口的端到端：判定落自定义，保存写入不静默删除", () => {
+    // 基线 = 内置条目经同一 parse 管道的 documentEntry（含窗口字段）
+    const entry = { slug: "glm-5.3", display_name: "glm-5.3", context_window: 1_048_576 };
+    const document = builtinEntryToImportDocument(entry, "glm-5.3");
+    const parsed = parseModelMetadataDocument(document, "glm-5.3");
+    assert.ok(parsed.ok);
+    const baseline = parsed.value.documentEntry;
+    // 未编辑 / 重新匹配重建（同一 entry、同一行名）→ 全字段相等 → 仍判内置
+    assert.strictEqual(metadataMatchesBuiltin(baseline, baseline), true);
+    const retrimmed = parseModelMetadataDocument(
+      builtinEntryToImportDocument(entry, "glm-5.3"), "glm-5.3",
+    );
+    assert.ok(retrimmed.ok);
+    assert.strictEqual(metadataMatchesBuiltin(retrimmed.value.documentEntry, baseline), true);
+
+    // 行窗口改成 999999 → 文档同步 → documentEntry 偏离内置 → 自定义
+    const synced = synchronizeModelMetadataDocumentLimitsPreview(document, "glm-5.3", "999999", "90%");
+    assert.ok(synced);
+    assert.strictEqual(metadataMatchesBuiltin(synced.preview.documentEntry, baseline), false);
+    const decision = importSaveDecision({
+      parseOk: true,
+      documentBlank: false,
+      imported: false,
+      matchesBuiltin: metadataMatchesBuiltin(synced.preview.documentEntry, baseline),
+    });
+    assert.strictEqual(decision.effect, "custom");
+    assert.strictEqual(decision.label, "保存为自定义配置");
+    // 有事实字段的保存照常写入
+    const saved = replaceModelMetadataForSlug("", "glm-5.3", synced.preview.metadata);
+    assert.deepStrictEqual(JSON.parse(saved), { "glm-5.3": { display_name: "glm-5.3" } });
+  });
+
+  it("空事实字段的自定义也落盘：窗口-only 保存不再静默删除", () => {
+    // 纯模板型条目（只有窗口字段）：过滤后事实字段为空对象
+    const parsed = parseModelMetadataDocument(
+      builtinEntryToImportDocument({ slug: "tpl", context_window: 272_000 }, "tpl"),
+      "tpl",
+    );
+    assert.ok(parsed.ok);
+    assert.strictEqual(Object.keys(parsed.value.metadata).length, 0);
+    // 旧实现走 delete 分支返回 ""，保存按钮承诺「自定义」实际 no-op
+    const saved = replaceModelMetadataForSlug("", "tpl", parsed.value.metadata);
+    assert.deepStrictEqual(JSON.parse(saved), { tpl: {} });
+    // 读侧不再抹掉空条目：徽标/清除判定能看见这份自定义
+    assert.ok(parseModelMetadataMap(saved).tpl);
+    // 删除语义只归 clearModelMetadataForSlug
+    assert.strictEqual(clearModelMetadataForSlug(saved, "tpl"), "");
+    // 空基线防护：模板条目本身（无事实字段基线是 {} 场景已在比较函数内拦截），
+    // 这里锁「窗口-only 编辑对模板条目也判不等价」
     assert.strictEqual(metadataMatchesBuiltin(
-      { ...base, context_window: 272_000 },
-      { ...base, context_window: 1_048_576, apply_patch_tool_type: "freeform" },
+      { ...parsed.value.documentEntry, context_window: 999_999 },
+      parsed.value.documentEntry,
     ), false);
-    // 字段顺序不影响
-    assert.strictEqual(metadataMatchesBuiltin(
-      { context_window: 1, display_name: "Kimi K3", prefer_websockets: false },
-      { display_name: "Kimi K3", context_window: 2, prefer_websockets: false },
-    ), true);
+  });
+
+  it("builtinRowBackfillValue 回填空窗口/压缩列且尊重后缀与已填值", () => {
+    // 窗口取内置值；压缩回落 Codex++ 默认 90%（当前内置资产该字段均为 null）
+    assert.deepStrictEqual(
+      builtinRowBackfillValue("kimi-k3", "", "", { context_window: 1_048_576, auto_compact_token_limit: null }),
+      { window: "1048576", autoCompact: "90%" },
+    );
+    // 空白列等同空列
+    assert.deepStrictEqual(
+      builtinRowBackfillValue("kimi-k3", "  ", "  ", { context_window: 1_048_576, auto_compact_token_limit: null }),
+      { window: "1048576", autoCompact: "90%" },
+    );
+    // 用户已填的值是显式意图，不覆盖
+    assert.deepStrictEqual(
+      builtinRowBackfillValue("kimi-k3", "512000", "85%", { context_window: 1_048_576, auto_compact_token_limit: null }),
+      { window: null, autoCompact: null },
+    );
+    // [1M] 后缀是显式意图，整行不回填
+    assert.deepStrictEqual(
+      builtinRowBackfillValue("kimi-k3[1M]", "", "", { context_window: 1_048_576, auto_compact_token_limit: null }),
+      { window: null, autoCompact: null },
+    );
+    // 未命中内置：不回填
+    assert.deepStrictEqual(
+      builtinRowBackfillValue("unknown-model", "", "", undefined),
+      { window: null, autoCompact: null },
+    );
+    // 厂商给了压缩值时优先用内置换算（943718/1048576 → 90%）
+    assert.deepStrictEqual(
+      builtinRowBackfillValue("kimi-k3", "", "", { context_window: 1_048_576, auto_compact_token_limit: 943_718 }),
+      { window: "1048576", autoCompact: "90%" },
+    );
+    // 窗口缺失：窗口列不动，压缩仍回落默认（压缩列存百分比，不依赖窗口）
+    assert.deepStrictEqual(
+      builtinRowBackfillValue("kimi-k3", "", "", { context_window: null, auto_compact_token_limit: null }),
+      { window: null, autoCompact: "90%" },
+    );
+  });
+
+  it("resolveModelMetadataRowKey 按行解析配置落点（含 pending rename）", () => {    const map = { "kimi-k3": { vendor: "x" }, "deepseek-v4-pro": { vendor: "y" } };
+    // 现名命中用现名
+    assert.strictEqual(resolveModelMetadataRowKey(map, { current: "kimi-k3" }), "kimi-k3");
+    // 现名无配置、origin 有 → 改名尚未提交（map 还挂在原名下）时回退
+    assert.strictEqual(resolveModelMetadataRowKey(map, { current: "kimi-k3-turbo", origin: "Kimi-K3[1M]" }), "kimi-k3");
+    // 两者都没有 → null
+    assert.strictEqual(resolveModelMetadataRowKey(map, { current: "unknown", origin: "missing" }), null);
+    assert.strictEqual(resolveModelMetadataRowKey(map, { current: "unknown" }), null);
+    // 后缀/大小写变体归一到同一 key
+    assert.strictEqual(resolveModelMetadataRowKey(map, { current: "DEEPSEEK-V4-PRO[1M]", origin: "" }), "deepseek-v4-pro");
+    // 行名被清空时回退 origin
+    assert.strictEqual(resolveModelMetadataRowKey(map, { current: "", origin: "deepseek-v4-pro" }), "deepseek-v4-pro");
+    assert.strictEqual(resolveModelMetadataRowKey(map, { current: "" }), null);
+  });
+
+  it("清除恒可点：只清空面板文档，不受 imported/解析/匹配状态影响", () => {
+    const options = {
+      slug: "kimi-k3",
+      document: "",
+      imported: false,
+      parseOk: false,
+      matched: false,
+      matchesBuiltin: false,
+    };
+    const controls = importPanelControls(options);
+    assert.strictEqual(controls.clear.disabled, false);
+    assert.strictEqual(controls.clear.title, "清空面板内容（不影响已保存的配置）");
+    // 有自定义配置、内容与内置一致等任何状态下都不置灰
+    assert.strictEqual(importPanelControls({ ...options, imported: true, parseOk: true, matched: true, matchesBuiltin: true }).clear.disabled, false);
   });
 
   it("来源徽标直接下发纯文本，文案由 helper 统一维护", () => {
@@ -793,14 +925,20 @@ describe("model metadata helpers", () => {
     assert.deepStrictEqual(failed, { status: "error", error: "IPC unavailable" });
   });
 
-  it("activeImportDraft 事务纯函数保留规范 slug 并可回滚行字段", () => {
+  it("activeImportDraft 事务：名称不入事务，取消只回滚窗口/压缩", () => {
     const draft = createActiveImportDraft({ index: 2, rowName: "GPT-5.6-SOL[1M]", window: "1000000", autoCompact: "80%" });
-    assert.strictEqual(draft.canonicalSlug, "GPT-5.6-SOL");
+    // 面板身份只用 index；originalSlug 是行已删除时的兜底身份，不再有
+    // canonicalSlug 双轨（那是改名时面板卸载/清除锁死的根源）
+    assert.strictEqual(draft.originalSlug, "GPT-5.6-SOL[1M]");
+    assert.ok(!("canonicalSlug" in draft), "canonicalSlug 双轨应已删除");
     const edited = updateActiveImportDraft(draft, { document: "{}" });
+    assert.strictEqual(edited.originalSlug, "GPT-5.6-SOL[1M]", "编辑文档不得污染兜底身份");
     const cancelled = cancelActiveImportDraft(edited);
     assert.deepStrictEqual(cancelled.rowPatch, { window: "1000000", autoCompact: "80%" });
-    const rematched = rematchActiveImportDraft(edited, "gpt-5.6-sol[256K]", "{\"models\":[]}", null);
-    assert.strictEqual(rematched.canonicalSlug, "gpt-5.6-sol");
+    // 重新匹配只替换面板内容，originalSlug 保持打开面板时的行名——
+    // 它是 pending rename 旧 key 的兜底，被改名污染后 resolveModelMetadataRowKey 就失明了
+    const rematched = rematchActiveImportDraft(edited, "{\"models\":[]}", null);
+    assert.strictEqual(rematched.originalSlug, "GPT-5.6-SOL[1M]");
     assert.strictEqual(rematched.document, "{\"models\":[]}");
   });
 });

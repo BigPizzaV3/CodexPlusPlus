@@ -87,6 +87,7 @@ import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import {
   builtinEntryToImportDocument,
+  builtinRowBackfillValue,
   clearModelMetadataForSlug,
   importDocumentSyncPatch,
   importPanelControls,
@@ -100,6 +101,7 @@ import {
   parseModelMetadataMap,
   remapModelMetadataSlugs,
   replaceModelMetadataForSlug,
+  resolveModelMetadataRowKey,
   retainModelMetadataForSlugs,
   serializeModelMetadataDocument,
   synchronizeModelMetadataDocumentLimitsPreview,
@@ -7576,18 +7578,18 @@ function RelayProfileEditor({
   const [builtinMatchSlug, setBuiltinMatchSlug] = useState("");
   const [builtinQueryState, setBuiltinQueryState] = useState<BuiltinMetadataQueryState | null>(null);
   const [importPrefillSource, setImportPrefillSource] = useState<"builtin" | "existing" | null>(null);
-  const [builtinIndex, setBuiltinIndex] = useState<Map<string, { source: string; context_window: unknown }>>(new Map());
+  const [builtinIndex, setBuiltinIndex] = useState<Map<string, { source: string; context_window: unknown; auto_compact_token_limit: unknown }>>(new Map());
   const queryBuiltinCommand = async <T,>(command: string, args?: Record<string, unknown>): Promise<T | null> => {
     try { return await invoke<T>(command, args); } catch { return null; }
   };
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const result = await queryBuiltinCommand<{ entries: Array<{ slug: string; source: string; context_window: unknown }> }>("builtin_model_metadata_index");
+      const result = await queryBuiltinCommand<{ entries: Array<{ slug: string; source: string; context_window: unknown; auto_compact_token_limit: unknown }> }>("builtin_model_metadata_index");
       if (cancelled || !result?.entries) return;
-      const map = new Map<string, { source: string; context_window: unknown }>();
+      const map = new Map<string, { source: string; context_window: unknown; auto_compact_token_limit: unknown }>();
       for (const entry of result.entries) {
-        map.set(modelMetadataKey(entry.slug), { source: entry.source, context_window: entry.context_window });
+        map.set(modelMetadataKey(entry.slug), { source: entry.source, context_window: entry.context_window, auto_compact_token_limit: entry.auto_compact_token_limit });
       }
       setBuiltinIndex(map);
     })();
@@ -7596,8 +7598,9 @@ function RelayProfileEditor({
   }, []);
   // 导入区打开期间模型名被修改：标签与内置预填实时跟随新名字（覆盖
   // 「创建模型后改名」「编辑模型名」场景，而不是沿用旧名字的匹配结果）。
+  // 面板身份只用 draft.index；行已删除时回退打开面板时的行名兜底。
   const activeImportSlug = activeImportDraft
-    ? modelWindowRows[activeImportDraft.index]?.model.trim() ?? activeImportDraft.canonicalSlug
+    ? modelWindowRows[activeImportDraft.index]?.model.trim() ?? activeImportDraft.originalSlug
     : "";
   const metadataImportTarget = activeImportDraft;
   const metadataImportDocument = activeImportDraft?.document ?? "";
@@ -7650,13 +7653,16 @@ function RelayProfileEditor({
     () => parseModelMetadataMap(profile.modelMetadata),
     [profile.modelMetadata],
   );
-  // 当前内置匹配条目的「事实字段」基线：用来判断面板里的内容是否只是内置的复刻。
-  // 与 metadataImportPreview.metadata 走同一条 parse→filter 管道，字段顺序不影响比较。
+  // 当前内置匹配条目的「全字段」基线：用来判断面板里的内容是否只是内置的复刻。
+  // 与预填走同一管道（同行名、同 slug 文本），并保留窗口/压缩字段——窗口/
+  // 压缩偏离内置值同样是用户编辑，保存应落自定义；写 map 仍走白名单过滤。
   const builtinMetadata = useMemo(() => {
     if (!builtinMatch?.matched || !builtinMatch.entry) return null;
-    const parsed = parseModelMetadataDocument(builtinEntryToImportDocument(builtinMatch.entry), builtinMatch.entry.slug);
-    return parsed.ok ? parsed.value.metadata : null;
-  }, [builtinMatch]);
+    const rowName = activeImportSlug || builtinMatchSlug || builtinMatch.entry.slug;
+    const canonical = modelSlugFromRowName(rowName);
+    const parsed = parseModelMetadataDocument(builtinEntryToImportDocument(builtinMatch.entry, canonical), canonical);
+    return parsed.ok ? parsed.value.documentEntry : null;
+  }, [builtinMatch, activeImportSlug, builtinMatchSlug]);
   // VLM/Strip 对 Chat Completions 与 Responses 协议均可用(注入块类型已按协议适配)。
   const vlmUnsupportedProtocol = false;
   if (isAggregateRelayProfile(profile)) {
@@ -7699,6 +7705,19 @@ function RelayProfileEditor({
       modelWindowRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
     );
   };
+  // 内置命中 → 回填空窗口/压缩列的统一入口：上游获取、手动提交行名、打开导入
+  // 面板都走这一条规则，不再只有「重新匹配」才回填（裁决见 builtinRowBackfillValue）。
+  const backfillRowFromBuiltin = (index: number, slug: string) => {
+    const row = modelWindowRows[index];
+    if (!row) return;
+    const patch = builtinRowBackfillValue(slug, row.window, row.autoCompact, builtinIndex.get(modelMetadataKey(slug)));
+    if (patch.window || patch.autoCompact) {
+      updateModelWindowRow(index, {
+        ...(patch.window ? { window: patch.window } : {}),
+        ...(patch.autoCompact ? { autoCompact: patch.autoCompact } : {}),
+      });
+    }
+  };
   const resolvePendingModelSlugRenames = (
     rows: ModelWindowRow[],
     origins: string[],
@@ -7721,11 +7740,8 @@ function RelayProfileEditor({
   const commitModelSlug = (index: number) => {
     const nextSlug = modelWindowRows[index]?.model.trim() ?? "";
     if (!nextSlug) return;
-    if (metadataImportTarget?.index === index) {
-      setActiveImportDraft((current) => current
-        ? updateActiveImportDraft(current, { canonicalSlug: modelSlugFromRowName(nextSlug) })
-        : current);
-    }
+    // 面板身份只用 index（activeImportSlug 实时跟随输入框），改名只需在这里
+    // 迁移 metadata map 的 key；draft 不再持有 slug 副本，避免双轨漂移。
     const resolved = resolvePendingModelSlugRenames(
       modelWindowRows,
       modelSlugOriginsRef.current,
@@ -7733,6 +7749,8 @@ function RelayProfileEditor({
     );
     modelSlugOriginsRef.current = resolved.origins;
     if (resolved.modelMetadata !== profile.modelMetadata) commitModelMetadata(resolved.modelMetadata);
+    // 手动新增/改名提交即同步：内置命中且窗口/压缩列为空时立即回填
+    backfillRowFromBuiltin(index, nextSlug);
   };
   const closeModelMetadataImport = () => {
     setActiveImportDraft(null);
@@ -7749,10 +7767,18 @@ function RelayProfileEditor({
     closeModelMetadataImport();
   };
   const beginModelMetadataImport = async (index: number, slug: string) => {
-    const existingMetadata = importedModelMetadata[modelMetadataKey(slug)];
+    // 配置可能还挂在「改名尚未提交」的旧 key 下（resolvePendingModelSlugRenames
+    // 的 previousSlug 同源），按行解析而不是按实时名硬查。
+    const existingKey = resolveModelMetadataRowKey(importedModelMetadata, {
+      current: slug,
+      origin: modelSlugOriginsRef.current[index],
+    });
+    const existingMetadata = existingKey ? importedModelMetadata[existingKey] : undefined;
     const existingDocument = existingMetadata
       ? serializeModelMetadataDocument(
-          slug,
+          // 文档 slug 必须与解析目标（剥后缀的行名）一致，否则带 [1M] 的行
+          // 现有配置文档永远匹配不上，保存键被解析失败锁死。
+          modelSlugFromRowName(slug),
           existingMetadata,
           modelWindowRows[index]?.window ?? "",
           modelWindowRows[index]?.autoCompact ?? "",
@@ -7778,6 +7804,20 @@ function RelayProfileEditor({
     if (!document && match?.matched && match.entry) {
       document = builtinEntryToImportDocument(match.entry, modelSlugFromRowName(slug));
       setImportPrefillSource("builtin");
+      // 打开面板即同步：内置条目的窗口/压缩回填空列（后缀与已填值不覆盖，
+      // 与上游获取/手动提交同一规则）
+      const backfill = builtinRowBackfillValue(
+        slug,
+        modelWindowRows[index]?.window ?? "",
+        modelWindowRows[index]?.autoCompact ?? "",
+        match.entry,
+      );
+      if (backfill.window || backfill.autoCompact) {
+        updateModelWindowRow(index, {
+          ...(backfill.window ? { window: backfill.window } : {}),
+          ...(backfill.autoCompact ? { autoCompact: backfill.autoCompact } : {}),
+        });
+      }
     } else {
       setImportPrefillSource(existingMetadata ? "existing" : null);
     }
@@ -7797,17 +7837,23 @@ function RelayProfileEditor({
     setMetadataImportError(metadataQueryError);
   };
   const applyModelMetadataImport = () => {
-    if (!metadataImportTarget || !metadataImportPreview) return;
+    if (!metadataImportTarget) return;
+    // 空文档是合法保存输入（清除 → 保存 = 放弃自定义回退内置）；解析失败才无内容可存。
+    const documentBlank = !metadataImportDocument.trim();
+    if (!metadataImportPreview && !documentBlank) return;
     // 保存跟当前行名（改名后保存写回新 slug，不存旧名）
-    const slug = modelWindowRows[metadataImportTarget.index]?.model.trim() || metadataImportPreview.slug;
+    const slug = modelWindowRows[metadataImportTarget.index]?.model.trim()
+      || metadataImportPreview?.slug || "";
     const key = modelMetadataKey(slug);
     const decision = importSaveDecision({
       parseOk: true,
-      documentBlank: !metadataImportDocument.trim(),
+      documentBlank,
       imported: Boolean(importedModelMetadata[key]),
-      // 内容与内置一致时目标态就是「用内置」，不写自定义覆盖——
+      // 内容与内置全字段一致时目标态就是「用内置」，不写自定义覆盖——
       // 否则「重新匹配后保存」会把内置数据复制成一份自定义配置。
-      matchesBuiltin: metadataMatchesBuiltin(metadataImportPreview.metadata, builtinMetadata),
+      matchesBuiltin: metadataImportPreview
+        ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
+        : false,
     });
     if (!decision.needsSave) {
       closeModelMetadataImport();
@@ -7815,6 +7861,10 @@ function RelayProfileEditor({
     }
     if (decision.effect === "builtin") {
       commitModelMetadata(clearModelMetadataForSlug(profile.modelMetadata, slug));
+      closeModelMetadataImport();
+      return;
+    }
+    if (!metadataImportPreview) {
       closeModelMetadataImport();
       return;
     }
@@ -7859,7 +7909,7 @@ function RelayProfileEditor({
     const preview = parseModelMetadataDocument(document, modelSlugFromRowName(slug));
     if (activeImportDraft) {
       setActiveImportDraft(rematchActiveImportDraft(
-        activeImportDraft, slug, document, preview.ok ? preview.value : null,
+        activeImportDraft, document, preview.ok ? preview.value : null,
       ));
     }
     setMetadataImportError("");
@@ -7868,14 +7918,16 @@ function RelayProfileEditor({
       updateModelWindowRow(metadataImportTarget.index, { window: preview.value.contextWindow });
     }
   };
-  // 「清除」：摘除该模型的自定义配置并关闭面板（对齐主面板「清除导入配置」
-  // 的一步到位语义）；上下文窗口列不动。清除后面板关闭，未保存的文档编辑
-  // 一并丢弃——不再停留在「文档已清空、保存键置灰」的死胡同里。
-  const clearBuiltinImport = (slug: string) => {
-    if (importedModelMetadata[modelMetadataKey(slug)]) {
-      commitModelMetadata(clearModelMetadataForSlug(profile.modelMetadata, slug));
-    }
-    closeModelMetadataImport();
+  // 「清除」：只清空面板文档（draft 内容），面板保持打开——不摘已保存配置、
+  // 不回滚窗口/压缩列、不关闭面板。回到内置走 清除 → 重新匹配 → 保存（内容=
+  // 内置 → 目标态内置）；粘贴最新供应商元数据也以清空后的面板为起点。
+  const clearImportDocument = () => {
+    setActiveImportDraft((draft) => draft
+      ? updateActiveImportDraft(draft, { document: "", preview: null })
+      : draft);
+    // 内容已被用户接管：后续改名不再自动回填内置预填
+    setImportPrefillSource(null);
+    setMetadataImportError("");
   };
   const removeModelWindowRow = (index: number) => {
     const removedSlug = modelWindowRows[index]?.model.trim() || modelSlugOriginsRef.current[index] || "";
@@ -7902,7 +7954,19 @@ function RelayProfileEditor({
       const currentIndex = modelWindowRows.findIndex((current) => current.model.trim() === row.model.trim());
       return currentIndex >= 0 ? modelSlugOriginsRef.current[currentIndex] || row.model.trim() : row.model.trim();
     });
-    setModelWindowRows(merged);
+    // 上游获取的行窗口/压缩列一律为空：内置命中时立即回填（同一回填裁决）
+    setModelWindowRows(merged.map((row) => {
+      if (row.window.trim() && row.autoCompact.trim()) return row;
+      const entry = builtinIndex.get(modelMetadataKey(row.model));
+      const patch = builtinRowBackfillValue(row.model, row.window, row.autoCompact, entry);
+      return patch.window || patch.autoCompact
+        ? {
+            ...row,
+            ...(patch.window ? { window: patch.window } : {}),
+            ...(patch.autoCompact ? { autoCompact: patch.autoCompact } : {}),
+          }
+        : row;
+    }));
   };
   const appendEmptyModelRow = () => {
     modelSlugOriginsRef.current = [...modelSlugOriginsRef.current, ""];
@@ -8221,9 +8285,14 @@ function RelayProfileEditor({
               </div>
               {modelWindowRows.map((row, index) => {
                 const slug = row.model.trim();
-                const importing = metadataImportTarget?.index === index
-                  && modelMetadataKey(metadataImportTarget.canonicalSlug) === modelMetadataKey(slug);
-                const imported = Boolean(importedModelMetadata[modelMetadataKey(slug)]);
+                // 面板身份只用 index：slug 双轨（draft 副本 vs 实时输入）曾导致
+                // 改名时面板整体卸载、blur 后重挂抢焦点。
+                const importing = metadataImportTarget?.index === index;
+                // 配置可能还挂在「改名尚未提交」的旧 key 下，按行解析而不是按实时名硬查。
+                const imported = resolveModelMetadataRowKey(importedModelMetadata, {
+                  current: slug,
+                  origin: modelSlugOriginsRef.current[index],
+                }) !== null;
                 // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
                 // 面板关闭时不创建导入控件，避免用一个面板级状态为所有行派生按钮状态。
                 const importControls = importing
@@ -8231,11 +8300,13 @@ function RelayProfileEditor({
                       slug,
                       document: metadataImportDocument,
                       imported,
-                      parseOk: Boolean(metadataImportPreview),
+                      // 空文档（清除后）不算解析失败：保存键保持可用，
+                      // 走「放弃自定义回退内置」的保存路径。
+                      parseOk: !metadataImportDocument.trim() || Boolean(metadataImportPreview),
                       matched: builtinQueryState?.status === "error" ? false : Boolean(builtinMatch?.matched),
-                      // 面板元数据与内置条目等价：保存的目标态就是「用内置」。
+                      // 面板内容与内置条目全字段等价：保存的目标态就是「用内置」。
                       matchesBuiltin: metadataImportPreview
-                        ? metadataMatchesBuiltin(metadataImportPreview.metadata, builtinMetadata)
+                        ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
                         : false,
                       matchedSource: builtinMatch?.matched ? builtinMatch.source : undefined,
                       fallbackSlug: builtinMatch?.fallback?.slug,
@@ -8421,7 +8492,7 @@ function RelayProfileEditor({
                             </Button>
                             <Button
                               disabled={importControls?.clear.disabled ?? true}
-                              onClick={() => void clearBuiltinImport(slug)}
+                              onClick={() => clearImportDocument()}
                               size="sm"
                               title={t(importControls?.clear.title ?? "清除")}
                               type="button"
