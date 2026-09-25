@@ -5,7 +5,11 @@ export type ModelMetadataMap = Record<string, ModelMetadata>;
 
 export type ImportedModelMetadata = {
   slug: string;
+  /// 事实字段（过 filteredMetadata 白名单，写 metadata map 用）
   metadata: ModelMetadata;
+  /// 文档匹配条目原值（含窗口/压缩托管字段）。「内容是否等于内置」的全字段
+  /// 比较用这份，不能用 metadata——窗口/压缩偏离内置值同样是用户编辑。
+  documentEntry: ModelMetadata;
   contextWindow: string | null;
   autoCompactPercent: string | null;
   autoCompactCalculationPercent?: string | null;
@@ -60,11 +64,12 @@ export function parseModelMetadataMap(value: string): ModelMetadataMap {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed)) return {};
+    // 不丢空条目：仅改窗口/压缩的「自定义」落盘后事实字段为空对象，读侧抹掉
+    // 会让徽标与清除判定重新失明（写侧 Rust 已接受 {} 条目）。
     return canonicalizeModelMetadataMap(Object.fromEntries(
       Object.entries(parsed)
         .filter((entry): entry is [string, ModelMetadata] => isRecord(entry[1]))
-        .map(([slug, metadata]) => [slug, filteredMetadata(metadata)] as [string, ModelMetadata])
-        .filter(([, metadata]) => Object.keys(metadata).length > 0),
+        .map(([slug, metadata]) => [slug, filteredMetadata(metadata)] as [string, ModelMetadata]),
     ));
   } catch {
     return {};
@@ -224,6 +229,33 @@ export function suffixWindowString(rowName: string): string | null {
   return parseModelRowName(rowName).suffixWindow;
 }
 
+/// 内置元数据命中时的行列回填裁决（窗口 + 压缩）：仅当对应列为空且无 [1M]
+/// 后缀时回填，后缀与用户已填值都是显式意图，不得覆盖。
+/// - 窗口：取内置 context_window（对内置命中的模型，留空的真实含义就是
+///   「用内置窗口」，回填把它显式化，避免被误解为「Codex 默认长度」）。
+/// - 压缩：优先取内置 auto_compact_token_limit 换算的百分比（当前内置资产
+///   均为 null，预留厂商未来提供值的通路）；否则回落 Codex++ 默认 90%——
+///   空列的真实含义就是「用默认 90%」。
+/// 上游获取、手动提交行名、打开导入面板三个入口共用这一裁决。
+export function builtinRowBackfillValue(
+  slug: string,
+  rowWindow: string,
+  rowAutoCompact: string,
+  builtin?: { context_window?: unknown; auto_compact_token_limit?: unknown } | null,
+): { window: string | null; autoCompact: string | null } {
+  if (!builtin || suffixWindowString(slug)) return { window: null, autoCompact: null };
+  const window = rowWindow.trim() || typeof builtin.context_window !== "number"
+    || !Number.isFinite(builtin.context_window) || builtin.context_window <= 0
+    ? null
+    : String(builtin.context_window);
+  const limit = builtin.auto_compact_token_limit;
+  const derived = typeof limit === "number" && Number.isFinite(limit) && limit > 0 && window
+    ? displayAutoCompactPercent(autoCompactTokenLimitToPercent(window, String(limit)))
+    : null;
+  const autoCompact = rowAutoCompact.trim() ? null : (derived ?? DEFAULT_AUTO_COMPACT_PERCENT);
+  return { window, autoCompact };
+}
+
 export type BuiltinModelMetadataMatch = {
   matched: boolean;
   source?: string;
@@ -254,8 +286,10 @@ export function builtinMetadataQueryState(
 
 export type ActiveImportDraft = {
   index: number;
+  /// 行已不存在时的兜底身份（activeImportSlug 回退用）。名称不参与取消回滚：
+  /// 改名在 blur 时已经 commitModelSlug 持久化（metadata remap 不可逆），
+  /// 名称是行的身份而非面板内容，回滚会造成配置错乱。
   originalSlug: string;
-  canonicalSlug: string;
   originalWindow: string;
   originalAutoCompact: string;
   document: string;
@@ -273,7 +307,6 @@ export function createActiveImportDraft(input: {
   return {
     index: input.index,
     originalSlug: input.rowName.trim(),
-    canonicalSlug: modelSlugFromRowName(input.rowName),
     originalWindow: input.window,
     originalAutoCompact: input.autoCompact,
     document: input.document ?? "",
@@ -283,7 +316,7 @@ export function createActiveImportDraft(input: {
 
 export function updateActiveImportDraft(
   draft: ActiveImportDraft,
-  patch: Partial<Pick<ActiveImportDraft, "document" | "preview" | "canonicalSlug">>,
+  patch: Partial<Pick<ActiveImportDraft, "document" | "preview">>,
 ): ActiveImportDraft {
   return { ...draft, ...patch };
 }
@@ -299,11 +332,13 @@ export function cancelActiveImportDraft(
 
 export function rematchActiveImportDraft(
   draft: ActiveImportDraft,
-  rowName: string,
   document: string,
   preview: ImportedModelMetadata | null,
 ): ActiveImportDraft {
-  return { ...draft, originalSlug: rowName.trim(), canonicalSlug: modelSlugFromRowName(rowName), document, preview };
+  // 只替换面板内容，不动 originalSlug：打开面板时的行名是「尚未迁移的旧 key」
+  // 的兜底，被改名污染后 resolveModelMetadataRowKey 就找不到 pending rename
+  // 下的配置了。
+  return { ...draft, document, preview };
 }
 
 /// 内置条目 → 导入文档文本：剥掉窗口/压缩四个托管字段（serialize 会按
@@ -421,17 +456,20 @@ function stableMetadataKey(metadata: ModelMetadata): string {
 }
 
 /// 面板里的元数据与内置条目是否等价（键排序后深比较）。
-/// 只比供应商事实字段：窗口字段由「上下文窗口」列管辖，不参与判断——
-/// 否则仅改窗口就会被误判成「要存成自定义」。这里显式剥掉被托管的字段，
-/// 不依赖调用方恰好已经过滤：即便上游某一侧漏过滤，判定也不会被窗口值带偏
-/// （否则 c00177e 修掉的「重新匹配后保存变成自定义」会静默回归）。
+/// 口径是「全字段等价」（含窗口/压缩托管字段）：这里回答的是「内容是否就是
+/// 内置的复刻」，窗口/压缩虽由「上下文窗口」列管辖、不进 metadata map，但它们
+/// 是用户可编辑内容的一部分——偏离内置值同样是部分编辑，保存应落自定义。
+/// 重新匹配填回的文档就是内置原值，全字段相等仍判内置，不会把内置复制成
+/// 自定义（c00177e 的语义保持成立）。写 map 的白名单过滤不在此处
+/// （见 filteredMetadata / replaceModelMetadataForSlug）。
 export function metadataMatchesBuiltin(
   metadata: ModelMetadata | null | undefined,
   builtinMetadata: ModelMetadata | null | undefined,
 ): boolean {
   if (!metadata || !builtinMetadata) return false;
-  return stableMetadataKey(filteredMetadata(metadata))
-    === stableMetadataKey(filteredMetadata(builtinMetadata));
+  // 空对象不是合法基线：否则「只有托管字段的内置条目」会与任意窗口-only 编辑判等。
+  if (Object.keys(metadata).length === 0 || Object.keys(builtinMetadata).length === 0) return false;
+  return stableMetadataKey(metadata) === stableMetadataKey(builtinMetadata);
 }
 
 /// 「保存此模型」按钮的判定。核心原则：**保存匹配到的内置数据不该产生自定义覆盖**。
@@ -533,12 +571,10 @@ export function importPanelControls(options: {
           ? "按当前模型名重新匹配内置元数据并重填下方内容"
           : "当前模型名没有内置元数据可匹配"),
     },
-    clear: {
-      disabled: !options.imported,
-      title: options.imported
-        ? "清除该模型的自定义元数据（保留上下文窗口），生成时改用内置"
-        : "该模型没有自定义元数据可清除",
-    },
+    // 「清除」=清空面板文档（draft 内容），面板保持打开；已保存的配置与窗口/
+    // 压缩列不受影响，恒可点。摘除自定义配置走保存路径：清除 → 重新匹配 →
+    // 保存（内容=内置 → 目标态内置），或 清除 → 保存（空文本 + 已有自定义）。
+    clear: { disabled: false, title: "清空面板内容（不影响已保存的配置）" },
     cancel: { disabled: false, title: "放弃本次在面板里的改动，不写入任何配置" },
     save,
     status: importPanelStatus(options, fallbackSlug, decision),
@@ -616,9 +652,26 @@ export function replaceModelMetadataForSlug(
   if (typeof existing?.display_name === "string" && existing.display_name.trim()) {
     imported.display_name = existing.display_name;
   }
-  if (Object.keys(imported).length > 0) map[key] = imported;
-  else delete map[key];
+  // 保存语义是「写入该模型的自定义配置」：过滤后为空也落 {}，让仅改窗口/
+  // 压缩的部分编辑仍被识别为自定义（窗口值本身由行列写 model_windows）。
+  // 删除只归 clearModelMetadataForSlug，不得在这里静默降级成无操作。
+  map[key] = imported;
   return serializeModelMetadataMap(map);
+}
+
+/// 这一行此刻的自定义配置落在哪个 key：现名命中用现名；改名尚未提交（map 还
+/// 挂在原名下）时回退行的原始名。origin 必须与 resolvePendingModelSlugRenames
+/// 的 previousSlug 同源（modelSlugOriginsRef），否则「面板认为有配置」和
+/// 「blur 会迁移哪个 key」会分叉，清除按钮再次失明。
+export function resolveModelMetadataRowKey(
+  map: ModelMetadataMap,
+  rowNames: { current: string; origin?: string },
+): string | null {
+  const current = modelMetadataKey(rowNames.current);
+  if (current && map[current]) return current;
+  const origin = modelMetadataKey(rowNames.origin ?? "");
+  if (origin && map[origin]) return origin;
+  return null;
 }
 
 export function clearModelMetadataForSlug(value: string, slug: string): string {
@@ -888,6 +941,7 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
     value: {
       slug: targetSlug,
       metadata,
+      documentEntry: model,
       contextWindow,
       autoCompactPercent: displayAutoCompactPercent(autoCompactPercent),
       autoCompactCalculationPercent: autoCompactPercent,

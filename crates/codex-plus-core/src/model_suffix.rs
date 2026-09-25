@@ -487,6 +487,7 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
             "context_window": entry
                 .get("context_window")
                 .or_else(|| entry.get("max_context_window")),
+            "auto_compact_token_limit": entry.get("auto_compact_token_limit"),
         }));
     };
     for slug in candidate_slugs {
