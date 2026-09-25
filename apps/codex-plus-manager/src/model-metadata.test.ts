@@ -468,10 +468,10 @@ describe("model metadata helpers", () => {
     // 而不是把内置复制成一份自定义配置。
     const builtin = { display_name: "Kimi K3", prefer_websockets: false };
 
-    // 1) 内置预填、未编辑、当前无自定义 → 已在使用内置，无需保存
+    // 1) 内置预填、未编辑、当前无自定义 → 不写自定义；保存键仍可点（=确认用内置并关面板）
     assert.deepStrictEqual(
       importSaveDecision({ parseOk: true, documentBlank: false, imported: false, matchesBuiltin: true }),
-      { needsSave: false, effect: "none", label: "保存此模型", title: "已在使用内置元数据，无需保存" },
+      { needsSave: false, effect: "none", label: "保存此模型", title: "内容与内置元数据一致，保存后继续使用内置元数据" },
     );
 
     // 2) 内置预填、未编辑、已有自定义 → 内容是内置，保存 = 放弃自定义
@@ -540,12 +540,12 @@ describe("model metadata helpers", () => {
     }
 
     // 「重新匹配后保存」的最常见路径：内容是内置复刻、无自定义 →
-    // 保存置灰并说明原因，状态行保持内置态（不会翻成自定义）
+    // 保存键保持可点（点=确认用内置并关闭面板，不写自定义），状态行保持内置态
     assert.strictEqual(base.rematch.disabled, false);
     assert.strictEqual(base.clear.disabled, true);
     assert.strictEqual(base.cancel.disabled, false);
-    assert.strictEqual(base.save.disabled, true);
-    assert.strictEqual(base.save.title, "已在使用内置元数据，无需保存");
+    assert.strictEqual(base.save.disabled, false);
+    assert.strictEqual(base.save.title, "内容与内置元数据一致，保存后继续使用内置元数据");
     assert.strictEqual(base.status.tone, "builtin");
     assert.match(base.status.text, /内置元数据（Kimi）/);
     // 状态行必须点明实时写回与可撤销，避免用户以为只有保存才生效
@@ -587,8 +587,8 @@ describe("model metadata helpers", () => {
     assert.strictEqual(cleared.save.label, "保存此模型");
     assert.strictEqual(cleared.save.disabled, false);
     assert.match(cleared.status.text, /保存后恢复内置/);
-    // 清空且没有自定义：没什么可做的，保存置灰
-    assert.strictEqual(control({ document: "", matchesBuiltin: false }).save.disabled, true);
+    // 清空且没有自定义：保存键仍可点（仅解析失败才置灰），点了只关面板不写
+    assert.strictEqual(control({ document: "", matchesBuiltin: false }).save.disabled, false);
 
     // fallbackSlug 可覆盖（回退模板变化时不用改代码）
     assert.match(
