@@ -3,12 +3,19 @@ import { describe, it } from "node:test";
 import { isValidAutoCompactPercent, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact.ts";
 import {
   builtinEntryToImportDocument,
+  builtinMetadataQueryState,
+  cancelActiveImportDraft,
+  createActiveImportDraft,
+  rematchActiveImportDraft,
+  updateActiveImportDraft,
   clearModelMetadataForSlug,
   importDocumentSyncPatch,
   importPanelControls,
   importSaveDecision,
   metadataMatchesBuiltin,
   metadataSourceTags,
+  modelMetadataKey,
+  parseModelRowName,
   modelSlugFromRowName,
   parseModelMetadataDocument,
   parseModelMetadataMap,
@@ -24,6 +31,26 @@ import {
 } from "./model-metadata.ts";
 
 describe("model metadata helpers", () => {
+  it("metadata map keys normalize suffixes and casing across every mutation", () => {
+    const initial = JSON.stringify({ "DeepSeek-V4-Pro[1M]": { temperature: 0.2 } });
+    const normalized = parseModelMetadataMap(initial);
+    assert.deepStrictEqual(normalized, { "deepseek-v4-pro": { temperature: 0.2 } });
+    assert.strictEqual(modelMetadataKey(" DeepSeek-V4-Pro[1M] "), "deepseek-v4-pro");
+
+    const replaced = replaceModelMetadataForSlug(initial, "deepseek-v4-pro", { top_p: 0.8 });
+    assert.deepStrictEqual(parseModelMetadataMap(replaced), { "deepseek-v4-pro": { top_p: 0.8 } });
+    assert.strictEqual(clearModelMetadataForSlug(replaced, "DEEPSEEK-V4-PRO[512K]"), "");
+    assert.deepStrictEqual(
+      parseModelMetadataMap(remapModelMetadataSlugs(initial, [{
+        previousSlug: "DeepSeek-V4-Pro[1M]",
+        nextSlug: "DEEPSEEK-V4-PRO-NEW[2M]",
+      }])),
+      { "deepseek-v4-pro-new": { temperature: 0.2 } },
+    );
+    assert.strictEqual(retainModelMetadataForSlugs(initial, ["deepseek-v4-pro[1M]"]),
+      JSON.stringify({ "deepseek-v4-pro": { temperature: 0.2 } }));
+  });
+
   it("自动压缩编辑把数字保持在百分号前并允许清空", () => {
     assert.strictEqual(normalizeAutoCompactEditing("90%5", "90%"), "905%");
     assert.strictEqual(normalizeAutoCompactEditing("9%", "90%"), "9");
@@ -627,6 +654,21 @@ describe("model metadata helpers", () => {
     assert.strictEqual(modelSlugFromRowName(""), "");
   });
 
+  it("parseModelRowName 一次返回原名、规范 slug、窗口和 map key", () => {
+    assert.deepStrictEqual(parseModelRowName(" DeepSeek-V4-Pro[1M] "), {
+      rawName: " DeepSeek-V4-Pro[1M] ",
+      canonicalSlug: "DeepSeek-V4-Pro",
+      suffixWindow: "1000000",
+      key: "deepseek-v4-pro",
+    });
+    assert.deepStrictEqual(parseModelRowName("foo[bar]"), {
+      rawName: "foo[bar]",
+      canonicalSlug: "foo[bar]",
+      suffixWindow: null,
+      key: "foo[bar]",
+    });
+  });
+
   it("suffixWindowString 给出后缀对应的窗口字符串", () => {
     assert.strictEqual(suffixWindowString("deepseek-v4-pro[1M]"), "1000000");
     assert.strictEqual(suffixWindowString("glm-5.3[256K]"), "256000");
@@ -740,5 +782,25 @@ describe("model metadata helpers", () => {
     assert.strictEqual(onlyMatch.length, 1);
     assert.strictEqual(onlyMatch[0].kind, "match");
     assert.strictEqual(onlyMatch[0].text, "匹配：Kimi");
+  });
+
+  it("内置查询区分命中、未命中和命令失败三态", () => {
+    const matched = builtinMetadataQueryState({ matched: true, source: "Kimi", entry: { slug: "kimi-k3" } });
+    assert.strictEqual(matched.status, "matched");
+    const miss = builtinMetadataQueryState({ matched: false });
+    assert.strictEqual(miss.status, "miss");
+    const failed = builtinMetadataQueryState(null, new Error("IPC unavailable"));
+    assert.deepStrictEqual(failed, { status: "error", error: "IPC unavailable" });
+  });
+
+  it("activeImportDraft 事务纯函数保留规范 slug 并可回滚行字段", () => {
+    const draft = createActiveImportDraft({ index: 2, rowName: "GPT-5.6-SOL[1M]", window: "1000000", autoCompact: "80%" });
+    assert.strictEqual(draft.canonicalSlug, "GPT-5.6-SOL");
+    const edited = updateActiveImportDraft(draft, { document: "{}" });
+    const cancelled = cancelActiveImportDraft(edited);
+    assert.deepStrictEqual(cancelled.rowPatch, { window: "1000000", autoCompact: "80%" });
+    const rematched = rematchActiveImportDraft(edited, "gpt-5.6-sol[256K]", "{\"models\":[]}", null);
+    assert.strictEqual(rematched.canonicalSlug, "gpt-5.6-sol");
+    assert.strictEqual(rematched.document, "{\"models\":[]}");
   });
 });

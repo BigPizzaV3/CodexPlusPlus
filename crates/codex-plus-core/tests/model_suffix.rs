@@ -4,7 +4,8 @@ use std::sync::Mutex;
 
 use codex_plus_core::model_suffix::{
     build_model_catalog_json, build_model_catalog_json_with_template, builtin_model_metadata,
-    builtin_model_metadata_index, collect_catalog_entries, model_ui_metadata, parse_model_suffix,
+    builtin_model_metadata_index, collect_catalog_entries, find_catalog_entry_for_test,
+    model_ui_metadata, parse_model_suffix,
 };
 
 /// CODEX_HOME 环境变量是进程级全局，运行时缓存测试必须串行执行。
@@ -34,6 +35,22 @@ impl Drop for CodexHomeEnvGuard {
             }
         }
     }
+}
+
+#[test]
+fn catalog_lookup_prefers_exact_case_before_case_insensitive_fallback() {
+    let models = vec![
+        serde_json::json!({ "slug": "foo", "display_name": "lower" }),
+        serde_json::json!({ "slug": "Foo", "display_name": "exact" }),
+    ];
+    assert_eq!(
+        find_catalog_entry_for_test(&models, "Foo").unwrap()["display_name"],
+        "exact"
+    );
+    assert_eq!(
+        find_catalog_entry_for_test(&models, "FOO").unwrap()["display_name"],
+        "lower"
+    );
 }
 
 #[test]
@@ -548,6 +565,25 @@ fn builtin_model_metadata_matches_with_source() {
     // 未命中 → None（生成时回退 gpt-5.5 模板）
     assert!(builtin_model_metadata("unknown-model-xyz").is_none());
     assert!(builtin_model_metadata("").is_none());
+}
+
+#[test]
+fn builtin_resolution_and_catalog_requirement_share_suffix_and_case_rules() {
+    use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
+
+    let metadata = builtin_model_metadata("  GPT-6-SOL[1M]  ")
+        .expect("规范化后应命中 gpt-6-sol 兼容元数据");
+    assert_eq!(metadata.entry["slug"], "gpt-6-sol");
+    assert!(requires_bundled_metadata_catalog("GPT-6-SOL[1M]"));
+    assert!(requires_bundled_metadata_catalog("gpt-6-sol"));
+    assert!(!requires_bundled_metadata_catalog(" unknown-model-xyz[1M] "));
+
+    let entries = collect_catalog_entries("GPT-6-SOL[1M]", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let model = &catalog["models"][0];
+    assert_eq!(model["slug"], "GPT-6-SOL");
+    assert_eq!(model["context_window"], 1_000_000);
 }
 
 #[test]

@@ -41,17 +41,31 @@ function filteredMetadata(metadata: ModelMetadata): ModelMetadata {
   );
 }
 
+export function modelMetadataKey(rowName: string): string {
+  return parseModelRowName(rowName).key;
+}
+
+function canonicalizeModelMetadataMap(map: ModelMetadataMap): ModelMetadataMap {
+  const canonical: ModelMetadataMap = {};
+  for (const [slug, metadata] of Object.entries(map)) {
+    const key = modelMetadataKey(slug);
+    if (!key) continue;
+    canonical[key] = metadata;
+  }
+  return canonical;
+}
+
 export function parseModelMetadataMap(value: string): ModelMetadataMap {
   if (!value.trim()) return {};
   try {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed)) return {};
-    return Object.fromEntries(
+    return canonicalizeModelMetadataMap(Object.fromEntries(
       Object.entries(parsed)
         .filter((entry): entry is [string, ModelMetadata] => isRecord(entry[1]))
         .map(([slug, metadata]) => [slug, filteredMetadata(metadata)] as [string, ModelMetadata])
         .filter(([, metadata]) => Object.keys(metadata).length > 0),
-    );
+    ));
   } catch {
     return {};
   }
@@ -165,13 +179,31 @@ export type BuiltinModelMetadataEntry = {
 // synchronize*、metadataMatchesBuiltin）共用，避免各自实现再次分叉。
 const MODEL_SUFFIX_PATTERN = /^(.*?)\[(\d+(?:[KkMm])?)\]$/;
 
-/// 从模型行名拆出规范 slug；无后缀或后缀非法时返回去掉首尾空白的原串。
-export function modelSlugFromRowName(rowName: string): string {
+export type ModelRowIdentity = {
+  rawName: string;
+  canonicalSlug: string;
+  suffixWindow: string | null;
+  key: string;
+};
+
+/** 统一解析模型行名，所有 metadata map 和 suffix 入口都使用这个结果。 */
+export function parseModelRowName(rowName: string): ModelRowIdentity {
+  const rawName = rowName;
   const trimmed = rowName.trim();
   const match = MODEL_SUFFIX_PATTERN.exec(trimmed);
-  if (!match) return trimmed;
-  if (suffixWindowTokens(match[2]) === null) return trimmed;
-  return match[1].trim();
+  const suffixWindow = match ? suffixWindowTokens(match[2]) : null;
+  const canonicalSlug = match && suffixWindow !== null ? match[1].trim() : trimmed;
+  return {
+    rawName,
+    canonicalSlug,
+    suffixWindow: suffixWindow === null ? null : String(suffixWindow),
+    key: canonicalSlug.toLowerCase(),
+  };
+}
+
+/// 从模型行名拆出规范 slug；无后缀或后缀非法时返回去掉首尾空白的原串。
+export function modelSlugFromRowName(rowName: string): string {
+  return parseModelRowName(rowName).canonicalSlug;
 }
 
 /// 把后缀文字换算成 token 数：`[1M]`→1000000、`[256K]`→256000、`[123]`→123。
@@ -189,10 +221,7 @@ export function suffixWindowTokens(suffix: string): number | null {
 
 /// 后缀对应的窗口字符串（供「上下文窗口」列初值/写回用）；无有效后缀返回 null。
 export function suffixWindowString(rowName: string): string | null {
-  const match = MODEL_SUFFIX_PATTERN.exec(rowName.trim());
-  if (!match) return null;
-  const tokens = suffixWindowTokens(match[2]);
-  return tokens === null ? null : String(tokens);
+  return parseModelRowName(rowName).suffixWindow;
 }
 
 export type BuiltinModelMetadataMatch = {
@@ -201,6 +230,81 @@ export type BuiltinModelMetadataMatch = {
   entry?: BuiltinModelMetadataEntry;
   fallback?: { slug: string; context_window: number };
 };
+
+/** 内置元数据查询的三态结果：命中、成功但未命中、命令失败。
+ * `null` 不再同时承担“未命中”和“IPC 出错”两种语义。
+ */
+export type BuiltinMetadataQueryState =
+  | { status: "matched"; value: BuiltinModelMetadataMatch & { matched: true; entry: BuiltinModelMetadataEntry } }
+  | { status: "miss"; value: BuiltinModelMetadataMatch & { matched: false } }
+  | { status: "error"; error: string };
+
+export function builtinMetadataQueryState(
+  value: BuiltinModelMetadataMatch | null | undefined,
+  error?: unknown,
+): BuiltinMetadataQueryState {
+  if (error !== undefined && error !== null) {
+    return { status: "error", error: error instanceof Error ? error.message : String(error) };
+  }
+  if (value?.matched && value.entry) {
+    return { status: "matched", value: value as BuiltinModelMetadataMatch & { matched: true; entry: BuiltinModelMetadataEntry } };
+  }
+  return { status: "miss", value: (value ?? { matched: false }) as BuiltinModelMetadataMatch & { matched: false } };
+}
+
+export type ActiveImportDraft = {
+  index: number;
+  originalSlug: string;
+  canonicalSlug: string;
+  originalWindow: string;
+  originalAutoCompact: string;
+  document: string;
+  preview: ImportedModelMetadata | null;
+};
+
+export function createActiveImportDraft(input: {
+  index: number;
+  rowName: string;
+  window: string;
+  autoCompact: string;
+  document?: string;
+  preview?: ImportedModelMetadata | null;
+}): ActiveImportDraft {
+  return {
+    index: input.index,
+    originalSlug: input.rowName.trim(),
+    canonicalSlug: modelSlugFromRowName(input.rowName),
+    originalWindow: input.window,
+    originalAutoCompact: input.autoCompact,
+    document: input.document ?? "",
+    preview: input.preview ?? null,
+  };
+}
+
+export function updateActiveImportDraft(
+  draft: ActiveImportDraft,
+  patch: Partial<Pick<ActiveImportDraft, "document" | "preview" | "canonicalSlug">>,
+): ActiveImportDraft {
+  return { ...draft, ...patch };
+}
+
+export function cancelActiveImportDraft(
+  draft: ActiveImportDraft,
+): { draft: null; rowPatch: { window: string; autoCompact: string } } {
+  return {
+    draft: null,
+    rowPatch: { window: draft.originalWindow, autoCompact: draft.originalAutoCompact },
+  };
+}
+
+export function rematchActiveImportDraft(
+  draft: ActiveImportDraft,
+  rowName: string,
+  document: string,
+  preview: ImportedModelMetadata | null,
+): ActiveImportDraft {
+  return { ...draft, originalSlug: rowName.trim(), canonicalSlug: modelSlugFromRowName(rowName), document, preview };
+}
 
 /// 内置条目 → 导入文档文本：剥掉窗口/压缩四个托管字段（serialize 会按
 /// 窗口参数重写），保留供应商事实字段。窗口取 context_window 优先——它是
@@ -505,20 +609,22 @@ export function replaceModelMetadataForSlug(
   metadata: ModelMetadata,
 ): string {
   const map = parseModelMetadataMap(value);
+  const key = modelMetadataKey(slug);
+  if (!key) return serializeModelMetadataMap(map);
   const imported = filteredMetadata(metadata);
-  const existing = map[slug];
-  // Codex++ 中已经编辑过的显示名称是用户意图，导入供应商 metadata 时不要覆盖它。
+  const existing = map[key];
   if (typeof existing?.display_name === "string" && existing.display_name.trim()) {
     imported.display_name = existing.display_name;
   }
-  if (Object.keys(imported).length > 0) map[slug] = imported;
-  else delete map[slug];
+  if (Object.keys(imported).length > 0) map[key] = imported;
+  else delete map[key];
   return serializeModelMetadataMap(map);
 }
 
 export function clearModelMetadataForSlug(value: string, slug: string): string {
   const map = parseModelMetadataMap(value);
-  delete map[slug];
+  const key = modelMetadataKey(slug);
+  if (key) delete map[key];
   return serializeModelMetadataMap(map);
 }
 
@@ -528,8 +634,8 @@ export function remapModelMetadataSlugs(
 ): string {
   const map = parseModelMetadataMap(value);
   const normalized = Array.from(mappings, ({ previousSlug, nextSlug }) => ({
-    previousSlug: previousSlug.trim(),
-    nextSlug: nextSlug.trim(),
+    previousSlug: modelMetadataKey(previousSlug),
+    nextSlug: modelMetadataKey(nextSlug),
   }));
   const retainedSources = new Set(
     normalized
@@ -539,7 +645,7 @@ export function remapModelMetadataSlugs(
   const moves = normalized.filter(({ previousSlug, nextSlug }) => (
     previousSlug && nextSlug && previousSlug !== nextSlug && map[previousSlug]
   ));
-  if (!moves.length) return value;
+  if (!moves.length) return serializeModelMetadataMap(map);
 
   const movedKeys = new Set(moves.map(({ nextSlug }) => nextSlug));
   for (const { previousSlug } of moves) {
@@ -553,7 +659,7 @@ export function remapModelMetadataSlugs(
 }
 
 export function retainModelMetadataForSlugs(value: string, slugs: Iterable<string>): string {
-  const allowed = new Set(Array.from(slugs, (slug) => slug.trim()).filter(Boolean));
+  const allowed = new Set(Array.from(slugs, modelMetadataKey).filter(Boolean));
   const map = parseModelMetadataMap(value);
   return serializeModelMetadataMap(Object.fromEntries(
     Object.entries(map).filter(([slug]) => allowed.has(slug)),

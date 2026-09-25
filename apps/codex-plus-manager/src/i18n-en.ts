@@ -436,6 +436,7 @@ export const EN_PLAIN: Record<string, string> = {
   "兼容增强": "Compatible enhancement",
   "内置": "Built-in",
   "自定义": "Custom",
+  "已导入自定义元数据，生成时以该配置为准": "Custom metadata imported; this configuration takes precedence at generation",
   "回退": "Fallback",
   "重新匹配": "Re-match",
   "清除": "Clear",
@@ -457,6 +458,7 @@ export const EN_PLAIN: Record<string, string> = {
   "当前为内置元数据预览；保存后将成为该模型的自定义配置，生成时覆盖内置": "Previewing built-in metadata; saving turns it into this model's custom configuration and overrides the built-in data at generation",
   "内容与已保存的配置一致，无需再保存": "Identical to the saved configuration; no need to save again",
   "JSON 无法解析，修复后即可保存": "JSON cannot be parsed; fix it to enable saving",
+  "上下文窗口与自动压缩值无效，无法同步模型配置。": "The context window or auto-compaction value is invalid, so the model configuration cannot be synchronized.",
   "保存此模型": "Save this model",
   "保存后清除该模型的自定义配置，生成时回退默认模板": "Saving clears this model's custom configuration; generation falls back to the default template",
   "内容与内置元数据一致，保存后使用内置元数据": "Identical to the built-in metadata; saving switches this model to the built-in data",
@@ -1214,7 +1216,6 @@ export const EN_TEMPLATE: Record<string, string> = {
   "内置元数据：{0}": "Built-in metadata: {0}",
   "无内置元数据，生成时回退 {0} 官方模板": "No built-in metadata; generation falls back to the {0} official template",
   "已导入自定义元数据，生成时覆盖内置（{0}）": "Custom metadata imported; overrides the built-in data ({0}) at generation",
-  "已导入自定义元数据，生成时以该配置为准": "Custom metadata imported; this configuration takes precedence at generation",
   "路由规则「{0}」的优先级必须是大于等于 0 的整数。":
     "Route rule \"{0}\" priority must be an integer greater than or equal to 0.",
   "路由规则「{0}」的目标供应商必须是聚合成员，请先将其勾选为成员。":
