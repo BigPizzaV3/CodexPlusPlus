@@ -7835,16 +7835,14 @@ function RelayProfileEditor({
       updateModelWindowRow(metadataImportTarget.index, { window: preview.value.contextWindow });
     }
   };
-  // 「清除」：移除该模型的自定义配置并清空未保存内容；随后按实际内置命中
-  // 恢复标签（命中→重新匹配可用，未命中→回退），不硬编码状态。
+  // 「清除」：摘除该模型的自定义配置并关闭面板（对齐主面板「清除导入配置」
+  // 的一步到位语义）；上下文窗口列不动。清除后面板关闭，未保存的文档编辑
+  // 一并丢弃——不再停留在「文档已清空、保存键置灰」的死胡同里。
   const clearBuiltinImport = (slug: string) => {
     if (importedModelMetadata[slug]) {
       commitModelMetadata(clearModelMetadataForSlug(profile.modelMetadata, slug));
     }
-    setMetadataImportDocument("");
-    setMetadataImportError("");
-    setMetadataImportPreview(null);
-    void refreshBuiltinMatch(slug);
+    closeModelMetadataImport();
   };
   const removeModelWindowRow = (index: number) => {
     const removedSlug = modelWindowRows[index]?.model.trim() || modelSlugOriginsRef.current[index] || "";

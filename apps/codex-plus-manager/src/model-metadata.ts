@@ -358,7 +358,7 @@ export function importSaveDecision(options: {
   if (options.matchesBuiltin) {
     return options.imported
       ? { needsSave: true, effect: "builtin", label: "保存此模型", title: "内容与内置元数据一致，保存后使用内置元数据" }
-      : { needsSave: false, effect: "none", label, title: "已在使用内置元数据，无需保存" };
+      : { needsSave: false, effect: "none", label, title: "内容与内置元数据一致，保存后继续使用内置元数据" };
   }
   // 内容与内置不同：写成自定义覆盖
   return {
@@ -411,8 +411,11 @@ export function importPanelControls(options: {
     imported: options.imported,
     matchesBuiltin: options.matchesBuiltin,
   });
+  // 保存键只在 JSON 解析失败时置灰（对齐主面板行为）：内容与内置一致时
+  // 点保存=确认用内置并关闭面板（不写自定义，见 applyModelMetadataImport），
+  // 不再因为「没什么可写」而把保存键禁掉。
   const save = {
-    disabled: !decision.needsSave,
+    disabled: !options.parseOk,
     label: decision.label,
     title: decision.title,
   };
@@ -429,7 +432,7 @@ export function importPanelControls(options: {
     clear: {
       disabled: !options.imported,
       title: options.imported
-        ? "清除该模型的自定义元数据与未保存内容，生成时改用内置"
+        ? "清除该模型的自定义元数据（保留上下文窗口），生成时改用内置"
         : "该模型没有自定义元数据可清除",
     },
     cancel: { disabled: false, title: "放弃本次在面板里的改动，不写入任何配置" },
