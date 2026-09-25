@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
-    io::{BufRead, BufReader},
-    path::Path,
+    io::BufRead,
 };
+#[cfg(test)]
+use std::{fs::File, io::BufReader, path::Path};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TurnBoundary {
     pub start_ordinal: i64,
     pub started_at: i64,
@@ -22,7 +22,7 @@ pub(crate) struct TurnBoundary {
     pub first_user_response_ordinal: Option<i64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Candidate {
     pub thread: String,
     pub turn: String,
@@ -46,6 +46,12 @@ pub(crate) struct Candidate {
     pub first_user_response_ordinal: Option<i64>,
     #[serde(default)]
     pub first_user_evidence_valid: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ScanResult {
+    pub candidates: Vec<Candidate>,
+    pub issues: Vec<String>,
 }
 
 fn event_time(row: &Value, field: &str) -> Option<i64> {
@@ -88,8 +94,12 @@ fn ordinary(text: &str) -> bool {
         .any(|prefix| text.starts_with(prefix))
 }
 
-pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
-    let mut reader = BufReader::new(File::open(path)?);
+#[cfg(test)]
+pub(crate) fn scan(path: &Path) -> anyhow::Result<ScanResult> {
+    scan_reader(BufReader::new(File::open(path)?))
+}
+
+pub(crate) fn scan_reader(mut reader: impl BufRead) -> anyhow::Result<ScanResult> {
     let mut line = String::new();
     let mut thread = None::<String>;
     let mut inherited_from = HashSet::<String>::new();
@@ -109,10 +119,12 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
     let mut first_user_responses = HashMap::<String, i64>::new();
     let mut responses = HashMap::<String, Vec<(Candidate, usize)>>::new();
     let mut evidence = HashMap::<(String, String), Vec<usize>>::new();
+    let mut terminal_positions = HashMap::<String, Vec<usize>>::new();
     let mut projections = HashMap::<(String, String), Vec<(String, i64)>>::new();
     let mut goal = None::<(String, i64, String, Option<String>)>;
     let mut seen_goals = HashSet::<(String, String)>::new();
     let mut result = Vec::new();
+    let mut issues = Vec::new();
     let mut stream_position = 0usize;
     loop {
         line.clear();
@@ -180,7 +192,10 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                         p["item"]["id"].as_str().filter(|id| !id.is_empty()),
                         row["ordinal"].as_i64().filter(|ordinal| *ordinal >= 0),
                     ) {
-                        if p["thread_id"].as_str() == Some(thread)
+                        if ended_turns.contains(turn) {
+                            invalid_boundaries.insert(turn.to_owned());
+                            invalid_first_user_evidence.insert(turn.to_owned());
+                        } else if p["thread_id"].as_str() == Some(thread)
                             && p["turn_id"].as_str() == Some(turn)
                         {
                             let first = first_user_projections
@@ -251,6 +266,10 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                 Some(kind @ ("task_complete" | "task_failed" | "turn_aborted")) => {
                     let terminal_turn = p["turn_id"].as_str().or(current_turn.as_deref());
                     if let Some(turn) = terminal_turn {
+                        terminal_positions
+                            .entry(turn.to_owned())
+                            .or_default()
+                            .push(stream_position);
                         if !ended_turns.insert(turn.to_owned()) {
                             invalid_boundaries.insert(turn.to_owned());
                         }
@@ -323,7 +342,10 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                 Some("user_message") => {
                     let turn = p["turn_id"].as_str().or(current_turn.as_deref());
                     if let (Some(turn), Some(text)) = (turn, p["message"].as_str()) {
-                        if ordinary(text) {
+                        if ordinary(text)
+                            && (current_turn.as_deref() == Some(turn)
+                                || (current_turn.is_none() && !ended_turns.contains(turn)))
+                        {
                             evidence
                                 .entry((turn.to_owned(), text.to_owned()))
                                 .or_default()
@@ -342,7 +364,10 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                         (p["turn_id"].as_str(), text_content(&p["item"]["content"]))
                     {
                         if ordinary(&text) {
-                            if let (Some(id), Some(ordinal)) =
+                            if ended_turns.contains(turn) {
+                                invalid_boundaries.insert(turn.to_owned());
+                                invalid_first_user_evidence.insert(turn.to_owned());
+                            } else if let (Some(id), Some(ordinal)) =
                                 (p["item"]["id"].as_str(), row["ordinal"].as_i64())
                             {
                                 if !id.is_empty() && ordinal >= 0 {
@@ -379,6 +404,10 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
         });
         if ordinary(&visible_text) || has_attachment {
             if let Some(turn) = meta["turn_id"].as_str().or(current_turn.as_deref()) {
+                if ended_turns.contains(turn) {
+                    invalid_boundaries.insert(turn.to_owned());
+                    invalid_first_user_evidence.insert(turn.to_owned());
+                }
                 if let Some(ordinal) = row["ordinal"].as_i64().filter(|ordinal| *ordinal >= 0) {
                     if meta["turn_id"].as_str() == Some(turn) {
                         let first = first_user_responses
@@ -471,20 +500,53 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
         for (candidate, _) in &candidates {
             *response_counts.entry(candidate.text.clone()).or_default() += 1;
         }
+        let mut ambiguous_events = HashSet::new();
         if let Some((first, _)) = candidates.first() {
             for (text, expected) in &response_counts {
                 if evidence
                     .get(&(first.turn.clone(), text.clone()))
                     .is_some_and(|items| items.len() != *expected)
                 {
-                    bail!("重复文本用户事件数量与响应不一致，无法可靠匹配");
+                    ambiguous_events.insert(text.clone());
                 }
             }
         }
-        for (index, (source, _)) in candidates.iter().enumerate() {
+        for (response_index, (source, source_position)) in candidates.iter().enumerate() {
             let mut candidate = source.clone();
             let key = (candidate.turn.clone(), candidate.text.clone());
-            let next = candidates[index + 1..]
+            let next_response_position = candidates[response_index + 1..]
+                .iter()
+                .find(|(c, _)| c.text == candidate.text)
+                .map(|(_, position)| *position);
+            let previous_response_position = candidates[..response_index]
+                .iter()
+                .rev()
+                .find(|(c, _)| c.text == candidate.text)
+                .map(|(_, position)| *position)
+                .unwrap_or(0);
+            let matched_event = evidence
+                .get_mut(&key)
+                .filter(|items| !items.is_empty() && !ambiguous_events.contains(&candidate.text))
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .position(|event_position| {
+                            *event_position > previous_response_position
+                                && next_response_position.is_none_or(|next| *event_position < next)
+                                && !terminal_positions.get(&candidate.turn).is_some_and(
+                                    |terminals| {
+                                        terminals.iter().any(|terminal| {
+                                            *terminal > (*event_position).min(*source_position)
+                                                && *terminal
+                                                    <= (*event_position).max(*source_position)
+                                        })
+                                    },
+                                )
+                        })
+                        .map(|index| items.remove(index))
+                })
+                .is_some();
+            let next = candidates[response_index + 1..]
                 .iter()
                 .find(|(c, _)| c.text == candidate.text)
                 .map(|(c, _)| c.ordinal);
@@ -497,7 +559,11 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     })
                     .count();
                 if matches > 1 {
-                    bail!("同一用户响应对应多个完成事件，无法可靠确认原生消息身份");
+                    issues.push(format!(
+                        "{} / {} / {}：同一用户响应对应多个完成事件，无法可靠确认原生消息身份",
+                        candidate.thread, candidate.turn, candidate.ordinal
+                    ));
+                    continue;
                 }
                 if let Some(index) = items.iter().position(|(_, ordinal)| {
                     *ordinal > candidate.ordinal && next.is_none_or(|next| *ordinal < next)
@@ -505,14 +571,13 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
                     candidate.projection = Some(items.remove(index));
                 }
             }
-            let matched_event = if let Some(items) = evidence.get_mut(&key) {
-                // 独立 user_message 与同文 response 按各自出现次数一一对应；
-                // 事件在 response 前后的历史格式都可匹配，但任何事件只消费一次。
-                items.remove(0);
-                true
-            } else {
-                false
-            };
+            if candidate.projection.is_none() && ambiguous_events.contains(&candidate.text) {
+                issues.push(format!(
+                    "{} / {} / {}：重复文本用户事件数量与响应不一致，无法可靠匹配",
+                    candidate.thread, candidate.turn, candidate.ordinal
+                ));
+                continue;
+            }
             if candidate.projection.is_some() || matched_event {
                 result.push(candidate);
             }
@@ -551,7 +616,8 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
             candidate
                 .first_user_response_ordinal
                 .is_some_and(|response| {
-                    !invalid_first_user_evidence.contains(&candidate.turn)
+                    !duplicate_starts.contains(&candidate.turn)
+                        && !invalid_first_user_evidence.contains(&candidate.turn)
                         && candidate.start_ordinal.is_none_or(|start| start < response)
                         && candidate
                             .first_user_projection
@@ -582,7 +648,11 @@ pub(crate) fn scan(path: &Path) -> anyhow::Result<Vec<Candidate>> {
             .cloned();
     }
     result.sort_by_key(|candidate| candidate.ordinal);
-    Ok(result)
+    issues.sort();
+    Ok(ScanResult {
+        candidates: result,
+        issues,
+    })
 }
 
 #[cfg(test)]
@@ -600,7 +670,7 @@ mod tests {
         let turn = std::env::var("CODEX_INDEX_VERIFY_TURN").expect("需要 CODEX_INDEX_VERIFY_TURN");
         let text = std::env::var("CODEX_INDEX_VERIFY_TEXT").expect("需要 CODEX_INDEX_VERIFY_TEXT");
         assert!(!text.is_empty(), "核验原文不能为空");
-        let candidates = scan(Path::new(&path)).unwrap();
+        let candidates = scan(Path::new(&path)).unwrap().candidates;
         let found = candidates
             .iter()
             .any(|candidate| candidate.turn == turn && candidate.text.starts_with(&text));
@@ -609,6 +679,10 @@ mod tests {
     }
 
     fn scan_rows(rows: Vec<Value>, tail: &str) -> anyhow::Result<Vec<Candidate>> {
+        scan_rows_with_issues(rows, tail).map(|result| result.candidates)
+    }
+
+    fn scan_rows_with_issues(rows: Vec<Value>, tail: &str) -> anyhow::Result<ScanResult> {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         for row in rows {
             writeln!(file, "{row}").unwrap();
@@ -645,6 +719,52 @@ mod tests {
             message("a", "原文", 2),
             json!({"type":"event_msg","ordinal":3,"payload":{"type":"user_message","turn_id":"a","message":"原文"}}),
         ]
+    }
+
+    #[test]
+    fn duplicate_task_starts_invalidate_ordinary_message_evidence() {
+        let rows = vec![
+            meta(),
+            start_at("a", 1),
+            message("a", "第一条", 2),
+            json!({"type":"event_msg","ordinal":3,"payload":{"type":"user_message","turn_id":"a","message":"第一条"}}),
+            start_at("a", 4),
+            message("a", "第二条", 5),
+            json!({"type":"event_msg","ordinal":6,"payload":{"type":"user_message","turn_id":"a","message":"第二条"}}),
+        ];
+        let candidates = scan_rows(rows, "").unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| { !candidate.first_user_evidence_valid })
+        );
+    }
+
+    #[test]
+    fn user_event_after_terminal_boundary_cannot_confirm_an_old_response() {
+        let rows = vec![
+            meta(),
+            start_at("a", 1),
+            message("a", "迟到", 2),
+            json!({"type":"event_msg","ordinal":3,"payload":{"type":"task_complete","turn_id":"a"}}),
+            json!({"type":"event_msg","ordinal":4,"payload":{"type":"user_message","turn_id":"a","message":"迟到"}}),
+        ];
+        assert!(scan_rows(rows, "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn completed_item_after_terminal_boundary_cannot_confirm_an_old_response() {
+        let rows = vec![
+            meta(),
+            start_at("a", 1),
+            message("a", "迟到完成", 2),
+            json!({"type":"event_msg","ordinal":3,"payload":{"type":"task_complete","turn_id":"a"}}),
+            json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":"late","type":"UserMessage","content":[{"type":"text","text":"迟到完成"}]}}}),
+        ];
+        let result = scan_rows_with_issues(rows, "").unwrap();
+        assert!(result.candidates.is_empty());
+        assert!(result.issues.is_empty());
     }
 
     #[test]
@@ -833,7 +953,7 @@ mod tests {
                 _ => unreachable!(),
             }
             let items = scan_rows(rows, "").unwrap();
-            assert_eq!(items.len(), 1);
+            assert_eq!(items.len(), 1, "invalid case {invalid}");
             assert!(items[0].turn_boundary.is_none(), "invalid case {invalid}");
         }
     }
@@ -852,7 +972,7 @@ mod tests {
                 _ => unreachable!(),
             }
             let items = scan_rows(rows, "").unwrap();
-            assert_eq!(items.len(), 1);
+            assert_eq!(items.len(), 1, "invalid case {invalid}");
             assert!(items[0].turn_boundary.is_none(), "invalid case {invalid}");
         }
     }
@@ -1056,11 +1176,14 @@ mod tests {
             json!({"type":"event_msg","payload":{"type":"user_message","turn_id":"a","message":"重复"}}),
             message("a", "重复", 4),
         ];
-        let error = scan_rows(event, "").unwrap_err();
+        let result = scan_rows_with_issues(event, "").unwrap();
+        assert!(result.candidates.is_empty());
+        assert_eq!(result.issues.len(), 2);
         assert!(
-            error
-                .to_string()
-                .contains("重复文本用户事件数量与响应不一致")
+            result
+                .issues
+                .iter()
+                .all(|issue| issue.contains("重复文本用户事件数量与响应不一致"))
         );
 
         let balanced = vec![
@@ -1081,12 +1204,10 @@ mod tests {
         for (id, ordinal) in [("native-a", 4), ("native-b", 5)] {
             rows.push(json!({"type":"event_msg","ordinal":ordinal,"payload":{"type":"item_completed","thread_id":"t","turn_id":"a","item":{"id":id,"type":"UserMessage","content":[{"type":"text","text":"原文"}]}}}));
         }
-        assert!(
-            scan_rows(rows, "")
-                .unwrap_err()
-                .to_string()
-                .contains("多个完成事件")
-        );
+        let result = scan_rows_with_issues(rows, "").unwrap();
+        assert!(result.candidates.is_empty());
+        assert_eq!(result.issues.len(), 1);
+        assert!(result.issues[0].contains("多个完成事件"));
     }
 
     #[test]

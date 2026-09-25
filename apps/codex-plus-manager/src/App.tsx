@@ -797,6 +797,9 @@ type SessionIndexRepairReport = {
   skippedItems: number;
   deferredItems?: number;
   issues: string[];
+  issuesTruncated?: number;
+  abortedReason?: string | null;
+  warnings?: string[];
   backupPath: string | null;
   elapsedMs: number;
   checkedAtMs?: number;
@@ -1217,6 +1220,7 @@ export function App() {
   const sessionIndexRepairRunning = useRef(false);
   const sessionIndexReportLoading = useRef(false);
   const [sessionIndexRepairReport, setSessionIndexRepairReport] = useState<SessionIndexRepairReport | null>(null);
+  const [sessionIndexRepairReportError, setSessionIndexRepairReportError] = useState<string | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
@@ -2593,13 +2597,20 @@ export function App() {
         "load_session_index_repair_report",
       );
       if (isCurrent() && !sessionIndexRepairRunning.current && isSuccessStatus(result.status)) {
+        setSessionIndexRepairReportError(null);
         setSessionIndexRepairReport((previous) => {
           if ((previous?.checkedAtMs ?? 0) > (result.report?.checkedAtMs ?? 0)) return previous;
           return result.report;
         });
+      } else if (isCurrent() && !isSuccessStatus(result.status)) {
+        setSessionIndexRepairReportError(result.message || t("读取会话索引修复报告失败"));
       }
-    } catch {
-      // 下次页面刷新再读；读取报告本身不会启动修复。
+    } catch (error) {
+      if (isCurrent()) {
+        setSessionIndexRepairReportError(
+          tf("读取会话索引修复报告失败：{0}", [stringifyError(error)]),
+        );
+      }
     } finally {
       sessionIndexReportLoading.current = false;
     }
@@ -3649,6 +3660,7 @@ export function App() {
               providerSyncProgress={providerSyncProgress}
               sessionIndexRepairActive={sessionIndexRepairActive}
               sessionIndexRepairReport={sessionIndexRepairReport}
+              sessionIndexRepairReportError={sessionIndexRepairReportError}
               providerSyncTargets={providerSyncTargets}
               selectedProviderSyncTarget={selectedProviderSyncTarget}
               onFormChange={setSettingsForm}
@@ -6262,6 +6274,7 @@ function SessionsScreen({
   providerSyncProgress,
   sessionIndexRepairActive,
   sessionIndexRepairReport,
+  sessionIndexRepairReportError,
   providerSyncTargets,
   selectedProviderSyncTarget,
   onFormChange,
@@ -6273,6 +6286,7 @@ function SessionsScreen({
   providerSyncProgress: ProviderSyncProgress;
   sessionIndexRepairActive: boolean;
   sessionIndexRepairReport: SessionIndexRepairReport | null;
+  sessionIndexRepairReportError: string | null;
   providerSyncTargets: ProviderSyncTargetsResult | null;
   selectedProviderSyncTarget: string;
   onFormChange: (value: BackendSettings) => void;
@@ -6401,7 +6415,7 @@ function SessionsScreen({
               />
               <span>
                 <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{t("启动前整理会话归属并检查缺失消息；运行期间自动检查索引。保存设置后生效。")}</small>
+                <small>{t("启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -6472,6 +6486,9 @@ function SessionsScreen({
           {sessionIndexRepairActive ? (
             <p role="status">{t("正在检查全部会话并恢复高可信缺失消息，首次检查可能需要较长时间…")}</p>
           ) : null}
+          {sessionIndexRepairReportError ? (
+            <p role="alert" className="break-all">{sessionIndexRepairReportError}</p>
+          ) : null}
           {sessionIndexRepairReport ? (
             <div className="provider-sync-progress session-repair-progress" aria-live="polite">
               <strong>{t("最近一次会话索引修复报告")}</strong>
@@ -6483,9 +6500,15 @@ function SessionsScreen({
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
-              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
+              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
               <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
               {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
+              {sessionIndexRepairReport.abortedReason ? (
+                <p role="alert" className="break-all"><strong>{t("修复已中止：")}</strong>{sessionIndexRepairReport.abortedReason}</p>
+              ) : null}
+              {sessionIndexRepairReport.warnings?.map((warning, index) => (
+                <p key={index} role="alert" className="break-all"><strong>{t("修复警告：")}</strong>{warning}</p>
+              ))}
               {sessionIndexRepairReport.pendingDetails?.length ? (
                 <details>
                   <summary>{t("等待与持续无法恢复详情")} ({sessionIndexRepairReport.pendingDetails.length})</summary>
@@ -6506,6 +6529,9 @@ function SessionsScreen({
                   <summary>{t("查看检查详情")} ({sessionIndexRepairReport.issues.length})</summary>
                   <ul>{sessionIndexRepairReport.issues.map((issue, index) => <li key={index} className="break-all">{issue}</li>)}</ul>
                 </details>
+              ) : null}
+              {sessionIndexRepairReport.issuesTruncated ? (
+                <p><small>{tf("另有 {0} 条检查详情因报告上限未显示。", [sessionIndexRepairReport.issuesTruncated])}</small></p>
               ) : null}
             </div>
           ) : null}

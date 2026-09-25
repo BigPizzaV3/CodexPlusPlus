@@ -1,5 +1,5 @@
 //! 仅修复可从 rollout 交叉验证的原生用户消息投影，不发送消息或修改原始记录。
-use crate::session_index_scan::{Candidate, scan};
+use crate::session_index_scan::{Candidate, ScanResult, scan_reader};
 use anyhow::{Context, bail};
 use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant, UNIX_EPOCH},
 };
@@ -28,6 +29,12 @@ pub struct SessionIndexRepairReport {
     #[serde(default)]
     pub pending_details: Vec<PendingDetail>,
     pub issues: Vec<String>,
+    #[serde(default)]
+    pub issues_truncated: usize,
+    #[serde(default)]
+    pub aborted_reason: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub backup_path: Option<PathBuf>,
     pub elapsed_ms: u64,
 }
@@ -47,6 +54,13 @@ pub struct PendingDetail {
 // 不改写原生轮次状态；连续等待 30 分钟后明确告知需核查，后续仍重新核验。
 const WAIT_LIMIT_MS: i64 = 30 * 60 * 1000;
 const OLD_SOURCE_MS: i64 = 24 * 60 * 60 * 1000;
+
+struct PendingObservation {
+    candidate: Option<Candidate>,
+    reason: String,
+    source: String,
+    modified_ms: i64,
+}
 
 fn pending_issue(
     report: &mut SessionIndexRepairReport,
@@ -143,8 +157,93 @@ fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RolloutOwner {
+    Known(String),
+    Absent,
+    Ambiguous,
+}
+
+fn source_metadata_stamp(path: &Path) -> anyhow::Result<String> {
+    let meta = fs::metadata(path)?;
+    let modified = meta.modified()?.duration_since(UNIX_EPOCH)?;
+    Ok(format!("v10:{}:{}:", meta.len(), modified.as_nanos()))
+}
+
+struct SourceReader {
+    file: fs::File,
+    digest: Sha256,
+    #[cfg(test)]
+    path: PathBuf,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_READ_BYTES: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
+}
+
+impl SourceReader {
+    fn open(path: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            file: fs::File::open(path)?,
+            digest: Sha256::new(),
+            #[cfg(test)]
+            path: path.to_owned(),
+        })
+    }
+
+    fn stamp(self, metadata: &str) -> String {
+        format!("{metadata}{:x}", self.digest.finalize())
+    }
+}
+
+impl Read for SourceReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.file.read(buffer)?;
+        self.digest.update(&buffer[..read]);
+        #[cfg(test)]
+        SOURCE_READ_BYTES.with(|bytes| {
+            *bytes.borrow_mut().entry(self.path.clone()).or_default() += read as u64;
+        });
+        Ok(read)
+    }
+}
+
+fn source_fingerprint(path: &Path) -> anyhow::Result<String> {
+    let metadata = source_metadata_stamp(path)?;
+    let mut reader = SourceReader::open(path)?;
+    std::io::copy(&mut reader, &mut std::io::sink())?;
+    if source_metadata_stamp(path)? != metadata {
+        bail!("文件扫描期间仍在写入，将在下次检查");
+    }
+    Ok(reader.stamp(&metadata))
+}
+
+fn scan_source(path: &Path) -> anyhow::Result<(ScanResult, String)> {
+    let metadata = source_metadata_stamp(path)?;
+    let mut reader = SourceReader::open(path)?;
+    let scanned = scan_reader(BufReader::with_capacity(64 * 1024, &mut reader))?;
+    if source_metadata_stamp(path)? != metadata {
+        bail!("文件扫描期间仍在写入，将在下次检查");
+    }
+    Ok((scanned, reader.stamp(&metadata)))
+}
+
+fn changed_sources(sources: &HashMap<PathBuf, String>) -> Vec<PathBuf> {
+    sources
+        .iter()
+        .filter_map(|(path, expected)| match source_metadata_stamp(path) {
+            Ok(metadata) if expected.starts_with(&metadata) => match source_fingerprint(path) {
+                Ok(actual) if actual == *expected => None,
+                _ => Some(path.clone()),
+            },
+            _ => Some(path.clone()),
+        })
+        .collect()
+}
+
 // 原生分片可能保留旧 session_meta.id；只信任目录数据库中的确切路径映射。
-fn rollout_owners(home: &Path) -> anyhow::Result<std::collections::HashMap<PathBuf, String>> {
+fn rollout_owners(home: &Path) -> anyhow::Result<HashMap<PathBuf, RolloutOwner>> {
     let mut owners = std::collections::HashMap::new();
     let path = home.join("state_5.sqlite");
     if !path.is_file() {
@@ -163,14 +262,19 @@ fn rollout_owners(home: &Path) -> anyhow::Result<std::collections::HashMap<PathB
             home.join(path)
         };
         if let Ok(path) = fs::canonicalize(path) {
-            if owners.get(&path).is_some_and(|old| old != &id) {
-                ambiguous.insert(path.clone());
+            match owners.get(&path) {
+                Some(RolloutOwner::Known(old)) if old != &id => {
+                    ambiguous.insert(path.clone());
+                }
+                Some(RolloutOwner::Ambiguous) => {}
+                _ => {
+                    owners.insert(path, RolloutOwner::Known(id));
+                }
             }
-            owners.insert(path, id);
         }
     }
     for path in ambiguous {
-        owners.remove(&path);
+        owners.insert(path, RolloutOwner::Ambiguous);
     }
     Ok(owners)
 }
@@ -230,9 +334,16 @@ fn resolve_owner(
     db: &Connection,
     path: &Path,
     items: &[Candidate],
-    directory_owner: Option<String>,
+    directory_owner: RolloutOwner,
     turns: &HashMap<String, HashSet<String>>,
 ) -> anyhow::Result<Option<String>> {
+    if matches!(directory_owner, RolloutOwner::Ambiguous) {
+        bail!("目录归属对应多个任务，整份文件需人工核查，未写入");
+    }
+    let directory_owner = match directory_owner {
+        RolloutOwner::Known(owner) => Some(owner),
+        RolloutOwner::Absent | RolloutOwner::Ambiguous => None,
+    };
     let owner = anchored_split_owner(db, path, items, turns)?.or(directory_owner);
     if let Some(owner) = &owner {
         if items
@@ -250,6 +361,18 @@ fn issue(report: &mut SessionIndexRepairReport, message: String) {
     // 报告不保存消息正文，避免 UI 加载大报告或泄露原文。
     if report.issues.len() < 200 {
         report.issues.push(message);
+    } else {
+        report.issues_truncated += 1;
+    }
+}
+
+fn abort_for_sources(report: &mut SessionIndexRepairReport, paths: Vec<PathBuf>, reason: &str) {
+    report.aborted_reason = Some(format!(
+        "{reason}（{} 个来源文件）；本次不推进等待计时，下次重新检查",
+        paths.len()
+    ));
+    for path in paths {
+        issue(report, format!("{}：{reason}", path.display()));
     }
 }
 
@@ -261,6 +384,14 @@ enum Action {
     RestoreTurn,
     Wait(&'static str),
     Skip(&'static str),
+}
+
+struct RepairLock(fs::File);
+
+impl Drop for RepairLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
 }
 
 fn recovery_id(c: &Candidate) -> String {
@@ -300,12 +431,16 @@ fn deduplicate_goals(
     mut candidates: Vec<Candidate>,
 ) -> anyhow::Result<Vec<Candidate>> {
     candidates.sort_by_key(|c| (c.created, c.ordinal));
-    let mut goals = HashMap::new();
+    let mut goals = HashMap::<_, usize>::new();
     let mut unique: Vec<Candidate> = Vec::new();
     for c in candidates {
         if let Some(key) = c.goal_key.as_ref().filter(|_| c.goal) {
             let identity = (c.thread.clone(), key.clone(), c.text.clone());
             if let Some(&index) = goals.get(&identity) {
+                if c.turn == unique[index].turn && c.ordinal == unique[index].ordinal {
+                    unique.push(c);
+                    continue;
+                }
                 // 旧版恢复ID不含goal身份。先用每个分片自己的轮次/位置核验，
                 // 保留已经恢复的那个分片，不能因更早分片后来出现而再次插入。
                 if matches!(inspect(db, &c)?, Action::Present | Action::Link(_))
@@ -323,6 +458,210 @@ fn deduplicate_goals(
         unique.push(c);
     }
     Ok(unique)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CandidateMergeKey {
+    thread: String,
+    turn: String,
+    ordinal: i64,
+    text: String,
+    goal: bool,
+    goal_key: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CandidateIdentity {
+    key: CandidateMergeKey,
+    projection: Option<(String, i64)>,
+}
+
+struct CandidateEntry {
+    candidate: Candidate,
+    conflict: bool,
+}
+
+fn merge_key(candidate: &Candidate) -> CandidateMergeKey {
+    CandidateMergeKey {
+        thread: candidate.thread.clone(),
+        turn: candidate.turn.clone(),
+        ordinal: candidate.ordinal,
+        text: candidate.text.clone(),
+        goal: candidate.goal,
+        goal_key: candidate.goal_key.clone(),
+    }
+}
+
+fn identity(candidate: &Candidate) -> CandidateIdentity {
+    CandidateIdentity {
+        key: merge_key(candidate),
+        projection: candidate.projection.clone(),
+    }
+}
+
+fn merge_identity_optional<T: Clone + Eq>(left: &mut Option<T>, right: &Option<T>) -> bool {
+    match (left.as_ref(), right.as_ref()) {
+        (None, Some(value)) => {
+            *left = Some(value.clone());
+            true
+        }
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    }
+}
+
+fn merge_supporting_optional<T: Clone + Eq>(
+    left: &mut Option<T>,
+    right: &Option<T>,
+    conflicted: &mut bool,
+) -> bool {
+    if *conflicted {
+        return false;
+    }
+    match (left.as_ref(), right.as_ref()) {
+        (None, Some(value)) => {
+            *left = Some(value.clone());
+            true
+        }
+        (Some(existing), Some(incoming)) if existing != incoming => {
+            *left = None;
+            *conflicted = true;
+            false
+        }
+        _ => true,
+    }
+}
+
+#[derive(Default)]
+struct SupportingConflicts {
+    following: bool,
+    boundary: bool,
+    start: bool,
+    first_projection: bool,
+    first_response: bool,
+}
+
+fn merge_candidate_evidence(
+    mut merged: Candidate,
+    other: &Candidate,
+    conflicts: &mut SupportingConflicts,
+) -> Option<Candidate> {
+    if !merge_identity_optional(&mut merged.projection, &other.projection) {
+        return None;
+    }
+    let mut supporting_evidence_is_consistent = true;
+    supporting_evidence_is_consistent &= merge_supporting_optional(
+        &mut merged.following_turn,
+        &other.following_turn,
+        &mut conflicts.following,
+    );
+    supporting_evidence_is_consistent &= merge_supporting_optional(
+        &mut merged.turn_boundary,
+        &other.turn_boundary,
+        &mut conflicts.boundary,
+    );
+    supporting_evidence_is_consistent &= merge_supporting_optional(
+        &mut merged.start_ordinal,
+        &other.start_ordinal,
+        &mut conflicts.start,
+    );
+    supporting_evidence_is_consistent &= merge_supporting_optional(
+        &mut merged.first_user_projection,
+        &other.first_user_projection,
+        &mut conflicts.first_projection,
+    );
+    supporting_evidence_is_consistent &= merge_supporting_optional(
+        &mut merged.first_user_response_ordinal,
+        &other.first_user_response_ordinal,
+        &mut conflicts.first_response,
+    );
+    merged.first_user_evidence_valid = merged.first_user_evidence_valid
+        && other.first_user_evidence_valid
+        && supporting_evidence_is_consistent;
+    merged.created = merged.created.min(other.created);
+    Some(merged)
+}
+
+fn merge_candidates(candidates: Vec<Candidate>) -> Vec<CandidateEntry> {
+    let mut groups = Vec::<(CandidateMergeKey, Vec<Candidate>)>::new();
+    let mut indexes = HashMap::<CandidateMergeKey, usize>::new();
+    for candidate in candidates {
+        let key = merge_key(&candidate);
+        if let Some(index) = indexes.get(&key).copied() {
+            groups[index].1.push(candidate);
+        } else {
+            indexes.insert(key.clone(), groups.len());
+            groups.push((key, vec![candidate]));
+        }
+    }
+    let mut entries = Vec::new();
+    for (_, group) in groups {
+        let mut merged = group[0].clone();
+        let mut supporting_conflicts = SupportingConflicts::default();
+        let compatible = group[1..].iter().try_for_each(|candidate| {
+            merged = merge_candidate_evidence(merged.clone(), candidate, &mut supporting_conflicts)
+                .ok_or(())?;
+            Ok::<(), ()>(())
+        });
+        if compatible.is_ok() {
+            entries.push(CandidateEntry {
+                candidate: merged,
+                conflict: false,
+            });
+        } else {
+            entries.extend(group.into_iter().map(|candidate| CandidateEntry {
+                candidate,
+                conflict: true,
+            }));
+        }
+    }
+    entries
+}
+
+fn conflicting_candidates(candidates: &[CandidateEntry]) -> HashSet<usize> {
+    let mut sources = HashMap::<(String, String, i64), usize>::new();
+    let mut positions = HashMap::<(String, i64), usize>::new();
+    let mut identities = HashMap::<(String, String, String), usize>::new();
+    let mut conflicts = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.conflict.then_some(index))
+        .collect::<HashSet<_>>();
+    for (index, entry) in candidates.iter().enumerate() {
+        let candidate = &entry.candidate;
+        let position = candidate
+            .projection
+            .as_ref()
+            .map_or(candidate.ordinal, |(_, ordinal)| *ordinal);
+        let item_id = candidate
+            .projection
+            .as_ref()
+            .map_or_else(|| recovery_id(candidate), |(identity, _)| identity.clone());
+        for previous in [
+            sources.insert(
+                (
+                    candidate.thread.clone(),
+                    candidate.turn.clone(),
+                    candidate.ordinal,
+                ),
+                index,
+            ),
+            positions.insert((candidate.thread.clone(), position), index),
+            identities.insert(
+                (candidate.thread.clone(), candidate.turn.clone(), item_id),
+                index,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if identity(&candidates[previous].candidate) != identity(candidate) {
+                conflicts.insert(previous);
+                conflicts.insert(index);
+            }
+        }
+    }
+    conflicts
 }
 
 fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
@@ -411,6 +750,33 @@ fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
         return Ok(Action::Skip("相同记录位置已有不同内容"));
     }
     if !rows.is_empty() {
+        // 首条原生消息可能已被删除，但 thread_turns 仍保留指向它的 ID。
+        // 只有候选就是该 ID、原始首条证据完整且所有现存用户消息都在其后，
+        // 才允许插入并把悬空指针重新连接到同一个 ID。
+        if let Some(first_id) = first.as_deref()
+            && c.projection
+                .as_ref()
+                .is_some_and(|(id, ordinal)| id == first_id && *ordinal == position)
+            && is_original_first(c)
+            && rows.iter().all(|(_, _, ordinal)| *ordinal > position)
+        {
+            return Ok(if finished {
+                Action::Prepend(first_id.to_owned(), first_id.to_owned())
+            } else {
+                Action::Wait("原生轮次仍在执行或状态未知，暂不恢复悬空首条消息")
+            });
+        }
+        if first.is_none()
+            && is_original_first(c)
+            && rows.iter().all(|(_, _, ordinal)| *ordinal > position)
+        {
+            return Ok(Action::Insert(
+                c.projection
+                    .as_ref()
+                    .map(|(id, _)| id.clone())
+                    .unwrap_or_else(|| recovery_id(c)),
+            ));
+        }
         // 目标有目标事件与内部 objective 双重证据，位置又早于全部用户消息。
         // 补回目标并调整首条指针，完整保留其后的选项回复和 steering。
         if c.goal && is_original_first(c) && rows.iter().all(|(_, _, n)| *n > position) {
@@ -493,7 +859,10 @@ fn inspect_with_source(
     verified_source: bool,
 ) -> anyhow::Result<Action> {
     let action = inspect(db, c)?;
-    if matches!(action, Action::Wait("原生数据库中尚无对应轮次")) && verified_source {
+    if matches!(action, Action::Wait("原生数据库中尚无对应轮次"))
+        && verified_source
+        && c.first_user_evidence_valid
+    {
         if let Some(b) = &c.turn_boundary {
             let position = c.projection.as_ref().map_or(c.ordinal, |(_, n)| *n);
             let original_first = if c.goal {
@@ -524,6 +893,20 @@ fn inspect_with_source(
 }
 
 pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexRepairReport> {
+    repair_session_index_observed(path, |_| {})
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RepairStage {
+    Scanned,
+    Locked,
+    Applied,
+}
+
+fn repair_session_index_observed(
+    path: Option<&Path>,
+    mut observe: impl FnMut(RepairStage),
+) -> anyhow::Result<SessionIndexRepairReport> {
     let started = Instant::now();
     let home = home(path);
     let work = home.join("session-index-repair");
@@ -536,6 +919,7 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
         .open(work.join("repair.lock"))?;
     lock.try_lock_exclusive()
         .context("会话索引修复正在运行，请稍后查看报告")?;
+    let _lock = RepairLock(lock);
     let _lifecycle = crate::try_acquire_provider_sync_lifecycle_guard(Some(&home))?;
     let mut report = SessionIndexRepairReport {
         checked_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -569,48 +953,50 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
         }
     }
     let mut source_times: HashMap<(String, String, i64), i64> = HashMap::new();
+    let mut source_fingerprints = HashMap::<PathBuf, String>::new();
+    let mut thread_sources = HashMap::<String, HashSet<PathBuf>>::new();
     let mut verified_sources = HashSet::new();
+    let mut pending_observations = Vec::new();
     let cache_tx = cache.transaction()?;
     for path in files {
         report.scanned_files += 1;
-        let result: anyhow::Result<Vec<Candidate>> = (|| {
-            let meta = fs::metadata(&path)?;
-            let stamp = format!(
-                "v7:{}:{}",
-                meta.len(),
-                meta.modified()?.duration_since(UNIX_EPOCH)?.as_nanos()
-            );
+        let result: anyhow::Result<ScanResult> = (|| {
+            let metadata = source_metadata_stamp(&path)?;
             let key = path.to_string_lossy();
-            let cached: Option<String> = cache_tx
+            let cached: Option<(String, String)> = cache_tx
                 .query_row(
-                    "SELECT candidates FROM files WHERE path=?1 AND stamp=?2",
-                    params![key, stamp],
-                    |r| r.get(0),
+                    "SELECT stamp,candidates FROM files WHERE path=?1",
+                    params![key],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            if let Some(raw) = cached
-                && let Ok(items) = serde_json::from_str(&raw)
+            if let Some((stamp, raw)) = cached
+                && stamp.starts_with(&metadata)
+                && source_fingerprint(&path)? == stamp
+                && let Ok(items) = serde_json::from_str::<ScanResult>(&raw)
             {
                 report.cached_files += 1;
+                source_fingerprints.insert(path.clone(), stamp);
                 return Ok(items);
             }
-            let items = scan(&path)?;
-            let after = fs::metadata(&path)?;
-            if after.len() == meta.len() && after.modified()? == meta.modified()? {
-                cache_tx.execute(
-                    "INSERT OR REPLACE INTO files VALUES(?1,?2,?3)",
-                    params![key, stamp, serde_json::to_string(&items)?],
-                )?;
-            } else {
-                bail!("文件扫描期间仍在写入，将在下次检查");
-            }
+            let (items, stamp) = scan_source(&path)?;
+            cache_tx.execute(
+                "INSERT OR REPLACE INTO files VALUES(?1,?2,?3)",
+                params![key, stamp, serde_json::to_string(&items)?],
+            )?;
+            source_fingerprints.insert(path.clone(), stamp);
             Ok(items)
         })();
         match result {
-            Ok(mut items) => {
+            Ok(scanned) => {
+                for message in scanned.issues {
+                    issue(&mut report, format!("{}：{message}", path.display()));
+                }
+                let mut items = scanned.candidates;
                 let owner = fs::canonicalize(&path)
                     .ok()
-                    .and_then(|p| owners.get(&p).cloned());
+                    .map(|p| owners.get(&p).cloned().unwrap_or(RolloutOwner::Absent))
+                    .unwrap_or(RolloutOwner::Absent);
                 // 目录表可能仅指向当前分片而保留父任务 ID，原生完成事件证据优先。
                 // 如证据仍指向别的 owner，整文件保留待核查，禁止重复补到目录 owner。
                 let owner = match resolve_owner(&db, &path, &items, owner, &turn_owners) {
@@ -637,6 +1023,10 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
                         .entry((item.thread.clone(), item.turn.clone(), item.ordinal))
                         .and_modify(|t| *t = (*t).max(modified))
                         .or_insert(modified);
+                    thread_sources
+                        .entry(item.thread.clone())
+                        .or_default()
+                        .insert(path.clone());
                 }
                 candidates.extend(items);
             }
@@ -667,48 +1057,31 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
                     );
                     continue;
                 }
-                pending_issue(
-                    &mut report,
-                    &cache_tx,
-                    None,
-                    reason,
-                    &path.to_string_lossy(),
-                    modified,
-                )?
+                pending_observations.push(PendingObservation {
+                    candidate: None,
+                    reason: reason.into(),
+                    source: path.to_string_lossy().into_owned(),
+                    modified_ms: modified,
+                });
             }
             Err(error) => issue(&mut report, format!("{}：{}", path.display(), error)),
         }
     }
-    cache_tx.commit()?;
     // 同目标优先保留已有原生投影；尚未恢复时才选择最早分片。
     candidates = deduplicate_goals(&db, candidates)?;
     candidates
         .sort_by(|a, b| (&a.thread, &a.turn, a.ordinal).cmp(&(&b.thread, &b.turn, b.ordinal)));
-    candidates.dedup_by(|a, b| {
-        a.thread == b.thread && a.turn == b.turn && a.ordinal == b.ordinal && a.text == b.text
-    });
-    let mut conflicts = std::collections::HashSet::new();
-    for pair in candidates.windows(2) {
-        if pair[0].thread == pair[1].thread
-            && pair[0].turn == pair[1].turn
-            && pair[0].ordinal == pair[1].ordinal
-            && pair[0].text != pair[1].text
-        {
-            conflicts.insert((
-                pair[0].thread.clone(),
-                pair[0].turn.clone(),
-                pair[0].ordinal,
-            ));
-        }
-    }
+    let candidates = merge_candidates(candidates);
+    let conflicts = conflicting_candidates(&candidates);
     let mut pending = Vec::new();
     let mut waiting = Vec::new();
-    for c in candidates {
-        if conflicts.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)) {
+    for (index, entry) in candidates.into_iter().enumerate() {
+        let c = entry.candidate;
+        if conflicts.contains(&index) {
             issue(
                 &mut report,
                 format!(
-                    "{} / {}：相同记录位置有多个候选原文，需人工核对",
+                    "{} / {}：候选消息身份、位置或来源证据冲突，需人工核对",
                     c.thread, c.turn
                 ),
             );
@@ -731,40 +1104,82 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
         pending.append(&mut waiting);
         pending
             .sort_by(|a, b| (&a.thread, &a.turn, a.ordinal).cmp(&(&b.thread, &b.turn, b.ordinal)));
+        let write_threads: HashSet<_> = pending.iter().map(|candidate| &candidate.thread).collect();
+        let write_sources: HashSet<_> = write_threads
+            .iter()
+            .filter_map(|thread| thread_sources.get(*thread))
+            .flatten()
+            .cloned()
+            .collect();
+        source_fingerprints.retain(|path, _| write_sources.contains(path));
+        observe(RepairStage::Scanned);
+        let changed = changed_sources(&source_fingerprints);
+        if !changed.is_empty() {
+            abort_for_sources(
+                &mut report,
+                changed,
+                "获取数据库写锁前来源文件已变化，已放弃本次写入",
+            );
+            pending.clear();
+        }
+    }
+    if !pending.is_empty() {
         let backup = work.join(format!("before-repair-{}.sqlite", uuid::Uuid::new_v4()));
         db.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
         report.backup_path = Some(backup);
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        for c in pending {
-            // 获取写锁后重新核验，避免扫描与写入之间原生进程已补齐消息。
-            let action = inspect_with_source(
-                &tx,
-                &c,
-                verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
-            )?;
-            match action {
-                Action::Present => report.already_present += 1,
-                Action::Skip(reason) => {
-                    issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
-                }
-                Action::Wait(reason) => pending_issue(
-                    &mut report,
-                    &cache,
-                    Some(&c),
-                    reason,
-                    "",
-                    *source_times
-                        .get(&(c.thread.clone(), c.turn.clone(), c.ordinal))
-                        .unwrap_or(&0),
-                )?,
-                action => {
-                    if apply(&tx, &c, action)? {
-                        report.repaired_items += 1;
+        let before_tx_report = report.clone();
+        observe(RepairStage::Locked);
+        let changed = changed_sources(&source_fingerprints);
+        if changed.is_empty() {
+            for c in pending {
+                // 获取写锁后重新核验，避免扫描与写入之间原生进程已补齐消息。
+                let action = inspect_with_source(
+                    &tx,
+                    &c,
+                    verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
+                )?;
+                match action {
+                    Action::Present => report.already_present += 1,
+                    Action::Skip(reason) => {
+                        issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
+                    }
+                    Action::Wait(reason) => pending_observations.push(PendingObservation {
+                        modified_ms: *source_times
+                            .get(&(c.thread.clone(), c.turn.clone(), c.ordinal))
+                            .unwrap_or(&0),
+                        candidate: Some(c),
+                        reason: reason.into(),
+                        source: String::new(),
+                    }),
+                    action => {
+                        if apply(&tx, &c, action)? {
+                            report.repaired_items += 1;
+                        }
                     }
                 }
             }
+            observe(RepairStage::Applied);
+            let changed_after_apply = changed_sources(&source_fingerprints);
+            if changed_after_apply.is_empty() {
+                tx.commit()?;
+            } else {
+                tx.rollback()?;
+                report = before_tx_report;
+                abort_for_sources(
+                    &mut report,
+                    changed_after_apply,
+                    "提交前来源文件发生变化，本次写入已回滚",
+                );
+            }
+        } else {
+            tx.rollback()?;
+            abort_for_sources(
+                &mut report,
+                changed,
+                "获取数据库写锁后来源文件已变化，已放弃本次写入",
+            );
         }
-        tx.commit()?;
     }
     for c in waiting {
         match inspect_with_source(
@@ -782,25 +1197,49 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
                 } else {
                     "原生状态刚发生变化，将在下次检查重新核验"
                 };
-                pending_issue(
-                    &mut report,
-                    &cache,
-                    Some(&c),
-                    reason,
-                    "",
-                    *source_times
+                pending_observations.push(PendingObservation {
+                    modified_ms: *source_times
                         .get(&(c.thread.clone(), c.turn.clone(), c.ordinal))
                         .unwrap_or(&0),
-                )?;
+                    candidate: Some(c),
+                    reason: reason.into(),
+                    source: String::new(),
+                });
             }
         }
     }
-    report.elapsed_ms = started.elapsed().as_millis() as u64;
     // 不再待处理的候选删除观察状态；以后真正再次缺失时重新计时。
-    cache.execute(
-        "DELETE FROM pending WHERE last_seen<>?1",
-        [report.checked_at_ms],
-    )?;
+    let before_cache_report = report.clone();
+    let cache_result: anyhow::Result<()> = (|| {
+        if report.aborted_reason.is_some() {
+            cache_tx.rollback()?;
+        } else {
+            for pending in pending_observations {
+                pending_issue(
+                    &mut report,
+                    &cache_tx,
+                    pending.candidate.as_ref(),
+                    &pending.reason,
+                    &pending.source,
+                    pending.modified_ms,
+                )?;
+            }
+            cache_tx.execute(
+                "DELETE FROM pending WHERE last_seen<>?1",
+                [report.checked_at_ms],
+            )?;
+            cache_tx.commit()?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = cache_result {
+        report = before_cache_report;
+        report.warnings.push(format!(
+            "索引核验已结束（已恢复 {} 条消息），缓存和等待记录未能保存：{error}；已提交的消息不受影响，下次重新检查",
+            report.repaired_items
+        ));
+    }
+    report.elapsed_ms = started.elapsed().as_millis() as u64;
     let report_temp = work.join("report.tmp");
     fs::write(&report_temp, serde_json::to_vec_pretty(&report)?)?;
     fs::rename(report_temp, work.join("report.json"))?;
@@ -810,6 +1249,585 @@ pub fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_reads_are_shared_with_parsing_and_rechecks_stay_with_write_threads() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let unrelated = home.path().join("sessions/unrelated.jsonl");
+        let raw = format!(
+            "{}\n",
+            json!({"type":"session_meta","payload":{"id":"unrelated","padding":"x".repeat(128 * 1024)}})
+        );
+        fs::write(&unrelated, raw).unwrap();
+        let length = fs::metadata(&path).unwrap().len();
+        let unrelated_length = fs::metadata(&unrelated).unwrap().len();
+        for attempt in 0..3 {
+            if attempt == 2 {
+                let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+                db.execute_batch(
+                    "DELETE FROM thread_items; UPDATE thread_turns SET first_user_item_id=NULL;",
+                )
+                .unwrap();
+            }
+            SOURCE_READ_BYTES.with(|bytes| bytes.borrow_mut().clear());
+            let report = repair_session_index_observed(Some(home.path()), |stage| {
+                if attempt == 2 && stage == RepairStage::Scanned {
+                    let raw = fs::read_to_string(&unrelated).unwrap();
+                    fs::write(&unrelated, raw.replace('x', "y")).unwrap();
+                }
+            })
+            .unwrap();
+            assert_eq!(report.repaired_items, usize::from(attempt != 1));
+            assert!(report.aborted_reason.is_none());
+            assert_eq!(report.cached_files, if attempt == 0 { 0 } else { 2 });
+            SOURCE_READ_BYTES.with(|bytes| {
+                let bytes = bytes.borrow();
+                assert_eq!(bytes[&unrelated], unrelated_length);
+                assert_eq!(bytes[&path], length * if attempt == 1 { 1 } else { 4 });
+            });
+        }
+    }
+
+    #[test]
+    fn aborted_repairs_preserve_database_waits_and_visible_reason_at_every_checkpoint() {
+        for stage in [
+            RepairStage::Scanned,
+            RepairStage::Locked,
+            RepairStage::Applied,
+        ] {
+            let home = home_with_rollout();
+            let path = home.path().join("sessions/rollout.jsonl");
+            let original = fs::read_to_string(&path).unwrap();
+            let modified = fs::metadata(&path).unwrap().modified().unwrap();
+            fs::write(
+                home.path().join("sessions/waiting.jsonl"),
+                original
+                    .replace("\"thread\"", "\"other\"")
+                    .replace("\"turn\"", "\"waiting\""),
+            )
+            .unwrap();
+            let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+            db.execute_batch("UPDATE thread_turns SET status='inProgress'; INSERT INTO thread_turns VALUES('other','waiting','inProgress',NULL);").unwrap();
+            assert_eq!(
+                repair_session_index(Some(home.path()))
+                    .unwrap()
+                    .deferred_items,
+                2
+            );
+            let cache =
+                Connection::open(home.path().join("session-index-repair/scan-cache.sqlite"))
+                    .unwrap();
+            let pending_rows = || {
+                let mut stmt = cache
+                    .prepare("SELECT key,first_seen,last_seen,checks FROM pending ORDER BY key")
+                    .unwrap();
+                stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+            };
+            let before = pending_rows();
+            db.execute(
+                "UPDATE thread_turns SET status='completed' WHERE thread_id='thread'",
+                [],
+            )
+            .unwrap();
+            for index in 0..201 {
+                fs::write(
+                    home.path().join(format!("sessions/bad-{index}.jsonl")),
+                    "bad json\n",
+                )
+                .unwrap();
+            }
+            let mut changed = false;
+            let report = repair_session_index_observed(Some(home.path()), |checkpoint| {
+                if checkpoint == stage {
+                    changed = true;
+                    fs::write(&path, original.replace("完整原文", "替代原文")).unwrap();
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)
+                        .unwrap()
+                        .set_modified(modified)
+                        .unwrap();
+                }
+            })
+            .unwrap();
+            assert!(changed);
+            assert!(
+                report
+                    .aborted_reason
+                    .as_ref()
+                    .unwrap()
+                    .contains("本次不推进等待计时")
+            );
+            assert_eq!(report.issues.len(), 200);
+            assert_eq!(report.issues_truncated, 2);
+            assert_eq!((report.repaired_items, report.deferred_items), (0, 0));
+            assert!(report.pending_details.is_empty());
+            assert_eq!(counts(&db), (0, None));
+            assert_eq!(pending_rows(), before);
+            let saved = load_session_index_repair_report(Some(home.path()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved.aborted_reason, report.aborted_reason);
+            assert_eq!(saved.issues_truncated, 2);
+            let next = repair_session_index(Some(home.path())).unwrap();
+            assert!(next.aborted_reason.is_none());
+            assert_eq!((next.repaired_items, next.deferred_items), (1, 1));
+            assert_eq!(next.pending_details[0].checks, 2);
+        }
+    }
+
+    #[test]
+    fn source_rechecks_include_existing_fragments_in_the_same_thread() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let existing_path = home.path().join("sessions/existing.jsonl");
+        let raw = fs::read_to_string(&path)
+            .unwrap()
+            .replace("\"turn\"", "\"existing\"")
+            .replace("\"ordinal\":3", "\"ordinal\":9");
+        fs::write(&existing_path, raw).unwrap();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO thread_turns VALUES('thread','existing','completed',NULL)",
+            [],
+        )
+        .unwrap();
+        let mut existing = candidate();
+        existing.turn = "existing".into();
+        existing.ordinal = 9;
+        existing.first_user_response_ordinal = Some(9);
+        apply(&db, &existing, inspect(&db, &existing).unwrap()).unwrap();
+        let report = repair_session_index_observed(Some(home.path()), |stage| {
+            if stage == RepairStage::Scanned {
+                let raw = fs::read_to_string(&existing_path).unwrap();
+                fs::write(&existing_path, raw.replace("完整原文", "替代原文")).unwrap();
+            }
+        })
+        .unwrap();
+        assert!(report.aborted_reason.is_some());
+        assert_eq!(report.repaired_items, 0);
+        assert_eq!(counts(&db), (1, None));
+    }
+
+    #[test]
+    fn metadata_changes_fail_revalidation_without_reading_contents() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let sources = HashMap::from([(path.clone(), source_fingerprint(&path).unwrap())]);
+        fs::write(&path, "changed\n").unwrap();
+        SOURCE_READ_BYTES.with(|bytes| bytes.borrow_mut().clear());
+        assert_eq!(changed_sources(&sources), vec![path]);
+        SOURCE_READ_BYTES.with(|bytes| assert!(bytes.borrow().is_empty()));
+    }
+
+    #[test]
+    fn cache_failure_after_native_commit_preserves_success_and_reports_warning() {
+        let home = home_with_rollout();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute("UPDATE thread_turns SET status='inProgress'", [])
+            .unwrap();
+        assert_eq!(
+            repair_session_index(Some(home.path()))
+                .unwrap()
+                .deferred_items,
+            1
+        );
+        let cache =
+            Connection::open(home.path().join("session-index-repair/scan-cache.sqlite")).unwrap();
+        cache.execute_batch("CREATE TRIGGER reject_cleanup BEFORE DELETE ON pending BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;").unwrap();
+        db.execute("UPDATE thread_turns SET status='completed'", [])
+            .unwrap();
+        let report = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!(report.repaired_items, 1);
+        assert!(report.aborted_reason.is_none());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("缓存和等待记录未能保存"));
+        assert!(report.warnings[0].contains("injected cleanup failure"));
+        assert_eq!(counts(&db), (1, Some("recovered-user-turn-3".into())));
+        assert_eq!(
+            cache
+                .query_row("SELECT count(*) FROM pending", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let saved = load_session_index_repair_report(Some(home.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.repaired_items, report.repaired_items);
+        assert_eq!(saved.warnings, report.warnings);
+        let repeated = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((repeated.repaired_items, repeated.already_present), (0, 1));
+        assert_eq!(counts(&db).0, 1);
+    }
+
+    #[test]
+    fn older_reports_default_to_no_abort_or_truncation() {
+        let mut report = serde_json::to_value(SessionIndexRepairReport::default()).unwrap();
+        report.as_object_mut().unwrap().remove("abortedReason");
+        report.as_object_mut().unwrap().remove("issuesTruncated");
+        report.as_object_mut().unwrap().remove("warnings");
+        let restored: SessionIndexRepairReport = serde_json::from_value(report).unwrap();
+        assert!(restored.aborted_reason.is_none());
+        assert_eq!(restored.issues_truncated, 0);
+        assert!(restored.warnings.is_empty());
+    }
+
+    #[test]
+    fn repair_lock_releases_ownership_even_with_a_duplicated_handle() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("repair.lock");
+        let owner = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        owner.try_lock_exclusive().unwrap();
+        let guard = RepairLock(owner);
+        let duplicate = guard.0.try_clone().unwrap();
+        let contender = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(contender.try_lock_exclusive().is_err());
+        drop(guard);
+        contender.try_lock_exclusive().unwrap();
+        FileExt::unlock(&contender).unwrap();
+        drop(duplicate);
+    }
+
+    #[test]
+    fn repairs_for_distinct_homes_with_identical_timestamps_are_independent() {
+        let homes: Vec<_> = (0..8).map(|_| home_with_rollout()).collect();
+        let modified = fs::metadata(homes[0].path().join("sessions/rollout.jsonl"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        for (index, home) in homes.iter().enumerate() {
+            let path = home.path().join("sessions/rollout.jsonl");
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(
+                &path,
+                original.replace("完整原文", &format!("独立消息{index}")),
+            )
+            .unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        }
+        let start = std::sync::Barrier::new(homes.len());
+        std::thread::scope(|scope| {
+            for (index, home) in homes.iter().enumerate() {
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for attempt in 0..3 {
+                        let report = repair_session_index(Some(home.path())).unwrap();
+                        assert_eq!(report.repaired_items, usize::from(attempt == 0));
+                        assert_eq!(report.cached_files, usize::from(attempt > 0));
+                        assert_eq!(report.already_present, usize::from(attempt > 0));
+                    }
+                    let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+                    let text: String = db
+                        .query_row(
+                            "SELECT json_extract(item_json,'$.content[0].text') FROM thread_items",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(text, format!("独立消息{index}"));
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn repair_respects_same_home_lock_and_releases_it_after_an_error() {
+        let home = home_with_rollout();
+        let work = home.path().join("session-index-repair");
+        fs::create_dir(&work).unwrap();
+        let owner = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(work.join("repair.lock"))
+            .unwrap();
+        owner.try_lock_exclusive().unwrap();
+        let error = repair_session_index(Some(home.path())).unwrap_err();
+        assert!(error.to_string().contains("会话索引修复正在运行"));
+        assert!(!work.join("scan-cache.sqlite").exists());
+        FileExt::unlock(&owner).unwrap();
+        let lifecycle =
+            crate::try_acquire_provider_sync_lifecycle_guard(Some(home.path())).unwrap();
+        assert!(repair_session_index(Some(home.path())).is_err());
+        drop(lifecycle);
+        assert_eq!(
+            repair_session_index(Some(home.path()))
+                .unwrap()
+                .repaired_items,
+            1
+        );
+    }
+
+    #[test]
+    fn candidates_with_same_text_but_different_native_identities_require_review() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let original = fs::read_to_string(&path).unwrap();
+        for (file, item_id) in [
+            ("rollout.jsonl", "native-first"),
+            ("conflict.jsonl", "native-other"),
+        ] {
+            let completion = json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn","item":{"type":"UserMessage","id":item_id,"content":[{"type":"text","text":"完整原文"}]}}});
+            fs::write(
+                home.path().join("sessions").join(file),
+                format!("{original}{completion}\n"),
+            )
+            .unwrap();
+        }
+        let report = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((report.repaired_items, report.skipped_items), (0, 2));
+        assert!(report.backup_path.is_none());
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        assert_eq!(counts(&db), (0, None));
+    }
+
+    #[test]
+    fn conflicting_candidate_positions_across_turns_do_not_choose_a_winner() {
+        let home = home_with_rollout();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute_batch("CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordinal); INSERT INTO thread_turns VALUES('thread','other','completed',NULL);").unwrap();
+        let raw = fs::read_to_string(home.path().join("sessions/rollout.jsonl")).unwrap();
+        fs::write(
+            home.path().join("sessions/conflict.jsonl"),
+            raw.replace("\"turn\"", "\"other\""),
+        )
+        .unwrap();
+        let report = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((report.repaired_items, report.skipped_items), (0, 2));
+        assert!(report.backup_path.is_none());
+        assert_eq!(counts(&db), (0, None));
+    }
+
+    #[test]
+    fn goal_dedup_does_not_hide_conflicting_evidence_for_the_same_source() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        let mut first = candidate();
+        first.goal = true;
+        first.goal_key = Some("goal-identity".into());
+        first.first_user_response_ordinal = None;
+        let mut conflicting = first.clone();
+        conflicting.following_turn = Some(("next".into(), 20));
+        let candidates = deduplicate_goals(&db, vec![first, conflicting]).unwrap();
+        let entries = merge_candidates(candidates);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].candidate.following_turn,
+            Some(("next".into(), 20))
+        );
+        assert!(conflicting_candidates(&entries).is_empty());
+        assert_eq!(counts(&db), (0, None));
+    }
+
+    #[test]
+    fn differing_supporting_evidence_keeps_candidate_conservatively() {
+        let mut first = candidate();
+        first.following_turn = Some(("next-a".into(), 20));
+        first.start_ordinal = Some(1);
+        first.first_user_projection = Some(("first-a".into(), 4));
+        let mut second = first.clone();
+        second.following_turn = Some(("next-b".into(), 30));
+        second.start_ordinal = Some(2);
+        second.first_user_projection = Some(("first-b".into(), 5));
+        second.first_user_evidence_valid = false;
+        let entries = merge_candidates(vec![first, second]);
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].conflict);
+        assert!(entries[0].candidate.following_turn.is_none());
+        assert!(entries[0].candidate.start_ordinal.is_none());
+        assert!(entries[0].candidate.first_user_projection.is_none());
+        assert!(!entries[0].candidate.first_user_evidence_valid);
+        assert!(conflicting_candidates(&entries).is_empty());
+    }
+
+    #[test]
+    fn conflicting_supporting_evidence_stays_cleared_across_three_fragments() {
+        let mut first = candidate();
+        first.following_turn = Some(("next-a".into(), 20));
+        first.start_ordinal = Some(1);
+        first.first_user_projection = Some(("native".into(), 4));
+        first.turn_boundary = Some(crate::session_index_scan::TurnBoundary {
+            start_ordinal: 1,
+            started_at: 100,
+            end_ordinal: 10,
+            completed_at: 105,
+            status: "completed".into(),
+            error_json: None,
+            duration_ms: Some(5000),
+            first_user_projection: first.first_user_projection.clone(),
+            first_user_response_ordinal: first.first_user_response_ordinal,
+        });
+        let mut second = first.clone();
+        second.following_turn = Some(("next-b".into(), 30));
+        second.start_ordinal = Some(2);
+        second.first_user_projection = Some(("different-first".into(), 5));
+        second.first_user_response_ordinal = Some(2);
+        second.turn_boundary.as_mut().unwrap().end_ordinal = 11;
+        let fragments = [first.clone(), second, first];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let entries = merge_candidates(order.map(|index| fragments[index].clone()).into());
+            assert_eq!(entries.len(), 1);
+            let merged = &entries[0].candidate;
+            assert!(!entries[0].conflict);
+            assert!(merged.following_turn.is_none(), "order {order:?}");
+            assert!(merged.start_ordinal.is_none(), "order {order:?}");
+            assert!(merged.turn_boundary.is_none(), "order {order:?}");
+            assert!(merged.first_user_projection.is_none(), "order {order:?}");
+            assert!(
+                merged.first_user_response_ordinal.is_none(),
+                "order {order:?}"
+            );
+            assert!(!merged.first_user_evidence_valid);
+        }
+    }
+
+    #[test]
+    fn native_projection_positions_and_ids_are_checked_across_fragments() {
+        for (response_ordinal, completion_ordinal, item_id) in
+            [(2, 4, "other-id"), (5, 6, "same-id")]
+        {
+            let home = home_with_rollout();
+            let path = home.path().join("sessions/rollout.jsonl");
+            let raw = fs::read_to_string(&path).unwrap();
+            let completion = json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn","item":{"type":"UserMessage","id":"same-id","content":[{"type":"text","text":"完整原文"}]}}});
+            fs::write(&path, format!("{raw}{completion}\n")).unwrap();
+            let other = raw.replace("\"ordinal\":3", &format!("\"ordinal\":{response_ordinal}"));
+            let completion = json!({"type":"event_msg","ordinal":completion_ordinal,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn","item":{"type":"UserMessage","id":item_id,"content":[{"type":"text","text":"完整原文"}]}}});
+            fs::write(
+                home.path().join("sessions/other.jsonl"),
+                format!("{other}{completion}\n"),
+            )
+            .unwrap();
+            let report = repair_session_index(Some(home.path())).unwrap();
+            assert_eq!((report.repaired_items, report.skipped_items), (0, 2));
+            assert!(report.backup_path.is_none());
+        }
+    }
+
+    #[test]
+    fn conflicting_following_turn_cannot_authorize_writing_active_steering() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        let first = candidate();
+        apply(&db, &first, inspect(&db, &first).unwrap()).unwrap();
+        db.execute_batch("ALTER TABLE thread_turns ADD COLUMN rollout_ordinal INTEGER; UPDATE thread_turns SET status='inProgress',rollout_ordinal=1; INSERT INTO thread_turns(thread_id,turn_id,status,rollout_ordinal) VALUES('thread','next-a','completed',20)").unwrap();
+        let mut steering = first.clone();
+        steering.ordinal = 6;
+        steering.projection = Some(("steering".into(), 7));
+        steering.start_ordinal = Some(1);
+        steering.following_turn = Some(("next-a".into(), 20));
+        assert!(matches!(
+            inspect(&db, &steering).unwrap(),
+            Action::Insert(_)
+        ));
+        let mut conflict = steering.clone();
+        conflict.following_turn = Some(("next-b".into(), 30));
+        let entries = merge_candidates(vec![steering.clone(), conflict, steering]);
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            inspect(&db, &entries[0].candidate).unwrap(),
+            Action::Wait(_)
+        ));
+        assert_eq!(counts(&db), (1, Some(recovery_id(&first))));
+    }
+
+    #[test]
+    fn ambiguous_turn_does_not_discard_safe_messages_or_cached_diagnostics() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let original = fs::read_to_string(&path).unwrap();
+        let rows = [
+            json!({"type":"event_msg","ordinal":5,"payload":{"type":"task_started","turn_id":"ambiguous"}}),
+            json!({"type":"response_item","ordinal":6,"timestamp":"2026-09-14T12:24:31Z","payload":{"role":"user","content":[{"type":"input_text","text":"歧义消息"}],"internal_chat_message_metadata_passthrough":{"turn_id":"ambiguous"}}}),
+            json!({"type":"event_msg","ordinal":7,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"ambiguous","item":{"type":"UserMessage","id":"first-id","content":[{"type":"text","text":"歧义消息"}]}}}),
+            json!({"type":"event_msg","ordinal":8,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"ambiguous","item":{"type":"UserMessage","id":"second-id","content":[{"type":"text","text":"歧义消息"}]}}}),
+        ];
+        fs::write(
+            &path,
+            format!(
+                "{original}{}",
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>()
+            ),
+        )
+        .unwrap();
+        let report = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((report.repaired_items, report.skipped_items), (1, 1));
+        assert!(report.issues[0].contains("多个完成事件"));
+        let cached = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!(
+            (
+                cached.cached_files,
+                cached.already_present,
+                cached.skipped_items
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(report.issues, cached.issues);
+        assert!(cached.backup_path.is_none());
+    }
+
+    #[test]
+    fn independent_completion_survives_ambiguous_repeated_user_events() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let original = fs::read_to_string(&path).unwrap();
+        let rows = [
+            json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn","item":{"type":"UserMessage","id":"safe-native","content":[{"type":"text","text":"完整原文"}]}}}),
+            json!({"type":"response_item","ordinal":5,"timestamp":"2026-09-14T12:24:31Z","payload":{"role":"user","content":[{"type":"input_text","text":"完整原文"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}}),
+        ];
+        fs::write(
+            &path,
+            format!(
+                "{original}{}",
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>()
+            ),
+        )
+        .unwrap();
+        let report = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((report.repaired_items, report.skipped_items), (1, 1));
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        assert_eq!(counts(&db), (1, Some("safe-native".into())));
+    }
 
     #[test]
     fn session_index_uses_catalog_path_for_split_thread_identity() {
@@ -976,7 +1994,7 @@ mod tests {
                 &db,
                 &path,
                 &[anchor.clone()],
-                Some("legacy".into()),
+                RolloutOwner::Known("legacy".into()),
                 &owners
             )
             .unwrap()
@@ -996,6 +2014,90 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(resolve_owner(&db, &path, &[], RolloutOwner::Ambiguous, &owners,).is_err());
+    }
+
+    #[test]
+    fn equal_length_content_change_invalidates_scan_cache_even_with_old_mtime() {
+        let home = home_with_rollout();
+        let path = home.path().join("sessions/rollout.jsonl");
+        let original = fs::read_to_string(&path).unwrap();
+        let old_modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let first = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((first.cached_files, first.repaired_items), (0, 1));
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute_batch(
+            "DELETE FROM thread_items; UPDATE thread_turns SET first_user_item_id=NULL;",
+        )
+        .unwrap();
+        fs::write(&path, original.replace("完整原文", "替代原文")).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old_modified)
+            .unwrap();
+        let second = repair_session_index(Some(home.path())).unwrap();
+        assert_eq!((second.cached_files, second.repaired_items), (0, 1));
+        let text: String = db
+            .query_row(
+                "SELECT json_extract(item_json,'$.content[0].text') FROM thread_items",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(text, "替代原文");
+    }
+
+    #[test]
+    fn dangling_first_pointer_can_be_repaired_only_by_matching_native_first_item() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        db.execute_batch(
+            "UPDATE thread_turns SET first_user_item_id='first-native'; INSERT INTO thread_items VALUES('thread','turn','later-native',8,1,'{\"content\":[{\"type\":\"text\",\"text\":\"后续\"}]}','userMessage',8);",
+        )
+        .unwrap();
+        let mut first = candidate();
+        first.text = "首条原文".into();
+        first.projection = Some(("first-native".into(), 3));
+        first.first_user_projection = first.projection.clone();
+        assert!(matches!(
+            inspect(&db, &first).unwrap(),
+            Action::Prepend(_, _)
+        ));
+        assert!(apply(&db, &first, inspect(&db, &first).unwrap()).unwrap());
+        assert_eq!(counts(&db), (2, Some("first-native".into())));
+        let wrong = Candidate {
+            projection: Some(("other-native".into(), 3)),
+            ..first
+        };
+        assert!(matches!(inspect(&db, &wrong).unwrap(), Action::Skip(_)));
+    }
+
+    #[test]
+    fn missing_first_pointer_can_be_repaired_before_existing_later_messages() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        db.execute(
+            "INSERT INTO thread_items VALUES('thread','turn','later-native',8,1,'{\"content\":[{\"type\":\"text\",\"text\":\"后续\"}]}','userMessage',8)",
+            [],
+        )
+        .unwrap();
+        let mut first = candidate();
+        first.text = "首条原文".into();
+        first.projection = Some(("first-native".into(), 3));
+        first.first_user_projection = first.projection.clone();
+        assert!(matches!(inspect(&db, &first).unwrap(), Action::Insert(_)));
+        assert!(apply(&db, &first, inspect(&db, &first).unwrap()).unwrap());
+        assert_eq!(counts(&db), (2, Some("first-native".into())));
+        let later: String = db
+            .query_row(
+                "SELECT item_id FROM thread_items WHERE rollout_ordinal=8",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(later, "later-native");
     }
 
     #[test]
@@ -1067,6 +2169,12 @@ mod tests {
             inspect_with_source(&db, &c, true).unwrap(),
             Action::RestoreTurn
         ));
+        c.first_user_evidence_valid = false;
+        assert!(matches!(
+            inspect_with_source(&db, &c, true).unwrap(),
+            Action::Wait(_)
+        ));
+        c.first_user_evidence_valid = true;
         let tx = db.unchecked_transaction().unwrap();
         apply(&tx, &c, inspect_with_source(&tx, &c, true).unwrap()).unwrap();
         tx.commit().unwrap();
