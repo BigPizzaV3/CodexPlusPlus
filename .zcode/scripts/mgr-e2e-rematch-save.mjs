@@ -1,6 +1,8 @@
 // E2E：验证「重新匹配 → 保存」不再把内置数据复制成自定义配置
 // 用户预期：重新匹配后再点保存，模型仍处于「匹配/内置」态（green），不是自定义。
-//           只有真的改过内容，保存才写成自定义覆盖。
+//           只有真的改过内容（含仅改窗口/压缩，2026-09-26 口径更新），保存才写成自定义覆盖。
+// 注意：S1/S3 里「保存置灰」的断言早于 484ca83「保存键仅解析失败置灰」与
+// 917ec82「重新匹配不再立即摘配置」的语义，已过时，待下次运行前统一修订。
 const BASE = "http://127.0.0.1:9330";
 const list = await (await fetch(BASE + "/json")).json();
 const target = list.find((t) => t.type === "page" && /tauri.localhost/i.test(t.url));
@@ -135,8 +137,9 @@ await sleep(1500);
 const s3 = JSON.parse(await readPanel());
 console.log("S2-AFTER-EDIT", JSON.stringify(s3, null, 1));
 check("S2 编辑触发 setter 写回", edited === true, edited);
-// 只改窗口不碰元数据：仍算内置复刻，保存保持置灰
-check("S2 仅改窗口后保存仍置灰(元数据未变)", s3.saveDisabled === true, s3);
+// 口径更新（2026-09-26）：仅改窗口/压缩也属于部分编辑 → 判自定义。
+// 旧断言「仅改窗口后保存仍置灰(元数据未变)」锁的正是已修复的缺陷。
+check("S2 仅改窗口后保存=保存为自定义配置", s3.saveDisabled === false && s3.saveLabel === "保存为自定义配置", s3);
 
 // 改元数据字段本身
 const editedMeta = await evalJs(`(() => {
