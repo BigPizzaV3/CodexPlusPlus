@@ -122,16 +122,18 @@ pub fn collect_catalog_entries(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let (slug, _) = parse_model_suffix(raw);
+        let (slug, suffix_window) = parse_model_suffix(raw);
         if slug.is_empty() {
             continue;
         }
         if !seen.insert(slug.clone()) {
             continue;
         }
-        let suffix_window = model_windows
-            .get(&slug)
-            .and_then(|token| parse_window_token(token));
+        let suffix_window = suffix_window.or_else(|| {
+            model_windows
+                .get(&slug)
+                .and_then(|token| parse_window_token(token))
+        });
         let auto_compact_percent = model_auto_compact
             .get(&slug)
             .and_then(|token| parse_compact_percent(token));
@@ -147,11 +149,13 @@ pub fn collect_catalog_entries(
     let current_model = current_model.trim();
     let mut entries = Vec::new();
     if !current_model.is_empty() {
-        let (slug, _) = parse_model_suffix(current_model);
+        let (slug, suffix_window) = parse_model_suffix(current_model);
         if !slug.is_empty() {
-            let suffix_window = model_windows
-                .get(&slug)
-                .and_then(|token| parse_window_token(token));
+            let suffix_window = suffix_window.or_else(|| {
+                model_windows
+                    .get(&slug)
+                    .and_then(|token| parse_window_token(token))
+            });
             let auto_compact_percent = model_auto_compact
                 .get(&slug)
                 .and_then(|token| parse_compact_percent(token));
@@ -196,89 +200,123 @@ const GPT6_SOL_LUNA_METADATA_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/gpt6-sol-luna-model-metadata-compat.json"
 ));
-/// 统一的精调/供应商元数据（assets/*-model-metadata*.json）：slug 命中即把
-/// 条目字段覆盖到模板基座上。历史 compat（gpt-5.6 / astra 产品级精调，如
-/// fast tier）排在供应商事实之前；各文件 slug 两两不相交，顺序仅表达优先级。
-/// deepseek 文件在官方 DeepSeek Responses 场景由 deepseek_model_template_entry
-/// 优先处理，放这里覆盖经中转使用 deepseek 模型的场景。
-const VENDOR_METADATA_JSONS: &[&str] = &[
-    GPT56_METADATA_JSON,
-    ASTRA_METADATA_JSON,
-    DEEPSEEK_METADATA_JSON,
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/doubao-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/gemini-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/glm-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/grok-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/kimi-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/mimo-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/minimax-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/mistral-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/muse-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/nvidia-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/qwen-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/stepfun-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/thinkingmachines-model-metadata.json"
-    )),
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/gptoss-model-metadata.json"
-    )),
+/// 精调/供应商 metadata 来源。数组顺序就是覆盖优先级，条目和来源名始终成对维护。
+const COMPATIBILITY_METADATA_SOURCES: &[(&'static str, &'static str)] = &[
+    (GPT56_METADATA_JSON, "gpt-5.6 兼容"),
+    (ASTRA_METADATA_JSON, "gpt-6-astra 兼容"),
+    (DEEPSEEK_METADATA_JSON, "DeepSeek"),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/doubao-model-metadata.json"
+        )),
+        "豆包",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/gemini-model-metadata.json"
+        )),
+        "Gemini",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/glm-model-metadata.json"
+        )),
+        "GLM",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/grok-model-metadata.json"
+        )),
+        "Grok",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/kimi-model-metadata.json"
+        )),
+        "Kimi",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/mimo-model-metadata.json"
+        )),
+        "MiMo",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/minimax-model-metadata.json"
+        )),
+        "MiniMax",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/mistral-model-metadata.json"
+        )),
+        "Mistral",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/muse-model-metadata.json"
+        )),
+        "Muse",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/nvidia-model-metadata.json"
+        )),
+        "NVIDIA",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/qwen-model-metadata.json"
+        )),
+        "Qwen",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/stepfun-model-metadata.json"
+        )),
+        "StepFun",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/thinkingmachines-model-metadata.json"
+        )),
+        "Thinking Machines",
+    ),
+    (
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/gptoss-model-metadata.json"
+        )),
+        "gpt-oss",
+    ),
+    (GPT6_SOL_LUNA_METADATA_JSON, "gpt-6 Sol/Luna 兼容"),
 ];
 
 /// 该 slug 是否需要落一份内置元数据 catalog（无用户窗口/元数据时也要生成）。
 /// 判定与生成链的模板查找保持一致：精调/供应商层、运行时官方缓存、bundled
-/// 静态资产任一命中即算——少走一层会让该层能提供元数据的模型拿不到 catalog，
-/// 窗口回落 codex 默认值。
+/// 静态资产任一命中即算。
 pub fn requires_bundled_metadata_catalog(slug: &str) -> bool {
-    if compatibility_metadata_entry(slug).is_some() {
-        return true;
-    }
-    if runtime_models_cache_entry(slug).is_some() {
-        return true;
-    }
-    bundled_template_entry(slug).is_some()
+    resolve_builtin_metadata(slug).is_some()
 }
 
 pub fn model_ui_metadata(slug: &str) -> Option<Value> {
-    let metadata = compatibility_metadata_entry(slug)?;
+    let resolved = resolve_builtin_metadata(slug)?;
+    let metadata = resolved.entry;
+    let normalized_slug = resolved.slug;
     let levels = metadata
         .get("supported_reasoning_levels")?
         .as_array()?
@@ -301,7 +339,7 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
         "displayName": metadata
             .get("display_name")
             .and_then(Value::as_str)
-            .unwrap_or(slug),
+            .unwrap_or(normalized_slug.as_str()),
         "description": metadata
             .get("description")
             .and_then(Value::as_str)
@@ -322,79 +360,136 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
     }))
 }
 
-/// 与 VENDOR_METADATA_JSONS 一一对应的来源名，供管理器 UI 的内置匹配提示。
-const VENDOR_METADATA_SOURCE_NAMES: &[&str] = &[
-    "gpt-5.6 兼容",
-    "gpt-6-astra 兼容",
-    "DeepSeek",
-    "豆包",
-    "Gemini",
-    "GLM",
-    "Grok",
-    "Kimi",
-    "MiMo",
-    "MiniMax",
-    "Mistral",
-    "Muse",
-    "NVIDIA",
-    "Qwen",
-    "StepFun",
-    "Thinking Machines",
-    "gpt-oss",
-];
-
 /// 内置元数据匹配结果：来源名 + 完整条目（含窗口/展示/档位等字段）。
 /// 供管理器「元数据导入区」显示匹配状态与预填文本使用。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BuiltinModelMetadata {
-    /// 来源名（如 "Kimi"、"官方内置"）
     pub source: String,
-    /// 完整模型条目
     pub entry: Value,
 }
 
-/// 按模型名查内置元数据（剥 `[1M]` 后缀、大小写不敏感）：
-/// 精调/供应商层 → 官方运行时缓存（models_cache.json）→ 官方 bundled 静态
-/// 资产——与生成链的模板查找保持一致；未命中即生成时回退 bundled 模板。
-pub fn builtin_model_metadata(slug: &str) -> Option<BuiltinModelMetadata> {
-    let (slug, _) = parse_model_suffix(slug);
-    let slug = slug.trim();
+#[derive(Debug, Clone)]
+struct ResolvedBuiltinMetadata {
+    slug: String,
+    source: &'static str,
+    entry: Value,
+}
+
+fn normalized_model_slug(slug: &str) -> String {
+    parse_model_suffix(slug).0.trim().to_string()
+}
+
+fn resolve_compatibility_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {
+    COMPATIBILITY_METADATA_SOURCES
+        .iter()
+        .find_map(|(catalog_json, source)| {
+            catalog_metadata_entry(catalog_json, slug).map(|entry| ResolvedBuiltinMetadata {
+                slug: slug.to_string(),
+                source,
+                entry,
+            })
+        })
+}
+
+/// 按生成链优先级解析模型元数据：兼容层 → 运行时缓存 → bundled。
+fn resolve_builtin_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {
+    let slug = normalized_model_slug(slug);
     if slug.is_empty() {
         return None;
     }
-    if let Some((source, entry)) = vendor_source_metadata_entry(slug) {
-        return Some(BuiltinModelMetadata {
-            source: source.to_string(),
+    if let Some(mut metadata) = resolve_compatibility_metadata(&slug) {
+        // Compatibility metadata is an overlay. Keep the same runtime/bundled
+        // base that the catalog builder uses, then apply its product/vendor
+        // fields on top. This keeps UI lookup and generated catalogs identical.
+        let mut base = runtime_models_cache_entry(&slug)
+            .or_else(|| bundled_template_entry(&slug))
+            .unwrap_or_else(|| first_bundled_template_entry().unwrap_or_else(|| json!({})));
+        if let (Some(target), Some(source)) = (base.as_object_mut(), metadata.entry.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        metadata.entry = base;
+        return Some(metadata);
+    }
+    if let Some(entry) = runtime_models_cache_entry(&slug) {
+        return Some(ResolvedBuiltinMetadata {
+            slug,
+            source: "官方内置",
             entry,
         });
     }
-    if let Some(entry) = runtime_models_cache_entry(slug) {
-        return Some(BuiltinModelMetadata {
-            source: "官方内置".to_string(),
-            entry,
-        });
-    }
-    bundled_template_entry(slug).map(|entry| BuiltinModelMetadata {
-        source: "官方内置".to_string(),
+    bundled_template_entry(&slug).map(|entry| ResolvedBuiltinMetadata {
+        slug,
+        source: "官方内置",
         entry,
     })
 }
 
-fn vendor_source_metadata_entry(slug: &str) -> Option<(&'static str, Value)> {
-    VENDOR_METADATA_JSONS
-        .iter()
-        .zip(VENDOR_METADATA_SOURCE_NAMES)
-        .find_map(|(catalog_json, name)| {
-            catalog_metadata_entry(catalog_json, slug).map(|entry| (*name, entry))
-        })
+/// 按模型名查内置元数据（剥合法 suffix、大小写不敏感）。
+pub fn builtin_model_metadata(slug: &str) -> Option<BuiltinModelMetadata> {
+    resolve_builtin_metadata(slug).map(|metadata| BuiltinModelMetadata {
+        source: metadata.source.to_string(),
+        entry: metadata.entry,
+    })
 }
 
-/// 内置元数据索引（管理器模型列表行级标记用）：嵌入层 + 运行时官方缓存全量
-/// {slug, source, display_name, context_window}，按生成链优先级去重。
+/// 内置元数据索引（管理器模型列表行级标记用）：嵌入层 + 运行时官方缓存全量。
 pub fn builtin_model_metadata_index() -> Vec<Value> {
-    let mut seen = std::collections::HashSet::new();
+    // First gather candidate slugs, then resolve each through the same owned
+    // resolver used by single-model lookup and catalog generation.
+    let mut candidate_slugs = Vec::new();
+    let mut candidate_seen = HashSet::new();
+    fn collect_candidates(
+        catalog: &Value,
+        candidate_seen: &mut HashSet<String>,
+        candidate_slugs: &mut Vec<String>,
+    ) {
+        let Some(models) = catalog.get("models").and_then(Value::as_array) else {
+            return;
+        };
+        for entry in models {
+            let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
+                continue;
+            };
+            let normalized = normalized_model_slug(slug);
+            if !normalized.is_empty() && candidate_seen.insert(normalized.to_ascii_lowercase()) {
+                candidate_slugs.push(normalized);
+            }
+        }
+    }
+    for (catalog_json, _) in COMPATIBILITY_METADATA_SOURCES {
+        if let Ok(catalog) = serde_json::from_str::<Value>(catalog_json) {
+            collect_candidates(&catalog, &mut candidate_seen, &mut candidate_slugs);
+        }
+    }
+    if let Ok(contents) = std::fs::read_to_string(
+        crate::codex_home::default_codex_home_dir().join("models_cache.json"),
+    ) {
+        if let Ok(catalog) = serde_json::from_str::<Value>(&contents) {
+            if let Some(models) = catalog.get("models").and_then(Value::as_array) {
+                for entry in models {
+                    let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let normalized = normalized_model_slug(slug);
+                    if !normalized.is_empty()
+                        && candidate_seen.insert(normalized.to_ascii_lowercase())
+                    {
+                        candidate_slugs.push(normalized);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(catalog) = serde_json::from_str::<Value>(BUNDLED_TEMPLATE_JSON) {
+        collect_candidates(&catalog, &mut candidate_seen, &mut candidate_slugs);
+    }
+
+    let mut seen = HashSet::new();
     let mut index = Vec::new();
-    let mut push_entry = |source: &str, entry: &Value| {
+    let mut push_resolved = |metadata: ResolvedBuiltinMetadata| {
+        let entry = metadata.entry;
         let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
             return;
         };
@@ -403,7 +498,7 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
         }
         index.push(json!({
             "slug": slug,
-            "source": source,
+            "source": metadata.source,
             "display_name": entry
                 .get("display_name")
                 .and_then(Value::as_str)
@@ -413,35 +508,9 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
                 .or_else(|| entry.get("max_context_window")),
         }));
     };
-    for (catalog_json, name) in VENDOR_METADATA_JSONS
-        .iter()
-        .zip(VENDOR_METADATA_SOURCE_NAMES)
-    {
-        if let Ok(catalog) = serde_json::from_str::<Value>(catalog_json) {
-            if let Some(models) = catalog.get("models").and_then(Value::as_array) {
-                for entry in models {
-                    push_entry(name, entry);
-                }
-            }
-        }
-    }
-    if let Ok(catalog) = serde_json::from_str::<Value>(
-        &std::fs::read_to_string(
-            crate::codex_home::default_codex_home_dir().join("models_cache.json"),
-        )
-        .unwrap_or_default(),
-    ) {
-        if let Some(models) = catalog.get("models").and_then(Value::as_array) {
-            for entry in models {
-                push_entry("官方内置", entry);
-            }
-        }
-    }
-    if let Ok(catalog) = serde_json::from_str::<Value>(BUNDLED_TEMPLATE_JSON) {
-        if let Some(models) = catalog.get("models").and_then(Value::as_array) {
-            for entry in models {
-                push_entry("官方内置", entry);
-            }
+    for slug in candidate_slugs {
+        if let Some(metadata) = resolve_builtin_metadata(&slug) {
+            push_resolved(metadata);
         }
     }
     index
@@ -563,47 +632,13 @@ fn deepseek_model_template_entry(slug: &str) -> Option<(Value, bool)> {
 }
 
 fn model_template_entry(slug: &str) -> (Value, bool) {
-    let (template, has_model_metadata) = runtime_or_bundled_template_entry(slug);
-    if let Some(template) = template {
-        return (template, has_model_metadata);
+    if let Some(metadata) = resolve_builtin_metadata(slug) {
+        return (metadata.entry, true);
     }
     (
         first_bundled_template_entry().unwrap_or_else(|| json!({})),
         false,
     )
-}
-
-/// 运行时模板查找链（issue #2141）：
-/// 1. 精调/供应商元数据层（gpt-5.6/astra 产品级精调 + 供应商事实，字段覆盖
-///    优先级最高；基座优先取运行时官方缓存，官方热更新流入未被精调覆盖的字段）
-/// 2. 用户本机 codex 官方 models_cache.json（随官方 App 更新，元数据最新鲜）
-/// 3. 打包的静态资产 assets/codex-models.json（兜底，纯 API / 未登录用户）
-///
-/// 兜底场景（slug 未命中任何同 slug 条目）仍用静态资产首条做模板基座，
-/// 保证未匹配模型在所有机器上的行为一致、可测试。
-fn runtime_or_bundled_template_entry(slug: &str) -> (Option<Value>, bool) {
-    if let Some(entry) = compatibility_metadata_entry(slug) {
-        // 基座优先取运行时官方缓存（随官方 App 热更新、字段最新鲜），精调字段
-        // 覆盖其上：官方更新能流入未被精调覆盖的字段，产品特性与供应商事实
-        // 不被官方数据冲掉。无缓存（纯 API / 未登录 / 测试隔离）回落静态资产。
-        let base = runtime_models_cache_entry(slug)
-            .or_else(|| bundled_template_entry(slug))
-            .unwrap_or_else(|| first_bundled_template_entry().unwrap_or_else(|| json!({})));
-        let mut template = base;
-        if let (Some(target), Some(source)) = (template.as_object_mut(), entry.as_object()) {
-            for (key, value) in source {
-                target.insert(key.clone(), value.clone());
-            }
-        }
-        return (Some(template), true);
-    }
-    if let Some(entry) = runtime_models_cache_entry(slug) {
-        return (Some(entry), true);
-    }
-    if let Some(entry) = bundled_template_entry(slug) {
-        return (Some(entry), true);
-    }
-    (None, false)
 }
 
 /// 从用户本机 codex 官方缓存读取同 slug 条目。
@@ -616,8 +651,6 @@ fn runtime_models_cache_entry(slug: &str) -> Option<Value> {
 }
 
 /// 按 slug 查找 catalog 条目：先精确匹配，未命中再按大小写不敏感匹配。
-/// 供应商 Model Key 大小写不统一（如智谱 GLM-5.3-FlashX），上游 API 对大小写
-/// 宽容，本地只做精确匹配会漏配元数据。
 fn find_catalog_entry<'a>(models: &'a [Value], slug: &str) -> Option<&'a Value> {
     models
         .iter()
@@ -632,8 +665,6 @@ fn find_catalog_entry<'a>(models: &'a [Value], slug: &str) -> Option<&'a Value> 
         })
 }
 
-/// 测试钩子：钉死「精确匹配优先于大小写不敏感」这条优先级规则。
-/// 同一 catalog 同时存在 Foo/foo 两条时，查询 Foo 必须命中 Foo 本身。
 #[doc(hidden)]
 pub fn find_catalog_entry_for_test<'a>(models: &'a [Value], slug: &str) -> Option<&'a Value> {
     find_catalog_entry(models, slug)
@@ -649,8 +680,7 @@ fn first_bundled_template_entry() -> Option<Value> {
     catalog.get("models")?.as_array()?.first().cloned()
 }
 
-/// 未命中内置元数据时生成链的真实回退（bundled 静态资产首条），
-/// 供管理器 UI 显示「回退：<slug>」标签用。返回 (slug, context_window)。
+/// 未命中内置元数据时生成链的真实回退，供管理器显示。
 pub fn fallback_template_info() -> Option<(String, u64)> {
     let entry = first_bundled_template_entry()?;
     let slug = entry.get("slug")?.as_str()?.to_string();
@@ -661,50 +691,18 @@ pub fn fallback_template_info() -> Option<(String, u64)> {
     Some((slug, context_window))
 }
 
-/// vendor 元数据解析的进程级缓存：同一份 &'static str �次访问后按 slug 建索引，
-/// 后续查找只做一次 hash，不再整份 from_str。
-fn vendor_catalog_index(
-    catalog_json: &'static str,
-) -> &'static std::collections::HashMap<String, Value> {
-    static INDEXES: OnceLock<
-        Mutex<HashMap<&'static str, std::collections::HashMap<String, Value>>>,
-    > = OnceLock::new();
+/// 缓存每份静态 catalog 的解析结果，但只在锁内完成查找并返回 owned Value。
+fn catalog_metadata_entry(catalog_json: &'static str, slug: &str) -> Option<Value> {
+    static INDEXES: OnceLock<Mutex<HashMap<&'static str, Vec<Value>>>> = OnceLock::new();
     let indexes = INDEXES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = indexes
+    let mut indexes = indexes
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let index = map.entry(catalog_json).or_insert_with(|| {
-        let mut index = std::collections::HashMap::new();
-        let catalog = serde_json::from_str::<Value>(catalog_json).ok();
-        let models = catalog
-            .as_ref()
-            .and_then(|catalog| catalog.get("models"))
-            .and_then(Value::as_array);
-        if let Some(models) = models {
-            for model in models {
-                if let Some(slug) = model.get("slug").and_then(Value::as_str) {
-                    index.insert(slug.to_ascii_lowercase(), model.clone());
-                }
-            }
-        }
-        index
+    let entries = indexes.entry(catalog_json).or_insert_with(|| {
+        serde_json::from_str::<Value>(catalog_json)
+            .ok()
+            .and_then(|catalog| catalog.get("models").and_then(Value::as_array).cloned())
+            .unwrap_or_default()
     });
-    // 安全性：索引一旦插入就不再移除或替换，拿到的引用会与 Mutex 内的值
-    // 同生命周期存活（进程级缓存）；锁本身只在插入时短暂持有。
-    unsafe { &*(index as *const std::collections::HashMap<String, Value>) }
-}
-
-fn compatibility_metadata_entry(slug: &str) -> Option<Value> {
-    VENDOR_METADATA_JSONS
-        .iter()
-        .find_map(|catalog_json| catalog_metadata_entry(catalog_json, slug))
-        .or_else(|| catalog_metadata_entry(GPT6_SOL_LUNA_METADATA_JSON, slug))
-}
-
-fn catalog_metadata_entry(catalog_json: &'static str, slug: &str) -> Option<Value> {
-    // 索引键统一小写：查找链自带 eq_ignore_ascii_case 语义，
-    // 精确命中场景由「同 catalog 同时存在 Foo/foo」测试另行守护。
-    vendor_catalog_index(catalog_json)
-        .get(&slug.to_ascii_lowercase())
-        .cloned()
+    find_catalog_entry(entries, slug).cloned()
 }

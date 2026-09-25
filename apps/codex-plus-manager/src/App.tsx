@@ -94,14 +94,22 @@ import {
   metadataMatchesBuiltin,
   metadataSourceTags,
   modelSlugFromRowName,
+  suffixWindowString,
+  modelMetadataKey,
   parseModelMetadataDocument,
   parseModelMetadataMap,
   remapModelMetadataSlugs,
   replaceModelMetadataForSlug,
   retainModelMetadataForSlugs,
   serializeModelMetadataDocument,
-  suffixWindowString,
   synchronizeModelMetadataDocumentLimitsPreview,
+  type ActiveImportDraft,
+  createActiveImportDraft,
+  updateActiveImportDraft,
+  cancelActiveImportDraft,
+  rematchActiveImportDraft,
+  builtinMetadataQueryState,
+  type BuiltinMetadataQueryState,
   type BuiltinModelMetadataMatch,
   type ImportedModelMetadata,
 } from "./model-metadata";
@@ -7562,18 +7570,11 @@ function RelayProfileEditor({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [vlmTestOpen, setVlmTestOpen] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
-  const [metadataImportTarget, setMetadataImportTarget] = useState<{
-    index: number;
-    slug: string;
-    originalWindow: string;
-    originalAutoCompact: string;
-  } | null>(null);
-  const [metadataImportDocument, setMetadataImportDocument] = useState("");
-  const [metadataImportOriginalDocument, setMetadataImportOriginalDocument] = useState("");
+  const [activeImportDraft, setActiveImportDraft] = useState<ActiveImportDraft | null>(null);
   const [metadataImportError, setMetadataImportError] = useState("");
-  const [metadataImportPreview, setMetadataImportPreview] = useState<ImportedModelMetadata | null>(null);
   const [builtinMatch, setBuiltinMatch] = useState<BuiltinModelMetadataMatch | null>(null);
   const [builtinMatchSlug, setBuiltinMatchSlug] = useState("");
+  const [builtinQueryState, setBuiltinQueryState] = useState<BuiltinMetadataQueryState | null>(null);
   const [importPrefillSource, setImportPrefillSource] = useState<"builtin" | "existing" | null>(null);
   const [builtinIndex, setBuiltinIndex] = useState<Map<string, { source: string; context_window: unknown }>>(new Map());
   const queryBuiltinCommand = async <T,>(command: string, args?: Record<string, unknown>): Promise<T | null> => {
@@ -7586,7 +7587,7 @@ function RelayProfileEditor({
       if (cancelled || !result?.entries) return;
       const map = new Map<string, { source: string; context_window: unknown }>();
       for (const entry of result.entries) {
-        map.set(entry.slug.toLowerCase(), { source: entry.source, context_window: entry.context_window });
+        map.set(modelMetadataKey(entry.slug), { source: entry.source, context_window: entry.context_window });
       }
       setBuiltinIndex(map);
     })();
@@ -7594,23 +7595,47 @@ function RelayProfileEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const refreshBuiltinMatch = async (slug: string) => {
-    if (!slug.trim()) { setBuiltinMatch(null); return; }
-    const result = await queryBuiltinCommand<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
-    if (result) {
-      setBuiltinMatch(result);
+    if (!slug.trim()) { setBuiltinMatch(null); setBuiltinQueryState(null); return; }
+    try {
+      const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
+      const state = builtinMetadataQueryState(result);
+      setBuiltinQueryState(state);
+      setBuiltinMatch(state.status === "error" ? null : state.value);
+      setBuiltinMatchSlug(slug);
+    } catch (error) {
+      const state = builtinMetadataQueryState(null, error);
+      setBuiltinQueryState(state);
+      setBuiltinMatch(null);
       setBuiltinMatchSlug(slug);
     }
   };
   // 导入区打开期间模型名被修改：标签与内置预填实时跟随新名字（覆盖
   // 「创建模型后改名」「编辑模型名」场景，而不是沿用旧名字的匹配结果）。
-  const activeImportSlug = metadataImportTarget
-    ? modelWindowRows[metadataImportTarget.index]?.model.trim() ?? ""
+  const activeImportSlug = activeImportDraft
+    ? modelWindowRows[activeImportDraft.index]?.model.trim() ?? activeImportDraft.canonicalSlug
     : "";
+  const metadataImportTarget = activeImportDraft;
+  const metadataImportDocument = activeImportDraft?.document ?? "";
+  const metadataImportPreview = activeImportDraft?.preview ?? null;
+  const setMetadataImportDocument = (document: string) =>
+    setActiveImportDraft((draft) => draft ? updateActiveImportDraft(draft, { document }) : draft);
+  const setMetadataImportPreview = (preview: ImportedModelMetadata | null) =>
+    setActiveImportDraft((draft) => draft ? updateActiveImportDraft(draft, { preview }) : draft);
   useEffect(() => {
     if (!metadataImportTarget || !activeImportSlug || activeImportSlug === builtinMatchSlug) return;
     let cancelled = false;
     void (async () => {
-      const match = await queryBuiltinCommand<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug: activeImportSlug });
+      let match: BuiltinModelMetadataMatch | null = null;
+      try {
+        const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug: activeImportSlug });
+        const state = builtinMetadataQueryState(result);
+        setBuiltinQueryState(state);
+        match = state.status === "error" ? null : state.value;
+      } catch (error) {
+        const state = builtinMetadataQueryState(null, error);
+        setBuiltinQueryState(state);
+        setMetadataImportError(state.status === "error" ? state.error : "");
+      }
       if (cancelled) return;
       setBuiltinMatch(match);
       setBuiltinMatchSlug(activeImportSlug);
@@ -7623,7 +7648,7 @@ function RelayProfileEditor({
         setMetadataImportDocument(document);
         setMetadataImportError("");
         setMetadataImportPreview(preview.ok ? preview.value : null);
-        if (preview.ok && preview.value.contextWindow) {
+        if (preview.ok && preview.value.contextWindow && !suffixWindowString(activeImportSlug)) {
           updateModelWindowRow(metadataImportTarget.index, { window: preview.value.contextWindow });
         }
       }
@@ -7711,6 +7736,11 @@ function RelayProfileEditor({
   const commitModelSlug = (index: number) => {
     const nextSlug = modelWindowRows[index]?.model.trim() ?? "";
     if (!nextSlug) return;
+    if (metadataImportTarget?.index === index) {
+      setActiveImportDraft((current) => current
+        ? updateActiveImportDraft(current, { canonicalSlug: modelSlugFromRowName(nextSlug) })
+        : current);
+    }
     const resolved = resolvePendingModelSlugRenames(
       modelWindowRows,
       modelSlugOriginsRef.current,
@@ -7720,23 +7750,21 @@ function RelayProfileEditor({
     if (resolved.modelMetadata !== profile.modelMetadata) commitModelMetadata(resolved.modelMetadata);
   };
   const closeModelMetadataImport = () => {
-    setMetadataImportTarget(null);
-    setMetadataImportDocument("");
-    setMetadataImportOriginalDocument("");
+    setActiveImportDraft(null);
     setMetadataImportError("");
-    setMetadataImportPreview(null);
   };
   const cancelModelMetadataImport = () => {
-    if (metadataImportTarget) {
-      updateModelWindowRow(metadataImportTarget.index, {
-        window: metadataImportTarget.originalWindow,
-        autoCompact: metadataImportTarget.originalAutoCompact,
+    if (activeImportDraft) {
+      const cancelled = cancelActiveImportDraft(activeImportDraft);
+      updateModelWindowRow(activeImportDraft.index, {
+        window: cancelled.rowPatch.window,
+        autoCompact: cancelled.rowPatch.autoCompact,
       });
     }
     closeModelMetadataImport();
   };
   const beginModelMetadataImport = async (index: number, slug: string) => {
-    const existingMetadata = importedModelMetadata[slug];
+    const existingMetadata = importedModelMetadata[modelMetadataKey(slug)];
     const existingDocument = existingMetadata
       ? serializeModelMetadataDocument(
           slug,
@@ -7749,7 +7777,16 @@ function RelayProfileEditor({
     // 无已导入配置且命中内置时，把内置条目预填为可编辑底稿（预填 ≠ 导入）。
     let match: BuiltinModelMetadataMatch | null = null;
     if (slug.trim()) {
-      match = await queryBuiltinCommand<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
+      try {
+        const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
+        const state = builtinMetadataQueryState(result);
+        setBuiltinQueryState(state);
+        match = state.status === "error" ? null : state.value;
+      } catch (error) {
+        const state = builtinMetadataQueryState(null, error);
+        setBuiltinQueryState(state);
+        setMetadataImportError(state.status === "error" ? state.error : "");
+      }
     }
     let document = existingDocument;
     if (!document && match?.matched && match.entry) {
@@ -7765,24 +7802,25 @@ function RelayProfileEditor({
     const existingPreview = document
       ? parseModelMetadataDocument(document, modelSlugFromRowName(slug))
       : null;
-    setMetadataImportTarget({
+    setActiveImportDraft(createActiveImportDraft({
       index,
-      slug,
-      originalWindow: modelWindowRows[index]?.window ?? "",
-      originalAutoCompact: modelWindowRows[index]?.autoCompact ?? "",
-    });
-    setMetadataImportDocument(document);
+      rowName: slug,
+      window: modelWindowRows[index]?.window ?? "",
+      autoCompact: modelWindowRows[index]?.autoCompact ?? "",
+      document,
+      preview: existingPreview?.ok ? existingPreview.value : null,
+    }));
     setMetadataImportError("");
-    setMetadataImportPreview(existingPreview?.ok ? existingPreview.value : null);
   };
   const applyModelMetadataImport = () => {
     if (!metadataImportTarget || !metadataImportPreview) return;
     // 保存跟当前行名（改名后保存写回新 slug，不存旧名）
     const slug = modelWindowRows[metadataImportTarget.index]?.model.trim() || metadataImportPreview.slug;
+    const key = modelMetadataKey(slug);
     const decision = importSaveDecision({
       parseOk: true,
       documentBlank: !metadataImportDocument.trim(),
-      imported: Boolean(importedModelMetadata[slug]),
+      imported: Boolean(importedModelMetadata[key]),
       // 内容与内置一致时目标态就是「用内置」，不写自定义覆盖——
       // 否则「重新匹配后保存」会把内置数据复制成一份自定义配置。
       matchesBuiltin: metadataMatchesBuiltin(metadataImportPreview.metadata, builtinMetadata),
@@ -7806,6 +7844,7 @@ function RelayProfileEditor({
     const row = modelWindowRows[metadataImportTarget.index];
     if (row) {
       const patch = importDocumentSyncPatch(row, metadataImportPreview);
+      if (suffixWindowString(row.model)) delete patch.window;
       if (patch.window !== undefined || patch.autoCompact !== undefined) {
         updateModelWindowRow(metadataImportTarget.index, patch);
       }
@@ -7815,23 +7854,33 @@ function RelayProfileEditor({
   // 「重新匹配」：按当前模型名重查内置元数据并重填下方内容（含实时写回行窗口）。
   const rematchBuiltinImport = async (slug: string) => {
     if (!slug.trim()) return;
-    const match = await queryBuiltinCommand<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
+    let match: BuiltinModelMetadataMatch | null = null;
+    try {
+      const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
+      const state = builtinMetadataQueryState(result);
+      setBuiltinQueryState(state);
+      match = state.status === "error" ? null : state.value;
+    } catch (error) {
+      const state = builtinMetadataQueryState(null, error);
+      setBuiltinQueryState(state);
+      setMetadataImportError(state.status === "error" ? state.error : "");
+    }
     setBuiltinMatch(match);
     // 未命中也要同步 slug：否则跟随 effect 的「slug 未变」早退会挡住后续查询，
     // 用户把名字改对后按钮状态不更新。
     setBuiltinMatchSlug(slug);
     if (!match?.matched || !match.entry) return;
-    // 重新匹配 = 放弃自定义、回到内置：清除该 slug 的自定义配置，
-    // 之后生成直接使用内置元数据（文本框仅作内置内容的只读展示底稿）。
-    if (importedModelMetadata[slug]) {
-      commitModelMetadata(clearModelMetadataForSlug(profile.modelMetadata, slug));
-    }
+    // 重新匹配只替换当前 draft；窗口后缀是用户显式意图，不能被内置值覆盖。
     const document = builtinEntryToImportDocument(match.entry, modelSlugFromRowName(slug));
     const preview = parseModelMetadataDocument(document, modelSlugFromRowName(slug));
-    setMetadataImportDocument(document);
+    if (activeImportDraft) {
+      setActiveImportDraft(rematchActiveImportDraft(
+        activeImportDraft, slug, document, preview.ok ? preview.value : null,
+      ));
+    }
     setMetadataImportError("");
-    setMetadataImportPreview(preview.ok ? preview.value : null);
-    if (metadataImportTarget && preview.ok && preview.value.contextWindow) {
+    if (metadataImportTarget && preview.ok && preview.value.contextWindow
+      && !suffixWindowString(slug)) {
       updateModelWindowRow(metadataImportTarget.index, { window: preview.value.contextWindow });
     }
   };
@@ -7839,7 +7888,7 @@ function RelayProfileEditor({
   // 的一步到位语义）；上下文窗口列不动。清除后面板关闭，未保存的文档编辑
   // 一并丢弃——不再停留在「文档已清空、保存键置灰」的死胡同里。
   const clearBuiltinImport = (slug: string) => {
-    if (importedModelMetadata[slug]) {
+    if (importedModelMetadata[modelMetadataKey(slug)]) {
       commitModelMetadata(clearModelMetadataForSlug(profile.modelMetadata, slug));
     }
     closeModelMetadataImport();
@@ -7860,7 +7909,7 @@ function RelayProfileEditor({
     if (metadataImportTarget?.index === index) {
       closeModelMetadataImport();
     } else if (metadataImportTarget && metadataImportTarget.index > index) {
-      setMetadataImportTarget({ ...metadataImportTarget, index: metadataImportTarget.index - 1 });
+      setActiveImportDraft({ ...activeImportDraft, index: activeImportDraft.index - 1 });
     }
   };
   const addModelWindowRows = (rows: ModelWindowRow[]) => {
@@ -7877,6 +7926,29 @@ function RelayProfileEditor({
   };
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
   const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
+  const localizeMetadataSourceTag = (tag: ReturnType<typeof metadataSourceTags>[number]) => {
+    if (tag.kind === "match") {
+      const source = tag.text.slice("匹配：".length);
+      return {
+        text: tf("匹配：{0}", [source]),
+        title: tf("内置元数据：{0}", [source]),
+      };
+    }
+    if (tag.kind === "fallback") {
+      const fallbackSlug = tag.text.slice("回退：".length);
+      return {
+        text: tf("回退：{0}", [fallbackSlug]),
+        title: tf("无内置元数据，生成时回退 {0} 官方模板", [fallbackSlug]),
+      };
+    }
+    const sourceMatch = tag.title.match(/（([^）]+)）$/);
+    return {
+      text: t("自定义"),
+      title: sourceMatch
+        ? tf("已导入自定义元数据，生成时覆盖内置（{0}）", [sourceMatch[1]])
+        : t("已导入自定义元数据，生成时以该配置为准"),
+    };
+  };
   const fetchSub2ApiRate = async () => {
     const result = await actions.fetchSub2ApiBilling(deriveRelayProfileFromFiles(profile));
     if (!result) return;
@@ -8165,25 +8237,26 @@ function RelayProfileEditor({
               </div>
               {modelWindowRows.map((row, index) => {
                 const slug = row.model.trim();
-                const importing = metadataImportTarget?.index === index && metadataImportTarget.slug === slug;
-                const imported = Boolean(importedModelMetadata[slug]);
+                const importing = metadataImportTarget?.index === index
+                  && modelMetadataKey(metadataImportTarget.canonicalSlug) === modelMetadataKey(slug);
+                const imported = Boolean(importedModelMetadata[modelMetadataKey(slug)]);
                 // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
-                // 面板未打开时 controls 无意义，但仍计算以保持代码简单。
-                const importControls = importPanelControls({
-                  slug,
-                  document: metadataImportDocument,
-                  imported,
-                  parseOk: Boolean(metadataImportPreview),
-                  matched: Boolean(builtinMatch?.matched),
-                  // 面板元数据与内置条目是否等价：等价时保存的目标态就是「用内置」，
-                  // 不会写成自定义覆盖（否则「重新匹配后保存」等于把内置复制成自定义）。
-                  matchesBuiltin: importing && metadataImportPreview
-                    ? metadataMatchesBuiltin(metadataImportPreview.metadata, builtinMetadata)
-                    : false,
-                  matchedSource: builtinMatch?.matched ? builtinMatch.source : undefined,
-                  // 回退模板名从后端 fallback 字段实时取（bundled 静态资产首条），不写死
-                  fallbackSlug: builtinMatch?.fallback?.slug,
-                });
+                // 面板关闭时不创建导入控件，避免用一个面板级状态为所有行派生按钮状态。
+                const importControls = importing
+                  ? importPanelControls({
+                      slug,
+                      document: metadataImportDocument,
+                      imported,
+                      parseOk: Boolean(metadataImportPreview),
+                      matched: builtinQueryState?.status === "error" ? false : Boolean(builtinMatch?.matched),
+                      // 面板元数据与内置条目等价：保存的目标态就是「用内置」。
+                      matchesBuiltin: metadataImportPreview
+                        ? metadataMatchesBuiltin(metadataImportPreview.metadata, builtinMetadata)
+                        : false,
+                      matchedSource: builtinMatch?.matched ? builtinMatch.source : undefined,
+                      fallbackSlug: builtinMatch?.fallback?.slug,
+                    })
+                  : null;
 
                 return (
                   <div className="relay-model-entry" key={index}>
@@ -8266,7 +8339,7 @@ function RelayProfileEditor({
                         title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
                       />
                       <Button
-                        className={`relay-model-import-button${imported ? " relay-model-import-custom" : builtinIndex.has(slug.toLowerCase()) ? " relay-model-import-builtin" : ""}`}
+                        className={`relay-model-import-button${imported ? " relay-model-import-custom" : builtinIndex.has(modelMetadataKey(slug)) ? " relay-model-import-builtin" : ""}`}
                         aria-expanded={importing}
                         disabled={!slug}
                         onClick={() => (importing ? cancelModelMetadataImport() : beginModelMetadataImport(index, slug))}
@@ -8330,60 +8403,65 @@ function RelayProfileEditor({
                             {metadataSourceTags({
                               slug,
                               imported,
-                              builtinMatch,
-                              builtinIndexSlug: builtinIndex.get(slug.toLowerCase()),
+                              builtinMatch: builtinQueryState?.status === "error" ? null : builtinMatch,
+                              builtinIndexSlug: builtinIndex.get(modelMetadataKey(slug)),
                               // 回退模板名从后端 fallback 字段实时取，不写死
                               fallbackSlug: builtinMatch?.fallback?.slug,
                             }).map((tag) => (
-                              <span
-                                key={tag.kind}
-                                className={`relay-model-source-badge relay-model-source-${tag.tone}`}
-                                title={tag.title}
-                              >
-                                {tag.text}
-                              </span>
+                              (() => {
+                                const localized = localizeMetadataSourceTag(tag);
+                                return (
+                                  <span
+                                    key={tag.kind}
+                                    className={`relay-model-source-badge relay-model-source-${tag.tone}`}
+                                    title={localized.title}
+                                  >
+                                    {localized.text}
+                                  </span>
+                                );
+                              })()
                             ))}
                           </div>
                           <div className="relay-model-metadata-import-flow">
                             {/* 四个按钮恒定渲染：只用置灰表达可用性，不再随状态出现/消失 */}
                             <Button
-                              disabled={importControls.rematch.disabled}
+                              disabled={importControls?.rematch.disabled ?? true}
                               onClick={() => void rematchBuiltinImport(slug)}
                               size="sm"
-                              title={t(importControls.rematch.title)}
+                              title={t(importControls?.rematch.title ?? "重新匹配")}
                               type="button"
                               variant="ghost"
                             >
                               {t("重新匹配")}
                             </Button>
                             <Button
-                              disabled={importControls.clear.disabled}
+                              disabled={importControls?.clear.disabled ?? true}
                               onClick={() => void clearBuiltinImport(slug)}
                               size="sm"
-                              title={t(importControls.clear.title)}
+                              title={t(importControls?.clear.title ?? "清除")}
                               type="button"
                               variant="ghost"
                             >
                               {t("清除")}
                             </Button>
                             <Button
-                              disabled={importControls.cancel.disabled}
+                              disabled={importControls?.cancel.disabled ?? true}
                               onClick={cancelModelMetadataImport}
                               size="sm"
-                              title={t(importControls.cancel.title)}
+                              title={t(importControls?.cancel.title ?? "取消")}
                               type="button"
                               variant="ghost"
                             >
                               {t("取消")}
                             </Button>
                             <Button
-                              disabled={importControls.save.disabled}
+                              disabled={importControls?.save.disabled ?? true}
                               onClick={applyModelMetadataImport}
                               size="sm"
                               type="button"
-                              title={t(importControls.save.title)}
+                              title={t(importControls?.save.title ?? "保存此模型")}
                             >
-                              {t(importControls.save.label)}
+                              {t(importControls?.save.label ?? "保存此模型")}
                             </Button>
                           </div>
                         </div>
