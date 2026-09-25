@@ -39,3 +39,6 @@ assets/example.json
 issue*-repro.md
 stepfun-*-stall-bugreport.md
 
+
+# ZCode CLI 本地工作区配置
+.zcodeignore
