@@ -1403,6 +1403,25 @@ async fn handle_helper_connection(
             "application/json; charset=utf-8".to_string(),
             "helper.backend_status_ok",
         )
+    } else if path == "/taskboard/open" && matches!(method, "GET" | "POST" | "OPTIONS") {
+        let result =
+            crate::routes::open_taskboard_from_default_settings().unwrap_or_else(|error| {
+                serde_json::json!({
+                    "status": "failed",
+                    "message": error.to_string()
+                })
+            });
+        let log_event = if result["status"] == "ok" {
+            "helper.taskboard_open_ok"
+        } else {
+            "helper.taskboard_open_failed"
+        };
+        (
+            "200 OK".to_string(),
+            serde_json::to_vec(&result)?,
+            "application/json; charset=utf-8".to_string(),
+            log_event,
+        )
     } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
         if method == "POST" {
             let detail =
@@ -3908,6 +3927,31 @@ mod tests {
         client.read_to_end(&mut response).await.unwrap();
         helper.await.unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn helper_routes_taskboard_open_requests() {
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings_path =
+            crate::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+        std::fs::write(
+            &settings_path,
+            br#"{"enhancementsEnabled":true,"codexTaskboardEnabled":false}"#,
+        )
+        .unwrap();
+
+        let response = send_raw_helper_request(
+            b"GET /taskboard/open HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let response = String::from_utf8(response).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains(r#""status":"failed""#));
+        assert!(response.contains("Taskboard is disabled in Codex++ settings."));
+        crate::paths::set_settings_path_for_tests(previous_settings_path);
     }
 
     #[tokio::test]

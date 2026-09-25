@@ -91,6 +91,90 @@ function installRendererStyle(renderer: string) {
   return appended;
 }
 
+function taskboardOpenRuntime(renderer: string, inline = true) {
+  const start = renderer.indexOf("  function closeCodexPlusSurfaces()");
+  const end = renderer.indexOf("\n  function scheduleBackendHeartbeat()", start);
+  assert.ok(start >= 0 && end > start, "taskboard opener block not found in renderer-inject.js");
+  const source = renderer.slice(start, end);
+  const removed: string[] = [];
+  const navigationStates: boolean[] = [];
+  const openCalls: Array<[string, string]> = [];
+  const postCalls: Array<[string, unknown]> = [];
+  const toasts: string[] = [];
+  let inlineOpens = 0;
+  let popupFocuses = 0;
+  let popupCloses = 0;
+  const popup = {
+    closed: false,
+    location: { href: "" },
+    focus: () => {
+      popupFocuses += 1;
+    },
+    close: () => {
+      popupCloses += 1;
+    },
+  };
+  const windowValue = {
+    __codexTaskboardInjection__: inline
+      ? {
+          open: () => {
+            inlineOpens += 1;
+          },
+        }
+      : undefined,
+    open: (url: string, target: string) => {
+      openCalls.push([url, target]);
+      return popup;
+    },
+  };
+  const documentValue = {
+    querySelectorAll(selector: string) {
+      assert.equal(selector, ".codex-plus-page-overlay, .codex-plus-modal-overlay");
+      return [
+        { remove: () => removed.push("page") },
+        { remove: () => removed.push("modal") },
+      ];
+    },
+    getElementById() {
+      return null;
+    },
+  };
+  const open = new Function(
+    "window",
+    "document",
+    "codexPlusPageClass",
+    "postJson",
+    "showToast",
+    "setCodexPlusSidebarNavActive",
+    "taskboardPanelUrl",
+    `${source}\nreturn openTaskboardFromCodex;`,
+  )(
+    windowValue,
+    documentValue,
+    "codex-plus-page-overlay",
+    async (path: string, payload: unknown) => {
+      postCalls.push([path, payload]);
+      return { status: "ok", url: "http://127.0.0.1:47823/?host=codex&ready=1" };
+    },
+    (message: string) => toasts.push(message),
+    (active: boolean) => navigationStates.push(active),
+    "http://127.0.0.1:47823/?host=codex",
+  ) as () => Promise<void>;
+
+  return {
+    open,
+    inlineOpens: () => inlineOpens,
+    navigationStates,
+    openCalls,
+    postCalls,
+    popup,
+    popupFocuses: () => popupFocuses,
+    popupCloses: () => popupCloses,
+    removed,
+    toasts,
+  };
+}
+
 describe("renderer injection header compatibility", () => {
   it("纯 API 会话使用当前真实 provider，不强行改成 custom", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
@@ -178,6 +262,49 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /setTimeout\(\(\) => \{\s*window\.__codexPlusPageNavigationCloseTimer = null;\s*closeCodexPlusPage\(\);/);
     assert.match(renderer, /installCodexPlusSidebarNavigation\(\);/);
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
+  });
+
+  it("keeps Taskboard disabled until the backend enables its menu row", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /const taskboardPanelUrl = "http:\/\/127\.0\.0\.1:47823\/\?host=codex"/);
+    assert.match(renderer, /taskboard: false/);
+    assert.match(renderer, /taskboard: "codexTaskboardEnabled"/);
+    assert.match(renderer, /codexTaskboardEnabled: false/);
+    assert.match(renderer, /data-codex-taskboard-row="true"/);
+    assert.match(renderer, /taskboardRow\.hidden = !settings\.taskboard/);
+    assert.match(renderer, /data-codex-open-taskboard="true"/);
+    assert.match(renderer, /if \(!codexPlusSettings\(\)\.taskboard\)/);
+  });
+
+  it("opens an injected Taskboard inline without starting the fallback", async () => {
+    const runtime = taskboardOpenRuntime(
+      await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8"),
+    );
+
+    await runtime.open();
+
+    assert.equal(runtime.inlineOpens(), 1);
+    assert.deepEqual(runtime.removed, ["page", "modal"]);
+    assert.deepEqual(runtime.navigationStates, [false]);
+    assert.deepEqual(runtime.openCalls, []);
+    assert.deepEqual(runtime.postCalls, []);
+  });
+
+  it("starts Taskboard through the host endpoint when inline injection is unavailable", async () => {
+    const runtime = taskboardOpenRuntime(
+      await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8"),
+      false,
+    );
+
+    await runtime.open();
+
+    assert.deepEqual(runtime.postCalls, [["/taskboard/open", {}]]);
+    assert.deepEqual(runtime.openCalls, [["http://127.0.0.1:47823/?host=codex", "_blank"]]);
+    assert.equal(runtime.popup.location.href, "http://127.0.0.1:47823/?host=codex&ready=1");
+    assert.equal(runtime.popupFocuses(), 1);
+    assert.equal(runtime.popupCloses(), 0);
+    assert.deepEqual(runtime.toasts, ["任务面板已打开"]);
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {

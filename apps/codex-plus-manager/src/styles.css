@@ -445,6 +445,75 @@ body {
   will-change: opacity, transform;
 }
 
+.taskboard-controller {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.taskboard-controller-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.taskboard-controller-content {
+  display: grid;
+  gap: 14px;
+}
+
+.taskboard-controller-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.taskboard-controller-origin {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskboard-controller-status-text {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskboard-controller-status-good {
+  color: hsl(var(--status-success));
+}
+
+.taskboard-controller-status-bad {
+  color: hsl(var(--destructive));
+}
+
+.taskboard-controller-status-pending {
+  color: hsl(var(--muted-foreground));
+}
+
+.taskboard-controller-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.taskboard-controller-flow {
+  display: grid;
+  gap: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .grid {
   display: grid;
   gap: 12px;

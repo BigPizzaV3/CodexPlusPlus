@@ -32,6 +32,10 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm install --package-lock=false
 
+      - name: Install Taskboard dependencies
+        working-directory: apps/codex-taskboard
+        run: npm ci
+
       - name: Frontend tests
         working-directory: apps/codex-plus-manager
         run: npm test
@@ -44,6 +48,18 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
+      - name: Taskboard TypeScript check
+        working-directory: apps/codex-taskboard
+        run: npm run typecheck
+
+      - name: Build Taskboard frontend
+        working-directory: apps/codex-taskboard
+        run: npm run build:web
+
+      - name: Taskboard tests
+        working-directory: apps/codex-taskboard
+        run: npm test
+
       - name: Rust tests
         run: cargo test --workspace
 
@@ -52,10 +68,7 @@ jobs:
 
       - name: Stage Windows app files
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist/windows/app | Out-Null
-          Copy-Item target/release/codex-plus-plus.exe dist/windows/app/
-          Copy-Item target/release/codex-plus-plus-manager.exe dist/windows/app/
+        run: .\scripts\installer\windows\package-windows.ps1 -SkipInstall -SkipBuild -SkipInstaller
 
       - name: Build Windows installer
         shell: pwsh

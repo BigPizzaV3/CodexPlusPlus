@@ -49,6 +49,8 @@ pub mod skills;
 pub mod status;
 pub mod stepwise;
 pub mod sub2api;
+pub mod taskboard_embedded;
+pub mod taskboard_runtime;
 pub mod tools;
 pub mod update;
 pub mod upstream_worktree;

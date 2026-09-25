@@ -379,6 +379,7 @@
   installCodexPlusForceChineseLocale();
 
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
+  const taskboardPanelUrl = "http://127.0.0.1:47823/?host=codex";
   const buttonClass = "codex-delete-button";
   const exportButtonClass = "codex-export-button";
   const actionButtonClass = "codex-session-action-button";
@@ -1406,7 +1407,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, taskboard: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1423,6 +1424,7 @@
     serviceTierControls: "codexAppServiceTierControls",
     petRealMouseLook: "codexAppPetRealMouseLook",
     stepwise: "codexAppStepwiseEnabled",
+    taskboard: "codexTaskboardEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
     pasteFix: "codexAppPasteFix",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
@@ -1462,6 +1464,7 @@
         serviceTierControls: false,
         petRealMouseLook: false,
         stepwise: false,
+        taskboard: false,
         answerOutline: false,
         dreamSkinEnabled: false,
         dreamSkinPaused: false,
@@ -2319,6 +2322,8 @@
 
   function renderCodexPlusMenu() {
     const settings = codexPlusSettings();
+    const taskboardRow = document.querySelector("[data-codex-taskboard-row='true']");
+    if (taskboardRow) taskboardRow.hidden = !settings.taskboard;
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
@@ -2330,7 +2335,7 @@
     refreshCodexServiceTierControls();
   }
 
-  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch", codexAppVersion: "" };
+  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, codexTaskboardEnabled: false, launchMode: "patch", codexAppVersion: "" };
   let codexPlusBackendSettingsSeq = 0;
   const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
   const codexPluginBridgeRequestUnlockFromVersion = "26.616.0";
@@ -4071,6 +4076,45 @@
     }
   }
 
+  function closeCodexPlusSurfaces() {
+    document.querySelectorAll(`.${codexPlusPageClass}, .codex-plus-modal-overlay`).forEach((node) => node.remove());
+    setCodexPlusSidebarNavActive(false);
+  }
+
+  function openCodexTaskboardInlinePage() {
+    closeCodexPlusSurfaces();
+    const api = window.__codexTaskboardInjection__;
+    if (api && typeof api.open === "function") {
+      api.open();
+      return true;
+    }
+    const entry = document.getElementById("codex-taskboard-entry");
+    if (entry && typeof entry.click === "function") {
+      entry.click();
+      return true;
+    }
+    return false;
+  }
+
+  async function openTaskboardFromCodex() {
+    if (openCodexTaskboardInlinePage()) return;
+    const taskboardWindow = window.open(taskboardPanelUrl, "_blank");
+    const result = await postJson("/taskboard/open", {});
+    if (result.status === "ok") {
+      const url = typeof result.url === "string" && result.url ? result.url : taskboardPanelUrl;
+      if (taskboardWindow && !taskboardWindow.closed) {
+        taskboardWindow.location.href = url;
+        taskboardWindow.focus?.();
+      } else {
+        window.open(url, "_blank");
+      }
+      showToast("任务面板已打开", null);
+      return;
+    }
+    if (taskboardWindow && !taskboardWindow.closed) taskboardWindow.close();
+    showToast(result.message || "打开任务面板失败", null);
+  }
+
   function scheduleBackendHeartbeat() {
     if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
     if (window.__codexPlusBackendHeartbeat &&
@@ -4440,6 +4484,10 @@
               <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、会话管理等全部页面能力。"}</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
+            <div class="codex-plus-row" data-codex-taskboard-row="true">
+              <div><div class="codex-plus-row-title">任务面板</div><div class="codex-plus-row-description">打开本地 Taskboard，查看和管理当前 Codex 任务。</div></div>
+              <button type="button" class="codex-plus-action-button" data-codex-open-taskboard="true">打开任务面板</button>
+            </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
@@ -4523,6 +4571,14 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      if (target?.closest("[data-codex-open-taskboard]")) {
+        if (!codexPlusSettings().taskboard) {
+          showToast("任务面板未启用", null);
+          return;
+        }
+        void openTaskboardFromCodex();
         return;
       }
       if (target?.closest("[data-codex-plus-discord]")) {
