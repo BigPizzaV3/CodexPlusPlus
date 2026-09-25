@@ -7594,21 +7594,6 @@ function RelayProfileEditor({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const refreshBuiltinMatch = async (slug: string) => {
-    if (!slug.trim()) { setBuiltinMatch(null); setBuiltinQueryState(null); return; }
-    try {
-      const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
-      const state = builtinMetadataQueryState(result);
-      setBuiltinQueryState(state);
-      setBuiltinMatch(state.status === "error" ? null : state.value);
-      setBuiltinMatchSlug(slug);
-    } catch (error) {
-      const state = builtinMetadataQueryState(null, error);
-      setBuiltinQueryState(state);
-      setBuiltinMatch(null);
-      setBuiltinMatchSlug(slug);
-    }
-  };
   // 导入区打开期间模型名被修改：标签与内置预填实时跟随新名字（覆盖
   // 「创建模型后改名」「编辑模型名」场景，而不是沿用旧名字的匹配结果）。
   const activeImportSlug = activeImportDraft
@@ -7776,6 +7761,7 @@ function RelayProfileEditor({
     // 无论有无已导入配置都查询内置匹配（标签需要准确的匹配状态）；
     // 无已导入配置且命中内置时，把内置条目预填为可编辑底稿（预填 ≠ 导入）。
     let match: BuiltinModelMetadataMatch | null = null;
+    let metadataQueryError = "";
     if (slug.trim()) {
       try {
         const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
@@ -7785,7 +7771,7 @@ function RelayProfileEditor({
       } catch (error) {
         const state = builtinMetadataQueryState(null, error);
         setBuiltinQueryState(state);
-        setMetadataImportError(state.status === "error" ? state.error : "");
+        metadataQueryError = state.status === "error" ? state.error : "";
       }
     }
     let document = existingDocument;
@@ -7795,10 +7781,8 @@ function RelayProfileEditor({
     } else {
       setImportPrefillSource(existingMetadata ? "existing" : null);
     }
-    if (match) {
-      setBuiltinMatch(match);
-      setBuiltinMatchSlug(slug);
-    }
+    setBuiltinMatch(match);
+    setBuiltinMatchSlug(slug);
     const existingPreview = document
       ? parseModelMetadataDocument(document, modelSlugFromRowName(slug))
       : null;
@@ -7810,7 +7794,7 @@ function RelayProfileEditor({
       document,
       preview: existingPreview?.ok ? existingPreview.value : null,
     }));
-    setMetadataImportError("");
+    setMetadataImportError(metadataQueryError);
   };
   const applyModelMetadataImport = () => {
     if (!metadataImportTarget || !metadataImportPreview) return;
@@ -8382,6 +8366,7 @@ function RelayProfileEditor({
                               const row = modelWindowRows[metadataImportTarget.index];
                               if (row) {
                                 const patch = importDocumentSyncPatch(row, parsed.value);
+                                if (suffixWindowString(row.model)) delete patch.window;
                                 if (patch.window !== undefined || patch.autoCompact !== undefined) {
                                   updateModelWindowRow(metadataImportTarget.index, patch);
                                 }

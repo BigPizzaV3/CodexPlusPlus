@@ -5,7 +5,9 @@
 
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCatalogEntry {
@@ -441,13 +443,10 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
     let mut candidate_slugs = Vec::new();
     let mut candidate_seen = HashSet::new();
     fn collect_candidates(
-        catalog: &Value,
+        models: &[Value],
         candidate_seen: &mut HashSet<String>,
         candidate_slugs: &mut Vec<String>,
     ) {
-        let Some(models) = catalog.get("models").and_then(Value::as_array) else {
-            return;
-        };
         for entry in models {
             let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
                 continue;
@@ -459,32 +458,14 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
         }
     }
     for (catalog_json, _) in COMPATIBILITY_METADATA_SOURCES {
-        if let Ok(catalog) = serde_json::from_str::<Value>(catalog_json) {
-            collect_candidates(&catalog, &mut candidate_seen, &mut candidate_slugs);
-        }
+        with_catalog_metadata_models(catalog_json, |models| {
+            collect_candidates(models, &mut candidate_seen, &mut candidate_slugs);
+        });
     }
-    if let Ok(contents) = std::fs::read_to_string(
-        crate::codex_home::default_codex_home_dir().join("models_cache.json"),
-    ) {
-        if let Ok(catalog) = serde_json::from_str::<Value>(&contents) {
-            if let Some(models) = catalog.get("models").and_then(Value::as_array) {
-                for entry in models {
-                    let Some(slug) = entry.get("slug").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let normalized = normalized_model_slug(slug);
-                    if !normalized.is_empty()
-                        && candidate_seen.insert(normalized.to_ascii_lowercase())
-                    {
-                        candidate_slugs.push(normalized);
-                    }
-                }
-            }
-        }
+    if let Some(models) = runtime_models_catalog() {
+        collect_candidates(&models, &mut candidate_seen, &mut candidate_slugs);
     }
-    if let Ok(catalog) = serde_json::from_str::<Value>(BUNDLED_TEMPLATE_JSON) {
-        collect_candidates(&catalog, &mut candidate_seen, &mut candidate_slugs);
-    }
+    collect_candidates(bundled_catalog_models(), &mut candidate_seen, &mut candidate_slugs);
 
     let mut seen = HashSet::new();
     let mut index = Vec::new();
@@ -644,10 +625,50 @@ fn model_template_entry(slug: &str) -> (Value, bool) {
 /// 从用户本机 codex 官方缓存读取同 slug 条目。
 /// 缓存由官方 App 登录态维护，这里只读不写；文件缺失或解析失败时静默回落静态资产。
 fn runtime_models_cache_entry(slug: &str) -> Option<Value> {
-    let cache_path = crate::codex_home::default_codex_home_dir().join("models_cache.json");
-    let contents = std::fs::read_to_string(cache_path).ok()?;
+    with_runtime_models(|models| find_catalog_entry(models, slug).cloned()).flatten()
+}
+
+#[derive(Clone)]
+struct RuntimeCatalogCacheEntry {
+    modified: Option<SystemTime>,
+    length: u64,
+    models: Vec<Value>,
+}
+
+/// 缓存运行时 models_cache.json 的解析结果；以路径和文件指纹隔离 CODEX_HOME，
+/// 文件变更后重新解析，避免索引对每个候选 slug 重复读盘和反序列化。
+fn with_runtime_models<T>(f: impl FnOnce(&[Value]) -> T) -> Option<T> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, RuntimeCatalogCacheEntry>>> = OnceLock::new();
+    let path = crate::codex_home::default_codex_home_dir().join("models_cache.json");
+    let metadata = std::fs::metadata(&path).ok()?;
+    let modified = metadata.modified().ok();
+    let length = metadata.len();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = cache.get(&path)
+        && cached.modified == modified
+        && cached.length == length
+    {
+        return Some(f(&cached.models));
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
     let catalog: Value = serde_json::from_str(&contents).ok()?;
-    find_catalog_entry(catalog.get("models")?.as_array()?, slug).cloned()
+    let models = catalog.get("models")?.as_array()?.clone();
+    cache.insert(
+        path,
+        RuntimeCatalogCacheEntry {
+            modified,
+            length,
+            models: models.clone(),
+        },
+    );
+    Some(f(&models))
+}
+
+fn runtime_models_catalog() -> Option<Vec<Value>> {
+    with_runtime_models(|models| models.to_vec())
 }
 
 /// 按 slug 查找 catalog 条目：先精确匹配，未命中再按大小写不敏感匹配。
@@ -671,13 +692,21 @@ pub fn find_catalog_entry_for_test<'a>(models: &'a [Value], slug: &str) -> Optio
 }
 
 fn bundled_template_entry(slug: &str) -> Option<Value> {
-    let catalog: Value = serde_json::from_str(BUNDLED_TEMPLATE_JSON).ok()?;
-    find_catalog_entry(catalog.get("models")?.as_array()?, slug).cloned()
+    find_catalog_entry(bundled_catalog_models(), slug).cloned()
 }
 
 fn first_bundled_template_entry() -> Option<Value> {
-    let catalog: Value = serde_json::from_str(BUNDLED_TEMPLATE_JSON).ok()?;
-    catalog.get("models")?.as_array()?.first().cloned()
+    bundled_catalog_models().first().cloned()
+}
+
+fn bundled_catalog_models() -> &'static Vec<Value> {
+    static MODELS: OnceLock<Vec<Value>> = OnceLock::new();
+    MODELS.get_or_init(|| {
+        serde_json::from_str::<Value>(BUNDLED_TEMPLATE_JSON)
+            .ok()
+            .and_then(|catalog| catalog.get("models").and_then(Value::as_array).cloned())
+            .unwrap_or_default()
+    })
 }
 
 /// 未命中内置元数据时生成链的真实回退，供管理器显示。
@@ -693,6 +722,13 @@ pub fn fallback_template_info() -> Option<(String, u64)> {
 
 /// 缓存每份静态 catalog 的解析结果，但只在锁内完成查找并返回 owned Value。
 fn catalog_metadata_entry(catalog_json: &'static str, slug: &str) -> Option<Value> {
+    with_catalog_metadata_models(catalog_json, |models| find_catalog_entry(models, slug).cloned())
+}
+
+fn with_catalog_metadata_models<T>(
+    catalog_json: &'static str,
+    f: impl FnOnce(&[Value]) -> T,
+) -> T {
     static INDEXES: OnceLock<Mutex<HashMap<&'static str, Vec<Value>>>> = OnceLock::new();
     let indexes = INDEXES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut indexes = indexes
@@ -704,5 +740,5 @@ fn catalog_metadata_entry(catalog_json: &'static str, slug: &str) -> Option<Valu
             .and_then(|catalog| catalog.get("models").and_then(Value::as_array).cloned())
             .unwrap_or_default()
     });
-    find_catalog_entry(entries, slug).cloned()
+    f(entries)
 }
