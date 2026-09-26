@@ -5131,53 +5131,6 @@ input[type="range"]:disabled {
   background: hsl(var(--warning) / 0.12);
 }
 
-
-.relay-model-metadata-import-warning {
-  color: hsl(var(--warning-foreground, var(--foreground)));
-  background: hsl(var(--warning) / 0.12);
-}
-
-/* 导入区状态行：说明「当前用什么元数据 / 保存后会发生什么」 */
-.relay-model-import-status {
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: hsl(var(--muted-foreground));
-  background: hsl(var(--surface-sunken));
-  border: 1px solid hsl(var(--border) / 0.6);
-}
-
-/* 命中内置：绿色边（与行内 badge 的 builtin 色调一致） */
-.relay-model-import-status-builtin {
-  color: hsl(var(--success-foreground, var(--foreground)));
-  border-color: hsl(var(--success, 160 84% 39%) / 0.55);
-  background: hsl(var(--success, 160 84% 39%) / 0.1);
-}
-
-/* 自定义（已导入或待保存为自定义）：主色边 */
-.relay-model-import-status-custom {
-  color: hsl(var(--primary-foreground, var(--foreground)));
-  border-color: hsl(var(--primary) / 0.55);
-  background: hsl(var(--primary) / 0.1);
-}
-
-/* 回退：中性色，不强调 */
-.relay-model-import-status-fallback {
-  color: hsl(var(--muted-foreground));
-}
-
-.relay-model-metadata-tags {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.relay-model-metadata-tags-spacer {
-  flex: 1;
-}
-
 .relay-model-source-badge {
   flex-shrink: 0;
   border-radius: 9999px;

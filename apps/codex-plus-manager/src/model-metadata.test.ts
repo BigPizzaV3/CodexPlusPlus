@@ -557,7 +557,6 @@ describe("model metadata helpers", () => {
       parseOk: true,
       matched: true,
       matchesBuiltin: true,
-      matchedSource: "Kimi",
       ...patch,
     });
 
@@ -570,7 +569,7 @@ describe("model metadata helpers", () => {
     }
 
     // 「重新匹配后保存」的最常见路径：内容是内置复刻、无自定义 →
-    // 保存键保持可点（点=确认用内置并关闭面板，不写自定义），状态行保持内置态。
+    // 保存键保持可点（点=确认用内置并关闭面板，不写自定义）。
     // 清除恒可点（2026-09-26 语义：只清空面板文档，不摘配置、不关面板）
     assert.strictEqual(base.rematch.disabled, false);
     assert.strictEqual(base.clear.disabled, false);
@@ -578,31 +577,22 @@ describe("model metadata helpers", () => {
     assert.strictEqual(base.cancel.disabled, false);
     assert.strictEqual(base.save.disabled, false);
     assert.strictEqual(base.save.title, "内容与内置元数据一致，保存后继续使用内置元数据");
-    assert.strictEqual(base.status.tone, "builtin");
-    assert.match(base.status.text, /内置元数据（Kimi）/);
-    // 状态行必须点明实时写回与可撤销，避免用户以为只有保存才生效
-    assert.match(base.status.text, /实时生效/);
 
-    // 已有自定义 + 内容是内置复刻：保存变「恢复内置」，状态行预告保存后恢复内置
+    // 已有自定义 + 内容是内置复刻：保存变「恢复内置」
     const withCustom = control({ imported: true });
     assert.strictEqual(withCustom.save.disabled, false);
     assert.strictEqual(withCustom.save.label, "保存此模型");
-    assert.match(withCustom.status.text, /保存后恢复内置/);
 
     // 内容真的改过（与内置不等价）：保存变可点，文案「保存为自定义配置」
     const edited = control({ matchesBuiltin: false });
     assert.strictEqual(edited.save.disabled, false);
     assert.strictEqual(edited.save.label, "保存为自定义配置");
-    assert.match(edited.status.text, /保存后：该模型改用这份自定义配置/);
 
     // 改了模型名导致未命中内置：重新匹配置灰，但按钮本身不消失
-    // （fallbackSlug 由后端实时下发，不写死；断言传入值即可）
-    const unmatched = control({ matched: false, matchedSource: undefined, fallbackSlug: "gpt-5.5" });
+    const unmatched = control({ matched: false });
     assert.strictEqual(unmatched.rematch.disabled, true);
     assert.match(unmatched.rematch.title, /没有内置元数据可匹配/);
     assert.strictEqual(unmatched.rematch.title.length > 0, true);
-    assert.strictEqual(unmatched.status.tone, "fallback");
-    assert.match(unmatched.status.text, /回退 gpt-5\.5/);
 
     // 模型名为空：重新匹配置灰并说明原因
     assert.strictEqual(control({ slug: "" }).rematch.disabled, true);
@@ -613,19 +603,12 @@ describe("model metadata helpers", () => {
     assert.strictEqual(broken.save.disabled, true);
     assert.match(broken.save.title, /JSON 无法解析/);
 
-    // 文本框被清空且已有自定义：保存变「恢复内置」，状态行预告恢复内置
+    // 文本框被清空且已有自定义：保存变「恢复内置」
     const cleared = control({ document: "", imported: true, matchesBuiltin: false });
     assert.strictEqual(cleared.save.label, "保存此模型");
     assert.strictEqual(cleared.save.disabled, false);
-    assert.match(cleared.status.text, /保存后恢复内置/);
     // 清空且没有自定义：保存键仍可点（仅解析失败才置灰），点了只关面板不写
     assert.strictEqual(control({ document: "", matchesBuiltin: false }).save.disabled, false);
-
-    // fallbackSlug 可覆盖（回退模板变化时不用改代码）
-    assert.match(
-      control({ matched: false, matchedSource: undefined, fallbackSlug: "gpt-5.4" }).status.text,
-      /回退 gpt-5\.4/,
-    );
   });
 
   // ── [1M] 后缀检测与适配（issue #2279）────────────────────────────────

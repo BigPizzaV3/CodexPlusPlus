@@ -8308,8 +8308,6 @@ function RelayProfileEditor({
                       matchesBuiltin: metadataImportPreview
                         ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
                         : false,
-                      matchedSource: builtinMatch?.matched ? builtinMatch.source : undefined,
-                      fallbackSlug: builtinMatch?.fallback?.slug,
                     })
                   : null;
 
