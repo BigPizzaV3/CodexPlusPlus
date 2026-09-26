@@ -513,7 +513,7 @@ export function importSaveDecision(options: {
   };
 }
 
-/// 导入区四个按钮 + 状态行的唯一判定来源。
+/// 导入区四个按钮的判定来源。
 /// 存在意义：把原先散在 JSX 里的四组显隐/置灰条件收成一處，使按钮「始终在同一
 /// 位置、只是能不能点」——不会再出现点一个键就少一个键的情况。
 export type ImportPanelControls = {
@@ -521,17 +521,8 @@ export type ImportPanelControls = {
   clear: { disabled: boolean; title: string };
   cancel: { disabled: boolean; title: string };
   save: { disabled: boolean; label: string; title: string };
-  status: ImportPanelStatus;
 };
 
-export type ImportPanelStatus = {
-  tone: "builtin" | "custom" | "fallback";
-  text: string;
-  title: string;
-};
-
-/// fallbackSlug：无内置元数据时生成所用的官方模板名，由调用方从后端
-/// fallback 字段实时取（不写死，随 bundled 静态资产首条演进）。
 export function importPanelControls(options: {
   slug: string;
   document: string;
@@ -540,11 +531,7 @@ export function importPanelControls(options: {
   matched: boolean;
   /// 面板元数据与内置条目是否等价（由调用方用 metadataMatchesBuiltin 算出）
   matchesBuiltin: boolean;
-  matchedSource?: string;
-  /// 无内置时的回退模板名；由调用方从后端 fallback 字段实时取，不写死。
-  fallbackSlug?: string;
 }): ImportPanelControls {
-  const fallbackSlug = options.fallbackSlug ?? "gpt-5.5";
   const slugBlank = !options.slug.trim();
   const documentBlank = !options.document.trim();
   const decision = importSaveDecision({
@@ -577,65 +564,6 @@ export function importPanelControls(options: {
     clear: { disabled: false, title: "清空面板内容（不影响已保存的配置）" },
     cancel: { disabled: false, title: "放弃本次在面板里的改动，不写入任何配置" },
     save,
-    status: importPanelStatus(options, fallbackSlug, decision),
-  };
-}
-
-function importPanelStatus(
-  options: {
-    imported: boolean;
-    matched: boolean;
-    matchedSource?: string;
-  },
-  fallbackSlug: string,
-  decision: ImportSaveDecision,
-): ImportPanelStatus {
-  // matched 为真但来源缺失时不编造供应商名：只声称「内置」，具体来源留空。
-  const source = options.matchedSource || "内置";
-  const hasSource = Boolean(options.matched);
-  // 无内置时：命中不到就是回退，来源写清楚避免用户猜
-  const effectiveSource = hasSource ? source : fallbackSlug;
-
-  if (!hasSource && !options.imported) {
-    return {
-      tone: "fallback",
-      text: `无内置元数据，生成时回退 ${fallbackSlug}`,
-      title: `没有内置元数据可用，生成时回退 ${fallbackSlug} 官方模板；可粘贴供应商 JSON 或手动编辑`,
-    };
-  }
-
-  const savedLabel = options.imported
-    ? "当前使用自定义配置"
-    : `当前使用内置元数据（${effectiveSource}）`;
-  const liveHint = "窗口与压缩比随编辑实时生效，取消可撤销";
-
-  // 清空文本 / 内容与内置一致 且已有自定义：预告保存后会恢复内置
-  if (decision.effect === "builtin") {
-    return {
-      tone: "custom",
-      text: `${savedLabel} · 保存后恢复内置`,
-      title: `保存后清除该模型的自定义配置，改用${hasSource ? `内置元数据（${source}）` : `${fallbackSlug} 官方模板`}`,
-    };
-  }
-
-  // 内容与内置不同：保存后才变成自定义
-  if (decision.effect === "custom") {
-    const overridden = options.imported ? "覆盖当前自定义配置" : `覆盖内置（${effectiveSource}）`;
-    return {
-      tone: "custom",
-      text: `保存后：该模型改用这份自定义配置，${overridden}`,
-      title: `窗口与压缩比已实时写回模型行；元数据保存后覆盖${options.imported ? "当前自定义配置" : "内置"}`,
-    };
-  }
-
-  // 无可保存：如实说明当前就在用什么
-  return {
-    // 自定义优先：内置只是底层事实，用户看到的是「当前用它自己的配置」
-    tone: options.imported ? "custom" : (hasSource ? "builtin" : "fallback"),
-    text: `${savedLabel} · ${liveHint}`,
-    title: hasSource
-      ? `已匹配内置元数据（${source}）；不导入时生成也会自动使用内置数据`
-      : `没有内置元数据，生成时回退 ${fallbackSlug} 官方模板；当前为自定义配置`,
   };
 }
 
