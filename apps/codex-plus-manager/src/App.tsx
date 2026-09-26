@@ -115,6 +115,7 @@ import {
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
+import { sessionProviderForProtocol } from "./relay-session";
 import { resolveProviderName } from "./provider-name";
 import {
   providerSyncStreamPercent,
@@ -11525,7 +11526,15 @@ function applyRelayProfilePatchToFiles(
   patch: Partial<RelayProfile>,
   options: { allowGenerateFiles?: boolean } = {},
 ): RelayProfile {
-  let next: RelayProfile = { ...profile, ...patch };
+  const protocol = patch.protocol ?? profile.protocol;
+  const sessionProvider = "sessionProvider" in patch
+    ? normalizeRelaySessionProvider(patch.sessionProvider)
+    : relaySessionProvider(profile);
+  const compatibleSession = sessionProviderForProtocol(sessionProvider, protocol);
+  const normalizedPatch = compatibleSession === sessionProvider
+    ? patch
+    : { ...patch, sessionProvider: compatibleSession };
+  let next: RelayProfile = { ...profile, ...normalizedPatch };
   if (isAggregateRelayProfile(next)) {
     return normalizeAggregateRelayProfile(next, null);
   }
