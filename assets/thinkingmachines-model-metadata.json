@@ -3,7 +3,7 @@
     {
       "slug": "inkling",
       "display_name": "Inkling",
-      "description": "Thinking Machines flagship open-weight MoE model (975B/41B active), 1M context multimodal",
+      "description": "Thinking Machines flagship open-weight MoE model (975B/41B active), 1M context multimodal; audio input (WAV/16kHz) accepted alongside images, text-only output",
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         { "effort": "low", "description": "Light reasoning, low token budget (effort 0.2)" },

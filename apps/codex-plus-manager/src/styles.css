@@ -5131,6 +5131,42 @@ input[type="range"]:disabled {
   background: hsl(var(--warning) / 0.12);
 }
 
+.relay-model-source-badge {
+  flex-shrink: 0;
+  border-radius: 9999px;
+  padding: 1px 7px;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  border: 1px solid hsl(var(--muted-foreground) / 0.55);
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--surface-sunken));
+}
+
+.relay-model-source-builtin {
+  color: hsl(var(--success-foreground, var(--foreground)));
+  border-color: hsl(var(--success, 160 84% 39%) / 0.9);
+}
+
+.relay-model-source-custom {
+  color: hsl(var(--primary-foreground, var(--foreground)));
+  border-color: hsl(var(--primary) / 0.9);
+}
+
+.relay-model-source-fallback {
+  color: hsl(var(--muted-foreground));
+}
+
+/* 行内导入按钮的元数据状态色：命中=绿、自定义=蓝、回退=默认无色 */
+.relay-model-import-button.relay-model-import-builtin {
+  border: 1px solid hsl(var(--success, 160 84% 39%) / 0.9);
+}
+
+.relay-model-import-button.relay-model-import-custom {
+  border: 1px solid hsl(var(--primary) / 0.9);
+}
+
+
 .relay-model-metadata-import-actions {
   display: flex;
   align-items: center;
@@ -5138,15 +5174,22 @@ input[type="range"]:disabled {
   gap: 12px;
 }
 
+/* 徽标与 slug 同行横排（c00177e 的既定设计）；c8ed14b 整文件覆盖时曾回退成
+   grid 单列导致竖排。flex-wrap 允许窄窗口下徽标整体折行而不挤压 slug。 */
 .relay-model-import-copy {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
 }
 
-.relay-model-import-copy span {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
+/* 省略号只作用于 slug 本身（strong）；不能再用 span 通配——那会把徽标的
+   10px 字号和三色 tone 覆盖成 muted 灰。 */
+.relay-model-import-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .relay-model-metadata-import-flow {

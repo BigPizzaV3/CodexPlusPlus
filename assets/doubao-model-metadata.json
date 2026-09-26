@@ -60,7 +60,7 @@
     {
       "slug": "doubao-seed-2.1-pro",
       "display_name": "Doubao-Seed-2.1-Pro",
-      "description": "Volcano Ark flagship model for high-complexity coding and agent tasks (256K context, multimodal)",
+      "description": "Volcano Ark flagship model for high-complexity coding and agent tasks (1M context on the 260915 build, 256K on 260628; multimodal)",
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         { "effort": "low", "description": "Fast reasoning for simple tasks" },
@@ -77,8 +77,8 @@
       "support_verbosity": false,
       "apply_patch_tool_type": "freeform",
       "truncation_policy": { "mode": "bytes", "limit": 10000 },
-      "context_window": 262144,
-      "max_context_window": 262144,
+      "context_window": 1048576,
+      "max_context_window": 1048576,
       "effective_context_window_percent": 95,
       "supports_parallel_tool_calls": true,
       "experimental_supported_tools": [],

@@ -2459,15 +2459,13 @@ fn apply_model_catalog_to_config(
     // Known bundled metadata entries need a catalog even without a user-supplied window.
     // 托管 Responses 传输走 model_routes 时需要 catalog，与会话身份无关；
     // 纯平铺 model_list 且无窗口/元数据的仍保持"不生成"契约（无后缀不落盘，见既有测试）。
-    if !has_metadata_overrides
-        && !entries.iter().any(|entry| {
-            entry.suffix_window.is_some()
-                || entry.auto_compact_percent.is_some()
-                || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
-                || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
-        })
-        && !(standard_responses && profile.has_model_routes())
-    {
+    if !should_write_managed_model_catalog(
+        &entries,
+        has_metadata_overrides,
+        standard_responses,
+        profile.has_model_routes(),
+        official_deepseek_responses,
+    ) {
         let mut doc = parse_toml_document(&config_text)?;
         if root_key_string(&config_text, "model_catalog_json").as_deref()
             == Some(catalog_relative.as_str())
@@ -2562,19 +2560,208 @@ fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::M
     let map = value
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("model_metadata 必须是 JSON 对象"))?;
+    // 与前端 canonicalizeModelMetadataMap 完全对齐：key 统一剥 [1M] 后缀并做
+    // ASCII 小写归一，同名变体（大小写/后缀差异）后写者胜。否则旧数据里
+    // "DeepSeek-V4-Pro" 与 "deepseek-v4-pro[512K]" 会在前端显示与 Rust 生成
+    // catalog 两侧各选一份覆盖（前端末位胜、这里首位胜），界面与生效值分叉。
+    let mut canonical = serde_json::Map::new();
     for (slug, metadata) in map {
         if !metadata.is_object() {
             anyhow::bail!("model_metadata 的模型 {slug} 值必须是对象");
         }
+        let normalized = crate::model_suffix::parse_model_suffix(slug).0;
+        if normalized.is_empty() {
+            continue;
+        }
+        canonical.insert(normalized.to_ascii_lowercase(), metadata.clone());
     }
-    Ok(map.clone())
+    Ok(canonical)
 }
 
 fn model_metadata_has_entries(
     metadata: &serde_json::Map<String, Value>,
     entry_slugs: &HashSet<String>,
 ) -> bool {
-    metadata.keys().any(|slug| entry_slugs.contains(slug))
+    // metadata 的 key 已由 parse_model_metadata_map 归一化，entry slug 侧做
+    // 同样归一后直接求交。
+    let normalized_entry_slugs = entry_slugs
+        .iter()
+        .map(|slug| {
+            crate::model_suffix::parse_model_suffix(slug)
+                .0
+                .to_ascii_lowercase()
+        })
+        .collect::<HashSet<_>>();
+    metadata.keys().any(|slug| normalized_entry_slugs.contains(slug))
+}
+
+fn model_metadata_override_for_slug<'a>(
+    override_map: &'a serde_json::Map<String, Value>,
+    slug: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    // override_map 的 key 已由 parse_model_metadata_map 归一化（剥后缀 +
+    // 小写、变体去重），查询 slug 做同样归一后直接命中。
+    let normalized_slug = crate::model_suffix::parse_model_suffix(slug)
+        .0
+        .to_ascii_lowercase();
+    override_map
+        .get(&normalized_slug)
+        .and_then(Value::as_object)
+}
+
+/// 判断当前 profile 是否需要由 CodexPlusPlus 托管写入 model catalog。
+///
+/// 该谓词只依赖已解析的 catalog 条目和 profile 能力事实，不读取磁盘，也不
+/// 改变外部 catalog 的接管、冲突回滚及 per-profile 单值行为。
+fn should_write_managed_model_catalog(
+    entries: &[crate::model_suffix::ModelCatalogEntry],
+    metadata_overrides: bool,
+    standard_responses: bool,
+    has_model_routes: bool,
+    official_deepseek_responses: bool,
+) -> bool {
+    metadata_overrides
+        || entries.iter().any(|entry| {
+            entry.suffix_window.is_some()
+                || entry.auto_compact_percent.is_some()
+                || crate::model_suffix::requires_bundled_metadata_catalog(&entry.slug)
+                || (official_deepseek_responses && entry.slug.starts_with("deepseek-v4-"))
+        })
+        || (standard_responses && has_model_routes)
+}
+
+#[cfg(test)]
+mod managed_catalog_predicate_tests {
+    use super::{
+        apply_model_metadata_overrides, model_metadata_has_entries,
+        model_metadata_override_for_slug, parse_model_metadata_map,
+        should_write_managed_model_catalog,
+    };
+    use crate::model_suffix::ModelCatalogEntry;
+    use serde_json::{Value, json};
+    use std::collections::HashSet;
+
+    fn entry(slug: &str) -> ModelCatalogEntry {
+        ModelCatalogEntry {
+            slug: slug.to_string(),
+            display_name: slug.to_string(),
+            suffix_window: None,
+            auto_compact_percent: None,
+        }
+    }
+
+    #[test]
+    fn predicate_keeps_plain_profile_without_routes_unmanaged() {
+        assert!(!should_write_managed_model_catalog(
+            &[entry("custom-model")],
+            false,
+            false,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn predicate_writes_for_per_model_window_compact_or_metadata() {
+        let mut window = entry("custom-model");
+        window.suffix_window = Some(1_000_000);
+        assert!(should_write_managed_model_catalog(
+            &[window], false, false, false, false
+        ));
+
+        let mut compact = entry("custom-model");
+        compact.auto_compact_percent = Some(80_000_000);
+        assert!(should_write_managed_model_catalog(
+            &[compact], false, false, false, false
+        ));
+        assert!(should_write_managed_model_catalog(
+            &[entry("custom-model")],
+            true,
+            false,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn predicate_writes_for_routes_or_official_deepseek() {
+        assert!(should_write_managed_model_catalog(
+            &[entry("custom-model")],
+            false,
+            true,
+            true,
+            false,
+        ));
+        assert!(should_write_managed_model_catalog(
+            &[entry("deepseek-v4-pro")],
+            false,
+            false,
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn metadata_keys_match_catalog_slugs_case_insensitively_and_without_suffix() {
+        // 生产链路里 has_entries 的入参恒来自 parse_model_metadata_map（key
+        // 已归一），这里走同一管道构造。
+        let metadata = parse_model_metadata_map(r#"{"DeepSeek-V4-Pro[1M]": {"description": "custom"}}"#).unwrap();
+        let slugs = HashSet::from(["deepseek-v4-pro".to_string()]);
+        assert!(model_metadata_has_entries(&metadata, &slugs));
+    }
+
+    #[test]
+    fn metadata_map_normalizes_keys_with_last_write_wins() {
+        // 同名变体（大小写/后缀）归一到同一 key，后写者胜——与前端
+        // canonicalizeModelMetadataMap 一致，否则两侧各选一份覆盖。
+        let metadata = parse_model_metadata_map(
+            r#"{
+                "DeepSeek-V4-Pro": {"description": "first"},
+                "deepseek-v4-pro[512K]": {"description": "second"}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata["deepseek-v4-pro"]["description"], "second");
+
+        // 覆盖查找同样按归一 key 命中：catalog 侧的 slug 带大小写变体也能查到。
+        let override_map =
+            parse_model_metadata_map(r#"{"GLM-5.3": {"display_name": "GLM"}}"#).unwrap();
+        assert_eq!(
+            model_metadata_override_for_slug(&override_map, "glm-5.3")
+                .unwrap()["display_name"],
+            "GLM"
+        );
+        assert_eq!(
+            model_metadata_override_for_slug(&override_map, "GLM-5.3[1M]")
+                .unwrap()["display_name"],
+            "GLM"
+        );
+        assert!(model_metadata_override_for_slug(&override_map, "other").is_none());
+    }
+
+    #[test]
+    fn metadata_overlay_uses_canonical_slug_and_preserves_managed_fields() {
+        let metadata = parse_model_metadata_map(
+            r#"{"DeepSeek-V4-Pro[1M]": {
+                "description": "custom",
+                "context_window": 1,
+                "max_context_window": 1
+            }}"#,
+        )
+        .unwrap();
+        let catalog = json!({"models": [{
+            "slug": "deepseek-v4-pro",
+            "context_window": 272000,
+            "max_context_window": 272000
+        }]});
+        let result = apply_model_metadata_overrides(&catalog.to_string(), &metadata).unwrap();
+        let value: Value = serde_json::from_str(&result).unwrap();
+        let model = &value["models"][0];
+        assert_eq!(model["description"], "custom");
+        assert_eq!(model["context_window"], 272000);
+        assert_eq!(model["max_context_window"], 272000);
+    }
 }
 
 fn apply_model_metadata_overrides(
@@ -2593,7 +2780,7 @@ fn apply_model_metadata_overrides(
         let Some(slug) = model.get("slug").and_then(Value::as_str) else {
             continue;
         };
-        let Some(user_override) = override_map.get(slug).and_then(Value::as_object) else {
+        let Some(user_override) = model_metadata_override_for_slug(override_map, slug) else {
             continue;
         };
         let Some(model_object) = model.as_object_mut() else {
