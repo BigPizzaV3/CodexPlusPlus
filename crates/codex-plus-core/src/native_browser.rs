@@ -1119,7 +1119,10 @@ pub fn wait_for_monitor_shutdown(timeout: Duration) -> Result<NativeBrowserShutd
     wait_for_monitor_shutdown_at(&paths, timeout)
 }
 
-fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Result<NativeBrowserShutdown> {
+fn wait_for_monitor_shutdown_at(
+    paths: &BrowserPaths,
+    timeout: Duration,
+) -> Result<NativeBrowserShutdown> {
     let path = paths.state_root.join("monitor.lock");
     let _guards = pin_parents(&path)?;
     let mut options = OpenOptions::new();
@@ -1147,15 +1150,25 @@ fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Resu
                 let mut bytes = Vec::new();
                 Read::by_ref(&mut file).take(1025).read_to_end(&mut bytes)?;
                 let receipt: MonitorReceipt = serde_json::from_slice(&bytes)?;
-                let receipt_is_valid = receipt.schema == 1
-                    && uuid::Uuid::parse_str(&receipt.generation).is_ok();
-                if receipt_is_valid && receipt.state == "restored" {
-                    return Ok(NativeBrowserShutdown::Ready);
-                }
-                if receipt_is_valid && receipt.state == "blocked" {
+                ensure!(
+                    receipt.schema == 1
+                        && uuid::Uuid::parse_str(&receipt.generation).is_ok()
+                        && matches!(receipt.state.as_str(), "active" | "blocked" | "restored"),
+                    "Invalid native browser cleanup receipt"
+                );
+                // A completed blocked recovery remains non-fatal upstream. A stale
+                // receipt is ready only when read-only disk verification succeeds.
+                let restored = verify_restored_state(paths);
+                if receipt.state == "blocked" && restored.is_err() {
                     return Ok(NativeBrowserShutdown::RestoreFailed);
                 }
-                anyhow::bail!("Native browser cleanup did not complete successfully");
+                restored.with_context(|| {
+                    format!(
+                        "Native browser cleanup is incomplete ({}); files were not overwritten",
+                        receipt.state
+                    )
+                })?;
+                return Ok(NativeBrowserShutdown::Ready);
             }
             Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
                 if std::time::Instant::now() >= deadline {
@@ -2147,7 +2160,7 @@ mod tests {
         let (paths, contract, service) = synthetic(&temp);
         let original = fs::read(&service).unwrap();
         let modified = fs::metadata(&service).unwrap().modified().unwrap();
-        let monitor = start_monitor_with_contract(paths.clone(), true, contract).await.unwrap();
+        let monitor = start_monitor_with_contract(paths.clone(), true, contract.clone()).await.unwrap();
         assert_ne!(fs::read(&service).unwrap(), original);
         monitor.stop().await;
         assert_eq!(sha(&fs::read(&service).unwrap()), sha(&original));
@@ -2258,7 +2271,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (paths, contract, service) = synthetic(&temp);
         let original = sha(&fs::read(&service).unwrap());
-        let monitor = start_monitor_with_contract(paths.clone(), true, contract).await.unwrap();
+        let monitor = start_monitor_with_contract(paths.clone(), true, contract.clone()).await.unwrap();
         let wait_paths = paths.clone();
         let waiter = tokio::task::spawn_blocking(move || {
             wait_for_monitor_shutdown_at(&wait_paths, Duration::from_secs(5)).unwrap();
@@ -2284,6 +2297,67 @@ mod tests {
         let error = reconcile_contract(&paths, true, &contract).unwrap_err();
         assert_eq!(error_status(&error).state, "runtime_unverified");
         assert_eq!(fs::read(&service).unwrap(), before);
+    }
+
+    #[test]
+    fn stale_cleanup_receipt_is_checked_against_disk_without_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        reconcile_contract(&paths, true, &contract).unwrap();
+        reconcile_contract(&paths, false, &contract).unwrap();
+        let original = fs::read(&service).unwrap();
+        let control = fs::read(paths.state_root.join("control.json")).unwrap();
+        let mut owner = acquire_monitor_owner(&paths).unwrap();
+        let generation = uuid::Uuid::new_v4().to_string();
+        for state in ["active", "blocked", "restored"] {
+            write_monitor_receipt(&mut owner, &generation, state).unwrap();
+            FileExt::unlock(&owner).unwrap();
+            assert_eq!(
+                wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap(),
+                NativeBrowserShutdown::Ready
+            );
+            owner.try_lock_exclusive().unwrap();
+        }
+        write_monitor_receipt(&mut owner, &generation, "restored").unwrap();
+        drop(owner);
+        assert_eq!(fs::read(&service).unwrap(), original);
+        assert_eq!(fs::read(paths.state_root.join("control.json")).unwrap(), control);
+
+        fs::write(&service, b"external edit").unwrap();
+        assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+        assert_eq!(fs::read(&service).unwrap(), b"external edit");
+    }
+
+    #[test]
+    fn blocked_cleanup_preserves_restore_failed_and_external_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        reconcile_contract(&paths, true, &contract).unwrap();
+        fs::write(&service, b"external edit").unwrap();
+        let control = fs::read(paths.state_root.join("control.json")).unwrap();
+        let mut owner = acquire_monitor_owner(&paths).unwrap();
+        write_monitor_receipt(&mut owner, &uuid::Uuid::new_v4().to_string(), "blocked").unwrap();
+        drop(owner);
+        assert_eq!(
+            wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap(),
+            NativeBrowserShutdown::RestoreFailed
+        );
+        assert_eq!(fs::read(&service).unwrap(), b"external edit");
+        assert_eq!(fs::read(paths.state_root.join("control.json")).unwrap(), control);
+    }
+
+    #[test]
+    fn unknown_cleanup_receipt_is_rejected_even_when_disk_is_restored() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, contract, service) = synthetic(&temp);
+        reconcile_contract(&paths, true, &contract).unwrap();
+        reconcile_contract(&paths, false, &contract).unwrap();
+        let original = fs::read(&service).unwrap();
+        let mut owner = acquire_monitor_owner(&paths).unwrap();
+        write_monitor_receipt(&mut owner, &uuid::Uuid::new_v4().to_string(), "unknown").unwrap();
+        drop(owner);
+        assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+        assert_eq!(fs::read(&service).unwrap(), original);
     }
 
     // The proprietary runtime is supplied locally, never committed or executed by this test.
