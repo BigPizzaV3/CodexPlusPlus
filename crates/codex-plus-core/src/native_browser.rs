@@ -20,6 +20,17 @@ const ANCHOR: &str = "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEnde
 const HELPER: &str = include_str!("../../../assets/native-browser/require-identification.mjs");
 const MAX_SERVICE: u64 = 32 * 1024 * 1024;
 
+#[derive(Debug)]
+struct UnverifiedRuntime(String);
+
+impl std::fmt::Display for UnverifiedRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Legacy compatibility is not verified for this runtime: {}", self.0)
+    }
+}
+
+impl std::error::Error for UnverifiedRuntime {}
+
 #[derive(Clone)]
 struct RuntimeContract {
     service_sha: String,
@@ -254,7 +265,7 @@ fn atomic_write_with_modified(
 fn transform(source: &[u8], control: &Path, contract: &RuntimeContract) -> Result<Vec<u8>> {
     ensure!(
         sha(source) == contract.service_sha,
-        "Unsupported native browser service hash"
+        UnverifiedRuntime("browser service".into())
     );
     transform_binding(source, control)
 }
@@ -372,7 +383,7 @@ fn prepare(paths: &BrowserPaths, key: &str, contract: &RuntimeContract) -> Resul
     for (file, expected) in &contract.files {
         ensure!(
             sha(&read_regular(&runtime.join(file), 128 * 1024 * 1024)?) == *expected,
-            "Unsupported native runtime component: {file}"
+            UnverifiedRuntime((*file).into())
         );
     }
     let mut current = read_regular(&target, MAX_SERVICE)?;
@@ -876,6 +887,9 @@ async fn start_monitor_with_contract(
 }
 
 fn error_status(error: &anyhow::Error) -> BrowserStatus {
+    if error.downcast_ref::<UnverifiedRuntime>().is_some() {
+        return BrowserStatus::new("runtime_unverified", &error.to_string());
+    }
     let retryable = error.chain().any(|cause| {
         cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
             matches!(
@@ -983,7 +997,7 @@ async fn monitor_once(
     tokio::task::spawn_blocking(move || {
         let before = observation(&paths).ok();
         let cached = cache.filter(|(status, observed)| {
-            matches!(status.state.as_str(), "prepared" | "restored" | "blocked")
+            matches!(status.state.as_str(), "prepared" | "restored" | "blocked" | "runtime_unverified")
                 && before.is_some()
                 && &before == observed
         });
@@ -1664,6 +1678,22 @@ mod tests {
         });
         monitor.stop().await;
         waiter.await.unwrap();
+    }
+
+    #[test]
+    fn unverified_runtime_is_not_reported_as_file_conflict_or_browser_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, mut contract, service) = synthetic(&temp);
+        let before = fs::read(&service).unwrap();
+        contract.files.push(("bin/node.exe", "unknown-version".into()));
+        // The synthetic descriptor determines the runtime, not the actual user installation.
+        let key = discover(&paths).unwrap().unwrap();
+        let node = paths.runtime_root.join(key).join("bin/node.exe");
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(node, b"new official version").unwrap();
+        let error = reconcile_contract(&paths, true, &contract).unwrap_err();
+        assert_eq!(error_status(&error).state, "runtime_unverified");
+        assert_eq!(fs::read(&service).unwrap(), before);
     }
 
     // The proprietary runtime is supplied locally, never committed or executed by this test.

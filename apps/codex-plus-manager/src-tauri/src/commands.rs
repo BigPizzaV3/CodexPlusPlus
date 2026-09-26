@@ -1609,9 +1609,21 @@ fn empty_weixin_qr_payload(status: &str) -> WeixinQrPayload {
     }
 }
 
+#[derive(serde::Serialize)]
+pub struct NativeBrowserDiagnostics {
+    compatibility: codex_plus_core::native_browser::BrowserStatus,
+    connection: codex_plus_core::native_browser_connection::ConnectionStatus,
+}
+
 #[tauri::command]
-pub fn native_browser_status() -> codex_plus_core::native_browser::BrowserStatus {
-    codex_plus_core::native_browser::read_status()
+pub async fn native_browser_status() -> NativeBrowserDiagnostics {
+    let compatibility = tauri::async_runtime::spawn_blocking(codex_plus_core::native_browser::read_status)
+        .await
+        .unwrap_or_else(|_| codex_plus_core::native_browser::BrowserStatus {
+            state: "unavailable".into(), detail: String::new(),
+        });
+    let connection = codex_plus_core::native_browser_connection::check_connection().await;
+    NativeBrowserDiagnostics { compatibility, connection }
 }
 
 #[tauri::command]
@@ -6461,6 +6473,26 @@ mod tests {
         GLOBAL_STATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn native_browser_diagnostics_keeps_connection_independent_from_patch_status() {
+        let result = NativeBrowserDiagnostics {
+            compatibility: codex_plus_core::native_browser::BrowserStatus {
+                state: "runtime_unverified".into(), detail: "Legacy runtime mismatch".into(),
+            },
+            connection: codex_plus_core::native_browser_connection::ConnectionStatus {
+                state: "available".into(), failed_checks: 0,
+                browsers: vec![codex_plus_core::native_browser_connection::ConnectedBrowser {
+                    family: "edge".into(), header_enabled: Some(true),
+                }],
+            },
+        };
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["compatibility"]["state"], "runtime_unverified");
+        assert_eq!(json["connection"]["state"], "available");
+        assert_eq!(json["connection"]["browsers"][0]["headerEnabled"], true);
+        assert_eq!(json["connection"]["failedChecks"], 0);
     }
 
     #[test]
