@@ -42,3 +42,6 @@ stepfun-*-stall-bugreport.md
 
 # ZCode CLI 本地工作区配置
 .zcodeignore
+
+# agent/CLI 本地临时目录（.zcode/ 之外的变体）
+.zcodetmp/
