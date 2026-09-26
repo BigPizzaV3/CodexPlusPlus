@@ -4828,7 +4828,7 @@ function EnhanceScreen({
               {isWindowsPlatform ? <>
                 <FeatureToggle
                   title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
-                  detail={t("仅 Windows Edge / Chrome；下次启动 Codex++ 时应用。扩展可能持久保留请求标识。")}
+                  detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex++ 时应用。扩展可能保留请求标识设置。")}
                   checked={form.codexAppNativeBrowserRequireIdentification}
                   disabled={!masterEnabled}
                   onChange={(value) => {
