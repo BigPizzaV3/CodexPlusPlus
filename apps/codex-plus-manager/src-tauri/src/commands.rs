@@ -807,14 +807,69 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
 }
 
 #[tauri::command]
-pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
+pub async fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        let _guard = match try_acquire_launch_guard() {
+            Ok(guard) => guard,
+            Err(message) => return failed(message, json!({})),
+        };
+        spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
+    }).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("启动后台任务失败：{error}"), json!({})),
+    }
 }
 
 #[tauri::command]
-pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    let Ok(_guard) = relay_switch_mutex().lock() else {
-        return failed("供应商切换锁已损坏，请重启管理器后再试。", json!({}));
+pub async fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || restart_codex_plus_blocking(request)).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("重启后台任务失败：{error}"), json!({})),
+    }
+}
+
+static LAUNCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct LaunchGuard;
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        LAUNCH_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+fn try_acquire_launch_guard() -> Result<LaunchGuard, &'static str> {
+    LAUNCH_IN_PROGRESS.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map(|_| LaunchGuard)
+        .map_err(|_| "启动或重启正在进行，请等待本次操作完成。")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RestartDisposition {
+    LaunchOnly,
+    StopAndRestart,
+}
+
+fn restart_disposition(sync_active_relay: bool, app_running: bool) -> RestartDisposition {
+    if !sync_active_relay && !app_running {
+        RestartDisposition::LaunchOnly
+    } else {
+        RestartDisposition::StopAndRestart
+    }
+}
+
+fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
+    let _launch_guard = match try_acquire_launch_guard() {
+        Ok(guard) => guard,
+        Err(message) => return failed(message, json!({})),
+    };
+    let request = normalize_launch_request(request);
+    let app_running = !codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port).is_empty();
+    if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly {
+        return spawn_codex_plus_launch(request, "Codex 未运行，已按直接启动方式在后台唤起。");
+    }
+    let Ok(_guard) = relay_switch_mutex().try_lock() else {
+        return failed("供应商切换正在进行或锁不可用，未执行重启；请稍后重试。", json!({}));
     };
     let settings = if request.sync_active_relay {
         match SettingsStore::default().load() {
@@ -832,23 +887,22 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     } else {
         None
     };
-    if let Err(message) = ensure_provider_sync_is_idle_before_stop() {
-        return failed(
-            &message,
-            json!({
-                "debugPort": request.debug_port,
-                "helperPort": request.helper_port,
-                "syncActiveRelay": request.sync_active_relay
-            }),
-        );
-    }
+    let provider_guard = match ensure_provider_sync_is_idle_before_stop() {
+        Ok(guard) => guard,
+        Err(message) => return failed(&message, json!({})),
+    };
     #[cfg(windows)]
     let launchers = match codex_plus_core::watcher::LauncherExitSnapshot::capture() {
         Ok(snapshot) => snapshot,
         Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
     };
     if let Err(error) = stop_codex_plus_for_restart(
-        || codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port),
+        || {
+            codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
+            anyhow::ensure!(codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port).is_empty(),
+                "Codex 进程尚未退出；未启动新实例");
+            Ok(())
+        },
         || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
         || {
             #[cfg(windows)]
@@ -859,7 +913,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         },
     ) {
         return failed(
-            &format!("Codex 已请求停止，但原生浏览器清理或旧启动器退出未完成；未强制终止启动器或启动新实例：{error}"),
+            &format!("重启已中止，停止或清理未完成；未强制终止启动器或启动新实例：{error:#}"),
             json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
         );
     }
@@ -889,7 +943,9 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), spawn_silent_launcher) {
+    match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
+        spawn_after_provider_guard_release(provider_guard, request, spawn_silent_launcher)
+    }) {
         Ok(()) => CommandResult {
             status: "accepted".to_string(),
             message: "Codex 已请求重启，启动任务正在后台运行。".to_string(),
@@ -918,15 +974,24 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 }
 
 fn stop_codex_plus_for_restart(
-    stop_codex: impl FnOnce(),
+    stop_codex: impl FnOnce() -> anyhow::Result<()>,
     wait_native: impl FnOnce() -> anyhow::Result<()>,
     stop_launcher: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     // The launcher owns native recovery; terminating it first skips that cleanup.
-    stop_codex();
+    stop_codex()?;
     wait_native()?;
     stop_launcher()?;
     Ok(())
+}
+
+fn spawn_after_provider_guard_release(
+    guard: codex_plus_data::ProviderSyncLifecycleGuard,
+    request: &LaunchRequest,
+    spawn: impl FnOnce(&LaunchRequest) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    guard.release().map_err(|error| anyhow::anyhow!("释放历史同步锁失败，未启动新实例：{error}"))?;
+    spawn(request)
 }
 
 fn restart_codex_plus_after_stop<F>(
@@ -1083,10 +1148,7 @@ fn sync_active_relay_to_home(
     )
 }
 
-fn spawn_codex_plus_launch(
-    mut request: LaunchRequest,
-    accepted_message: &str,
-) -> CommandResult<Value> {
+fn normalize_launch_request(mut request: LaunchRequest) -> LaunchRequest {
     // launcher 收到显式 --app-path 时不会回退自动探测（避免静默启动错误目录），
     // 所以这里先把明显无效的路径摘掉，让它走探测而不是永久失败（#1972）。
     let requested_app_path = request.app_path.trim().to_string();
@@ -1100,6 +1162,14 @@ fn spawn_codex_plus_launch(
         );
         request.app_path = String::new();
     }
+    request
+}
+
+fn spawn_codex_plus_launch(
+    request: LaunchRequest,
+    accepted_message: &str,
+) -> CommandResult<Value> {
+    let request = normalize_launch_request(request);
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
     let launch_started_at_ms = current_timestamp_ms();
@@ -6376,62 +6446,11 @@ fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     }
 }
 
-/// provider sync 正在进行时，最多等它这么久再考虑放弃重启。
-const PROVIDER_SYNC_WAIT_TIMEOUT_MS: u64 = 30_000;
-const PROVIDER_SYNC_WAIT_INTERVAL_MS: u64 = 200;
-
-/// 等待正在执行的 provider sync 结束。
-///
-/// launcher 在同步期间持有 `~/.codex/tmp/provider-sync.lock`，而这一步之后调用方会
-/// `TerminateProcess` 强杀 launcher。被强杀的进程来不及 `release_lock()`，会留下残留锁，
-/// 使后续启动全部跳过同步，用户侧表现为历史会话消失或「修复 0 个会话」（issue #1901）。
-/// 因此这里先等同步自然结束；等不到就拒绝本次重启，而不是把它打断。
-fn wait_for_idle_provider_sync(
-    inspect: impl Fn() -> codex_plus_data::ProviderSyncLockState,
-    sleep: impl Fn(u64),
-    timeout_ms: u64,
-) -> Result<(), codex_plus_data::ProviderSyncLockState> {
-    use codex_plus_data::ProviderSyncLockState;
-
-    let mut waited_ms = 0;
-    loop {
-        // Stale 锁的持有者已经退出，下一次 acquire_lock 会自动回收它，不必等。
-        match inspect() {
-            ProviderSyncLockState::Free | ProviderSyncLockState::Stale { .. } => return Ok(()),
-            state => {
-                if waited_ms >= timeout_ms {
-                    return Err(state);
-                }
-            }
-        }
-        sleep(PROVIDER_SYNC_WAIT_INTERVAL_MS);
-        waited_ms += PROVIDER_SYNC_WAIT_INTERVAL_MS;
-    }
-}
-
-/// 在强杀 launcher 前放行或拦截本次重启，并把判定结果写进诊断日志。
-fn ensure_provider_sync_is_idle_before_stop() -> Result<(), String> {
-    let outcome = wait_for_idle_provider_sync(
-        || codex_plus_data::inspect_provider_sync_lock(None),
-        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
-        PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-    );
-    match outcome {
-        Ok(()) => Ok(()),
-        Err(state) => {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "manager.restart_blocked_by_provider_sync",
-                json!({
-                    "state": state,
-                    "waited_ms": PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-                }),
-            );
-            Err(format!(
-                "历史会话同步正在进行中（已等待 {} 秒）。为避免中断同步导致会话丢失，本次重启未执行；请等待同步完成后重试。",
-                PROVIDER_SYNC_WAIT_TIMEOUT_MS / 1000
-            ))
-        }
-    }
+// Hold ownership across stop and config sync, then release before the successor starts.
+fn ensure_provider_sync_is_idle_before_stop() -> Result<codex_plus_data::ProviderSyncLifecycleGuard, String> {
+    codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None).map_err(|error| {
+        format!("历史会话同步正在进行或锁不可用，未执行重启；请稍后重试：{error}")
+    })
 }
 
 fn default_debug_port() -> u16 {
@@ -6662,83 +6681,62 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    fn restart_does_not_wait_when_no_provider_sync_is_running() {
-        let slept = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || codex_plus_data::ProviderSyncLockState::Free,
-            |ms| slept.set(slept.get() + ms),
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(slept.get(), 0);
+    fn restart_absent_app_uses_launch_but_explicit_sync_still_restarts() {
+        assert_eq!(restart_disposition(false, false), RestartDisposition::LaunchOnly);
+        for (sync, running) in [(true, false), (false, true), (true, true)] {
+            assert_eq!(restart_disposition(sync, running), RestartDisposition::StopAndRestart);
+        }
     }
 
     #[test]
-    fn restart_does_not_wait_on_a_lock_whose_owner_already_exited() {
-        let slept = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || codex_plus_data::ProviderSyncLockState::Stale { pid: Some(4321) },
-            |ms| slept.set(slept.get() + ms),
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(slept.get(), 0);
+    fn restart_as_launch_precedes_cleanup_and_does_not_use_cdp_presence() {
+        let source = include_str!("commands.rs");
+        let start = source.find("fn restart_codex_plus_blocking").unwrap();
+        let end = source[start..].find("fn stop_codex_plus_for_restart").unwrap() + start;
+        let body = &source[start..end];
+        assert!(body.find("RestartDisposition::LaunchOnly").unwrap()
+            < body.find("ensure_provider_sync_is_idle_before_stop").unwrap());
+        assert!(body.contains("watcher::find_codex_processes_for_debug_port(request.debug_port)"));
+        assert!(!body.contains("cdp::"));
+        let async_start = source.find("pub async fn restart_codex_plus").unwrap();
+        assert!(source[async_start..start].contains("spawn_blocking"));
     }
 
     #[test]
-    fn restart_proceeds_once_an_in_flight_provider_sync_releases_the_lock() {
-        let polls = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || {
-                polls.set(polls.get() + 1);
-                if polls.get() < 3 {
-                    codex_plus_data::ProviderSyncLockState::Held {
-                        pid: 4321,
-                        started_at: 1234,
-                    }
-                } else {
-                    codex_plus_data::ProviderSyncLockState::Free
-                }
-            },
-            |_| {},
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(polls.get(), 3);
-    }
-
-    /// issue #1901：同步一直不结束时宁可拒绝重启，也不能强杀持锁的 launcher。
-    #[test]
-    fn restart_is_refused_while_a_provider_sync_keeps_holding_the_lock() {
-        let held = codex_plus_data::ProviderSyncLockState::Held {
-            pid: 4321,
-            started_at: 1234,
-        };
-
-        let outcome =
-            wait_for_idle_provider_sync(|| held.clone(), |_| {}, PROVIDER_SYNC_WAIT_TIMEOUT_MS);
-
-        assert_eq!(outcome, Err(held));
+    fn restart_and_launch_share_a_single_flight_guard() {
+        let first = try_acquire_launch_guard().unwrap();
+        assert!(try_acquire_launch_guard().is_err());
+        drop(first);
+        assert!(try_acquire_launch_guard().is_ok());
     }
 
     #[test]
-    fn restart_is_refused_while_the_lock_owner_cannot_be_determined() {
-        let outcome = wait_for_idle_provider_sync(
-            || codex_plus_data::ProviderSyncLockState::Indeterminate,
-            |_| {},
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
+    fn restart_provider_guard_is_held_until_spawn_and_released_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
+        assert!(codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).is_err());
+        let spawned = std::cell::Cell::new(false);
+        spawn_after_provider_guard_release(guard, &launch_request(false), |_| {
+            let next = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path()))?;
+            next.release()?;
+            spawned.set(true);
+            Ok(())
+        }).unwrap();
+        assert!(spawned.get());
+    }
 
-        assert_eq!(
-            outcome,
-            Err(codex_plus_data::ProviderSyncLockState::Indeterminate)
-        );
+    #[test]
+    fn restart_provider_guard_release_failure_blocks_spawn() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
+        fs::write(temp.path().join("tmp/provider-sync.lock/owner.json"),
+            json!({"pid": std::process::id(), "startedAt":1, "lockId":"replacement"}).to_string()).unwrap();
+        let spawned = std::cell::Cell::new(false);
+        assert!(spawn_after_provider_guard_release(guard, &launch_request(false), |_| {
+            spawned.set(true);
+            Ok(())
+        }).is_err());
+        assert!(!spawned.get());
     }
 
     #[test]
@@ -7189,7 +7187,6 @@ base_url = "https://example.invalid/v1"
         assert!(config.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
     }
 
-    #[test]
     /// 回归（issue #1604）：用户点「重启 Codex++」走的就是这条同步路径。
     /// 现场遗留的 0 字节 auth.json 必须被修复成合法 JSON，否则仍然停在登录页。
     #[test]
@@ -7226,6 +7223,7 @@ base_url = "https://example.invalid/v1"
         );
     }
 
+    #[test]
     fn failed_active_relay_sync_does_not_spawn_or_change_live_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
@@ -7269,7 +7267,7 @@ base_url = "https://example.invalid/v1"
     fn restart_stops_codex_then_waits_for_native_cleanup_before_launcher() {
         let events = std::cell::RefCell::new(Vec::new());
         stop_codex_plus_for_restart(
-            || events.borrow_mut().push("codex"),
+            || { events.borrow_mut().push("codex"); Ok(()) },
             || { events.borrow_mut().push("cleanup"); Ok(()) },
             || { events.borrow_mut().push("launcher"); Ok(()) },
         ).unwrap();
@@ -7281,13 +7279,23 @@ base_url = "https://example.invalid/v1"
         let stopped = std::cell::Cell::new(false);
         let killed = std::cell::Cell::new(false);
         let result = stop_codex_plus_for_restart(
-            || stopped.set(true),
+            || { stopped.set(true); Ok(()) },
             || anyhow::bail!("cleanup still running"),
             || { killed.set(true); Ok(()) },
         );
         assert!(result.is_err());
         assert!(stopped.get());
         assert!(!killed.get());
+    }
+
+    #[test]
+    fn restart_does_not_cleanup_or_spawn_if_app_stop_fails() {
+        let result = stop_codex_plus_for_restart(
+            || anyhow::bail!("app remains running"),
+            || panic!("must not wait on cleanup"),
+            || panic!("must not stop launcher"),
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -7731,7 +7739,6 @@ enabled = true
         );
     }
 
-    #[test]
     /// #1972：用户误把 Codex++ 自己的 exe 选成了「Codex 应用路径」——文件选择器
     /// 只按 exe 扩展名过滤，拦不住。以前无效路径会原样存进 settings.json，而
     /// launcher 拿到显式无效 --app-path 又不回退自动探测，于是启动永久失败，

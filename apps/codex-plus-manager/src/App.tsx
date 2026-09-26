@@ -122,7 +122,7 @@ import {
   type ProviderSyncStreamProgress,
 } from "./provider-sync-flow";
 import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./provider-sync-target";
-import { resolveLaunchStatus } from "./launch-status";
+import { resolveLaunchStatus, launchCompletionNotice } from "./launch-status";
 import {
   defaultDreamSkinTheme,
   defaultDreamSkinColors,
@@ -1166,6 +1166,8 @@ export function App() {
     helperPort: "57321",
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
+  const launchPendingRef = useRef(false);
+  const [launchPending, setLaunchPending] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   // 顶栏工具切换条的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
@@ -2144,33 +2146,49 @@ export function App() {
   };
 
   const launch = async () => {
-    const result = await launchCommand("launch_codex_plus");
-    if (!result) return;
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("启动任务"), result.message, result.status);
-      return;
+    if (launchPendingRef.current) return;
+    launchPendingRef.current = true;
+    setLaunchPending(true);
+    try {
+      const result = await launchCommand("launch_codex_plus");
+      if (!result) return;
+      if (!isSuccessStatus(result.status)) {
+        showNotice(t("启动任务"), result.message, result.status);
+        return;
+      }
+      showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
+      const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
+      showLaunchCompletionNotice(t("启动任务"), completion, result.launchStartedAtMs);
+    } finally {
+      launchPendingRef.current = false;
+      setLaunchPending(false);
     }
-    showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
-    const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-    showLaunchCompletionNotice(t("启动任务"), completion);
   };
 
   const restart = async (syncActiveRelay = false) => {
-    const result = await launchCommand("restart_codex_plus", syncActiveRelay);
-    if (!result) return false;
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("重启 Codex++"), result.message, result.status);
-      return false;
+    if (launchPendingRef.current) return false;
+    launchPendingRef.current = true;
+    setLaunchPending(true);
+    try {
+      const result = await launchCommand("restart_codex_plus", syncActiveRelay);
+      if (!result) return false;
+      if (!isSuccessStatus(result.status)) {
+        showNotice(t("重启 Codex++"), result.message, result.status);
+        return false;
+      }
+      showNotice(t("重启 Codex++"), t("正在等待 Codex 重新启动…"), "accepted");
+      const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
+      showLaunchCompletionNotice(t("重启 Codex++"), completion, result.launchStartedAtMs);
+      const succeeded = Boolean(
+        completion
+        && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
+      );
+      if (succeeded) setPendingDreamSkinRestart(null);
+      return succeeded;
+    } finally {
+      launchPendingRef.current = false;
+      setLaunchPending(false);
     }
-    showNotice(t("重启 Codex++"), t("正在等待 Codex 重新启动…"), "accepted");
-    const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-    showLaunchCompletionNotice(t("重启 Codex++"), completion);
-    const succeeded = Boolean(
-      completion
-      && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
-    );
-    if (succeeded) setPendingDreamSkinRestart(null);
-    return succeeded;
   };
 
   const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus", syncActiveRelay = false) => {
@@ -2206,20 +2224,9 @@ export function App() {
     return null;
   };
 
-  const showLaunchCompletionNotice = (title: string, result: OverviewResult | null) => {
-    const status = result?.latest_launch;
-    if (!status) {
-      showNotice(title, t("启动仍在后台进行，可在概览的“最近启动”中查看状态。"), "accepted");
-      return;
-    }
-    if (["failed", "crashed", "stopped"].includes(status.status)) {
-      showNotice(title, status.message || t("Codex 启动失败。"), "failed");
-      return;
-    }
-    const message = status.status === "running_degraded"
-      ? t("Codex 已启动，增强功能仍在等待页面连接。")
-      : t("Codex 已成功启动。");
-    showNotice(title, message, "ok");
+  const showLaunchCompletionNotice = (title: string, result: OverviewResult | null, requestedAt?: number) => {
+    const notice = launchCompletionNotice(result?.latest_launch ?? null, requestedAt ?? 0);
+    showNotice(title, t(notice.message), notice.status);
   };
 
   const repairPluginMarketplace = async () => {
@@ -3515,7 +3522,7 @@ export function App() {
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
             {activeTool === "codex" ? (
-              <Button onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
+              <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
                 <Rocket className="h-4 w-4" />
                 {t("重启 Codex++")}
               </Button>
