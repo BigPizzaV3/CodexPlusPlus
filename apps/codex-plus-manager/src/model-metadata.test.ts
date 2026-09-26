@@ -415,53 +415,53 @@ describe("model metadata helpers", () => {
   it("元数据来源标签覆盖全部用户场景", () => {
     const match = { matched: true, source: "GLM", entry: { slug: "glm-5.3" } };
     const fallback = { matched: false, fallback: { slug: "gpt-5.5", context_window: 272_000 } };
-    // 标签直接下发纯文本（不再过 t()/tf()），原样透传即可
+    // 标签以结构化 source 下发；文案由调用方 localize 时拼 t()/tf() key
     const render = (tags: ReturnType<typeof metadataSourceTags>) => tags.map((tag) => ({
       kind: tag.kind,
       tone: tag.tone,
-      text: tag.text,
-      title: tag.title,
+      source: tag.source,
     }));
+    const sources = (tags: ReturnType<typeof metadataSourceTags>) => render(tags).map((tag) => tag.source);
 
     // 纯命中（打开导入区，内置预填）：只显示匹配标签
     assert.deepStrictEqual(
       render(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: match, builtinIndexSlug: { source: "GLM" } })),
-      [{ kind: "match", text: "匹配：GLM", title: "内置元数据：GLM", tone: "builtin" }],
+      [{ kind: "match", source: "GLM", tone: "builtin" }],
     );
     // 命中 + 自定义（保存过/老版本已配置）：匹配与自定义并列
     assert.deepStrictEqual(
-      render(metadataSourceTags({ slug: "glm-5.3", imported: true, builtinMatch: match, builtinIndexSlug: { source: "GLM" } })).map(t => t.text),
-      ["匹配：GLM", "自定义"],
+      sources(metadataSourceTags({ slug: "glm-5.3", imported: true, builtinMatch: match, builtinIndexSlug: { source: "GLM" } })),
+      ["GLM", "GLM"],
     );
     // 回退态（无内置）：回退标签
     assert.deepStrictEqual(
-      render(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: fallback, builtinIndexSlug: undefined })).map(t => t.text),
-      ["回退：gpt-5.5"],
+      render(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: fallback, builtinIndexSlug: undefined })),
+      [{ kind: "fallback", source: "gpt-5.5", tone: "fallback" }],
     );
     // 回退 + 自定义：自定义已覆盖，不再显示"回退"（避免误导为还在用 gpt-5.5）
     assert.deepStrictEqual(
-      render(metadataSourceTags({ slug: "nope", imported: true, builtinMatch: fallback, builtinIndexSlug: undefined })).map(t => t.text),
-      ["自定义"],
+      render(metadataSourceTags({ slug: "nope", imported: true, builtinMatch: fallback, builtinIndexSlug: undefined })),
+      [{ kind: "custom", source: undefined, tone: "custom" }],
     );
     // match 数据未返回时用索引兜底（行级渲染路径）
     assert.deepStrictEqual(
-      render(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: null, builtinIndexSlug: { source: "GLM" } })).map(t => t.text),
-      ["匹配：GLM"],
+      sources(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: null, builtinIndexSlug: { source: "GLM" } })),
+      ["GLM"],
     );
     // 全无：回退（fallbackSlug 由后端实时下发，不写死）
     assert.deepStrictEqual(
-      render(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.5" })).map(t => t.text),
-      ["回退：gpt-5.5"],
+      sources(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.5" })),
+      ["gpt-5.5"],
     );
-    // 自定义 fallback 标签文案可定制（fallback 源变化时）
+    // 自定义 fallback 标签可定制（fallback 源变化时）
     assert.deepStrictEqual(
-      render(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.4" })).map(t => t.text),
-      ["回退：gpt-5.4"],
+      sources(metadataSourceTags({ slug: "nope", imported: false, builtinMatch: null, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.4" })),
+      ["gpt-5.4"],
     );
     // match 未命中但 entry 缺失时不应产生匹配标签（脏数据防御）
     assert.deepStrictEqual(
-      render(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: { matched: false, source: "GLM" }, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.5" })).map(t => t.text),
-      ["回退：gpt-5.5"],
+      sources(metadataSourceTags({ slug: "glm-5.3", imported: false, builtinMatch: { matched: false, source: "GLM" }, builtinIndexSlug: undefined, fallbackSlug: "gpt-5.5" })),
+      ["gpt-5.5"],
     );
   });
 
@@ -848,7 +848,7 @@ describe("model metadata helpers", () => {
     assert.strictEqual(importPanelControls({ ...options, imported: true, parseOk: true, matched: true, matchesBuiltin: true }).clear.disabled, false);
   });
 
-  it("来源徽标直接下发纯文本，文案由 helper 统一维护", () => {
+  it("来源徽标以结构化 source 下发，文案由调用方 localize 拼装", () => {
     const [match] = metadataSourceTags({
       slug: "kimi-k3[1M]",
       imported: false,
@@ -858,8 +858,7 @@ describe("model metadata helpers", () => {
     assert.deepStrictEqual(match, {
       kind: "match",
       tone: "builtin",
-      text: "匹配：Kimi",
-      title: "内置元数据：Kimi",
+      source: "Kimi",
     });
     const [fallback] = metadataSourceTags({
       slug: "unknown",
@@ -871,8 +870,7 @@ describe("model metadata helpers", () => {
     assert.deepStrictEqual(fallback, {
       kind: "fallback",
       tone: "fallback",
-      text: "回退：gpt-5.5",
-      title: "无内置元数据，生成时回退 gpt-5.5 官方模板",
+      source: "gpt-5.5",
     });
     // 命中内置 + 有自定义时并列两个标签，custom 在第二个
     const tags = metadataSourceTags({
@@ -884,8 +882,8 @@ describe("model metadata helpers", () => {
     assert.strictEqual(tags.length, 2);
     const custom = tags[1];
     assert.strictEqual(custom.kind, "custom");
-    assert.strictEqual(custom.text, "自定义");
-    assert.strictEqual(custom.title, "已导入自定义元数据，生成时覆盖内置（Kimi）");
+    assert.strictEqual(custom.tone, "custom");
+    assert.strictEqual(custom.source, "Kimi");
 
     // 命中内置但无自定义：只有 match 一个标签
     const onlyMatch = metadataSourceTags({
@@ -896,7 +894,7 @@ describe("model metadata helpers", () => {
     });
     assert.strictEqual(onlyMatch.length, 1);
     assert.strictEqual(onlyMatch[0].kind, "match");
-    assert.strictEqual(onlyMatch[0].text, "匹配：Kimi");
+    assert.strictEqual(onlyMatch[0].source, "Kimi");
   });
 
   it("内置查询区分命中、未命中和命令失败三态", () => {
