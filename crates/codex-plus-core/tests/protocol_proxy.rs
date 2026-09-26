@@ -1,5 +1,5 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, CompactionSseConverter, audio_transcriptions_url,
+    ChatSseToResponsesConverter, CompactionSseConverter, UpstreamWireApi, audio_transcriptions_url,
     chat_completion_to_response, chat_completion_to_response_with_request, chat_completions_url,
     chat_sse_to_responses_sse, chat_sse_to_responses_sse_with_request, image_edits_url,
     image_generations_url, is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path,
@@ -9,11 +9,11 @@ use codex_plus_core::protocol_proxy::{
     open_image_edits_proxy_request, open_image_generations_proxy_request,
     open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
-    open_responses_proxy_request_with_settings_for_path, request_has_compaction_trigger,
-    responses_compact_url, responses_error_from_upstream, responses_to_chat_completions,
-    responses_to_chat_completions_with_options, send_upstream_request_with_header_timeout,
-    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
-    wrap_non_stream_response_as_compaction,
+    open_responses_proxy_request_with_settings_for_path, render_compaction_sse,
+    request_has_compaction_trigger, responses_compact_url, responses_error_from_upstream,
+    responses_to_chat_completions, responses_to_chat_completions_with_options,
+    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
+    upstream_stream_header_timeout, wrap_non_stream_response_as_compaction,
 };
 use codex_plus_core::relay_config::test_relay_profile;
 use codex_plus_core::settings::{
@@ -65,6 +65,15 @@ fn compaction_trigger_detection() {
 
     let string_input = json!({ "model": "m", "input": "hi" });
     assert!(!request_has_compaction_trigger(&string_input));
+
+    let trigger_not_last = json!({
+        "model": "m",
+        "input": [
+            { "type": "compaction_trigger" },
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "after" }] }
+        ]
+    });
+    assert!(request_has_compaction_trigger(&trigger_not_last));
 }
 
 #[test]
@@ -74,7 +83,8 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
         "input": [
             { "type": "message", "role": "user",
               "content": [{ "type": "input_text", "text": "latest question" }] },
-            { "type": "compaction", "encrypted_content": "PRIOR_SUMMARY" }
+            { "type": "compaction", "id": "cp_resp_compact_legacy",
+              "encrypted_content": "PRIOR_SUMMARY" }
         ]
     }))
     .unwrap();
@@ -89,6 +99,120 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
         })
         .expect("compaction item 应展开为摘要 user 消息");
     assert_eq!(replayed["role"], "user");
+}
+
+#[test]
+fn native_checkpoint_cannot_be_downgraded_to_chat_text() {
+    let error = responses_to_chat_completions(json!({
+        "model": "model",
+        "input": [{ "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" }]
+    }))
+    .unwrap_err();
+    assert!(error.to_string().contains("原生 v2 压缩项"));
+
+    let object_error = responses_to_chat_completions(json!({
+        "model": "model",
+        "input": { "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" }
+    }))
+    .unwrap_err();
+    assert!(object_error.to_string().contains("原生 v2 压缩项"));
+}
+
+#[test]
+fn marked_proxy_summary_replays_as_chat_user_message() {
+    let mut converter = CompactionSseConverter::new("model");
+    converter.push_summary_text("CHAT_REPLAY_SUMMARY");
+    let checkpoint = parse_sse_events(&converter.finish())
+        .into_iter()
+        .find(|(name, _)| name == "response.output_item.done")
+        .unwrap()
+        .1["item"]
+        .clone();
+    let converted = responses_to_chat_completions(json!({
+        "model": "model",
+        "input": [checkpoint]
+    }))
+    .unwrap();
+    let message = &converted["messages"][0];
+    assert_eq!(message["role"], "user");
+    assert!(
+        message["content"]
+            .as_str()
+            .unwrap()
+            .contains("CHAT_REPLAY_SUMMARY")
+    );
+    assert!(
+        !message["content"]
+            .as_str()
+            .unwrap()
+            .contains("codexplus-summary-v1:")
+    );
+}
+
+#[tokio::test]
+async fn proxy_summary_replays_as_text_for_responses_without_rewriting_native_checkpoint() {
+    let mut converter = CompactionSseConverter::new("model");
+    converter.push_summary_text("REPLAY_SUMMARY");
+    let events = parse_sse_events(&converter.finish());
+    let checkpoint = events
+        .iter()
+        .find(|(name, _)| name == "response.output_item.done")
+        .unwrap()
+        .1["item"]
+        .clone();
+    assert!(
+        checkpoint["encrypted_content"]
+            .as_str()
+            .unwrap()
+            .starts_with("codexplus-summary-v1:")
+    );
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        write_json_response(&mut stream, r#"{"id":"resp_ok","output":[]}"#).await;
+        request
+    });
+    let request = json!({
+        "model": "model",
+        "stream": false,
+        "input": [
+            checkpoint,
+            { "type": "compaction", "id": "cp_resp_compact_legacy",
+              "encrypted_content": "LEGACY_SUMMARY" },
+            { "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" }
+        ]
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &request.to_string(),
+        compaction_proxy_settings(&format!("http://{addr}/v1")),
+    )
+    .await
+    .unwrap();
+    result.read_body().await.unwrap();
+    let captured = server.await.unwrap();
+    let (_, body) = captured.split_once("\r\n\r\n").unwrap();
+    let forwarded: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(forwarded["input"][0]["type"], "message");
+    assert!(
+        forwarded["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("REPLAY_SUMMARY")
+    );
+    assert_eq!(forwarded["input"][1]["type"], "message");
+    assert!(
+        forwarded["input"][1]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("LEGACY_SUMMARY")
+    );
+    assert_eq!(forwarded["input"][2]["type"], "compaction");
+    assert_eq!(forwarded["input"][2]["encrypted_content"], "OPAQUE_NATIVE");
 }
 
 #[test]
@@ -109,8 +233,71 @@ fn wrap_non_stream_response_produces_single_compaction_item() {
     assert!(text.contains("\"type\":\"compaction\""));
     assert!(text.contains("SUMMARYfromRESPONSES"));
     assert!(text.contains("data: [DONE]"));
-    // 恰好一个 compaction 输出项
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    let events = parse_sse_events(text.as_bytes());
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(name, value)| {
+                name == "response.output_item.done" && value["item"]["type"] == "compaction"
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn wrapped_compaction_emits_item_done_before_completed() {
+    let upstream = json!({
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "HANDOFF_SUMMARY" }]
+        }]
+    });
+    let wrapped =
+        wrap_non_stream_response_as_compaction(upstream.to_string().as_bytes(), "model").unwrap();
+    let events = parse_sse_events(&wrapped);
+    let done = events
+        .iter()
+        .filter(|(name, _)| name == "response.output_item.done")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        done.len(),
+        1,
+        "Codex counts output_item.done, not completed.output"
+    );
+    assert_eq!(done[0].1["item"]["type"], "compaction");
+    assert!(
+        done[0].1["item"]["encrypted_content"]
+            .as_str()
+            .is_some_and(|content| content.contains("HANDOFF_SUMMARY"))
+    );
+    assert_eq!(events.last().unwrap().0, "response.completed");
+}
+
+#[test]
+fn empty_summary_emits_failure_without_installing_checkpoint() {
+    let wrapped = wrap_non_stream_response_as_compaction(br#"{"output":[]}"#, "model").unwrap();
+    let events = parse_sse_events(&wrapped);
+    assert!(events.iter().any(|(name, _)| name == "response.failed"));
+    assert!(
+        !events.iter().any(|(name, _)| {
+            name == "response.output_item.done" || name == "response.completed"
+        })
+    );
+}
+
+fn parse_sse_events(bytes: &[u8]) -> Vec<(String, Value)> {
+    String::from_utf8_lossy(bytes)
+        .split("\n\n")
+        .filter_map(|block| {
+            let name = block
+                .lines()
+                .find_map(|line| line.strip_prefix("event: "))?;
+            let data = block.lines().find_map(|line| line.strip_prefix("data: "))?;
+            Some((name.to_string(), serde_json::from_str(data).unwrap()))
+        })
+        .collect()
 }
 
 #[test]
@@ -124,7 +311,15 @@ fn wrap_non_stream_chat_response_produces_single_compaction_item() {
     let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
     let text = String::from_utf8(wrapped).unwrap();
     assert!(text.contains("SUMMARYfromCHAT"));
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    assert_eq!(
+        parse_sse_events(text.as_bytes())
+            .iter()
+            .filter(|(name, value)| {
+                name == "response.output_item.done" && value["item"]["type"] == "compaction"
+            })
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -228,53 +423,39 @@ async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        // 单次 read() 只保证拿到「一部分」字节：头与 body 分在不同 TCP 段到达时
-        // 只会读到头部（实测读到 187 字节 = 仅有头部），断言就看不到请求体。
-        // 本测试注入的摘要指令约 425 字符、body 约 700 字节，使这个竞态从偶发
-        // 变成常态（修复前连跑 12 次失败 10 次）。按 Content-Length 读满整个请求。
-        let mut raw = Vec::new();
-        let mut buffer = [0; 8192];
-        loop {
-            let read = stream.read(&mut buffer).await.unwrap();
-            if read == 0 {
-                break;
-            }
-            raw.extend_from_slice(&buffer[..read]);
-            let text = String::from_utf8_lossy(&raw);
-            let Some(header_end) = text.find("\r\n\r\n") else {
-                continue;
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let accepted = if index == 0 {
+                Some(listener.accept().await.unwrap())
+            } else {
+                tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
             };
-            let content_length = text
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())?
-                })
-                .unwrap_or(0);
-            if raw.len() >= header_end + 4 + content_length {
+            let Some((mut stream, _)) = accepted else {
                 break;
-            }
+            };
+            let request = read_http_request(&mut stream).await;
+            let text = if index == 0 {
+                "ORDINARY_ANSWER_NOT_A_SUMMARY"
+            } else {
+                "COMPACTED_SUMMARY_TEXT"
+            };
+            let body = json!({
+                "id": "resp_up",
+                "object": "response",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": text }]
+                }]
+            });
+            write_json_response(&mut stream, &body.to_string()).await;
+            requests.push(request);
         }
-        let request = String::from_utf8_lossy(&raw).to_string();
-        let body = json!({
-            "id": "resp_up",
-            "object": "response",
-            "status": "completed",
-            "output": [
-                { "type": "message", "role": "assistant",
-                  "content": [{ "type": "output_text", "text": "COMPACTED_SUMMARY_TEXT" }] }
-            ]
-        });
-        let body_text = serde_json::to_string(&body).unwrap();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
-            body_text.len(),
-            body_text
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-        request
+        requests
     });
     let settings = BackendSettings {
         active_relay_id: "compact".to_string(),
@@ -300,22 +481,378 @@ async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
             { "type": "compaction_trigger" }
         ]
     });
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         &serde_json::to_string(&request_body).unwrap(),
         settings,
     )
     .await
     .unwrap();
-    let request = server.await.unwrap();
+    let requests = server.await.unwrap();
 
-    // 上游端点保持普通 /v1/responses，请求体剥离了 trigger 并注入了摘要指令。
-    assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
-    assert!(request.contains("CONTEXT CHECKPOINT COMPACTION"));
-    assert!(!request.contains("compaction_trigger"));
-
-    // 标记为压缩请求，交给响应包装层重组。
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("POST /v1/responses HTTP/1.1"));
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
     assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
     assert_eq!(result.status_code, 200);
+    let buffered = result.read_body().await.unwrap();
+    let buffered = String::from_utf8(buffered).unwrap();
+    assert!(buffered.contains("COMPACTED_SUMMARY_TEXT"));
+    assert!(!buffered.contains("ORDINARY_ANSWER_NOT_A_SUMMARY"));
+}
+
+#[tokio::test]
+async fn compaction_v2_passthrough_requires_native_sse_item_event() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        let body = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"NATIVE_CHECKPOINT\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",\"output\":[]}}\n\n"
+        );
+        write_sse_response(&mut stream, body).await;
+        let second = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        if let Ok(Ok((mut stream, _))) = second {
+            let fallback = read_http_request(&mut stream).await;
+            write_json_response(&mut stream, r#"{"output":[]}"#).await;
+            return vec![request, fallback];
+        }
+        vec![request]
+    });
+    let settings = compaction_proxy_settings(&format!("http://{addr}/v1"));
+    let request_body = json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "history" }] },
+            { "type": "compaction_trigger" }
+        ]
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request_body).unwrap(),
+        settings,
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[0].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(result.native_compaction_passthrough);
+    assert!(result.compaction);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("NATIVE_CHECKPOINT"));
+    assert_eq!(
+        parse_sse_events(body.as_bytes())[0].0,
+        "response.output_item.done"
+    );
+}
+
+#[tokio::test]
+async fn compaction_v2_empty_output_falls_back_without_stripping_native_success() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let body = if index == 0 {
+                r#"{"id":"resp_empty","object":"response","status":"completed","output":[]}"#
+            } else {
+                r#"{"id":"resp_fallback","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"FALLBACK_SUMMARY"}]}]}"#
+            };
+            write_json_response(&mut stream, body).await;
+            requests.push(request);
+        }
+        requests
+    });
+    let settings = compaction_proxy_settings(&format!("http://{addr}/v1"));
+    let request_body = json!({
+        "model": "grok-4.7",
+        "stream": false,
+        "input": [
+            { "type": "compaction_trigger" },
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "history" }] }
+        ]
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &serde_json::to_string(&request_body).unwrap(),
+        settings,
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[0].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("FALLBACK_SUMMARY"));
+}
+
+#[tokio::test]
+async fn compaction_v2_completed_only_output_does_not_count_as_native_item() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            requests.push(read_http_request(&mut stream).await);
+            if index == 0 {
+                let body = concat!(
+                    "event: response.completed\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",",
+                    "\"output\":[{\"type\":\"compaction\",\"encrypted_content\":\"UNUSABLE\"}]}}\n\n"
+                );
+                write_sse_response(&mut stream, body).await;
+            } else {
+                write_json_response(
+                    &mut stream,
+                    r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"REAL_SUMMARY"}]}]}"#,
+                )
+                .await;
+            }
+        }
+        requests
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        compaction_proxy_settings(&format!("http://{addr}/v1")),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(!result.native_compaction_passthrough);
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    let body = result.read_body().await.unwrap();
+    let wrapped =
+        render_compaction_sse(&body, result.is_stream, UpstreamWireApi::Responses, "model");
+    let events = parse_sse_events(&wrapped);
+    let done = events
+        .iter()
+        .find(|(name, _)| name == "response.output_item.done")
+        .expect("JSON fallback must produce a checkpoint even when the request asked for SSE");
+    assert!(
+        done.1["item"]["encrypted_content"]
+            .as_str()
+            .unwrap()
+            .contains("REAL_SUMMARY")
+    );
+}
+
+#[tokio::test]
+async fn compaction_v2_auth_error_is_not_retried_as_summary() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        let body = r#"{"error":{"message":"invalid API key"}}"#;
+        let response = format!(
+            "HTTP/1.1 401 Unauthorized\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        let second = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        (request, second.is_ok())
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        compaction_proxy_settings(&format!("http://{addr}/v1")),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert_eq!(result.status_code, 401);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("invalid API key")
+    );
+}
+
+#[tokio::test]
+async fn compaction_v2_stream_failure_is_forwarded_without_summary_retry() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let failure = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",",
+        "\"status\":\"failed\",\"error\":{\"message\":\"upstream capacity exceeded\"}}}\n\n"
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        write_sse_response(&mut stream, failure).await;
+        let second = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        (request, second.is_ok())
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        compaction_proxy_settings(&format!("http://{addr}/v1")),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert!(result.native_compaction_passthrough);
+    assert_eq!(result.read_body().await.unwrap(), failure.as_bytes());
+}
+
+#[tokio::test]
+async fn compaction_v2_explicit_unsupported_trigger_falls_back_to_summary() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            requests.push(read_http_request(&mut stream).await);
+            if index == 0 {
+                let body = r#"{"error":{"message":"unsupported compaction_trigger item"}}"#;
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            } else {
+                write_json_response(
+                    &mut stream,
+                    r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"COMPAT_SUMMARY"}]}]}"#,
+                )
+                .await;
+            }
+        }
+        requests
+    });
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        compaction_proxy_settings(&format!("http://{addr}/v1")),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert_eq!(result.status_code, 200);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("COMPAT_SUMMARY")
+    );
+}
+
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&raw);
+        let Some(header_end) = text.find("\r\n\r\n") else {
+            continue;
+        };
+        let content_length = text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0);
+        if raw.len() >= header_end + 4 + content_length {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&raw).to_string()
+}
+
+async fn write_json_response(stream: &mut tokio::net::TcpStream, body: &str) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+async fn write_sse_response(stream: &mut tokio::net::TcpStream, body: &str) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: text/event-stream\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+fn compaction_proxy_settings(base_url: &str) -> BackendSettings {
+    BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            base_url: base_url.to_string(),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
 }
 
 #[test]
@@ -486,9 +1023,7 @@ async fn responses_compact_request_keeps_compact_path_upstream() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buffer = [0; 4096];
-        let read = stream.read(&mut buffer).await.unwrap();
-        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        let request = read_http_request(&mut stream).await;
         stream
             .write_all(
                 b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
@@ -1685,7 +2220,7 @@ async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u
         "stream": false,
         "tools": tools
     });
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         &serde_json::to_string(&request).unwrap(),
         settings,
     )
@@ -1693,8 +2228,7 @@ async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u
     .expect("修复后：代理请求应成功完成（状态 200）");
     let status_code = result.status_code;
     let upstream_body = server.await.unwrap();
-    let response_body: Value =
-        serde_json::from_slice(&result.response.bytes().await.unwrap()).unwrap();
+    let response_body: Value = serde_json::from_slice(&result.read_body().await.unwrap()).unwrap();
     Ok((upstream_body, status_code, response_body))
 }
 
@@ -2878,16 +3412,16 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         relay.api_key.clear();
     }
 
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
         settings,
     )
     .await
     .unwrap();
-    let body = result.response.bytes().await.unwrap();
+    let body = result.read_body().await.unwrap();
 
     assert_eq!(result.status_code, 200);
-    assert_eq!(body.as_ref(), br#"{"id":"resp_1","object":"response"}"#);
+    assert_eq!(body.as_slice(), br#"{"id":"resp_1","object":"response"}"#);
     let first_request = first_server.await.unwrap();
     let second_request = second_server.await.unwrap();
     assert!(
@@ -3279,9 +3813,7 @@ async fn capture_request_and_respond_once(
     response: &'static str,
 ) -> String {
     let (mut stream, _) = listener.accept().await.unwrap();
-    let mut buffer = [0; 4096];
-    let read = stream.read(&mut buffer).await.unwrap();
-    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+    let request = read_http_request(&mut stream).await;
     stream.write_all(response.as_bytes()).await.unwrap();
     request
 }
@@ -3509,13 +4041,13 @@ async fn image_generations_proxy_forwards_json_and_upstream_error() {
     });
     write_image_relay_settings(temp.path(), &format!("http://{addr}/v1"));
     let body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
-    let upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
+    let mut upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
         .await
         .unwrap();
     assert_eq!(upstream.status_code, 429);
     assert_eq!(upstream.content_type, "application/problem+json");
     assert_eq!(
-        upstream.response.bytes().await.unwrap().as_ref(),
+        upstream.read_body().await.unwrap().as_slice(),
         br#"{"error":{"message":"rate limited"}}"#
     );
     let request = server.await.unwrap();
@@ -4364,7 +4896,10 @@ fn responses_request_passes_tool_search_through_to_chat_tools() {
         .expect("tool_search 必须出现在转换后的 tools 里");
     assert_eq!(tool_search["type"], "function");
     assert_eq!(tool_search["function"]["name"], "tool_search");
-    assert_eq!(tool_search["function"]["description"], "Search exposed tools");
+    assert_eq!(
+        tool_search["function"]["description"],
+        "Search exposed tools"
+    );
     assert_eq!(
         tool_search["function"]["parameters"]["properties"]["query"]["type"],
         "string"
@@ -4374,7 +4909,11 @@ fn responses_request_passes_tool_search_through_to_chat_tools() {
         "query"
     );
     // 其它工具不受影响
-    assert!(tools.iter().any(|tool| tool["function"]["name"] == "exec_command"));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "exec_command")
+    );
 }
 
 /// #2263：模型调用回 tool_search 时必须还原成 `tool_search_call` item，
@@ -4527,9 +5066,11 @@ key = "value"
     )
     .unwrap();
 
-    let preserved =
-        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
-            .unwrap();
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
 
     assert!(
         preserved.contains("[mcp_servers.context7]"),
@@ -4718,9 +5259,11 @@ fn preserve_live_app_settings_does_not_invent_mcp_servers() {
     let home = dir.path();
     std::fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
 
-    let preserved =
-        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
-            .unwrap();
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
 
     assert!(
         !preserved.contains("mcp_servers"),
