@@ -2560,18 +2560,30 @@ fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::M
     let map = value
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("model_metadata 必须是 JSON 对象"))?;
+    // 与前端 canonicalizeModelMetadataMap 完全对齐：key 统一剥 [1M] 后缀并做
+    // ASCII 小写归一，同名变体（大小写/后缀差异）后写者胜。否则旧数据里
+    // "DeepSeek-V4-Pro" 与 "deepseek-v4-pro[512K]" 会在前端显示与 Rust 生成
+    // catalog 两侧各选一份覆盖（前端末位胜、这里首位胜），界面与生效值分叉。
+    let mut canonical = serde_json::Map::new();
     for (slug, metadata) in map {
         if !metadata.is_object() {
             anyhow::bail!("model_metadata 的模型 {slug} 值必须是对象");
         }
+        let normalized = crate::model_suffix::parse_model_suffix(slug).0;
+        if normalized.is_empty() {
+            continue;
+        }
+        canonical.insert(normalized.to_ascii_lowercase(), metadata.clone());
     }
-    Ok(map.clone())
+    Ok(canonical)
 }
 
 fn model_metadata_has_entries(
     metadata: &serde_json::Map<String, Value>,
     entry_slugs: &HashSet<String>,
 ) -> bool {
+    // metadata 的 key 已由 parse_model_metadata_map 归一化，entry slug 侧做
+    // 同样归一后直接求交。
     let normalized_entry_slugs = entry_slugs
         .iter()
         .map(|slug| {
@@ -2580,27 +2592,21 @@ fn model_metadata_has_entries(
                 .to_ascii_lowercase()
         })
         .collect::<HashSet<_>>();
-    metadata.keys().any(|slug| {
-        let normalized = crate::model_suffix::parse_model_suffix(slug).0;
-        !normalized.is_empty() && normalized_entry_slugs.contains(&normalized.to_ascii_lowercase())
-    })
+    metadata.keys().any(|slug| normalized_entry_slugs.contains(slug))
 }
 
 fn model_metadata_override_for_slug<'a>(
     override_map: &'a serde_json::Map<String, Value>,
     slug: &str,
 ) -> Option<&'a serde_json::Map<String, Value>> {
+    // override_map 的 key 已由 parse_model_metadata_map 归一化（剥后缀 +
+    // 小写、变体去重），查询 slug 做同样归一后直接命中。
     let normalized_slug = crate::model_suffix::parse_model_suffix(slug)
         .0
         .to_ascii_lowercase();
-    override_map.iter().find_map(|(key, value)| {
-        let candidate = crate::model_suffix::parse_model_suffix(key)
-            .0
-            .to_ascii_lowercase();
-        (candidate == normalized_slug)
-            .then(|| value.as_object())
-            .flatten()
-    })
+    override_map
+        .get(&normalized_slug)
+        .and_then(Value::as_object)
 }
 
 /// 判断当前 profile 是否需要由 CodexPlusPlus 托管写入 model catalog。
@@ -2628,6 +2634,7 @@ fn should_write_managed_model_catalog(
 mod managed_catalog_predicate_tests {
     use super::{
         apply_model_metadata_overrides, model_metadata_has_entries,
+        model_metadata_override_for_slug, parse_model_metadata_map,
         should_write_managed_model_catalog,
     };
     use crate::model_suffix::ModelCatalogEntry;
@@ -2696,29 +2703,52 @@ mod managed_catalog_predicate_tests {
 
     #[test]
     fn metadata_keys_match_catalog_slugs_case_insensitively_and_without_suffix() {
-        let metadata = serde_json::from_value::<Value>(json!({
-            "DeepSeek-V4-Pro[1M]": { "description": "custom" }
-        }))
-        .unwrap()
-        .as_object()
-        .cloned()
-        .unwrap();
+        // 生产链路里 has_entries 的入参恒来自 parse_model_metadata_map（key
+        // 已归一），这里走同一管道构造。
+        let metadata = parse_model_metadata_map(r#"{"DeepSeek-V4-Pro[1M]": {"description": "custom"}}"#).unwrap();
         let slugs = HashSet::from(["deepseek-v4-pro".to_string()]);
         assert!(model_metadata_has_entries(&metadata, &slugs));
     }
 
     #[test]
+    fn metadata_map_normalizes_keys_with_last_write_wins() {
+        // 同名变体（大小写/后缀）归一到同一 key，后写者胜——与前端
+        // canonicalizeModelMetadataMap 一致，否则两侧各选一份覆盖。
+        let metadata = parse_model_metadata_map(
+            r#"{
+                "DeepSeek-V4-Pro": {"description": "first"},
+                "deepseek-v4-pro[512K]": {"description": "second"}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata["deepseek-v4-pro"]["description"], "second");
+
+        // 覆盖查找同样按归一 key 命中：catalog 侧的 slug 带大小写变体也能查到。
+        let override_map =
+            parse_model_metadata_map(r#"{"GLM-5.3": {"display_name": "GLM"}}"#).unwrap();
+        assert_eq!(
+            model_metadata_override_for_slug(&override_map, "glm-5.3")
+                .unwrap()["display_name"],
+            "GLM"
+        );
+        assert_eq!(
+            model_metadata_override_for_slug(&override_map, "GLM-5.3[1M]")
+                .unwrap()["display_name"],
+            "GLM"
+        );
+        assert!(model_metadata_override_for_slug(&override_map, "other").is_none());
+    }
+
+    #[test]
     fn metadata_overlay_uses_canonical_slug_and_preserves_managed_fields() {
-        let metadata = serde_json::from_value::<Value>(json!({
-            "DeepSeek-V4-Pro[1M]": {
+        let metadata = parse_model_metadata_map(
+            r#"{"DeepSeek-V4-Pro[1M]": {
                 "description": "custom",
                 "context_window": 1,
                 "max_context_window": 1
-            }
-        }))
-        .unwrap()
-        .as_object()
-        .cloned()
+            }}"#,
+        )
         .unwrap();
         let catalog = json!({"models": [{
             "slug": "deepseek-v4-pro",
