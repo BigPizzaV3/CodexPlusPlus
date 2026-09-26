@@ -56,6 +56,7 @@ const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
 /// codex 期望响应里恰好包含一个的压缩结果 item，`encrypted_content` 只透传不校验。
 const COMPACTION_OUTPUT_TYPE: &str = "compaction";
+const PROXY_COMPACTION_PREFIX: &str = "codexplus-summary-v1:";
 /// 本地代理生成摘要时注入的 user 指令（对齐 openai/codex prompts/templates/compact/prompt.md）。
 const COMPACTION_SUMMARY_INSTRUCTION: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.";
 /// 历史回放时 `compaction` item 展开成的文本前缀（对齐 codex SUMMARY_PREFIX 语义）。
@@ -211,6 +212,9 @@ pub fn responses_to_chat_completions_with_options(
     body: Value,
     standard: bool,
 ) -> anyhow::Result<Value> {
+    if input_has_native_compaction(&body) {
+        anyhow::bail!("原生 v2 压缩项无法转换给 Chat Completions 上游");
+    }
     let mut result = json!({});
 
     if let Some(model) = body.get("model") {
@@ -606,36 +610,49 @@ impl CompactionSseConverter {
             ));
         }
         let mut output = String::new();
-        let (status, error, summary) = if let Some((message, _)) = &self.failed {
-            ("failed", json!({ "message": message }), String::new())
-        } else {
-            ("completed", Value::Null, self.summary)
-        };
-        let compaction_item = json!({
-            "id": format!("cp_{}", &self.response_id),
-            "type": COMPACTION_OUTPUT_TYPE,
-            "encrypted_content": summary
-        });
         let mut response = json!({
             "id": self.response_id,
             "object": "response",
             "created_at": chrono_now_millis() / 1000,
-            "status": status,
             "model": self.model,
-            "output": [compaction_item],
             "usage": default_responses_usage()
         });
-        if !error.is_null() {
+        if let Some((message, error_type)) = &self.failed {
+            let mut error = json!({ "message": message });
+            if let Some(error_type) = error_type {
+                error["type"] = json!(error_type);
+            }
+            response["status"] = json!("failed");
+            response["output"] = json!([]);
             response["error"] = error;
+            push_sse(
+                &mut output,
+                "response.failed",
+                json!({ "type": "response.failed", "response": response }),
+            );
+        } else {
+            let compaction_item = json!({
+                "id": format!("cp_{}", &self.response_id),
+                "type": COMPACTION_OUTPUT_TYPE,
+                "encrypted_content": format!("{PROXY_COMPACTION_PREFIX}{}", self.summary)
+            });
+            push_sse(
+                &mut output,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": compaction_item
+                }),
+            );
+            response["status"] = json!("completed");
+            response["output"] = json!([compaction_item]);
+            push_sse(
+                &mut output,
+                "response.completed",
+                json!({ "type": "response.completed", "response": response }),
+            );
         }
-        push_sse(
-            &mut output,
-            "response.completed",
-            json!({
-                "type": "response.completed",
-                "response": response
-            }),
-        );
         output.push_str("data: [DONE]\n\n");
         output.into_bytes()
     }
@@ -674,13 +691,16 @@ pub fn render_compaction_sse(
     if wire_api != UpstreamWireApi::Responses {
         converter = converter.with_chat_upstream();
     }
-    let streamed = is_stream || response_body_is_stream("", upstream_body);
-    if streamed {
-        converter.push_upstream_bytes(upstream_body);
-    } else if let Ok(json) = serde_json::from_slice::<Value>(upstream_body) {
-        if let Some(error) = json.get("error").filter(|value| !value.is_null()) {
+    if let Ok(json) = serde_json::from_slice::<Value>(upstream_body) {
+        if json.get("error").is_some_and(|error| !error.is_null())
+            || matches!(
+                json.get("status").and_then(Value::as_str),
+                Some("failed" | "incomplete")
+            )
+        {
             converter.fail(
-                error
+                json.get("error")
+                    .unwrap_or(&Value::Null)
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("compaction upstream error")
@@ -703,6 +723,8 @@ pub fn render_compaction_sse(
             return converter.finish();
         }
         converter.push_summary_text(&text);
+    } else if is_stream || response_body_is_stream("", upstream_body) {
+        converter.push_upstream_bytes(upstream_body);
     } else {
         converter.fail(
             "上游返回了空摘要，无法完成压缩".to_string(),
@@ -789,14 +811,19 @@ fn json_compaction_count(value: &Value) -> Option<usize> {
         .and_then(|response| output_compaction_count(response.get("output")))
 }
 
-/// \u7edf\u8ba1\u4e0a\u6e38\u54cd\u5e94\u91cc\u7684 compaction \u8f93\u51fa\u9879\u3002\u6ca1\u6709 output \u6570\u7ec4\u65f6\u8fd4\u56de None\u3002
+/// 按 Codex 实际消费的 SSE item-done 事件统计原生压缩项。
+/// 非流式调用仍兼容 JSON output，但流式请求不能把 JSON 当作原生 v2 透传。
 fn upstream_compaction_item_count(body: &[u8], content_type: &str) -> Option<usize> {
     if response_body_is_stream(content_type, body) {
         let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
-        let mut last = None;
+        let mut count = 0;
         for block in text.split("\n\n") {
+            let mut event_name = None;
             let mut data_parts = Vec::new();
             for line in block.lines() {
+                if let Some(event) = strip_sse_field(line, "event") {
+                    event_name = Some(event.trim());
+                }
                 if let Some(data) = strip_sse_field(line.trim_end_matches('\r'), "data") {
                     data_parts.push(data);
                 }
@@ -811,11 +838,27 @@ fn upstream_compaction_item_count(body: &[u8], content_type: &str) -> Option<usi
             let Ok(json) = serde_json::from_str::<Value>(&data) else {
                 continue;
             };
-            if let Some(count) = json_compaction_count(&json) {
-                last = Some(count);
+            let event = event_name.or_else(|| json.get("type").and_then(Value::as_str));
+            match event {
+                Some("response.output_item.done")
+                    if json
+                        .get("item")
+                        .and_then(|item| item.get("type"))
+                        .and_then(Value::as_str)
+                        == Some(COMPACTION_OUTPUT_TYPE) =>
+                {
+                    json.get("item")?.get("encrypted_content")?.as_str()?;
+                    count += 1;
+                }
+                Some("response.completed") => {
+                    json.get("response")?.get("id")?.as_str()?;
+                    return Some(count);
+                }
+                Some("response.failed" | "response.incomplete" | "error") => return None,
+                _ => {}
             }
         }
-        return last;
+        return None;
     }
     let Ok(json) = serde_json::from_slice::<Value>(body) else {
         return None;
@@ -823,30 +866,78 @@ fn upstream_compaction_item_count(body: &[u8], content_type: &str) -> Option<usi
     json_compaction_count(&json)
 }
 
-fn upstream_has_summary_text(body: &[u8], content_type: &str, wire_api: UpstreamWireApi) -> bool {
+fn upstream_has_terminal_failure(body: &[u8], content_type: &str) -> bool {
     if response_body_is_stream(content_type, body) {
-        let mut converter = CompactionSseConverter::new("");
-        if wire_api != UpstreamWireApi::Responses {
-            converter = converter.with_chat_upstream();
-        }
-        converter.push_upstream_bytes(body);
-        return !converter.summary_text().trim().is_empty();
+        let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
+        return text.split("\n\n").any(|block| {
+            let event = block
+                .lines()
+                .find_map(|line| strip_sse_field(line, "event"));
+            matches!(
+                event.map(str::trim),
+                Some("response.failed" | "response.incomplete" | "error")
+            )
+        });
     }
-    let Ok(json) = serde_json::from_slice::<Value>(body) else {
-        return false;
+    serde_json::from_slice::<Value>(body).is_ok_and(|json| {
+        json.get("error").is_some_and(|error| !error.is_null())
+            || matches!(
+                json.get("status").and_then(Value::as_str),
+                Some("failed" | "incomplete")
+            )
+    })
+}
+
+fn proxy_compaction_summary(item: &Value) -> Option<&str> {
+    let content = item.get("encrypted_content")?.as_str()?;
+    content.strip_prefix(PROXY_COMPACTION_PREFIX).or_else(|| {
+        item.get("id")
+            .and_then(Value::as_str)
+            .filter(|id| id.starts_with("cp_resp_compact_"))
+            .map(|_| content)
+    })
+}
+
+fn input_has_native_compaction(body: &Value) -> bool {
+    let is_native = |item: &Value| {
+        item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE)
+            && proxy_compaction_summary(item).is_none()
     };
-    let responses_text = extract_summary_text_from_responses(&json);
-    if !responses_text.trim().is_empty() {
-        return true;
+    match body.get("input") {
+        Some(Value::Array(items)) => items.iter().any(is_native),
+        Some(Value::Object(_)) => is_native(&body["input"]),
+        _ => false,
     }
-    !extract_summary_text_from_chat(&json).trim().is_empty()
+}
+
+fn replay_proxy_compactions_for_responses(body: &mut Value) {
+    let replay_item = |item: &mut Value| {
+        if item.get("type").and_then(Value::as_str) != Some(COMPACTION_OUTPUT_TYPE) {
+            return;
+        }
+        if let Some(summary) = proxy_compaction_summary(item) {
+            *item = json!({
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": format!("{COMPACTION_REPLAY_PREFIX}{summary}")
+                }]
+            });
+        }
+    };
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => items.iter_mut().for_each(replay_item),
+        Some(Value::Object(_)) => replay_item(&mut body["input"]),
+        _ => {}
+    }
 }
 
 /// 历史回放：把 codex 历史里的 `compaction` item 展开成明文 user 消息。
 /// codex 下游请求会把上次压缩结果作为 `{"type":"compaction","encrypted_content":"..."}`
 /// 放进 input，第三方模型看不懂该类型，必须转成文本。
 fn expand_compaction_item(item: &Value) -> Option<Value> {
-    let summary = item.get("encrypted_content").and_then(Value::as_str)?;
+    let summary = proxy_compaction_summary(item)?;
     let mut text = COMPACTION_REPLAY_PREFIX.to_string();
     text.push_str(summary);
     Some(json!({
@@ -1192,28 +1283,57 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             .to_string();
         if preserve_native {
             let success = (200..300).contains(&status_code);
-            let probed = if success {
-                upstream.bytes().await?.to_vec()
-            } else {
-                let _ = upstream.bytes().await;
-                Vec::new()
-            };
-            let native =
-                success && upstream_compaction_item_count(&probed, &content_type) == Some(1);
-            let summarized =
-                success && !native && upstream_has_summary_text(&probed, &content_type, wire_api);
-            if native || summarized {
+            let probed = upstream.bytes().await?.to_vec();
+            let stream_response = response_body_is_stream(&content_type, &probed);
+            if success && upstream_has_terminal_failure(&probed, &content_type) {
+                crate::relay_rotation::record_relay_request_failure(&settings);
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: stream_response,
+                    content_type,
+                    wire_api,
+                    compaction: true,
+                    // A failed SSE is still a complete native response; Codex must see its error.
+                    native_compaction_passthrough: stream_response,
+                    buffered_body: Some(probed),
+                    response: None,
+                });
+            }
+            let native = success
+                && (stream_response || !is_stream)
+                && upstream_compaction_item_count(&probed, &content_type) == Some(1);
+            if native {
                 crate::relay_rotation::record_relay_request_event(
                     &settings,
                     RotationEvent::Success,
                 );
                 return Ok(UpstreamProxyResponse {
                     status_code,
-                    is_stream: response_body_is_stream(&content_type, &probed),
+                    is_stream: stream_response,
                     content_type,
                     wire_api,
                     compaction: true,
-                    native_compaction_passthrough: native,
+                    native_compaction_passthrough: true,
+                    buffered_body: Some(probed),
+                    response: None,
+                });
+            }
+            let unsupported_trigger = (status_code == 400 || status_code == 422)
+                && String::from_utf8_lossy(&probed)
+                    .to_ascii_lowercase()
+                    .contains(COMPACTION_TRIGGER_TYPE);
+            if !success && !unsupported_trigger {
+                crate::relay_rotation::record_relay_request_failure(&settings);
+                if has_more_candidates {
+                    continue;
+                }
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: false,
+                    content_type,
+                    wire_api,
+                    compaction: true,
+                    native_compaction_passthrough: false,
                     buffered_body: Some(probed),
                     response: None,
                 });
@@ -1696,6 +1816,9 @@ async fn upstream_request_parts(
     // 原生 v2 上游要先看到 compaction_trigger。只有确认它没有返回 compaction 项后才剥掉重试。
     if compact && !preserve_compaction_trigger {
         request_json = rewrite_request_for_compaction(strip_compaction_trigger(request_json));
+        if input_has_native_compaction(&request_json) {
+            anyhow::bail!("原生 v2 压缩历史无法由不支持 v2 的上游生成兼容摘要");
+        }
     }
     if let Some(model) = model_override
         .map(str::trim)
@@ -1704,7 +1827,10 @@ async fn upstream_request_parts(
         request_json["model"] = json!(model);
     }
     let mut body = match relay.protocol {
-        RelayProtocol::Responses => request_json,
+        RelayProtocol::Responses => {
+            replay_proxy_compactions_for_responses(&mut request_json);
+            request_json
+        }
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
             relay.standard_openai_protocol,
@@ -1775,7 +1901,7 @@ async fn upstream_request_parts(
     Ok((
         match relay.protocol {
             // v2 压缩请求走普通 /responses 端点（compaction_trigger 在 input 里）；
-            // 旧版 /responses/compact 端点官方已下线，仅对显式路径保留改写。
+            // Codex 新版客户端使用 v2；独立 /responses/compact 路径仍按显式请求处理。
             RelayProtocol::Responses if compact && !is_v2_compaction => {
                 responses_compact_url(&relay.base_url)
             }
