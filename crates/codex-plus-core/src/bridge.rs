@@ -155,6 +155,30 @@ pub fn bridge_health_check_script() -> &'static str {
 "#
 }
 
+pub fn bridge_active_health_probe_script() -> &'static str {
+    r#"
+(async () => {
+  const bridge = window.__codexSessionDeleteBridge;
+  if (typeof bridge !== "function") return false;
+  let timer;
+  try {
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), 1500);
+    });
+    const result = await Promise.race([bridge("/backend/status", {}), timeout]);
+    if (result?.status !== "ok") return false;
+    const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
+    health.lastSuccessAt = Date.now();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+})()
+"#
+}
+
 pub async fn evaluate_script(websocket_url: &str, script: &str) -> anyhow::Result<Value> {
     evaluate_script_with_await_promise(websocket_url, script, false).await
 }

@@ -149,7 +149,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /Codex 未能生成新名称/);
   });
 
-  it("removes the legacy Codex++ top-bar entry", async () => {
+  it("removes the legacy dropdown without reviving its menu implementation", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.doesNotMatch(renderer, /function installCodexPlusMenu\(\)/);
@@ -157,20 +157,21 @@ describe("renderer injection header compatibility", () => {
     assert.doesNotMatch(renderer, /codex-plus-trigger/);
   });
 
-  it("places Codex++ in the native sidebar and opens a main-content page", async () => {
+  it("retains sidebar navigation as a fallback and opens a main-content page", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /codexPlusSidebarNavId\s*=\s*"codex-plus-sidebar-nav"/);
     assert.match(renderer, /function installCodexPlusSidebarNavigation\(\)/);
     assert.match(renderer, /aside\.app-shell-left-panel nav\[role="navigation"\]/);
-    assert.match(renderer, /const insertionButton = pluginButton \|\| navButtons\.find/);
+    assert.match(renderer, /navigation\.appendChild\(wrapper\)/);
+    assert.doesNotMatch(renderer, /insertionButton\?\.parentElement \|\| navigation/);
     assert.match(renderer, /selectors\.pluginNavButton/);
     assert.match(renderer, /button\.querySelector\(selectors\.pluginSvgPath\)/);
     assert.match(renderer, /\^\(插件\|Plugins\)\$/);
     assert.match(renderer, /openCodexPlusPage\(\)/);
     assert.match(renderer, /codex-plus-page-overlay/);
     assert.match(renderer, /positionCodexPlusPage/);
-    assert.match(renderer, /overlay\.remove\(\);\s*if \(pageMode\) setCodexPlusSidebarNavActive\(false\);/);
+    assert.match(renderer, /if \(pageMode\) closeCodexPlusPage\(\);/);
     assert.match(renderer, /function closeCodexPlusPage\(\)/);
     assert.match(renderer, /function installCodexPlusPageNavigationCloseHandler\(\)/);
     assert.match(renderer, /target\?\.closest\(selectors\.sidebarThread\)/);
@@ -178,6 +179,82 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /setTimeout\(\(\) => \{\s*window\.__codexPlusPageNavigationCloseTimer = null;\s*closeCodexPlusPage\(\);/);
     assert.match(renderer, /installCodexPlusSidebarNavigation\(\);/);
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
+  });
+
+  it("keeps the sidebar entry separated and the page opaque below the host chrome", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const css = installRendererStyle(renderer)[0].textContent ?? "";
+
+    assert.match(css, /#codex-plus-sidebar-nav\s*\{[^}]*margin-top:\s*auto;[^}]*border-top:\s*2px solid/s);
+    assert.match(renderer, /overlay\.style\.setProperty\("background", palette\.bgPrimary, "important"\)/);
+    assert.match(renderer, /__codexPlusPageLayoutObserver = new ResizeObserver/);
+    assert.match(renderer, /__codexPlusPageLayoutObserver\?\.disconnect\(\)/);
+  });
+
+  it("keeps the titlebar button clickable and limits its status badge to failures", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const css = installRendererStyle(renderer)[0].textContent ?? "";
+    assert.match(css, /#codex-plus-titlebar-entry > button\s*\{[^}]*-webkit-app-region: no-drag/s);
+    assert.match(css, /#codex-plus-titlebar-entry::before\s*\{[^}]*height: 14px/s);
+    assert.match(css, /\.codex-plus-titlebar-status\s*\{\s*display: none/s);
+    assert.match(css, /\.codex-plus-titlebar-status:is\(\[data-status="failed"\], \[data-status="degraded"\]\)/);
+  });
+
+  it("tracks the native main surface when the sidebar changes size", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const start = renderer.indexOf("  function positionCodexPlusPage(");
+    const end = renderer.indexOf("\n  function codexPlusHostUsesLightTheme(", start);
+    assert.ok(start >= 0 && end > start);
+    let x = 290;
+    let y = 44;
+    const main = { getBoundingClientRect: () => ({ left: x, top: y, width: 900, height: 600 }) };
+    const sidebar = { getBoundingClientRect: () => ({ right: x, top: y, width: x }) };
+    const observed: unknown[] = [];
+    const windowMock = {
+      __codexPlusPageLayoutObserver: {
+        disconnect: () => { observed.length = 0; },
+        observe: (node: unknown) => { observed.push(node); },
+      },
+      __codexPlusPageLayoutTargets: {},
+    };
+    const overlay = { classList: { contains: () => true }, style: { left: "", top: "" } };
+    const position = new Function("document", "window", "codexPlusPageClass",
+      `${renderer.slice(start, end)}\nreturn positionCodexPlusPage;`)(
+      { querySelector: (selector: string) => selector === "main" ? main : sidebar },
+      windowMock, "codex-plus-page-overlay",
+    ) as (node: typeof overlay) => void;
+
+    position(overlay);
+    assert.equal(overlay.style.left, "290px");
+    assert.equal(overlay.style.top, "44px");
+    assert.deepEqual(observed, [main, sidebar]);
+    x = 360;
+    y = 52;
+    position(overlay);
+    assert.equal(overlay.style.left, "360px");
+    assert.equal(overlay.style.top, "52px");
+    assert.deepEqual(observed, [main, sidebar]);
+  });
+
+  it("bounds model whitelist refreshes during long-running catalog updates", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const start = renderer.indexOf("  function scheduleCodexModelWhitelistRefresh(");
+    const end = renderer.indexOf("\n  function refreshCodexModelWhitelistFromScan(", start);
+    assert.ok(start >= 0 && end > start);
+    const callbacks: Array<() => void> = [];
+    const delays: number[] = [];
+    let passes = 0;
+    const schedule = new Function("window", "codexPlusModelUnlockEnabled", "sendCodexPlusDiagnostic", "runCodexModelWhitelistRefreshPass",
+      `let codexModelWhitelistRefreshUntil = 0; let codexModelWhitelistRefreshTimer = 0;
+      ${renderer.slice(start, end)}\nreturn scheduleCodexModelWhitelistRefresh;`)(
+      { setTimeout: (callback: () => void, delay: number) => { callbacks.push(callback); delays.push(delay); return callbacks.length; } },
+      () => true, () => {}, () => { passes += 1; },
+    ) as () => void;
+
+    schedule();
+    while (callbacks.length) callbacks.shift()?.();
+    assert.equal(passes, 4);
+    assert.deepEqual(delays, [400, 1200, 2500]);
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {

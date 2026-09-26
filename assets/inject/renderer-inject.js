@@ -410,10 +410,11 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "20";
+  const codexDeleteStyleVersion = "22";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
+  const codexPlusTitlebarEntryId = "codex-plus-titlebar-entry";
   const codexPlusPageClass = "codex-plus-page-overlay";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
@@ -960,9 +961,85 @@
       .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
       .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
       .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
+      #${codexPlusTitlebarEntryId} {
+        display: inline-flex;
+        align-items: center;
+        align-self: center;
+        flex: 0 0 auto;
+        gap: 8px;
+        margin-inline: 2px 8px;
+        -webkit-app-region: drag;
+      }
+      #${codexPlusTitlebarEntryId}::before {
+        content: "";
+        width: 1px;
+        height: 14px;
+        background: var(--color-border-primary, rgba(127,127,127,.35));
+      }
+      #${codexPlusTitlebarEntryId} > button {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 26px;
+        padding: 4px 8px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        white-space: nowrap;
+        cursor: pointer;
+        -webkit-app-region: no-drag;
+      }
+      #${codexPlusTitlebarEntryId} > button:hover,
+      #${codexPlusTitlebarEntryId} > button[data-active="true"] {
+        background: var(--color-background-primary-soft, rgba(127,127,127,.12));
+        color: var(--color-text-primary, inherit);
+      }
+      #${codexPlusTitlebarEntryId} > button:focus-visible {
+        outline: 2px solid var(--color-text-secondary, #888);
+        outline-offset: 1px;
+      }
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-icon,
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-icon svg {
+        display: block;
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+      }
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-status {
+        display: none;
+        position: absolute;
+        inset-inline-start: 17px;
+        top: 1px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #e8b85f;
+        color: #30210a;
+        font: bold 9px/10px sans-serif;
+        text-align: center;
+        pointer-events: none;
+      }
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-status:is([data-status="failed"], [data-status="degraded"]) { display: block; }
+      @media (max-width: 680px) {
+        #${codexPlusTitlebarEntryId} .codex-plus-titlebar-label { display: none; }
+        #${codexPlusTitlebarEntryId} { gap: 5px; margin-inline-end: 4px; }
+      }
       #${codexPlusSidebarNavId} {
         position: relative;
         flex: 0 0 auto;
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 48px;
+        margin-top: auto;
+        padding: 7px 8px 5px;
+        border-top: 2px solid color-mix(in srgb, var(--codex-plus-text) 38%, transparent);
+        background: var(--codex-plus-bg-primary);
+      }
+      #${codexPlusSidebarNavId} > button {
+        width: 100%;
+        min-height: 34px;
       }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-icon {
         width: 20px;
@@ -997,7 +1074,10 @@
       }
       .${codexPlusPageClass} {
         position: fixed;
-        inset: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        top: 0;
         z-index: 2147483644;
         display: block;
         background: var(--token-bg-primary, #212121);
@@ -4019,6 +4099,7 @@
       sidebarStatus.dataset.status = status;
       sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
+    updateCodexPlusTitlebarStatus(status);
     refreshCodexServiceTierControls();
   }
 
@@ -4241,20 +4322,34 @@
   }
 
   function setCodexPlusSidebarNavActive(active) {
-    const nav = document.getElementById(codexPlusSidebarNavId);
-    const button = nav?.querySelector("button");
-    if (!button) return;
-    button.dataset.active = String(active);
-    button.setAttribute("aria-current", active ? "page" : "false");
+    for (const id of [codexPlusSidebarNavId, codexPlusTitlebarEntryId]) {
+      const button = document.getElementById(id)?.querySelector("button");
+      if (!button) continue;
+      button.dataset.active = String(active);
+      button.setAttribute("aria-current", active ? "page" : "false");
+      button.setAttribute("aria-expanded", String(active));
+    }
   }
 
   function positionCodexPlusPage(overlay) {
     if (!overlay?.classList?.contains(codexPlusPageClass)) return;
     const sidebar = document.querySelector("aside.app-shell-left-panel");
-    const rect = sidebar?.getBoundingClientRect?.();
-    const left = rect && rect.width > 0 ? Math.max(0, rect.right) : 0;
-    overlay.style.left = `${left}px`;
-    overlay.style.top = "0px";
+    const main = document.querySelector("main");
+    const sidebarRect = sidebar?.getBoundingClientRect?.();
+    const mainRect = main?.getBoundingClientRect?.();
+    const left = mainRect && mainRect.width > 0 ? mainRect.left : sidebarRect?.right || 0;
+    const top = mainRect && mainRect.height > 0 ? mainRect.top : sidebarRect?.top || 0;
+    const nextLeft = `${Math.max(0, left)}px`;
+    const nextTop = `${Math.max(0, top)}px`;
+    if (overlay.style.left !== nextLeft) overlay.style.left = nextLeft;
+    if (overlay.style.top !== nextTop) overlay.style.top = nextTop;
+    if (window.__codexPlusPageLayoutObserver &&
+        (window.__codexPlusPageLayoutTargets?.main !== main || window.__codexPlusPageLayoutTargets?.sidebar !== sidebar)) {
+      window.__codexPlusPageLayoutObserver.disconnect();
+      if (main) window.__codexPlusPageLayoutObserver.observe(main);
+      if (sidebar) window.__codexPlusPageLayoutObserver.observe(sidebar);
+      window.__codexPlusPageLayoutTargets = { main, sidebar };
+    }
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -4319,6 +4414,9 @@
     };
     Object.entries(variables).forEach(([name, value]) => overlay.style.setProperty(name, value));
     overlay.dataset.codexPlusTheme = light ? "light" : "dark";
+    if (overlay.classList.contains(codexPlusPageClass)) {
+      overlay.style.setProperty("background", palette.bgPrimary, "important");
+    }
   }
 
   function openCodexPlusModal(options = {}) {
@@ -4484,12 +4582,17 @@
         </div>
       </div>
     `;
+    if (pageMode) {
+      overlay.querySelector(".codex-plus-modal-content")?.style.setProperty(
+        "background", overlay.dataset.codexPlusTheme === "light" ? "#ffffff" : "#212121", "important"
+      );
+    }
     const closeButton = overlay.querySelector(".codex-plus-modal-close");
     closeButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      overlay.remove();
-      if (pageMode) setCodexPlusSidebarNavActive(false);
+      if (pageMode) closeCodexPlusPage();
+      else overlay.remove();
     }, true);
     overlay.addEventListener("input", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -4508,8 +4611,8 @@
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if ((!pageMode && event.target === overlay) || target?.closest(".codex-plus-modal-close")) {
-        overlay.remove();
-        if (pageMode) setCodexPlusSidebarNavActive(false);
+        if (pageMode) closeCodexPlusPage();
+        else overlay.remove();
         return;
       }
       const tabButton = target?.closest("[data-codex-plus-tab]");
@@ -4606,6 +4709,9 @@
     document.body.appendChild(overlay);
     if (pageMode) {
       setCodexPlusSidebarNavActive(true);
+      window.__codexPlusPageLayoutObserver?.disconnect();
+      window.__codexPlusPageLayoutObserver = new ResizeObserver(() => positionCodexPlusPage(overlay));
+      window.__codexPlusPageLayoutTargets = {};
       positionCodexPlusPage(overlay);
       if (!window.__codexPlusPageResizeHandler) {
         window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
@@ -4627,6 +4733,8 @@
 
   function closeCodexPlusPage() {
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutTargets = null;
     setCodexPlusSidebarNavActive(false);
   }
 
@@ -4650,20 +4758,59 @@
     document.addEventListener("click", window.__codexPlusPageNavigationCloseHandler, true);
   }
 
+  function updateCodexPlusTitlebarStatus(status) {
+    const button = document.getElementById(codexPlusTitlebarEntryId)?.querySelector("button");
+    if (!button) return;
+    const label = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "后端未连接";
+    const title = `Codex++ · ${label}`;
+    if (button.title !== title) {
+      button.title = title;
+      button.setAttribute("aria-label", title);
+    }
+    const indicator = button.querySelector(".codex-plus-titlebar-status");
+    if (indicator && indicator.dataset.status !== status) indicator.dataset.status = status;
+  }
+
+  function installCodexPlusTitlebarEntry() {
+    // Use the application menu identity, not translated labels or screen coordinates.
+    const help = document.getElementById("application-menu-trigger-help-menu");
+    const menu = help?.closest('[role="menubar"]');
+    const parent = menu?.parentElement;
+    if (!parent) return false;
+    let wrapper = document.getElementById(codexPlusTitlebarEntryId);
+    if (!wrapper) {
+      wrapper = document.createElement("div");
+      wrapper.id = codexPlusTitlebarEntryId;
+      const button = document.createElement("button");
+      button.type = "button";
+      // Only borrow styling: Radix menu roles, IDs and roving tabindex stay native.
+      button.className = help.className;
+      button.innerHTML = '<span class="codex-plus-titlebar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="codex-plus-titlebar-label">Codex++</span><span class="codex-plus-titlebar-status" aria-hidden="true">!</span>';
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (document.querySelector(`.${codexPlusPageClass}`)) closeCodexPlusPage();
+        else openCodexPlusPage();
+      });
+      wrapper.appendChild(button);
+    }
+    // Keep the entry outside Radix's menubar while following it in normal layout.
+    if (menu.nextElementSibling !== wrapper) parent.insertBefore(wrapper, menu.nextSibling);
+    document.getElementById(codexPlusSidebarNavId)?.remove();
+    const rawStatus = codexPlusBackendStatus.status || "checking";
+    updateCodexPlusTitlebarStatus(codexPlusBridgeFailureCount >= CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD && rawStatus === "ok" ? "degraded" : rawStatus);
+    const page = document.querySelector(`.${codexPlusPageClass}`);
+    setCodexPlusSidebarNavActive(!!page);
+    if (page) positionCodexPlusPage(page);
+    return true;
+  }
+
   function installCodexPlusSidebarNavigation() {
     document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
-    const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"], nav[role="navigation"]');
+    const titlebarInstalled = installCodexPlusTitlebarEntry();
+    if (!titlebarInstalled) document.getElementById(codexPlusTitlebarEntryId)?.remove();
+    const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"]');
     if (!navigation) return;
-    const navButtons = Array.from(navigation.querySelectorAll("button"));
-    const pluginButton = navButtons.find((button) => {
-      if (button.querySelector(selectors.pluginSvgPath)) return true;
-      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
-      return /^(插件|Plugins)$/i.test(label);
-    });
-    const insertionButton = pluginButton || navButtons.find((button) => {
-      const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
-      return /^(已安排|Scheduled|拉取请求|Pull requests|新对话|New chat)$/i.test(label);
-    });
     if (navigation.dataset.codexPlusSidebarNavigationListener !== "true") {
       navigation.dataset.codexPlusSidebarNavigationListener = "true";
       navigation.addEventListener("click", (event) => {
@@ -4672,14 +4819,24 @@
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
+    if (titlebarInstalled) return;
+    // macOS and older hosts without an HTML application menu keep the sidebar entry.
+    const navButtons = Array.from(navigation.querySelectorAll("button"));
+    const templateButton = navButtons.find((button) => {
+      if (button.querySelector(selectors.pluginSvgPath)) return true;
+      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
+      return /^(插件|Plugins)$/i.test(label);
+    }) || navButtons.find((button) => {
+      const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
+      return /^(已安排|Scheduled|拉取请求|Pull requests|新对话|New chat)$/i.test(label);
+    });
     let wrapper = document.getElementById(codexPlusSidebarNavId);
-    const parent = insertionButton?.parentElement || navigation;
-    if (!wrapper || wrapper.parentElement !== parent) {
+    if (!wrapper) {
       wrapper?.remove();
       wrapper = document.createElement("div");
       wrapper.id = codexPlusSidebarNavId;
       wrapper.dataset.codexPlusSidebarNav = "true";
-      const button = (insertionButton || document.createElement("button")).cloneNode(true);
+      const button = (templateButton || document.createElement("button")).cloneNode(true);
       if (!(button instanceof HTMLElement)) return;
       if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
       button.type = "button";
@@ -4696,16 +4853,14 @@
         openCodexPlusPage();
       }, true);
       wrapper.appendChild(button);
-      if (insertionButton?.nextSibling) {
-        parent.insertBefore(wrapper, insertionButton.nextSibling);
-      } else {
-        parent.appendChild(wrapper);
-      }
     }
+    if (wrapper.parentElement !== navigation || wrapper.nextElementSibling) navigation.appendChild(wrapper);
+    wrapper.style.setProperty("background", codexPlusHostUsesLightTheme() ? "#ffffff" : "#212121", "important");
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
     setCodexPlusSidebarNavActive(active);
+    if (active) positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
   }
 
   const codexPluginRemoteOnlyMarketplaceKinds = new Set(["created-by-me-remote", "shared-with-me"]);
@@ -7455,11 +7610,15 @@
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
     sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    const startedAt = Date.now();
+    const retryOffsets = [400, 1200, 2500];
+    let retryIndex = 0;
     const tick = () => {
       codexModelWhitelistRefreshTimer = 0;
       runCodexModelWhitelistRefreshPass();
-      if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+      if (retryIndex < retryOffsets.length && Date.now() < codexModelWhitelistRefreshUntil) {
+        const nextOffset = retryOffsets[retryIndex++];
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, Math.max(0, nextOffset - (Date.now() - startedAt)));
       }
     };
     tick();
@@ -11001,7 +11160,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusTitlebarEntryId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {
@@ -11020,6 +11179,8 @@
       selectors.archiveNav,
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
+      '[role="menubar"]:has(#application-menu-trigger-help-menu)',
+      '#application-menu-trigger-help-menu',
       codexMenuLocalizationScopeSelector(),
       ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
     ].join(", ");
@@ -11100,7 +11261,7 @@
     let attempts = 0;
     window.__codexPlusSidebarNavRetryTimer = setInterval(() => {
       attempts += 1;
-      if (document.getElementById(codexPlusSidebarNavId) || attempts > 20) {
+      if (document.getElementById(codexPlusTitlebarEntryId) || document.getElementById(codexPlusSidebarNavId) || attempts > 20) {
         clearInterval(window.__codexPlusSidebarNavRetryTimer);
         window.__codexPlusSidebarNavRetryTimer = null;
         return;
