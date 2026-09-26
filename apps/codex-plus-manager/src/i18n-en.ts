@@ -286,6 +286,7 @@ export const EN_PLAIN: Record<string, string> = {
   "上次更新结果": "Last update result",
   "上游协议": "Upstream protocol",
   "纯标准协议": "Standard protocol only",
+  "仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。": "Available only when the upstream protocol is Chat Completions. Responses API requests are forwarded unchanged.",
   "强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。": "Force the standard OpenAI protocol without vendor-specific reasoning parameters, for third-party gateways that accept only standard OpenAI fields and reject vendor-bundled private parameters.",
   "上一页": "Previous page",
   "下一页": "Next page",
