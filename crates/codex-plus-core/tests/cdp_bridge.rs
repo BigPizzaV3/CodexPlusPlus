@@ -4592,6 +4592,51 @@ fn bridge_health_check_script_uses_persisted_real_probe_result() {
 }
 
 #[test]
+fn bridge_active_health_probe_confirms_a_stale_but_working_binding() {
+    let script = serde_json::to_string(bridge::bridge_active_health_probe_script())
+        .expect("probe script should serialize");
+    let harness = format!(
+        r#"
+const vm = require("node:vm");
+const source = {script};
+async function run(status, hasBridge = true) {{
+  const health = {{}};
+  let calls = 0;
+  const window = {{
+    __codexPlusBridgeHealth: health,
+    __codexSessionDeleteBridge: hasBridge ? (path, payload) => {{
+      if (path !== "/backend/status" || Object.keys(payload).length) throw Error("unexpected probe");
+      calls++;
+      return Promise.resolve({{ status }});
+    }} : null,
+  }};
+  const result = await vm.runInNewContext(source, {{ window, setTimeout, clearTimeout, Promise, Date }});
+  return {{ result, calls, health }};
+}}
+(async () => {{
+  const ok = await run("ok");
+  if (ok.result !== true || ok.calls !== 1 || !ok.health.lastSuccessAt) process.exit(1);
+  const failed = await run("failed");
+  if (failed.result !== false || failed.calls !== 1 || failed.health.lastSuccessAt) process.exit(2);
+  const missing = await run("ok", false);
+  if (missing.result !== false || missing.calls !== 0) process.exit(3);
+}})().catch(() => process.exit(4));
+"#,
+        script = script
+    );
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(harness)
+        .output()
+        .expect("node should execute bridge probe contract");
+    assert!(
+        output.status.success(),
+        "active bridge probe contract failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn bridge_health_check_script_rejects_stale_bridge_after_failed_requests() {
     let script = serde_json::to_string(bridge::bridge_health_check_script())
         .expect("health script should serialize");

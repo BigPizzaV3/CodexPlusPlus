@@ -2801,6 +2801,18 @@ async fn check_and_reinject_bridge_inner(
     if !should_reinject_after_health_result(healthy, browser_identity_changed, health_failures) {
         return false;
     }
+    if !browser_identity_changed {
+        match bridge_active_health_probe_ok(debug_port).await {
+            Ok(true) | Err(_) => {
+                // A responsive bridge needs no reinjection; an indeterminate CDP
+                // probe is not permission to add work to a busy renderer.
+                *health_failures = 0;
+                backoff.reset();
+                return false;
+            }
+            Ok(false) => {}
+        }
+    }
     if browser_identity_changed {
         // 应用实例更换：旧退避针对的是旧页面，新页面需要立即注入。
         backoff.reset();
@@ -2871,18 +2883,33 @@ async fn run_bridge_reinjector(
 }
 
 async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+    evaluate_bridge_health_script(debug_port, crate::bridge::bridge_health_check_script()).await
+}
+
+async fn bridge_active_health_probe_ok(debug_port: u16) -> anyhow::Result<bool> {
+    evaluate_bridge_health_script(
+        debug_port,
+        crate::bridge::bridge_active_health_probe_script(),
+    )
+    .await
+}
+
+async fn evaluate_bridge_health_script(debug_port: u16, script: &str) -> anyhow::Result<bool> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let result = crate::bridge::evaluate_script_with_await_promise(
-        websocket_url,
-        crate::bridge::bridge_health_check_script(),
-        true,
-    )
-    .await?;
+    let result =
+        crate::bridge::evaluate_script_with_await_promise(websocket_url, script, true).await?;
+    if result
+        .get("result")
+        .and_then(|value| value.get("exceptionDetails"))
+        .is_some()
+    {
+        anyhow::bail!("bridge health probe raised a renderer exception");
+    }
     Ok(runtime_evaluate_result_is_true(&result))
 }
 

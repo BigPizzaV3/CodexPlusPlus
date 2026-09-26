@@ -410,7 +410,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "20";
+  const codexDeleteStyleVersion = "21";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -963,6 +963,17 @@
       #${codexPlusSidebarNavId} {
         position: relative;
         flex: 0 0 auto;
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 48px;
+        margin-top: auto;
+        padding: 7px 8px 5px;
+        border-top: 2px solid color-mix(in srgb, var(--codex-plus-text) 38%, transparent);
+        background: var(--codex-plus-bg-primary);
+      }
+      #${codexPlusSidebarNavId} > button {
+        width: 100%;
+        min-height: 34px;
       }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-icon {
         width: 20px;
@@ -997,7 +1008,10 @@
       }
       .${codexPlusPageClass} {
         position: fixed;
-        inset: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        top: 0;
         z-index: 2147483644;
         display: block;
         background: var(--token-bg-primary, #212121);
@@ -4251,10 +4265,22 @@
   function positionCodexPlusPage(overlay) {
     if (!overlay?.classList?.contains(codexPlusPageClass)) return;
     const sidebar = document.querySelector("aside.app-shell-left-panel");
-    const rect = sidebar?.getBoundingClientRect?.();
-    const left = rect && rect.width > 0 ? Math.max(0, rect.right) : 0;
-    overlay.style.left = `${left}px`;
-    overlay.style.top = "0px";
+    const main = document.querySelector("main");
+    const sidebarRect = sidebar?.getBoundingClientRect?.();
+    const mainRect = main?.getBoundingClientRect?.();
+    const left = mainRect && mainRect.width > 0 ? mainRect.left : sidebarRect?.right || 0;
+    const top = mainRect && mainRect.height > 0 ? mainRect.top : sidebarRect?.top || 0;
+    const nextLeft = `${Math.max(0, left)}px`;
+    const nextTop = `${Math.max(0, top)}px`;
+    if (overlay.style.left !== nextLeft) overlay.style.left = nextLeft;
+    if (overlay.style.top !== nextTop) overlay.style.top = nextTop;
+    if (window.__codexPlusPageLayoutObserver &&
+        (window.__codexPlusPageLayoutTargets?.main !== main || window.__codexPlusPageLayoutTargets?.sidebar !== sidebar)) {
+      window.__codexPlusPageLayoutObserver.disconnect();
+      if (main) window.__codexPlusPageLayoutObserver.observe(main);
+      if (sidebar) window.__codexPlusPageLayoutObserver.observe(sidebar);
+      window.__codexPlusPageLayoutTargets = { main, sidebar };
+    }
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -4319,6 +4345,9 @@
     };
     Object.entries(variables).forEach(([name, value]) => overlay.style.setProperty(name, value));
     overlay.dataset.codexPlusTheme = light ? "light" : "dark";
+    if (overlay.classList.contains(codexPlusPageClass)) {
+      overlay.style.setProperty("background", palette.bgPrimary, "important");
+    }
   }
 
   function openCodexPlusModal(options = {}) {
@@ -4484,12 +4513,17 @@
         </div>
       </div>
     `;
+    if (pageMode) {
+      overlay.querySelector(".codex-plus-modal-content")?.style.setProperty(
+        "background", overlay.dataset.codexPlusTheme === "light" ? "#ffffff" : "#212121", "important"
+      );
+    }
     const closeButton = overlay.querySelector(".codex-plus-modal-close");
     closeButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      overlay.remove();
-      if (pageMode) setCodexPlusSidebarNavActive(false);
+      if (pageMode) closeCodexPlusPage();
+      else overlay.remove();
     }, true);
     overlay.addEventListener("input", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -4508,8 +4542,8 @@
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if ((!pageMode && event.target === overlay) || target?.closest(".codex-plus-modal-close")) {
-        overlay.remove();
-        if (pageMode) setCodexPlusSidebarNavActive(false);
+        if (pageMode) closeCodexPlusPage();
+        else overlay.remove();
         return;
       }
       const tabButton = target?.closest("[data-codex-plus-tab]");
@@ -4606,6 +4640,9 @@
     document.body.appendChild(overlay);
     if (pageMode) {
       setCodexPlusSidebarNavActive(true);
+      window.__codexPlusPageLayoutObserver?.disconnect();
+      window.__codexPlusPageLayoutObserver = new ResizeObserver(() => positionCodexPlusPage(overlay));
+      window.__codexPlusPageLayoutTargets = {};
       positionCodexPlusPage(overlay);
       if (!window.__codexPlusPageResizeHandler) {
         window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
@@ -4627,6 +4664,8 @@
 
   function closeCodexPlusPage() {
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutTargets = null;
     setCodexPlusSidebarNavActive(false);
   }
 
@@ -4652,15 +4691,14 @@
 
   function installCodexPlusSidebarNavigation() {
     document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
-    const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"], nav[role="navigation"]');
+    const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"]');
     if (!navigation) return;
     const navButtons = Array.from(navigation.querySelectorAll("button"));
-    const pluginButton = navButtons.find((button) => {
+    const templateButton = navButtons.find((button) => {
       if (button.querySelector(selectors.pluginSvgPath)) return true;
       const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
       return /^(插件|Plugins)$/i.test(label);
-    });
-    const insertionButton = pluginButton || navButtons.find((button) => {
+    }) || navButtons.find((button) => {
       const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
       return /^(已安排|Scheduled|拉取请求|Pull requests|新对话|New chat)$/i.test(label);
     });
@@ -4673,13 +4711,12 @@
       }, true);
     }
     let wrapper = document.getElementById(codexPlusSidebarNavId);
-    const parent = insertionButton?.parentElement || navigation;
-    if (!wrapper || wrapper.parentElement !== parent) {
+    if (!wrapper) {
       wrapper?.remove();
       wrapper = document.createElement("div");
       wrapper.id = codexPlusSidebarNavId;
       wrapper.dataset.codexPlusSidebarNav = "true";
-      const button = (insertionButton || document.createElement("button")).cloneNode(true);
+      const button = (templateButton || document.createElement("button")).cloneNode(true);
       if (!(button instanceof HTMLElement)) return;
       if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
       button.type = "button";
@@ -4696,16 +4733,14 @@
         openCodexPlusPage();
       }, true);
       wrapper.appendChild(button);
-      if (insertionButton?.nextSibling) {
-        parent.insertBefore(wrapper, insertionButton.nextSibling);
-      } else {
-        parent.appendChild(wrapper);
-      }
     }
+    if (wrapper.parentElement !== navigation || wrapper.nextElementSibling) navigation.appendChild(wrapper);
+    wrapper.style.setProperty("background", codexPlusHostUsesLightTheme() ? "#ffffff" : "#212121", "important");
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
     setCodexPlusSidebarNavActive(active);
+    if (active) positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
   }
 
   const codexPluginRemoteOnlyMarketplaceKinds = new Set(["created-by-me-remote", "shared-with-me"]);
@@ -7455,11 +7490,15 @@
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
     sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    const startedAt = Date.now();
+    const retryOffsets = [400, 1200, 2500];
+    let retryIndex = 0;
     const tick = () => {
       codexModelWhitelistRefreshTimer = 0;
       runCodexModelWhitelistRefreshPass();
-      if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+      if (retryIndex < retryOffsets.length && Date.now() < codexModelWhitelistRefreshUntil) {
+        const nextOffset = retryOffsets[retryIndex++];
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, Math.max(0, nextOffset - (Date.now() - startedAt)));
       }
     };
     tick();
