@@ -550,6 +550,9 @@ fn compat_overlay_composes_with_runtime_cache_base() {
 
 #[test]
 fn builtin_model_metadata_matches_with_source() {
+    // builtin_model_metadata 会读 CODEX_HOME/models_cache.json，与其他
+    // 临时改写 CODEX_HOME 的测试互斥。
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
 
     // 供应商事实层：附带来源名
     let kimi = builtin_model_metadata("kimi-k3").expect("kimi-k3 内置");
@@ -571,6 +574,8 @@ fn builtin_model_metadata_matches_with_source() {
 fn builtin_resolution_and_catalog_requirement_share_suffix_and_case_rules() {
     use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
 
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+
     let metadata = builtin_model_metadata("  GPT-6-SOL[1M]  ")
         .expect("规范化后应命中 gpt-6-sol 兼容元数据");
     assert_eq!(metadata.entry["slug"], "gpt-6-sol");
@@ -588,6 +593,7 @@ fn builtin_resolution_and_catalog_requirement_share_suffix_and_case_rules() {
 
 #[test]
 fn builtin_model_metadata_index_covers_all_embedded_entries() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
 
     let index = builtin_model_metadata_index();
     // 60 条精调/供应商全量 + 官方 bundled 静态资产（随 sync_official_models.py
@@ -682,4 +688,82 @@ fn builtin_model_metadata_index_dedupes_case_variants_and_skips_invalid() {
         .collect();
     assert_eq!(glm.len(), 1, "大小写变体只应保留首次命中的来源");
     assert_eq!(glm[0]["source"], "GLM");
+}
+
+#[test]
+fn collect_entries_prefers_inline_suffix_over_model_windows_map() {
+    // 行内后缀（model_list 里的 `slug[1M]` 写法）是用户显式意图，优先于
+    // model_windows map 里同名条目的窗口值。
+    let mut windows = HashMap::new();
+    windows.insert("deepseek-v4-pro".to_string(), "256K".to_string());
+    let entries = collect_catalog_entries("deepseek-v4-pro[1M]", &windows, &HashMap::new(), "");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].slug, "deepseek-v4-pro");
+    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+}
+
+// 补回被 02ee176 无意删除的 sol/luna 元数据覆盖（commit message 当时未说明
+// 删除原因；资产与解析链路均未变化，断言原样保留）。
+#[test]
+fn gpt6_sol_luna_metadata_matches_official_efforts_fast_and_default_window() {
+    use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
+
+    // catalog 生成链会读 CODEX_HOME/models_cache.json，与其他临时改写
+    // CODEX_HOME 的测试互斥。
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+
+    let entries = collect_catalog_entries(
+        "gpt-6-sol\ngpt-6-luna",
+        &HashMap::new(),
+        &HashMap::new(),
+        "gpt-6-sol",
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    for slug in ["gpt-6-sol", "gpt-6-luna"] {
+        let mut expected_efforts = vec!["none", "low", "medium", "high", "xhigh", "max"];
+        if slug == "gpt-6-sol" {
+            expected_efforts.push("ultra");
+        }
+        assert!(requires_bundled_metadata_catalog(slug));
+        let model = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == slug)
+            .unwrap();
+        let ui = model_ui_metadata(slug).unwrap();
+        for (levels, key) in [
+            (&model["supported_reasoning_levels"], "effort"),
+            (&ui["supportedReasoningEfforts"], "reasoningEffort"),
+        ] {
+            let efforts = levels
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level[key].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(efforts, expected_efforts);
+        }
+        assert_eq!(ui["displayName"], model["display_name"]);
+        assert_eq!(model["default_reasoning_level"], "medium");
+        assert_eq!(ui["defaultReasoningEffort"], "medium");
+        assert_eq!(model["context_window"], 272_000);
+        assert_eq!(model["max_context_window"], 872_000);
+        assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+        assert_eq!(ui["additionalSpeedTiers"], model["additional_speed_tiers"]);
+        assert_eq!(model["service_tiers"][0]["id"], "priority");
+        assert_eq!(ui["serviceTiers"], model["service_tiers"]);
+        assert_eq!(model["supports_search_tool"], true);
+        assert_eq!(model["use_responses_lite"], false);
+    }
+
+    assert!(!requires_bundled_metadata_catalog("gpt-6-sol-custom"));
+    assert!(model_ui_metadata("gpt-6-luna-custom").is_none());
+    let overridden: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();
+    for model in overridden["models"].as_array().unwrap() {
+        assert_eq!(model["context_window"], 200_000);
+        assert_eq!(model["max_context_window"], 200_000);
+    }
 }
