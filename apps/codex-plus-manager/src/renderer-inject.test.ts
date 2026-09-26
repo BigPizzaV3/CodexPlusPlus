@@ -149,7 +149,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /Codex 未能生成新名称/);
   });
 
-  it("removes the legacy Codex++ top-bar entry", async () => {
+  it("removes the legacy dropdown without reviving its menu implementation", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.doesNotMatch(renderer, /function installCodexPlusMenu\(\)/);
@@ -157,7 +157,7 @@ describe("renderer injection header compatibility", () => {
     assert.doesNotMatch(renderer, /codex-plus-trigger/);
   });
 
-  it("places Codex++ in the native sidebar and opens a main-content page", async () => {
+  it("retains sidebar navigation as a fallback and opens a main-content page", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /codexPlusSidebarNavId\s*=\s*"codex-plus-sidebar-nav"/);
@@ -189,6 +189,15 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /overlay\.style\.setProperty\("background", palette\.bgPrimary, "important"\)/);
     assert.match(renderer, /__codexPlusPageLayoutObserver = new ResizeObserver/);
     assert.match(renderer, /__codexPlusPageLayoutObserver\?\.disconnect\(\)/);
+  });
+
+  it("keeps the titlebar button clickable and limits its status badge to failures", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const css = installRendererStyle(renderer)[0].textContent ?? "";
+    assert.match(css, /#codex-plus-titlebar-entry > button\s*\{[^}]*-webkit-app-region: no-drag/s);
+    assert.match(css, /#codex-plus-titlebar-entry::before\s*\{[^}]*height: 14px/s);
+    assert.match(css, /\.codex-plus-titlebar-status\s*\{\s*display: none/s);
+    assert.match(css, /\.codex-plus-titlebar-status:is\(\[data-status="failed"\], \[data-status="degraded"\]\)/);
   });
 
   it("tracks the native main surface when the sidebar changes size", async () => {

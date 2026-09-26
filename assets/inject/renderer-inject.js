@@ -410,10 +410,11 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "21";
+  const codexDeleteStyleVersion = "22";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
+  const codexPlusTitlebarEntryId = "codex-plus-titlebar-entry";
   const codexPlusPageClass = "codex-plus-page-overlay";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
@@ -960,6 +961,71 @@
       .codex-plus-backend-indicator[data-status="failed"] { background: var(--codex-plus-danger); }
       .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
       .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
+      #${codexPlusTitlebarEntryId} {
+        display: inline-flex;
+        align-items: center;
+        align-self: center;
+        flex: 0 0 auto;
+        gap: 8px;
+        margin-inline: 2px 8px;
+        -webkit-app-region: drag;
+      }
+      #${codexPlusTitlebarEntryId}::before {
+        content: "";
+        width: 1px;
+        height: 14px;
+        background: var(--color-border-primary, rgba(127,127,127,.35));
+      }
+      #${codexPlusTitlebarEntryId} > button {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 26px;
+        padding: 4px 8px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        white-space: nowrap;
+        cursor: pointer;
+        -webkit-app-region: no-drag;
+      }
+      #${codexPlusTitlebarEntryId} > button:hover,
+      #${codexPlusTitlebarEntryId} > button[data-active="true"] {
+        background: var(--color-background-primary-soft, rgba(127,127,127,.12));
+        color: var(--color-text-primary, inherit);
+      }
+      #${codexPlusTitlebarEntryId} > button:focus-visible {
+        outline: 2px solid var(--color-text-secondary, #888);
+        outline-offset: 1px;
+      }
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-icon,
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-icon svg {
+        display: block;
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+      }
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-status {
+        display: none;
+        position: absolute;
+        inset-inline-start: 17px;
+        top: 1px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #e8b85f;
+        color: #30210a;
+        font: bold 9px/10px sans-serif;
+        text-align: center;
+        pointer-events: none;
+      }
+      #${codexPlusTitlebarEntryId} .codex-plus-titlebar-status:is([data-status="failed"], [data-status="degraded"]) { display: block; }
+      @media (max-width: 680px) {
+        #${codexPlusTitlebarEntryId} .codex-plus-titlebar-label { display: none; }
+        #${codexPlusTitlebarEntryId} { gap: 5px; margin-inline-end: 4px; }
+      }
       #${codexPlusSidebarNavId} {
         position: relative;
         flex: 0 0 auto;
@@ -4033,6 +4099,7 @@
       sidebarStatus.dataset.status = status;
       sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
+    updateCodexPlusTitlebarStatus(status);
     refreshCodexServiceTierControls();
   }
 
@@ -4255,11 +4322,13 @@
   }
 
   function setCodexPlusSidebarNavActive(active) {
-    const nav = document.getElementById(codexPlusSidebarNavId);
-    const button = nav?.querySelector("button");
-    if (!button) return;
-    button.dataset.active = String(active);
-    button.setAttribute("aria-current", active ? "page" : "false");
+    for (const id of [codexPlusSidebarNavId, codexPlusTitlebarEntryId]) {
+      const button = document.getElementById(id)?.querySelector("button");
+      if (!button) continue;
+      button.dataset.active = String(active);
+      button.setAttribute("aria-current", active ? "page" : "false");
+      button.setAttribute("aria-expanded", String(active));
+    }
   }
 
   function positionCodexPlusPage(overlay) {
@@ -4689,10 +4758,69 @@
     document.addEventListener("click", window.__codexPlusPageNavigationCloseHandler, true);
   }
 
+  function updateCodexPlusTitlebarStatus(status) {
+    const button = document.getElementById(codexPlusTitlebarEntryId)?.querySelector("button");
+    if (!button) return;
+    const label = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "后端未连接";
+    const title = `Codex++ · ${label}`;
+    if (button.title !== title) {
+      button.title = title;
+      button.setAttribute("aria-label", title);
+    }
+    const indicator = button.querySelector(".codex-plus-titlebar-status");
+    if (indicator && indicator.dataset.status !== status) indicator.dataset.status = status;
+  }
+
+  function installCodexPlusTitlebarEntry() {
+    // Use the application menu identity, not translated labels or screen coordinates.
+    const help = document.getElementById("application-menu-trigger-help-menu");
+    const menu = help?.closest('[role="menubar"]');
+    const parent = menu?.parentElement;
+    if (!parent) return false;
+    let wrapper = document.getElementById(codexPlusTitlebarEntryId);
+    if (!wrapper) {
+      wrapper = document.createElement("div");
+      wrapper.id = codexPlusTitlebarEntryId;
+      const button = document.createElement("button");
+      button.type = "button";
+      // Only borrow styling: Radix menu roles, IDs and roving tabindex stay native.
+      button.className = help.className;
+      button.innerHTML = '<span class="codex-plus-titlebar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="codex-plus-titlebar-label">Codex++</span><span class="codex-plus-titlebar-status" aria-hidden="true">!</span>';
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (document.querySelector(`.${codexPlusPageClass}`)) closeCodexPlusPage();
+        else openCodexPlusPage();
+      });
+      wrapper.appendChild(button);
+    }
+    // Keep the entry outside Radix's menubar while following it in normal layout.
+    if (menu.nextElementSibling !== wrapper) parent.insertBefore(wrapper, menu.nextSibling);
+    document.getElementById(codexPlusSidebarNavId)?.remove();
+    const rawStatus = codexPlusBackendStatus.status || "checking";
+    updateCodexPlusTitlebarStatus(codexPlusBridgeFailureCount >= CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD && rawStatus === "ok" ? "degraded" : rawStatus);
+    const page = document.querySelector(`.${codexPlusPageClass}`);
+    setCodexPlusSidebarNavActive(!!page);
+    if (page) positionCodexPlusPage(page);
+    return true;
+  }
+
   function installCodexPlusSidebarNavigation() {
     document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
+    const titlebarInstalled = installCodexPlusTitlebarEntry();
+    if (!titlebarInstalled) document.getElementById(codexPlusTitlebarEntryId)?.remove();
     const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"]');
     if (!navigation) return;
+    if (navigation.dataset.codexPlusSidebarNavigationListener !== "true") {
+      navigation.dataset.codexPlusSidebarNavigationListener = "true";
+      navigation.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
+        if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
+      }, true);
+    }
+    if (titlebarInstalled) return;
+    // macOS and older hosts without an HTML application menu keep the sidebar entry.
     const navButtons = Array.from(navigation.querySelectorAll("button"));
     const templateButton = navButtons.find((button) => {
       if (button.querySelector(selectors.pluginSvgPath)) return true;
@@ -4702,14 +4830,6 @@
       const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
       return /^(已安排|Scheduled|拉取请求|Pull requests|新对话|New chat)$/i.test(label);
     });
-    if (navigation.dataset.codexPlusSidebarNavigationListener !== "true") {
-      navigation.dataset.codexPlusSidebarNavigationListener = "true";
-      navigation.addEventListener("click", (event) => {
-        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
-        if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
-      }, true);
-    }
     let wrapper = document.getElementById(codexPlusSidebarNavId);
     if (!wrapper) {
       wrapper?.remove();
@@ -11040,7 +11160,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusTitlebarEntryId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {
@@ -11059,6 +11179,8 @@
       selectors.archiveNav,
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
+      '[role="menubar"]:has(#application-menu-trigger-help-menu)',
+      '#application-menu-trigger-help-menu',
       codexMenuLocalizationScopeSelector(),
       ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
     ].join(", ");
@@ -11139,7 +11261,7 @@
     let attempts = 0;
     window.__codexPlusSidebarNavRetryTimer = setInterval(() => {
       attempts += 1;
-      if (document.getElementById(codexPlusSidebarNavId) || attempts > 20) {
+      if (document.getElementById(codexPlusTitlebarEntryId) || document.getElementById(codexPlusSidebarNavId) || attempts > 20) {
         clearInterval(window.__codexPlusSidebarNavRetryTimer);
         window.__codexPlusSidebarNavRetryTimer = null;
         return;
