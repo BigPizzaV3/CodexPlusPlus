@@ -359,13 +359,14 @@ export function builtinEntryToImportDocument(
   );
 }
 
-/// 标签文案以「中文 key + 插值参数」下发，由调用方过 t()/tf()：
-/// 裸字符串会被 i18n-verify.mjs 漏掉（它只扫调用点），英文模式直接露中文。
+/// 标签以结构化字段下发（kind + 来源名），文案由调用方 localize 时用
+/// t()/tf() 拼 key：裸字符串会被 i18n-verify.mjs 漏掉（它只扫调用点），
+/// 英文模式直接露中文；调用方也不该再从渲染文本反解参数。
 /// key 全部登记在 i18n-en.ts 的 EN_TEMPLATE/EN_PLAIN 里。
 export type MetadataSourceTag =
-  | { kind: "match"; text: string; title: string; tone: "builtin" }
-  | { kind: "fallback"; text: string; title: string; tone: "fallback" }
-  | { kind: "custom"; text: string; title: string; tone: "custom" };
+  | { kind: "match"; source: string; tone: "builtin" }
+  | { kind: "fallback"; source: string; tone: "fallback" }
+  | { kind: "custom"; source?: string; tone: "custom" };
 
 /// 元数据来源标签（覆盖全部用户场景）：
 /// - 自定义存在 → 内置命中与否都显示 [自定义]；同时命中内置时并列 [匹配：来源]
@@ -380,7 +381,9 @@ export function metadataSourceTags(options: {
   fallbackSlug?: string;
 }): MetadataSourceTag[] {
   const { imported, builtinMatch, builtinIndexSlug } = options;
-  const fallbackSlug = options.fallbackSlug ?? options.builtinMatch?.fallback?.slug ?? "";
+  // 空串与缺失都兜底到 bundled 首条（与后端 fallback_template_info 的应急
+  // 降级一致），避免渲染出「回退：」空后缀。
+  const fallbackSlug = options.fallbackSlug || options.builtinMatch?.fallback?.slug || "gpt-5.5";
   const matchedSource = builtinMatch?.matched && builtinMatch.entry
     ? builtinMatch.source ?? ""
     : builtinIndexSlug?.source;
@@ -388,25 +391,20 @@ export function metadataSourceTags(options: {
   if (matchedSource) {
     tags.push({
       kind: "match",
-      text: `匹配：${matchedSource}`,
-      title: `内置元数据：${matchedSource}`,
+      source: matchedSource,
       tone: "builtin",
     });
   } else if (!imported) {
     tags.push({
       kind: "fallback",
-      text: `回退：${fallbackSlug}`,
-      title: `无内置元数据，生成时回退 ${fallbackSlug} 官方模板`,
+      source: fallbackSlug,
       tone: "fallback",
     });
   }
   if (imported) {
     tags.push({
       kind: "custom",
-      text: "自定义",
-      title: matchedSource
-        ? `已导入自定义元数据，生成时覆盖内置（${matchedSource}）`
-        : "已导入自定义元数据，生成时以该配置为准",
+      source: matchedSource || undefined,
       tone: "custom",
     });
   }

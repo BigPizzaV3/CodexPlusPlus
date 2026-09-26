@@ -7579,8 +7579,16 @@ function RelayProfileEditor({
   const [builtinQueryState, setBuiltinQueryState] = useState<BuiltinMetadataQueryState | null>(null);
   const [importPrefillSource, setImportPrefillSource] = useState<"builtin" | "existing" | null>(null);
   const [builtinIndex, setBuiltinIndex] = useState<Map<string, { source: string; context_window: unknown; auto_compact_token_limit: unknown }>>(new Map());
+  // 面板内置查询的请求代数：begin/rematch 是命令式调用（没有 effect cleanup
+  // 的 cancelled 通道），响应返回时代数不匹配即丢弃全部 setState——防止迟到
+  // 响应把已取消的面板重新打开，或覆盖用户改名后的新查询结果。
+  const builtinQuerySeqRef = useRef(0);
   const queryBuiltinCommand = async <T,>(command: string, args?: Record<string, unknown>): Promise<T | null> => {
-    try { return await invoke<T>(command, args); } catch { return null; }
+    try { return await invoke<T>(command, args); } catch (error) {
+      // 索引只影响行级标记与便利回填（失败是假阴性、不产错误数据），可诊断即可。
+      console.warn(`[Codex++] ${command} 查询失败`, error);
+      return null;
+    }
   };
   useEffect(() => {
     let cancelled = false;
@@ -7616,10 +7624,15 @@ function RelayProfileEditor({
       let match: BuiltinModelMetadataMatch | null = null;
       try {
         const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug: activeImportSlug });
+        // 迟到响应守卫：改名后旧查询一律丢弃（含错误态），否则旧 error 会把
+        // 当前正确匹配的徽标误藏成回退/错误态（cancelled 只由 cleanup 置位，
+        // cleanup 跑过必有新 run 接手，不存在「最后一次响应被误丢」）。
+        if (cancelled) return;
         const state = builtinMetadataQueryState(result);
         setBuiltinQueryState(state);
         match = state.status === "error" ? null : state.value;
       } catch (error) {
+        if (cancelled) return;
         const state = builtinMetadataQueryState(null, error);
         setBuiltinQueryState(state);
         setMetadataImportError(state.status === "error" ? state.error : "");
@@ -7753,6 +7766,9 @@ function RelayProfileEditor({
     backfillRowFromBuiltin(index, nextSlug);
   };
   const closeModelMetadataImport = () => {
+    // 作废所有在飞的命令式内置查询（begin/rematch）：面板已关，迟到响应
+    // 不得再把面板重新打开或写入陈旧匹配状态。
+    builtinQuerySeqRef.current += 1;
     setActiveImportDraft(null);
     setMetadataImportError("");
   };
@@ -7789,12 +7805,17 @@ function RelayProfileEditor({
     let match: BuiltinModelMetadataMatch | null = null;
     let metadataQueryError = "";
     if (slug.trim()) {
+      const querySeq = ++builtinQuerySeqRef.current;
       try {
         const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
+        // 代数守卫：await 期间面板被取消或被另一次 begin/rematch 抢占
+        // （seq 已变）时，本次响应整体丢弃——迟到响应不得重开已关闭的面板。
+        if (querySeq !== builtinQuerySeqRef.current) return;
         const state = builtinMetadataQueryState(result);
         setBuiltinQueryState(state);
         match = state.status === "error" ? null : state.value;
       } catch (error) {
+        if (querySeq !== builtinQuerySeqRef.current) return;
         const state = builtinMetadataQueryState(null, error);
         setBuiltinQueryState(state);
         metadataQueryError = state.status === "error" ? state.error : "";
@@ -7888,13 +7909,17 @@ function RelayProfileEditor({
   // 「重新匹配」：按当前模型名重查内置元数据并重填下方内容（含实时写回行窗口）。
   const rematchBuiltinImport = async (slug: string) => {
     if (!slug.trim()) return;
+    const querySeq = ++builtinQuerySeqRef.current;
     let match: BuiltinModelMetadataMatch | null = null;
     try {
       const result = await invoke<BuiltinModelMetadataMatch>("query_builtin_model_metadata", { slug });
+      // 代数守卫：连点重新匹配或面板已关闭时，旧响应整体丢弃。
+      if (querySeq !== builtinQuerySeqRef.current) return;
       const state = builtinMetadataQueryState(result);
       setBuiltinQueryState(state);
       match = state.status === "error" ? null : state.value;
     } catch (error) {
+      if (querySeq !== builtinQuerySeqRef.current) return;
       const state = builtinMetadataQueryState(null, error);
       setBuiltinQueryState(state);
       setMetadataImportError(state.status === "error" ? state.error : "");
@@ -7976,24 +8001,21 @@ function RelayProfileEditor({
   const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
   const localizeMetadataSourceTag = (tag: ReturnType<typeof metadataSourceTags>[number]) => {
     if (tag.kind === "match") {
-      const source = tag.text.slice("匹配：".length);
       return {
-        text: tf("匹配：{0}", [source]),
-        title: tf("内置元数据：{0}", [source]),
+        text: tf("匹配：{0}", [tag.source]),
+        title: tf("内置元数据：{0}", [tag.source]),
       };
     }
     if (tag.kind === "fallback") {
-      const fallbackSlug = tag.text.slice("回退：".length);
       return {
-        text: tf("回退：{0}", [fallbackSlug]),
-        title: tf("无内置元数据，生成时回退 {0} 官方模板", [fallbackSlug]),
+        text: tf("回退：{0}", [tag.source]),
+        title: tf("无内置元数据，生成时回退 {0} 官方模板", [tag.source]),
       };
     }
-    const sourceMatch = tag.title.match(/（([^）]+)）$/);
     return {
       text: t("自定义"),
-      title: sourceMatch
-        ? tf("已导入自定义元数据，生成时覆盖内置（{0}）", [sourceMatch[1]])
+      title: tag.source
+        ? tf("已导入自定义元数据，生成时覆盖内置（{0}）", [tag.source])
         : t("已导入自定义元数据，生成时以该配置为准"),
     };
   };
