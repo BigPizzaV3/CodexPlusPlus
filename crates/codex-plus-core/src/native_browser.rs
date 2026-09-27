@@ -754,6 +754,20 @@ pub enum NativeBrowserShutdown {
     RestoreFailed,
 }
 
+#[derive(Debug)]
+pub struct NativeBrowserCleanupStillRunning;
+
+impl std::fmt::Display for NativeBrowserCleanupStillRunning {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Native browser cleanup is still running; launcher was not terminated"
+        )
+    }
+}
+
+impl std::error::Error for NativeBrowserCleanupStillRunning {}
+
 /// Called after Codex has been stopped, before the manager launches a replacement.
 /// Never restores files itself or creates a lock for an older launcher.
 pub fn wait_for_monitor_shutdown(timeout: Duration) -> Result<NativeBrowserShutdown> {
@@ -803,10 +817,9 @@ fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Resu
                 anyhow::bail!("Native browser cleanup did not complete successfully");
             }
             Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
-                ensure!(
-                    std::time::Instant::now() < deadline,
-                    "Native browser cleanup is still running; launcher was not terminated"
-                );
+                if std::time::Instant::now() >= deadline {
+                    return Err(anyhow::Error::new(NativeBrowserCleanupStillRunning));
+                }
                 std::thread::sleep(Duration::from_millis(50).min(
                     deadline.saturating_duration_since(std::time::Instant::now()),
                 ));

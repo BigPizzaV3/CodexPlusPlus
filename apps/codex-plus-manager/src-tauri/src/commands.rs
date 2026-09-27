@@ -952,9 +952,17 @@ enum RestartStopError {
 
 fn restart_stop_failure_message(error: &RestartStopError) -> String {
     match error {
-        RestartStopError::NativeBrowser(error) => format!(
-            "Codex 已请求停止，但原生浏览器文件仍在恢复，未启动新实例：{error}"
-        ),
+        RestartStopError::NativeBrowser(error) => {
+            let summary = if error
+                .downcast_ref::<codex_plus_core::native_browser::NativeBrowserCleanupStillRunning>()
+                .is_some()
+            {
+                "仍在恢复"
+            } else {
+                "恢复失败"
+            };
+            format!("Codex 已请求停止，但原生浏览器文件{summary}，未启动新实例：{error}")
+        }
         RestartStopError::Launcher(error) => format!(
             "Codex 已请求停止，但旧启动器尚未退出，未启动新实例：{error}"
         ),
@@ -7333,7 +7341,9 @@ base_url = "https://example.invalid/v1"
     #[test]
     fn restart_stop_errors_name_the_step_that_failed() {
         let browser = restart_stop_failure_message(&RestartStopError::NativeBrowser(
-            anyhow::anyhow!("Native browser cleanup is still running; launcher was not terminated"),
+            anyhow::Error::new(
+                codex_plus_core::native_browser::NativeBrowserCleanupStillRunning,
+            ),
         ));
         let launcher = restart_stop_failure_message(&RestartStopError::Launcher(anyhow::anyhow!(
             "old launcher still exiting"
@@ -7342,6 +7352,12 @@ base_url = "https://example.invalid/v1"
         assert!(!browser.contains("旧启动器尚未退出"));
         assert!(launcher.contains("旧启动器尚未退出"));
         assert!(!launcher.contains("原生浏览器文件仍在恢复"));
+
+        let failed = restart_stop_failure_message(&RestartStopError::NativeBrowser(
+            anyhow::anyhow!("Invalid native cleanup receipt"),
+        ));
+        assert!(failed.contains("原生浏览器文件恢复失败"));
+        assert!(!failed.contains("原生浏览器文件仍在恢复"));
     }
 
     #[test]
