@@ -173,6 +173,24 @@ DMG_CREATED=false
 MOUNT_POINT=""
 MOUNT_DEVICE=""
 
+release_dmg_holders() {
+  local target="$1"
+  local pids=""
+
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -t -- "$target" 2>/dev/null || true)"
+  fi
+  # GitHub 的 macOS runner 上，hdiutil -force 失败后 diskimages-helper 仍会占着
+  # 设备，直到 job 收尾才被当成孤儿杀掉。那时 convert 已经来不及跑。
+  if [ -z "$pids" ] && [ "${GITHUB_ACTIONS:-}" = "true" ] && command -v pgrep >/dev/null 2>&1; then
+    pids="$(pgrep -x diskimages-helper || true)"
+  fi
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill -KILL $pids >/dev/null 2>&1 || true
+  fi
+}
+
 detach_dmg() {
   local target="$1"
   local attempt
@@ -207,6 +225,8 @@ detach_dmg() {
     if target_is_gone; then
       return 0
     fi
+
+    release_dmg_holders "$target"
 
     sleep "$attempt"
   done
