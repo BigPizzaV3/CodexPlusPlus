@@ -1153,19 +1153,9 @@ impl LaunchHooks for DefaultLaunchHooks {
                 }
             }
         }
-        let mut empty_streak = 0u32;
-        loop {
-            let has_codex_process = !crate::watcher::find_codex_processes().is_empty();
-            let cdp_available = should_probe_launcher_cdp(cfg!(windows), has_codex_process)
-                && crate::cdp::endpoint_available(debug_port);
-            if !launcher_target_alive(has_codex_process, cdp_available) {
-                empty_streak = empty_streak.saturating_add(1);
-                if empty_streak >= 3 {
-                    break;
-                }
-            } else {
-                empty_streak = 0;
-            }
+        // Another Codex process must not keep this launcher holding the native
+        // browser monitor. Only this debug port can delay the restore.
+        while owned_debug_port_blocks_launcher_exit(crate::cdp::endpoint_available(debug_port)) {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
         Ok(())
@@ -2734,12 +2724,8 @@ pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
     previous.is_some_and(|previous| previous != current)
 }
 
-fn launcher_target_alive(has_codex_process: bool, cdp_available: bool) -> bool {
-    has_codex_process || cdp_available
-}
-
-fn should_probe_launcher_cdp(is_windows: bool, has_codex_process: bool) -> bool {
-    is_windows && !has_codex_process
+fn owned_debug_port_blocks_launcher_exit(debug_port_open: bool) -> bool {
+    debug_port_open
 }
 
 fn should_reinject_after_health_result(
@@ -3473,15 +3459,9 @@ mod tests {
     }
 
     #[test]
-    fn launcher_stays_alive_while_injected_cdp_endpoint_is_available() {
-        assert!(launcher_target_alive(false, true));
-    }
-
-    #[test]
-    fn launcher_only_probes_cdp_for_unrecognized_windows_processes() {
-        assert!(should_probe_launcher_cdp(true, false));
-        assert!(!should_probe_launcher_cdp(true, true));
-        assert!(!should_probe_launcher_cdp(false, false));
+    fn owned_launcher_exit_follows_its_debug_port_not_other_codex_processes() {
+        assert!(owned_debug_port_blocks_launcher_exit(true));
+        assert!(!owned_debug_port_blocks_launcher_exit(false));
     }
 
     #[test]

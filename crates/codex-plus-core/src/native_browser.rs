@@ -747,17 +747,24 @@ fn acquire_monitor_owner(paths: &BrowserPaths) -> Result<File> {
     Ok(owner)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeBrowserShutdown {
+    Ready,
+    /// The monitor finished and released the lock, but restore did not reach `restored`.
+    RestoreFailed,
+}
+
 /// Called after Codex has been stopped, before the manager launches a replacement.
 /// Never restores files itself or creates a lock for an older launcher.
-pub fn wait_for_monitor_shutdown(timeout: Duration) -> Result<()> {
+pub fn wait_for_monitor_shutdown(timeout: Duration) -> Result<NativeBrowserShutdown> {
     if !cfg!(windows) {
-        return Ok(());
+        return Ok(NativeBrowserShutdown::Ready);
     }
     let paths = BrowserPaths::current()?;
     wait_for_monitor_shutdown_at(&paths, timeout)
 }
 
-fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Result<()> {
+fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Result<NativeBrowserShutdown> {
     let path = paths.state_root.join("monitor.lock");
     let _guards = pin_parents(&path)?;
     let mut options = OpenOptions::new();
@@ -770,7 +777,8 @@ fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Resu
     let mut file = match options.open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return verify_restored_state(paths);
+            verify_restored_state(paths)?;
+            return Ok(NativeBrowserShutdown::Ready);
         }
         Err(error) => return Err(error.into()),
     };
@@ -784,12 +792,15 @@ fn wait_for_monitor_shutdown_at(paths: &BrowserPaths, timeout: Duration) -> Resu
                 let mut bytes = Vec::new();
                 Read::by_ref(&mut file).take(1025).read_to_end(&mut bytes)?;
                 let receipt: MonitorReceipt = serde_json::from_slice(&bytes)?;
-                ensure!(
-                    receipt.schema == 1 && uuid::Uuid::parse_str(&receipt.generation).is_ok()
-                        && receipt.state == "restored",
-                    "Native browser cleanup did not complete successfully"
-                );
-                return Ok(());
+                let receipt_is_valid = receipt.schema == 1
+                    && uuid::Uuid::parse_str(&receipt.generation).is_ok();
+                if receipt_is_valid && receipt.state == "restored" {
+                    return Ok(NativeBrowserShutdown::Ready);
+                }
+                if receipt_is_valid && receipt.state == "blocked" {
+                    return Ok(NativeBrowserShutdown::RestoreFailed);
+                }
+                anyhow::bail!("Native browser cleanup did not complete successfully");
             }
             Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
                 ensure!(
@@ -1599,7 +1610,10 @@ mod tests {
             serde_json::from_slice(&fs::read(paths.state_root.join("status.json")).unwrap()).unwrap();
         assert_eq!(status.state, "blocked");
         assert!(status.detail.contains("External runtime change"));
-        assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+        assert_eq!(
+            wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap(),
+            NativeBrowserShutdown::RestoreFailed
+        );
         assert!(acquire_monitor_owner(&paths).is_ok());
     }
 
@@ -1643,7 +1657,12 @@ mod tests {
         for state in ["active", "blocked"] {
             write_monitor_receipt(&mut owner, &generation, state).unwrap();
             FileExt::unlock(&owner).unwrap();
-            assert!(wait_for_monitor_shutdown_at(&paths, Duration::ZERO).is_err());
+            let shutdown = wait_for_monitor_shutdown_at(&paths, Duration::ZERO);
+            if state == "blocked" {
+                assert_eq!(shutdown.unwrap(), NativeBrowserShutdown::RestoreFailed);
+            } else {
+                assert!(shutdown.is_err());
+            }
             owner.try_lock_exclusive().unwrap();
         }
         owner.set_len(0).unwrap();
