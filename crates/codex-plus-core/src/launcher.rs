@@ -1154,8 +1154,11 @@ impl LaunchHooks for DefaultLaunchHooks {
             }
         }
         // Another Codex process must not keep this launcher holding the native
-        // browser monitor. Only this debug port can delay the restore.
-        while owned_debug_port_blocks_launcher_exit(crate::cdp::endpoint_available(debug_port)) {
+        // browser monitor. Directly owned processes and this debug port can.
+        while owned_launcher_target_alive(
+            launcher_owned_process_alive(launch, debug_port),
+            crate::cdp::endpoint_available(debug_port),
+        ) {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
         Ok(())
@@ -2724,8 +2727,26 @@ pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
     previous.is_some_and(|previous| previous != current)
 }
 
-fn owned_debug_port_blocks_launcher_exit(debug_port_open: bool) -> bool {
-    debug_port_open
+fn owned_launcher_target_alive(owned_process_alive: bool, debug_port_open: bool) -> bool {
+    owned_process_alive || debug_port_open
+}
+
+/// macOS `open` is not the app's parent, so its tracked child exits immediately.
+/// Match the exact debug port in the app process command line instead.
+#[cfg(target_os = "macos")]
+fn launcher_owned_process_alive(launch: &CodexLaunch, debug_port: u16) -> bool {
+    matches!(
+        launch,
+        CodexLaunch::Process {
+            wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+            ..
+        }
+    ) && !crate::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launcher_owned_process_alive(_launch: &CodexLaunch, _debug_port: u16) -> bool {
+    false
 }
 
 fn should_reinject_after_health_result(
@@ -3460,8 +3481,13 @@ mod tests {
 
     #[test]
     fn owned_launcher_exit_follows_its_debug_port_not_other_codex_processes() {
-        assert!(owned_debug_port_blocks_launcher_exit(true));
-        assert!(!owned_debug_port_blocks_launcher_exit(false));
+        assert!(owned_launcher_target_alive(false, true));
+        assert!(!owned_launcher_target_alive(false, false));
+    }
+
+    #[test]
+    fn owned_launcher_waits_for_its_codex_process_when_cdp_is_unavailable() {
+        assert!(owned_launcher_target_alive(true, false));
     }
 
     #[test]
