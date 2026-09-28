@@ -4600,8 +4600,9 @@ fn bridge_health_check_script_rejects_stale_bridge_after_failed_requests() {
 const vm = require("node:vm");
 const source = {script};
 const bridge = () => Promise.resolve({{ status: "failed" }});
-const run = (health, hasBridge = true) => vm.runInNewContext(source, {{
+const run = (health, hasBridge = true, document = undefined) => vm.runInNewContext(source, {{
   window: {{ __codexSessionDeleteBridge: hasBridge ? bridge : null, __codexPlusBridgeHealth: health }},
+  ...(document ? {{ document }} : {{}}),
 }});
 const now = Date.now();
 if (run({{ lastInjectionAt: 0, lastSuccessAt: 1 }}) !== false) process.exit(1);
@@ -4612,6 +4613,10 @@ if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000 }}) !== false) process
 if (run({{ lastInjectionAt: 0, lastSuccessAt: 0, lastAttemptAt: now }}) !== true) process.exit(7);
 if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000, lastAttemptAt: now - 16000 }}) !== false) process.exit(8);
 if (run({{ lastInjectionAt: now, lastSuccessAt: now }}, false) !== false) process.exit(6);
+const stale = {{ lastInjectionAt: 1, lastSuccessAt: now - 16000, lastAttemptAt: now - 16000 }};
+if (run(stale, true, {{ visibilityState: "hidden" }}) !== true) process.exit(9);
+if (run(stale, false, {{ visibilityState: "hidden" }}) !== false) process.exit(10);
+if (run(stale, true, {{ visibilityState: "visible" }}) !== false) process.exit(11);
 "#,
         script = script
     );

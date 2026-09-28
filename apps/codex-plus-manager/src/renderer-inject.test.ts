@@ -467,6 +467,15 @@ describe("renderer injection codex app module loader", () => {
     // 两个前缀各自试了一次；第三次命中 vscode-api- 自己的冷却。
     assert.equal(loader.sweeps(), 2);
   });
+
+  // issue #2169：重注入会重新执行整份脚本，失败记录和查找结果必须挂在 window 上保留，
+  // 否则每次重注入都会把全部 app asset 重新 fetch 一遍。
+  it("keeps asset lookup caches on window across reinjection", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+
+    assert.match(renderer, /window\.__codexPlusAppModuleFailures/);
+    assert.match(renderer, /__codexPlusAssetUrlLookups/);
+  });
 });
 
 interface DispatcherPatchHarness {

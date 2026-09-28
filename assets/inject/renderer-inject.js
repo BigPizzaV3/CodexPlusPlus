@@ -2415,7 +2415,10 @@
   const codexServiceTierReadTimeoutMs = 5000;
   const codexServiceTierModulePromises = new Map();
   // namePart -> { at, attempts, error }，见 loadCodexAppModule 里的说明。
-  const codexAppModuleFailures = new Map();
+  // 挂在 window 上跨重注入保留：否则每次重注入都会清空失败记录，重新全量 fetch asset。
+  const codexAppModuleFailures = window.__codexPlusAppModuleFailures || (window.__codexPlusAppModuleFailures = new Map());
+  // namePart -> { at, url }：codexAppAssetUrlFromScriptText 的查找结果，未命中也缓存，同样跨重注入保留。
+  const codexAppAssetUrlLookups = window.__codexPlusAssetUrlLookups || (window.__codexPlusAssetUrlLookups = new Map());
   const codexAppModuleRetryCooldownMs = 30000;
   const codexAppModuleMaxAttempts = 8;
   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
@@ -2446,6 +2449,18 @@
 
   async function codexAppAssetUrlFromScriptText(namePart) {
     if (!namePart) return "";
+    // installExternalApiQuotaGate 等调用方会绕过 loader 直接调这里，
+    // 没有缓存时每次注入都要把全部 app asset fetch 一遍。
+    const cached = codexAppAssetUrlLookups.get(namePart);
+    if (cached && (cached.url || Date.now() - cached.at < codexAppModuleRetryCooldownMs)) {
+      return cached.url;
+    }
+    const url = await scanCodexAppAssetUrlFromScriptText(namePart);
+    codexAppAssetUrlLookups.set(namePart, { at: Date.now(), url });
+    return url;
+  }
+
+  async function scanCodexAppAssetUrlFromScriptText(namePart) {
     const scripts = codexAppAssetCandidateUrls();
     const escaped = String(namePart).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const patterns = [

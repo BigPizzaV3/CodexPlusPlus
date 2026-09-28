@@ -27,12 +27,16 @@ const BRIDGE_HEALTH_FAILURE_THRESHOLD: u8 = 2;
 /// 改变了页面上下文），避免每 10~15 秒重发一次完整注入脚本（issue #2169）。
 const BRIDGE_REINJECT_BACKOFF_BASE_SECS: u64 = 10;
 const BRIDGE_REINJECT_BACKOFF_CAP_SECS: u64 = 300;
+/// 重注入后紧接着的健康检查必然通过（lastInjectionAt 在 5 秒内），
+/// 必须持续健康满这么久才清零退避，否则退避永远不会生效。
+const BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS: u64 = 60;
 
-/// 看门狗内跟踪重注入退避状态；健康恢复或应用实例更换时重置。
+/// 看门狗内跟踪重注入退避状态；持续健康一段时间或应用实例更换时重置。
 #[derive(Debug, Default)]
 struct BridgeReinjectBackoff {
     consecutive_attempts: u32,
     next_allowed_at: Option<std::time::Instant>,
+    healthy_since: Option<std::time::Instant>,
 }
 
 fn reinject_backoff_delay(consecutive_attempts: u32) -> std::time::Duration {
@@ -60,6 +64,21 @@ impl BridgeReinjectBackoff {
     fn reset(&mut self) {
         self.consecutive_attempts = 0;
         self.next_allowed_at = None;
+        self.healthy_since = None;
+    }
+
+    /// 观测到一次健康：持续健康满 BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS 才清零。
+    fn observe_healthy(&mut self, now: std::time::Instant) {
+        let since = *self.healthy_since.get_or_insert(now);
+        if now.saturating_duration_since(since)
+            >= std::time::Duration::from_secs(BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS)
+        {
+            self.reset();
+        }
+    }
+
+    fn observe_unhealthy(&mut self) {
+        self.healthy_since = None;
     }
 }
 const MACOS_DEBUG_TAKEOVER_WAIT_MS: u64 = 5_000;
@@ -2855,9 +2874,11 @@ async fn check_and_reinject_bridge_inner(
         }
     };
     match healthy {
-        // 健康恢复或探测不确定时清掉退避；失效计数由 should_reinject_* 统一管理。
-        Some(true) | None => backoff.reset(),
-        Some(false) => {}
+        // 持续健康一段时间才清掉退避；探测不确定时不改变退避状态。
+        // 失效计数由 should_reinject_* 统一管理。
+        Some(true) => backoff.observe_healthy(std::time::Instant::now()),
+        None => {}
+        Some(false) => backoff.observe_unhealthy(),
     }
     if !should_reinject_after_health_result(healthy, browser_identity_changed, health_failures) {
         return false;
@@ -3611,6 +3632,35 @@ mod tests {
         backoff.reset();
         assert_eq!(backoff.consecutive_attempts, 0);
         assert!(backoff.ready(now), "健康恢复后应立即允许重注入");
+    }
+
+    #[test]
+    fn reinject_backoff_resets_only_after_sustained_health() {
+        let now = std::time::Instant::now();
+        let reset_after = std::time::Duration::from_secs(BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS);
+        let mut backoff = BridgeReinjectBackoff::default();
+
+        backoff.record_attempt(now);
+        backoff.observe_healthy(now + std::time::Duration::from_secs(1));
+        assert_eq!(
+            backoff.consecutive_attempts, 1,
+            "注入后立刻健康不应清零退避"
+        );
+
+        backoff.observe_healthy(now + std::time::Duration::from_secs(30));
+        assert_eq!(backoff.consecutive_attempts, 1);
+
+        // 中途出现一次不健康，重新计时。
+        backoff.observe_unhealthy();
+        let restart = now + std::time::Duration::from_secs(40);
+        backoff.observe_healthy(restart);
+        backoff.observe_healthy(now + std::time::Duration::from_secs(1) + reset_after);
+        assert_eq!(backoff.consecutive_attempts, 1, "不健康后应重新计时");
+
+        backoff.observe_healthy(restart + reset_after);
+        assert_eq!(backoff.consecutive_attempts, 0, "持续健康满阈值后应清零");
+        assert!(backoff.healthy_since.is_none());
+        assert!(backoff.ready(restart + reset_after));
     }
 
     #[test]
