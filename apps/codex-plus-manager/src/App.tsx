@@ -208,6 +208,7 @@ type OverviewResult = CommandResult<{
 
 type LaunchCommandResult = CommandResult<{
   launchStartedAtMs?: number;
+  nativeBrowserRestoreFailed?: boolean;
 }>;
 
 type PluginMarketplaceRepairResult = CommandResult<{
@@ -2162,7 +2163,13 @@ export function App() {
       showNotice(t("重启 Codex++"), result.message, result.status);
       return false;
     }
-    showNotice(t("重启 Codex++"), t("正在等待 Codex 重新启动…"), "accepted");
+    showNotice(
+      t("重启 Codex++"),
+      result.nativeBrowserRestoreFailed
+        ? t("原生浏览器文件恢复失败，仍会继续启动。")
+        : t("正在等待 Codex 重新启动…"),
+      result.nativeBrowserRestoreFailed ? "failed" : "accepted",
+    );
     const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
     showLaunchCompletionNotice(t("重启 Codex++"), completion);
     const succeeded = Boolean(

@@ -1153,19 +1153,12 @@ impl LaunchHooks for DefaultLaunchHooks {
                 }
             }
         }
-        let mut empty_streak = 0u32;
-        loop {
-            let has_codex_process = !crate::watcher::find_codex_processes().is_empty();
-            let cdp_available = should_probe_launcher_cdp(cfg!(windows), has_codex_process)
-                && crate::cdp::endpoint_available(debug_port);
-            if !launcher_target_alive(has_codex_process, cdp_available) {
-                empty_streak = empty_streak.saturating_add(1);
-                if empty_streak >= 3 {
-                    break;
-                }
-            } else {
-                empty_streak = 0;
-            }
+        // Another Codex process must not keep this launcher holding the native
+        // browser monitor. Directly owned processes and this debug port can.
+        while owned_launcher_target_alive(
+            launcher_owned_process_alive(launch, debug_port),
+            crate::cdp::endpoint_available(debug_port),
+        ) {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
         Ok(())
@@ -2734,12 +2727,26 @@ pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
     previous.is_some_and(|previous| previous != current)
 }
 
-fn launcher_target_alive(has_codex_process: bool, cdp_available: bool) -> bool {
-    has_codex_process || cdp_available
+fn owned_launcher_target_alive(owned_process_alive: bool, debug_port_open: bool) -> bool {
+    owned_process_alive || debug_port_open
 }
 
-fn should_probe_launcher_cdp(is_windows: bool, has_codex_process: bool) -> bool {
-    is_windows && !has_codex_process
+/// macOS `open` is not the app's parent, so its tracked child exits immediately.
+/// Match the exact debug port in the app process command line instead.
+#[cfg(target_os = "macos")]
+fn launcher_owned_process_alive(launch: &CodexLaunch, debug_port: u16) -> bool {
+    matches!(
+        launch,
+        CodexLaunch::Process {
+            wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+            ..
+        }
+    ) && !crate::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launcher_owned_process_alive(_launch: &CodexLaunch, _debug_port: u16) -> bool {
+    false
 }
 
 fn should_reinject_after_health_result(
@@ -3473,15 +3480,14 @@ mod tests {
     }
 
     #[test]
-    fn launcher_stays_alive_while_injected_cdp_endpoint_is_available() {
-        assert!(launcher_target_alive(false, true));
+    fn owned_launcher_exit_follows_its_debug_port_not_other_codex_processes() {
+        assert!(owned_launcher_target_alive(false, true));
+        assert!(!owned_launcher_target_alive(false, false));
     }
 
     #[test]
-    fn launcher_only_probes_cdp_for_unrecognized_windows_processes() {
-        assert!(should_probe_launcher_cdp(true, false));
-        assert!(!should_probe_launcher_cdp(true, true));
-        assert!(!should_probe_launcher_cdp(false, false));
+    fn owned_launcher_waits_for_its_codex_process_when_cdp_is_unavailable() {
+        assert!(owned_launcher_target_alive(true, false));
     }
 
     #[test]

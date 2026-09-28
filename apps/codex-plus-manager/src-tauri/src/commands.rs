@@ -847,7 +847,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         Ok(snapshot) => snapshot,
         Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
     };
-    if let Err(error) = stop_codex_plus_for_restart(
+    let native_browser_shutdown = match stop_codex_plus_for_restart(
         || codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port),
         || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
         || {
@@ -858,9 +858,22 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             Ok(())
         },
     ) {
-        return failed(
-            &format!("Codex 已请求停止，但原生浏览器清理或旧启动器退出未完成；未强制终止启动器或启动新实例：{error}"),
-            json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            return failed(
+                &restart_stop_failure_message(&error),
+                json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+            );
+        }
+    };
+    let native_browser_restore_failed = matches!(
+        native_browser_shutdown,
+        codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
+    );
+    if native_browser_restore_failed {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "native_browser.cleanup_not_restored",
+            json!({"state": "blocked"}),
         );
     }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
@@ -897,7 +910,8 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
                 "debugPort": request.debug_port,
                 "helperPort": request.helper_port,
                 "syncActiveRelay": request.sync_active_relay,
-                "launchStartedAtMs": launch_started_at_ms
+                "launchStartedAtMs": launch_started_at_ms,
+                "nativeBrowserRestoreFailed": native_browser_restore_failed
             }),
         },
         Err(error) => {
@@ -910,7 +924,8 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
                     "debugPort": request.debug_port,
                     "helperPort": request.helper_port,
                     "syncActiveRelay": request.sync_active_relay,
-                    "launchStartedAtMs": launch_started_at_ms
+                    "launchStartedAtMs": launch_started_at_ms,
+                    "nativeBrowserRestoreFailed": native_browser_restore_failed
                 }),
             )
         }
@@ -919,14 +934,39 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 
 fn stop_codex_plus_for_restart(
     stop_codex: impl FnOnce(),
-    wait_native: impl FnOnce() -> anyhow::Result<()>,
+    wait_native: impl FnOnce() -> anyhow::Result<codex_plus_core::native_browser::NativeBrowserShutdown>,
     stop_launcher: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+) -> Result<codex_plus_core::native_browser::NativeBrowserShutdown, RestartStopError> {
     // The launcher owns native recovery; terminating it first skips that cleanup.
     stop_codex();
-    wait_native()?;
-    stop_launcher()?;
-    Ok(())
+    let shutdown = wait_native().map_err(RestartStopError::NativeBrowser)?;
+    stop_launcher().map_err(RestartStopError::Launcher)?;
+    Ok(shutdown)
+}
+
+#[derive(Debug)]
+enum RestartStopError {
+    NativeBrowser(anyhow::Error),
+    Launcher(anyhow::Error),
+}
+
+fn restart_stop_failure_message(error: &RestartStopError) -> String {
+    match error {
+        RestartStopError::NativeBrowser(error) => {
+            let summary = if error
+                .downcast_ref::<codex_plus_core::native_browser::NativeBrowserCleanupStillRunning>()
+                .is_some()
+            {
+                "仍在恢复"
+            } else {
+                "恢复失败"
+            };
+            format!("Codex 已请求停止，但原生浏览器文件{summary}，未启动新实例：{error}")
+        }
+        RestartStopError::Launcher(error) => format!(
+            "Codex 已请求停止，但旧启动器尚未退出，未启动新实例：{error}"
+        ),
+    }
 }
 
 fn restart_codex_plus_after_stop<F>(
@@ -7270,10 +7310,54 @@ base_url = "https://example.invalid/v1"
         let events = std::cell::RefCell::new(Vec::new());
         stop_codex_plus_for_restart(
             || events.borrow_mut().push("codex"),
-            || { events.borrow_mut().push("cleanup"); Ok(()) },
+            || {
+                events.borrow_mut().push("cleanup");
+                Ok(codex_plus_core::native_browser::NativeBrowserShutdown::Ready)
+            },
             || { events.borrow_mut().push("launcher"); Ok(()) },
         ).unwrap();
         assert_eq!(*events.borrow(), ["codex", "cleanup", "launcher"]);
+    }
+
+    #[test]
+    fn restore_failure_still_stops_the_old_launcher() {
+        let stopped_launcher = std::cell::Cell::new(false);
+        let shutdown = stop_codex_plus_for_restart(
+            || {},
+            || Ok(codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed),
+            || {
+                stopped_launcher.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            shutdown,
+            codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
+        );
+        assert!(stopped_launcher.get());
+    }
+
+    #[test]
+    fn restart_stop_errors_name_the_step_that_failed() {
+        let browser = restart_stop_failure_message(&RestartStopError::NativeBrowser(
+            anyhow::Error::new(
+                codex_plus_core::native_browser::NativeBrowserCleanupStillRunning,
+            ),
+        ));
+        let launcher = restart_stop_failure_message(&RestartStopError::Launcher(anyhow::anyhow!(
+            "old launcher still exiting"
+        )));
+        assert!(browser.contains("原生浏览器文件仍在恢复"));
+        assert!(!browser.contains("旧启动器尚未退出"));
+        assert!(launcher.contains("旧启动器尚未退出"));
+        assert!(!launcher.contains("原生浏览器文件仍在恢复"));
+
+        let failed = restart_stop_failure_message(&RestartStopError::NativeBrowser(
+            anyhow::anyhow!("Invalid native cleanup receipt"),
+        ));
+        assert!(failed.contains("原生浏览器文件恢复失败"));
+        assert!(!failed.contains("原生浏览器文件仍在恢复"));
     }
 
     #[test]

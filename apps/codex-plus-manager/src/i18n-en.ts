@@ -15,6 +15,8 @@ export const EN_PLAIN: Record<string, string> = {
   "启动中": "Starting",
   "启动仍在后台进行，可在概览的“最近启动”中查看状态。": "Startup is still running in the background. Check Recent Launch on Overview for its status.",
   "正在等待 Codex 重新启动…": "Waiting for Codex to restart...",
+  "原生浏览器文件恢复失败，仍会继续启动。":
+    "Native browser files could not be restored. Codex will still start.",
   "正在等待 Codex 启动结果…": "Waiting for the Codex startup result...",
   "运行中（增强等待中）": "Running (waiting for enhancements)",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
