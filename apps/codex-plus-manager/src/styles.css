@@ -2991,6 +2991,16 @@ body {
   margin-bottom: 0;
 }
 
+.switch-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.switch-row.is-disabled:hover {
+  border-color: hsl(var(--border));
+  background: hsl(var(--background));
+}
+
 .zed-remote-settings {
   display: grid;
   grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);

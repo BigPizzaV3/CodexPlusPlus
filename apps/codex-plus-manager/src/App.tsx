@@ -8201,9 +8201,13 @@ function RelayProfileEditor({
           </section>
         ) : null}
         {showApiFields ? (
-          <label className="switch-row compact relay-switch-row relay-field-standard">
+          <label
+            className={`switch-row compact relay-switch-row relay-field-standard${profile.protocol === "chatCompletions" ? "" : " is-disabled"}`}
+            title={profile.protocol === "chatCompletions" ? undefined : t("仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。")}
+          >
             <input
               checked={profile.standardOpenaiProtocol}
+              disabled={profile.protocol !== "chatCompletions"}
               onChange={(event) =>
                 updateDraft({ standardOpenaiProtocol: event.currentTarget.checked })
               }
