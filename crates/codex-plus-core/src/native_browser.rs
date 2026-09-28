@@ -17,6 +17,12 @@ const SERVICE: &str = "bin/node_modules/@oai/browser-desktop/scripts/browser-ser
 const ORIGINAL_SHA: &str = "3e6fd4a8cf09f57549d63f2c9cbfa2abf42f0a6b0c09c3d6605fe07c8ba09e4a";
 const NATIVE_SHA: &str = "ef53f8f0d957b7cf437020499b6b9d880dee381214788930107b549237f7949c";
 const ANCHOR: &str = "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEndedTracker,cD)";
+const CURRENT_ORIGINAL_SHA: &str =
+    "fc0660ba45e6c10b532d8faa0c1bac704d987dad3d4b74478f49fdd82bf90086";
+const CURRENT_MANIFEST_SHA: &str =
+    "2c8ea57bfab596fb3b9cf78673b62a763f8d484aa8d380e341324354ce9e90e8";
+const CURRENT_ANCHOR: &str =
+    "new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,sv)";
 const HELPER: &str = include_str!("../../../assets/native-browser/require-identification.mjs");
 const MAX_SERVICE: u64 = 32 * 1024 * 1024;
 
@@ -45,6 +51,39 @@ impl RuntimeContract {
                     "992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278".into(),
                 ),
             ],
+        }
+    }
+
+    fn current() -> Self {
+        Self {
+            service_sha: CURRENT_ORIGINAL_SHA.into(),
+            files: vec![
+                (
+                    "bin/node_repl.exe",
+                    "e42e0d846b9c1e5da3ec7b5e069fdae3643df590f4e304f433cfaa7fbd8732a7".into(),
+                ),
+                (
+                    "bin/node.exe",
+                    "d3c3c290b11d55ef747e63f5a63538e0d8ca95f3f9668bb6a8081a25ba2befab".into(),
+                ),
+                ("manifest.json", CURRENT_MANIFEST_SHA.into()),
+                (
+                    "bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs",
+                    "992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278".into(),
+                ),
+            ],
+        }
+    }
+
+    fn for_manifest(hash: &str) -> Result<Self> {
+        match hash {
+            "ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc" => {
+                Ok(Self::pinned())
+            }
+            CURRENT_MANIFEST_SHA => Ok(Self::current()),
+            _ => Err(anyhow::anyhow!(
+                "Unsupported native runtime component: manifest.json"
+            )),
         }
     }
 }
@@ -256,13 +295,15 @@ fn transform(source: &[u8], control: &Path, contract: &RuntimeContract) -> Resul
         sha(source) == contract.service_sha,
         "Unsupported native browser service hash"
     );
-    transform_binding(source, control)
+    transform_binding(source, control, contract)
 }
 
-fn transform_binding(source: &[u8], control: &Path) -> Result<Vec<u8>> {
+fn transform_binding(source: &[u8], control: &Path, contract: &RuntimeContract) -> Result<Vec<u8>> {
     let text = std::str::from_utf8(source)?;
+    let current = contract.service_sha == CURRENT_ORIGINAL_SHA;
+    let anchor = if current { CURRENT_ANCHOR } else { ANCHOR };
     ensure!(
-        text.matches(ANCHOR).count() == 1,
+        text.matches(anchor).count() == 1,
         "Expected one callback binding"
     );
     ensure!(
@@ -270,10 +311,16 @@ fn transform_binding(source: &[u8], control: &Path) -> Result<Vec<u8>> {
         "Conflicting adapter"
     );
     let path = serde_json::to_string(&control.to_str().context("Non-Unicode control path")?)?;
-    let replacement = format!(
-        "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,cD,ze,{path}))"
-    );
-    Ok(format!("{}\n{HELPER}", text.replacen(ANCHOR, &replacement, 1)).into_bytes())
+    let replacement = if current {
+        format!(
+            "new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,sv,je,{path}))"
+        )
+    } else {
+        format!(
+            "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,cD,ze,{path}))"
+        )
+    };
+    Ok(format!("{}\n{HELPER}", text.replacen(anchor, &replacement, 1)).into_bytes())
 }
 
 fn selected_key(descriptor: &Value, root: &Path) -> Result<String> {
@@ -479,7 +526,8 @@ fn recovery_material(
     ensure!(
         journal.schema == 1
             && (journal.original_sha == contract.service_sha
-                || journal.original_sha == ORIGINAL_SHA)
+                || journal.original_sha == ORIGINAL_SHA
+                || journal.original_sha == CURRENT_ORIGINAL_SHA)
             && sha(&original) == journal.original_sha
             && journal.candidate_sha == sha(&candidate)
             && journal.modified_nanos < 1_000_000_000,
@@ -599,7 +647,16 @@ fn reconcile_locked(
         ));
     };
     restore_all(paths, Some(&key), contract)?;
-    prepare(paths, &key, contract)?;
+    let selected = if contract.service_sha == ORIGINAL_SHA {
+        let manifest = read_regular(
+            &paths.runtime_root.join(&key).join("manifest.json"),
+            1024 * 1024,
+        )?;
+        Some(RuntimeContract::for_manifest(&sha(&manifest))?)
+    } else {
+        None
+    };
+    prepare(paths, &key, selected.as_ref().unwrap_or(contract))?;
     atomic_write(&control, br#"{"schema":1,"requireIdentification":true}"#)?;
     Ok(BrowserStatus::new(
         "prepared",
@@ -1097,6 +1154,34 @@ mod tests {
             )
             .is_err()
         );
+        assert!(
+            transform(
+                CURRENT_ANCHOR.as_bytes(),
+                Path::new("C:/state/control.json"),
+                &RuntimeContract::current()
+            )
+            .is_err()
+        );
+        assert!(RuntimeContract::for_manifest("unknown").is_err());
+        assert_eq!(
+            RuntimeContract::for_manifest(CURRENT_MANIFEST_SHA).unwrap().service_sha,
+            CURRENT_ORIGINAL_SHA
+        );
+    }
+
+    #[test]
+    fn unsupported_manifest_does_not_modify_the_browser_service() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, _, service) = synthetic(&temp);
+        let before = fs::read(&service).unwrap();
+        fs::write(paths.runtime_root.join("0123456789abcdef/manifest.json"), b"unknown").unwrap();
+        let error = reconcile(&paths, true).unwrap_err();
+        assert!(error.to_string().contains("manifest.json"));
+        assert_eq!(fs::read(service).unwrap(), before);
+        let control: Value =
+            serde_json::from_slice(&fs::read(paths.state_root.join("control.json")).unwrap())
+                .unwrap();
+        assert_eq!(control["requireIdentification"], false);
     }
 
     #[test]
@@ -1143,15 +1228,35 @@ mod tests {
     fn binding_requires_unique_anchor_and_preserves_other_code() {
         let path = Path::new("C:/unicode-\u{4e2d}/control.json");
         for source in ["no binding".to_string(), ANCHOR.repeat(2)] {
-            assert!(transform_binding(source.as_bytes(), path).is_err());
+            assert!(
+                transform_binding(source.as_bytes(), path, &RuntimeContract::pinned()).is_err()
+            );
         }
         let source = format!("prefix;{ANCHOR};suffix");
-        let output =
-            String::from_utf8(transform_binding(source.as_bytes(), path).unwrap()).unwrap();
+        let output = String::from_utf8(
+            transform_binding(source.as_bytes(), path, &RuntimeContract::pinned()).unwrap(),
+        )
+        .unwrap();
         assert!(output.starts_with("prefix;new nf("));
         assert!(output.contains(";suffix\n"));
         assert!(output.ends_with(HELPER));
         assert!(!output.contains("turn_id:"));
+    }
+
+    #[test]
+    fn current_binding_uses_current_metadata_and_policy_callback() {
+        let path = Path::new("C:/state/control.json");
+        let contract = RuntimeContract::current();
+        for source in [ANCHOR.to_owned(), CURRENT_ANCHOR.repeat(2)] {
+            assert!(transform_binding(source.as_bytes(), path, &contract).is_err());
+        }
+        let source = format!("prefix;{CURRENT_ANCHOR};suffix");
+        let output =
+            String::from_utf8(transform_binding(source.as_bytes(), path, &contract).unwrap())
+                .unwrap();
+        assert!(output.contains("new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,sv,je,"));
+        assert!(output.ends_with(HELPER));
+        assert!(output.contains(";suffix\n"));
     }
 
     fn descriptor(root: &Path, key: &str) -> Value {
@@ -1704,6 +1809,8 @@ mod tests {
     fn pinned_fixture_transaction_recovery_and_external_change() {
         let fixture = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_FIXTURE").unwrap());
         let generated = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_DESCRIPTOR").unwrap());
+        let manifest = read_regular(&fixture.join("manifest.json"), 1024 * 1024).unwrap();
+        let contract = RuntimeContract::for_manifest(&sha(&manifest)).unwrap();
         let mut data: Value = serde_json::from_slice(&fs::read(&generated).unwrap()).unwrap();
         let source_key = selected_key(&data, fixture.parent().unwrap()).unwrap();
         assert_eq!(
@@ -1730,7 +1837,7 @@ mod tests {
         let service = runtime.join(SERVICE);
         fs::create_dir_all(service.parent().unwrap()).unwrap();
         fs::copy(fixture.join(SERVICE), &service).unwrap();
-        for (file, _) in RuntimeContract::pinned().files {
+        for (file, _) in contract.files {
             let target = runtime.join(file);
             fs::create_dir_all(target.parent().unwrap()).unwrap();
             fs::copy(fixture.join(file), target).unwrap();
