@@ -641,9 +641,13 @@ html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]) > di
   padding-top: 15px !important;
 }
 
+/* The 440px hero-art block was tuned for a ~1080p window. A fixed basis never
+   compresses, so on shorter windows the home hero is pushed out of view while
+   the composer overflows the pane. Scale it against the [role="main"] size
+   container instead, keeping 440px as the tall-window ceiling. */
 html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]) > div:first-child > div:first-child {
-  flex: 0 0 440px !important;
-  min-height: 440px !important;
+  flex: 0 0 clamp(220px, 48cqh, 440px) !important;
+  min-height: clamp(220px, 48cqh, 440px) !important;
   align-items: flex-start !important;
   padding-bottom: 0 !important;
 }

@@ -35,7 +35,7 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
         ),
         (
             "assets/inject/upstream/dream-skin/windows/dream-skin.css",
-            "F45CAA9A0A3D57157FBFA89DB98FEB6C5B87DBA21E09049E5341DB378C6F385D",
+            "A6CFB241953C0F871B04E4DD6296D40D5FA64928AE0110D3E2A5D396390A36C1",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
@@ -43,7 +43,7 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
         ),
         (
             "assets/inject/upstream/dream-skin/macos/dream-skin.css",
-            "F45CAA9A0A3D57157FBFA89DB98FEB6C5B87DBA21E09049E5341DB378C6F385D",
+            "A6CFB241953C0F871B04E4DD6296D40D5FA64928AE0110D3E2A5D396390A36C1",
         ),
         (
             "assets/inject/upstream/cidala-tiger/windows/renderer-inject.js",
