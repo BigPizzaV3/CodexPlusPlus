@@ -743,6 +743,51 @@ fn launcher_constructs_windows_packaged_activation_without_real_app() {
 }
 
 #[test]
+fn packaged_app_user_model_id_reads_application_id_from_manifest() {
+    // 新版 ChatGPT Desktop 可能调整 manifest 中的 Application Id（见 issue #2148）。
+    // 这段校验曾被 #2202 的 799ef0c9 静默回退掉，导致 #2308/#2310 的「该进程没有
+    // 程序包标识符」；恢复实现时一并恢复测试，避免再次无声丢失。
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp
+        .path()
+        .join("OpenAI.ChatGPT-Desktop_1.2026.190.0_x64__2p2nqsd0c76g0");
+    let app_dir = package_dir.join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(
+        package_dir.join("AppxManifest.xml"),
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+            "<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\"> ",
+            "<Applications><Application Id=\"ChatGPTDesktop\" ",
+            "Executable=\"app\\ChatGPT.exe\" EntryPoint=\"Windows.FullTrustApplication\"/>",
+            "</Applications></Package>"
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        packaged_app_user_model_id(&app_dir).as_deref(),
+        Some("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPTDesktop")
+    );
+}
+
+#[test]
+fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
+    // manifest 缺失/不可读时保持旧行为（仍使用历史默认值 "App"）。
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp
+        .path()
+        .join("OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0");
+    let app_dir = package_dir.join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+
+    assert_eq!(
+        packaged_app_user_model_id(&app_dir).as_deref(),
+        Some("OpenAI.Codex_2p2nqsd0c76g0!App")
+    );
+}
+
+#[test]
 fn launcher_packaged_activation_appends_extra_codex_arguments() {
     let app_dir = PathBuf::from(
         r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
