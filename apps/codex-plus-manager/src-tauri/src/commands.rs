@@ -876,6 +876,12 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             json!({"state": "blocked"}),
         );
     }
+    if let Err(error) = prepare_fixed_helper_port_for_restart(settings.as_ref()) {
+        return failed(
+            &format!("重启 Codex++ 失败：{error}"),
+            json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+        );
+    }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.restart_requested",
@@ -967,6 +973,36 @@ fn restart_stop_failure_message(error: &RestartStopError) -> String {
             "Codex 已请求停止，但旧启动器尚未退出，未启动新实例：{error}"
         ),
     }
+}
+
+fn prepare_fixed_helper_port_for_restart(settings: Option<&BackendSettings>) -> anyhow::Result<()> {
+    let loaded;
+    let settings = match settings {
+        Some(settings) => settings,
+        None => match SettingsStore::default().load() {
+            Ok(value) => {
+                loaded = value;
+                &loaded
+            }
+            // 读不到设置时仍交给 launcher 自己等。这里失败不应把一次普通重启拦死。
+            Err(_) => return Ok(()),
+        },
+    };
+    let Some(port) = codex_plus_core::launcher::required_fixed_helper_port(settings) else {
+        return Ok(());
+    };
+    codex_plus_core::launcher::wait_for_fixed_helper_port(
+        port,
+        codex_plus_core::launcher::protocol_proxy_bind_retry_timeout_ms(),
+        codex_plus_core::launcher::helper_bind_retry_interval_ms(),
+        probe_loopback_port,
+        |interval_ms| std::thread::sleep(std::time::Duration::from_millis(interval_ms)),
+    )
+}
+
+fn probe_loopback_port(port: u16) -> std::io::Result<()> {
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    Ok(())
 }
 
 fn restart_codex_plus_after_stop<F>(
