@@ -1108,6 +1108,12 @@ body {
   background: hsl(var(--shell-bg));
 }
 
+.relay-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .relay-detail-body {
   flex: 1;
   min-height: 0;
