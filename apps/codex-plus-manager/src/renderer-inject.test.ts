@@ -163,6 +163,12 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /codexPlusSidebarNavId\s*=\s*"codex-plus-sidebar-nav"/);
     assert.match(renderer, /function installCodexPlusSidebarNavigation\(\)/);
     assert.match(renderer, /aside\.app-shell-left-panel nav\[role="navigation"\]/);
+    // 新版把 role="navigation" 挪去了缩略图面板/演示目录，兜底要限定在 aside 内；
+    // 而图标栏本身也是 aside 里的 <nav> 且文档顺序在前，必须显式排除，
+    // 否则 "点导航就关页面" 的监听会挂到图标栏上，点自己的入口就把页面关掉。
+    assert.doesNotMatch(renderer, /aside\.app-shell-left-panel nav\[role="navigation"\], nav\[role="navigation"\]/);
+    assert.match(renderer, /aside\.app-shell-left-panel nav\[role="navigation"\]'\)/);
+    assert.match(renderer, /!nav\.hasAttribute\("data-app-navigation-rail"\)/);
     assert.match(renderer, /const insertionButton = pluginButton \|\| navButtons\.find/);
     assert.match(renderer, /selectors\.pluginNavButton/);
     assert.match(renderer, /button\.querySelector\(selectors\.pluginSvgPath\)/);
@@ -176,8 +182,51 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /target\?\.closest\(selectors\.sidebarThread\)/);
     assert.match(renderer, /closeCodexPlusPageAfterNativeNavigation\(\)/);
     assert.match(renderer, /setTimeout\(\(\) => \{\s*window\.__codexPlusPageNavigationCloseTimer = null;\s*closeCodexPlusPage\(\);/);
-    assert.match(renderer, /installCodexPlusSidebarNavigation\(\);/);
+    assert.match(renderer, /installCodexPlusNavigationEntries\(\);/);
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
+  });
+
+  it("mounts Codex++ and 拓展 entries into the new navigation rail", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /codexPlusRailNavId\s*=\s*"codex-plus-rail-nav"/);
+    assert.match(renderer, /codexPlusRailExtensionsId\s*=\s*"codex-plus-rail-extensions"/);
+    assert.match(renderer, /codexPlusRailSelector\s*=\s*"nav\[data-app-navigation-rail\]"/);
+    assert.match(renderer, /function installCodexPlusRailNavigation\(\)/);
+    // 模板按钮取自原生 destination，clone 后必须清掉这几个属性，
+    // 否则会被 Codex 的自定义/排序逻辑当成真 destination。
+    assert.match(renderer, /codexPlusRailDestinationSelector\s*=\s*"\[data-sidebar-destination\]"/);
+    assert.match(renderer, /button\.removeAttribute\("data-sidebar-destination"\)/);
+    assert.match(renderer, /button\.removeAttribute\("aria-current"\)/);
+    // 图标栏是纯图标，不塞文字标签。
+    assert.match(renderer, /class="codex-plus-rail-icon"/);
+    assert.doesNotMatch(renderer, /codex-plus-rail-icon"[^]*?<span class="truncate">/);
+  });
+
+  it("falls back to the legacy sidebar entry when the rail is absent", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function installCodexPlusNavigationEntries\(\)/);
+    // 两条路径互斥：有 rail 就移除旧入口，没有就移除 rail 入口。
+    assert.match(renderer, /if \(installCodexPlusRailNavigation\(\)\) \{\s*detachCodexPlusSidebarNavigation\(\);\s*return;\s*\}/);
+    assert.match(renderer, /removeCodexPlusRailNavigation\(\);\s*installCodexPlusSidebarNavigation\(\);/);
+    assert.match(renderer, /function detachCodexPlusSidebarNavigation\(\)/);
+    // 启动补扫要认两条路径任意一条已装上。
+    assert.match(renderer, /const installed = document\.getElementById\(codexPlusSidebarNavId\)\s*\|\| document\.getElementById\(codexPlusRailNavId\);/);
+  });
+
+  it("opens 拓展 as a standalone page instead of a Codex++ tab", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /codexPlusExtensionsTab\s*=\s*"extensions"/);
+    assert.match(renderer, /function openCodexPlusExtensions\(\)/);
+    assert.match(renderer, /openCodexPlusModal\(\{ page: true, tab: codexPlusExtensionsTab \}\)/);
+    // 旧名 userScripts 仍要能映射过去，避免存量调用点失效。
+    assert.match(renderer, /if \(tab === "extensions" \|\| tab === "userScripts"\) return codexPlusExtensionsTab;/);
+    // 弹窗必须尊重传入的初始 tab，而不是硬编码 home。
+    assert.match(renderer, /selectCodexPlusTab\(initialTab\);/);
+    // 激活态要靠 data-codex-plus-active-tab 区分页面，必须排在 selectCodexPlusTab 之后。
+    assert.match(renderer, /selectCodexPlusTab\(initialTab\);\s*\/\/[^]*?if \(pageMode\) setCodexPlusSidebarNavActive\(true, codexPlusActiveEntry\(\) \|\| "home"\);/);
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {
