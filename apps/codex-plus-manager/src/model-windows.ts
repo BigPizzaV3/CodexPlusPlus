@@ -98,6 +98,48 @@ export function mergeModelWindowRows(
   return rows.length ? rows : [{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }];
 }
 
+/// 按模型名称排序的比较器：忽略大小写，数字段按数值比较（gpt-4 排在 gpt-10 前）；未命名的空行始终排到最后。
+export function compareModelWindowRowsByName(left: ModelWindowRow, right: ModelWindowRow): number {
+  const leftModel = left.model.trim();
+  const rightModel = right.model.trim();
+  if (!leftModel && !rightModel) return 0;
+  if (!leftModel) return 1;
+  if (!rightModel) return -1;
+  return leftModel.localeCompare(rightModel, "en", { numeric: true, sensitivity: "base" });
+}
+
+export type ModelWindowSortDirection = "asc" | "desc";
+
+/// 返回按模型名称排序后的新数组，不修改入参；等值行保持原有相对顺序。
+export function sortModelWindowRowsByName(
+  rows: ModelWindowRow[],
+  direction: ModelWindowSortDirection = "asc",
+): ModelWindowRow[] {
+  return sortModelWindowRowsWithOrigins(rows, [], direction).rows;
+}
+
+/// 按模型名同步重排行和对应的原始模型名（“原始名”用于把重命名正确回写 modelMetadata）。
+export function sortModelWindowRowsWithOrigins(
+  rows: ModelWindowRow[],
+  origins: string[],
+  direction: ModelWindowSortDirection = "asc",
+): { rows: ModelWindowRow[]; origins: string[] } {
+  const entries = rows.map((row, index) => ({
+    row,
+    origin: origins[index] || row.model.trim(),
+  }));
+  entries.sort((left, right) => {
+    const result = compareModelWindowRowsByName(left.row, right.row);
+    // 未命名的空行始终排在最后，不随升降序翻转。
+    if (!left.row.model.trim() || !right.row.model.trim()) return result;
+    return direction === "desc" ? -result : result;
+  });
+  return {
+    rows: entries.map((entry) => entry.row),
+    origins: entries.map((entry) => entry.origin),
+  };
+}
+
 export function modelWindowRowsFromProfile(
   modelList: string,
   modelWindows: string,

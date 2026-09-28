@@ -3732,16 +3732,23 @@ fn no_auth_auth_contents(auth_contents: &str) -> anyhow::Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
 }
 
+/// 默认模型已在列表里时保持用户排定的位置（例如按名称排序的结果），
+/// 只在缺失时补到首位，顺带按首次出现去重。
 fn merge_model_into_model_list(model: &str, model_list: &str) -> String {
     let model = model.trim();
     let mut models = Vec::new();
-    if !model.is_empty() {
-        models.push(model.to_string());
-    }
+    let mut model_present = false;
     for item in model_list.split(['\r', '\n', ',']).map(str::trim) {
-        if !item.is_empty() && !models.iter().any(|existing| existing == item) {
-            models.push(item.to_string());
+        if item.is_empty() || models.iter().any(|existing| existing == item) {
+            continue;
         }
+        if item == model {
+            model_present = true;
+        }
+        models.push(item.to_string());
+    }
+    if !model.is_empty() && !model_present {
+        models.insert(0, model.to_string());
     }
     models.join("\n")
 }
@@ -4091,6 +4098,17 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 保存时默认模型不应再被强行提到首位：它已在列表里就保持用户排定的位置，
+    /// 这样「按名称排序」的结果在保存后仍然稳定。
+    #[test]
+    fn merge_model_into_model_list_keeps_existing_position() {
+        assert_eq!(merge_model_into_model_list("b", "a\nb\nc"), "a\nb\nc");
+        assert_eq!(merge_model_into_model_list(" b ", "a\nb\nc"), "a\nb\nc");
+        assert_eq!(merge_model_into_model_list("zz", "a\nb"), "zz\na\nb");
+        assert_eq!(merge_model_into_model_list("", "a\nb\na"), "a\nb");
+        assert_eq!(merge_model_into_model_list("b", "a, b ,b\nc"), "a\nb\nc");
+    }
 
     /// 回归 09-23 现场故障：裸的 [mcp_servers] 父表头把切块锚点钉在 mcp_servers，
     /// 之后两个重复的 [mcp_servers.node_repl] 落在同一块里，整块解析失败后退回
