@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 
 pub const TASKBOARD_PORT: u16 = 47823;
 pub const TASKBOARD_URL: &str = "http://127.0.0.1:47823/?host=codex";
