@@ -4485,6 +4485,9 @@
       const on = Boolean(active) && entry === name;
       railButton.dataset.active = String(on);
       railButton.setAttribute("aria-current", on ? "page" : "false");
+      // 原生 rail 按钮的选中色由 data-selected 驱动（且需无 data-suppress-active-style）。
+      if (on) railButton.setAttribute("data-selected", "");
+      else railButton.removeAttribute("data-selected");
     });
   }
 
@@ -5027,15 +5030,18 @@
       : document.createElement("button");
     if (!(button instanceof HTMLElement)) return null;
     button.type = "button";
-    // 必须清掉这几个：留着 data-sidebar-destination 会被 Codex 的自定义/排序逻辑
-    // 当成真的 destination；aria-current / data-selected 则是选中态标记，
-    // 不清掉入口在没有任何页面打开时也会渲染成选中样式。
+    // 留着 data-sidebar-destination 会被 Codex 的自定义/排序逻辑当成真的 destination。
     button.removeAttribute("data-sidebar-destination");
-    button.removeAttribute("aria-current");
-    button.removeAttribute("data-selected");
     button.removeAttribute("data-state");
     button.removeAttribute("disabled");
     button.removeAttribute("aria-disabled");
+    // 选中态由 data-selected 驱动，但它只在没有 data-suppress-active-style 时生效。
+    // 模板若是未选中的按钮，会带着 suppress 过来，压制掉我们的选中样式——
+    // 必须移除，否则按钮永远停在未选中的暗色。
+    button.removeAttribute("data-suppress-active-style");
+    // 起始为未选中；激活态由 setCodexPlusSidebarNavActive 切换 data-selected。
+    button.removeAttribute("data-selected");
+    button.removeAttribute("aria-current");
     button.setAttribute("aria-label", label);
     button.textContent = "";
     // 原生 rail 按钮是纯图标，没有文字标签，所以只放图标 + 状态点。
