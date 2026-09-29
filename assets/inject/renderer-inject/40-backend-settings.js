@@ -501,18 +501,29 @@
     if (!content || !body) return;
     const layout = document.createElement("div");
     layout.className = "codex-plus-page-layout";
-    const nav = document.createElement("div");
-    nav.className = "codex-plus-page-nav";
-    nav.innerHTML = `
-      <div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${tab === codexPlusExtensionsTab ? "拓展" : "Codex++"}</div></div>
-      <div class="codex-plus-page-nav-body" data-codex-plus-page-nav-body="true">${renderCodexPlusPageNavItems(tab)}</div>
-    `;
     const main = document.createElement("div");
     main.className = "codex-plus-page-main";
+    // 只有「拓展」需要左面板（它是脚本列表）。主页和推荐内容都是单栏内容页，
+    // 页面切换交给图标栏那三个入口，再列一遍就是重复。
+    if (tab === codexPlusExtensionsTab) {
+      const nav = document.createElement("div");
+      nav.className = "codex-plus-page-nav";
+      nav.innerHTML = `
+        <div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${codexPlusPageTitle(tab)}</div></div>
+        <div class="codex-plus-page-nav-body" data-codex-plus-page-nav-body="true">${renderCodexPlusPageNavItems(tab)}</div>
+      `;
+      layout.appendChild(nav);
+    }
     content.appendChild(layout);
-    layout.appendChild(nav);
     layout.appendChild(main);
     main.appendChild(body);
+  }
+
+  /** 页面标题：每个 rail 入口一个名字，和图标栏上的标签保持一致。 */
+  function codexPlusPageTitle(tab) {
+    if (tab === codexPlusExtensionsTab) return "拓展";
+    if (tab === codexPlusSponsorTab) return "推荐内容";
+    return "Codex++";
   }
 
   /** 左面板内容随当前分组刷新（切 tab 后调用）。 */
@@ -766,14 +777,11 @@
   }
 
   function selectCodexPlusTab(tab) {
-    // 归一化后再比对：panel 用的是 extensions，而弹窗里那个 tab 按钮仍叫 userScripts，
+    // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
     // 不统一就会两边都对不上、所有 panel 全被隐藏。
     const normalized = codexPlusModalTab(tab);
     document.querySelectorAll(".codex-plus-modal-content").forEach((modal) => {
       modal.dataset.codexPlusActiveTab = normalized;
-    });
-    document.querySelectorAll("[data-codex-plus-tab]").forEach((button) => {
-      button.dataset.active = String(codexPlusModalTab(button.getAttribute("data-codex-plus-tab")) === normalized);
     });
     document.querySelectorAll("[data-codex-plus-panel]").forEach((panel) => {
       panel.hidden = codexPlusModalTab(panel.getAttribute("data-codex-plus-panel")) !== normalized;
@@ -791,7 +799,9 @@
     const overlay = document.querySelector(`.${codexPlusPageClass}`);
     if (!overlay) return null;
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
-    return tab === codexPlusExtensionsTab ? "extensions" : "home";
+    if (tab === codexPlusExtensionsTab) return "extensions";
+    if (tab === codexPlusSponsorTab) return "sponsor";
+    return "home";
   }
 
   function setCodexPlusSidebarNavActive(active, entry = "home") {
@@ -805,6 +815,7 @@
     [
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
+      [codexPlusRailSponsorId, "sponsor"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -852,7 +863,12 @@
     const left = railRect && railRect.width > 0
       ? Math.max(0, railRect.right)
       : (rect && rect.width > 0 ? Math.max(0, rect.right) : 0);
-    overlay.style.left = `${left}px`;
+    // 量出来的是视觉坐标，而 overlay 在缩放空间里布局，所以统一折算成布局坐标。
+    // CSS 的 calc(100vw / zoom - left) 用的也是这个空间的量，两边才配得上。
+    const zoom = codexPlusWindowZoom();
+    const layoutLeft = zoom === 1 ? left : left / zoom;
+    overlay.style.setProperty("--codex-plus-page-left", `${layoutLeft}px`);
+    overlay.style.left = `${layoutLeft}px`;
     overlay.style.top = "0px";
   }
 
@@ -878,43 +894,113 @@
     return !window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
   }
 
+  /**
+   * 取 Codex 当前的界面缩放系数。
+   *
+   * Codex 的界面缩放的实现是给内层布局节点设 CSS `zoom`（例如 1.2），而不是改
+   * documentElement，所以固定在 body 下的 overlay 不会自动跟随。这里把它读出来，
+   * 由 applyCodexPlusZoom 自己套上。
+   */
+  function codexPlusWindowZoom() {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue(codexPlusWindowZoomVar);
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  }
+
+  /**
+   * 让 overlay 跟随 Codex 的界面缩放，并保持满屏。
+   *
+   * 直接给 fixed 元素设 zoom 的话，它自身的 `inset: 0` / `100vw` 都还是按未缩放的
+   * 视口算，再乘 zoom 就溢出（实测 zoom=1.2 时 100vw 得到 2072px，视口只有 1727）。
+   * 所以 overlay 自身的尺寸改用 `calc(100vw / var(--codex-plus-zoom))` 抵消，
+   * 内部子元素则用百分比——它们在缩放空间里，百分比本来就对。
+   *
+   * 字号不在这里动：由 CSS 跟随 zoom 自然放大，与原生行为一致。
+   */
+  function applyCodexPlusZoom(overlay) {
+    if (!overlay?.style) return 1;
+    const zoom = codexPlusWindowZoom();
+    overlay.style.setProperty("--codex-plus-zoom", String(zoom));
+    if (zoom === 1) {
+      overlay.style.removeProperty("zoom");
+      return 1;
+    }
+    overlay.style.setProperty("zoom", String(zoom));
+    return zoom;
+  }
+
+  /**
+   * 用 Codex 自己的语义令牌刷新 overlay 的变量。
+   *
+   * 早先这里内联写死了一套 zinc 调色板（深色正文 #f3f4f6、次要 #a1a1aa），
+   * 内联优先级最高，把样式表里本来正确的令牌链整个盖掉了，表现为我们的文字
+   * 比原生偏白偏冷。现在改成读宿主算好的值——取不到才回落到兜底色，
+   * 这样浅色/深色主题都跟原生同源，也不会在 Codex 调色板变动后失配。
+   */
   function applyCodexPlusTheme(overlay) {
     if (!overlay?.style) return;
     const light = codexPlusHostUsesLightTheme();
-    const palette = light ? {
-      bgPrimary: "#ffffff",
-      bgSecondary: "#f7f7f7",
-      bgElevated: "#ffffff",
-      bgHover: "rgba(0,0,0,.06)",
-      bgSelected: "rgba(0,0,0,.08)",
-      text: "#171717",
-      textSecondary: "#5d5d5d",
-      textTertiary: "#8a8a8a",
-      border: "rgba(0,0,0,.12)",
-      borderSubtle: "rgba(0,0,0,.08)",
-    } : {
-      bgPrimary: "#212121",
-      bgSecondary: "#2f2f2f",
-      bgElevated: "#2f2f2f",
-      bgHover: "rgba(255,255,255,.08)",
-      bgSelected: "rgba(255,255,255,.12)",
-      text: "#f3f4f6",
-      textSecondary: "#d1d5db",
-      textTertiary: "#a1a1aa",
-      border: "rgba(255,255,255,.14)",
-      borderSubtle: "rgba(255,255,255,.08)",
+    const host = getComputedStyle(document.documentElement);
+    const read = (names, fallback) => {
+      for (const name of names) {
+        const value = host.getPropertyValue(name).trim();
+        if (value) return value;
+      }
+      return fallback;
     };
     const variables = {
-      "--codex-plus-bg-primary": palette.bgPrimary,
-      "--codex-plus-bg-secondary": palette.bgSecondary,
-      "--codex-plus-bg-elevated": palette.bgElevated,
-      "--codex-plus-bg-hover": palette.bgHover,
-      "--codex-plus-bg-selected": palette.bgSelected,
-      "--codex-plus-text": palette.text,
-      "--codex-plus-text-secondary": palette.textSecondary,
-      "--codex-plus-text-tertiary": palette.textTertiary,
-      "--codex-plus-border": palette.border,
-      "--codex-plus-border-subtle": palette.borderSubtle,
+      "--codex-plus-bg-primary": read(
+        ["--color-token-bg-primary", "--token-bg-primary", "--app-color-background-surface"],
+        light ? "#ffffff" : "#141414",
+      ),
+      "--codex-plus-bg-secondary": read(
+        ["--color-token-bg-secondary", "--token-bg-secondary", "--color-surface-secondary"],
+        light ? "#f7f7f7" : "#2f2f2f",
+      ),
+      "--codex-plus-bg-elevated": read(
+        ["--color-token-dropdown-background", "--color-surface-elevated-secondary", "--color-token-bg-elevated-secondary"],
+        light ? "#ffffff" : "#2f2f2f",
+      ),
+      "--codex-plus-bg-hover": read(
+        ["--color-token-interactive-bg-secondary-hover", "--color-background-primary-soft-hover", "--token-list-hover-background"],
+        light ? "rgba(0,0,0,.06)" : "rgba(255,255,255,.08)",
+      ),
+      "--codex-plus-bg-selected": read(
+        ["--color-token-interactive-bg-secondary-selected", "--color-background-primary-soft-active"],
+        light ? "rgba(0,0,0,.08)" : "rgba(255,255,255,.12)",
+      ),
+      "--codex-plus-text": read(
+        ["--color-token-text-primary", "--color-text-primary", "--token-text-primary"],
+        light ? "#171717" : "#dfdfdf",
+      ),
+      "--codex-plus-text-secondary": read(
+        ["--color-token-text-secondary", "--color-text-secondary-solid", "--color-text-secondary"],
+        light ? "#5d5d5d" : "rgba(255,255,255,.71)",
+      ),
+      "--codex-plus-text-tertiary": read(
+        ["--color-token-text-tertiary", "--color-text-tertiary"],
+        light ? "#8a8a8a" : "rgba(255,255,255,.498)",
+      ),
+      "--codex-plus-border": read(
+        ["--color-token-border-default", "--color-token-border", "--color-border-primary-outline"],
+        light ? "rgba(0,0,0,.12)" : "rgba(255,255,255,.084)",
+      ),
+      "--codex-plus-border-subtle": read(
+        ["--color-token-border-subtle", "--color-border-disabled"],
+        light ? "rgba(0,0,0,.08)" : "rgba(255,255,255,.06)",
+      ),
+      "--codex-plus-danger": read(
+        ["--color-text-danger", "--color-token-text-error"],
+        light ? "#dc2626" : "#ff6764",
+      ),
+      "--codex-plus-success": read(
+        ["--color-text-success", "--app-color-text-success"],
+        light ? "#15803d" : "#40c977",
+      ),
+      "--codex-plus-warning": read(
+        ["--color-text-warning", "--color-text-caution-surface"],
+        light ? "#a16207" : "#ffc300",
+      ),
     };
     Object.entries(variables).forEach(([name, value]) => overlay.style.setProperty(name, value));
     overlay.dataset.codexPlusTheme = light ? "light" : "dark";
@@ -935,23 +1021,20 @@
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
-    const extensionsMode = initialTab === codexPlusExtensionsTab;
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
     overlay.className = pageMode ? codexPlusPageClass : "codex-plus-modal-overlay";
     overlay.dataset.codexPlusPage = String(pageMode);
     applyCodexPlusTheme(overlay);
+    // 跟随 Codex 的界面缩放。必须在写 innerHTML 之前设好，否则内部那些
+    // calc(100% / var(--codex-plus-zoom-inverse)) 会先按 1 算一遍再被 zoom 放大。
+    applyCodexPlusZoom(overlay);
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
           <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
           <button type="button" class="codex-plus-modal-close" aria-label="${pageMode ? "返回" : "关闭"}">${pageMode ? "返回" : "×"}</button>
-        </div>
-        <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="${String(initialTab === "home")}">主页</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="${String(initialTab === "userScripts")}">用户脚本</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="${String(initialTab === "sponsor")}">推荐内容</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
@@ -1128,12 +1211,7 @@
         if (pageMode) setCodexPlusSidebarNavActive(false);
         return;
       }
-      const tabButton = target?.closest("[data-codex-plus-tab]");
-      if (tabButton) {
-        selectCodexPlusTab(tabButton.getAttribute("data-codex-plus-tab"));
-        return;
-      }
-      // 左面板的分组导航，等价于点顶栏那个 tab（页面模式下顶栏已隐藏）。
+      // 左面板的分组导航（仅拓展页有左面板）。
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {
         selectCodexPlusTab(pageNav.getAttribute("data-codex-plus-page-nav"));
@@ -1274,6 +1352,11 @@
     openCodexPlusModal({ page: true, tab: codexPlusExtensionsTab });
   }
 
+  /** 「推荐内容」页面：从弹窗的二级 tab 提出来，成为图标栏上的一级入口。 */
+  function openCodexPlusSponsor() {
+    openCodexPlusModal({ page: true, tab: codexPlusSponsorTab });
+  }
+
   function closeCodexPlusPage() {
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
@@ -1365,7 +1448,7 @@
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => document.getElementById(id)?.remove());
   }
 
   function detachCodexPlusSidebarNavigation() {
@@ -1459,19 +1542,23 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
 
     const icons = {
       home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg>',
-      extensions: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 4.5h3a1.5 1.5 0 0 1 1.5 1.5v1.5H17a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-2V15a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 15v-1.5H7A1.5 1.5 0 0 1 5.5 12V9A1.5 1.5 0 0 1 7 7.5h2V6a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M12 16.5V21"/></svg>',
+      // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
+      // 和页面内部保持同一个符号，不再另画一个近似图形。
+      extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
+      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2.5a1.5 1.5 0 0 0 1.5 1.5H6l1.5 4.5a1 1 0 0 0 1.9-.6L8.2 15h.3l7.5 3.5V4.5L8.5 8H4.5A1.5 1.5 0 0 0 3 9.5Z"/><path d="M19 9.5v5"/></svg>',
     };
 
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
+      { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
     const anchor = codexPlusRailPrimaryAnchor(rail);

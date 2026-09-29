@@ -115,7 +115,7 @@
         background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
         color: var(--color-token-text-secondary, var(--token-text-secondary, inherit));
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 3px 8px;
         cursor: pointer;
@@ -136,7 +136,7 @@
         background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
         color: var(--color-token-text-primary, var(--token-text-primary, inherit));
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         margin-left: 6px;
         padding: 2px 7px;
@@ -232,7 +232,7 @@
         background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
         color: var(--codex-plus-text);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 6px 8px;
         box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
@@ -245,7 +245,7 @@
         background: var(--color-background-danger-soft, rgba(220,38,38,.1));
         color: var(--color-text-danger, #dc2626);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 3px 8px;
         cursor: pointer;
@@ -325,7 +325,18 @@
       }
       .codex-plus-modal-overlay {
         position: fixed;
-        inset: 0;
+        top: 0;
+        left: 0;
+        /*
+         * overlay 自身带 zoom（见 applyCodexPlusZoom），而它的 inset: 0 与 100vw
+         * 都按未缩放的视口算，再乘 zoom 就溢出（实测 zoom=1.2 时 100vw 得到 2072px，
+         * 视口只有 1727px）。用 calc(100vw / var(--codex-plus-zoom)) 抵消；zoom 缺失
+         * 时分母回落到 1，行为与改造前一致。
+         * 内部子元素用百分比即可——它们在缩放空间里，百分比本来就对。
+         * 注意：本段在 JS 模板字符串里，注释中不能出现反引号，否则会提前闭合。
+         */
+        width: calc(100vw / var(--codex-plus-zoom, 1));
+        height: calc(100vh / var(--codex-plus-zoom, 1));
         z-index: 2147483646;
         display: flex;
         align-items: center;
@@ -336,8 +347,8 @@
         -webkit-app-region: no-drag;
       }
       .codex-plus-modal-content {
-        width: min(520px, calc(100vw - 48px));
-        max-height: min(680px, calc(100vh - 40px));
+        width: min(520px, calc(100% - 48px));
+        max-height: min(680px, calc(100% - 40px));
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -454,9 +465,22 @@
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] * {
         color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
       }
+      /*
+       * 页面 overlay 的 left 由 positionCodexPlusPage 按图标栏右边界算好写进来。
+       *
+       * 关键：写进来的必须是**布局坐标**（视觉值 / zoom），因为 overlay 自己在缩放
+       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left)
+       * 把右边贴到视口右边缘；两个量都除过 zoom，缩放后才正好补齐。
+       * 注意：本段在 JS 模板字符串里，注释里不能出现反引号，否则会提前闭合。
+       */
       .${codexPlusPageClass} {
         position: fixed;
-        inset: 0;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px));
+        height: calc(100vh / var(--codex-plus-zoom, 1));
         z-index: 2147483644;
         display: block;
         background: var(--token-bg-primary, #212121);
@@ -477,16 +501,6 @@
         margin: 0;
         padding: 16px 24px 10px;
       }
-      .${codexPlusPageClass} .codex-plus-tabs {
-        width: min(960px, 100%);
-        margin-inline: auto;
-      }
-      /* 「拓展」是独立页面，不属于 Codex++ 的 tab 分组，藏掉 tab 栏免得错位。 */
-      .codex-plus-modal-content[data-codex-plus-active-tab="${codexPlusExtensionsTab}"] .codex-plus-tabs {
-        display: none;
-      }
-      /* 页面模式下分组导航由左面板接管，顶栏那条 tab 一律隐藏。 */
-      .${codexPlusPageClass} .codex-plus-tabs { display: none; }
       .${codexPlusPageClass} .codex-plus-modal-body {
         width: 100%;
         margin: 0;
@@ -554,7 +568,7 @@
       }
       .codex-plus-page-nav-item-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
       .codex-plus-page-nav-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-page-nav-item-meta { font-size: 11px; color: var(--codex-plus-text-tertiary); }
+      .codex-plus-page-nav-item-meta { font-size: 13px; color: var(--codex-plus-text-tertiary); }
       .codex-plus-page-nav-item-state {
         flex: 0 0 auto;
         width: 7px;
@@ -611,7 +625,7 @@
         margin-top: 2px;
         padding-right: 8px;
         color: var(--codex-plus-text-tertiary);
-        font-size: 12px;
+        font-size: 13px;
         line-height: normal;
         display: -webkit-box;
         -webkit-line-clamp: 2;
@@ -633,7 +647,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-size: 11px;
+        font-size: 13px;
         font-weight: 600;
         color: var(--codex-plus-text-tertiary);
       }
@@ -645,7 +659,7 @@
         border-radius: 6px;
         background: transparent;
         color: var(--codex-plus-text-secondary);
-        font-size: 11px;
+        font-size: 13px;
         line-height: 16px;
         white-space: nowrap;
       }
@@ -675,10 +689,10 @@
         border-radius: 999px;
         background: #10a37f;
         color: #fff;
-        font-size: 10px;
+        font-size: 13px;
         line-height: 1;
       }
-      .codex-plus-page-nav-empty { padding: 8px 10px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
+      .codex-plus-page-nav-empty { padding: 8px 10px; color: var(--codex-plus-text-tertiary); font-size: 13px; }
       /* 拓展页：搜索框 + 分组标题 + 市场条目的「安装」按钮 */
       .codex-plus-page-search { padding: 0 10px 8px; }
       .codex-plus-page-search-input {
@@ -690,7 +704,7 @@
         background: var(--codex-plus-bg-secondary);
         color: var(--codex-plus-text);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         outline: none;
       }
       .codex-plus-page-search-input:focus { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-elevated); }
@@ -748,10 +762,10 @@
       .codex-plus-extensions-detail-meta {
         margin-top: 3px;
         color: var(--codex-plus-text-secondary);
-        font-size: 12px;
+        font-size: 13px;
       }
       .codex-plus-extensions-detail-sep { margin: 0 6px; color: var(--codex-plus-text-tertiary); }
-      .codex-plus-extensions-detail-update { margin-top: 5px; color: #fbbf24; font-size: 12px; }
+      .codex-plus-extensions-detail-update { margin-top: 5px; color: #fbbf24; font-size: 13px; }
       .codex-plus-extensions-detail-actions {
         flex: 0 0 auto;
         display: inline-flex;
@@ -765,7 +779,7 @@
         background: transparent;
         color: var(--codex-plus-text-secondary);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         cursor: pointer;
       }
       .codex-plus-extensions-detail-button:hover { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
@@ -792,7 +806,7 @@
         border-radius: 999px;
         background: var(--codex-plus-bg-hover);
         color: var(--codex-plus-text-tertiary);
-        font-size: 11px;
+        font-size: 13px;
       }
       .codex-plus-extensions-detail-section { margin-top: 16px; }
       .codex-plus-extensions-detail-section-title {
@@ -805,10 +819,10 @@
         margin: 0;
         padding-left: 18px;
         color: var(--codex-plus-text-secondary);
-        font-size: 12px;
+        font-size: 13px;
         line-height: 1.7;
       }
-      .codex-plus-extensions-detail-link { margin-top: 16px; font-size: 12px; }
+      .codex-plus-extensions-detail-link { margin-top: 16px; font-size: 13px; }
       .codex-plus-extensions-detail-link a { color: #10a37f; word-break: break-all; }
       .codex-plus-extensions-detail-error {
         margin-top: 14px;
@@ -816,7 +830,7 @@
         border-radius: 8px;
         background: rgba(239,68,68,.12);
         color: #ef4444;
-        font-size: 12px;
+        font-size: 13px;
       }
       .codex-plus-page-nav-group { margin-bottom: 10px; }
       .codex-plus-page-nav-group-head {
@@ -825,7 +839,7 @@
         justify-content: space-between;
         padding: 4px 10px;
         color: var(--codex-plus-text-tertiary);
-        font-size: 11px;
+        font-size: 13px;
         text-transform: uppercase;
         letter-spacing: .04em;
       }
@@ -835,7 +849,7 @@
         border-radius: 999px;
         background: var(--codex-plus-bg-hover);
         text-align: center;
-        font-size: 10px;
+        font-size: 13px;
       }
       .codex-plus-page-nav-group-tail { display: inline-flex; align-items: center; gap: 6px; }
       .codex-plus-page-nav-group-action {
@@ -843,7 +857,7 @@
         background: transparent;
         color: var(--codex-plus-text-tertiary);
         font: inherit;
-        font-size: 11px;
+        font-size: 13px;
         cursor: pointer;
         padding: 0 2px;
       }
@@ -854,7 +868,7 @@
         border: 1px solid var(--codex-plus-border);
         border-radius: 6px;
         color: var(--codex-plus-text-secondary);
-        font-size: 11px;
+        font-size: 13px;
       }
       .codex-plus-page-nav-item:hover .codex-plus-page-nav-item-action {
         background: var(--codex-plus-bg-selected);
@@ -905,8 +919,8 @@
       }
       .codex-plus-row:first-child { border-top: 0; }
       .codex-plus-row-title { font-weight: 550; line-height: 1.35; }
-      .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 12px; line-height: 1.4; }
-      .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 12px; line-height: 1.45; }
+      .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 13px; line-height: 1.4; }
+      .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 13px; line-height: 1.45; }
       .codex-plus-toggle {
         width: 42px;
         height: 24px;
@@ -936,7 +950,7 @@
       .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
-      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
+      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 13px; font-weight: 650; line-height: 1; }
       .codex-plus-width-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 176px; align-self: center; }
       .codex-plus-width-input {
         width: 78px;
@@ -946,19 +960,23 @@
         border-radius: 7px;
         background: rgba(255,255,255,.08);
         color: #f3f4f6;
-        font: 12px system-ui, sans-serif;
+        font-size: 13px;
+        font-family: inherit;
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-service-tier-control { display: grid; gap: 6px; min-width: 316px; justify-items: end; align-self: center; }
-      .codex-plus-service-tier-status { color: #a1a1aa; font-size: 12px; line-height: 1.3; text-align: right; }
+      .codex-plus-service-tier-status { color: #a1a1aa; font-size: 13px; line-height: 1.3; text-align: right; }
       .codex-plus-service-tier-status[data-status="ok"] { color: #34d399; }
       .codex-plus-service-tier-status[data-status="failed"] { color: #f87171; }
       .codex-plus-service-tier-status[data-status="unsupported"] { color: #fbbf24; }
       .codex-plus-service-tier-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
       .codex-plus-service-tier-thread-actions { opacity: .88; align-items: center; }
-      .codex-plus-service-tier-thread-label { color: #a1a1aa; font: 12px/1.2 system-ui, sans-serif; white-space: nowrap; }
-      .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 5px 8px; white-space: nowrap; }
+      .codex-plus-service-tier-thread-label { color: #a1a1aa; font-size: 13px;
+        line-height: 1.2;
+        font-family: inherit; white-space: nowrap; }
+      .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font-size: 13px;
+        font-family: inherit; padding: 5px 8px; white-space: nowrap; }
       .codex-plus-service-tier-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.22); color: #6ee7b7; }
       .codex-plus-service-tier-button:disabled { opacity: .55; cursor: not-allowed; }
       .${codexServiceTierBadgeClass} {
@@ -973,7 +991,10 @@
         border-radius: 999px;
         background: rgba(148,163,184,.12);
         color: #d4d4d8;
-        font: 600 12px/1 system-ui, sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        font-family: inherit;
         padding: 0 8px;
         white-space: nowrap;
         cursor: pointer;
@@ -985,12 +1006,10 @@
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
-      .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
-      .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
-      .codex-plus-tab-button[data-active="true"] { background: #10a37f; color: white; border-color: #10a37f; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
-      .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font-size: 13px;
+        font-family: inherit; padding: 6px 8px; }
       .codex-plus-worktree-actions {
         display: inline-flex;
         align-items: center;
@@ -1001,7 +1020,8 @@
         gap: 4px;
         margin-top: 10px;
         color: #d4d4d8;
-        font: 12px system-ui, sans-serif;
+        font-size: 13px;
+        font-family: inherit;
         text-align: left;
       }
       .codex-plus-form-field input {
@@ -1017,14 +1037,15 @@
         min-height: 18px;
         margin-top: 10px;
         color: #a1a1aa;
-        font: 12px system-ui, sans-serif;
+        font-size: 13px;
+        font-family: inherit;
         text-align: left;
       }
       .codex-plus-form-message[data-status="ok"] { color: #34d399; }
       .codex-plus-form-message[data-status="failed"] { color: #f87171; }
       .codex-plus-form-message[data-status="loading"] { color: #fbbf24; }
       .codex-plus-backend-status { display: grid; gap: 4px; min-width: 132px; justify-items: end; }
-      .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
+      .codex-plus-backend-label { color: #a1a1aa; font-size: 13px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
       .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
@@ -1039,7 +1060,7 @@
       .codex-plus-ad-title { margin: 0; overflow: hidden; color: #f8fafc; font-size: 17px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
       .codex-plus-ad-description { display: -webkit-box; margin: 6px 0 10px; overflow: hidden; color: #dbeafe; font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-height: 1.55; }
       .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; max-height: 56px; margin-bottom: 12px; overflow: hidden; }
-      .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 12px; padding: 4px 8px; }
+      .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 13px; padding: 4px 8px; }
       .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
       /* Keep injected surfaces on Codex's own semantic palette in both themes. */
@@ -1097,7 +1118,7 @@
         background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
         color: var(--codex-plus-text);
         font-family: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 6px 8px;
         box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
@@ -1174,16 +1195,11 @@
       }
       .codex-plus-width-input:focus,
       .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
-      .codex-plus-service-tier-button[data-active="true"],
-      .codex-plus-tab-button[data-active="true"] {
+      .codex-plus-service-tier-button[data-active="true"] {
         border-color: var(--color-border-primary, var(--codex-plus-focus));
         background: var(--color-background-primary-soft, var(--codex-plus-bg-selected));
         color: var(--color-text-primary, var(--codex-plus-text));
       }
-      .codex-plus-tabs { gap: 4px; }
-      .codex-plus-tab-button { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; padding: 6px 10px; }
-      .codex-plus-tab-button:hover,
-      .codex-plus-tab-button:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],

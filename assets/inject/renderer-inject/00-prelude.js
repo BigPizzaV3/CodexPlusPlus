@@ -416,12 +416,18 @@
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
   const codexPlusPageClass = "codex-plus-page-overlay";
   // 新版 Codex 在最左侧多出一条导航图标栏（navigation rail）。
-  // 两个入口分别挂进去：Codex++ 主页，以及从弹窗里拆出来的「拓展」（原用户脚本）。
+  // 三个入口分别挂进去：Codex++ 主页、「拓展」（原用户脚本）和「推荐内容」。
+  // 三者各自是一个独立页面，不再作为弹窗里的二级 tab。
   const codexPlusRailNavId = "codex-plus-rail-nav";
   const codexPlusRailExtensionsId = "codex-plus-rail-extensions";
+  const codexPlusRailSponsorId = "codex-plus-rail-sponsor";
   const codexPlusRailSelector = "nav[data-app-navigation-rail]";
   const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
   const codexPlusExtensionsTab = "extensions";
+  const codexPlusSponsorTab = "sponsor";
+  // Codex 的界面缩放是给内层布局节点设 CSS zoom，不是改 documentElement。
+  // 我们的 overlay 挂在 body 下、落在那棵缩放子树之外，只能自己读这个变量跟随。
+  const codexPlusWindowZoomVar = "--codex-window-zoom";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
   const codexActionGroupVersion = "6";

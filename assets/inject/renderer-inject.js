@@ -416,12 +416,18 @@
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
   const codexPlusPageClass = "codex-plus-page-overlay";
   // 新版 Codex 在最左侧多出一条导航图标栏（navigation rail）。
-  // 两个入口分别挂进去：Codex++ 主页，以及从弹窗里拆出来的「拓展」（原用户脚本）。
+  // 三个入口分别挂进去：Codex++ 主页、「拓展」（原用户脚本）和「推荐内容」。
+  // 三者各自是一个独立页面，不再作为弹窗里的二级 tab。
   const codexPlusRailNavId = "codex-plus-rail-nav";
   const codexPlusRailExtensionsId = "codex-plus-rail-extensions";
+  const codexPlusRailSponsorId = "codex-plus-rail-sponsor";
   const codexPlusRailSelector = "nav[data-app-navigation-rail]";
   const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
   const codexPlusExtensionsTab = "extensions";
+  const codexPlusSponsorTab = "sponsor";
+  // Codex 的界面缩放是给内层布局节点设 CSS zoom，不是改 documentElement。
+  // 我们的 overlay 挂在 body 下、落在那棵缩放子树之外，只能自己读这个变量跟随。
+  const codexPlusWindowZoomVar = "--codex-window-zoom";
   const codexDeleteVersion = "7";
   const codexExportVersion = "1";
   const codexActionGroupVersion = "6";
@@ -717,7 +723,7 @@
         background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
         color: var(--color-token-text-secondary, var(--token-text-secondary, inherit));
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 3px 8px;
         cursor: pointer;
@@ -738,7 +744,7 @@
         background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
         color: var(--color-token-text-primary, var(--token-text-primary, inherit));
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         margin-left: 6px;
         padding: 2px 7px;
@@ -834,7 +840,7 @@
         background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
         color: var(--codex-plus-text);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 6px 8px;
         box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
@@ -847,7 +853,7 @@
         background: var(--color-background-danger-soft, rgba(220,38,38,.1));
         color: var(--color-text-danger, #dc2626);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 3px 8px;
         cursor: pointer;
@@ -927,7 +933,18 @@
       }
       .codex-plus-modal-overlay {
         position: fixed;
-        inset: 0;
+        top: 0;
+        left: 0;
+        /*
+         * overlay 自身带 zoom（见 applyCodexPlusZoom），而它的 inset: 0 与 100vw
+         * 都按未缩放的视口算，再乘 zoom 就溢出（实测 zoom=1.2 时 100vw 得到 2072px，
+         * 视口只有 1727px）。用 calc(100vw / var(--codex-plus-zoom)) 抵消；zoom 缺失
+         * 时分母回落到 1，行为与改造前一致。
+         * 内部子元素用百分比即可——它们在缩放空间里，百分比本来就对。
+         * 注意：本段在 JS 模板字符串里，注释中不能出现反引号，否则会提前闭合。
+         */
+        width: calc(100vw / var(--codex-plus-zoom, 1));
+        height: calc(100vh / var(--codex-plus-zoom, 1));
         z-index: 2147483646;
         display: flex;
         align-items: center;
@@ -938,8 +955,8 @@
         -webkit-app-region: no-drag;
       }
       .codex-plus-modal-content {
-        width: min(520px, calc(100vw - 48px));
-        max-height: min(680px, calc(100vh - 40px));
+        width: min(520px, calc(100% - 48px));
+        max-height: min(680px, calc(100% - 40px));
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -1056,9 +1073,22 @@
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] * {
         color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
       }
+      /*
+       * 页面 overlay 的 left 由 positionCodexPlusPage 按图标栏右边界算好写进来。
+       *
+       * 关键：写进来的必须是**布局坐标**（视觉值 / zoom），因为 overlay 自己在缩放
+       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left)
+       * 把右边贴到视口右边缘；两个量都除过 zoom，缩放后才正好补齐。
+       * 注意：本段在 JS 模板字符串里，注释里不能出现反引号，否则会提前闭合。
+       */
       .${codexPlusPageClass} {
         position: fixed;
-        inset: 0;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px));
+        height: calc(100vh / var(--codex-plus-zoom, 1));
         z-index: 2147483644;
         display: block;
         background: var(--token-bg-primary, #212121);
@@ -1079,16 +1109,6 @@
         margin: 0;
         padding: 16px 24px 10px;
       }
-      .${codexPlusPageClass} .codex-plus-tabs {
-        width: min(960px, 100%);
-        margin-inline: auto;
-      }
-      /* 「拓展」是独立页面，不属于 Codex++ 的 tab 分组，藏掉 tab 栏免得错位。 */
-      .codex-plus-modal-content[data-codex-plus-active-tab="${codexPlusExtensionsTab}"] .codex-plus-tabs {
-        display: none;
-      }
-      /* 页面模式下分组导航由左面板接管，顶栏那条 tab 一律隐藏。 */
-      .${codexPlusPageClass} .codex-plus-tabs { display: none; }
       .${codexPlusPageClass} .codex-plus-modal-body {
         width: 100%;
         margin: 0;
@@ -1156,7 +1176,7 @@
       }
       .codex-plus-page-nav-item-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
       .codex-plus-page-nav-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-page-nav-item-meta { font-size: 11px; color: var(--codex-plus-text-tertiary); }
+      .codex-plus-page-nav-item-meta { font-size: 13px; color: var(--codex-plus-text-tertiary); }
       .codex-plus-page-nav-item-state {
         flex: 0 0 auto;
         width: 7px;
@@ -1213,7 +1233,7 @@
         margin-top: 2px;
         padding-right: 8px;
         color: var(--codex-plus-text-tertiary);
-        font-size: 12px;
+        font-size: 13px;
         line-height: normal;
         display: -webkit-box;
         -webkit-line-clamp: 2;
@@ -1235,7 +1255,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-size: 11px;
+        font-size: 13px;
         font-weight: 600;
         color: var(--codex-plus-text-tertiary);
       }
@@ -1247,7 +1267,7 @@
         border-radius: 6px;
         background: transparent;
         color: var(--codex-plus-text-secondary);
-        font-size: 11px;
+        font-size: 13px;
         line-height: 16px;
         white-space: nowrap;
       }
@@ -1277,10 +1297,10 @@
         border-radius: 999px;
         background: #10a37f;
         color: #fff;
-        font-size: 10px;
+        font-size: 13px;
         line-height: 1;
       }
-      .codex-plus-page-nav-empty { padding: 8px 10px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
+      .codex-plus-page-nav-empty { padding: 8px 10px; color: var(--codex-plus-text-tertiary); font-size: 13px; }
       /* 拓展页：搜索框 + 分组标题 + 市场条目的「安装」按钮 */
       .codex-plus-page-search { padding: 0 10px 8px; }
       .codex-plus-page-search-input {
@@ -1292,7 +1312,7 @@
         background: var(--codex-plus-bg-secondary);
         color: var(--codex-plus-text);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         outline: none;
       }
       .codex-plus-page-search-input:focus { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-elevated); }
@@ -1350,10 +1370,10 @@
       .codex-plus-extensions-detail-meta {
         margin-top: 3px;
         color: var(--codex-plus-text-secondary);
-        font-size: 12px;
+        font-size: 13px;
       }
       .codex-plus-extensions-detail-sep { margin: 0 6px; color: var(--codex-plus-text-tertiary); }
-      .codex-plus-extensions-detail-update { margin-top: 5px; color: #fbbf24; font-size: 12px; }
+      .codex-plus-extensions-detail-update { margin-top: 5px; color: #fbbf24; font-size: 13px; }
       .codex-plus-extensions-detail-actions {
         flex: 0 0 auto;
         display: inline-flex;
@@ -1367,7 +1387,7 @@
         background: transparent;
         color: var(--codex-plus-text-secondary);
         font: inherit;
-        font-size: 12px;
+        font-size: 13px;
         cursor: pointer;
       }
       .codex-plus-extensions-detail-button:hover { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
@@ -1394,7 +1414,7 @@
         border-radius: 999px;
         background: var(--codex-plus-bg-hover);
         color: var(--codex-plus-text-tertiary);
-        font-size: 11px;
+        font-size: 13px;
       }
       .codex-plus-extensions-detail-section { margin-top: 16px; }
       .codex-plus-extensions-detail-section-title {
@@ -1407,10 +1427,10 @@
         margin: 0;
         padding-left: 18px;
         color: var(--codex-plus-text-secondary);
-        font-size: 12px;
+        font-size: 13px;
         line-height: 1.7;
       }
-      .codex-plus-extensions-detail-link { margin-top: 16px; font-size: 12px; }
+      .codex-plus-extensions-detail-link { margin-top: 16px; font-size: 13px; }
       .codex-plus-extensions-detail-link a { color: #10a37f; word-break: break-all; }
       .codex-plus-extensions-detail-error {
         margin-top: 14px;
@@ -1418,7 +1438,7 @@
         border-radius: 8px;
         background: rgba(239,68,68,.12);
         color: #ef4444;
-        font-size: 12px;
+        font-size: 13px;
       }
       .codex-plus-page-nav-group { margin-bottom: 10px; }
       .codex-plus-page-nav-group-head {
@@ -1427,7 +1447,7 @@
         justify-content: space-between;
         padding: 4px 10px;
         color: var(--codex-plus-text-tertiary);
-        font-size: 11px;
+        font-size: 13px;
         text-transform: uppercase;
         letter-spacing: .04em;
       }
@@ -1437,7 +1457,7 @@
         border-radius: 999px;
         background: var(--codex-plus-bg-hover);
         text-align: center;
-        font-size: 10px;
+        font-size: 13px;
       }
       .codex-plus-page-nav-group-tail { display: inline-flex; align-items: center; gap: 6px; }
       .codex-plus-page-nav-group-action {
@@ -1445,7 +1465,7 @@
         background: transparent;
         color: var(--codex-plus-text-tertiary);
         font: inherit;
-        font-size: 11px;
+        font-size: 13px;
         cursor: pointer;
         padding: 0 2px;
       }
@@ -1456,7 +1476,7 @@
         border: 1px solid var(--codex-plus-border);
         border-radius: 6px;
         color: var(--codex-plus-text-secondary);
-        font-size: 11px;
+        font-size: 13px;
       }
       .codex-plus-page-nav-item:hover .codex-plus-page-nav-item-action {
         background: var(--codex-plus-bg-selected);
@@ -1507,8 +1527,8 @@
       }
       .codex-plus-row:first-child { border-top: 0; }
       .codex-plus-row-title { font-weight: 550; line-height: 1.35; }
-      .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 12px; line-height: 1.4; }
-      .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 12px; line-height: 1.45; }
+      .codex-plus-row-description { margin-top: 2px; color: #a1a1aa; font-size: 13px; line-height: 1.4; }
+      .codex-plus-model-compat-warning { margin-top: 6px; color: #fbbf24; font-size: 13px; line-height: 1.45; }
       .codex-plus-toggle {
         width: 42px;
         height: 24px;
@@ -1538,7 +1558,7 @@
       .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
-      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
+      .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 13px; font-weight: 650; line-height: 1; }
       .codex-plus-width-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 176px; align-self: center; }
       .codex-plus-width-input {
         width: 78px;
@@ -1548,19 +1568,23 @@
         border-radius: 7px;
         background: rgba(255,255,255,.08);
         color: #f3f4f6;
-        font: 12px system-ui, sans-serif;
+        font-size: 13px;
+        font-family: inherit;
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-service-tier-control { display: grid; gap: 6px; min-width: 316px; justify-items: end; align-self: center; }
-      .codex-plus-service-tier-status { color: #a1a1aa; font-size: 12px; line-height: 1.3; text-align: right; }
+      .codex-plus-service-tier-status { color: #a1a1aa; font-size: 13px; line-height: 1.3; text-align: right; }
       .codex-plus-service-tier-status[data-status="ok"] { color: #34d399; }
       .codex-plus-service-tier-status[data-status="failed"] { color: #f87171; }
       .codex-plus-service-tier-status[data-status="unsupported"] { color: #fbbf24; }
       .codex-plus-service-tier-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
       .codex-plus-service-tier-thread-actions { opacity: .88; align-items: center; }
-      .codex-plus-service-tier-thread-label { color: #a1a1aa; font: 12px/1.2 system-ui, sans-serif; white-space: nowrap; }
-      .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 5px 8px; white-space: nowrap; }
+      .codex-plus-service-tier-thread-label { color: #a1a1aa; font-size: 13px;
+        line-height: 1.2;
+        font-family: inherit; white-space: nowrap; }
+      .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font-size: 13px;
+        font-family: inherit; padding: 5px 8px; white-space: nowrap; }
       .codex-plus-service-tier-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.22); color: #6ee7b7; }
       .codex-plus-service-tier-button:disabled { opacity: .55; cursor: not-allowed; }
       .${codexServiceTierBadgeClass} {
@@ -1575,7 +1599,10 @@
         border-radius: 999px;
         background: rgba(148,163,184,.12);
         color: #d4d4d8;
-        font: 600 12px/1 system-ui, sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        font-family: inherit;
         padding: 0 8px;
         white-space: nowrap;
         cursor: pointer;
@@ -1587,12 +1614,10 @@
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
-      .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
-      .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
-      .codex-plus-tab-button[data-active="true"] { background: #10a37f; color: white; border-color: #10a37f; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
-      .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font-size: 13px;
+        font-family: inherit; padding: 6px 8px; }
       .codex-plus-worktree-actions {
         display: inline-flex;
         align-items: center;
@@ -1603,7 +1628,8 @@
         gap: 4px;
         margin-top: 10px;
         color: #d4d4d8;
-        font: 12px system-ui, sans-serif;
+        font-size: 13px;
+        font-family: inherit;
         text-align: left;
       }
       .codex-plus-form-field input {
@@ -1619,14 +1645,15 @@
         min-height: 18px;
         margin-top: 10px;
         color: #a1a1aa;
-        font: 12px system-ui, sans-serif;
+        font-size: 13px;
+        font-family: inherit;
         text-align: left;
       }
       .codex-plus-form-message[data-status="ok"] { color: #34d399; }
       .codex-plus-form-message[data-status="failed"] { color: #f87171; }
       .codex-plus-form-message[data-status="loading"] { color: #fbbf24; }
       .codex-plus-backend-status { display: grid; gap: 4px; min-width: 132px; justify-items: end; }
-      .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
+      .codex-plus-backend-label { color: #a1a1aa; font-size: 13px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
       .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
@@ -1641,7 +1668,7 @@
       .codex-plus-ad-title { margin: 0; overflow: hidden; color: #f8fafc; font-size: 17px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
       .codex-plus-ad-description { display: -webkit-box; margin: 6px 0 10px; overflow: hidden; color: #dbeafe; font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-height: 1.55; }
       .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; max-height: 56px; margin-bottom: 12px; overflow: hidden; }
-      .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 12px; padding: 4px 8px; }
+      .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 13px; padding: 4px 8px; }
       .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
       /* Keep injected surfaces on Codex's own semantic palette in both themes. */
@@ -1699,7 +1726,7 @@
         background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
         color: var(--codex-plus-text);
         font-family: inherit;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 16px;
         padding: 6px 8px;
         box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
@@ -1776,16 +1803,11 @@
       }
       .codex-plus-width-input:focus,
       .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
-      .codex-plus-service-tier-button[data-active="true"],
-      .codex-plus-tab-button[data-active="true"] {
+      .codex-plus-service-tier-button[data-active="true"] {
         border-color: var(--color-border-primary, var(--codex-plus-focus));
         background: var(--color-background-primary-soft, var(--codex-plus-bg-selected));
         color: var(--color-text-primary, var(--codex-plus-text));
       }
-      .codex-plus-tabs { gap: 4px; }
-      .codex-plus-tab-button { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; padding: 6px 10px; }
-      .codex-plus-tab-button:hover,
-      .codex-plus-tab-button:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],
@@ -4796,18 +4818,29 @@
     if (!content || !body) return;
     const layout = document.createElement("div");
     layout.className = "codex-plus-page-layout";
-    const nav = document.createElement("div");
-    nav.className = "codex-plus-page-nav";
-    nav.innerHTML = `
-      <div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${tab === codexPlusExtensionsTab ? "拓展" : "Codex++"}</div></div>
-      <div class="codex-plus-page-nav-body" data-codex-plus-page-nav-body="true">${renderCodexPlusPageNavItems(tab)}</div>
-    `;
     const main = document.createElement("div");
     main.className = "codex-plus-page-main";
+    // 只有「拓展」需要左面板（它是脚本列表）。主页和推荐内容都是单栏内容页，
+    // 页面切换交给图标栏那三个入口，再列一遍就是重复。
+    if (tab === codexPlusExtensionsTab) {
+      const nav = document.createElement("div");
+      nav.className = "codex-plus-page-nav";
+      nav.innerHTML = `
+        <div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${codexPlusPageTitle(tab)}</div></div>
+        <div class="codex-plus-page-nav-body" data-codex-plus-page-nav-body="true">${renderCodexPlusPageNavItems(tab)}</div>
+      `;
+      layout.appendChild(nav);
+    }
     content.appendChild(layout);
-    layout.appendChild(nav);
     layout.appendChild(main);
     main.appendChild(body);
+  }
+
+  /** 页面标题：每个 rail 入口一个名字，和图标栏上的标签保持一致。 */
+  function codexPlusPageTitle(tab) {
+    if (tab === codexPlusExtensionsTab) return "拓展";
+    if (tab === codexPlusSponsorTab) return "推荐内容";
+    return "Codex++";
   }
 
   /** 左面板内容随当前分组刷新（切 tab 后调用）。 */
@@ -5061,14 +5094,11 @@
   }
 
   function selectCodexPlusTab(tab) {
-    // 归一化后再比对：panel 用的是 extensions，而弹窗里那个 tab 按钮仍叫 userScripts，
+    // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
     // 不统一就会两边都对不上、所有 panel 全被隐藏。
     const normalized = codexPlusModalTab(tab);
     document.querySelectorAll(".codex-plus-modal-content").forEach((modal) => {
       modal.dataset.codexPlusActiveTab = normalized;
-    });
-    document.querySelectorAll("[data-codex-plus-tab]").forEach((button) => {
-      button.dataset.active = String(codexPlusModalTab(button.getAttribute("data-codex-plus-tab")) === normalized);
     });
     document.querySelectorAll("[data-codex-plus-panel]").forEach((panel) => {
       panel.hidden = codexPlusModalTab(panel.getAttribute("data-codex-plus-panel")) !== normalized;
@@ -5086,7 +5116,9 @@
     const overlay = document.querySelector(`.${codexPlusPageClass}`);
     if (!overlay) return null;
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
-    return tab === codexPlusExtensionsTab ? "extensions" : "home";
+    if (tab === codexPlusExtensionsTab) return "extensions";
+    if (tab === codexPlusSponsorTab) return "sponsor";
+    return "home";
   }
 
   function setCodexPlusSidebarNavActive(active, entry = "home") {
@@ -5100,6 +5132,7 @@
     [
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
+      [codexPlusRailSponsorId, "sponsor"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -5147,7 +5180,12 @@
     const left = railRect && railRect.width > 0
       ? Math.max(0, railRect.right)
       : (rect && rect.width > 0 ? Math.max(0, rect.right) : 0);
-    overlay.style.left = `${left}px`;
+    // 量出来的是视觉坐标，而 overlay 在缩放空间里布局，所以统一折算成布局坐标。
+    // CSS 的 calc(100vw / zoom - left) 用的也是这个空间的量，两边才配得上。
+    const zoom = codexPlusWindowZoom();
+    const layoutLeft = zoom === 1 ? left : left / zoom;
+    overlay.style.setProperty("--codex-plus-page-left", `${layoutLeft}px`);
+    overlay.style.left = `${layoutLeft}px`;
     overlay.style.top = "0px";
   }
 
@@ -5173,43 +5211,113 @@
     return !window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
   }
 
+  /**
+   * 取 Codex 当前的界面缩放系数。
+   *
+   * Codex 的界面缩放的实现是给内层布局节点设 CSS `zoom`（例如 1.2），而不是改
+   * documentElement，所以固定在 body 下的 overlay 不会自动跟随。这里把它读出来，
+   * 由 applyCodexPlusZoom 自己套上。
+   */
+  function codexPlusWindowZoom() {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue(codexPlusWindowZoomVar);
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  }
+
+  /**
+   * 让 overlay 跟随 Codex 的界面缩放，并保持满屏。
+   *
+   * 直接给 fixed 元素设 zoom 的话，它自身的 `inset: 0` / `100vw` 都还是按未缩放的
+   * 视口算，再乘 zoom 就溢出（实测 zoom=1.2 时 100vw 得到 2072px，视口只有 1727）。
+   * 所以 overlay 自身的尺寸改用 `calc(100vw / var(--codex-plus-zoom))` 抵消，
+   * 内部子元素则用百分比——它们在缩放空间里，百分比本来就对。
+   *
+   * 字号不在这里动：由 CSS 跟随 zoom 自然放大，与原生行为一致。
+   */
+  function applyCodexPlusZoom(overlay) {
+    if (!overlay?.style) return 1;
+    const zoom = codexPlusWindowZoom();
+    overlay.style.setProperty("--codex-plus-zoom", String(zoom));
+    if (zoom === 1) {
+      overlay.style.removeProperty("zoom");
+      return 1;
+    }
+    overlay.style.setProperty("zoom", String(zoom));
+    return zoom;
+  }
+
+  /**
+   * 用 Codex 自己的语义令牌刷新 overlay 的变量。
+   *
+   * 早先这里内联写死了一套 zinc 调色板（深色正文 #f3f4f6、次要 #a1a1aa），
+   * 内联优先级最高，把样式表里本来正确的令牌链整个盖掉了，表现为我们的文字
+   * 比原生偏白偏冷。现在改成读宿主算好的值——取不到才回落到兜底色，
+   * 这样浅色/深色主题都跟原生同源，也不会在 Codex 调色板变动后失配。
+   */
   function applyCodexPlusTheme(overlay) {
     if (!overlay?.style) return;
     const light = codexPlusHostUsesLightTheme();
-    const palette = light ? {
-      bgPrimary: "#ffffff",
-      bgSecondary: "#f7f7f7",
-      bgElevated: "#ffffff",
-      bgHover: "rgba(0,0,0,.06)",
-      bgSelected: "rgba(0,0,0,.08)",
-      text: "#171717",
-      textSecondary: "#5d5d5d",
-      textTertiary: "#8a8a8a",
-      border: "rgba(0,0,0,.12)",
-      borderSubtle: "rgba(0,0,0,.08)",
-    } : {
-      bgPrimary: "#212121",
-      bgSecondary: "#2f2f2f",
-      bgElevated: "#2f2f2f",
-      bgHover: "rgba(255,255,255,.08)",
-      bgSelected: "rgba(255,255,255,.12)",
-      text: "#f3f4f6",
-      textSecondary: "#d1d5db",
-      textTertiary: "#a1a1aa",
-      border: "rgba(255,255,255,.14)",
-      borderSubtle: "rgba(255,255,255,.08)",
+    const host = getComputedStyle(document.documentElement);
+    const read = (names, fallback) => {
+      for (const name of names) {
+        const value = host.getPropertyValue(name).trim();
+        if (value) return value;
+      }
+      return fallback;
     };
     const variables = {
-      "--codex-plus-bg-primary": palette.bgPrimary,
-      "--codex-plus-bg-secondary": palette.bgSecondary,
-      "--codex-plus-bg-elevated": palette.bgElevated,
-      "--codex-plus-bg-hover": palette.bgHover,
-      "--codex-plus-bg-selected": palette.bgSelected,
-      "--codex-plus-text": palette.text,
-      "--codex-plus-text-secondary": palette.textSecondary,
-      "--codex-plus-text-tertiary": palette.textTertiary,
-      "--codex-plus-border": palette.border,
-      "--codex-plus-border-subtle": palette.borderSubtle,
+      "--codex-plus-bg-primary": read(
+        ["--color-token-bg-primary", "--token-bg-primary", "--app-color-background-surface"],
+        light ? "#ffffff" : "#141414",
+      ),
+      "--codex-plus-bg-secondary": read(
+        ["--color-token-bg-secondary", "--token-bg-secondary", "--color-surface-secondary"],
+        light ? "#f7f7f7" : "#2f2f2f",
+      ),
+      "--codex-plus-bg-elevated": read(
+        ["--color-token-dropdown-background", "--color-surface-elevated-secondary", "--color-token-bg-elevated-secondary"],
+        light ? "#ffffff" : "#2f2f2f",
+      ),
+      "--codex-plus-bg-hover": read(
+        ["--color-token-interactive-bg-secondary-hover", "--color-background-primary-soft-hover", "--token-list-hover-background"],
+        light ? "rgba(0,0,0,.06)" : "rgba(255,255,255,.08)",
+      ),
+      "--codex-plus-bg-selected": read(
+        ["--color-token-interactive-bg-secondary-selected", "--color-background-primary-soft-active"],
+        light ? "rgba(0,0,0,.08)" : "rgba(255,255,255,.12)",
+      ),
+      "--codex-plus-text": read(
+        ["--color-token-text-primary", "--color-text-primary", "--token-text-primary"],
+        light ? "#171717" : "#dfdfdf",
+      ),
+      "--codex-plus-text-secondary": read(
+        ["--color-token-text-secondary", "--color-text-secondary-solid", "--color-text-secondary"],
+        light ? "#5d5d5d" : "rgba(255,255,255,.71)",
+      ),
+      "--codex-plus-text-tertiary": read(
+        ["--color-token-text-tertiary", "--color-text-tertiary"],
+        light ? "#8a8a8a" : "rgba(255,255,255,.498)",
+      ),
+      "--codex-plus-border": read(
+        ["--color-token-border-default", "--color-token-border", "--color-border-primary-outline"],
+        light ? "rgba(0,0,0,.12)" : "rgba(255,255,255,.084)",
+      ),
+      "--codex-plus-border-subtle": read(
+        ["--color-token-border-subtle", "--color-border-disabled"],
+        light ? "rgba(0,0,0,.08)" : "rgba(255,255,255,.06)",
+      ),
+      "--codex-plus-danger": read(
+        ["--color-text-danger", "--color-token-text-error"],
+        light ? "#dc2626" : "#ff6764",
+      ),
+      "--codex-plus-success": read(
+        ["--color-text-success", "--app-color-text-success"],
+        light ? "#15803d" : "#40c977",
+      ),
+      "--codex-plus-warning": read(
+        ["--color-text-warning", "--color-text-caution-surface"],
+        light ? "#a16207" : "#ffc300",
+      ),
     };
     Object.entries(variables).forEach(([name, value]) => overlay.style.setProperty(name, value));
     overlay.dataset.codexPlusTheme = light ? "light" : "dark";
@@ -5230,23 +5338,20 @@
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
-    const extensionsMode = initialTab === codexPlusExtensionsTab;
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
     overlay.className = pageMode ? codexPlusPageClass : "codex-plus-modal-overlay";
     overlay.dataset.codexPlusPage = String(pageMode);
     applyCodexPlusTheme(overlay);
+    // 跟随 Codex 的界面缩放。必须在写 innerHTML 之前设好，否则内部那些
+    // calc(100% / var(--codex-plus-zoom-inverse)) 会先按 1 算一遍再被 zoom 放大。
+    applyCodexPlusZoom(overlay);
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
           <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
           <button type="button" class="codex-plus-modal-close" aria-label="${pageMode ? "返回" : "关闭"}">${pageMode ? "返回" : "×"}</button>
-        </div>
-        <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="${String(initialTab === "home")}">主页</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="${String(initialTab === "userScripts")}">用户脚本</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="${String(initialTab === "sponsor")}">推荐内容</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
@@ -5423,12 +5528,7 @@
         if (pageMode) setCodexPlusSidebarNavActive(false);
         return;
       }
-      const tabButton = target?.closest("[data-codex-plus-tab]");
-      if (tabButton) {
-        selectCodexPlusTab(tabButton.getAttribute("data-codex-plus-tab"));
-        return;
-      }
-      // 左面板的分组导航，等价于点顶栏那个 tab（页面模式下顶栏已隐藏）。
+      // 左面板的分组导航（仅拓展页有左面板）。
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {
         selectCodexPlusTab(pageNav.getAttribute("data-codex-plus-page-nav"));
@@ -5569,6 +5669,11 @@
     openCodexPlusModal({ page: true, tab: codexPlusExtensionsTab });
   }
 
+  /** 「推荐内容」页面：从弹窗的二级 tab 提出来，成为图标栏上的一级入口。 */
+  function openCodexPlusSponsor() {
+    openCodexPlusModal({ page: true, tab: codexPlusSponsorTab });
+  }
+
   function closeCodexPlusPage() {
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
@@ -5660,7 +5765,7 @@
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => document.getElementById(id)?.remove());
   }
 
   function detachCodexPlusSidebarNavigation() {
@@ -5754,19 +5859,23 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
 
     const icons = {
       home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg>',
-      extensions: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 4.5h3a1.5 1.5 0 0 1 1.5 1.5v1.5H17a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-2V15a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 15v-1.5H7A1.5 1.5 0 0 1 5.5 12V9A1.5 1.5 0 0 1 7 7.5h2V6a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M12 16.5V21"/></svg>',
+      // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
+      // 和页面内部保持同一个符号，不再另画一个近似图形。
+      extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
+      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2.5a1.5 1.5 0 0 0 1.5 1.5H6l1.5 4.5a1 1 0 0 0 1.9-.6L8.2 15h.3l7.5 3.5V4.5L8.5 8H4.5A1.5 1.5 0 0 0 3 9.5Z"/><path d="M19 9.5v5"/></svg>',
     };
 
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
+      { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
     const anchor = codexPlusRailPrimaryAnchor(rail);
@@ -12100,7 +12209,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {

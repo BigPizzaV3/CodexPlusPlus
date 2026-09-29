@@ -237,18 +237,67 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
     // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
     assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
-    assert.match(renderer, /nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /main\.className = "codex-plus-page-main"/);
     // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
     // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
     assert.match(renderer, /main\.appendChild\(body\)/);
-    // 页面模式下顶栏 tab 由左面板接管，必须隐藏。
-    assert.match(renderer, /\.\$\{codexPlusPageClass\} \.codex-plus-tabs \{ display: none; \}/);
+    // 左面板只有「拓展」需要（它是脚本列表）；主页与推荐内容是单栏内容页，
+    // 页面切换交给图标栏那三个入口，所以导航容器要在条件分支里创建。
+    assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
+    assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
     // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
     assert.match(renderer, /installCodexPlusPageLayout\(overlay, initialTab\);[\s\S]{0,900}selectCodexPlusTab\(initialTab\);/);
-    // 左面板分组导航等价于点顶栏 tab。
+    // 左面板分组导航走同一个选中函数。
     assert.match(renderer, /const pageNav = target\?\.closest\("\[data-codex-plus-page-nav\]"\)/);
     assert.match(renderer, /selectCodexPlusTab\(pageNav\.getAttribute\("data-codex-plus-page-nav"\)\)/);
+  });
+
+  it("把三个 rail 入口都接成独立页面，并跟随 Codex 的界面缩放", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    // 推荐内容从弹窗二级 tab 提成图标栏上的一级入口。
+    assert.match(renderer, /const codexPlusRailSponsorId = "codex-plus-rail-sponsor"/);
+    assert.match(renderer, /const codexPlusSponsorTab = "sponsor"/);
+    assert.match(renderer, /function openCodexPlusSponsor\(\)/);
+    assert.match(renderer, /id: codexPlusRailSponsorId, label: "推荐内容"/);
+    // 三个入口都要参与选中态映射，否则「推荐内容」亮不起来。
+    assert.match(renderer, /\[codexPlusRailSponsorId, "sponsor"\],/);
+    assert.match(renderer, /if \(tab === codexPlusSponsorTab\) return "sponsor";/);
+
+    // 弹窗里的 tab 条已随入口外移删除，不该再有残留。
+    assert.doesNotMatch(renderer, /codex-plus-tab-button/);
+
+    // 「拓展」入口用 VSCode 的扩展字形，和列表默认图标同一份 path。
+    assert.match(renderer, /extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="\$\{codexPlusDefaultExtensionIconPath\}"/);
+
+    // 界面缩放：读 Codex 的 zoom 变量，套到 overlay 上，尺寸用 calc 反向抵消。
+    assert.match(renderer, /const codexPlusWindowZoomVar = "--codex-window-zoom"/);
+    assert.match(renderer, /function codexPlusWindowZoom\(\)/);
+    assert.match(renderer, /function applyCodexPlusZoom\(overlay\)/);
+    assert.match(renderer, /overlay\.style\.setProperty\("zoom", String\(zoom\)\)/);
+    assert.match(renderer, /width: calc\(100vw \/ var\(--codex-plus-zoom, 1\)\)/);
+    // 页面模式的 left 偏移要按 zoom 折算回布局坐标，CSS 里的 width 用的是同一个空间，
+    // 两边量纲不一致会把右边缘算短（曾出现 62 + 1652 = 1714，视口 1727）。
+    assert.match(renderer, /const layoutLeft = zoom === 1 \? left : left \/ zoom;/);
+    assert.match(renderer, /overlay\.style\.setProperty\("--codex-plus-page-left", `\$\{layoutLeft\}px`\)/);
+  });
+
+  it("颜色走 Codex 的语义令牌，不写死调色板", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    // applyCodexPlusTheme 读宿主算好的令牌，取不到才回落。
+    assert.match(renderer, /function applyCodexPlusTheme\(overlay\)/);
+    assert.match(renderer, /--color-token-text-primary/);
+    assert.match(renderer, /--color-token-text-secondary/);
+    assert.match(renderer, /--color-token-bg-primary/);
+    // 早先写死的 zinc 调色板不能再出现在主题函数里。
+    const themeBody = renderer.slice(
+      renderer.indexOf("function applyCodexPlusTheme(overlay)"),
+      renderer.indexOf("function codexPlusModalTab(tab)"),
+    );
+    assert.ok(themeBody.length > 0, "找不到 applyCodexPlusTheme 的函数体");
+    assert.ok(!themeBody.includes('text: "#f3f4f6"'), "主题函数里残留硬编码的正文色");
+    assert.ok(!themeBody.includes('textSecondary: "#a1a1aa"'), "主题函数里残留硬编码的次要色");
   });
 
   it("lists user scripts in the 拓展 page left panel", async () => {
