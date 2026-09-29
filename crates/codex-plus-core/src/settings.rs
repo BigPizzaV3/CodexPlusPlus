@@ -1104,7 +1104,7 @@ pub fn default_relay_test_model() -> String {
 }
 
 pub fn default_channel_requests_per_minute() -> u32 {
-    55
+    20
 }
 
 pub fn default_cooldown_error_statuses() -> Vec<u16> {

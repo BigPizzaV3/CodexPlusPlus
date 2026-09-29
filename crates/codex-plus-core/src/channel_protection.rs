@@ -10,7 +10,7 @@ use crate::settings::{
     normalize_channel_requests_per_minute,
 };
 
-const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60);
+const DEFAULT_COOLDOWN: Duration = Duration::from_secs(30);
 const REQUEST_WINDOW: Duration = Duration::from_secs(60);
 
 struct ChannelState {
@@ -222,6 +222,11 @@ mod tests {
             .expect("failure should set a cooldown")
             .saturating_duration_since(Instant::now());
         assert!(remaining >= DEFAULT_COOLDOWN.saturating_sub(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn default_cooldown_is_thirty_seconds() {
+        assert_eq!(DEFAULT_COOLDOWN, Duration::from_secs(30));
     }
 
     #[tokio::test]

@@ -46,7 +46,7 @@ const _profileTypeCheck: RelayProfile = {
   standardOpenaiProtocol: false,
   rateLimitCooldownEnabled: false,
   channelQueueEnabled: false,
-  channelRequestsPerMinute: 55,
+  channelRequestsPerMinute: 20,
   cooldownErrorStatuses: [429, 500],
 };
 

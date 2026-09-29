@@ -1103,7 +1103,7 @@ const defaultSettings: BackendSettings = {
       standardOpenaiProtocol: false,
       rateLimitCooldownEnabled: false,
       channelQueueEnabled: false,
-      channelRequestsPerMinute: 55,
+      channelRequestsPerMinute: 20,
       cooldownErrorStatuses: [429, 500],
     },
   ],
@@ -7898,7 +7898,7 @@ function RelayProfileEditor({
               />
               <span>
                 <strong>{t("启用错误冷却")}</strong>
-                <small>{t("命中下方状态码后，当前供应商等待至少 60 秒；上游 Retry-After 更长时优先使用上游时间。")}</small>
+                <small>{t("命中下方状态码后，当前供应商暂停请求至少 30 秒并自动继续；上游 Retry-After 更长时优先使用上游时间。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -7927,6 +7927,7 @@ function RelayProfileEditor({
                     })
                   }
                 />
+                <p className="field-hint">{t("请填入供应商提供的最大RPM")}</p>
               </Field>
               <Field label={t("触发冷却的状态码")}>
                 <div className="channel-status-editor">
@@ -11232,7 +11233,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             standardOpenaiProtocol: false,
             rateLimitCooldownEnabled: false,
             channelQueueEnabled: false,
-            channelRequestsPerMinute: 55,
+            channelRequestsPerMinute: 20,
             cooldownErrorStatuses: [429, 500],
           },
         ];
@@ -11348,7 +11349,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         standardOpenaiProtocol: false,
         rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
         channelQueueEnabled: profile.channelQueueEnabled === true,
-        channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 55, 1, 10000),
+        channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
         cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
       },
       null,
@@ -11389,7 +11390,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
     channelQueueEnabled: profile.channelQueueEnabled === true,
-    channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 55, 1, 10000),
+    channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
     cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
@@ -12210,7 +12211,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     standardOpenaiProtocol: false,
     rateLimitCooldownEnabled: false,
     channelQueueEnabled: false,
-    channelRequestsPerMinute: 55,
+    channelRequestsPerMinute: 20,
     cooldownErrorStatuses: [429, 500],
   };
   return withGeneratedRelayFiles(next);
@@ -12258,7 +12259,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       standardOpenaiProtocol: false,
       rateLimitCooldownEnabled: false,
       channelQueueEnabled: false,
-      channelRequestsPerMinute: 55,
+      channelRequestsPerMinute: 20,
       cooldownErrorStatuses: [429, 500],
       aggregate: {
         strategy: "failover",
