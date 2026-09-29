@@ -1181,8 +1181,8 @@ export const EN_PLAIN: Record<string, string> = {
   "仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。":
     "Applies only to the current provider; helps reduce the chance of hitting shared-channel 429, 500, or RPM limits.",
   "启用错误冷却": "Enable error cooldown",
-  "命中下方状态码后，当前供应商暂停请求至少 30 秒并自动继续；上游 Retry-After 更长时优先使用上游时间。":
-    "After one of the status codes below is hit, requests for this provider pause for at least 30 seconds and then continue automatically; a longer upstream Retry-After takes precedence.",
+  "命中下方状态码后，当前供应商暂停请求至少 30 秒并自动继续；最多自动重试 3 次，3 次仍失败则返回错误；上游 Retry-After 更长时优先使用上游时间。":
+    "After one of the status codes below is hit, requests for this provider pause for at least 30 seconds and then continue automatically; retry up to 3 times, return the error if all 3 retries fail; a longer upstream Retry-After takes precedence.",
   "启用同渠道队列": "Enable per-provider queue",
   "当前供应商的请求按顺序发送，并按每分钟上限预留请求次数。":
     "Requests for this provider are sent in order, reserving capacity under the per-minute limit.",
