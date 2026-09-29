@@ -308,10 +308,6 @@ type BackendSettings = {
   relayContextConfigContents: string;
   activeRelayId: string;
   relayTestModel: string;
-  rateLimitCooldownEnabled: boolean;
-  channelQueueEnabled: boolean;
-  channelRequestsPerMinute: number;
-  cooldownErrorStatuses: number[];
   /** 按工具分区的配置镜像，键为工具 id（codex / grok / …）。 */
   tools?: Record<string, ToolShard>;
   /** 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
@@ -385,6 +381,10 @@ export type RelayProfile = {
   noAuth: boolean;
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
+  rateLimitCooldownEnabled: boolean;
+  channelQueueEnabled: boolean;
+  channelRequestsPerMinute: number;
+  cooldownErrorStatuses: number[];
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -1101,6 +1101,10 @@ const defaultSettings: BackendSettings = {
       noAuth: false,
       sub2apiMultiplier: "",
       standardOpenaiProtocol: false,
+      rateLimitCooldownEnabled: false,
+      channelQueueEnabled: false,
+      channelRequestsPerMinute: 55,
+      cooldownErrorStatuses: [429, 500],
     },
   ],
   relayCommonConfigContents: "",
@@ -1109,10 +1113,6 @@ const defaultSettings: BackendSettings = {
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
   relayTestModel: "gpt-5.4-mini",
-  rateLimitCooldownEnabled: false,
-  channelQueueEnabled: false,
-  channelRequestsPerMinute: 55,
-  cooldownErrorStatuses: [429, 500],
   tools: {},
   activeTool: "codex",
 };
@@ -6743,19 +6743,6 @@ function SettingsScreen({
 }) {
   const tool = toolEntries.find((entry) => entry.id === activeTool);
   const isCodex = activeTool === "codex";
-  const [channelStatusInput, setChannelStatusInput] = useState("");
-  const addChannelStatuses = () => {
-    const next = channelStatusInput
-      .split(/[,\s]+/)
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value >= 100 && value <= 599);
-    if (!next.length) return;
-    onFormChange({
-      ...form,
-      cooldownErrorStatuses: Array.from(new Set([...form.cooldownErrorStatuses, ...next])).slice(0, 20),
-    });
-    setChannelStatusInput("");
-  };
   return (
     <div className="settings-page">
       <Panel>
@@ -6785,90 +6772,6 @@ function SettingsScreen({
               </Field>
               <p className="field-hint">
                 {t("「测试供应商」按钮用这个模型发起一次真实请求，用于判断 Key 与端点是否可用。")}
-              </p>
-            </CardContent>
-          </Panel>
-
-          <Panel>
-            <CardHead title={t("渠道保护")} detail={t("按供应商配置共享冷却、排队与请求频率限制")} />
-            <CardContent className="settings-content">
-              <label className="check-row">
-                <input
-                  checked={form.rateLimitCooldownEnabled}
-                  onChange={(event) =>
-                    onFormChange({ ...form, rateLimitCooldownEnabled: event.currentTarget.checked })
-                  }
-                  type="checkbox"
-                />
-                <span>
-                  <strong>{t("启用错误冷却")}</strong>
-                  <small>{t("同一供应商返回配置的状态码后，后续请求等待 60 秒；Retry-After 更长时优先使用上游时间。")}</small>
-                </span>
-              </label>
-              <label className="check-row">
-                <input
-                  checked={form.channelQueueEnabled}
-                  onChange={(event) =>
-                    onFormChange({ ...form, channelQueueEnabled: event.currentTarget.checked })
-                  }
-                  type="checkbox"
-                />
-                <span>
-                  <strong>{t("启用同渠道队列")}</strong>
-                  <small>{t("共享同一供应商的请求按顺序进入，并按每分钟上限预留请求次数。")}</small>
-                </span>
-              </label>
-              <div className="form-row">
-                <Field label={t("每个渠道每分钟请求数")}>
-                  <Input
-                    min={1}
-                    max={10000}
-                    type="number"
-                    value={form.channelRequestsPerMinute}
-                    onChange={(event) =>
-                      onFormChange({
-                        ...form,
-                        channelRequestsPerMinute: clampNumber(Number(event.currentTarget.value), 1, 10000),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label={t("触发冷却的状态码")}>
-                  <div className="channel-status-editor">
-                    <div className="channel-status-list">
-                      {form.cooldownErrorStatuses.map((status) => (
-                        <button
-                          key={status}
-                          className="channel-status-chip"
-                          onClick={() =>
-                            onFormChange({
-                              ...form,
-                              cooldownErrorStatuses: form.cooldownErrorStatuses.filter((item) => item !== status),
-                            })
-                          }
-                          type="button"
-                        >
-                          {status} ×
-                        </button>
-                      ))}
-                    </div>
-                    <Input
-                      inputMode="numeric"
-                      placeholder={t("输入状态码后回车")}
-                      value={channelStatusInput}
-                      onChange={(event) => setChannelStatusInput(event.currentTarget.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          addChannelStatuses();
-                        }
-                      }}
-                    />
-                  </div>
-                </Field>
-              </div>
-              <p className="field-hint">
-                {t("默认状态码为 429 和 500；只在启用错误冷却时生效。删除某个状态码即可停止该状态触发冷却。")}
               </p>
             </CardContent>
           </Panel>
@@ -7676,6 +7579,7 @@ function RelayProfileEditor({
   const [metadataImportOriginalDocument, setMetadataImportOriginalDocument] = useState("");
   const [metadataImportError, setMetadataImportError] = useState("");
   const [metadataImportPreview, setMetadataImportPreview] = useState<ImportedModelMetadata | null>(null);
+  const [channelStatusInput, setChannelStatusInput] = useState("");
   const modelSlugOriginsRef = useRef(modelWindowRows.map((row) => row.model.trim()));
   useEffect(() => {
     modelSlugOriginsRef.current = modelWindowRows.map((row) => row.model.trim());
@@ -7708,6 +7612,20 @@ function RelayProfileEditor({
   const canFetchSub2ApiRate = profile.sub2apiEnabled && Boolean(sub2apiBaseUrl && profile.apiKey.trim());
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
+  };
+  const addChannelStatuses = () => {
+    const next = channelStatusInput
+      .split(/[,\s]+/)
+      .map(Number)
+      .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599);
+    if (!next.length) return;
+    updateDraft({
+      cooldownErrorStatuses: normalizeCooldownErrorStatuses([
+        ...profile.cooldownErrorStatuses,
+        ...next,
+      ]),
+    });
+    setChannelStatusInput("");
   };
   const modelRoutes = normalizeRelayModelRoutes(profile.modelRoutes);
   const modelRouteTargets = form.relayProfiles.filter(
@@ -7963,6 +7881,90 @@ function RelayProfileEditor({
               />
             </Field>
           </div>
+        ) : null}
+        {!isAggregateRelayProfile(profile) ? (
+          <section className="relay-config-section relay-channel-protection">
+            <div className="relay-config-section-head">
+              <div>
+                <strong>{t("渠道保护")}</strong>
+                <span>{t("仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。")}</span>
+              </div>
+            </div>
+            <label className="switch-row compact">
+              <input
+                checked={profile.rateLimitCooldownEnabled}
+                onChange={(event) => updateDraft({ rateLimitCooldownEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("启用错误冷却")}</strong>
+                <small>{t("命中下方状态码后，当前供应商等待至少 60 秒；上游 Retry-After 更长时优先使用上游时间。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            <label className="switch-row compact">
+              <input
+                checked={profile.channelQueueEnabled}
+                onChange={(event) => updateDraft({ channelQueueEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("启用同渠道队列")}</strong>
+                <small>{t("当前供应商的请求按顺序发送，并按每分钟上限预留请求次数。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            <div className="form-row relay-channel-protection-fields">
+              <Field label={t("每分钟请求数")}>
+                <Input
+                  min={1}
+                  max={10000}
+                  type="number"
+                  value={profile.channelRequestsPerMinute}
+                  onChange={(event) =>
+                    updateDraft({
+                      channelRequestsPerMinute: clampNumber(Number(event.currentTarget.value), 1, 10000),
+                    })
+                  }
+                />
+              </Field>
+              <Field label={t("触发冷却的状态码")}>
+                <div className="channel-status-editor">
+                  <div className="channel-status-list">
+                    {profile.cooldownErrorStatuses.map((status) => (
+                      <button
+                        key={status}
+                        className="channel-status-chip"
+                        onClick={() =>
+                          updateDraft({
+                            cooldownErrorStatuses: profile.cooldownErrorStatuses.filter((item) => item !== status),
+                          })
+                        }
+                        type="button"
+                      >
+                        {status} ×
+                      </button>
+                    ))}
+                  </div>
+                  <Input
+                    inputMode="numeric"
+                    placeholder={t("输入状态码后回车")}
+                    value={channelStatusInput}
+                    onChange={(event) => setChannelStatusInput(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addChannelStatuses();
+                      }
+                    }}
+                  />
+                </div>
+              </Field>
+            </div>
+            <p className="field-hint">
+              {t("默认状态码为 429 和 500；删除某个状态码即可停止该状态触发冷却。")}
+            </p>
+          </section>
         ) : null}
         {profile.relayMode === "official" ? (
           <Field className="relay-field-official-key" label="API Key">
@@ -11228,18 +11230,15 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             noAuth: false,
             sub2apiMultiplier: "",
             standardOpenaiProtocol: false,
+            rateLimitCooldownEnabled: false,
+            channelQueueEnabled: false,
+            channelRequestsPerMinute: 55,
+            cooldownErrorStatuses: [429, 500],
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
     ? settings.activeRelayId
     : profiles[0]?.id || "default";
-  const cooldownErrorStatuses = Array.from(
-    new Set(
-      (settings.cooldownErrorStatuses ?? [429, 500])
-        .map((status) => Number(status))
-        .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599),
-    ),
-  ).slice(0, 20);
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
@@ -11259,10 +11258,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayContextConfigContents,
     relayProfiles: profiles,
     activeRelayId,
-    rateLimitCooldownEnabled: settings.rateLimitCooldownEnabled === true,
-    channelQueueEnabled: settings.channelQueueEnabled === true,
-    channelRequestsPerMinute: clampNumber(settings.channelRequestsPerMinute ?? 55, 1, 10000),
-    cooldownErrorStatuses,
   });
 }
 
@@ -11281,6 +11276,17 @@ function backendSettingsEqual(left: BackendSettings, right: BackendSettings): bo
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeCooldownErrorStatuses(value: number[] | undefined): number[] {
+  if (!Array.isArray(value)) return [429, 500];
+  return Array.from(
+    new Set(
+      value
+        .map(Number)
+        .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599),
+    ),
+  ).slice(0, 20);
 }
 
 function normalizeStepwiseGenerationMode(value: StepwiseGenerationMode | undefined): StepwiseGenerationMode {
@@ -11340,6 +11346,10 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         noAuth: false,
         sub2apiMultiplier: "",
         standardOpenaiProtocol: false,
+        rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
+        channelQueueEnabled: profile.channelQueueEnabled === true,
+        channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 55, 1, 10000),
+        cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
       },
       null,
     );
@@ -11377,6 +11387,10 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
+    rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
+    channelQueueEnabled: profile.channelQueueEnabled === true,
+    channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 55, 1, 10000),
+    cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
@@ -12194,6 +12208,10 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     sub2apiMultiplier: "",
     modelRoutes: [],
     standardOpenaiProtocol: false,
+    rateLimitCooldownEnabled: false,
+    channelQueueEnabled: false,
+    channelRequestsPerMinute: 55,
+    cooldownErrorStatuses: [429, 500],
   };
   return withGeneratedRelayFiles(next);
 }
@@ -12238,6 +12256,10 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       sub2apiMultiplier: "",
       modelRoutes: [],
       standardOpenaiProtocol: false,
+      rateLimitCooldownEnabled: false,
+      channelQueueEnabled: false,
+      channelRequestsPerMinute: 55,
+      cooldownErrorStatuses: [429, 500],
       aggregate: {
         strategy: "failover",
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),

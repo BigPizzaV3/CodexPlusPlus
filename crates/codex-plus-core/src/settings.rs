@@ -130,6 +130,20 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub standard_openai_protocol: bool,
+    #[serde(rename = "rateLimitCooldownEnabled", default)]
+    pub rate_limit_cooldown_enabled: bool,
+    #[serde(rename = "channelQueueEnabled", default)]
+    pub channel_queue_enabled: bool,
+    #[serde(
+        rename = "channelRequestsPerMinute",
+        default = "default_channel_requests_per_minute"
+    )]
+    pub channel_requests_per_minute: u32,
+    #[serde(
+        rename = "cooldownErrorStatuses",
+        default = "default_cooldown_error_statuses"
+    )]
+    pub cooldown_error_statuses: Vec<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -259,6 +273,10 @@ impl Default for RelayProfile {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            rate_limit_cooldown_enabled: false,
+            channel_queue_enabled: false,
+            channel_requests_per_minute: default_channel_requests_per_minute(),
+            cooldown_error_statuses: default_cooldown_error_statuses(),
         }
     }
 }
@@ -614,20 +632,6 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
-    #[serde(rename = "rateLimitCooldownEnabled", default)]
-    pub rate_limit_cooldown_enabled: bool,
-    #[serde(rename = "channelQueueEnabled", default)]
-    pub channel_queue_enabled: bool,
-    #[serde(
-        rename = "channelRequestsPerMinute",
-        default = "default_channel_requests_per_minute"
-    )]
-    pub channel_requests_per_minute: u32,
-    #[serde(
-        rename = "cooldownErrorStatuses",
-        default = "default_cooldown_error_statuses"
-    )]
-    pub cooldown_error_statuses: Vec<u16>,
     /// 按工具分区的配置。`tools.codex` 是上面那批扁平字段的镜像（写盘时同步），
     /// 其它工具（Grok / 后续工具）只存在这里。见 `crate::tools`。
     #[serde(rename = "tools", default)]
@@ -712,10 +716,6 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
-            rate_limit_cooldown_enabled: false,
-            channel_queue_enabled: false,
-            channel_requests_per_minute: default_channel_requests_per_minute(),
-            cooldown_error_statuses: default_cooldown_error_statuses(),
             tools: BTreeMap::new(),
             active_tool: ToolId::Codex,
         }
@@ -770,6 +770,10 @@ impl BackendSettings {
                 model_routes: Vec::new(),
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
+                rate_limit_cooldown_enabled: false,
+                channel_queue_enabled: false,
+                channel_requests_per_minute: default_channel_requests_per_minute(),
+                cooldown_error_statuses: default_cooldown_error_statuses(),
             };
         }
 
@@ -826,6 +830,10 @@ impl BackendSettings {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            rate_limit_cooldown_enabled: false,
+            channel_queue_enabled: false,
+            channel_requests_per_minute: default_channel_requests_per_minute(),
+            cooldown_error_statuses: default_cooldown_error_statuses(),
         }
     }
 
@@ -1716,35 +1724,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             }),
         );
     }
-    merge_bool_setting(target, source, "rateLimitCooldownEnabled");
-    merge_bool_setting(target, source, "channelQueueEnabled");
-    if let Some(value) = source
-        .get("channelRequestsPerMinute")
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-    {
-        target.insert(
-            "channelRequestsPerMinute".to_string(),
-            Value::Number(serde_json::Number::from(
-                normalize_channel_requests_per_minute(value),
-            )),
-        );
-    }
-    if let Some(value) = source
-        .get("cooldownErrorStatuses")
-        .and_then(Value::as_array)
-    {
-        let statuses = value
-            .iter()
-            .filter_map(Value::as_u64)
-            .filter_map(|value| u16::try_from(value).ok())
-            .collect::<Vec<_>>();
-        target.insert(
-            "cooldownErrorStatuses".to_string(),
-            serde_json::to_value(normalize_channel_cooldown_statuses(&statuses))
-                .unwrap_or_else(|_| Value::Array(Vec::new())),
-        );
-    }
     if let Some(value) = source.get("activeTool").and_then(Value::as_str) {
         target.insert(
             "activeTool".to_string(),
@@ -1947,10 +1926,12 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
-    settings.channel_requests_per_minute =
-        normalize_channel_requests_per_minute(settings.channel_requests_per_minute);
-    settings.cooldown_error_statuses =
-        normalize_channel_cooldown_statuses(&settings.cooldown_error_statuses);
+    for profile in &mut settings.relay_profiles {
+        profile.channel_requests_per_minute =
+            normalize_channel_requests_per_minute(profile.channel_requests_per_minute);
+        profile.cooldown_error_statuses =
+            normalize_channel_cooldown_statuses(&profile.cooldown_error_statuses);
+    }
     // 扁平字段始终是 Codex 的唯一事实来源，这里把它镜像进 tools.codex；
     // 其它工具的分片原样保留。放在函数末尾，所有 load / save / update 路径
     // 都会经过，两边不会漂移。
@@ -2158,14 +2139,15 @@ mod tests {
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
-        assert!(!settings.rate_limit_cooldown_enabled);
-        assert!(!settings.channel_queue_enabled);
+        let default_profile = &settings.relay_profiles[0];
+        assert!(!default_profile.rate_limit_cooldown_enabled);
+        assert!(!default_profile.channel_queue_enabled);
         assert_eq!(
-            settings.channel_requests_per_minute,
+            default_profile.channel_requests_per_minute,
             default_channel_requests_per_minute()
         );
         assert_eq!(
-            settings.cooldown_error_statuses,
+            default_profile.cooldown_error_statuses,
             default_cooldown_error_statuses()
         );
         assert!(!settings.codex_app_stepwise_enabled);
@@ -2196,15 +2178,62 @@ mod tests {
     #[test]
     fn channel_protection_settings_are_normalized() {
         let settings = BackendSettings {
-            channel_requests_per_minute: 0,
-            cooldown_error_statuses: vec![500, 429, 429, 99, 600],
+            relay_profiles: vec![RelayProfile {
+                channel_requests_per_minute: 0,
+                cooldown_error_statuses: vec![500, 429, 429, 99, 600],
+                ..RelayProfile::default()
+            }],
             ..BackendSettings::default()
         };
 
         let normalized = normalize_settings_config_sections(settings);
 
-        assert_eq!(normalized.channel_requests_per_minute, 1);
-        assert_eq!(normalized.cooldown_error_statuses, vec![429, 500]);
+        assert_eq!(normalized.relay_profiles[0].channel_requests_per_minute, 1);
+        assert_eq!(
+            normalized.relay_profiles[0].cooldown_error_statuses,
+            vec![429, 500]
+        );
+    }
+
+    #[test]
+    fn channel_protection_settings_round_trip_independently_per_profile() {
+        let settings = BackendSettings {
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "relay-a".to_string(),
+                    rate_limit_cooldown_enabled: true,
+                    channel_queue_enabled: true,
+                    channel_requests_per_minute: 24,
+                    cooldown_error_statuses: vec![429],
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "relay-b".to_string(),
+                    rate_limit_cooldown_enabled: false,
+                    channel_queue_enabled: true,
+                    channel_requests_per_minute: 90,
+                    cooldown_error_statuses: vec![500, 503],
+                    ..RelayProfile::default()
+                },
+            ],
+            ..BackendSettings::default()
+        };
+
+        let serialized = serde_json::to_value(&settings).unwrap();
+        let restored: BackendSettings = serde_json::from_value(serialized).unwrap();
+        let normalized = normalize_settings_config_sections(restored);
+
+        let first = &normalized.relay_profiles[0];
+        assert!(first.rate_limit_cooldown_enabled);
+        assert!(first.channel_queue_enabled);
+        assert_eq!(first.channel_requests_per_minute, 24);
+        assert_eq!(first.cooldown_error_statuses, vec![429]);
+
+        let second = &normalized.relay_profiles[1];
+        assert!(!second.rate_limit_cooldown_enabled);
+        assert!(second.channel_queue_enabled);
+        assert_eq!(second.channel_requests_per_minute, 90);
+        assert_eq!(second.cooldown_error_statuses, vec![500, 503]);
     }
 
     #[test]

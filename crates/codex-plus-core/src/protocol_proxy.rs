@@ -988,7 +988,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         validate_upstream(&relay)?;
         let channel_key = crate::channel_protection::key_for_relay(&relay);
         let channel_permit =
-            crate::channel_protection::acquire(&channel_key, &settings).await;
+            crate::channel_protection::acquire(&channel_key, &relay).await;
         let model_override = aggregate_upstream_model_override(&settings, &relay);
         let (endpoint, upstream_body, wire_api, compaction) = upstream_request_parts(
             &relay,
@@ -1099,7 +1099,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             if !(200..300).contains(&status_code) {
                 crate::channel_protection::mark_failure(
                     &channel_key,
-                    &settings,
+                    &relay,
                     status_code,
                     retry_after,
                 )
@@ -1117,7 +1117,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         }
         crate::channel_protection::mark_failure(
             &channel_key,
-            &settings,
+            &relay,
             status_code,
             retry_after,
         )
@@ -1454,7 +1454,7 @@ pub async fn open_chat_completions_proxy_request(
         .unwrap_or(false);
     let channel_key = crate::channel_protection::key_for_relay(&relay);
     let channel_permit =
-        crate::channel_protection::acquire(&channel_key, &settings).await;
+        crate::channel_protection::acquire(&channel_key, &relay).await;
     let request = crate::http_client::proxied_client(&effective_user_agent(
         &relay.user_agent,
         original_user_agent,
@@ -1474,7 +1474,7 @@ pub async fn open_chat_completions_proxy_request(
     if !(200..300).contains(&status_code) {
         crate::channel_protection::mark_failure(
             &channel_key,
-            &settings,
+            &relay,
             status_code,
             retry_after,
         )
