@@ -583,8 +583,7 @@ fn align_profile_model_with_active_goal_thread(home: &Path, profile: &RelayProfi
         return profile.clone();
     }
     let Some(goal_model) = crate::codex_sqlite::latest_unarchived_goal_thread_model(home)
-        .filter(|model| !model.trim().is_empty())
-        .map(|model| model.trim().to_string())
+        .and_then(|model| sanitize_relay_model_name(&model))
     else {
         return profile.clone();
     };
@@ -672,8 +671,7 @@ pub fn align_live_config_model_with_goal_thread(
         return Ok(false);
     }
     let Some(goal_model) = crate::codex_sqlite::latest_unarchived_goal_thread_model(home)
-        .filter(|model| !model.trim().is_empty())
-        .map(|model| model.trim().to_string())
+        .and_then(|model| sanitize_relay_model_name(&model))
     else {
         return Ok(false);
     };
@@ -1092,7 +1090,9 @@ pub fn backfill_relay_profile_from_home(
     let live_config = profile.config_contents.clone();
     sync_context_limits_from_config(profile, &live_config);
     if profile.model.trim().is_empty() {
-        if let Some(model) = root_key_string(&live_config, "model") {
+        if let Some(model) = root_key_string(&live_config, "model")
+            .and_then(|model| sanitize_relay_model_name(&model))
+        {
             profile.model = model;
         }
     }
@@ -1152,7 +1152,9 @@ pub fn backfill_relay_profile_from_home_with_common(
     // `model =` 可能是 apply 写入的隐式默认/目标任务对齐值，固化进
     // profile.model 会挡住后续对齐（issue #2264）。
     if profile.model.trim().is_empty() {
-        if let Some(model) = root_key_string(&profile.config_contents, "model") {
+        if let Some(model) = root_key_string(&profile.config_contents, "model")
+            .and_then(|model| sanitize_relay_model_name(&model))
+        {
             profile.model = model;
         }
     }
@@ -3395,12 +3397,44 @@ fn codex_auth_api_key(auth_contents: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// 模型名只接受合理的单行 slug。issue #1097 问题 2：live config 里的
+/// `model =` 可能被污染成整段转义后的供应商配置，写侧转义、读侧
+/// （`root_key_string` 不反转义）逐轮叠加导致 settings.json 膨胀到几十 MB、
+/// 管理工具白屏。这里统一拒绝换行/控制字符/反斜杠、超长值以及明显混入
+/// 供应商配置关键字的值，视为「未声明」。
+const MAX_MODEL_NAME_LEN: usize = 256;
+const MODEL_NAME_FORBIDDEN_KEYWORDS: [&str; 6] = [
+    "model_provider",
+    "model_providers",
+    "base_url",
+    "wire_api",
+    "requires_openai_auth",
+    "model_catalog_json",
+];
+
+fn sanitize_relay_model_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_MODEL_NAME_LEN
+        || trimmed.contains(['\\', '\r', '\n'])
+        || trimmed.chars().any(char::is_control)
+        || MODEL_NAME_FORBIDDEN_KEYWORDS
+            .iter()
+            .any(|keyword| trimmed.contains(keyword))
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// 解析 profile 實際使用的模型：優先取 config.toml 裡的 `model =`，
 /// 否則退回 profile.model 欄位。供應商測試用它做回退，避免串到別家供應商的模型名。
+/// 两侧来源都过 `sanitize_relay_model_name`：被污染的值视为未声明（issue #1097）。
 pub fn relay_profile_model(profile: &RelayProfile) -> String {
     root_key_string(&profile.config_contents, "model")
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| profile.model.trim().to_string())
+        .and_then(|value| sanitize_relay_model_name(&value))
+        .or_else(|| sanitize_relay_model_name(&profile.model))
+        .unwrap_or_default()
 }
 
 pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
@@ -3512,8 +3546,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
             .split(['\r', '\n', ','])
             .map(str::trim)
             .find(|value| !value.is_empty())
+            .and_then(sanitize_relay_model_name)
         {
-            model = crate::model_suffix::parse_model_suffix(first).0;
+            model = crate::model_suffix::parse_model_suffix(&first).0;
         }
     }
     // 若用户把后缀语法（如 deepseek-v4-flash[1M]）写在 model 字段，
@@ -3521,6 +3556,10 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     let (model, _) = crate::model_suffix::parse_model_suffix(&model);
     if !model.trim().is_empty() {
         doc["model"] = toml_edit::value(model.trim());
+    } else {
+        // config_contents 里被污染的 `model =`（issue #1097 问题 2）必须剥掉，
+        // 否则 normalize 重写快照时脏值会原样保留、逐轮转义放大。
+        doc.as_table_mut().remove("model");
     }
 
     let base_url = relay_profile_base_url(profile);
@@ -3733,7 +3772,9 @@ fn no_auth_auth_contents(auth_contents: &str) -> anyhow::Result<String> {
 }
 
 fn merge_model_into_model_list(model: &str, model_list: &str) -> String {
-    let model = model.trim();
+    // 入参可能来自 official 分支的原始 profile.model 字段（未经 relay_profile_model
+    // 出口过滤），污染值并入列表后会在 normalize 逐轮转义放大（issue #1097 问题 2）。
+    let model = sanitize_relay_model_name(model).unwrap_or_default();
     let mut models = Vec::new();
     if !model.is_empty() {
         models.push(model.to_string());
@@ -4313,6 +4354,41 @@ command = \"pwsh -File end.ps1\"
             ..RelayProfile::default()
         };
         assert!(relay_profile_model(&empty).trim().is_empty());
+    }
+
+    /// issue #1097 问题 2：live config 的 `model =` 可能被污染成整段转义后的
+    /// 供应商配置（含反斜杠/换行逃逸、base_url 等关键字），读回不反转义会在
+    /// 保存/切换循环里逐轮放大。这里验证出口统一拒绝污染值。
+    #[test]
+    fn relay_profile_model_rejects_polluted_model_values() {
+        let polluted = "gpt-5.6-sol\\n\\nmodel_provider = \\\"custom\\\"\\nbase_url = \\\"https://relay.example.test/v1\\\"\\n";
+
+        // config 里的污染值视为未声明，退回 profile.model 字段
+        let falls_back = RelayProfile {
+            config_contents: format!("model = \"{polluted}\"\nmodel_provider = \"custom\"\n"),
+            model: "deepseek-v4-pro".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(relay_profile_model(&falls_back), "deepseek-v4-pro");
+
+        // 两侧都被污染（字段值含反斜杠逃逸）→ 空串
+        let rejected = RelayProfile {
+            config_contents: format!("model = \"{polluted}\"\nmodel_provider = \"custom\"\n"),
+            model: "also\\npolluted".to_string(),
+            ..RelayProfile::default()
+        };
+        assert!(relay_profile_model(&rejected).trim().is_empty());
+
+        // 合法形态不受影响：斜杠命名空间、后缀语法
+        for valid in ["gpt-5.6-sol", "openai/gpt-4o", "deepseek-v4-flash[1M]"] {
+            assert_eq!(
+                relay_profile_model(&RelayProfile {
+                    config_contents: format!("model = \"{valid}\"\n"),
+                    ..RelayProfile::default()
+                }),
+                valid
+            );
+        }
     }
 
     /// 伪造一个带 threads / automation_runs 表的 Codex 会话库。

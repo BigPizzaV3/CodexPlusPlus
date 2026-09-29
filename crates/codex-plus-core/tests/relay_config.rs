@@ -777,6 +777,94 @@ base_url = "https://relay.example.test/v1"
     let _ = temp;
 }
 
+/// issue #1097 问题 2：live config 的 `model =` 被污染成整段转义后的供应商配置时，
+/// backfill 不得把脏值固化进 profile.model（否则随保存/切换逐轮转义放大）。
+#[test]
+fn backfill_rejects_polluted_model_line() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "gpt-5.6-sol\n\nmodel_provider = \"custom\"\nbase_url = \"https://relay.example.test/v1\"\n"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example.test/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#,
+    )
+    .unwrap();
+
+    let mut profile = RelayProfile::default();
+    backfill_relay_profile_from_home(home, &mut profile).unwrap();
+
+    assert!(profile.model.trim().is_empty());
+}
+
+/// issue #1097 问题 2：normalize 重写快照时剥掉/替换 config_contents 里被污染的
+/// `model =`，且多轮 normalize 幂等——修复前读侧不反转义，每轮写侧再转义一层，
+/// settings.json 会指数膨胀。
+#[test]
+fn normalize_drops_polluted_model_and_stays_idempotent() {
+    let polluted_config = r#"model = "gpt-5.6-sol\n\nmodel_provider = \"custom\"\nbase_url = \"https://relay.example.test/v1\"\n"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+"#
+    .to_string();
+
+    // model_list 有合法条目时，污染值被替换为 model_list 第一条
+    let mut profile = RelayProfile {
+        id: "custom".to_string(),
+        relay_mode: RelayMode::MixedApi,
+        protocol: RelayProtocol::Responses,
+        base_url: "https://relay.example.test/v1".to_string(),
+        upstream_base_url: "https://relay.example.test/v1".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        config_contents: polluted_config.clone(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        model_list: "deepseek-v4-flash\ngpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert!(profile.config_contents.contains(r#"model = "deepseek-v4-flash""#));
+    assert!(!profile.config_contents.contains(r"\nmodel_provider"));
+    // modelList 不被污染值侵入
+    assert!(!profile.model_list.contains('\\'));
+
+    // 幂等：再次 normalize 输出稳定（修复前每轮转义翻倍增长）
+    let once = profile.config_contents.clone();
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+    assert_eq!(profile.config_contents, once);
+
+    // model_list 也为空时，污染的 model 键直接剥除而非保留
+    let mut bare = RelayProfile {
+        id: "custom".to_string(),
+        relay_mode: RelayMode::MixedApi,
+        protocol: RelayProtocol::Responses,
+        base_url: "https://relay.example.test/v1".to_string(),
+        upstream_base_url: "https://relay.example.test/v1".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        config_contents: polluted_config,
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    normalize_relay_profile_for_storage(&mut bare).unwrap();
+    assert!(!bare.config_contents.contains("model = "));
+    assert!(!bare.config_contents.contains(r"\nmodel_provider"));
+}
+
 #[test]
 fn openai_session_provider_keeps_openai_name_for_official_identity() {
     let temp = tempfile::tempdir().unwrap();
