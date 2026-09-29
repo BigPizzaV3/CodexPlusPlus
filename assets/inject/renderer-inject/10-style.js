@@ -1028,15 +1028,6 @@
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
       .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
-      .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
-      .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
-      .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
-      .codex-plus-user-script-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px 8px; }
-      .codex-plus-user-script-name { font-size: 12px; }
-      .codex-plus-user-script-meta { margin-top: 2px; color: #a1a1aa; font-size: 11px; }
-      .codex-plus-user-script-error { margin-top: 2px; color: #f87171; font-size: 11px; word-break: break-all; }
-      .codex-plus-user-script-actions { display: grid; justify-items: end; gap: 8px; min-width: 120px; }
-      .codex-plus-user-script-reload { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
       .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
       .codex-plus-ad-section { display: grid; gap: 10px; margin-top: 12px; }
       .codex-plus-ad-section:first-of-type { margin-top: 0; }
@@ -1128,14 +1119,11 @@
       .codex-plus-service-tier-thread-label,
       .codex-plus-backend-label,
       .codex-plus-form-message,
-      .codex-plus-user-script-dirs,
-      .codex-plus-user-script-meta,
       .codex-plus-sponsor-text { color: var(--codex-plus-text-secondary); }
       .codex-delete-confirm-actions button,
       .codex-plus-action-button,
       .codex-plus-issue-button,
-      .codex-plus-service-tier-button,
-      .codex-plus-user-script-reload {
+      .codex-plus-service-tier-button {
         min-height: 32px;
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-lg, 8px);
@@ -1154,8 +1142,6 @@
       .codex-plus-issue-button:focus-visible,
       .codex-plus-service-tier-button:hover,
       .codex-plus-service-tier-button:focus-visible,
-      .codex-plus-user-script-reload:hover,
-      .codex-plus-user-script-reload:focus-visible { background: var(--codex-plus-bg-hover); outline: none; }
       .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
         border-color: var(--color-border-danger, #dc2626);
         background: var(--color-background-danger-solid, #dc2626);
@@ -1198,7 +1184,6 @@
       .codex-plus-tab-button { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; padding: 6px 10px; }
       .codex-plus-tab-button:hover,
       .codex-plus-tab-button:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
-      .codex-plus-user-script-item { border-color: var(--codex-plus-border-subtle); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],
@@ -1231,9 +1216,9 @@
       .codex-plus-ad-link:hover { background: var(--color-background-primary-solid-hover, var(--color-background-primary-solid, #10a37f)); }
       .codex-plus-ad-empty { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); color: var(--codex-plus-text-tertiary); }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
-      .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"], .codex-plus-user-script-error { color: var(--codex-plus-danger); }
+      .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
-      .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-user-script-warning, .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
+      .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
     `;
     document.documentElement.appendChild(style);
   }

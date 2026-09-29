@@ -224,35 +224,6 @@
   }
 
   /**
-   * 用户脚本区块的 markup。
-   *
-   * 弹窗里的旧 tab 和独立的「拓展」页面共用这一份，避免两处各写一遍后走样。
-   * 注意这段里的 data-codex-user-scripts-* 是 loadUserScripts/renderUserScripts 的挂载点，
-   * 两处同时打开时 querySelector 只会命中最先出现的那份，所以同一时刻只渲染一个页面。
-   */
-  function renderUserScriptsSection(options = {}) {
-    // 页面模式下列表在左面板，右栏只留全局开关与目录信息，避免同屏出现两份列表。
-    const inlineList = options.compact
-      ? ""
-      : `<div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>`;
-    return `
-      <div class="codex-plus-row" data-codex-user-scripts-section="true">
-        <div>
-          <div class="codex-plus-row-title">用户脚本</div>
-          <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-          <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
-          <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
-          ${inlineList}
-        </div>
-        <div class="codex-plus-user-script-actions">
-          <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
-          <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
-        </div>
-      </div>
-    `;
-  }
-
-  /**
    * 「拓展」页面左面板：搜索框 + 已安装/市场两个分组。
    *
    * 点击复用已有的事件委托：已安装走向 `data-codex-user-script-key` 的开关，
@@ -553,29 +524,15 @@
     body.innerHTML = renderCodexPlusPageNavItems(tab);
   }
 
+  /**
+   * 脚本清单变化后同步左面板。
+   *
+   * 原来这里还要往「用户脚本」区块的开关与目录文本里写值，那个区块已经删掉，
+   * 脚本列表现在只存在于拓展页左面板，所以只剩刷新这一件事。
+   */
   function renderUserScripts() {
-    const enabledToggle = document.querySelector("[data-codex-user-scripts-enabled]");
-    if (enabledToggle) enabledToggle.dataset.enabled = String(!!codexPlusUserScripts.enabled);
-    const dirs = document.querySelector("[data-codex-user-script-dirs]");
-    if (dirs) dirs.textContent = `内置：${codexPlusUserScripts.builtin_dir || "未找到"}  用户：${codexPlusUserScripts.user_dir || "未找到"}`;
     // 左面板也要跟着刷新，否则脚本的启停/状态变化不会反映到列表上。
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusPageNav(codexPlusExtensionsTab);
-    const list = document.querySelector("[data-codex-user-script-list]");
-    if (!list) return;
-    if (!codexPlusUserScripts.scripts?.length) {
-      list.textContent = codexPlusUserScriptsLoaded ? "未发现用户脚本。" : "正在读取用户脚本…";
-      return;
-    }
-    list.innerHTML = codexPlusUserScripts.scripts.map((script) => `
-      <div class="codex-plus-user-script-item">
-        <div>
-          <div class="codex-plus-user-script-name">${escapeHtml(script.name || script.key)}</div>
-          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? "内置" : "用户"} · ${userScriptStatusLabel(script.status)}</div>
-          ${script.error ? `<div class="codex-plus-user-script-error">${escapeHtml(script.error)}</div>` : ""}
-        </div>
-        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(script.key)}" data-enabled="${String(!!script.enabled)}"><span></span></button>
-      </div>
-    `).join("");
   }
 
   async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
@@ -1117,7 +1074,6 @@
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
-            ${renderUserScriptsSection({ compact: pageMode })}
             <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${pageMode ? renderCodexPlusExtensionsDetail() : ""}</div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
@@ -1205,11 +1161,6 @@
         window.open(issueUrl, "_blank");
         return;
       }
-      const userScriptsEnabled = target?.closest("[data-codex-user-scripts-enabled]");
-      if (userScriptsEnabled) {
-        loadUserScripts("/user-scripts/set-enabled", { enabled: userScriptsEnabled.dataset.enabled !== "true" });
-        return;
-      }
       if (target?.closest("[data-codex-service-tier-inherit]")) {
         setCodexServiceTierControlMode("inherit");
         return;
@@ -1266,10 +1217,6 @@
         const [kind, ...rest] = extensionsSelect.getAttribute("data-codex-extensions-select").split(":");
         codexPlusExtensionsSelected = { kind, key: rest.join(":") };
         refreshCodexPlusExtensionsView();
-        return;
-      }
-      if (target?.closest("[data-codex-user-scripts-reload]")) {
-        loadUserScripts("/user-scripts/reload", {});
         return;
       }
       if (target?.closest("[data-codex-upstream-worktree-open]")) {

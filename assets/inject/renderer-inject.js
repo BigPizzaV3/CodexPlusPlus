@@ -1630,15 +1630,6 @@
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
       .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
-      .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
-      .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
-      .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
-      .codex-plus-user-script-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px 8px; }
-      .codex-plus-user-script-name { font-size: 12px; }
-      .codex-plus-user-script-meta { margin-top: 2px; color: #a1a1aa; font-size: 11px; }
-      .codex-plus-user-script-error { margin-top: 2px; color: #f87171; font-size: 11px; word-break: break-all; }
-      .codex-plus-user-script-actions { display: grid; justify-items: end; gap: 8px; min-width: 120px; }
-      .codex-plus-user-script-reload { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
       .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
       .codex-plus-ad-section { display: grid; gap: 10px; margin-top: 12px; }
       .codex-plus-ad-section:first-of-type { margin-top: 0; }
@@ -1730,14 +1721,11 @@
       .codex-plus-service-tier-thread-label,
       .codex-plus-backend-label,
       .codex-plus-form-message,
-      .codex-plus-user-script-dirs,
-      .codex-plus-user-script-meta,
       .codex-plus-sponsor-text { color: var(--codex-plus-text-secondary); }
       .codex-delete-confirm-actions button,
       .codex-plus-action-button,
       .codex-plus-issue-button,
-      .codex-plus-service-tier-button,
-      .codex-plus-user-script-reload {
+      .codex-plus-service-tier-button {
         min-height: 32px;
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-lg, 8px);
@@ -1756,8 +1744,6 @@
       .codex-plus-issue-button:focus-visible,
       .codex-plus-service-tier-button:hover,
       .codex-plus-service-tier-button:focus-visible,
-      .codex-plus-user-script-reload:hover,
-      .codex-plus-user-script-reload:focus-visible { background: var(--codex-plus-bg-hover); outline: none; }
       .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
         border-color: var(--color-border-danger, #dc2626);
         background: var(--color-background-danger-solid, #dc2626);
@@ -1800,7 +1786,6 @@
       .codex-plus-tab-button { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; padding: 6px 10px; }
       .codex-plus-tab-button:hover,
       .codex-plus-tab-button:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
-      .codex-plus-user-script-item { border-color: var(--codex-plus-border-subtle); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],
@@ -1833,9 +1818,9 @@
       .codex-plus-ad-link:hover { background: var(--color-background-primary-solid-hover, var(--color-background-primary-solid, #10a37f)); }
       .codex-plus-ad-empty { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); color: var(--codex-plus-text-tertiary); }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
-      .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"], .codex-plus-user-script-error { color: var(--codex-plus-danger); }
+      .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
-      .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-user-script-warning, .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
+      .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
     `;
     document.documentElement.appendChild(style);
   }
@@ -4534,35 +4519,6 @@
   }
 
   /**
-   * 用户脚本区块的 markup。
-   *
-   * 弹窗里的旧 tab 和独立的「拓展」页面共用这一份，避免两处各写一遍后走样。
-   * 注意这段里的 data-codex-user-scripts-* 是 loadUserScripts/renderUserScripts 的挂载点，
-   * 两处同时打开时 querySelector 只会命中最先出现的那份，所以同一时刻只渲染一个页面。
-   */
-  function renderUserScriptsSection(options = {}) {
-    // 页面模式下列表在左面板，右栏只留全局开关与目录信息，避免同屏出现两份列表。
-    const inlineList = options.compact
-      ? ""
-      : `<div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>`;
-    return `
-      <div class="codex-plus-row" data-codex-user-scripts-section="true">
-        <div>
-          <div class="codex-plus-row-title">用户脚本</div>
-          <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-          <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
-          <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
-          ${inlineList}
-        </div>
-        <div class="codex-plus-user-script-actions">
-          <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
-          <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
-        </div>
-      </div>
-    `;
-  }
-
-  /**
    * 「拓展」页面左面板：搜索框 + 已安装/市场两个分组。
    *
    * 点击复用已有的事件委托：已安装走向 `data-codex-user-script-key` 的开关，
@@ -4863,29 +4819,15 @@
     body.innerHTML = renderCodexPlusPageNavItems(tab);
   }
 
+  /**
+   * 脚本清单变化后同步左面板。
+   *
+   * 原来这里还要往「用户脚本」区块的开关与目录文本里写值，那个区块已经删掉，
+   * 脚本列表现在只存在于拓展页左面板，所以只剩刷新这一件事。
+   */
   function renderUserScripts() {
-    const enabledToggle = document.querySelector("[data-codex-user-scripts-enabled]");
-    if (enabledToggle) enabledToggle.dataset.enabled = String(!!codexPlusUserScripts.enabled);
-    const dirs = document.querySelector("[data-codex-user-script-dirs]");
-    if (dirs) dirs.textContent = `内置：${codexPlusUserScripts.builtin_dir || "未找到"}  用户：${codexPlusUserScripts.user_dir || "未找到"}`;
     // 左面板也要跟着刷新，否则脚本的启停/状态变化不会反映到列表上。
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusPageNav(codexPlusExtensionsTab);
-    const list = document.querySelector("[data-codex-user-script-list]");
-    if (!list) return;
-    if (!codexPlusUserScripts.scripts?.length) {
-      list.textContent = codexPlusUserScriptsLoaded ? "未发现用户脚本。" : "正在读取用户脚本…";
-      return;
-    }
-    list.innerHTML = codexPlusUserScripts.scripts.map((script) => `
-      <div class="codex-plus-user-script-item">
-        <div>
-          <div class="codex-plus-user-script-name">${escapeHtml(script.name || script.key)}</div>
-          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? "内置" : "用户"} · ${userScriptStatusLabel(script.status)}</div>
-          ${script.error ? `<div class="codex-plus-user-script-error">${escapeHtml(script.error)}</div>` : ""}
-        </div>
-        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(script.key)}" data-enabled="${String(!!script.enabled)}"><span></span></button>
-      </div>
-    `).join("");
   }
 
   async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
@@ -5427,7 +5369,6 @@
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
-            ${renderUserScriptsSection({ compact: pageMode })}
             <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${pageMode ? renderCodexPlusExtensionsDetail() : ""}</div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
@@ -5515,11 +5456,6 @@
         window.open(issueUrl, "_blank");
         return;
       }
-      const userScriptsEnabled = target?.closest("[data-codex-user-scripts-enabled]");
-      if (userScriptsEnabled) {
-        loadUserScripts("/user-scripts/set-enabled", { enabled: userScriptsEnabled.dataset.enabled !== "true" });
-        return;
-      }
       if (target?.closest("[data-codex-service-tier-inherit]")) {
         setCodexServiceTierControlMode("inherit");
         return;
@@ -5576,10 +5512,6 @@
         const [kind, ...rest] = extensionsSelect.getAttribute("data-codex-extensions-select").split(":");
         codexPlusExtensionsSelected = { kind, key: rest.join(":") };
         refreshCodexPlusExtensionsView();
-        return;
-      }
-      if (target?.closest("[data-codex-user-scripts-reload]")) {
-        loadUserScripts("/user-scripts/reload", {});
         return;
       }
       if (target?.closest("[data-codex-upstream-worktree-open]")) {
