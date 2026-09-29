@@ -1057,9 +1057,9 @@
         box-shadow: none;
       }
       .${codexPlusPageClass} .codex-plus-modal-header {
-        width: min(960px, 100%);
-        margin: 0 auto;
-        padding: 24px 32px 12px;
+        width: 100%;
+        margin: 0;
+        padding: 16px 24px 10px;
       }
       .${codexPlusPageClass} .codex-plus-tabs {
         width: min(960px, 100%);
@@ -1069,11 +1069,85 @@
       .codex-plus-modal-content[data-codex-plus-active-tab="${codexPlusExtensionsTab}"] .codex-plus-tabs {
         display: none;
       }
+      /* 页面模式下分组导航由左面板接管，顶栏那条 tab 一律隐藏。 */
+      .${codexPlusPageClass} .codex-plus-tabs { display: none; }
       .${codexPlusPageClass} .codex-plus-modal-body {
-        width: min(960px, 100%);
-        margin: 0 auto;
+        width: 100%;
+        margin: 0;
         padding: 4px 32px 32px;
       }
+      /* 两栏：左侧自己的面板（导航 / 列表），右侧内容区。观感对齐 Codex 原生页面。 */
+      .${codexPlusPageClass} .codex-plus-page-layout {
+        display: flex;
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+      }
+      .${codexPlusPageClass} .codex-plus-page-nav {
+        width: 260px;
+        flex: 0 0 260px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border-right: 1px solid var(--codex-plus-border-subtle);
+      }
+      .${codexPlusPageClass} .codex-plus-page-nav-header {
+        flex: 0 0 auto;
+        padding: 4px 16px 10px;
+      }
+      .${codexPlusPageClass} .codex-plus-page-nav-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--codex-plus-text);
+      }
+      .${codexPlusPageClass} .codex-plus-page-nav-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 4px 10px 16px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255,255,255,.28) transparent;
+      }
+      .${codexPlusPageClass} .codex-plus-page-main {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .codex-plus-page-nav-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 7px 10px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+        font: inherit;
+        font-size: 13px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .codex-plus-page-nav-item:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-page-nav-item[data-active="true"] {
+        background: var(--codex-plus-bg-selected);
+        color: var(--codex-plus-text);
+      }
+      .codex-plus-page-nav-item-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+      .codex-plus-page-nav-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-page-nav-item-meta { font-size: 11px; color: var(--codex-plus-text-tertiary); }
+      .codex-plus-page-nav-item-state {
+        flex: 0 0 auto;
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--codex-plus-text-tertiary);
+      }
+      .codex-plus-page-nav-item-state[data-state="on"] { background: #34d399; }
+      .codex-plus-page-nav-empty { padding: 8px 10px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
       .${codexPlusPageClass} .codex-plus-modal-close {
         min-width: 56px;
         padding: 5px 12px;
@@ -4010,6 +4084,9 @@
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
+  // 单独跟踪「读过了没有」：scripts 为空既可能是真没有脚本，也可能是还没读到。
+  // 不区分就会在无后端时把「正在读取」直接显示成「未发现」。
+  let codexPlusUserScriptsLoaded = false;
   let codexPlusBackendStatus = window.__codexPlusBackendStatus || { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
@@ -4157,15 +4234,81 @@
     `;
   }
 
+  /** 「拓展」页面左面板：用户脚本列表。点击复用已有的 data-codex-user-script-key 事件委托。 */
+  function renderCodexPlusExtensionsNav() {
+    const scripts = codexPlusUserScripts.scripts;
+    if (!scripts?.length) {
+      return `<div class="codex-plus-page-nav-empty">${codexPlusUserScriptsLoaded ? "未发现用户脚本。" : "正在读取用户脚本…"}</div>`;
+    }
+    return scripts.map((script) => `
+      <button type="button" class="codex-plus-page-nav-item" data-codex-user-script-key="${escapeHtml(script.key)}" data-enabled="${String(!!script.enabled)}" title="${escapeHtml(script.name || script.key)}">
+        <span class="codex-plus-page-nav-item-text">
+          <span class="codex-plus-page-nav-item-name">${escapeHtml(script.name || script.key)}</span>
+          <span class="codex-plus-page-nav-item-meta">${script.source === "builtin" ? "内置" : "用户"} · ${userScriptStatusLabel(script.status)}</span>
+        </span>
+        <span class="codex-plus-page-nav-item-state" data-state="${script.enabled ? "on" : "off"}" aria-hidden="true"></span>
+      </button>
+    `).join("");
+  }
+
+  /** 左面板的导航项。Codex++ 页面切分组，「拓展」页面列脚本。 */
+  function renderCodexPlusPageNavItems(tab) {
+    if (tab === codexPlusExtensionsTab) return renderCodexPlusExtensionsNav();
+    return [
+      { key: "home", label: "主页" },
+      { key: "sponsor", label: "推荐内容" },
+    ].map((item) => `
+      <button type="button" class="codex-plus-page-nav-item" data-codex-plus-page-nav="${item.key}" data-active="${String(tab === item.key)}">${item.label}</button>
+    `).join("");
+  }
+
+  /**
+   * 页面模式下把单栏内容改造成两栏：左面板 + 右内容区。
+   *
+   * 只搬动已有的 .codex-plus-modal-body，不重建里面那些 data-codex-* 挂载点，
+   * 免得 renderUserScripts / 各类 toggle 的 querySelector 找不到目标。
+   */
+  function installCodexPlusPageLayout(overlay, tab) {
+    if (!overlay || overlay.querySelector(".codex-plus-page-layout")) return;
+    const content = overlay.querySelector(".codex-plus-modal-content");
+    const body = content?.querySelector(".codex-plus-modal-body");
+    if (!content || !body) return;
+    const layout = document.createElement("div");
+    layout.className = "codex-plus-page-layout";
+    const nav = document.createElement("div");
+    nav.className = "codex-plus-page-nav";
+    nav.innerHTML = `
+      <div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${tab === codexPlusExtensionsTab ? "拓展" : "Codex++"}</div></div>
+      <div class="codex-plus-page-nav-body" data-codex-plus-page-nav-body="true">${renderCodexPlusPageNavItems(tab)}</div>
+    `;
+    const main = document.createElement("div");
+    main.className = "codex-plus-page-main";
+    content.appendChild(layout);
+    layout.appendChild(nav);
+    layout.appendChild(main);
+    main.appendChild(body);
+  }
+
+  /** 左面板内容随当前分组刷新（切 tab 后调用）。 */
+  function refreshCodexPlusPageNav(tab) {
+    const body = document.querySelector("[data-codex-plus-page-nav-body]");
+    if (!body) return;
+    const title = document.querySelector(".codex-plus-page-nav-title");
+    if (title) title.textContent = tab === codexPlusExtensionsTab ? "拓展" : "Codex++";
+    body.innerHTML = renderCodexPlusPageNavItems(tab);
+  }
+
   function renderUserScripts() {
     const enabledToggle = document.querySelector("[data-codex-user-scripts-enabled]");
     if (enabledToggle) enabledToggle.dataset.enabled = String(!!codexPlusUserScripts.enabled);
     const dirs = document.querySelector("[data-codex-user-script-dirs]");
     if (dirs) dirs.textContent = `内置：${codexPlusUserScripts.builtin_dir || "未找到"}  用户：${codexPlusUserScripts.user_dir || "未找到"}`;
+    // 左面板也要跟着刷新，否则脚本的启停/状态变化不会反映到列表上。
+    if (codexPlusActiveEntry() === "extensions") refreshCodexPlusPageNav(codexPlusExtensionsTab);
     const list = document.querySelector("[data-codex-user-script-list]");
     if (!list) return;
     if (!codexPlusUserScripts.scripts?.length) {
-      list.textContent = "未发现用户脚本。";
+      list.textContent = codexPlusUserScriptsLoaded ? "未发现用户脚本。" : "正在读取用户脚本…";
       return;
     }
     list.innerHTML = codexPlusUserScripts.scripts.map((script) => `
@@ -4187,6 +4330,7 @@
     const result = await postJson(path, requestPayload);
     if (result?.scripts) {
       codexPlusUserScripts = result;
+      codexPlusUserScriptsLoaded = true;
       renderUserScripts();
     }
   }
@@ -4313,6 +4457,7 @@
       panel.hidden = codexPlusModalTab(panel.getAttribute("data-codex-plus-panel")) !== normalized;
     });
     if (normalized === codexPlusExtensionsTab) loadUserScripts();
+    refreshCodexPlusPageNav(normalized);
   }
 
   /** 两个 rail 入口各自对应一个页面，激活态要分别判断，不能只看页面开着没有。 */
@@ -4618,6 +4763,12 @@
         selectCodexPlusTab(tabButton.getAttribute("data-codex-plus-tab"));
         return;
       }
+      // 左面板的分组导航，等价于点顶栏那个 tab（页面模式下顶栏已隐藏）。
+      const pageNav = target?.closest("[data-codex-plus-page-nav]");
+      if (pageNav) {
+        selectCodexPlusTab(pageNav.getAttribute("data-codex-plus-page-nav"));
+        return;
+      }
       if (target?.closest("[data-codex-open-devtools]")) {
         postJson("/devtools/open", {});
         return;
@@ -4707,6 +4858,8 @@
     document.body.appendChild(overlay);
     if (pageMode) {
       positionCodexPlusPage(overlay);
+      // 必须在 selectCodexPlusTab 之前建好两栏，否则刷新左面板时找不到容器。
+      installCodexPlusPageLayout(overlay, initialTab);
       if (!window.__codexPlusPageResizeHandler) {
         window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
         window.addEventListener("resize", window.__codexPlusPageResizeHandler);

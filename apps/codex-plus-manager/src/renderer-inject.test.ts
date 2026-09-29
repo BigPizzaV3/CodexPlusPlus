@@ -229,6 +229,39 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /selectCodexPlusTab\(initialTab\);\s*\/\/[^]*?if \(pageMode\) setCodexPlusSidebarNavActive\(true, codexPlusActiveEntry\(\) \|\| "home"\);/);
   });
 
+  it("gives the page mode a two-column layout with its own left panel", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function installCodexPlusPageLayout\(overlay, tab\)/);
+    assert.match(renderer, /function refreshCodexPlusPageNav\(tab\)/);
+    assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
+    // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
+    assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
+    assert.match(renderer, /nav\.className = "codex-plus-page-nav"/);
+    assert.match(renderer, /main\.className = "codex-plus-page-main"/);
+    // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
+    // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
+    assert.match(renderer, /main\.appendChild\(body\)/);
+    // 页面模式下顶栏 tab 由左面板接管，必须隐藏。
+    assert.match(renderer, /\.\$\{codexPlusPageClass\} \.codex-plus-tabs \{ display: none; \}/);
+    // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
+    assert.match(renderer, /installCodexPlusPageLayout\(overlay, initialTab\);[\s\S]{0,900}selectCodexPlusTab\(initialTab\);/);
+    // 左面板分组导航等价于点顶栏 tab。
+    assert.match(renderer, /const pageNav = target\?\.closest\("\[data-codex-plus-page-nav\]"\)/);
+    assert.match(renderer, /selectCodexPlusTab\(pageNav\.getAttribute\("data-codex-plus-page-nav"\)\)/);
+  });
+
+  it("lists user scripts in the 拓展 page left panel", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function renderCodexPlusExtensionsNav\(\)/);
+    // 点击复用已有的 data-codex-user-script-key 事件委托，不另起一条路径。
+    assert.match(renderer, /data-codex-user-script-key="\$\{escapeHtml\(script\.key\)\}"/);
+    assert.match(renderer, /codex-plus-page-nav-item-state/);
+    // 脚本启停/状态变化要同步到左面板。
+    assert.match(renderer, /if \(codexPlusActiveEntry\(\) === "extensions"\) refreshCodexPlusPageNav\(codexPlusExtensionsTab\);/);
+  });
+
   it("does not install Codex++ UI in embedded browser documents", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
