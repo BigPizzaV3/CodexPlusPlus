@@ -255,11 +255,52 @@ describe("renderer injection header compatibility", () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /function renderCodexPlusExtensionsNav\(\)/);
-    // 点击复用已有的 data-codex-user-script-key 事件委托，不另起一条路径。
-    assert.match(renderer, /data-codex-user-script-key="\$\{escapeHtml\(script\.key\)\}"/);
+    // 点左面板的行 = 选中（右侧看详情），不直接切开关——
+    // 开关移到详情页，避免点行就误触发启停。
+    assert.match(renderer, /data-codex-extensions-select="installed:\$\{escapeHtml\(entry\.key\)\}"/);
+    assert.match(renderer, /data-codex-extensions-select="market:\$\{escapeHtml\(entry\.key\)\}"/);
     assert.match(renderer, /codex-plus-page-nav-item-state/);
-    // 脚本启停/状态变化要同步到左面板。
-    assert.match(renderer, /if \(codexPlusActiveEntry\(\) === "extensions"\) refreshCodexPlusPageNav\(codexPlusExtensionsTab\);/);
+    // 每个条目都有图标，没有自带图标的用默认字形。
+    assert.match(renderer, /codex-plus-page-nav-item-icon/);
+    assert.match(renderer, /codexPlusDefaultExtensionIconPath/);
+    // 脚本启停/状态变化要同步到左面板与详情。
+    assert.match(renderer, /if \(codexPlusActiveEntry\(\) === "extensions"\) refreshCodexPlusExtensionsView\(\);/);
+  });
+
+  it("shows a VSCode-style detail pane for the selected 拓展", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function renderCodexPlusExtensionsDetail\(\)/);
+    assert.match(renderer, /data-codex-plus-extensions-detail="true"/);
+    assert.match(renderer, /function codexPlusExtensionsSelectionDetail\(\)/);
+    // 详情里给已安装的开关（复用 user-script-key 委托）与卸载入口。
+    assert.match(renderer, /data-codex-extensions-uninstall=/);
+    assert.match(renderer, /function uninstallUserScript\(key\)/);
+    assert.match(renderer, /postJson\("\/user-scripts\/delete", \{ key \}\)/);
+    // 内置脚本在只读目录里，只给用户脚本提供卸载。
+    assert.match(renderer, /if \(local\?\.source === "user"\)/);
+    // 市场条目在详情里也能直接安装。
+    assert.match(renderer, /codex-plus-extensions-detail-primary/);
+    // 选中项要高亮。
+    assert.match(renderer, /data-active="\$\{String\(selected\)\}"/);
+  });
+
+  it("gives 拓展 a searchable 已安装 / 市场 分组视图", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /data-codex-extensions-search="true"/);
+    assert.match(renderer, /function refreshCodexPlusExtensionsView\(\)/);
+    assert.match(renderer, /function codexPlusExtensionsEntries\(\)/);
+    assert.match(renderer, /function loadScriptMarket\(/);
+    // 市场走 bridge 的两个新路由。
+    assert.match(renderer, /postJson\("\/script-market\/list", \{\}\)/);
+    assert.match(renderer, /postJson\("\/script-market\/install", \{ id \}\)/);
+    // 空分组要留着显示占位（加载中/加载失败），只在搜索无匹配时才省略——
+    // 否则「正在读取脚本市场…」和错误提示会被一起藏掉，面板全空。
+    assert.match(renderer, /if \(!entries\.length && searching\) return "";/);
+    assert.doesNotMatch(renderer, /if \(!entries\.length && \(searching \|\| !count\)\) return "";/);
+    // 搜索重绘后要把焦点放回输入框，否则每敲一个字就断。
+    assert.match(renderer, /next\.setSelectionRange\(next\.value\.length, next\.value\.length\)/);
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {
@@ -1082,5 +1123,84 @@ describe("renderer injection app-server model request patch", () => {
 
     assert.equal(harness.sweeps(), 1);
     assert.deepEqual(harness.diagnostics(), ["model_app_server_request_patch_installed"]);
+  });
+});
+
+// renderer-inject.js 现在是「分片源码 + 生成产物」：真正的源码在
+// assets/inject/renderer-inject/*.js，产物是拼回去的单体文件，供 assets.rs 的
+// include_str! 和本文件的大量按路径断言消费。
+// 这组用例防止有人只改产物、不回改分片，让两边悄悄分叉。
+describe("renderer inject 分片与产物一致", () => {
+  const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
+  const artifactPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  async function assembleFromFragments(): Promise<{ source: string; names: string[] }> {
+    const manifest = JSON.parse(
+      await readFile(new URL("manifest.json", fragmentDir), "utf8"),
+    ) as { fragments: Array<{ name: string; description?: string }> };
+    assert.ok(
+      Array.isArray(manifest.fragments) && manifest.fragments.length > 0,
+      "manifest.json 必须有 fragments",
+    );
+    const bodies = await Promise.all(
+      manifest.fragments.map(async (fragment) => {
+        assert.ok(fragment.name, "分片必须带 name");
+        const body = await readFile(new URL(fragment.name, fragmentDir), "utf8");
+        // 每片以换行收尾，直接相接才能还原原始行结构；漏了会让两处声明粘连。
+        assert.ok(body.endsWith("\n"), `分片 ${fragment.name} 未以换行结尾`);
+        return body;
+      }),
+    );
+    return { source: bodies.join(""), names: manifest.fragments.map((f) => f.name) };
+  }
+
+  it("分片按 manifest 顺序拼接后与产物逐字节一致", async () => {
+    const { source, names } = await assembleFromFragments();
+    const artifact = await readFile(artifactPath, "utf8");
+    assert.equal(
+      source,
+      artifact,
+      `产物与分片不一致（分片 ${names.length} 个）。` +
+        "改分片后请跑 node scripts/assemble-renderer-inject.mjs 重新组装。",
+    );
+  });
+
+  it("拼接结果是完整可解析的单个 IIFE", async () => {
+    const { source } = await assembleFromFragments();
+    assert.ok(source.startsWith("(() => {\n"), "必须以 IIFE 开头");
+    assert.ok(source.includes("\n})();\n"), "必须包含主 IIFE 的收尾");
+    // 语法解析（不执行）能抓出分片切坏造成的括号不匹配。
+    assert.doesNotThrow(() => new Function(source));
+  });
+
+  it("测试辅助依赖的锚点仍落在同一个分片里且顺序不变", async () => {
+    // installRendererStyle() 用 indexOf 划区间，靠这两个标记定位。
+    // 它们一旦被拆到不同分片、或前后顺序反转，helper 会静默取到空区间。
+    const { source } = await assembleFromFragments();
+    const start = source.indexOf("  function installStyle()");
+    const end = source.indexOf("\n  function defaultCodexPlusSettings", start);
+    assert.ok(start >= 0, "找不到 installStyle 锚点");
+    assert.ok(end > start, "defaultCodexPlusSettings 必须排在 installStyle 之后");
+  });
+
+  it("拓展列表渲染不裸取 entry.item", async () => {
+    // 已安装条目的形状是 { kind, key, name, meta, enabled, script }，没有 item；
+    // 只有市场条目才有。裸取 entry.item.description 会在列表里只要有任意一个
+    // 已安装脚本时就抛 TypeError，整块渲染中断，左面板停在「正在读取…」占位。
+    // 已安装条目要走 codexPlusExtensionMarketItem(entry) 按 market_id 回查。
+    const { source } = await assembleFromFragments();
+    const openingTag = source.indexOf("  function renderCodexPlusExtensionsNav()");
+    const closingTag = source.indexOf("\n  /** 左面板内容变了就整块重绘", openingTag);
+    assert.ok(openingTag >= 0, "找不到 renderCodexPlusExtensionsNav");
+    assert.ok(closingTag > openingTag, "找不到函数结束位置");
+    const body = source.slice(openingTag, closingTag);
+    assert.ok(
+      !/entry\.item\s*\./.test(body),
+      "itemHtml 里出现了不带可选链的 entry.item.*，会在已安装条目上抛 TypeError",
+    );
+    assert.ok(
+      body.includes("codexPlusExtensionMarketItem(entry)"),
+      "itemHtml 应该用 codexPlusExtensionMarketItem(entry) 解析图标与简介来源",
+    );
   });
 });

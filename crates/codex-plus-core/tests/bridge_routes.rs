@@ -55,6 +55,8 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
         ),
         ("/zed-remote/projects", json!({})),
+        ("/script-market/list", json!({})),
+        ("/script-market/install", json!({"id": "codex-relay-balance"})),
         (
             "/zed-remote/remember-project",
             json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
@@ -814,6 +816,9 @@ async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_
         homepage: "https://example.com/demo".to_string(),
         script_url: "https://example.com/demo.js".to_string(),
         sha256: String::new(),
+        requirements: Vec::new(),
+        limitations: Vec::new(),
+        icon: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -1033,6 +1038,9 @@ fn user_script_inventory_includes_market_metadata() {
             homepage: "https://example.com/demo".to_string(),
             script_url: "https://example.com/demo.js".to_string(),
             sha256: String::new(),
+            requirements: Vec::new(),
+            limitations: Vec::new(),
+            icon: String::new(),
         })
         .unwrap();
 
@@ -1070,6 +1078,9 @@ fn install_market_script_writes_file_and_records_metadata() {
         homepage: "https://example.com/demo".to_string(),
         script_url: "https://example.com/demo.js".to_string(),
         sha256: String::new(),
+        requirements: Vec::new(),
+        limitations: Vec::new(),
+        icon: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -1108,6 +1119,9 @@ fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() 
         homepage: String::new(),
         script_url: "https://example.com/demo.js".to_string(),
         sha256: "0000".to_string(),
+        requirements: Vec::new(),
+        limitations: Vec::new(),
+        icon: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")

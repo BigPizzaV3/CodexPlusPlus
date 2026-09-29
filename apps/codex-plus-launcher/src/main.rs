@@ -929,6 +929,22 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         codex_plus_core::user_scripts::reload_scripts_at(&websocket_url, &self.user_scripts).await
     }
 
+    async fn script_market_list(&self) -> anyhow::Result<Value> {
+        codex_plus_core::script_market::list_market_scripts(&self.user_scripts).await
+    }
+
+    async fn script_market_install(&self, payload: Value) -> anyhow::Result<Value> {
+        let id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if id.is_empty() {
+            anyhow::bail!("脚本 id 不能为空");
+        }
+        codex_plus_core::script_market::install_market_script_by_id(&self.user_scripts, id).await
+    }
+
     async fn open_devtools(&self) -> anyhow::Result<Value> {
         let debug_port = *self.debug_port.lock().unwrap();
         let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
