@@ -102,6 +102,8 @@ The manager's About page can check and start updates. When the silent launcher f
 - Codex++ state and logs: `~/.codex-session-delete/`
 - Provider Sync backups: `~/.codex/backups_state/provider-sync`
 
+`~/.codex` above refers to the Codex home directory: it follows the `CODEX_HOME` environment variable when set, and defaults to `.codex` under the user profile otherwise.
+
 ## FAQ
 
 ### The Codex++ menu does not appear

@@ -188,6 +188,8 @@ Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程
 
 ## 数据位置
 
+以下 `~/.codex` 均指 Codex 主目录：设置了 `CODEX_HOME` 环境变量时以该目录为准，否则为用户目录下的 `.codex`。
+
 - Codex 配置：`~/.codex/config.toml`
 - Codex 登录状态：`~/.codex/auth.json`
 - Codex 本地数据库：优先读取 `~/.codex/sqlite/*.db`，旧版回退到 `~/.codex/state_5.sqlite`

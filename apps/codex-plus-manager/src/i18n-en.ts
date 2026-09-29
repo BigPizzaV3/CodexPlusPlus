@@ -443,7 +443,7 @@ export const EN_PLAIN: Record<string, string> = {
   "切换 thread 时恢复上一次浏览位置。": "Restore the last scroll position when switching threads.",
   "切换中": "Switching",
   "切换主题": "Toggle theme",
-  "切换到此供应商时会写入 ~/.codex/auth.json": "Switching to this provider writes ~/.codex/auth.json",
+  "切换到此供应商时会写入 Codex 主目录的 auth.json": "Switching to this provider writes auth.json under the Codex home directory",
   "切换到此供应商时会写入的预览；上下文开关变化会立即反映": "Preview of what gets written when switching to this provider; context toggles are reflected immediately",
   "切换到中文": "Switch to Chinese",
   "切换到英文": "Switch to English",
@@ -609,8 +609,8 @@ export const EN_PLAIN: Record<string, string> = {
   "当前为兼容增强模式，插件市场解锁不会启用；其他页面功能仍可用。":
     "Currently in compatible enhancement mode; plugin marketplace unlock is not enabled, but other page features still work.",
   "当前会话": "Current session",
-  "当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档":
-    "Currently in use: backfilled from ~/.codex/auth.json when opened; saving stores it as this provider's auth archive",
+  "当前使用中：打开时从 Codex 主目录的 auth.json 回填，保存后会作为此供应商 auth 存档":
+    "Currently in use: backfilled from auth.json under the Codex home directory when opened; saving stores it as this provider's auth archive",
   "当前供应商 config.toml 里没有可提取的通用配置。": "The current provider's config.toml has no extractable common config.",
   "当前供应商切换后会写入的预览；上下文开关变化会立即反映": "Preview of what the current provider writes after switching; context toggles are reflected immediately",
   "当前供应商还没有完整 config.toml / API Key 存档。": "The current provider doesn't have a complete config.toml / API Key archive yet.",

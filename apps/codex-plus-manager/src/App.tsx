@@ -9248,8 +9248,8 @@ function RelayFileEditors({
             <span>{isActive
               ? profile.relayMode === "pureApi"
                 ? t("当前使用中：保留此供应商的 auth 存档，避免 Codex 登录密钥覆盖供应商密钥")
-                : t("当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档")
-              : t("切换到此供应商时会写入 ~/.codex/auth.json")}</span>
+                : t("当前使用中：打开时从 Codex 主目录的 auth.json 回填，保存后会作为此供应商 auth 存档")
+              : t("切换到此供应商时会写入 Codex 主目录的 auth.json")}</span>
           </div>
         </div>
         <SyncedTextarea
