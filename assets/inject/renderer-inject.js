@@ -410,7 +410,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "20";
+  const codexDeleteStyleVersion = "21";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1037,6 +1037,24 @@
         margin-left: 0;
         width: 6px;
         height: 6px;
+      }
+      /*
+       * 我们的页面是叠加在 Codex 之上的，Codex 并不知道，所以它自己那个
+       * destination 的选中态会一直留着，看起来像 rail 上同时亮两个。
+       * 页面打开时给根节点打标记，用 CSS 把原生选中项压成未选中；
+       * 关掉页面即移除标记，原生状态自动恢复——比改它的按钮属性稳，
+       * 不会和 React 的重渲染打架。
+       * 颜色取自当前主题下真实未选中项（见 syncCodexPlusRailNativeSelection），
+       * 主题切换时下次同步会重算。
+       */
+      html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] {
+        color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
+      }
+      html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"]::before {
+        opacity: 0 !important;
+      }
+      html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] * {
+        color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
       }
       .${codexPlusPageClass} {
         position: fixed;
@@ -4489,6 +4507,29 @@
       if (on) railButton.setAttribute("data-selected", "");
       else railButton.removeAttribute("data-selected");
     });
+    syncCodexPlusRailNativeSelection();
+  }
+
+  /**
+   * 我们的页面是叠加在 Codex 上的，Codex 不知道，所以它自己那个 destination
+   * 的选中态会一直留着，表现为 rail 上同时亮两个。页面打开时给根节点打标记，
+   * 由 CSS 把原生选中项压成未选中；关掉即移除标记，原生状态自动恢复。
+   *
+   * 未选中的颜色取自当前主题下真实的未选中项，避免把深浅色写死。
+   */
+  function syncCodexPlusRailNativeSelection() {
+    const root = document.documentElement;
+    if (!root) return;
+    if (!document.querySelector(`.${codexPlusPageClass}`)) {
+      root.removeAttribute("data-codex-plus-page-open");
+      root.style.removeProperty("--codex-plus-rail-dim");
+      return;
+    }
+    const rail = document.querySelector(codexPlusRailSelector);
+    const unselected = rail?.querySelector(`${codexPlusRailDestinationSelector}:not([aria-current="page"])`);
+    const dim = unselected ? getComputedStyle(unselected).color : "";
+    if (dim) root.style.setProperty("--codex-plus-rail-dim", dim);
+    root.setAttribute("data-codex-plus-page-open", "");
   }
 
   function positionCodexPlusPage(overlay) {
