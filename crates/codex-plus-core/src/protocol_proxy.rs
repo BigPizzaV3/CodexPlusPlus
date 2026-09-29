@@ -33,6 +33,7 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
+const MAX_COOLDOWN_RETRIES: usize = 3;
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -51,6 +52,10 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+
+fn should_retry_after_cooldown(retries: usize) -> bool {
+    retries < MAX_COOLDOWN_RETRIES
+}
 
 /// codex v2 远程压缩请求在 input 末尾携带的控制 item（openai/codex compact_remote_v2）。
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
@@ -1105,7 +1110,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     retry_after,
                 )
                 .await;
-                if cooldown_started {
+                if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
                     cooldown_retries = cooldown_retries.saturating_add(1);
                     drop(channel_permit);
                     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1498,7 +1503,7 @@ pub async fn open_chat_completions_proxy_request(
                 retry_after,
             )
             .await;
-            if cooldown_started {
+            if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
                 cooldown_retries = cooldown_retries.saturating_add(1);
                 drop(channel_permit);
                 let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -5909,5 +5914,19 @@ mod relay_custom_header_tests {
             request.headers().get("authorization").unwrap(),
             "Bearer explicit"
         );
+    }
+}
+
+#[cfg(test)]
+mod channel_cooldown_retry_tests {
+    use super::*;
+
+    #[test]
+    fn cooldown_allows_three_automatic_retries_only() {
+        assert!(should_retry_after_cooldown(0));
+        assert!(should_retry_after_cooldown(1));
+        assert!(should_retry_after_cooldown(2));
+        assert!(!should_retry_after_cooldown(3));
+        assert!(!should_retry_after_cooldown(usize::MAX));
     }
 }

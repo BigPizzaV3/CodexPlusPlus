@@ -7898,7 +7898,7 @@ function RelayProfileEditor({
               />
               <span>
                 <strong>{t("启用错误冷却")}</strong>
-                <small>{t("命中下方状态码后，当前供应商暂停请求至少 30 秒并自动继续；上游 Retry-After 更长时优先使用上游时间。")}</small>
+                <small>{t("命中下方状态码后，当前供应商暂停请求至少 30 秒并自动继续；最多自动重试 3 次，3 次仍失败则返回错误；上游 Retry-After 更长时优先使用上游时间。")}</small>
               </span>
               <ToggleVisual />
             </label>
