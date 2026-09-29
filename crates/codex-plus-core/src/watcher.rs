@@ -755,7 +755,7 @@ fn find_launcher_processes() -> Vec<u32> {
 }
 
 #[cfg(target_os = "macos")]
-fn find_macos_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
+pub(crate) fn find_macos_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
     let Ok(output) = std::process::Command::new("ps")
         .args(["-axo", "pid=,args="])
         .output()

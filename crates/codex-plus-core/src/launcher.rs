@@ -69,8 +69,11 @@ const MACOS_DEBUG_TAKEOVER_INTERVAL_MS: u64 = 100;
 /// 不能像普通 helper 端口那样临时换一个空闲的，否则 Codex CLI 会连到没人监听的地址。
 /// 而管理器的「重启」是先强杀旧 launcher 再拉新的，旧 helper 交还监听要一小会儿；
 /// 过去这里一次 bind 失败就整个启动中止，用户侧就是重启必失败、直接双击 exe 反而正常（issue #1933）。
-/// 所以固定端口下给前任一个让位的窗口，只对「端口被占用」重试。
+/// 所以固定端口下给前任一个让位的窗口。端口被占用，以及 Windows 在旧进程
+/// 退出瞬间暂时返回的 10013，都放在这一段里重试。窗口结束仍是 10013，
+/// 才当成端口被系统永久保留。
 const HELPER_BIND_RETRY_TIMEOUT_MS: u64 = 6_000;
+const PROTOCOL_PROXY_BIND_RETRY_TIMEOUT_MS: u64 = 10_000;
 const HELPER_BIND_RETRY_INTERVAL_MS: u64 = 200;
 
 /// Asynchronous callback used by the bridge watchdog to restore a launcher-specific bridge.
@@ -328,7 +331,9 @@ fn error_is_address_in_use(error: &anyhow::Error) -> bool {
 /// 判断错误链里是不是「端口被系统禁止绑定」（issue #2189）。
 /// Windows 上 Hyper-V/WSL 会在开机时把动态端口范围（49152-65535）里的一段段端口
 /// 划进排除区间，落在区间里的端口 bind 报 os error 10013（PermissionDenied），
-/// 和「被进程占用」不是一回事：重试永远失败，用户需要的是对症指引。
+/// 和「被进程占用」不是一回事。真正被排除区间划走时重试不会成功，
+/// 但重启瞬间旧套接字未放开也会暂时返回同一个错误，所以只有固定端口会在
+/// 有限窗口内重试，窗口结束后仍失败才给出对症指引。
 fn error_is_bind_forbidden(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
@@ -385,11 +390,13 @@ fn describe_helper_bind_failure(
     error
 }
 
-/// 端口被占用时按 `interval_ms` 重试启动 helper，直到成功或超过 `timeout_ms`。
+/// 按 `interval_ms` 重试启动 helper，直到成功或超过 `timeout_ms`。
+/// 端口被占用会重试；`retry_forbidden` 为真时，暂时的 10013 也放在同一段等待里。
 async fn start_helper_waiting_for_busy_port<F, Fut>(
     mut start: F,
     timeout_ms: u64,
     interval_ms: u64,
+    retry_forbidden: bool,
 ) -> anyhow::Result<()>
 where
     F: FnMut() -> Fut,
@@ -414,7 +421,9 @@ where
             }
             Err(error) => error,
         };
-        if !error_is_address_in_use(&error) || waited_ms >= timeout_ms {
+        let retryable = error_is_address_in_use(&error)
+            || (retry_forbidden && error_is_bind_forbidden(&error));
+        if !retryable || waited_ms >= timeout_ms {
             return Err(error);
         }
         tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
@@ -423,10 +432,54 @@ where
 }
 
 fn helper_bind_retry_timeout_ms(protocol_proxy_enabled: bool, is_macos: bool) -> u64 {
-    if protocol_proxy_enabled || is_macos {
+    if protocol_proxy_enabled {
+        PROTOCOL_PROXY_BIND_RETRY_TIMEOUT_MS
+    } else if is_macos {
         HELPER_BIND_RETRY_TIMEOUT_MS
     } else {
         0
+    }
+}
+
+pub fn protocol_proxy_bind_retry_timeout_ms() -> u64 {
+    PROTOCOL_PROXY_BIND_RETRY_TIMEOUT_MS
+}
+
+pub fn helper_bind_retry_interval_ms() -> u64 {
+    HELPER_BIND_RETRY_INTERVAL_MS
+}
+
+/// 这次启动如果必须占用写进 `config.toml` 的协议代理端口，返回那个端口。
+/// 不需要协议代理时返回 `None`，调用方不应去等一个用不到的端口。
+pub fn required_fixed_helper_port(settings: &BackendSettings) -> Option<u16> {
+    let enabled = relay_protocol_proxy_enabled(settings)
+        || remote_control_provider_proxy_enabled(settings);
+    enabled.then(crate::protocol_proxy::protocol_proxy_port)
+}
+
+/// 在拉起新 launcher 之前确认固定端口已经能绑定。
+/// `probe` 成功表示端口已释放；占用和暂时的 10013 都继续等，其它错误立即返回。
+pub fn wait_for_fixed_helper_port(
+    port: u16,
+    timeout_ms: u64,
+    interval_ms: u64,
+    mut probe: impl FnMut(u16) -> std::io::Result<()>,
+    mut sleep: impl FnMut(u64),
+) -> anyhow::Result<()> {
+    let mut waited_ms = 0u64;
+    loop {
+        match probe(port) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                let retryable = error_is_address_in_use(&error) || error_is_bind_forbidden(&error);
+                if !retryable || waited_ms >= timeout_ms {
+                    return Err(describe_helper_bind_failure(error, port, true, timeout_ms));
+                }
+                sleep(interval_ms);
+                waited_ms = waited_ms.saturating_add(interval_ms);
+            }
+        }
     }
 }
 
@@ -536,6 +589,7 @@ where
                 || hooks.start_helper(helper_port),
                 bind_retry_timeout_ms,
                 HELPER_BIND_RETRY_INTERVAL_MS,
+                protocol_proxy_enabled,
             )
             .await
             .map_err(|error| {
@@ -1153,19 +1207,12 @@ impl LaunchHooks for DefaultLaunchHooks {
                 }
             }
         }
-        let mut empty_streak = 0u32;
-        loop {
-            let has_codex_process = !crate::watcher::find_codex_processes().is_empty();
-            let cdp_available = should_probe_launcher_cdp(cfg!(windows), has_codex_process)
-                && crate::cdp::endpoint_available(debug_port);
-            if !launcher_target_alive(has_codex_process, cdp_available) {
-                empty_streak = empty_streak.saturating_add(1);
-                if empty_streak >= 3 {
-                    break;
-                }
-            } else {
-                empty_streak = 0;
-            }
+        // Another Codex process must not keep this launcher holding the native
+        // browser monitor. Directly owned processes and this debug port can.
+        while owned_launcher_target_alive(
+            launcher_owned_process_alive(launch, debug_port),
+            crate::cdp::endpoint_available(debug_port),
+        ) {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
         Ok(())
@@ -2753,12 +2800,26 @@ pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
     previous.is_some_and(|previous| previous != current)
 }
 
-fn launcher_target_alive(has_codex_process: bool, cdp_available: bool) -> bool {
-    has_codex_process || cdp_available
+fn owned_launcher_target_alive(owned_process_alive: bool, debug_port_open: bool) -> bool {
+    owned_process_alive || debug_port_open
 }
 
-fn should_probe_launcher_cdp(is_windows: bool, has_codex_process: bool) -> bool {
-    is_windows && !has_codex_process
+/// macOS `open` is not the app's parent, so its tracked child exits immediately.
+/// Match the exact debug port in the app process command line instead.
+#[cfg(target_os = "macos")]
+fn launcher_owned_process_alive(launch: &CodexLaunch, debug_port: u16) -> bool {
+    matches!(
+        launch,
+        CodexLaunch::Process {
+            wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+            ..
+        }
+    ) && !crate::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launcher_owned_process_alive(_launch: &CodexLaunch, _debug_port: u16) -> bool {
+    false
 }
 
 fn should_reinject_after_health_result(
@@ -3492,15 +3553,14 @@ mod tests {
     }
 
     #[test]
-    fn launcher_stays_alive_while_injected_cdp_endpoint_is_available() {
-        assert!(launcher_target_alive(false, true));
+    fn owned_launcher_exit_follows_its_debug_port_not_other_codex_processes() {
+        assert!(owned_launcher_target_alive(false, true));
+        assert!(!owned_launcher_target_alive(false, false));
     }
 
     #[test]
-    fn launcher_only_probes_cdp_for_unrecognized_windows_processes() {
-        assert!(should_probe_launcher_cdp(true, false));
-        assert!(!should_probe_launcher_cdp(true, true));
-        assert!(!should_probe_launcher_cdp(false, false));
+    fn owned_launcher_waits_for_its_codex_process_when_cdp_is_unavailable() {
+        assert!(owned_launcher_target_alive(true, false));
     }
 
     #[test]
@@ -3576,13 +3636,115 @@ mod tests {
     fn helper_bind_retry_covers_fixed_proxy_ports_and_macos_restarts() {
         assert_eq!(
             helper_bind_retry_timeout_ms(true, false),
-            HELPER_BIND_RETRY_TIMEOUT_MS
+            PROTOCOL_PROXY_BIND_RETRY_TIMEOUT_MS
         );
         assert_eq!(
             helper_bind_retry_timeout_ms(false, true),
             HELPER_BIND_RETRY_TIMEOUT_MS
         );
         assert_eq!(helper_bind_retry_timeout_ms(false, false), 0);
+        assert_eq!(
+            helper_bind_retry_timeout_ms(true, true),
+            PROTOCOL_PROXY_BIND_RETRY_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn fixed_helper_port_is_required_only_when_protocol_proxy_is_used() {
+        assert_eq!(required_fixed_helper_port(&BackendSettings::default()), None);
+
+        let official_mix = BackendSettings {
+            active_relay_id: "official-mix".to_string(),
+            relay_profiles: vec![crate::settings::RelayProfile {
+                id: "official-mix".to_string(),
+                relay_mode: crate::settings::RelayMode::Official,
+                official_mix_api_key: true,
+                protocol: crate::settings::RelayProtocol::Responses,
+                ..crate::settings::RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        assert_eq!(
+            required_fixed_helper_port(&official_mix),
+            Some(crate::protocol_proxy::protocol_proxy_port())
+        );
+    }
+
+    #[test]
+    fn fixed_port_wait_retries_transient_forbidden_and_stops_on_other_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("diagnostic.log");
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path));
+        struct RestoreLog;
+        impl Drop for RestoreLog {
+            fn drop(&mut self) {
+                crate::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+            }
+        }
+        let _restore = RestoreLog;
+
+        let forbidden_attempts = std::cell::Cell::new(0u32);
+        let sleeps = std::cell::Cell::new(0u32);
+        wait_for_fixed_helper_port(
+            57321,
+            400,
+            200,
+            |_| {
+                let attempt = forbidden_attempts.get();
+                forbidden_attempts.set(attempt + 1);
+                if attempt < 2 {
+                    Err(std::io::Error::from_raw_os_error(10013))
+                } else {
+                    Ok(())
+                }
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+        )
+        .unwrap();
+        assert_eq!(forbidden_attempts.get(), 3);
+        assert_eq!(sleeps.get(), 2);
+
+        let probes = std::cell::Cell::new(0u32);
+        let other_sleeps = std::cell::Cell::new(0u32);
+        let error = wait_for_fixed_helper_port(
+            57321,
+            10_000,
+            200,
+            |_| {
+                probes.set(probes.get() + 1);
+                Err(std::io::Error::other("simulated unrelated failure"))
+            },
+            |_| other_sleeps.set(other_sleeps.get() + 1),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert_eq!(probes.get(), 1);
+        assert_eq!(other_sleeps.get(), 0);
+        assert!(message.contains("simulated unrelated failure"), "{message}");
+        assert!(!message.contains("被其他进程占用"), "{message}");
+        assert!(!message.contains("被 Windows 保留"), "{message}");
+
+        let permanent_probes = std::cell::Cell::new(0u32);
+        let permanent_sleeps = std::cell::Cell::new(0u32);
+        let error = wait_for_fixed_helper_port(
+            57321,
+            400,
+            200,
+            |_| {
+                permanent_probes.set(permanent_probes.get() + 1);
+                Err(std::io::Error::from_raw_os_error(10013))
+            },
+            |_| permanent_sleeps.set(permanent_sleeps.get() + 1),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert_eq!(permanent_probes.get(), 3);
+        assert_eq!(permanent_sleeps.get(), 2);
+        assert!(message.contains("os error 10013"), "{message}");
+        assert!(!message.contains("被其他进程占用"), "{message}");
+        if cfg!(windows) {
+            assert!(message.contains("被 Windows 保留"), "{message}");
+        }
     }
 
     #[tokio::test]

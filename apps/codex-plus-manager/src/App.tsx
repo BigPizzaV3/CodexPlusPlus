@@ -116,6 +116,7 @@ import {
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
+import { sessionProviderForProtocol } from "./relay-session";
 import { resolveProviderName } from "./provider-name";
 import {
   providerSyncStreamPercent,
@@ -209,6 +210,7 @@ type OverviewResult = CommandResult<{
 
 type LaunchCommandResult = CommandResult<{
   launchStartedAtMs?: number;
+  nativeBrowserRestoreFailed?: boolean;
 }>;
 
 type PluginMarketplaceRepairResult = CommandResult<{
@@ -2173,7 +2175,13 @@ export function App() {
       showNotice(t("重启 Codex++"), result.message, result.status);
       return false;
     }
-    showNotice(t("重启 Codex++"), t("正在等待 Codex 重新启动…"), "accepted");
+    showNotice(
+      t("重启 Codex++"),
+      result.nativeBrowserRestoreFailed
+        ? t("原生浏览器文件恢复失败，仍会继续启动。")
+        : t("正在等待 Codex 重新启动…"),
+      result.nativeBrowserRestoreFailed ? "failed" : "accepted",
+    );
     const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
     showLaunchCompletionNotice(t("重启 Codex++"), completion);
     const succeeded = Boolean(
@@ -8298,9 +8306,13 @@ function RelayProfileEditor({
           </section>
         ) : null}
         {showApiFields ? (
-          <label className="switch-row compact relay-switch-row relay-field-standard">
+          <label
+            className={`switch-row compact relay-switch-row relay-field-standard${profile.protocol === "chatCompletions" ? "" : " is-disabled"}`}
+            title={profile.protocol === "chatCompletions" ? undefined : t("仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。")}
+          >
             <input
               checked={profile.standardOpenaiProtocol}
+              disabled={profile.protocol !== "chatCompletions"}
               onChange={(event) =>
                 updateDraft({ standardOpenaiProtocol: event.currentTarget.checked })
               }
@@ -11631,7 +11643,15 @@ function applyRelayProfilePatchToFiles(
   patch: Partial<RelayProfile>,
   options: { allowGenerateFiles?: boolean } = {},
 ): RelayProfile {
-  let next: RelayProfile = { ...profile, ...patch };
+  const protocol = patch.protocol ?? profile.protocol;
+  const sessionProvider = "sessionProvider" in patch
+    ? normalizeRelaySessionProvider(patch.sessionProvider)
+    : relaySessionProvider(profile);
+  const compatibleSession = sessionProviderForProtocol(sessionProvider, protocol);
+  const normalizedPatch = compatibleSession === sessionProvider
+    ? patch
+    : { ...patch, sessionProvider: compatibleSession };
+  let next: RelayProfile = { ...profile, ...normalizedPatch };
   if (isAggregateRelayProfile(next)) {
     return normalizeAggregateRelayProfile(next, null);
   }
