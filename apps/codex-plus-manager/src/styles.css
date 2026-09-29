@@ -8080,6 +8080,43 @@ select {
   padding-top: 14px;
 }
 
+.settings-content .check-row > span {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-content .check-row > span small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.channel-status-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.channel-status-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.channel-status-chip {
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 8px;
+}
+
+.channel-status-chip:hover {
+  border-color: hsl(var(--primary));
+}
+
 .settings-content .stepwise-settings-block {
   display: grid;
   gap: 10px;
