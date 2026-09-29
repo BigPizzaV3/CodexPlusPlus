@@ -279,7 +279,7 @@ mod tests {
         let key = test_key();
         let profile = enabled_profile();
         let first_permit = acquire(&key, &profile).await;
-        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
         let waiter_key = key.clone();
         let waiter_profile = profile.clone();
         let waiter = tokio::spawn(async move {
