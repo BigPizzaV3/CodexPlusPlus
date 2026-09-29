@@ -4492,11 +4492,14 @@
     if (!overlay?.classList?.contains(codexPlusPageClass)) return;
     const sidebar = document.querySelector("aside.app-shell-left-panel");
     const rect = sidebar?.getBoundingClientRect?.();
-    // 新版把图标栏放在宽面板外侧（_PageSurface_ 用 var(--app-shell-navigation-rail-width) 做 inset）。
-    // 取两者的较大值，这样无论 aside 是否已经包含图标栏都不会盖住它。
     const rail = document.querySelector(codexPlusRailSelector);
-    const railWidth = rail?.getBoundingClientRect?.().width ?? 0;
-    const left = Math.max(0, rect && rect.width > 0 ? Math.max(0, rect.right) : 0, railWidth);
+    const railRect = rail?.getBoundingClientRect?.();
+    // 新版：页面要顶替原生侧边栏——从图标栏右边界起铺满，把宽面板整个盖住，
+    // 而不是并排在其右侧多出一列（那样会变成「图标栏 + 会话列表 + 我们的面板」三段）。
+    // 旧版没有图标栏，我们的入口就在 aside 内部，此时退回 aside 右边界。
+    const left = railRect && railRect.width > 0
+      ? Math.max(0, railRect.right)
+      : (rect && rect.width > 0 ? Math.max(0, rect.right) : 0);
     overlay.style.left = `${left}px`;
     overlay.style.top = "0px";
   }
