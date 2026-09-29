@@ -407,6 +407,7 @@ pub struct UpstreamProxyResponse {
     /// 响应必须由代理重组为单个 `compaction` 输出项。
     pub compaction: bool,
     pub response: reqwest::Response,
+    pub(crate) _channel_permit: Option<crate::channel_protection::ChannelPermit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -985,6 +986,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     let mut is_compaction_request;
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
+        let channel_key = crate::channel_protection::key_for_relay(&relay);
+        let channel_permit =
+            crate::channel_protection::acquire(&channel_key, &settings).await;
         let model_override = aggregate_upstream_model_override(&settings, &relay);
         let (endpoint, upstream_body, wire_api, compaction) = upstream_request_parts(
             &relay,
@@ -1032,6 +1036,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         {
             Ok(upstream) => upstream,
             Err(error) => {
+                drop(channel_permit);
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "protocol_proxy.upstream_request_failed",
                     json!({
@@ -1060,6 +1065,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             }
         };
         let status_code = upstream.status().as_u16();
+        let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "protocol_proxy.upstream_response",
             json!({
@@ -1090,6 +1096,15 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             .unwrap_or("")
             .to_string();
         if (200..300).contains(&status_code) || !has_more_candidates {
+            if !(200..300).contains(&status_code) {
+                crate::channel_protection::mark_failure(
+                    &channel_key,
+                    &settings,
+                    status_code,
+                    retry_after,
+                )
+                .await;
+            }
             return Ok(UpstreamProxyResponse {
                 status_code,
                 is_stream: is_stream || content_type.contains("text/event-stream"),
@@ -1097,8 +1112,17 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 wire_api,
                 compaction: is_compaction_request,
                 response: upstream,
+                _channel_permit: Some(channel_permit),
             });
         }
+        crate::channel_protection::mark_failure(
+            &channel_key,
+            &settings,
+            status_code,
+            retry_after,
+        )
+        .await;
+        drop(channel_permit);
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "protocol_proxy.upstream_failover",
             json!({
@@ -1211,6 +1235,7 @@ pub async fn open_models_proxy_request(
         wire_api: UpstreamWireApi::Responses,
         compaction: false,
         response: upstream,
+        _channel_permit: None,
     })
 }
 
@@ -1261,6 +1286,7 @@ pub async fn open_audio_transcriptions_proxy_request(
         wire_api: UpstreamWireApi::AudioTranscriptions,
         compaction: false,
         response: upstream,
+        _channel_permit: None,
     })
 }
 
@@ -1393,6 +1419,7 @@ async fn open_image_proxy_request(
         wire_api,
         compaction: false,
         response: upstream,
+        _channel_permit: None,
     })
 }
 
@@ -1425,6 +1452,9 @@ pub async fn open_chat_completions_proxy_request(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let channel_key = crate::channel_protection::key_for_relay(&relay);
+    let channel_permit =
+        crate::channel_protection::acquire(&channel_key, &settings).await;
     let request = crate::http_client::proxied_client(&effective_user_agent(
         &relay.user_agent,
         original_user_agent,
@@ -1432,8 +1462,24 @@ pub async fn open_chat_completions_proxy_request(
     .post(chat_completions_url(&relay.base_url))
     .header(reqwest::header::CONTENT_TYPE, "application/json")
     .json(&request_json);
-    let upstream = with_relay_auth(request, &relay).send().await?;
+    let upstream = match with_relay_auth(request, &relay).send().await {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            drop(channel_permit);
+            return Err(error.into());
+        }
+    };
     let status_code = upstream.status().as_u16();
+    let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
+    if !(200..300).contains(&status_code) {
+        crate::channel_protection::mark_failure(
+            &channel_key,
+            &settings,
+            status_code,
+            retry_after,
+        )
+        .await;
+    }
     let content_type = upstream
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -1448,6 +1494,7 @@ pub async fn open_chat_completions_proxy_request(
         wire_api: UpstreamWireApi::ChatCompletions,
         compaction: false,
         response: upstream,
+        _channel_permit: Some(channel_permit),
     })
 }
 
