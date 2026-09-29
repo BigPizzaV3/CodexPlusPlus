@@ -1019,29 +1019,32 @@
         background: var(--token-list-hover-background, rgba(255,255,255,.08));
         color: var(--token-text-primary, inherit);
       }
-      /* 新版导航图标栏里的 Codex++ / 拓展入口：原生按钮只放图标，这里对齐它的尺寸。 */
-      #${codexPlusRailNavId},
-      #${codexPlusRailExtensionsId} {
+      /*
+       * 新版导航图标栏里的 Codex++ / 拓展 / 推荐内容入口：原生按钮只放图标，
+       * 这里对齐它的尺寸。
+       *
+       * 用 [data-codex-plus-rail] 而不是逐个列 id——早先按 id 写，加第三个入口时
+       * 漏掉了对应的选择器，那个图标容器就没有 20px 约束、撑成整个按钮宽，
+       * 表现为图标偏左不居中。
+       */
+      [data-codex-plus-rail] {
         position: relative;
         flex: 0 0 auto;
         display: flex;
         align-items: center;
         justify-content: center;
       }
-      #${codexPlusRailNavId} > button,
-      #${codexPlusRailExtensionsId} > button {
+      [data-codex-plus-rail] > button {
         position: relative;
       }
-      #${codexPlusRailNavId} .codex-plus-rail-icon,
-      #${codexPlusRailExtensionsId} .codex-plus-rail-icon {
+      [data-codex-plus-rail] .codex-plus-rail-icon {
         width: 20px;
         height: 20px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
       }
-      #${codexPlusRailNavId} .codex-plus-rail-icon svg,
-      #${codexPlusRailExtensionsId} .codex-plus-rail-icon svg {
+      [data-codex-plus-rail] .codex-plus-rail-icon svg {
         width: 19px;
         height: 19px;
         display: block;
@@ -1658,18 +1661,76 @@
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
       .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
       .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
-      .codex-plus-ad-section { display: grid; gap: 10px; margin-top: 12px; }
+      /*
+       * 推荐内容：网格卡片。
+       *
+       * 一张卡 = 图标 + 名称/简介 + 右上箭头 + 底部优惠条。用 auto-fill + minmax
+       * 让列数随宽度自适应（宽屏 4 列、窄屏递减），卡片等高对齐。
+       */
+      .codex-plus-ad-section { display: grid; gap: 12px; margin-top: 20px; }
       .codex-plus-ad-section:first-of-type { margin-top: 0; }
-      .codex-plus-ad-section-title { color: #f8fafc; font-size: 15px; margin: 0; }
-      .codex-plus-ad-list { display: grid; gap: 14px; }
-      .codex-plus-ad-card { border: 1px solid rgba(96,165,250,.26); border-radius: 16px; background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(255,255,255,.05)); box-shadow: 0 14px 36px rgba(0,0,0,.22); }
-      .codex-plus-ad-image { display: block; width: calc(100% - 28px); aspect-ratio: 16 / 5; margin: 14px 14px 0; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #080808; object-fit: cover; }
-      .codex-plus-ad-content { padding: 14px; }
-      .codex-plus-ad-title { margin: 0; overflow: hidden; color: #f8fafc; font-size: 17px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-ad-description { display: -webkit-box; margin: 6px 0 10px; overflow: hidden; color: #dbeafe; font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-height: 1.55; }
-      .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; max-height: 56px; margin-bottom: 12px; overflow: hidden; }
-      .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 13px; padding: 4px 8px; }
-      .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
+      .codex-plus-ad-section-title { color: #f8fafc; font-size: 13px; font-weight: 600; margin: 0; }
+      .codex-plus-ad-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+        gap: 12px;
+      }
+      .codex-plus-ad-card {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        border: 1px solid rgba(255,255,255,.08);
+        border-radius: 12px;
+        background: rgba(255,255,255,.02);
+        color: inherit;
+        text-decoration: none;
+        padding: 16px;
+        transition: background .12s ease, border-color .12s ease;
+      }
+      .codex-plus-ad-card:hover,
+      .codex-plus-ad-card:focus-visible {
+        border-color: rgba(255,255,255,.18);
+        background: rgba(255,255,255,.05);
+        outline: none;
+      }
+      .codex-plus-ad-main { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+      .codex-plus-ad-icon {
+        flex: 0 0 auto;
+        width: 36px;
+        height: 36px;
+        border-radius: 9px;
+        object-fit: contain;
+        background: rgba(255,255,255,.06);
+      }
+      /* 清单没给图时用名称首字占位，比空一块整齐。 */
+      .codex-plus-ad-icon-fallback {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #f3f4f6;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .codex-plus-ad-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+      .codex-plus-ad-title { overflow: hidden; color: #f8fafc; font-size: 14px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-ad-description { overflow: hidden; color: #a1a1aa; font-size: 13px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-ad-arrow { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 2px; color: #71717a; }
+      .codex-plus-ad-arrow svg { width: 14px; height: 14px; display: block; }
+      .codex-plus-ad-card:hover .codex-plus-ad-arrow,
+      .codex-plus-ad-card:focus-visible .codex-plus-ad-arrow { color: #f3f4f6; }
+      /* 底部优惠条：撑满卡片宽度，长文本截断。 */
+      .codex-plus-ad-promo {
+        display: block;
+        overflow: hidden;
+        border-radius: 8px;
+        background: rgba(255,255,255,.05);
+        color: #f5a97f;
+        font-size: 13px;
+        line-height: 1.35;
+        padding: 7px 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
       /* Keep injected surfaces on Codex's own semantic palette in both themes. */
       :root {
@@ -1830,15 +1891,29 @@
       .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
-      .codex-plus-ad-card { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); box-shadow: none; }
-      .codex-plus-ad-image { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-primary); }
+      .codex-plus-ad-card { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-secondary); }
+      .codex-plus-ad-card:hover,
+      .codex-plus-ad-card:focus-visible { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-hover); }
+      .codex-plus-ad-icon { background: var(--codex-plus-bg-hover); }
+      .codex-plus-ad-icon-fallback { color: var(--codex-plus-text); }
       .codex-plus-ad-title,
       .codex-plus-ad-section-title { color: var(--codex-plus-text); }
       .codex-plus-ad-description { color: var(--codex-plus-text-secondary); }
-      .codex-plus-ad-highlights span { border-color: var(--codex-plus-border); border-radius: var(--border-radius-sm, 6px); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text-secondary); }
-      .codex-plus-ad-link { border-radius: var(--border-radius-lg, 8px); background: var(--color-background-primary-solid, #10a37f); color: var(--color-text-on-accent, #fff); }
-      .codex-plus-ad-link:hover { background: var(--color-background-primary-solid-hover, var(--color-background-primary-solid, #10a37f)); }
-      .codex-plus-ad-empty { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); color: var(--codex-plus-text-tertiary); }
+      .codex-plus-ad-arrow { color: var(--codex-plus-text-tertiary); }
+      .codex-plus-ad-card:hover .codex-plus-ad-arrow,
+      .codex-plus-ad-card:focus-visible .codex-plus-ad-arrow { color: var(--codex-plus-text); }
+      /*
+       * 优惠条：暗底配橙色文字。
+       *
+       * 底色不能用 --codex-plus-danger-bg —— 它在当前主题下解析成浅粉（偏浅色主题
+       * 的值），压在深色卡片上非常刺眼。改成用警告色按低透明度混出来，深浅主题
+       * 都成立，也和原生「需要注意」的语义色同源。
+       */
+      .codex-plus-ad-promo {
+        background: color-mix(in srgb, var(--codex-plus-warning) 14%, transparent);
+        color: var(--codex-plus-warning);
+      }
+      .codex-plus-ad-empty { border-color: var(--codex-plus-border); color: var(--codex-plus-text-tertiary); }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
@@ -5016,22 +5091,34 @@
     return value.split(/[｜|]/, 1)[0].trim() || value;
   }
 
+  /** 推荐卡片的右上角外链箭头，跟 VSCode/Codex 的「新窗口打开」同一语义。 */
+  const codexPlusAdArrowIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 10.5 10.5 5.5"/><path d="M6.5 5.5h4v4"/></svg>';
+
   function renderCodexPlusAdGroup(type, emptyText) {
     const ads = codexPlusAds.filter((ad) => ad.type === type);
     if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
-    return ads.map((ad) => `
-      <article class="codex-plus-ad-card">
-        ${ad.image ? `<img class="codex-plus-ad-image" src="${escapeHtml(ad.image)}" alt="">` : ""}
-        <div class="codex-plus-ad-content">
-          <h3 class="codex-plus-ad-title">${escapeHtml(formatCodexPlusAdTitle(ad.title))}</h3>
-          <p class="codex-plus-ad-description">${escapeHtml(ad.description)}</p>
-          <div class="codex-plus-ad-highlights">
-            ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-          </div>
-          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">访问 ${escapeHtml(new URL(ad.url).hostname)}</a>
-        </div>
-      </article>
-    `).join("");
+    return ads.map((ad) => {
+      const name = formatCodexPlusAdTitle(ad.title);
+      // 底部那条优惠信息：取第一个亮点。没有就不渲染整条，免得留一段空白。
+      const promo = (ad.highlights || []).find(Boolean) || "";
+      // 没有配图时用名称首字当占位，比空一块更整齐。
+      const icon = ad.image
+        ? `<img class="codex-plus-ad-icon" src="${escapeHtml(ad.image)}" alt="" loading="lazy" />`
+        : `<span class="codex-plus-ad-icon codex-plus-ad-icon-fallback" aria-hidden="true">${escapeHtml(name.slice(0, 1))}</span>`;
+      return `
+        <a class="codex-plus-ad-card" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer" title="${escapeHtml(name)}">
+          <span class="codex-plus-ad-main">
+            ${icon}
+            <span class="codex-plus-ad-text">
+              <span class="codex-plus-ad-title">${escapeHtml(name)}</span>
+              <span class="codex-plus-ad-description">${escapeHtml(ad.description)}</span>
+            </span>
+            <span class="codex-plus-ad-arrow" aria-hidden="true">${codexPlusAdArrowIcon}</span>
+          </span>
+          ${promo ? `<span class="codex-plus-ad-promo">${escapeHtml(promo)}</span>` : ""}
+        </a>
+      `;
+    }).join("");
   }
 
   function renderCodexPlusAds() {
@@ -5869,7 +5956,8 @@
       // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
       // 和页面内部保持同一个符号，不再另画一个近似图形。
       extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
-      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2.5a1.5 1.5 0 0 0 1.5 1.5H6l1.5 4.5a1 1 0 0 0 1.9-.6L8.2 15h.3l7.5 3.5V4.5L8.5 8H4.5A1.5 1.5 0 0 0 3 9.5Z"/><path d="M19 9.5v5"/></svg>',
+      // Lucide 的 megaphone：与 home 同一套 24 格线性风格，笔画宽度和端点也一致。
+      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
     };
 
     const specs = [

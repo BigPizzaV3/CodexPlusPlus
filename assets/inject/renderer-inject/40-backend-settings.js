@@ -699,22 +699,34 @@
     return value.split(/[｜|]/, 1)[0].trim() || value;
   }
 
+  /** 推荐卡片的右上角外链箭头，跟 VSCode/Codex 的「新窗口打开」同一语义。 */
+  const codexPlusAdArrowIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 10.5 10.5 5.5"/><path d="M6.5 5.5h4v4"/></svg>';
+
   function renderCodexPlusAdGroup(type, emptyText) {
     const ads = codexPlusAds.filter((ad) => ad.type === type);
     if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
-    return ads.map((ad) => `
-      <article class="codex-plus-ad-card">
-        ${ad.image ? `<img class="codex-plus-ad-image" src="${escapeHtml(ad.image)}" alt="">` : ""}
-        <div class="codex-plus-ad-content">
-          <h3 class="codex-plus-ad-title">${escapeHtml(formatCodexPlusAdTitle(ad.title))}</h3>
-          <p class="codex-plus-ad-description">${escapeHtml(ad.description)}</p>
-          <div class="codex-plus-ad-highlights">
-            ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-          </div>
-          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">访问 ${escapeHtml(new URL(ad.url).hostname)}</a>
-        </div>
-      </article>
-    `).join("");
+    return ads.map((ad) => {
+      const name = formatCodexPlusAdTitle(ad.title);
+      // 底部那条优惠信息：取第一个亮点。没有就不渲染整条，免得留一段空白。
+      const promo = (ad.highlights || []).find(Boolean) || "";
+      // 没有配图时用名称首字当占位，比空一块更整齐。
+      const icon = ad.image
+        ? `<img class="codex-plus-ad-icon" src="${escapeHtml(ad.image)}" alt="" loading="lazy" />`
+        : `<span class="codex-plus-ad-icon codex-plus-ad-icon-fallback" aria-hidden="true">${escapeHtml(name.slice(0, 1))}</span>`;
+      return `
+        <a class="codex-plus-ad-card" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer" title="${escapeHtml(name)}">
+          <span class="codex-plus-ad-main">
+            ${icon}
+            <span class="codex-plus-ad-text">
+              <span class="codex-plus-ad-title">${escapeHtml(name)}</span>
+              <span class="codex-plus-ad-description">${escapeHtml(ad.description)}</span>
+            </span>
+            <span class="codex-plus-ad-arrow" aria-hidden="true">${codexPlusAdArrowIcon}</span>
+          </span>
+          ${promo ? `<span class="codex-plus-ad-promo">${escapeHtml(promo)}</span>` : ""}
+        </a>
+      `;
+    }).join("");
   }
 
   function renderCodexPlusAds() {
@@ -1552,7 +1564,8 @@
       // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
       // 和页面内部保持同一个符号，不再另画一个近似图形。
       extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
-      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2.5a1.5 1.5 0 0 0 1.5 1.5H6l1.5 4.5a1 1 0 0 0 1.9-.6L8.2 15h.3l7.5 3.5V4.5L8.5 8H4.5A1.5 1.5 0 0 0 3 9.5Z"/><path d="M19 9.5v5"/></svg>',
+      // Lucide 的 megaphone：与 home 同一套 24 格线性风格，笔画宽度和端点也一致。
+      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
     };
 
     const specs = [
