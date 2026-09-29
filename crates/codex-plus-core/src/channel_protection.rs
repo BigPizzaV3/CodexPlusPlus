@@ -6,7 +6,7 @@ use reqwest::header::{HeaderMap, RETRY_AFTER};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::settings::{
-    BackendSettings, RelayProfile, normalize_channel_cooldown_statuses,
+    RelayProfile, normalize_channel_cooldown_statuses,
     normalize_channel_requests_per_minute,
 };
 
@@ -53,24 +53,24 @@ pub fn key_for_relay(relay: &RelayProfile) -> String {
     relay.base_url.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
-pub async fn acquire(key: &str, settings: &BackendSettings) -> ChannelPermit {
+pub async fn acquire(key: &str, profile: &RelayProfile) -> ChannelPermit {
     let state = channel_state(key);
-    if settings.rate_limit_cooldown_enabled {
+    if profile.rate_limit_cooldown_enabled {
         wait_for_cooldown(&state).await;
     }
-    let queue_guard = if settings.channel_queue_enabled {
+    let queue_guard = if profile.channel_queue_enabled {
         Some(state.queue.clone().lock_owned().await)
     } else {
         None
     };
 
-    if settings.rate_limit_cooldown_enabled {
+    if profile.rate_limit_cooldown_enabled {
         wait_for_cooldown(&state).await;
     }
-    if settings.channel_queue_enabled {
+    if profile.channel_queue_enabled {
         reserve_request(
             &state,
-            normalize_channel_requests_per_minute(settings.channel_requests_per_minute),
+            normalize_channel_requests_per_minute(profile.channel_requests_per_minute),
         )
         .await;
     }
@@ -126,12 +126,12 @@ async fn reserve_request(state: &ChannelState, request_limit: u32) {
 
 pub async fn mark_failure(
     key: &str,
-    settings: &BackendSettings,
+    profile: &RelayProfile,
     status_code: u16,
     retry_after: Option<Duration>,
 ) -> bool {
-    if !settings.rate_limit_cooldown_enabled
-        || !normalize_channel_cooldown_statuses(&settings.cooldown_error_statuses)
+    if !profile.rate_limit_cooldown_enabled
+        || !normalize_channel_cooldown_statuses(&profile.cooldown_error_statuses)
             .contains(&status_code)
     {
         return false;
@@ -174,11 +174,11 @@ mod tests {
         )
     }
 
-    fn enabled_settings() -> BackendSettings {
-        BackendSettings {
+    fn enabled_profile() -> RelayProfile {
+        RelayProfile {
             rate_limit_cooldown_enabled: true,
             channel_queue_enabled: true,
-            ..BackendSettings::default()
+            ..RelayProfile::default()
         }
     }
 
@@ -212,8 +212,8 @@ mod tests {
     #[tokio::test]
     async fn failure_uses_at_least_the_default_cooldown() {
         let key = test_key();
-        let settings = enabled_settings();
-        assert!(mark_failure(&key, &settings, 429, Some(Duration::from_secs(1))).await);
+        let profile = enabled_profile();
+        assert!(mark_failure(&key, &profile, 429, Some(Duration::from_secs(1))).await);
 
         let state = channel_state(&key);
         let runtime = state.runtime.lock().await;
@@ -227,9 +227,9 @@ mod tests {
     #[tokio::test]
     async fn failure_prefers_a_longer_retry_after() {
         let key = test_key();
-        let settings = enabled_settings();
+        let profile = enabled_profile();
         let retry_after = Duration::from_secs(120);
-        assert!(mark_failure(&key, &settings, 500, Some(retry_after)).await);
+        assert!(mark_failure(&key, &profile, 500, Some(retry_after)).await);
 
         let state = channel_state(&key);
         let runtime = state.runtime.lock().await;
@@ -243,12 +243,12 @@ mod tests {
     #[tokio::test]
     async fn unconfigured_status_does_not_set_cooldown() {
         let key = test_key();
-        let settings = BackendSettings {
+        let profile = RelayProfile {
             rate_limit_cooldown_enabled: true,
             cooldown_error_statuses: vec![429],
-            ..BackendSettings::default()
+            ..RelayProfile::default()
         };
-        assert!(!mark_failure(&key, &settings, 500, None).await);
+        assert!(!mark_failure(&key, &profile, 500, None).await);
 
         let state = channel_state(&key);
         assert!(state.runtime.lock().await.cooldown_until.is_none());
@@ -272,13 +272,13 @@ mod tests {
     #[tokio::test]
     async fn queue_serializes_requests_for_the_same_channel() {
         let key = test_key();
-        let settings = enabled_settings();
-        let first_permit = acquire(&key, &settings).await;
+        let profile = enabled_profile();
+        let first_permit = acquire(&key, &profile).await;
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let waiter_key = key.clone();
-        let waiter_settings = settings.clone();
+        let waiter_profile = profile.clone();
         let waiter = tokio::spawn(async move {
-            let _permit = acquire(&waiter_key, &waiter_settings).await;
+            let _permit = acquire(&waiter_key, &waiter_profile).await;
             let _ = sender.send(());
         });
 
