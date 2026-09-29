@@ -109,8 +109,11 @@ fn wrap_non_stream_response_produces_single_compaction_item() {
     assert!(text.contains("\"type\":\"compaction\""));
     assert!(text.contains("SUMMARYfromRESPONSES"));
     assert!(text.contains("data: [DONE]"));
-    // 恰好一个 compaction 输出项
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    assert_eq!(completed_compaction_items(&text), 1);
+    assert!(
+        text.find("event: response.output_item.done").unwrap()
+            < text.find("event: response.completed").unwrap()
+    );
 }
 
 #[test]
@@ -124,7 +127,23 @@ fn wrap_non_stream_chat_response_produces_single_compaction_item() {
     let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
     let text = String::from_utf8(wrapped).unwrap();
     assert!(text.contains("SUMMARYfromCHAT"));
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    assert_eq!(completed_compaction_items(&text), 1);
+}
+
+fn completed_compaction_items(sse: &str) -> usize {
+    sse.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .filter(|event| {
+            event.get("type").and_then(Value::as_str)
+                == Some("response.output_item.done")
+                && event
+                    .get("item")
+                    .and_then(|item| item.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("compaction")
+        })
+        .count()
 }
 
 #[test]

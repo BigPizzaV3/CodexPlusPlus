@@ -623,11 +623,30 @@ impl CompactionSseConverter {
             "created_at": chrono_now_millis() / 1000,
             "status": status,
             "model": self.model,
-            "output": [compaction_item],
+            "output": [compaction_item.clone()],
             "usage": default_responses_usage()
         });
         if !error.is_null() {
             response["error"] = error;
+        } else {
+            push_sse(
+                &mut output,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": compaction_item.clone()
+                }),
+            );
+            push_sse(
+                &mut output,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": compaction_item
+                }),
+            );
         }
         push_sse(
             &mut output,
