@@ -194,6 +194,14 @@ fn github_release_workflow_builds_separate_macos_x64_and_arm64_dmgs() {
     assert!(workflow.contains("aarch64-apple-darwin"));
     assert!(workflow.contains("package-dmg.sh \"$VERSION\" \"${{ matrix.arch }}\""));
     assert!(workflow.contains("target/${{ matrix.target }}/release"));
+    assert!(workflow.contains("Install Taskboard dependencies"));
+    assert!(workflow.contains("Build Taskboard frontend"));
+    assert!(workflow.contains("package-windows.ps1 -SkipInstall -SkipBuild -SkipInstaller"));
+    assert!(workflow.contains("taskboard-health-smoke.mjs"));
+    assert!(workflow.contains("Contents/Resources/codex-taskboard"));
+    assert!(workflow.contains("linux-deb:"));
+    assert!(workflow.contains("build-deb.sh \"$VERSION\""));
+    assert!(workflow.contains("dist/linux/*.deb"));
 }
 
 #[test]

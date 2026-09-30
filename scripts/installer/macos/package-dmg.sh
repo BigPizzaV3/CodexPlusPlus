@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DIST="$ROOT/dist/macos"
 STAGE="$DIST/stage"
 BINARY_DIR="${BINARY_DIR:-$ROOT/target/release}"
+TASKBOARD_ROOT="${TASKBOARD_ROOT:-$ROOT/apps/codex-taskboard}"
 DMG="$DIST/CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"
 ICON_SOURCE="$ROOT/apps/codex-plus-manager/src-tauri/icons/icon.png"
 ICON_NAME="codex-plus-plus.icns"
@@ -16,6 +17,16 @@ BACKGROUND_PATH="$STAGE/.background/background.png"
 
 rm -rf "$DIST"
 mkdir -p "$STAGE"
+
+for required in \
+  "$TASKBOARD_ROOT/dist/web/index.html" \
+  "$TASKBOARD_ROOT/scripts/codex-injector.mjs" \
+  "$TASKBOARD_ROOT/server/index.mjs"; do
+  if [ ! -f "$required" ]; then
+    echo "error: missing Taskboard runtime file: $required" >&2
+    exit 1
+  fi
+done
 
 prepare_background() {
   mkdir -p "$(dirname "$BACKGROUND_PATH")"
@@ -73,6 +84,11 @@ create_app() {
   mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
   cp "$binary_path" "$app_dir/Contents/MacOS/$executable_name"
   cp "$ICON_ICNS" "$app_dir/Contents/Resources/$ICON_NAME"
+  local taskboard_dir="$app_dir/Contents/Resources/codex-taskboard"
+  mkdir -p "$taskboard_dir"
+  for entry in dist inject scripts server shared skills; do
+    cp -R "$TASKBOARD_ROOT/$entry" "$taskboard_dir/"
+  done
   chmod +x "$app_dir/Contents/MacOS/$executable_name"
   printf 'APPL????' > "$app_dir/Contents/PkgInfo"
   if [ "$executable_name" = "CodexPlusPlusManager" ]; then
@@ -148,6 +164,15 @@ verify_app() {
     echo "error: missing PkgInfo in $app_dir" >&2
     return 1
   fi
+  for required in \
+    "$app_dir/Contents/Resources/codex-taskboard/dist/web/index.html" \
+    "$app_dir/Contents/Resources/codex-taskboard/scripts/codex-injector.mjs" \
+    "$app_dir/Contents/Resources/codex-taskboard/server/index.mjs"; do
+    if [ ! -f "$required" ]; then
+      echo "error: missing Taskboard resource: $required" >&2
+      return 1
+    fi
+  done
   codesign -dv "$app_dir" >/dev/null 2>&1 || {
     echo "error: codesign verification failed for $app_dir" >&2
     return 1

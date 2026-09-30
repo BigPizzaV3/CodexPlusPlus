@@ -86,6 +86,26 @@ jobs:
           & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
           Pop-Location
 
+      - name: Smoke test installed Windows runtime
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v", "V")
+          $version = $version -replace '[\\/]', '-'
+          if (-not $version -or $version -eq "main") {
+            $version = "0.0.0-${{ github.run_number }}"
+          }
+          $installer = Join-Path $PWD "dist/windows/CodexPlusPlus-$version-windows-x64-setup.exe"
+          $installRoot = Join-Path $env:RUNNER_TEMP "codex-plus-plus-pr-smoke"
+          if (Test-Path $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force }
+          & $installer /S "/D=$installRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Silent Windows install failed with exit code $LASTEXITCODE" }
+          try {
+            node scripts/installer/taskboard-health-smoke.mjs (Join-Path $installRoot "codex-taskboard")
+          } finally {
+            $uninstaller = Join-Path $installRoot "uninstall.exe"
+            if (Test-Path $uninstaller) { & $uninstaller /S }
+          }
+
       - name: Upload Windows binaries
         uses: actions/upload-artifact@v4
         with:
@@ -131,9 +151,17 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm install --package-lock=false
 
+      - name: Install Taskboard dependencies
+        working-directory: apps/codex-taskboard
+        run: npm ci
+
       - name: Build frontend
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
+
+      - name: Build Taskboard frontend
+        working-directory: apps/codex-taskboard
+        run: npm run build:web
 
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }}
@@ -157,10 +185,15 @@ jobs:
             test -f "$app/Contents/Info.plist"
             test -f "$app/Contents/PkgInfo"
             test -x "$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+            test -f "$app/Contents/Resources/codex-taskboard/dist/web/index.html"
+            test -f "$app/Contents/Resources/codex-taskboard/server/index.mjs"
             plutil -lint "$app/Contents/Info.plist" >/dev/null
             codesign -dv "$app" >/dev/null 2>&1
             echo "verified: $app"
           done
+
+      - name: Smoke test packaged macOS runtime
+        run: node scripts/installer/taskboard-health-smoke.mjs "dist/macos/stage/Codex++.app/Contents/Resources/codex-taskboard"
 
       - name: Upload macOS DMG
         uses: actions/upload-artifact@v4

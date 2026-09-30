@@ -222,13 +222,49 @@ pub fn taskboard_root_for_exe_path(exe_path: &Path) -> Option<PathBuf> {
         exe_path.parent()?
     };
     for directory in start.ancestors() {
-        let packaged_root = directory.join("codex-taskboard");
-        if taskboard_runtime_exists(&packaged_root) {
-            return Some(packaged_root);
+        for candidate in [
+            directory.join("codex-taskboard"),
+            directory.join("apps").join("codex-taskboard"),
+        ] {
+            if taskboard_runtime_exists(&candidate) {
+                return Some(candidate);
+            }
         }
-        let dev_root = directory.join("apps").join("codex-taskboard");
-        if taskboard_runtime_exists(&dev_root) {
-            return Some(dev_root);
+
+        if directory.file_name().and_then(|name| name.to_str()) == Some("MacOS")
+            && directory
+                .parent()
+                .and_then(|contents| contents.file_name())
+                .and_then(|name| name.to_str())
+                == Some("Contents")
+        {
+            let bundle_root = directory
+                .parent()
+                .expect("Contents parent was checked")
+                .join("Resources")
+                .join("codex-taskboard");
+            if taskboard_runtime_exists(&bundle_root) {
+                return Some(bundle_root);
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        if directory.file_name().and_then(|name| name.to_str()) == Some("bin")
+            && directory
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                == Some("usr")
+        {
+            let installed_root = directory
+                .parent()
+                .expect("usr parent was checked")
+                .join("lib")
+                .join("codex-plus-plus")
+                .join("codex-taskboard");
+            if taskboard_runtime_exists(&installed_root) {
+                return Some(installed_root);
+            }
         }
     }
     None
@@ -308,6 +344,50 @@ mod tests {
             } else {
                 "codex-plus-plus"
             });
+
+        assert_eq!(taskboard_root_for_exe_path(&exe), Some(root));
+    }
+
+    #[test]
+    fn taskboard_root_resolution_finds_macos_bundle_resources() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let root = test_dir
+            .path()
+            .join("Codex++.app")
+            .join("Contents")
+            .join("Resources")
+            .join("codex-taskboard");
+        touch_runtime(&root);
+        let exe = test_dir
+            .path()
+            .join("Codex++.app")
+            .join("Contents")
+            .join("MacOS")
+            .join(if cfg!(windows) {
+                "CodexPlusPlus.exe"
+            } else {
+                "CodexPlusPlus"
+            });
+
+        assert_eq!(taskboard_root_for_exe_path(&exe), Some(root));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn taskboard_root_resolution_finds_linux_installed_runtime() {
+        let test_dir = tempfile::tempdir().unwrap();
+        let root = test_dir
+            .path()
+            .join("usr")
+            .join("lib")
+            .join("codex-plus-plus")
+            .join("codex-taskboard");
+        touch_runtime(&root);
+        let exe = test_dir
+            .path()
+            .join("usr")
+            .join("bin")
+            .join("codex-plus-plus");
 
         assert_eq!(taskboard_root_for_exe_path(&exe), Some(root));
     }

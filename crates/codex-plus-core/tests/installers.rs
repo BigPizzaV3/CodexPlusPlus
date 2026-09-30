@@ -111,6 +111,25 @@ fn macos_dmg_includes_applications_shortcut_for_drag_install() {
         .expect("read macOS DMG packaging script");
 
     assert!(script.contains("ln -s /Applications \"$STAGE/Applications\""));
+    assert!(script.contains("TASKBOARD_ROOT=\"${TASKBOARD_ROOT:-$ROOT/apps/codex-taskboard}\""));
+    assert!(script.contains("Contents/Resources/codex-taskboard"));
+    assert!(script.contains("codex-injector.mjs"));
+}
+
+#[test]
+fn linux_deb_stages_and_smoke_tests_taskboard_runtime() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join("scripts/installer/linux/build-deb.sh");
+    let script = std::fs::read_to_string(&script).expect("read Linux deb packager");
+
+    assert!(script.contains("TASKBOARD_DIR=\"$REPO_DIR/apps/codex-taskboard\""));
+    assert!(script.contains("$taskboard_stage/dist/web/index.html"));
+    assert!(script.contains("taskboard-health-smoke.mjs"));
+    assert!(script.contains("/usr/lib/${PACKAGE_NAME}/codex-taskboard"));
 }
 
 #[test]

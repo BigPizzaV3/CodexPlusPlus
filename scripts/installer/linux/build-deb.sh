@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PROJECT_DIR="$REPO_DIR/apps/codex-plus-manager"
+TASKBOARD_DIR="$REPO_DIR/apps/codex-taskboard"
 BUILD_DIR="$REPO_DIR/.linux-build"
 DEB_DIR="$BUILD_DIR/deb"
 PACKAGE_NAME="codex-plus-plus"
@@ -77,6 +78,11 @@ build_frontend() {
     # Build vite directly (skip npm/pnpm wrapper issues)
     node_modules/.bin/vite build
     echo ">>> 前端构建完成"
+
+    cd "$TASKBOARD_DIR"
+    npm ci
+    npm run build:web
+    echo ">>> Taskboard 前端构建完成"
 }
 
 # ── 4. 构建 Rust 二进制 ──────────────────────────────────────
@@ -108,6 +114,7 @@ package_deb() {
     mkdir -p "$stage/share/doc/$PACKAGE_NAME"
     mkdir -p "$DEB_DIR/DEBIAN"
     mkdir -p "$stage/lib/${PACKAGE_NAME}"
+    local taskboard_stage="$stage/lib/${PACKAGE_NAME}/codex-taskboard"
 
     # ── 复制二进制 ──
     cp "$REPO_DIR/target/release/codex-plus-plus"          "$stage/bin/"
@@ -119,6 +126,20 @@ package_deb() {
     if [ -d "$PROJECT_DIR/dist" ]; then
         cp -r "$PROJECT_DIR/dist" "$stage/lib/${PACKAGE_NAME}/"
     fi
+
+    mkdir -p "$taskboard_stage"
+    for entry in dist inject scripts server shared skills; do
+        cp -r "$TASKBOARD_DIR/$entry" "$taskboard_stage/"
+    done
+    for required in \
+        "$taskboard_stage/dist/web/index.html" \
+        "$taskboard_stage/scripts/codex-injector.mjs" \
+        "$taskboard_stage/server/index.mjs"; do
+        if [ ! -f "$required" ]; then
+            echo "error: missing staged Taskboard runtime file: $required" >&2
+            return 1
+        fi
+    done
 
     # ── 复制图标 ──
     local icon_src="$PROJECT_DIR/src-tauri/icons/icon.png"
@@ -207,6 +228,13 @@ EOF
 
     # ── 创建 deb ──
     dpkg-deb --build "$DEB_DIR" "$deb_path"
+    local verify_dir
+    verify_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-plus-plus-deb-smoke.XXXXXX")"
+    dpkg-deb --extract "$deb_path" "$verify_dir"
+    CODEX_TASKBOARD_SMOKE_PORT=47824 node \
+        "$REPO_DIR/scripts/installer/taskboard-health-smoke.mjs" \
+        "$verify_dir/usr/lib/${PACKAGE_NAME}/codex-taskboard"
+    rm -rf "$verify_dir"
     echo ">>> .deb 构建完成: $deb_path"
 }
 
