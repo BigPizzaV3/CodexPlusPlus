@@ -641,9 +641,13 @@ html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]) > di
   padding-top: 15px !important;
 }
 
+/* 440px 是固定的 flex basis，矮窗口下不会收缩，会把首页 hero 顶出视野、并把
+   输入框挤出面板。改为按最近的 size 容器（app 的 `home-main-content`，
+   container-type:size）取 48cqh，220px 保底、440px 封顶：高窗口下 48cqh 已超过
+   440px，被 clamp 到 440px，与原先行为一致；只有矮窗口才会压缩。 */
 html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]) > div:first-child > div:first-child {
-  flex: 0 0 440px !important;
-  min-height: 440px !important;
+  flex: 0 0 clamp(220px, 48cqh, 440px) !important;
+  min-height: clamp(220px, 48cqh, 440px) !important;
   align-items: flex-start !important;
   padding-bottom: 0 !important;
 }
