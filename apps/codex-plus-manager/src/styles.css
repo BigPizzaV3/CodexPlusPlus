@@ -1108,6 +1108,12 @@ body {
   background: hsl(var(--shell-bg));
 }
 
+.relay-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .relay-detail-body {
   flex: 1;
   min-height: 0;
@@ -2983,6 +2989,16 @@ body {
 
 .switch-row.compact {
   margin-bottom: 0;
+}
+
+.switch-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.switch-row.is-disabled:hover {
+  border-color: hsl(var(--border));
+  background: hsl(var(--background));
 }
 
 .zed-remote-settings {
@@ -8062,6 +8078,43 @@ select {
 .settings-content .settings-block {
   border-top: 1px solid hsl(var(--border));
   padding-top: 14px;
+}
+
+.settings-content .check-row > span {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-content .check-row > span small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.channel-status-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.channel-status-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.channel-status-chip {
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 8px;
+}
+
+.channel-status-chip:hover {
+  border-color: hsl(var(--primary));
 }
 
 .settings-content .stepwise-settings-block {

@@ -115,11 +115,14 @@ for (const scenario of ["success", "retry-convert", "late-convert", "delayed-out
       assert.equal(result.trace.match(/^convert /gm)?.length, 1);
     }
     if (scenario === "delayed") {
+      // 普通 detach 失败后立刻补 -force：CI runner 上「卷已消失、设备仍注册」
+      // 的中间态只有 -force 能解，普通重试不会成功（见 detach_dmg 注释）。
       assert.equal(result.trace.match(/^detach /gm)?.length, 2);
-      assert.doesNotMatch(result.trace, /-force/);
+      assert.match(result.trace, /detach \/dev\/disk4 -force/);
     }
     if (scenario === "force-only") {
-      assert.equal(result.trace.match(/^detach /gm)?.length, 5);
+      // -force 在循环内，所以第 2 次 detach 就是 force，不再等到循环跑完。
+      assert.equal(result.trace.match(/^detach /gm)?.length, 2);
       assert.match(result.trace, /detach \/dev\/disk4 -force/);
     }
   });
@@ -132,7 +135,8 @@ for (const scenario of ["no-device", "no-volume"]) {
     assert.match(result.stderr, /failed to find mounted DMG device and volume/);
     assert.doesNotMatch(result.trace, /^convert /m);
     if (scenario === "no-device") {
-      assert.equal(result.trace.match(/^detach \/Volumes\/fixture$/gm)?.length, 2);
+      // 只有挂载点可清理（无设备），detach 一次即成功。
+      assert.equal(result.trace.match(/^detach \/Volumes\/fixture$/gm)?.length, 1);
     } else {
       assert.match(result.trace, /detach \/dev\/disk4/);
     }

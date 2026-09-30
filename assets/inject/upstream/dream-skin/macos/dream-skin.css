@@ -641,9 +641,13 @@ html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]) > di
   padding-top: 15px !important;
 }
 
+/* 440px 是固定的 flex basis，矮窗口下不会收缩，会把首页 hero 顶出视野、并把
+   输入框挤出面板。改为按最近的 size 容器（app 的 `home-main-content`，
+   container-type:size）取 48cqh，220px 保底、440px 封顶：高窗口下 48cqh 已超过
+   440px，被 clamp 到 440px，与原先行为一致；只有矮窗口才会压缩。 */
 html[data-dream-skin="active"] [role="main"]:has([data-testid="home-icon"]) > div:first-child > div:first-child {
-  flex: 0 0 440px !important;
-  min-height: 440px !important;
+  flex: 0 0 clamp(220px, 48cqh, 440px) !important;
+  min-height: clamp(220px, 48cqh, 440px) !important;
   align-items: flex-start !important;
   padding-bottom: 0 !important;
 }
@@ -1378,13 +1382,42 @@ html[data-dream-skin="active"]:is([data-dream-task-mode="ambient"], [data-dream-
   background: transparent !important;
 }
 
+  /* Codex 26.924 utility routes: Projects, Pull Requests and Customize each keep
+     their own full-window opaque surface, so the wallpaper stops at the route
+     edge. These are separate from the chat/home fix above and were never adapted
+     for this shell. Each route hides a different layer, so every anchor below is
+     deliberately narrow: the focus-area child belongs to Projects, while the pane
+     frame and the sticky shell only exist on Pull Requests and Customize. Counted
+     on the live 26.924 renderer, all three anchors match nothing on a conversation
+     route, which is what leaves Chat and Home untouched. Keep them that way — a
+     bare `.bg-surface` reset would also strip dialogs, menus and form cards. */
+html[data-dream-skin="active"] [data-app-shell-focus-area] > .bg-surface {
+  background: transparent !important;
+}
+
+/* Pull Requests stacks its detail pane: pane frame, then section, then the
+   detail container. Clearing only the frame leaves two nested opaque layers. */
+html[data-dream-skin="active"] [data-app-shell-pane-frame],
+html[data-dream-skin="active"] [data-app-shell-pane-frame] .bg-surface {
+  background: transparent !important;
+}
+
+/* Customize pins its page header with a sticky shell whose ::before paints an
+   opaque backdrop. Clear the paint but keep the blur, so the header still
+   separates from list content once it scrolls underneath. The composer is also
+   sticky, so exclude anything that owns one. */
+html[data-dream-skin="active"] [data-app-shell-focus-area] [data-sticky]:not(:has([data-codex-composer-root]))::before {
+  background: transparent !important;
+  backdrop-filter: blur(16px) saturate(108%) !important;
+}
+
 html[data-dream-skin="active"][data-dream-art-wide="true"] main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"])
   .app-shell-main-content-frame {
   border-top: 0 !important;
 }
 
 html[data-dream-skin="active"][data-dream-art-wide="true"] main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"])
-  :is(.app-shell-main-content-top-fade, [data-app-shell-main-content-top-fade], [class*="_MainContentTopFade_"]) {
+  :is(.app-shell-main-content-top-fade, [class*="_MainContentTopFade_"]) {
   display: none !important;
   background: transparent !important;
 }
