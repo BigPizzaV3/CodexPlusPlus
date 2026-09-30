@@ -6250,7 +6250,6 @@ fn market_script_payload(script: &MarketScript, installed: &BTreeMap<String, Str
         "tags": script.tags,
         "homepage": script.homepage,
         "script_url": script.script_url,
-        "sha256": script.sha256,
         "installed": is_installed,
         "installedVersion": installed_version,
         "updateAvailable": is_installed && installed.get(&script.id).map(|version| version != &script.version).unwrap_or(false)

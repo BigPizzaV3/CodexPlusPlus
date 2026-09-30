@@ -28,3 +28,7 @@
   document.removeEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
   window.__codexSessionActionTriggerClickHandler = rememberSessionActionTrigger;
   document.addEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
+  // 对外接口层在此刻挂载：此时所有分片都已执行完毕，闭包里的函数全部就绪。
+  // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
+  // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
+  window.codexPlus = buildCodexPlusExtensionApi();

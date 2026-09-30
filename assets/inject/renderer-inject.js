@@ -608,6 +608,179 @@
   };
   const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
 
+  /**
+   * 拓展注册中心。
+   *
+   * 第三方用户脚本通过挂到 window 上的 `codexPlus` 对象注册 UI 项，注册结果
+   * 落在这里。注册中心只存数据与回调，不做任何渲染——渲染由各消费方在合适的
+   * 时机读表完成。这样「内置项」和「第三方项」不会产生两条代码路径。
+   *
+   * 生命周期约定（很重要）：
+   *   注册表持久，DOM 瞬态。
+   *
+   * Codex++ 的 UI 宿主会被反复重建（overlay 每次打开都清空重建、会话行按钮在
+   * 版本号变化时整组重建），所以任何消费方都不能缓存 DOM 引用，必须每次从注册
+   * 表读数据全量重建。反过来说，第三方脚本不需要关心 DOM 何时被销毁。
+   *
+   * 注意：注册中心本身不持有 DOM，也不在模块顶层读 DOM，因此可以安全地放在
+   * prelude 之后的最前面——此时常量已声明，而所有顶层启动语句都还没执行。
+   */
+  const codexPlusRegistry = {
+    rowActions: new Map(),
+    navEntries: new Map(),
+    pages: new Map(),
+  };
+
+  /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
+  const codexPlusExtensionPerScriptLimit = 16;
+  const codexPlusExtensionGlobalLimit = 64;
+
+  /**
+   * 必须被扫描调度忽略的选择器。
+   *
+   * 这些节点由 Codex++ 自己（或拓展）插入到 Codex 的容器里，而容器本身是
+   * scan-relevant 的。如果不排除，就会形成「写入 → 观察到自己的写入 → 200ms
+   * 后再 scan → 再写入」的自喂循环：空闲时也每秒全量扫描五次，macOS 上足以
+   * 吃满一个核（issue #1960）。
+   *
+   * 内置项在这里，拓展项通过 registerCodexPlusExtensionSelector 动态加入。
+   * 拓展自带的选择器一律是 `[data-codex-plus-ext="<脚本 key>"]`，由接口层在
+   * 注册时自动加上，拓展作者不需要也不应该自己维护这个列表。
+   */
+  const codexPlusExtensionSelectors = new Set();
+  let codexPlusExtensionSelectorCache = null;
+
+  function registerCodexPlusExtensionSelector(selector) {
+    if (typeof selector !== "string" || !selector.trim()) return false;
+    if (codexPlusExtensionSelectors.has(selector)) return true;
+    if (codexPlusExtensionSelectors.size >= codexPlusExtensionGlobalLimit) {
+      return false;
+    }
+    // 提前验证选择器语法：非法选择器会在 closest() 里抛错，而 closest() 跑在
+    // 每次 mutation 上，一个坏选择器能把整个页面卡死。
+    try {
+      document.createDocumentFragment().querySelector(selector);
+    } catch {
+      return false;
+    }
+    codexPlusExtensionSelectors.add(selector);
+    codexPlusExtensionSelectorCache = null;
+    return true;
+  }
+
+  /**
+   * 拼给 closest() 用的选择器串。Set 变化时重建、否则复用——closest() 传一个
+   * 逗号串比逐个调用快得多，而这里每次 DOM 变更都会走一遍。
+   */
+  function codexPlusExtensionSelector() {
+    if (codexPlusExtensionSelectorCache !== null) return codexPlusExtensionSelectorCache;
+    codexPlusExtensionSelectorCache = [...codexPlusExtensionSelectors].join(", ");
+    return codexPlusExtensionSelectorCache;
+  }
+
+  function isCodexPlusExtensionNode(node) {
+    const selector = codexPlusExtensionSelector();
+    if (!selector) return false;
+    return !!node?.closest?.(selector);
+  }
+
+  /**
+   * 注册一项通用扩展数据。返回 dispose 函数。
+   *
+   * 所有类别共用同一套校验与配额，免得每个 register* 各写一遍。`kind` 只用于
+   * 诊断与配额统计，不参与渲染。
+   */
+  function registerCodexPlusExtension(kind, registry, id, definition, scriptKey) {
+    if (typeof id !== "string" || !id.trim()) {
+      throw new Error("拓展项 id 不能为空");
+    }
+    if (registry.has(id)) {
+      throw new Error(`拓展项 id 已被占用：${id}`);
+    }
+    const owned = [...registry.values()].filter((item) => item.scriptKey === scriptKey).length;
+    if (owned >= codexPlusExtensionPerScriptLimit) {
+      throw new Error(`每个脚本最多注册 ${codexPlusExtensionPerScriptLimit} 项`);
+    }
+    if (registry.size >= codexPlusExtensionGlobalLimit) {
+      throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
+    }
+    if (definition && typeof definition.render !== "function" && typeof definition.onActivate !== "function") {
+      throw new Error(`拓展项 ${id} 必须提供 render 或 onActivate`);
+    }
+    const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
+    // 内置项占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
+    const normalized = { ...definition, kind, id, order: Math.max(1000, order), scriptKey };
+    registry.set(id, normalized);
+    codexPlusRegistryDiagnostics(kind, "register", id, scriptKey);
+    return () => {
+      if (registry.get(id) === normalized) {
+        registry.delete(id);
+        codexPlusRegistryDiagnostics(kind, "dispose", id, scriptKey);
+      }
+    };
+  }
+
+  /** 按 order 排序的注册项快照。消费方每次渲染时取，不要缓存结果。 */
+  function codexPlusExtensionItems(registry) {
+    return [...registry.values()].sort((left, right) => left.order - right.order);
+  }
+
+  function codexPlusRegistryDiagnostics(kind, action, id, scriptKey) {
+    const entry = {
+      kind,
+      action,
+      id,
+      script_key: scriptKey || "",
+      at: Date.now(),
+      // 不抛错：诊断通道本身出问题时不该影响注册。
+    };
+    window.__codexPlusRegistryLog = window.__codexPlusRegistryLog || [];
+    window.__codexPlusRegistryLog.push(entry);
+    if (window.__codexPlusRegistryLog.length > 200) window.__codexPlusRegistryLog.shift();
+    try {
+      window.__codexSessionDeleteBridge?.("/diagnostics/log", {
+        event: "extension_registry",
+        detail: entry,
+      })?.catch?.(() => {});
+    } catch {}
+  }
+
+  /**
+   * 带着归属信息执行拓展提供的回调。
+   *
+   * 拓展代码可能抛错、也可能返回坏数据。这里统一兜住：错误记进该脚本的状态
+   * 通道（和用户脚本自身的失败上报同一个字段），并由调用方决定如何降级展示。
+   * 返回值约定：成功返回 { ok: true, value }，失败返回 { ok: false, error }。
+   */
+  function runCodexPlusExtensionCallback(scriptKey, label, callback) {
+    try {
+      return { ok: true, value: callback() };
+    } catch (error) {
+      const message = String(error?.stack || error?.message || error);
+      codexPlusMarkExtensionFailure(scriptKey, `${label}: ${message}`);
+      return { ok: false, error: message };
+    }
+  }
+
+  /**
+   * 把拓展的失败写进用户脚本运行时状态。
+   *
+   * 复用 wrap_script 已经建立的上报通道：管理页读的就是
+   * window.__codexPlusUserScripts.scripts[key].error。这样拓展的 UI 错误和
+   * 脚本本身抛错在用户看来是同一件事，不需要第二套排查入口。
+   */
+  function codexPlusMarkExtensionFailure(scriptKey, message) {
+    if (!scriptKey) return;
+    const record = window.__codexPlusUserScripts?.scripts?.[scriptKey];
+    if (record) {
+      record.error = message;
+      // 不覆盖 status：脚本本身可能已成功加载，失败的只是它注册的某一项 UI。
+      record.extensionError = message;
+    }
+    window.__codexPlusExtensionFailures = window.__codexPlusExtensionFailures || [];
+    window.__codexPlusExtensionFailures.push({ script_key: scriptKey, message, at: Date.now() });
+    if (window.__codexPlusExtensionFailures.length > 100) window.__codexPlusExtensionFailures.shift();
+  }
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
     if (existingStyle?.dataset.codexDeleteStyleVersion === codexDeleteStyleVersion) return;
@@ -883,6 +1056,10 @@
         pointer-events: none;
       }
       .codex-delete-toast button { margin-left: 10px; pointer-events: auto; }
+      /* 拓展与内置提示共用的类型配色。不传 type 时保持上面的默认外观。 */
+      .codex-delete-toast[data-toast-type="success"] { border-color: var(--codex-plus-success, #2f9e63); }
+      .codex-delete-toast[data-toast-type="warn"] { border-color: var(--codex-plus-warn, #b7791f); }
+      .codex-delete-toast[data-toast-type="error"] { border-color: var(--codex-plus-error, #c53030); }
       .codex-delete-confirm-overlay {
         position: fixed;
         inset: 0;
@@ -8813,10 +8990,41 @@
     }
   }
 
-  function showToast(message, undoToken) {
-    document.querySelectorAll(".codex-delete-toast").forEach((node) => node.remove());
+  /**
+   * 同一时间最多显示几条 toast。
+   *
+   * 原来是「新 toast 顶掉旧 toast」的单例语义。拓展也能弹 toast 之后，单例会让
+   * 第三方提示把「删除成功（可撤销）」这类关键反馈挤掉，所以改成有界队列：超出
+   * 上限时挤掉最旧的一条，而不是最关键的当前一条。
+   */
+  const codexPlusToastLimit = 3;
+  const codexPlusToastLifetimeMs = 10000;
+
+  /**
+   * 显示一条提示。
+   *
+   * `options.type` 取 info / success / warn / error，对应 styles 里的四条配色；
+   * 不传则保持原先的默认外观。`options.undoToken` 会追加「撤销」按钮——这是
+   * 内部删除流程用的，拓展一般用不到。
+   */
+  function showToast(message, options = {}) {
+    // 兼容旧调用点：老签名是 showToast(message, undoToken)。第二个参数传字符串
+    // 时按 undoToken 处理，传对象时按新签名处理。
+    const settings = typeof options === "string" ? { undoToken: options } : (options || {});
+    const undoToken = settings.undoToken;
+    const type = typeof settings.type === "string" ? settings.type : "";
+    const live = document.querySelectorAll(".codex-delete-toast");
+    // 队列满时挤掉最旧的（DOM 顺序即插入顺序）。
+    if (live.length >= codexPlusToastLimit) {
+      for (let index = 0; index <= live.length - codexPlusToastLimit; index += 1) {
+        live[index].remove();
+      }
+    }
     const toast = document.createElement("div");
     toast.className = "codex-delete-toast";
+    if (type) toast.dataset.toastType = type;
+    // 多条并存时靠 bottom 偏移叠起来，否则会完全重合。
+    toast.style.bottom = `${18 + document.querySelectorAll(".codex-delete-toast").length * 48}px`;
     toast.textContent = message;
     if (undoToken) {
       const undo = document.createElement("button");
@@ -8833,7 +9041,8 @@
       toast.appendChild(undo);
     }
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 10000);
+    setTimeout(() => toast.remove(), codexPlusToastLifetimeMs);
+    return () => toast.remove();
   }
 
   function shareBase64Url(bytes) {
@@ -10453,6 +10662,9 @@
         sessionAutoRenameItem.__codexSessionAutoRenameRow = row;
         moreMenu.appendChild(sessionAutoRenameItem);
       }
+      // 拓展注册的会话行操作追加在内置项之后。菜单每次重建（版本号变化）都会
+      // 重新走一遍这里，所以拓展项不会因为重建而丢失。
+      appendCodexPlusExtensionRowActions(moreMenu, row, moreButton);
       const openMoreMenu = (event) => {
         stopActionButtonEvent(row, moreButton, event);
         hideActionButtonTooltip();
@@ -11033,6 +11245,470 @@
 
   window.__codexPlusConversationViewCleanup = cleanupConversationView;
 
+  /**
+   * 对外接口层：window.codexPlus
+   *
+   * 第三方用户脚本不认识 Codex++ 内部的闭包函数，只能通过这个对象调用能力。
+   * 设计要点：
+   *
+   *   1. 只挂一个全局名。之前 42 个 window.__codexPlus* 里绝大多数是补丁哨兵，
+   *      对外没有价值；新能力统一收进这里，避免命名空间继续发散。
+   *   2. 注册表持久、DOM 瞬态。每个 register* 只把数据写进注册中心，渲染由消费方
+   *      负责。第三方不需要关心宿主何时重建（overlay 重开、会话行重建）。
+   *   3. 失败隔离。第三方回调一律经 runCodexPlusExtensionCallback 包一层，抛错
+   *      记进该脚本的状态通道，不会让 Codex++ 自己的 UI 白屏。
+   *
+   * 这个分片必须在 renderer-inject 内部的所有 UI 消费方之前执行，因为它只做定义、
+   * 不读 DOM；实际挂载发生在 99-tail 之前，那时所有依赖函数都已可用。
+   */
+  const codexPlusExtensionApiVersion = 1;
+  const codexPlusExtensionAdapterVersion = "1.0.0";
+
+  /** 类名与属性契约。一旦发布不再更名，新增用新名字。 */
+  const codexPlusExtensionConstants = {
+    pageClass: codexPlusPageClass,
+    pageNavAttribute: "data-codex-plus-page-nav",
+    railSelector: codexPlusRailSelector,
+    railDestinationSelector: codexPlusRailDestinationSelector,
+    actionGroupClass,
+    moreMenuClass,
+    toastClass: "codex-delete-toast",
+    // 拓展自己插入的节点必须带这个属性，值是该脚本的 key。
+    // 扫描调度靠它把拓展的写入排除在自喂循环之外（issue #1960）。
+    extensionAttribute: "data-codex-plus-ext",
+  };
+
+  /**
+   * 路由白名单。未在此声明的路由即使后端支持也不允许拓展调用。
+   *
+   * 刻意做成白名单而不是黑名单：新增路由时默认不可用，需要显式决定是否开放，
+   * 避免内部路由（例如 `/settings/set`、`/zed-remote/*`）被顺手暴露出去。
+   */
+  const codexPlusExtensionRoutes = new Set([
+    "/diagnostics/log",
+    "/session/export",
+    "/thread-usage-history",
+    "/archived-thread",
+    "/export-markdown",
+    "/user-scripts/list",
+  ]);
+
+  /** 单次调用的默认超时，略短于桥接自身的 26s，让拓展先拿到可读的错误。 */
+  const codexPlusExtensionCallTimeoutMs = 26000;
+
+  /**
+   * 调用后端。
+   *
+   * 直接暴露 __codexSessionDeleteBridge 有三个问题：名字语义错位（它早就不只用于
+   * 会话删除）、没有超时、错误风格不统一（路由层返回 {status:"failed"}，浮层面板
+   * 返回 {error}）。这里统一成 Promise reject，让拓展用 try/catch。
+   */
+  function codexPlusExtensionCall(route, payload = {}, options = {}) {
+    if (typeof route !== "string" || !codexPlusExtensionRoutes.has(route)) {
+      return Promise.reject(new Error(`未开放的路由：${route}`));
+    }
+    const bridge = window.__codexSessionDeleteBridge;
+    if (typeof bridge !== "function") {
+      return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
+    }
+    const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
+    // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
+    const request = bridge(route, payload);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`调用 ${route} 超时`)), timeout);
+      Promise.resolve(request).then(
+        (result) => {
+          clearTimeout(timer);
+          if (result?.status === "failed" || result?.error) {
+            reject(new Error(result.message || result.error || `${route} 调用失败`));
+            return;
+          }
+          resolve(result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
+    });
+  }
+
+  /**
+   * 当前脚本的 key。
+   *
+   * wrap_script 只在脚本初始化期间把 currentKey 设为脚本 key，异步回调里就是 null。
+   * 而拓展完全可能在 await 之后才注册 UI，所以不能只看 currentKey——那样这些项会
+   * 丢失归属，出问题时无法定位到是哪个脚本，扫描调度也认不出它的节点。
+   * 这里保留 options.scriptKey 作为显式覆盖，默认回退到 currentKey。
+   */
+  function codexPlusCurrentExtensionScriptKey(options) {
+    return options?.scriptKey || window.__codexPlusUserScripts?.currentKey || "";
+  }
+
+  /** 注册一个带 order 的拓展项，统一处理 id 前缀与失败上报。 */
+  function codexPlusRegisterExtensionItem(kind, registry, definition, options = {}) {
+    const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+    const id = `${scriptKey}:${kind}:${options.id || codexPlusExtensionIdSeed()}`;
+    const dispose = registerCodexPlusExtension(kind, registry, id, definition, scriptKey);
+    // 注册后立刻让所有入口重画一次，否则用户要等下一次 scan 才看得到新项。
+    codexPlusRefreshExtensionHosts();
+    return () => {
+      dispose();
+      codexPlusRefreshExtensionHosts();
+    };
+  }
+
+  let codexPlusExtensionIdCounter = 0;
+  function codexPlusExtensionIdSeed() {
+    codexPlusExtensionIdCounter += 1;
+    return `item-${codexPlusExtensionIdCounter}`;
+  }
+
+  /**
+   * 通知各消费方重画。
+   *
+   * 每个消息都可能有消费方尚未初始化（例如浮层面板按需注入、overlay 未打开），
+   * 所以逐项 try/catch，任何一个不存在或抛错都不影响其余。
+   */
+  function codexPlusRefreshExtensionHosts() {
+    for (const refresh of [refreshCodexPlusPageNav, refreshCodexPlusRailNavigation, refreshExtensionSessionRows]) {
+      try {
+        refresh?.();
+      } catch {}
+    }
+  }
+
+  /** 会话行按钮重画：让扫描在下一轮把这些行重建，从而带上拓展的项。 */
+  function refreshExtensionSessionRows() {
+    try {
+      sessionRows().forEach((row) => {
+        const group = actionGroupFromRow(row);
+        if (group) delete group.dataset.codexActionLayoutStable;
+      });
+    } catch {}
+  }
+
+  /**
+   * 构建对外对象。
+   *
+   * 拆成函数而不是直接字面量，是为了让 99-tail 之前的挂载点能按顺序装配：
+   * 依赖的函数都已在同一闭包里，此处只做引用。
+   */
+  function buildCodexPlusExtensionApi() {
+    return {
+      version: codexPlusExtensionAdapterVersion,
+      apiVersion: codexPlusExtensionApiVersion,
+      constants: codexPlusExtensionConstants,
+      // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
+      get script() {
+        return { key: codexPlusCurrentExtensionScriptKey() };
+      },
+
+      /** 显示提示。type: info | success | warn | error */
+      toast(message, options) {
+        return runCodexPlusExtensionCallback(
+          codexPlusCurrentExtensionScriptKey(),
+          "toast",
+          () => showToast(String(message ?? ""), options || {}),
+        );
+      },
+
+      /** 调用后端白名单路由，失败时 reject。 */
+      call: codexPlusExtensionCall,
+
+      /** 在会话行「更多操作」里加一项。 */
+      registerRowAction(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("rowAction", codexPlusRegistry.rowActions, definition, options);
+      },
+
+      /** 加一个图标栏入口（点击后走 registerPage 注册的页面）。 */
+      registerNavEntry(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("navEntry", codexPlusRegistry.navEntries, definition, options);
+      },
+
+      /**
+       * 注册一个整页视图。
+       *
+       * 同时自动配一个图标栏入口——内置的三个页面（Codex++ / 拓展 / 推荐内容）
+       * 都是「rail 入口 + 整页」的形态，第三方页面沿用同一种形态，用户才不会
+       * 在弹窗里找入口。`options.navLabel` / `options.icon` 控制入口外观。
+       *
+       * render 每次打开都被重新调用，不要缓存 DOM（见本文件顶部的生命周期约定）。
+       */
+      registerPage(definition, options = {}) {
+        const scriptKey = codexPlusCurrentExtensionScriptKey(options);
+        const pageId = `${scriptKey}:page:${options.id || codexPlusExtensionIdSeed()}`;
+        const disposePage = registerCodexPlusExtension("page", codexPlusRegistry.pages, pageId, definition, scriptKey);
+        // 入口与页面成对存在：页面没了，入口也该消失，否则点了没有任何反应。
+        const entry = {
+          ...definition,
+          label: options.navLabel || definition.navLabel || definition.title || pageId,
+          icon: options.icon || definition.icon,
+          pageId,
+          order: Math.max(1000, Number.isFinite(options.order) ? Number(options.order) : 0),
+        };
+        const navId = `${scriptKey}:navEntry:${pageId}`;
+        let disposeNav = null;
+        try {
+          disposeNav = registerCodexPlusExtension("navEntry", codexPlusRegistry.navEntries, navId, entry, scriptKey);
+        } catch {
+          // 入口注册失败（配额满）时页面本身仍可用，不要回滚已成功的页面注册。
+        }
+        codexPlusRefreshExtensionHosts();
+        return () => {
+          try {
+            disposeNav?.();
+          } catch {}
+          disposePage();
+          codexPlusRefreshExtensionHosts();
+        };
+      },
+
+      /** 注册清理函数，热重载时逆序执行。 */
+      onCleanup(cleanup) {
+        return window.__codexPlusUserScripts?.registerCleanup?.(cleanup);
+      },
+
+      /** 主动上报失败，供异步阶段的错误使用（同步阶段由 wrap_script 捕获）。 */
+      fail(error) {
+        codexPlusMarkExtensionFailure(
+          window.__codexPlusUserScripts?.currentKey,
+          String(error?.stack || error?.message || error),
+        );
+      },
+    };
+  }
+  /**
+   * 拓展宿主：把注册中心里的第三方项渲染出来。
+   *
+   * 与 91-extension-api.js 的分工：那边负责「收」（校验、配额、挂 API），这边负责
+   * 「画」（把数据变成 DOM）。分开是因为画的部分要贴着既有 UI 的类名与结构走，
+   * 而收的部分只需要一份数据契约。
+   *
+   * 全部采用「追加」而不是「重写」：内置项仍由原路径渲染，拓展项在其后补上。
+   * 这样内置 UI 的行为零变化，出问题时摘掉这个分片即可回滚。
+   */
+
+  /**
+   * 拓展节点的统一标记，扫描调度靠它识别（见 01-registry.js 的注释）。
+   *
+   * 选择器按「有归属/无归属」两档登记，而不是按脚本 key 逐个登记：一个脚本可能
+   * 注册很多项，按 key 登记会白白吃掉全局选择器配额（上限 64），而扫描调度只需要
+   * 知道「这个节点是我们的」——精确到脚本对排除自喂循环没有任何额外价值。
+   */
+  function markCodexPlusExtensionNode(node, scriptKey) {
+    node.setAttribute(codexPlusExtensionConstants.extensionAttribute, scriptKey || "");
+    registerCodexPlusExtensionSelector(`[${codexPlusExtensionConstants.extensionAttribute}]`);
+    return node;
+  }
+
+  /** 取一个拓展项的图标：允许传 SVG 字符串，没给就用默认字形。 */
+  function codexPlusExtensionIconMarkup(definition) {
+    const icon = definition?.icon;
+    if (typeof icon !== "string" || !icon.trim()) return `<span aria-hidden="true">◇</span>`;
+    // 只接受 svg 或文本字形：注入任意 HTML 会让拓展有机会破坏内置 UI 结构。
+    if (/^\s*<svg[\s>]/i.test(icon)) return `<span class="codex-plus-ext-icon" aria-hidden="true">${icon}</span>`;
+    return `<span class="codex-plus-ext-icon" aria-hidden="true">${escapeHtml(icon)}</span>`;
+  }
+
+  /**
+   * 打开一个拓展注册的整页视图。
+   *
+   * 复用内置的页面骨架（rail 高亮同步、缩放跟随、原生选中态压制都白拿），只是把
+   * 内容区换掉。注意 overlay 每次打开都重建，所以 render 每次都要重新调用。
+   */
+  function openCodexPlusExtensionPage(id) {
+    const definition = codexPlusRegistry.pages.get(id);
+    if (!definition) return false;
+    openCodexPlusModalForExtension(id, definition);
+    return true;
+  }
+
+  /**
+   * 渲染拓展页面。
+   *
+   * 不走 openCodexPlusModal 是因为那个函数的内容区来自内置模板字符串；这里要的是
+   * 同一套外壳 + 自定义内容，所以单独走一遍，但外壳结构与类名完全对齐。
+   */
+  function openCodexPlusModalForExtension(id, definition) {
+    document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
+    document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
+    const overlay = document.createElement("div");
+    overlay.className = codexPlusPageClass;
+    overlay.dataset.codexPlusPage = "true";
+    overlay.dataset.codexPlusExtensionPage = id;
+    applyCodexPlusTheme(overlay);
+    // 必须在写 innerHTML 之前设好缩放，否则内部 calc 会先按 1 算一遍（见内置实现注释）。
+    applyCodexPlusZoom(overlay);
+    overlay.innerHTML = `
+      <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="${escapeHtml(definition.title || "拓展页面")}">
+        <div class="codex-plus-modal-header">
+          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span>${escapeHtml(definition.title || "拓展页面")}</span></div>
+        </div>
+        <div class="codex-plus-modal-body">
+          <div class="codex-plus-panel" data-codex-plus-panel="extension" data-codex-plus-extension-panel="${id}"></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    positionCodexPlusPage(overlay);
+    // 拓展入口不在内置的三个 id 里，setCodexPlusSidebarNavActive 认不出来，
+    // 所以自己点亮该入口，再调一次 sync 让原生选中态被压下去。
+    setCodexPlusExtensionNavActive(id);
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(overlay);
+    window.addEventListener("resize", window.__codexPlusPageResizeHandler);
+    // 与内置页面一致：点图标栏上的任何原生按钮就关掉这个覆盖层。
+    const rail = document.querySelector(codexPlusRailSelector);
+    rail?.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+      if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
+    }, true);
+
+    const panel = overlay.querySelector(`[data-codex-plus-extension-panel="${id}"]`);
+    if (!panel) return;
+    // 拓展的 render 每次打开都重新调用，禁止缓存 DOM——见 91 顶部的生命周期约定。
+    const outcome = runCodexPlusExtensionCallback(definition.scriptKey, "page.render", () =>
+      definition.render({ container: panel, close: () => closeCodexPlusPage(), script: definition.scriptKey }));
+    if (!outcome.ok) {
+      panel.innerHTML = `<div class="codex-plus-row"><div><div class="codex-plus-row-title">拓展页面加载失败</div><div class="codex-plus-row-description">${escapeHtml(definition.scriptKey || "")}：${escapeHtml(outcome.error)}</div></div></div>`;
+      panel.dataset.extensionError = "true";
+    }
+    definition.onCleanup && runCodexPlusExtensionCallback(definition.scriptKey, "page.onCleanup", () => {
+      window.__codexPlusExtensionPageCleanup = definition.onCleanup;
+    });
+  }
+
+  /**
+   * 点亮某个拓展的图标栏入口。
+   *
+   * 内置的 setCodexPlusSidebarNavActive 只认三个固定 id，拓展入口的 id 是动态的，
+   * 所以这里单独处理：先把内置项全部置为未选中，再点亮目标，最后统一压原生选中态。
+   */
+  function setCodexPlusExtensionNavActive(pageId) {
+    setCodexPlusSidebarNavActive(false);
+    const entry = codexPlusExtensionItems(codexPlusRegistry.navEntries)
+      .find((item) => item.pageId === pageId);
+    const elementId = entry ? `codex-plus-ext-rail-${entry.id.replace(/[^\w-]/g, "_")}` : "";
+    // 先清掉所有拓展入口的选中态，避免两个页面之间切换时残留。
+    document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {
+      node.removeAttribute("data-codex-plus-ext-rail-active");
+      const button = node.querySelector("button") || node;
+      button?.removeAttribute("data-selected");
+      button?.removeAttribute("aria-current");
+    });
+    if (!elementId) return;
+    const wrapper = document.getElementById(elementId);
+    if (!wrapper) return;
+    wrapper.setAttribute("data-codex-plus-ext-rail-active", "true");
+    const button = wrapper.querySelector("button") || wrapper;
+    button.dataset.active = "true";
+    button.setAttribute("aria-current", "page");
+    button.setAttribute("data-selected", "");
+    // setCodexPlusSidebarNavActive(false) 内部的 sync 是在还没有选中项时跑的，
+    // 这里要再跑一次，否则原生选中态压制会基于过期状态。
+    syncCodexPlusRailNativeSelection();
+  }
+
+  /** 关闭当前拓展页面并执行其 onCleanup。 */
+  function closeCodexPlusPage() {
+    const cleanup = window.__codexPlusExtensionPageCleanup;
+    window.__codexPlusExtensionPageCleanup = null;
+    if (typeof cleanup === "function") {
+      try {
+        cleanup();
+      } catch {}
+    }
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
+    setCodexPlusSidebarNavActive(false);
+  }
+
+  /**
+   * 图标栏上的拓展入口。
+   *
+   * 与内置的三个入口并列插在 primary 锚点之后。内置项由
+   * installCodexPlusRailNavigation 负责，这里只补第三方项，靠 id 幂等。
+   */
+  function refreshCodexPlusRailNavigation() {
+    const rail = document.querySelector(codexPlusRailSelector);
+    if (!rail) return false;
+    const entries = codexPlusExtensionItems(codexPlusRegistry.navEntries);
+    if (!entries.length) return false;
+    const anchor = codexPlusRailPrimaryAnchor(rail);
+    const host = anchor?.parentElement || rail;
+    const template = codexPlusRailTemplateButton(rail);
+    let cursor = anchor;
+    // 内置三项先占位，第三方从它们之后开始排。
+    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
+      const node = document.getElementById(id);
+      if (node) cursor = node;
+    });
+    entries.forEach((entry) => {
+      const elementId = `codex-plus-ext-rail-${entry.id.replace(/[^\w-]/g, "_")}`;
+      let wrapper = document.getElementById(elementId);
+      if (!wrapper || wrapper.parentElement !== host) {
+        wrapper?.remove();
+        wrapper = createCodexPlusRailButton({
+          id: elementId,
+          template,
+          label: entry.label || entry.id,
+          iconMarkup: codexPlusExtensionIconMarkup(entry),
+          withStatus: false,
+          onActivate: () => {
+            // 注册时若带了 pageId 就打开对应页面；否则交给拓展自己的 onActivate。
+            const navigate = () => {
+              if (entry.pageId && codexPlusRegistry.pages.has(entry.pageId)) {
+                entry.navId = elementId;
+                openCodexPlusExtensionPage(entry.pageId);
+              } else if (typeof entry.onActivate === "function") {
+                runCodexPlusExtensionCallback(entry.scriptKey, "navEntry.onActivate", () => entry.onActivate());
+              }
+            };
+            navigate();
+          },
+        });
+        if (!wrapper) return;
+        markCodexPlusExtensionNode(wrapper, entry.scriptKey);
+        markCodexPlusExtensionNode(wrapper.firstElementChild || wrapper, entry.scriptKey);
+      }
+      if (cursor?.nextSibling) {
+        if (cursor.nextSibling !== wrapper) host.insertBefore(wrapper, cursor.nextSibling);
+      } else if (cursor) {
+        host.appendChild(wrapper);
+      }
+      cursor = wrapper;
+    });
+    return true;
+  }
+
+  /**
+   * 会话行「更多操作」里的拓展项。
+   *
+   * 由 attachButton 在构建 moreMenu 时调用。返回的节点直接 append 进菜单，
+   * 所以样式与内置项一致；点击后关闭菜单再执行回调。
+   */
+  function appendCodexPlusExtensionRowActions(moreMenu, row, moreButton) {
+    const items = codexPlusExtensionItems(codexPlusRegistry.rowActions);
+    if (!items.length) return;
+    items.forEach((definition) => {
+      const item = createSessionMoreMenuItem(definition.label || definition.id, definition.icon || "◇", (event) => {
+        stopActionButtonEvent(row, moreButton, event);
+        closeSessionMoreMenus();
+        runCodexPlusExtensionCallback(definition.scriptKey, "rowAction.onActivate", () =>
+          definition.onActivate({
+            row,
+            session_id: sessionRefFromRow(row).session_id,
+            close: () => closeSessionMoreMenus(),
+          }));
+      });
+      // 加分隔线：拓展项与内置项在语义上没有关联，挨着排会让人以为是一组。
+      item.dataset.codexPlusExtensionItem = definition.id;
+      markCodexPlusExtensionNode(item, definition.scriptKey);
+      moreMenu.appendChild(item);
+    });
+  }
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
@@ -11232,6 +11908,9 @@
       );
     }
     installCodexPlusNavigationEntries();
+    // 拓展注册的图标栏入口与内置入口走同一条刷新路径：rail 渲染晚于注入，
+    // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
+    refreshCodexPlusRailNavigation();
     installCodexPlusPageNavigationCloseHandler();
     installSessionShareImportListener();
     localizeCodexMenus();
@@ -12503,8 +13182,19 @@
     requestAnimationFrame(() => runScanStep(scanDeferred));
   }
 
+  /**
+   * 这个节点是不是 Codex++ 自己（或拓展）的 UI。
+   *
+   * 内置选择器写在这里；拓展通过注册中心登记的选择器走 isCodexPlusExtensionNode，
+   * 那边已把选择器合并成一个串并在 Set 变化时重建缓存，所以这里每次调用只多一次
+   * closest()，不会因为拓展数量增长而线性变慢。
+   */
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
+    if (!node?.closest) return false;
+    if (node.closest(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`)) {
+      return true;
+    }
+    return isCodexPlusExtensionNode(node);
   }
 
   function scanRelevantSelector() {
@@ -12653,6 +13343,10 @@
   document.removeEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
   window.__codexSessionActionTriggerClickHandler = rememberSessionActionTrigger;
   document.addEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
+  // 对外接口层在此刻挂载：此时所有分片都已执行完毕，闭包里的函数全部就绪。
+  // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
+  // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
+  window.codexPlus = buildCodexPlusExtensionApi();
 })();
 
 // === 粘贴修复 (CodexPlusPlus 页面增强) ===

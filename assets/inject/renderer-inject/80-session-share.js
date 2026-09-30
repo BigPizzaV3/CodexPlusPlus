@@ -44,10 +44,41 @@
     }
   }
 
-  function showToast(message, undoToken) {
-    document.querySelectorAll(".codex-delete-toast").forEach((node) => node.remove());
+  /**
+   * 同一时间最多显示几条 toast。
+   *
+   * 原来是「新 toast 顶掉旧 toast」的单例语义。拓展也能弹 toast 之后，单例会让
+   * 第三方提示把「删除成功（可撤销）」这类关键反馈挤掉，所以改成有界队列：超出
+   * 上限时挤掉最旧的一条，而不是最关键的当前一条。
+   */
+  const codexPlusToastLimit = 3;
+  const codexPlusToastLifetimeMs = 10000;
+
+  /**
+   * 显示一条提示。
+   *
+   * `options.type` 取 info / success / warn / error，对应 styles 里的四条配色；
+   * 不传则保持原先的默认外观。`options.undoToken` 会追加「撤销」按钮——这是
+   * 内部删除流程用的，拓展一般用不到。
+   */
+  function showToast(message, options = {}) {
+    // 兼容旧调用点：老签名是 showToast(message, undoToken)。第二个参数传字符串
+    // 时按 undoToken 处理，传对象时按新签名处理。
+    const settings = typeof options === "string" ? { undoToken: options } : (options || {});
+    const undoToken = settings.undoToken;
+    const type = typeof settings.type === "string" ? settings.type : "";
+    const live = document.querySelectorAll(".codex-delete-toast");
+    // 队列满时挤掉最旧的（DOM 顺序即插入顺序）。
+    if (live.length >= codexPlusToastLimit) {
+      for (let index = 0; index <= live.length - codexPlusToastLimit; index += 1) {
+        live[index].remove();
+      }
+    }
     const toast = document.createElement("div");
     toast.className = "codex-delete-toast";
+    if (type) toast.dataset.toastType = type;
+    // 多条并存时靠 bottom 偏移叠起来，否则会完全重合。
+    toast.style.bottom = `${18 + document.querySelectorAll(".codex-delete-toast").length * 48}px`;
     toast.textContent = message;
     if (undoToken) {
       const undo = document.createElement("button");
@@ -64,7 +95,8 @@
       toast.appendChild(undo);
     }
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 10000);
+    setTimeout(() => toast.remove(), codexPlusToastLifetimeMs);
+    return () => toast.remove();
   }
 
   function shareBase64Url(bytes) {

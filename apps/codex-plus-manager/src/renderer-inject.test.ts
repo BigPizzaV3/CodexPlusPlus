@@ -1276,3 +1276,176 @@ describe("renderer inject 分片与产物一致", () => {
     );
   });
 });
+
+/**
+ * 拓展接口层的契约测试。
+ *
+ * 这些测试把 01-registry.js 与 91-extension-api.js 的定义抽出来单独执行，
+ * 不依赖真实 DOM——注册中心本身刻意不读 DOM，正是为了让它可以这样被验证。
+ */
+describe("拓展注册中心", () => {
+  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  interface RegistryHarness {
+    registry: { rowActions: Map<string, unknown>; navEntries: Map<string, unknown>; pages: Map<string, unknown> };
+    register: (kind: string, reg: Map<string, unknown>, id: string, def: unknown, key: string) => () => void;
+    registerSelector: (selector: string) => boolean;
+    extensionSelector: () => string;
+    isExtensionNode: (node: unknown) => boolean;
+    items: (reg: Map<string, unknown>) => Array<Record<string, unknown>>;
+    runCallback: (key: string, label: string, cb: () => unknown) => { ok: boolean; value?: unknown; error?: string };
+    failures: () => Array<{ script_key: string; message: string }>;
+    registryLog: () => unknown[];
+  }
+
+  async function registryRuntime(): Promise<RegistryHarness> {
+    // 直接读注册中心分片本身：它刻意不读 DOM、不依赖 prelude 常量，所以能独立执行。
+    // 不要从产物里 indexOf 切片——注册中心与接口层之间隔着十来个分片，区间会失控。
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/01-registry.js", import.meta.url),
+      "utf8",
+    );
+
+    const windowValue: Record<string, unknown> = {};
+    const documentValue = {
+      // registerCodexPlusExtensionSelector 用空 fragment 验证选择器语法，
+      // 非法选择器会抛错，模拟这个方法就足以覆盖合法性判定。
+      createDocumentFragment: () => ({
+        querySelector: (selector: string) => {
+          if (/[<>]/.test(selector)) throw new Error("invalid selector");
+          return null;
+        },
+      }),
+    };
+    const factory = new Function(
+      "window",
+      "document",
+      `${source}
+return { codexPlusRegistry, registerCodexPlusExtension, registerCodexPlusExtensionSelector,
+  codexPlusExtensionSelector, isCodexPlusExtensionNode, codexPlusExtensionItems,
+  runCodexPlusExtensionCallback };`,
+    );
+    const api = factory(windowValue, documentValue) as Record<string, unknown>;
+    return {
+      registry: api.codexPlusRegistry as RegistryHarness["registry"],
+      register: api.registerCodexPlusExtension as RegistryHarness["register"],
+      registerSelector: api.registerCodexPlusExtensionSelector as RegistryHarness["registerSelector"],
+      extensionSelector: api.codexPlusExtensionSelector as RegistryHarness["extensionSelector"],
+      isExtensionNode: api.isCodexPlusExtensionNode as RegistryHarness["isExtensionNode"],
+      items: api.codexPlusExtensionItems as RegistryHarness["items"],
+      runCallback: api.runCodexPlusExtensionCallback as RegistryHarness["runCallback"],
+      failures: () => (windowValue.__codexPlusExtensionFailures || []) as Array<{ script_key: string; message: string }>,
+      registryLog: () => (windowValue.__codexPlusRegistryLog || []) as unknown[],
+    };
+  }
+
+  it("第三方项从 1000 起排，不会插到内置项前面", async () => {
+    const runtime = await registryRuntime();
+    runtime.register("rowAction", runtime.registry.rowActions, "builtin:a", { order: 10, onActivate() {} }, "builtin");
+    runtime.register("rowAction", runtime.registry.rowActions, "ext:b", { order: 5, onActivate() {} }, "user:x.js");
+    const items = runtime.items(runtime.registry.rowActions);
+    // 传入的 5 被抬到 1000：内置项永远排在拓展项之前。
+    assert.deepEqual(items.map((item) => item.id), ["builtin:a", "ext:b"]);
+    assert.equal(items[1].order, 1000);
+  });
+
+  it("按脚本配额限制注册数量，超出时抛错", async () => {
+    const runtime = await registryRuntime();
+    for (let index = 0; index < 16; index += 1) {
+      runtime.register("navEntry", runtime.registry.navEntries, `ext:${index}`, { onActivate() {} }, "user:noisy.js");
+    }
+    assert.throws(
+      () => runtime.register("navEntry", runtime.registry.navEntries, "ext:overflow", { onActivate() {} }, "user:noisy.js"),
+      /最多注册 16 项/,
+    );
+    // 另一个脚本不受影响。
+    assert.doesNotThrow(
+      () => runtime.register("navEntry", runtime.registry.navEntries, "ext:other", { onActivate() {} }, "user:other.js"),
+    );
+  });
+
+  it("拒绝重复 id 与缺少回调的定义", async () => {
+    const runtime = await registryRuntime();
+    runtime.register("page", runtime.registry.pages, "ext:p", { render() {} }, "user:x.js");
+    assert.throws(
+      () => runtime.register("page", runtime.registry.pages, "ext:p", { render() {} }, "user:x.js"),
+      /已被占用/,
+    );
+    assert.throws(
+      () => runtime.register("page", runtime.registry.pages, "ext:empty", {}, "user:x.js"),
+      /必须提供 render 或 onActivate/,
+    );
+  });
+
+  it("dispose 只移除自己注册的那一项", async () => {
+    const runtime = await registryRuntime();
+    const dispose = runtime.register("page", runtime.registry.pages, "ext:first", { render() {} }, "user:x.js");
+    runtime.register("page", runtime.registry.pages, "ext:second", { render() {} }, "user:y.js");
+    dispose();
+    assert.deepEqual([...runtime.registry.pages.keys()], ["ext:second"]);
+    // 重复 dispose 不应误删后来者。
+    dispose();
+    assert.deepEqual([...runtime.registry.pages.keys()], ["ext:second"]);
+  });
+
+  it("选择器登记拒绝非法语法，避免 closest() 在每次 mutation 上抛错", async () => {
+    const runtime = await registryRuntime();
+    assert.equal(runtime.registerSelector('[data-codex-plus-ext="a"]'), true);
+    assert.match(runtime.extensionSelector(), /data-codex-plus-ext/);
+    assert.equal(runtime.registerSelector("div << p"), false);
+    assert.equal(runtime.registerSelector(""), false);
+  });
+
+  it("回调抛错时记进该脚本的失败通道，不向调用方抛出", async () => {
+    const runtime = await registryRuntime();
+    const outcome = runtime.runCallback("user:broken.js", "rowAction.onActivate", () => {
+      throw new Error("boom");
+    });
+    assert.equal(outcome.ok, false);
+    assert.match(String(outcome.error), /boom/);
+    assert.equal(runtime.failures().length, 1);
+    assert.equal(runtime.failures()[0].script_key, "user:broken.js");
+  });
+});
+
+/**
+ * 对外接口层的护栏测试。
+ *
+ * 接口层挂在 window.codexPlus 上、面向第三方脚本，所以「哪些能力被开放」必须
+ * 有测试守着——新增路由时默认不开放，漏网才是 bug。
+ */
+describe("拓展接口层", () => {
+  const apiFragmentPath = new URL(
+    "../../../assets/inject/renderer-inject/91-extension-api.js",
+    import.meta.url,
+  );
+  const artifactPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  async function readRouteWhitelist(): Promise<string[]> {
+    const source = await readFile(apiFragmentPath, "utf8");
+    const start = source.indexOf("const codexPlusExtensionRoutes = new Set([");
+    const end = source.indexOf("]);", start);
+    assert.ok(start >= 0 && end > start, "找不到路由白名单");
+    const body = source.slice(start, end);
+    return Array.from(body.matchAll(/"([^"]+)"/g), ([, route]) => route);
+  }
+
+  it("路由白名单只放只读能力，不含设置写入与远端控制", async () => {
+    const routes = await readRouteWhitelist();
+    assert.ok(routes.length > 0, "白名单不能为空");
+    // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
+    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create"]) {
+      assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
+    }
+    assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
+  });
+
+  it("接口对象在 IIFE 收尾前挂载", async () => {
+    const renderer = await readFile(artifactPath, "utf8");
+    const mount = renderer.indexOf("window.codexPlus = buildCodexPlusExtensionApi();");
+    const tail = renderer.indexOf("\n})();\n");
+    assert.ok(mount >= 0, "找不到 window.codexPlus 的挂载点");
+    // 挂载必须在主 IIFE 结束之前，否则闭包里的函数已经不可达。
+    assert.ok(mount < tail, "挂载点必须位于 IIFE 收尾之前");
+  });
+});

@@ -45,6 +45,20 @@
 - 改动隔离 + opt-in，不破坏现有 per-profile 单值行为
 - 不做需求外的操作
 
+## 拓展接口约定
+
+`window.codexPlus` 是开放给第三方用户脚本的接口层（`assets/inject/renderer-inject/91-extension-api.js`）。
+改动这里要遵守：
+
+- **已发布的类名与 `codexPlus.constants` 不再更名**，新增用新名字。第三方脚本按字面量依赖它们。
+- **路由默认不开放**。`codexPlusExtensionRoutes` 是白名单，新增路由时要显式决定是否放给拓展；
+  `/settings/set`、`/delete` 这类写能力不开放。契约测试会守住这条。
+- **注册表持久、DOM 瞬态**。消费方不能缓存 DOM 引用，每次重建都要从注册中心读数据。
+  见 `01-registry.js` 顶部的生命周期说明。
+- **扫描调度**：拓展插入的节点必须带 `data-codex-plus-ext` 属性，否则会触发自喂扫描循环
+  （issue #1960）。选择器按「有归属/无归属」两档登记，不要按脚本逐个登记，会耗尽配额。
+- 改分片后必须跑 `node scripts/assemble-renderer-inject.mjs` 重新组装产物。
+
 ## 测试约定
 
 - 沿用上游 `#[test]` + tempfile 风格（见 `crates/codex-plus-core/tests/relay_config.rs`）

@@ -273,6 +273,10 @@
         pointer-events: none;
       }
       .codex-delete-toast button { margin-left: 10px; pointer-events: auto; }
+      /* 拓展与内置提示共用的类型配色。不传 type 时保持上面的默认外观。 */
+      .codex-delete-toast[data-toast-type="success"] { border-color: var(--codex-plus-success, #2f9e63); }
+      .codex-delete-toast[data-toast-type="warn"] { border-color: var(--codex-plus-warn, #b7791f); }
+      .codex-delete-toast[data-toast-type="error"] { border-color: var(--codex-plus-error, #c53030); }
       .codex-delete-confirm-overlay {
         position: fixed;
         inset: 0;

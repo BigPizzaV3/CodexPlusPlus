@@ -226,6 +226,9 @@
         sessionAutoRenameItem.__codexSessionAutoRenameRow = row;
         moreMenu.appendChild(sessionAutoRenameItem);
       }
+      // 拓展注册的会话行操作追加在内置项之后。菜单每次重建（版本号变化）都会
+      // 重新走一遍这里，所以拓展项不会因为重建而丢失。
+      appendCodexPlusExtensionRowActions(moreMenu, row, moreButton);
       const openMoreMenu = (event) => {
         stopActionButtonEvent(row, moreButton, event);
         hideActionButtonTooltip();

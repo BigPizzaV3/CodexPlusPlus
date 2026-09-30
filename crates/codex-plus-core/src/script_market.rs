@@ -28,8 +28,6 @@ pub struct MarketScript {
     #[serde(default)]
     pub homepage: String,
     pub script_url: String,
-    #[serde(default)]
-    pub sha256: String,
     /// 清单里的可选字段，详情页展示用；老条目没有则为空。
     #[serde(default)]
     pub requirements: Vec<String>,
@@ -244,7 +242,6 @@ fn parse_market_script(raw: Value) -> Option<MarketScript> {
             .unwrap_or_default(),
         homepage: optional_string(&raw, "homepage"),
         script_url,
-        sha256: optional_string(&raw, "sha256"),
         requirements: string_list(&raw, "requirements"),
         limitations: string_list(&raw, "limitations"),
         icon: optional_string(&raw, "icon"),

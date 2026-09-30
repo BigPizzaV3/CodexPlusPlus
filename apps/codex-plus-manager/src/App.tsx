@@ -897,7 +897,6 @@ type ScriptMarketItem = {
   tags: string[];
   homepage: string;
   script_url: string;
-  sha256: string;
   installed: boolean;
   installedVersion: string;
   updateAvailable: boolean;

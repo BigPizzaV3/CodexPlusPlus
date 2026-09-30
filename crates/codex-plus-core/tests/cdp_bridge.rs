@@ -2939,8 +2939,10 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
         .split_once("function showToast")
         .expect("refresh helper should end before toast helper")
         .0;
+    // 签名在开放拓展接口时改成 (message, options)：第二个参数既接受旧的
+    // undoToken 字符串，也接受 { undoToken, type } 对象，见 80-session-share.js。
     let toast = script
-        .split_once("function showToast(message, undoToken)")
+        .split_once("function showToast(message, options = {})")
         .expect("undo toast should exist")
         .1
         .split_once("function upstreamWorktreeField")

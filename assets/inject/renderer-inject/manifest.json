@@ -6,6 +6,11 @@
       "lines": 602
     },
     {
+      "name": "01-registry.js",
+      "description": "拓展注册中心、扩展选择器登记与失败上报",
+      "lines": 0
+    },
+    {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
       "lines": 2037
@@ -49,6 +54,16 @@
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
       "lines": 808
+    },
+    {
+      "name": "91-extension-api.js",
+      "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
+      "lines": 0
+    },
+    {
+      "name": "92-extension-host.js",
+      "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
+      "lines": 0
     },
     {
       "name": "95-conversation-view.js",

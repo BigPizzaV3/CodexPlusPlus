@@ -197,6 +197,9 @@
       );
     }
     installCodexPlusNavigationEntries();
+    // 拓展注册的图标栏入口与内置入口走同一条刷新路径：rail 渲染晚于注入，
+    // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
+    refreshCodexPlusRailNavigation();
     installCodexPlusPageNavigationCloseHandler();
     installSessionShareImportListener();
     localizeCodexMenus();
