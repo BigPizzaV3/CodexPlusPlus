@@ -124,11 +124,33 @@
    * 所以逐项 try/catch，任何一个不存在或抛错都不影响其余。
    */
   function codexPlusRefreshExtensionHosts() {
-    for (const refresh of [refreshCodexPlusPageNav, refreshCodexPlusRailNavigation, refreshExtensionSessionRows]) {
+    for (const refresh of [
+      refreshCodexPlusPageNav,
+      refreshCodexPlusRailNavigation,
+      refreshExtensionSessionRows,
+      refreshCodexPlusExtensionMenu,
+    ]) {
       try {
         refresh?.();
       } catch {}
     }
+  }
+
+  /**
+   * 已打开的菜单里补上／摘掉拓展项。
+   *
+   * 菜单是打开时一次性构建的 innerHTML，注册发生在它打开之后时不会自动出现。
+   * 这里只处理「已打开」这一种情况：整块替换掉带 data-codex-plus-ext-menu 的容器。
+   * 菜单没打开时什么都不做——下次打开自然会带上。
+   */
+  function refreshCodexPlusExtensionMenu() {
+    const overlay = document.querySelector(".codex-plus-modal-overlay, .codex-plus-page-overlay");
+    if (!overlay) return;
+    const panel = overlay.querySelector('[data-codex-plus-panel="home"]');
+    if (!panel) return;
+    panel.querySelector("[data-codex-plus-ext-menu]")?.remove();
+    const markup = renderCodexPlusExtensionMenuRows();
+    if (markup) panel.insertAdjacentHTML("beforeend", markup);
   }
 
   /** 会话行按钮重画：让扫描在下一轮把这些行重建，从而带上拓展的项。 */
@@ -177,6 +199,20 @@
       /** 加一个图标栏入口（点击后走 registerPage 注册的页面）。 */
       registerNavEntry(definition, options = {}) {
         return codexPlusRegisterExtensionItem("navEntry", codexPlusRegistry.navEntries, definition, options);
+      },
+
+      /**
+       * 在 Codex++ 菜单的「主页」面板里加一行。
+       *
+       * 两种形态，按 definition 里给的字段决定：
+       *   - 开关：给 `onChange(next)`，可选 `toggleValue()` 提供当前值
+       *   - 按钮：给 `onActivate({ close })`
+       *
+       * 这些是 Codex++ 自己的设置面板，改动会立刻反映到当前打开的菜单上；
+       * 菜单重新打开时会从 `toggleValue()` 重新读一次状态。
+       */
+      registerMenuItem(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("menuItem", codexPlusRegistry.menuItems, definition, options);
       },
 
       /**

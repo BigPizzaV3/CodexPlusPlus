@@ -1137,6 +1137,7 @@
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
               <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
             </div>
+            ${renderCodexPlusExtensionMenuRows()}
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
             <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${pageMode ? renderCodexPlusExtensionsDetail() : ""}</div>
@@ -1188,6 +1189,9 @@
     }, true);
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      // 拓展注册的菜单项。放在最前面是因为它的判定完全基于自己的 data 属性，
+      // 与下面那些内置分支不会重叠；万一将来重叠，也应当由拓展优先拿到。
+      if (handleCodexPlusExtensionMenuClick(target)) return;
       // 左面板的分组导航（仅拓展页有左面板）。
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {

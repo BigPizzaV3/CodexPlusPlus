@@ -629,6 +629,7 @@
     rowActions: new Map(),
     navEntries: new Map(),
     pages: new Map(),
+    menuItems: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -704,8 +705,11 @@
     if (registry.size >= codexPlusExtensionGlobalLimit) {
       throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
     }
-    if (definition && typeof definition.render !== "function" && typeof definition.onActivate !== "function") {
-      throw new Error(`拓展项 ${id} 必须提供 render 或 onActivate`);
+    // 每个类别至少要有一个可调用的钩子，否则注册进来也渲染不出东西。
+    // 菜单项的开关形态是 onChange，页面/入口是 render，其余是 onActivate。
+    const callbacks = ["render", "onActivate", "onChange", "onCleanup"];
+    if (definition && !callbacks.some((name) => typeof definition[name] === "function")) {
+      throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }
     const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
     // 内置项占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
@@ -5706,6 +5710,7 @@
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
               <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
             </div>
+            ${renderCodexPlusExtensionMenuRows()}
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
             <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${pageMode ? renderCodexPlusExtensionsDetail() : ""}</div>
@@ -5757,6 +5762,9 @@
     }, true);
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      // 拓展注册的菜单项。放在最前面是因为它的判定完全基于自己的 data 属性，
+      // 与下面那些内置分支不会重叠；万一将来重叠，也应当由拓展优先拿到。
+      if (handleCodexPlusExtensionMenuClick(target)) return;
       // 左面板的分组导航（仅拓展页有左面板）。
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {
@@ -11394,11 +11402,33 @@
    * 所以逐项 try/catch，任何一个不存在或抛错都不影响其余。
    */
   function codexPlusRefreshExtensionHosts() {
-    for (const refresh of [refreshCodexPlusPageNav, refreshCodexPlusRailNavigation, refreshExtensionSessionRows]) {
+    for (const refresh of [
+      refreshCodexPlusPageNav,
+      refreshCodexPlusRailNavigation,
+      refreshExtensionSessionRows,
+      refreshCodexPlusExtensionMenu,
+    ]) {
       try {
         refresh?.();
       } catch {}
     }
+  }
+
+  /**
+   * 已打开的菜单里补上／摘掉拓展项。
+   *
+   * 菜单是打开时一次性构建的 innerHTML，注册发生在它打开之后时不会自动出现。
+   * 这里只处理「已打开」这一种情况：整块替换掉带 data-codex-plus-ext-menu 的容器。
+   * 菜单没打开时什么都不做——下次打开自然会带上。
+   */
+  function refreshCodexPlusExtensionMenu() {
+    const overlay = document.querySelector(".codex-plus-modal-overlay, .codex-plus-page-overlay");
+    if (!overlay) return;
+    const panel = overlay.querySelector('[data-codex-plus-panel="home"]');
+    if (!panel) return;
+    panel.querySelector("[data-codex-plus-ext-menu]")?.remove();
+    const markup = renderCodexPlusExtensionMenuRows();
+    if (markup) panel.insertAdjacentHTML("beforeend", markup);
   }
 
   /** 会话行按钮重画：让扫描在下一轮把这些行重建，从而带上拓展的项。 */
@@ -11447,6 +11477,20 @@
       /** 加一个图标栏入口（点击后走 registerPage 注册的页面）。 */
       registerNavEntry(definition, options = {}) {
         return codexPlusRegisterExtensionItem("navEntry", codexPlusRegistry.navEntries, definition, options);
+      },
+
+      /**
+       * 在 Codex++ 菜单的「主页」面板里加一行。
+       *
+       * 两种形态，按 definition 里给的字段决定：
+       *   - 开关：给 `onChange(next)`，可选 `toggleValue()` 提供当前值
+       *   - 按钮：给 `onActivate({ close })`
+       *
+       * 这些是 Codex++ 自己的设置面板，改动会立刻反映到当前打开的菜单上；
+       * 菜单重新打开时会从 `toggleValue()` 重新读一次状态。
+       */
+      registerMenuItem(definition, options = {}) {
+        return codexPlusRegisterExtensionItem("menuItem", codexPlusRegistry.menuItems, definition, options);
       },
 
       /**
@@ -11729,6 +11773,67 @@
       cursor = wrapper;
     });
     return true;
+  }
+
+  /**
+   * 拓展注册的菜单项。
+   *
+   * 接入方式是「在 home 面板末尾追加一块」而不是把内置的一百多行模板拆成数组——
+   * 拆模板动的是内置 UI 主干，出问题会影响所有人；追加只影响新内容，回滚时删掉
+   * 这个调用即可。
+   *
+   * 每次 openCodexPlusModal 都会重新调用，所以不需要在别处维护刷新逻辑。
+   */
+  function renderCodexPlusExtensionMenuRows() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.menuItems);
+    if (!items.length) return "";
+    const rows = items.map((item) => {
+      const title = escapeHtml(item.label || item.id);
+      const description = escapeHtml(item.description || "");
+      // 有 onChange 的渲染成开关，否则渲染成动作按钮。
+      let control;
+      if (typeof item.onChange === "function") {
+        const enabled = typeof item.toggleValue === "function" ? item.toggleValue() === true : false;
+        control = `<button type="button" class="codex-plus-toggle" data-codex-plus-ext-setting="${escapeHtml(item.id)}" data-enabled="${String(enabled)}" aria-pressed="${String(enabled)}"><span></span></button>`;
+      } else {
+        control = `<button type="button" class="codex-plus-action-button" data-codex-plus-ext-action="${escapeHtml(item.id)}">${escapeHtml(item.buttonLabel || "打开")}</button>`;
+      }
+      return `<div class="codex-plus-row" data-codex-plus-ext-row="${escapeHtml(item.id)}">`
+        + `<div><div class="codex-plus-row-title">${title}</div>`
+        + (description ? `<div class="codex-plus-row-description">${description}</div>` : "")
+        + `</div>${control}</div>`;
+    }).join("");
+    // 整块包一层：dispose 后能一次性摘掉，测试也好定位。
+    return `<div data-codex-plus-ext-menu="true">${rows}</div>`;
+  }
+
+  /**
+   * 处理拓展菜单项的点击。
+   *
+   * 由 openCodexPlusModal 的委托监听调用；返回 true 表示已处理，调用方应 return。
+   */
+  function handleCodexPlusExtensionMenuClick(target) {
+    const action = target?.closest?.("[data-codex-plus-ext-action]");
+    if (action) {
+      const id = action.getAttribute("data-codex-plus-ext-action") || "";
+      const item = codexPlusRegistry.menuItems.get(id);
+      if (!item) return true;
+      runCodexPlusExtensionCallback(item.scriptKey, "menuItem.onActivate", () =>
+        item.onActivate({ close: () => document.querySelector(".codex-plus-modal-close")?.click() }));
+      return true;
+    }
+    const toggle = target?.closest?.("[data-codex-plus-ext-setting]");
+    if (toggle) {
+      const id = toggle.getAttribute("data-codex-plus-ext-setting") || "";
+      const item = codexPlusRegistry.menuItems.get(id);
+      if (!item) return true;
+      const next = toggle.getAttribute("data-enabled") !== "true";
+      toggle.setAttribute("data-enabled", String(next));
+      toggle.setAttribute("aria-pressed", String(next));
+      runCodexPlusExtensionCallback(item.scriptKey, "menuItem.onChange", () => item.onChange(next));
+      return true;
+    }
+    return false;
   }
 
   /**

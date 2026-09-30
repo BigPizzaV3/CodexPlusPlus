@@ -19,6 +19,7 @@
     rowActions: new Map(),
     navEntries: new Map(),
     pages: new Map(),
+    menuItems: new Map(),
   };
 
   /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
@@ -94,8 +95,11 @@
     if (registry.size >= codexPlusExtensionGlobalLimit) {
       throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
     }
-    if (definition && typeof definition.render !== "function" && typeof definition.onActivate !== "function") {
-      throw new Error(`拓展项 ${id} 必须提供 render 或 onActivate`);
+    // 每个类别至少要有一个可调用的钩子，否则注册进来也渲染不出东西。
+    // 菜单项的开关形态是 onChange，页面/入口是 render，其余是 onActivate。
+    const callbacks = ["render", "onActivate", "onChange", "onCleanup"];
+    if (definition && !callbacks.some((name) => typeof definition[name] === "function")) {
+      throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
     }
     const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
     // 内置项占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。

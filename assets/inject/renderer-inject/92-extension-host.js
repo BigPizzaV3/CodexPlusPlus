@@ -229,6 +229,67 @@
   }
 
   /**
+   * 拓展注册的菜单项。
+   *
+   * 接入方式是「在 home 面板末尾追加一块」而不是把内置的一百多行模板拆成数组——
+   * 拆模板动的是内置 UI 主干，出问题会影响所有人；追加只影响新内容，回滚时删掉
+   * 这个调用即可。
+   *
+   * 每次 openCodexPlusModal 都会重新调用，所以不需要在别处维护刷新逻辑。
+   */
+  function renderCodexPlusExtensionMenuRows() {
+    const items = codexPlusExtensionItems(codexPlusRegistry.menuItems);
+    if (!items.length) return "";
+    const rows = items.map((item) => {
+      const title = escapeHtml(item.label || item.id);
+      const description = escapeHtml(item.description || "");
+      // 有 onChange 的渲染成开关，否则渲染成动作按钮。
+      let control;
+      if (typeof item.onChange === "function") {
+        const enabled = typeof item.toggleValue === "function" ? item.toggleValue() === true : false;
+        control = `<button type="button" class="codex-plus-toggle" data-codex-plus-ext-setting="${escapeHtml(item.id)}" data-enabled="${String(enabled)}" aria-pressed="${String(enabled)}"><span></span></button>`;
+      } else {
+        control = `<button type="button" class="codex-plus-action-button" data-codex-plus-ext-action="${escapeHtml(item.id)}">${escapeHtml(item.buttonLabel || "打开")}</button>`;
+      }
+      return `<div class="codex-plus-row" data-codex-plus-ext-row="${escapeHtml(item.id)}">`
+        + `<div><div class="codex-plus-row-title">${title}</div>`
+        + (description ? `<div class="codex-plus-row-description">${description}</div>` : "")
+        + `</div>${control}</div>`;
+    }).join("");
+    // 整块包一层：dispose 后能一次性摘掉，测试也好定位。
+    return `<div data-codex-plus-ext-menu="true">${rows}</div>`;
+  }
+
+  /**
+   * 处理拓展菜单项的点击。
+   *
+   * 由 openCodexPlusModal 的委托监听调用；返回 true 表示已处理，调用方应 return。
+   */
+  function handleCodexPlusExtensionMenuClick(target) {
+    const action = target?.closest?.("[data-codex-plus-ext-action]");
+    if (action) {
+      const id = action.getAttribute("data-codex-plus-ext-action") || "";
+      const item = codexPlusRegistry.menuItems.get(id);
+      if (!item) return true;
+      runCodexPlusExtensionCallback(item.scriptKey, "menuItem.onActivate", () =>
+        item.onActivate({ close: () => document.querySelector(".codex-plus-modal-close")?.click() }));
+      return true;
+    }
+    const toggle = target?.closest?.("[data-codex-plus-ext-setting]");
+    if (toggle) {
+      const id = toggle.getAttribute("data-codex-plus-ext-setting") || "";
+      const item = codexPlusRegistry.menuItems.get(id);
+      if (!item) return true;
+      const next = toggle.getAttribute("data-enabled") !== "true";
+      toggle.setAttribute("data-enabled", String(next));
+      toggle.setAttribute("aria-pressed", String(next));
+      runCodexPlusExtensionCallback(item.scriptKey, "menuItem.onChange", () => item.onChange(next));
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * 会话行「更多操作」里的拓展项。
    *
    * 由 attachButton 在构建 moreMenu 时调用。返回的节点直接 append 进菜单，

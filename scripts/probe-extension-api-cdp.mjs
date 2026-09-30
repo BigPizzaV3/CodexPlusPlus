@@ -15,7 +15,10 @@ const port = process.argv[2] || "9229";
 const root = path.resolve(import.meta.dirname, "..");
 
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-const page = targets.find((t) => t.type === "page" && t.url.startsWith("app://-/index.html"));
+// 主窗口是 URL 不带 query 的那个。带 ?initialRoute= 的是桌宠浮层等辅助窗口，
+// 它们也有 app://-/index.html 前缀且不保证排在后面，靠顺序取第一个会连错。
+const page = targets.find((t) => t.type === "page" && t.url === "app://-/index.html")
+  || targets.find((t) => t.type === "page" && t.url.startsWith("app://-/index.html") && !t.url.includes("?"));
 if (!page) throw new Error("未找到 app://-/index.html 页面目标");
 
 const ws = new WebSocket(page.webSocketDebuggerUrl);

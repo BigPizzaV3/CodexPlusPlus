@@ -1287,7 +1287,7 @@ describe("拓展注册中心", () => {
   const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
 
   interface RegistryHarness {
-    registry: { rowActions: Map<string, unknown>; navEntries: Map<string, unknown>; pages: Map<string, unknown> };
+    registry: { rowActions: Map<string, unknown>; navEntries: Map<string, unknown>; pages: Map<string, unknown>; menuItems: Map<string, unknown> };
     register: (kind: string, reg: Map<string, unknown>, id: string, def: unknown, key: string) => () => void;
     registerSelector: (selector: string) => boolean;
     extensionSelector: () => string;
@@ -1373,7 +1373,18 @@ return { codexPlusRegistry, registerCodexPlusExtension, registerCodexPlusExtensi
     );
     assert.throws(
       () => runtime.register("page", runtime.registry.pages, "ext:empty", {}, "user:x.js"),
-      /必须提供 render 或 onActivate/,
+      /必须提供 render \/ onActivate/,
+    );
+  });
+
+  it("菜单项的开关形态（只给 onChange）不被校验误拒", async () => {
+    const runtime = await registryRuntime();
+    // 开关形态没有 render / onActivate，早期实现会把它当成非法定义拒掉。
+    assert.doesNotThrow(
+      () => runtime.register("menuItem", runtime.registry.menuItems, "ext:toggle", { onChange() {} }, "user:x.js"),
+    );
+    assert.doesNotThrow(
+      () => runtime.register("page", runtime.registry.pages, "ext:cleanup-only", { onCleanup() {} }, "user:x.js"),
     );
   });
 
@@ -1447,5 +1458,73 @@ describe("拓展接口层", () => {
     assert.ok(mount >= 0, "找不到 window.codexPlus 的挂载点");
     // 挂载必须在主 IIFE 结束之前，否则闭包里的函数已经不可达。
     assert.ok(mount < tail, "挂载点必须位于 IIFE 收尾之前");
+  });
+});
+
+/**
+ * 菜单项的接入方式护栏。
+ *
+ * 菜单的接入点是「在 home 面板模板末尾追加一块」，不是把内置的一百多行模板
+ * 拆成数据结构——后者会动到内置 UI 主干。这些断言守住这个决定，以及点击
+ * 委托的分支顺序。
+ */
+describe("拓展菜单项", () => {
+  const settingsPath = new URL(
+    "../../../assets/inject/renderer-inject/40-backend-settings.js",
+    import.meta.url,
+  );
+  const hostPath = new URL(
+    "../../../assets/inject/renderer-inject/92-extension-host.js",
+    import.meta.url,
+  );
+
+  it("内置菜单模板保持原样，只追加一个拓展挂载点", async () => {
+    const source = await readFile(settingsPath, "utf8");
+    // 挂载点在 home 面板里，且位于「提出问题」之后（即内置项末尾）。
+    const openIdx = source.indexOf("overlay.innerHTML = `");
+    const mountIdx = source.indexOf("${renderCodexPlusExtensionMenuRows()}");
+    const issueIdx = source.indexOf("提出问题");
+    assert.ok(mountIdx > 0, "找不到拓展菜单挂载点");
+    assert.ok(mountIdx > issueIdx, "挂载点应位于内置项之后");
+    // 关键：内置的行仍然是内联模板，没有被拆成数组。
+    assert.ok(
+      source.slice(openIdx, mountIdx).includes('class="codex-plus-row"'),
+      "内置菜单行应当仍是内联模板",
+    );
+    assert.ok(
+      !/const codexPlusBuiltinMenuRows\s*=/.test(source),
+      "不应把内置菜单行抽成数组",
+    );
+  });
+
+  it("点击委托里拓展分支排在内置分支之前", async () => {
+    const source = await readFile(settingsPath, "utf8");
+    const handler = source.indexOf('overlay.addEventListener("click"');
+    assert.ok(handler > 0, "找不到点击委托");
+    const body = source.slice(handler, handler + 600);
+    const extIdx = body.indexOf("handleCodexPlusExtensionMenuClick(target)");
+    const devtoolsIdx = body.indexOf("data-codex-open-devtools");
+    assert.ok(extIdx > 0, "点击委托应当调用拓展菜单处理器");
+    assert.ok(extIdx < devtoolsIdx, "拓展分支应排在内置分支之前");
+  });
+
+  it("开关与按钮分别渲染成不同的控件", async () => {
+    const source = await readFile(hostPath, "utf8");
+    const start = source.indexOf("function renderCodexPlusExtensionMenuRows()");
+    const end = source.indexOf("function handleCodexPlusExtensionMenuClick(", start);
+    assert.ok(start > 0 && end > start, "找不到菜单渲染函数");
+    const body = source.slice(start, end);
+    assert.match(body, /data-codex-plus-ext-setting/, "开关应有自己的 data 属性");
+    assert.match(body, /data-codex-plus-ext-action/, "按钮应有自己的 data 属性");
+    // 是追加到 home 面板，不是替换它。
+    assert.ok(!/panel\.innerHTML\s*=/.test(body), "不应整体替换面板内容");
+  });
+
+  it("菜单项失败经由脚本状态上报，不向调用方抛出", async () => {
+    const source = await readFile(hostPath, "utf8");
+    const start = source.indexOf("function handleCodexPlusExtensionMenuClick(");
+    const body = source.slice(start, start + 1400);
+    assert.match(body, /runCodexPlusExtensionCallback/, "回调必须经失败隔离包装");
+    assert.ok(!/try\s*{[\s\S]*item\.onActivate\(/.test(body), "不应裸调 onActivate");
   });
 });
