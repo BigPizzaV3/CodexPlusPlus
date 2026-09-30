@@ -80,8 +80,8 @@ jobs:
           $installer = Join-Path $PWD "dist/windows/CodexPlusPlus-$version-windows-x64-setup.exe"
           $installRoot = Join-Path $env:RUNNER_TEMP "codex-plus-plus-release-smoke"
           if (Test-Path $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force }
-          & $installer /S "/D=$installRoot"
-          if ($LASTEXITCODE -ne 0) { throw "Silent Windows install failed with exit code $LASTEXITCODE" }
+          $installerProcess = Start-Process -FilePath $installer -ArgumentList @("/S", "/D=$installRoot") -Wait -PassThru
+          if ($installerProcess.ExitCode -ne 0) { throw "Silent Windows install failed with exit code $($installerProcess.ExitCode)" }
           try {
             $runtimeRoot = Join-Path $installRoot "codex-taskboard"
             $runtimeFiles = @(
