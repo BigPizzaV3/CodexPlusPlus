@@ -564,7 +564,8 @@ impl SQLiteStorageAdapter {
             "assigned_thread_id = ?1",
             &[&thread_id],
         )?;
-        let file_backups = rollout_file_backups(tables.get("threads").and_then(Value::as_array));
+        let (file_backups, unreadable_rollouts) =
+            rollout_file_backups(tables.get("threads").and_then(Value::as_array));
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
         }
@@ -604,7 +605,11 @@ impl SQLiteStorageAdapter {
                 Some(&backup_path),
             ));
         }
-        let mut file_errors = Vec::new();
+        // issue #162：rollout 文件存在但两种视角都读取失败时，不允许静默报删除成功
+        let mut file_errors = unreadable_rollouts
+            .into_iter()
+            .map(|path| format!("{path}: 读取失败，未删除"))
+            .collect::<Vec<_>>();
         for file in file_backups {
             if let Some(path) = file.get("path").and_then(Value::as_str) {
                 if let Err(err) = fs::remove_file(path) {
@@ -1204,7 +1209,15 @@ fn allowed_backup_file_paths(tables: &Map<String, Value>) -> HashSet<String> {
         .flatten()
         .filter_map(|row| row.get("rollout_path").and_then(Value::as_str))
         .filter(|path| !path.trim().is_empty())
-        .map(ToString::to_string)
+        .flat_map(|path| {
+            // issue #162：__files 条目的 path 可能是互转后的可读写视角，
+            // 撤销校验需要同时放行原始写法与互转写法
+            let mut views = vec![path.to_string()];
+            if let Some(alternative) = wsl_path_alternative(path) {
+                views.push(alternative);
+            }
+            views
+        })
         .collect()
 }
 
@@ -1302,19 +1315,85 @@ fn delete_related_rows(
     Ok(())
 }
 
-fn rollout_file_backups(thread_rows: Option<&Vec<Value>>) -> Vec<Value> {
-    thread_rows
-        .into_iter()
-        .flatten()
-        .filter_map(|row| row.get("rollout_path").and_then(Value::as_str))
-        .filter_map(|path| {
-            let bytes = fs::read(path).ok()?;
-            Some(json!({
-                "path": path,
-                "content_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
-            }))
-        })
-        .collect()
+/// 为 threads 行里的每个 rollout 文件生成 `__files` 备份条目。
+///
+/// issue #162：WSL 模式下 codex 写入 `threads.rollout_path` 的是 WSL 视角路径
+/// （如 `/mnt/c/Users/.../rollout-xxx.jsonl`），Windows 侧进程按原路径读不到文件。
+/// 这里先按原路径读取，失败再尝试互转后的另一种视角（见 [`wsl_path_alternative`]）；
+/// 两种视角下文件都确实不存在时才跳过（与旧行为一致，视为文件已缺失）。
+/// 文件存在但读取失败时记入 unreadable，交由调用方拒绝静默成功。
+fn rollout_file_backups(thread_rows: Option<&Vec<Value>>) -> (Vec<Value>, Vec<String>) {
+    let mut entries = Vec::new();
+    let mut unreadable = Vec::new();
+    for row in thread_rows.into_iter().flatten() {
+        let Some(path) = row.get("rollout_path").and_then(Value::as_str) else {
+            continue;
+        };
+        if path.trim().is_empty() {
+            continue;
+        }
+        if let Ok(bytes) = fs::read(path) {
+            entries.push(rollout_file_backup_entry(path, path, bytes));
+            continue;
+        }
+        if let Some(alternative) = wsl_path_alternative(path) {
+            if let Ok(bytes) = fs::read(&alternative) {
+                entries.push(rollout_file_backup_entry(&alternative, path, bytes));
+                continue;
+            }
+            if Path::new(&alternative).is_file() {
+                unreadable.push(path.to_string());
+                continue;
+            }
+        }
+        if Path::new(path).is_file() {
+            unreadable.push(path.to_string());
+        }
+    }
+    (entries, unreadable)
+}
+
+/// `path` 用可读写视角（原路径或互转后的路径），`source_path` 保留 DB 里的原始
+/// 写法。删除与撤销都以 `path` 为准；两视角不同时附带 `source_path` 便于追溯。
+fn rollout_file_backup_entry(path: &str, source_path: &str, bytes: Vec<u8>) -> Value {
+    let mut entry = json!({
+        "path": path,
+        "content_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+    });
+    if path != source_path {
+        entry["source_path"] = Value::String(source_path.to_string());
+    }
+    entry
+}
+
+/// `/mnt/<盘符>/...` 与 `<盘符>:/...` 两种路径视角互转（issue #162）。
+///
+/// WSL 把 Windows 盘符挂载在 `/mnt/<盘符>` 下：同一文件在 WSL 侧写作
+/// `/mnt/c/Users/a.jsonl`，在 Windows 侧写作 `C:/Users/a.jsonl`（或反斜杠）。
+/// 只做字符串形式转换，不保证目标存在；路径不属于这两种形式时返回 None。
+fn wsl_path_alternative(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    if let Some(rest) = normalized.strip_prefix("/mnt/") {
+        let rest_bytes = rest.as_bytes();
+        if rest_bytes.len() > 1
+            && rest_bytes[0].is_ascii_alphabetic()
+            && rest_bytes[1] == b'/'
+            && rest.len() > 2
+        {
+            // 前两个字节是 ASCII，切片安全
+            let tail = &rest[2..];
+            let drive = rest_bytes[0].to_ascii_uppercase() as char;
+            return Some(format!("{drive}:/{tail}"));
+        }
+        return None;
+    }
+    let bytes = normalized.as_bytes();
+    if bytes.len() > 3 && bytes[1] == b':' && bytes[2] == b'/' && bytes[0].is_ascii_alphabetic() {
+        let drive = bytes[0].to_ascii_lowercase() as char;
+        let tail = &normalized[3..];
+        return Some(format!("/mnt/{drive}/{tail}"));
+    }
+    None
 }
 
 fn sql_value_to_json(value: ValueRef<'_>) -> Value {
@@ -1345,5 +1424,55 @@ pub(crate) fn json_to_sql_value(value: &Value) -> SqlValue {
         }
         Value::String(value) => SqlValue::Text(value.clone()),
         other => SqlValue::Text(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod wsl_path_tests {
+    use super::wsl_path_alternative;
+
+    #[test]
+    fn converts_wsl_mount_view_to_windows_drive_view() {
+        assert_eq!(
+            wsl_path_alternative("/mnt/c/Users/tom/.codex/sessions/a.jsonl").as_deref(),
+            Some("C:/Users/tom/.codex/sessions/a.jsonl")
+        );
+        assert_eq!(
+            wsl_path_alternative("/mnt/f/TEMP/rollout.jsonl").as_deref(),
+            Some("F:/TEMP/rollout.jsonl")
+        );
+    }
+
+    #[test]
+    fn converts_windows_drive_view_to_wsl_mount_view() {
+        assert_eq!(
+            wsl_path_alternative("C:\\Users\\tom\\.codex\\sessions\\a.jsonl").as_deref(),
+            Some("/mnt/c/Users/tom/.codex/sessions/a.jsonl")
+        );
+        assert_eq!(
+            wsl_path_alternative("C:/Users/tom/a.jsonl").as_deref(),
+            Some("/mnt/c/Users/tom/a.jsonl")
+        );
+    }
+
+    #[test]
+    fn roundtrip_between_views_is_stable() {
+        let windows = "D:/data/rollout-1.jsonl";
+        let wsl = wsl_path_alternative(windows).unwrap();
+        assert_eq!(wsl, "/mnt/d/data/rollout-1.jsonl");
+        assert_eq!(wsl_path_alternative(&wsl).as_deref(), Some(windows));
+    }
+
+    #[test]
+    fn rejects_paths_outside_both_views() {
+        // 非 /mnt/<盘符> 形式的 POSIX 路径不可互转
+        assert_eq!(wsl_path_alternative("/mnt/external/catalog.json"), None);
+        assert_eq!(wsl_path_alternative("/home/tom/a.jsonl"), None);
+        assert_eq!(wsl_path_alternative("mnt/c/a.jsonl"), None);
+        // 盘符后不是路径分隔符
+        assert_eq!(wsl_path_alternative("C:temp.jsonl"), None);
+        // 只有前缀没有剩余部分
+        assert_eq!(wsl_path_alternative("/mnt/c/"), None);
+        assert_eq!(wsl_path_alternative("C:/"), None);
     }
 }
