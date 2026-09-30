@@ -106,7 +106,7 @@
   // 「Fast 仅支持 …」的提示文案，塞进没验证过的模型等于对用户做出错误承诺。
   // 第三方模型（deepseek 等）走下面 codexServiceTierFastSupportedForModel 里的
   // 模型元数据判定：上游自己声明了 priority 才认。
-  ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
+  ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
 
   function uniqueCodexAppAssetUrls(urls) {
     return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && url.includes("/assets/") && url.split("?")[0].endsWith(".js"))));
