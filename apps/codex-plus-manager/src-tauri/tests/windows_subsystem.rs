@@ -82,6 +82,24 @@ fn manager_hides_macos_dock_icon_when_window_moves_to_tray() {
 }
 
 #[test]
+fn manager_reopens_hidden_window_when_macos_dock_requests_reopen() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("tauri::RunEvent::Reopen"));
+    assert!(lib_rs.contains("show_main_window(app_handle);"));
+}
+
+#[test]
+fn manager_second_instance_activates_existing_macos_bundle() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("codex_plus_core::install::MANAGER_BUNDLE_ID"));
+    assert!(lib_rs.contains("std::process::Command::new(\"/usr/bin/open\")"));
+}
+
+#[test]
 fn manager_queues_codexplusplus_provider_urls_for_confirmation_on_startup() {
     let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
         .expect("read manager main.rs");

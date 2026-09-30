@@ -206,14 +206,24 @@ pub fn run() {
     match app_result {
         Ok(app) => app.run(|app_handle, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = event {
-                for url in urls {
-                    if handle_session_share_url(url.as_str()) || handle_dream_skin_url(url.as_str())
-                    {
-                        show_main_window(app_handle);
+            match event {
+                tauri::RunEvent::Opened { urls } => {
+                    for url in urls {
+                        if handle_session_share_url(url.as_str())
+                            || handle_dream_skin_url(url.as_str())
+                        {
+                            show_main_window(app_handle);
+                        }
                     }
                 }
+                tauri::RunEvent::Reopen { .. } => {
+                    show_main_window(app_handle);
+                }
+                _ => {}
             }
+
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
         }),
         Err(error) => {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -494,9 +504,7 @@ fn set_manager_activation_policy<R: tauri::Runtime>(
 ) {
 }
 
-/// Restores and focuses an existing manager window on Windows.
-///
-/// This is a no-op on other platforms.
+/// Restores and focuses an existing manager window on desktop platforms.
 pub fn focus_existing_manager_window() {
     #[cfg(windows)]
     {
@@ -513,6 +521,13 @@ pub fn focus_existing_manager_window() {
                 break;
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .args(["-b", codex_plus_core::install::MANAGER_BUNDLE_ID])
+            .status();
     }
 }
 
