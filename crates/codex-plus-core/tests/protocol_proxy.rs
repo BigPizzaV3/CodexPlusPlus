@@ -643,6 +643,423 @@ fn remote_image_urls_are_untouched_for_glm() {
         .as_str()
         .expect("image part survives");
     assert_eq!(url, "https://example.com/a.png");
+fn remote_compaction_settings(base_url: &str, protocol: RelayProtocol) -> BackendSettings {
+    BackendSettings {
+        active_relay_id: "compact".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "compact".to_string(),
+            name: "compact".to_string(),
+            protocol,
+            base_url: base_url.to_string(),
+            api_key: "sk-compact".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            hide_official_usage_alert: false,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+async fn write_remote_compaction_response(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    body: &str,
+) {
+    write_remote_compaction_typed_response(stream, status, "application/json", body).await;
+}
+
+async fn write_remote_compaction_typed_response(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\ncontent-length: {}\r\ncontent-type: {content_type}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_falls_back_when_trigger_is_rejected() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = if index == 0 {
+                listener.accept().await.unwrap()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .expect("fallback request should arrive")
+                    .unwrap()
+            };
+            requests.push(
+                String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string(),
+            );
+            if index == 0 {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    r#"{"error":{"message":"unsupported compaction_trigger item"}}"#,
+                )
+                .await;
+            } else {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"COMPAT_SUMMARY"}]}]}"#,
+                )
+                .await;
+            }
+        }
+        requests
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [
+                { "type": "compaction_trigger" },
+                { "type": "message", "role": "user", "content": "history" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[0].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert_eq!(result.status_code, 200);
+    assert!(result.compaction);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("COMPAT_SUMMARY")
+    );
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_empty_output_falls_back_to_summary() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = if index == 0 {
+                listener.accept().await.unwrap()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .expect("fallback request should arrive")
+                    .unwrap()
+            };
+            requests.push(
+                String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string(),
+            );
+            let body = if index == 0 {
+                r#"{"id":"resp_empty","status":"completed","output":[]}"#
+            } else {
+                r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"FALLBACK_SUMMARY"}]}]}"#
+            };
+            write_remote_compaction_response(&mut stream, "200 OK", body).await;
+        }
+        requests
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [
+                { "type": "message", "role": "user", "content": "history" },
+                { "type": "compaction_trigger" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[0].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert_eq!(result.status_code, 200);
+    assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("FALLBACK_SUMMARY")
+    );
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_auth_error_is_not_retried_as_summary() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_response(
+            &mut stream,
+            "401 Unauthorized",
+            r#"{"error":{"message":"invalid API key"}}"#,
+        )
+        .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert_eq!(result.status_code, 401);
+    assert!(!result.native_compaction_passthrough);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("invalid API key")
+    );
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_stream_failure_is_forwarded_without_summary_retry() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let failure = concat!(
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",",
+        "\"status\":\"failed\",\"error\":{\"message\":\"upstream capacity exceeded\"}}}\n\n"
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_typed_response(&mut stream, "200 OK", "text/event-stream", failure)
+            .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert!(result.native_compaction_passthrough);
+    assert_eq!(
+        result.read_body().await.unwrap(),
+        failure.as_bytes().to_vec()
+    );
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_truncated_stream_is_not_retried() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let partial = concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+    );
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_typed_response(&mut stream, "200 OK", "text/event-stream", partial)
+            .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert!(result.native_compaction_passthrough);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("response.failed"));
+    assert!(body.contains("stream closed before response.completed"));
+    assert!(!body.contains("CONTEXT CHECKPOINT COMPACTION"));
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_json_native_item_becomes_full_sse() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_response(
+            &mut stream,
+            "200 OK",
+            r#"{"id":"resp_native","status":"completed","output":[{"id":"cmp_native","type":"compaction","encrypted_content":"OPAQUE_JSON"}]}"#,
+        )
+        .await;
+        let second = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, second.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("compaction_trigger"));
+    assert!(!retried);
+    assert!(result.native_compaction_passthrough);
+    assert!(result.is_stream);
+    let events = compaction_sse_events(&result.read_body().await.unwrap());
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "response.created",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.completed"
+        ]
+    );
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], index);
+    }
+    assert_eq!(events[2]["item"]["encrypted_content"], "OPAQUE_JSON");
+}
+
+#[tokio::test]
+async fn native_compaction_history_returns_responses_error_without_fallback() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
+        write_remote_compaction_response(
+            &mut stream,
+            "400 Bad Request",
+            r#"{"error":{"message":"unsupported compaction_trigger item"}}"#,
+        )
+        .await;
+        let fallback = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+        (request, fallback.is_ok())
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [
+                { "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" },
+                { "type": "compaction_trigger" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .expect("native history incompatibility is a Responses error, not a proxy failure");
+    let (request, retried) = server.await.unwrap();
+
+    assert!(request.contains("OPAQUE_NATIVE"));
+    assert!(!retried);
+    assert_eq!(result.status_code, 400);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("原生 v2 压缩历史"));
+    assert!(body.contains("compaction_incompatible"));
+}
+
+#[tokio::test]
+async fn native_compaction_history_on_chat_upstream_returns_responses_error() {
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": false,
+            "input": [
+                { "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" },
+                { "type": "compaction_trigger" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings("http://127.0.0.1:9/v1", RelayProtocol::ChatCompletions),
+    )
+    .await
+    .expect("chat conversion refusal is a Responses error, not a proxy failure");
+
+    assert_eq!(result.status_code, 400);
+    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+    assert!(body.contains("原生 v2 压缩历史"));
+    assert!(body.contains("compaction_incompatible"));
 }
 
 #[test]
@@ -813,9 +1230,8 @@ async fn responses_compact_request_keeps_compact_path_upstream() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buffer = [0; 4096];
-        let read = stream.read(&mut buffer).await.unwrap();
-        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        let request =
+            String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string();
         stream
             .write_all(
                 b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
@@ -2281,7 +2697,7 @@ async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u
         "stream": false,
         "tools": tools
     });
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         &serde_json::to_string(&request).unwrap(),
         settings,
     )
@@ -2289,8 +2705,7 @@ async fn strict_provider_accepts(tools: Value) -> Result<(Value, u16, Value), (u
     .expect("修复后：代理请求应成功完成（状态 200）");
     let status_code = result.status_code;
     let upstream_body = server.await.unwrap();
-    let response_body: Value =
-        serde_json::from_slice(&result.response.bytes().await.unwrap()).unwrap();
+    let response_body: Value = serde_json::from_slice(&result.read_body().await.unwrap()).unwrap();
     Ok((upstream_body, status_code, response_body))
 }
 
@@ -3587,16 +4002,16 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         relay.api_key.clear();
     }
 
-    let result = open_responses_proxy_request_with_settings(
+    let mut result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
         settings,
     )
     .await
     .unwrap();
-    let body = result.response.bytes().await.unwrap();
+    let body = result.read_body().await.unwrap();
 
     assert_eq!(result.status_code, 200);
-    assert_eq!(body.as_ref(), br#"{"id":"resp_1","object":"response"}"#);
+    assert_eq!(body, br#"{"id":"resp_1","object":"response"}"#.to_vec());
     let first_request = first_server.await.unwrap();
     let second_request = second_server.await.unwrap();
     assert!(
@@ -4218,14 +4633,14 @@ async fn image_generations_proxy_forwards_json_and_upstream_error() {
     });
     write_image_relay_settings(temp.path(), &format!("http://{addr}/v1"));
     let body = br#"{"model":"gpt-image-2","prompt":"draw a square"}"#;
-    let upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
+    let mut upstream = open_image_generations_proxy_request(body, Some("Image-Client/1.0"))
         .await
         .unwrap();
     assert_eq!(upstream.status_code, 429);
     assert_eq!(upstream.content_type, "application/problem+json");
     assert_eq!(
-        upstream.response.bytes().await.unwrap().as_ref(),
-        br#"{"error":{"message":"rate limited"}}"#
+        upstream.read_body().await.unwrap(),
+        br#"{"error":{"message":"rate limited"}}"#.to_vec()
     );
     let request = server.await.unwrap();
     let header_end = find_http_header_end(&request).unwrap();
@@ -5696,7 +6111,7 @@ async fn native_compaction_preserves_protocol_and_opaque_state() {
                 });
                 let settings =
                     model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
-                let result = open_responses_proxy_request_with_settings_for_path_and_beta(
+                let mut result = open_responses_proxy_request_with_settings_for_path_and_beta(
                     &request.to_string(),
                     settings,
                     "/v1/responses",
@@ -5708,7 +6123,10 @@ async fn native_compaction_preserves_protocol_and_opaque_state() {
                     !result.compaction,
                     "native Responses must not enter the synthetic wrapper"
                 );
-                assert_eq!(result.response.text().await.unwrap(), expected_response);
+                assert_eq!(
+                    String::from_utf8(result.read_body().await.unwrap()).unwrap(),
+                    expected_response
+                );
                 let (headers, sent) = server.await.unwrap();
                 assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
                 assert_eq!(

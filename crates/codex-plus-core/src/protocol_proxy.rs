@@ -161,38 +161,25 @@ const COMPACTION_SUMMARY_INSTRUCTION: &str = "You are performing a CONTEXT CHECK
 /// 历史回放时 `compaction` item 展开成的文本前缀（对齐 codex SUMMARY_PREFIX 语义）。
 const COMPACTION_REPLAY_PREFIX: &str = "Another language model started to solve this problem and produced a summary of its thinking process. Here is the summary produced by the other language model:\n";
 
-/// 判断 Responses 请求体是否为 codex v2 远程压缩请求：
-/// input 末尾（允许中间有尾随的空壳 item）存在 `compaction_trigger`。
+/// 判断 Responses 请求体是否为 codex v2 远程压缩请求。
+/// 当前 Codex 把 trigger 追加在 input 末尾；这里仍接受任意位置，避免漏检。
 pub fn request_has_compaction_trigger(body: &Value) -> bool {
     body.get("input")
         .and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .rev()
-                .find(|item| item.get("type").and_then(Value::as_str).is_some())
-                .map(|item| {
-                    item.get("type").and_then(Value::as_str) == Some(COMPACTION_TRIGGER_TYPE)
-                })
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some(COMPACTION_TRIGGER_TYPE)
+            })
         })
-        .unwrap_or(false)
 }
 
-/// 从请求 input 中剥离 `compaction_trigger` 控制项，返回去掉后的请求体。
-/// codex 只把它放在 input 末尾，其余位置的按未知类型忽略。
+/// 从请求 input 中剥离全部 compaction_trigger 控制项。
+/// 只在确认上游没有原生 compaction 项、需要改写成普通摘要时使用。
 fn strip_compaction_trigger(mut body: Value) -> Value {
-    if let Some(items) = body
-        .get_mut("input")
-        .and_then(Value::as_array_mut)
-        .filter(|items| !items.is_empty())
-    {
-        while items
-            .last()
-            .and_then(|item| item.get("type").and_then(Value::as_str))
-            == Some(COMPACTION_TRIGGER_TYPE)
-        {
-            items.pop();
-        }
+    if let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) {
+        items.retain(|item| {
+            item.get("type").and_then(Value::as_str) != Some(COMPACTION_TRIGGER_TYPE)
+        });
     }
     body
 }
@@ -562,10 +549,14 @@ pub struct UpstreamProxyResponse {
     pub content_type: String,
     pub is_stream: bool,
     pub wire_api: UpstreamWireApi,
-    /// 仅标记 Chat Completions 的合成摘要兼容路径；原生 Responses 保持透传。
-    /// 响应必须由代理重组为单个 `compaction` 输出项。
+    /// 仅标记需要代理重组的合成摘要兼容路径。
     pub compaction: bool,
-    pub response: reqwest::Response,
+    /// 原生上游已返回恰好一个 compaction 项或完整失败流时为真，
+    /// 调用方必须原样透传。
+    pub native_compaction_passthrough: bool,
+    /// 响应体已经读完。为 Some 时不要再读 response。
+    pub buffered_body: Option<Vec<u8>>,
+    pub response: Option<reqwest::Response>,
     pub(crate) _channel_permit: Option<crate::channel_protection::ChannelPermit>,
 }
 
@@ -601,6 +592,18 @@ impl UpstreamProxyResponse {
 
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status_code)
+    }
+
+    pub async fn read_body(&mut self) -> anyhow::Result<Vec<u8>> {
+        if let Some(body) = &self.buffered_body {
+            return Ok(body.clone());
+        }
+        let response = self.response.take().context("缺少上游响应")?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
+    pub fn take_response(&mut self) -> anyhow::Result<reqwest::Response> {
+        self.response.take().context("缺少上游响应")
     }
 }
 
@@ -1134,6 +1137,321 @@ fn extract_summary_text_from_chat(response: &Value) -> String {
         .to_string()
 }
 
+fn response_body_is_stream(content_type: &str, body: &[u8]) -> bool {
+    if content_type.contains("text/event-stream") {
+        return true;
+    }
+    let trimmed = body
+        .iter()
+        .copied()
+        .skip_while(|byte| byte.is_ascii_whitespace())
+        .take(6)
+        .collect::<Vec<_>>();
+    trimmed.starts_with(b"data:") || trimmed.starts_with(b"event:")
+}
+
+fn output_compaction_count(output: Option<&Value>) -> Option<usize> {
+    let items = output?.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE))
+            .count(),
+    )
+}
+
+fn json_compaction_count(value: &Value) -> Option<usize> {
+    if let Some(count) = output_compaction_count(value.get("output")) {
+        return Some(count);
+    }
+    value
+        .get("response")
+        .and_then(|response| output_compaction_count(response.get("output")))
+}
+
+/// 按 Codex 实际消费的 SSE item-done 事件统计原生压缩项。
+/// 非流式调用仍兼容 JSON output，但流式请求不能把 JSON 当作原生 v2 透传。
+fn upstream_compaction_item_count(body: &[u8], content_type: &str) -> Option<usize> {
+    if response_body_is_stream(content_type, body) {
+        let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
+        let mut count = 0;
+        for block in text.split("\n\n") {
+            let mut event_name = None;
+            let mut data_parts = Vec::new();
+            for line in block.lines() {
+                if let Some(event) = strip_sse_field(line, "event") {
+                    event_name = Some(event.trim());
+                }
+                if let Some(data) = strip_sse_field(line.trim_end_matches('\r'), "data") {
+                    data_parts.push(data);
+                }
+            }
+            if data_parts.is_empty() {
+                continue;
+            }
+            let data = data_parts.join("\n");
+            if data.trim() == "[DONE]" {
+                continue;
+            }
+            let Ok(json) = serde_json::from_str::<Value>(&data) else {
+                continue;
+            };
+            let event = event_name.or_else(|| json.get("type").and_then(Value::as_str));
+            match event {
+                Some("response.output_item.done")
+                    if json
+                        .get("item")
+                        .and_then(|item| item.get("type"))
+                        .and_then(Value::as_str)
+                        == Some(COMPACTION_OUTPUT_TYPE) =>
+                {
+                    json.get("item")?.get("encrypted_content")?.as_str()?;
+                    count += 1;
+                }
+                Some("response.completed") => {
+                    json.get("response")?.get("id")?.as_str()?;
+                    return Some(count);
+                }
+                Some("response.failed" | "response.incomplete" | "error") => return None,
+                _ => {}
+            }
+        }
+        return None;
+    }
+    let Ok(json) = serde_json::from_slice::<Value>(body) else {
+        return None;
+    };
+    json_compaction_count(&json)
+}
+
+fn compaction_input_rejected(status_code: u16, body: &[u8]) -> bool {
+    if status_code != 400 && status_code != 422 {
+        return false;
+    }
+    let text = String::from_utf8_lossy(body).to_ascii_lowercase();
+    if text.contains(COMPACTION_TRIGGER_TYPE) {
+        return true;
+    }
+    let mentions_item = text.contains("input")
+        || text.contains("item")
+        || text.contains("schema")
+        || text.contains("field")
+        || text.contains("parameter");
+    let unrecognized = text.contains("unknown")
+        || text.contains("unrecognized")
+        || text.contains("unsupported")
+        || text.contains("unexpected")
+        || text.contains("not supported")
+        || text.contains("invalid type")
+        || text.contains("invalid_type")
+        || text.contains("additional propert");
+    if unrecognized && mentions_item {
+        return true;
+    }
+    text.contains("invalid")
+        && text.contains("type")
+        && (text.contains("item") || text.contains("input"))
+}
+
+fn sse_block_type(block: &str) -> Option<String> {
+    let mut event_name = None;
+    let mut data_parts = Vec::new();
+    for line in block.lines() {
+        if let Some(event) = strip_sse_field(line, "event") {
+            event_name = Some(event.trim().to_string());
+        }
+        if let Some(data) = strip_sse_field(line.trim_end_matches('\r'), "data") {
+            data_parts.push(data);
+        }
+    }
+    if let Some(name) = event_name.filter(|name| !name.is_empty()) {
+        return Some(name);
+    }
+    let data = data_parts.join("\n");
+    let data = data.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str::<Value>(data).ok().and_then(|json| {
+        json.get("type")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    })
+}
+
+fn upstream_has_terminal_failure(body: &[u8], content_type: &str) -> bool {
+    if response_body_is_stream(content_type, body) {
+        let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
+        return text.split("\n\n").any(|block| {
+            matches!(
+                sse_block_type(block).as_deref(),
+                Some("response.failed" | "response.incomplete" | "error")
+            )
+        });
+    }
+    serde_json::from_slice::<Value>(body).is_ok_and(|json| {
+        json.get("error").is_some_and(|error| !error.is_null())
+            || matches!(
+                json.get("status").and_then(Value::as_str),
+                Some("failed" | "incomplete")
+            )
+    })
+}
+
+fn render_native_compaction_as_sse(body: &[u8]) -> Option<Vec<u8>> {
+    let json = serde_json::from_slice::<Value>(body).ok()?;
+    let response = if json.get("output").is_some() {
+        json
+    } else {
+        json.get("response")?.clone()
+    };
+    let output = response.get("output")?.as_array()?;
+    let mut compaction_items = output.iter().filter(|item| {
+        item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE)
+            && item
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .is_some()
+    });
+    let item = compaction_items.next()?.clone();
+    if compaction_items.next().is_some() {
+        return None;
+    }
+    let mut sse = String::new();
+    let mut created_response = response.clone();
+    created_response["status"] = json!("in_progress");
+    created_response["output"] = json!([]);
+    push_sse(
+        &mut sse,
+        "response.created",
+        json!({
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": created_response
+        }),
+    );
+    push_sse(
+        &mut sse,
+        "response.output_item.added",
+        json!({
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": item
+        }),
+    );
+    push_sse(
+        &mut sse,
+        "response.output_item.done",
+        json!({
+            "type": "response.output_item.done",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item": item
+        }),
+    );
+    push_sse(
+        &mut sse,
+        "response.completed",
+        json!({
+            "type": "response.completed",
+            "sequence_number": 3,
+            "response": response
+        }),
+    );
+    sse.push_str("data: [DONE]\n\n");
+    Some(sse.into_bytes())
+}
+
+fn incomplete_compaction_stream(body: &[u8]) -> Vec<u8> {
+    let mut output = String::from_utf8_lossy(body)
+        .into_owned()
+        .replace("\r\n", "\n");
+    if !output.is_empty() && !output.ends_with("\n\n") {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push('\n');
+    }
+    push_sse(
+        &mut output,
+        "response.failed",
+        json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_compact_incomplete",
+                "status": "failed",
+                "error": {
+                    "message": "remote compaction v2 stream closed before response.completed",
+                    "type": "stream_error"
+                }
+            }
+        }),
+    );
+    output.into_bytes()
+}
+
+#[derive(Debug)]
+struct NativeCompactionUnsupported {
+    message: &'static str,
+}
+
+impl NativeCompactionUnsupported {
+    fn history() -> Self {
+        Self {
+            message: "原生 v2 压缩历史无法由不支持 v2 的上游生成兼容摘要",
+        }
+    }
+}
+
+impl std::fmt::Display for NativeCompactionUnsupported {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for NativeCompactionUnsupported {}
+
+fn native_compaction_unsupported_result(
+    error: anyhow::Error,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    if error
+        .downcast_ref::<NativeCompactionUnsupported>()
+        .is_some()
+    {
+        let body = json!({
+            "error": {
+                "message": error.to_string(),
+                "type": "compaction_incompatible",
+                "code": "native_compaction_unsupported"
+            }
+        });
+        Ok(UpstreamProxyResponse {
+            status_code: 400,
+            content_type: "application/json".to_string(),
+            is_stream: false,
+            wire_api: UpstreamWireApi::Responses,
+            compaction: true,
+            native_compaction_passthrough: false,
+            buffered_body: Some(serde_json::to_vec(&body).unwrap_or_default()),
+            response: None,
+            _channel_permit: None,
+        })
+    } else {
+        Err(error)
+    }
+}
+
+fn input_has_native_compaction(body: &Value) -> bool {
+    let is_native =
+        |item: &Value| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE);
+    match body.get("input") {
+        Some(Value::Array(items)) => items.iter().any(is_native),
+        Some(Value::Object(_)) => is_native(&body["input"]),
+        _ => false,
+    }
+}
+
 /// 历史回放：把 codex 历史里的 `compaction` item 展开成明文 user 消息。
 /// codex 下游请求会把上次压缩结果作为 `{"type":"compaction","encrypted_content":"..."}`
 /// 放进 input，第三方模型看不懂该类型，必须转成文本。
@@ -1484,175 +1802,363 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     let mut cooldown_retries = 0_usize;
     'request: loop {
         for (attempt, relay) in relays.iter().cloned().enumerate() {
-        validate_upstream(&relay)?;
-        let channel_key = crate::channel_protection::key_for_relay(&relay);
-        let channel_permit =
-            crate::channel_protection::acquire(&channel_key, &relay).await;
-        let model_override = aggregate_upstream_model_override(&settings, &relay);
-        let (endpoint, upstream_body, wire_api, compaction) = upstream_request_parts(
-            &relay,
-            request_json.clone(),
-            request_path,
-            model_override.as_deref(),
-        )
-        .await?;
-        let is_compaction_request = compaction;
-        let has_more_candidates = attempt + 1 < relay_count;
-        let header_timeout = response_header_timeout(is_stream);
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "protocol_proxy.upstream_request",
-            json!({
-                "relayId": relay.id,
-                "relayName": relay.name,
-                "endpoint": endpoint,
-                "wireApi": wire_api,
-                "stream": is_stream,
-                "attempt": attempt + 1,
-                "candidateCount": relay_count,
-                "headerTimeoutSeconds": header_timeout.as_secs(),
-                "modelRoute": model_route.as_ref().map(|route| json!({
-                    "sourceRelayId": route.source_relay_id,
-                    "sourceModel": route.source_model,
-                    "targetRelayId": route.relay.id,
-                    "upstreamModel": route.upstream_model
-                }))
-            }),
-        );
-        let mut builder = upstream_request_builder(
-            crate::http_client::proxied_client(&effective_user_agent(
-                &relay.user_agent,
-                original_user_agent,
-            ))?,
-            &endpoint,
-            &relay,
-            is_stream,
-            &upstream_body,
-        );
-        builder = with_client_session_headers(builder, &relay, session_headers);
-        if wire_api == UpstreamWireApi::Responses {
-            if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
-                builder = builder.header("x-codex-beta-features", value);
-            }
-        }
-        let upstream = match send_upstream_request_for_responses(builder, is_stream).await {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                drop(channel_permit);
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "protocol_proxy.upstream_request_failed",
-                    json!({
-                        "relayId": relay.id,
-                        "relayName": relay.name,
-                        "endpoint": endpoint,
-                        "wireApi": wire_api,
-                        "stream": is_stream,
-                        "attempt": attempt + 1,
-                        "candidateCount": relay_count,
-                        "headerTimeoutSeconds": header_timeout.as_secs(),
-                        "willFailover": has_more_candidates,
-                        "error": error.to_string()
-                    }),
-                );
-                crate::relay_rotation::record_relay_request_failure(&settings);
-                if has_more_candidates {
-                    continue;
-                }
-                return Err(error).with_context(|| {
-                    format!(
-                        "供应商「{}」请求上游失败，endpoint: {}",
-                        relay.name, endpoint
-                    )
-                });
-            }
-        };
-        let status_code = upstream.status().as_u16();
-        let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "protocol_proxy.upstream_response",
-            json!({
-                "relayId": relay.id,
-                "relayName": relay.name,
-                "endpoint": endpoint,
-                "wireApi": wire_api,
-                "stream": is_stream,
-                "statusCode": status_code,
-                "attempt": attempt + 1,
-                "candidateCount": relay_count,
-                "headerTimeoutSeconds": header_timeout.as_secs(),
-                "willFailover": has_more_candidates && !(200..300).contains(&status_code)
-            }),
-        );
-        crate::relay_rotation::record_relay_request_event(
-            &settings,
-            if (200..300).contains(&status_code) {
-                RotationEvent::Success
-            } else {
-                RotationEvent::Failure
-            },
-        );
-        let content_type = upstream
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        if (200..300).contains(&status_code) || !has_more_candidates {
-            if !(200..300).contains(&status_code) {
-                let cooldown_started = crate::channel_protection::mark_failure(
-                    &channel_key,
+            validate_upstream(&relay)?;
+            let channel_key = crate::channel_protection::key_for_relay(&relay);
+            let mut channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
+            let model_override = aggregate_upstream_model_override(&settings, &relay);
+            let preserve_native_request = relay.protocol == RelayProtocol::Responses
+                && (request_has_compaction_trigger(&request_json)
+                    || is_responses_compact_proxy_path(request_path));
+            let probe_native_compaction = request_has_compaction_trigger(&request_json)
+                && relay.protocol == RelayProtocol::Responses
+                && !is_responses_compact_proxy_path(request_path);
+            let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
+                match upstream_request_parts(
                     &relay,
-                    status_code,
-                    retry_after,
+                    request_json.clone(),
+                    request_path,
+                    model_override.as_deref(),
+                    preserve_native_request,
                 )
-                .await;
-                if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
-                    cooldown_retries = cooldown_retries.saturating_add(1);
+                .await
+                {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        drop(channel_permit);
+                        return native_compaction_unsupported_result(error);
+                    }
+                };
+            let is_compaction_request = compaction || probe_native_compaction;
+            let has_more_candidates = attempt + 1 < relay_count;
+            let header_timeout = response_header_timeout(is_stream);
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.upstream_request",
+                json!({
+                    "relayId": relay.id,
+                    "relayName": relay.name,
+                    "endpoint": endpoint,
+                    "wireApi": wire_api,
+                    "stream": is_stream,
+                    "attempt": attempt + 1,
+                    "candidateCount": relay_count,
+                    "headerTimeoutSeconds": header_timeout.as_secs(),
+                    "modelRoute": model_route.as_ref().map(|route| json!({
+                        "sourceRelayId": route.source_relay_id,
+                        "sourceModel": route.source_model,
+                        "targetRelayId": route.relay.id,
+                        "upstreamModel": route.upstream_model
+                    }))
+                }),
+            );
+            let mut upstream = match send_responses_upstream_request(
+                &relay,
+                &endpoint,
+                &upstream_body,
+                wire_api,
+                is_stream,
+                original_user_agent,
+                beta_features,
+                session_headers,
+            )
+            .await
+            {
+                Ok(upstream) => upstream,
+                Err(error) => {
                     drop(channel_permit);
                     let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "protocol_proxy.channel_cooldown_retry",
+                        "protocol_proxy.upstream_request_failed",
                         json!({
                             "relayId": relay.id,
                             "relayName": relay.name,
-                            "statusCode": status_code,
-                            "retryAfterSeconds": retry_after.map(|value| value.as_secs()),
-                            "retry": cooldown_retries
+                            "endpoint": endpoint,
+                            "wireApi": wire_api,
+                            "stream": is_stream,
+                            "attempt": attempt + 1,
+                            "candidateCount": relay_count,
+                            "headerTimeoutSeconds": header_timeout.as_secs(),
+                            "willFailover": has_more_candidates,
+                            "error": error.to_string()
                         }),
                     );
-                    continue 'request;
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    if has_more_candidates {
+                        continue;
+                    }
+                    return Err(error).with_context(|| {
+                        format!(
+                            "供应商「{}」请求上游失败，endpoint: {}",
+                            relay.name, endpoint
+                        )
+                    });
                 }
+            };
+            let mut status_code = upstream.status().as_u16();
+            let mut content_type = upstream
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+
+            if probe_native_compaction {
+                let success = (200..300).contains(&status_code);
+                let probed = match upstream.bytes().await {
+                    Ok(body) => body.to_vec(),
+                    Err(error) => {
+                        drop(channel_permit);
+                        return Err(error.into());
+                    }
+                };
+                let stream_response = response_body_is_stream(&content_type, &probed);
+                drop(channel_permit);
+
+                if success && upstream_has_terminal_failure(&probed, &content_type) {
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    return Ok(UpstreamProxyResponse {
+                        status_code,
+                        is_stream: stream_response,
+                        content_type,
+                        wire_api,
+                        compaction: false,
+                        native_compaction_passthrough: stream_response,
+                        buffered_body: Some(probed),
+                        response: None,
+                        _channel_permit: None,
+                    });
+                }
+                if success && stream_response {
+                    match upstream_compaction_item_count(&probed, &content_type) {
+                        Some(1) => {
+                            crate::relay_rotation::record_relay_request_event(
+                                &settings,
+                                RotationEvent::Success,
+                            );
+                            return Ok(UpstreamProxyResponse {
+                                status_code,
+                                is_stream: true,
+                                content_type,
+                                wire_api,
+                                compaction: false,
+                                native_compaction_passthrough: true,
+                                buffered_body: Some(probed),
+                                response: None,
+                                _channel_permit: None,
+                            });
+                        }
+                        None => {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                            return Ok(UpstreamProxyResponse {
+                                status_code,
+                                is_stream: true,
+                                content_type: "text/event-stream".to_string(),
+                                wire_api,
+                                compaction: false,
+                                native_compaction_passthrough: true,
+                                buffered_body: Some(incomplete_compaction_stream(&probed)),
+                                response: None,
+                                _channel_permit: None,
+                            });
+                        }
+                        Some(_) => {}
+                    }
+                } else if success
+                    && upstream_compaction_item_count(&probed, &content_type) == Some(1)
+                {
+                    crate::relay_rotation::record_relay_request_event(
+                        &settings,
+                        RotationEvent::Success,
+                    );
+                    if !is_stream {
+                        return Ok(UpstreamProxyResponse {
+                            status_code,
+                            is_stream: false,
+                            content_type,
+                            wire_api,
+                            compaction: false,
+                            native_compaction_passthrough: true,
+                            buffered_body: Some(probed),
+                            response: None,
+                            _channel_permit: None,
+                        });
+                    }
+                    if let Some(sse) = render_native_compaction_as_sse(&probed) {
+                        return Ok(UpstreamProxyResponse {
+                            status_code,
+                            is_stream: true,
+                            content_type: "text/event-stream".to_string(),
+                            wire_api,
+                            compaction: false,
+                            native_compaction_passthrough: true,
+                            buffered_body: Some(sse),
+                            response: None,
+                            _channel_permit: None,
+                        });
+                    }
+                }
+                if !success && !compaction_input_rejected(status_code, &probed) {
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    if has_more_candidates {
+                        continue;
+                    }
+                    return Ok(UpstreamProxyResponse {
+                        status_code,
+                        is_stream: false,
+                        content_type,
+                        wire_api,
+                        compaction: false,
+                        native_compaction_passthrough: false,
+                        buffered_body: Some(probed),
+                        response: None,
+                        _channel_permit: None,
+                    });
+                }
+
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.compaction_fallback",
+                    json!({
+                        "relayId": relay.id,
+                        "statusCode": status_code,
+                    }),
+                );
+                let fallback = upstream_request_parts(
+                    &relay,
+                    request_json.clone(),
+                    request_path,
+                    model_override.as_deref(),
+                    false,
+                )
+                .await;
+                let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
+                    Ok(parts) => parts,
+                    Err(error) => return native_compaction_unsupported_result(error),
+                };
+                endpoint = fallback_endpoint;
+                upstream_body = fallback_body;
+                wire_api = fallback_wire;
+                channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
+                upstream = match send_responses_upstream_request(
+                    &relay,
+                    &endpoint,
+                    &upstream_body,
+                    wire_api,
+                    is_stream,
+                    original_user_agent,
+                    beta_features,
+                    session_headers,
+                )
+                .await
+                {
+                    Ok(upstream) => upstream,
+                    Err(error) => {
+                        drop(channel_permit);
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "protocol_proxy.upstream_request_failed",
+                            json!({
+                                "relayId": relay.id,
+                                "endpoint": endpoint,
+                                "compactionFallback": true,
+                                "error": error.to_string()
+                            }),
+                        );
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                        if has_more_candidates {
+                            continue;
+                        }
+                        return Err(error).with_context(|| {
+                            format!(
+                                "供应商「{}」请求上游失败，endpoint: {}",
+                                relay.name, endpoint
+                            )
+                        });
+                    }
+                };
+                status_code = upstream.status().as_u16();
+                content_type = upstream
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
             }
-            return Ok(UpstreamProxyResponse {
-                status_code,
-                is_stream: is_stream || content_type.contains("text/event-stream"),
-                content_type,
-                wire_api,
-                compaction: is_compaction_request,
-                response: upstream,
-                _channel_permit: Some(channel_permit),
-            });
-        }
-        crate::channel_protection::mark_failure(
-            &channel_key,
-            &relay,
-            status_code,
-            retry_after,
-        )
-        .await;
-        drop(channel_permit);
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "protocol_proxy.upstream_failover",
-            json!({
-                "relayId": relay.id,
-                "relayName": relay.name,
-                "endpoint": endpoint,
-                "wireApi": wire_api,
-                "stream": is_stream,
-                "statusCode": status_code,
-                "attempt": attempt + 1,
-                "candidateCount": relay_count,
-                "headerTimeoutSeconds": header_timeout.as_secs()
-            }),
-        );
+
+            let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.upstream_response",
+                json!({
+                    "relayId": relay.id,
+                    "relayName": relay.name,
+                    "endpoint": endpoint,
+                    "wireApi": wire_api,
+                    "stream": is_stream,
+                    "statusCode": status_code,
+                    "attempt": attempt + 1,
+                    "candidateCount": relay_count,
+                    "headerTimeoutSeconds": header_timeout.as_secs(),
+                    "willFailover": has_more_candidates && !(200..300).contains(&status_code)
+                }),
+            );
+            crate::relay_rotation::record_relay_request_event(
+                &settings,
+                if (200..300).contains(&status_code) {
+                    RotationEvent::Success
+                } else {
+                    RotationEvent::Failure
+                },
+            );
+            if (200..300).contains(&status_code) || !has_more_candidates {
+                if !(200..300).contains(&status_code) {
+                    let cooldown_started = crate::channel_protection::mark_failure(
+                        &channel_key,
+                        &relay,
+                        status_code,
+                        retry_after,
+                    )
+                    .await;
+                    if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
+                        cooldown_retries = cooldown_retries.saturating_add(1);
+                        drop(channel_permit);
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "protocol_proxy.channel_cooldown_retry",
+                            json!({
+                                "relayId": relay.id,
+                                "relayName": relay.name,
+                                "statusCode": status_code,
+                                "retryAfterSeconds": retry_after.map(|value| value.as_secs()),
+                                "retry": cooldown_retries
+                            }),
+                        );
+                        continue 'request;
+                    }
+                }
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: is_stream || content_type.contains("text/event-stream"),
+                    content_type,
+                    wire_api,
+                    compaction: is_compaction_request,
+                    native_compaction_passthrough: false,
+                    buffered_body: None,
+                    response: Some(upstream),
+                    _channel_permit: Some(channel_permit),
+                });
+            }
+            crate::channel_protection::mark_failure(&channel_key, &relay, status_code, retry_after)
+                .await;
+            drop(channel_permit);
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.upstream_failover",
+                json!({
+                    "relayId": relay.id,
+                    "relayName": relay.name,
+                    "endpoint": endpoint,
+                    "wireApi": wire_api,
+                    "stream": is_stream,
+                    "statusCode": status_code,
+                    "attempt": attempt + 1,
+                    "candidateCount": relay_count,
+                    "headerTimeoutSeconds": header_timeout.as_secs()
+                }),
+            );
         }
         anyhow::bail!("未找到可用的聚合供应商成员")
     }
@@ -1751,7 +2257,9 @@ pub async fn open_models_proxy_request(
         content_type,
         wire_api: UpstreamWireApi::Responses,
         compaction: false,
-        response: upstream,
+        native_compaction_passthrough: false,
+        buffered_body: None,
+        response: Some(upstream),
         _channel_permit: None,
     })
 }
@@ -1802,7 +2310,9 @@ pub async fn open_audio_transcriptions_proxy_request(
         content_type,
         wire_api: UpstreamWireApi::AudioTranscriptions,
         compaction: false,
-        response: upstream,
+        native_compaction_passthrough: false,
+        buffered_body: None,
+        response: Some(upstream),
         _channel_permit: None,
     })
 }
@@ -1935,7 +2445,9 @@ async fn open_image_proxy_request(
         content_type,
         wire_api,
         compaction: false,
-        response: upstream,
+        native_compaction_passthrough: false,
+        buffered_body: None,
+        response: Some(upstream),
         _channel_permit: None,
     })
 }
@@ -1972,8 +2484,7 @@ pub async fn open_chat_completions_proxy_request(
     let channel_key = crate::channel_protection::key_for_relay(&relay);
     let mut cooldown_retries = 0_usize;
     loop {
-        let channel_permit =
-            crate::channel_protection::acquire(&channel_key, &relay).await;
+        let channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
         let request = crate::http_client::proxied_client(&effective_user_agent(
             &relay.user_agent,
             original_user_agent,
@@ -2027,7 +2538,9 @@ pub async fn open_chat_completions_proxy_request(
             content_type,
             wire_api: UpstreamWireApi::ChatCompletions,
             compaction: false,
-            response: upstream,
+            native_compaction_passthrough: false,
+            buffered_body: None,
+            response: Some(upstream),
             _channel_permit: Some(channel_permit),
         });
     }
@@ -2038,15 +2551,24 @@ async fn upstream_request_parts(
     mut request_json: Value,
     request_path: &str,
     model_override: Option<&str>,
+    preserve_compaction_trigger: bool,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi, bool)> {
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
-    // 原生 Responses 状态必须来自上游，不能以普通摘要冒充加密状态。
-    let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
-    if synthetic_compaction {
-        request_json = rewrite_request_for_compaction(strip_compaction_trigger(request_json));
+    if relay.protocol == RelayProtocol::ChatCompletions
+        && input_has_native_compaction(&request_json)
+    {
+        return Err(NativeCompactionUnsupported::history().into());
     }
+    // 原生 v2 上游要先看到 compaction_trigger。只有确认它没有返回 compaction 项后才剥掉重试。
+    if compact && !preserve_compaction_trigger {
+        request_json = rewrite_request_for_compaction(strip_compaction_trigger(request_json));
+        if input_has_native_compaction(&request_json) {
+            return Err(NativeCompactionUnsupported::history().into());
+        }
+    }
+    let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
     if let Some(model) = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2136,6 +2658,35 @@ async fn upstream_request_parts(
         wire_api,
         synthetic_compaction,
     ))
+}
+
+async fn send_responses_upstream_request(
+    relay: &crate::settings::RelayProfile,
+    endpoint: &str,
+    upstream_body: &Value,
+    wire_api: UpstreamWireApi,
+    is_stream: bool,
+    original_user_agent: Option<&str>,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+) -> anyhow::Result<reqwest::Response> {
+    let mut builder = upstream_request_builder(
+        crate::http_client::proxied_client(&effective_user_agent(
+            &relay.user_agent,
+            original_user_agent,
+        ))?,
+        endpoint,
+        relay,
+        is_stream,
+        upstream_body,
+    );
+    builder = with_client_session_headers(builder, relay, session_headers);
+    if wire_api == UpstreamWireApi::Responses {
+        if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
+            builder = builder.header("x-codex-beta-features", value);
+        }
+    }
+    send_upstream_request_for_responses(builder, is_stream).await
 }
 
 fn upstream_request_builder(
@@ -2229,13 +2780,13 @@ fn effective_user_agent(configured_user_agent: &str, original_user_agent: Option
 
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
     let request_json: Value = serde_json::from_str(body)?;
-    let upstream = open_responses_proxy_request(body, None).await?;
+    let mut upstream = open_responses_proxy_request(body, None).await?;
     let is_compaction = upstream.compaction;
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
     let is_stream = upstream.is_stream;
     let wire_api = upstream.wire_api;
-    let upstream_body = upstream.response.bytes().await?;
+    let upstream_body = upstream.read_body().await?;
 
     if !(200..300).contains(&status_code) {
         let error =
@@ -2244,6 +2795,22 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             status: http_status_line(status_code),
             content_type: "application/json; charset=utf-8".to_string(),
             body: serde_json::to_vec(&error)?,
+        });
+    }
+
+    if upstream.native_compaction_passthrough {
+        return Ok(ProxyHttpResponse {
+            status: "200 OK".to_string(),
+            content_type: if upstream_content_type.is_empty() {
+                if is_stream {
+                    "text/event-stream; charset=utf-8".to_string()
+                } else {
+                    "application/json; charset=utf-8".to_string()
+                }
+            } else {
+                upstream_content_type
+            },
+            body: upstream_body,
         });
     }
 
