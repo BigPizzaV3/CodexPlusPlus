@@ -4705,6 +4705,69 @@ base_url = "https://relay.example/v1"
 }
 
 #[test]
+fn apply_relay_profile_generates_gpt61_sol_catalog_without_window_override() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-gpt61".to_string(),
+        model: "gpt-6.1-sol".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-6.1-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let read_model = || {
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-gpt61.json""#));
+        let catalog: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("model-catalogs/relay-gpt61.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(catalog["models"].as_array().unwrap().len(), 1);
+        catalog["models"][0].clone()
+    };
+    let model = read_model();
+    assert_eq!(model["slug"], "gpt-6.1-sol");
+    assert_eq!(model["display_name"], "GPT-6.1-Sol");
+    assert_eq!(model["default_reasoning_level"], "medium");
+    assert_eq!(model["context_window"], 272_000);
+    assert_eq!(model["max_context_window"], 872_000);
+    assert_eq!(model["use_responses_lite"], false);
+    assert_eq!(model["multi_agent_version"], "v2");
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(model["service_tiers"][0]["id"], "priority");
+    assert_eq!(
+        model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
+
+    let mut overridden = profile.clone();
+    overridden.model_windows = serde_json::json!({"gpt-6.1-sol": "200K"}).to_string();
+    apply_relay_profile_files_to_home_with_context(temp.path(), &overridden, "").unwrap();
+    let model = read_model();
+    assert_eq!(model["context_window"], 200_000);
+    assert_eq!(model["max_context_window"], 200_000);
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(read_model()["context_window"], 272_000);
+}
+
+#[test]
 fn apply_relay_profile_generates_gpt6_sol_luna_catalog_without_suffix() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {

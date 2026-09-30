@@ -198,6 +198,12 @@ const GPT6_SOL_LUNA_METADATA_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/gpt6-sol-luna-model-metadata-compat.json"
 ));
+
+const GPT61_SOL_METADATA_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/gpt61-sol-model-metadata-compat.json"
+));
+
 /// 统一的精调/供应商元数据（assets/*-model-metadata*.json）：slug 命中即把
 /// 条目字段覆盖到模板基座上。历史 compat（gpt-5.6 / astra 产品级精调，如
 /// fast tier）排在供应商事实之前；各文件 slug 两两不相交，顺序仅表达优先级。
@@ -516,6 +522,7 @@ fn compatibility_metadata_entry(slug: &str) -> Option<Value> {
         .iter()
         .find_map(|catalog_json| catalog_metadata_entry(catalog_json, slug))
         .or_else(|| catalog_metadata_entry(GPT6_SOL_LUNA_METADATA_JSON, slug))
+        .or_else(|| catalog_metadata_entry(GPT61_SOL_METADATA_JSON, slug))
 }
 
 fn catalog_metadata_entry(catalog_json: &str, slug: &str) -> Option<Value> {
