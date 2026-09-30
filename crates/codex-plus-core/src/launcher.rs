@@ -1724,7 +1724,8 @@ async fn handle_models_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-    let upstream = match crate::protocol_proxy::open_models_proxy_request(request_user_agent).await
+    let mut upstream = match crate::protocol_proxy::open_models_proxy_request(request_user_agent)
+        .await
     {
         Ok(upstream) => upstream,
         Err(error) => {
@@ -1756,7 +1757,7 @@ async fn handle_models_proxy_connection(
     } else {
         upstream.content_type.clone()
     };
-    let body = upstream.response.bytes().await?.to_vec();
+    let body = upstream.read_body().await?;
     write_http_response(stream, &status, &content_type, &body).await?;
     log_helper_response(
         if is_success {
@@ -1782,7 +1783,7 @@ async fn handle_protocol_proxy_connection(
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path_with_beta(
+    let mut upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path_with_beta(
         request_body,
         request_user_agent,
         path,
@@ -1816,7 +1817,7 @@ async fn handle_protocol_proxy_connection(
     if !upstream.is_success() {
         let status = upstream.status();
         let upstream_content_type = upstream.content_type.clone();
-        let upstream_body = upstream.response.bytes().await?.to_vec();
+        let upstream_body = upstream.read_body().await?;
         let error = crate::protocol_proxy::responses_error_from_upstream(
             upstream.status_code,
             &upstream_content_type,
@@ -1829,6 +1830,28 @@ async fn handle_protocol_proxy_connection(
             method,
             path,
             &status,
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if upstream.native_compaction_passthrough {
+        let body = upstream.read_body().await?;
+        let content_type = if upstream.content_type.is_empty() {
+            if upstream.is_stream {
+                "text/event-stream; charset=utf-8"
+            } else {
+                "application/json; charset=utf-8"
+            }
+        } else {
+            &upstream.content_type
+        };
+        write_http_response(stream, "200 OK", content_type, &body).await?;
+        log_helper_response(
+            "helper.protocol_proxy_compaction_native",
+            method,
+            path,
+            "200 OK",
             remote_addr_text,
         );
         stream.shutdown().await?;
@@ -1850,7 +1873,7 @@ async fn handle_protocol_proxy_connection(
             if upstream.wire_api != crate::protocol_proxy::UpstreamWireApi::Responses {
                 converter = converter.with_chat_upstream();
             }
-            let mut bytes_stream = upstream.response.bytes_stream();
+            let mut bytes_stream = upstream.take_response()?.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
                 match chunk {
                     Ok(bytes) => converter.push_upstream_bytes(&bytes),
@@ -1873,7 +1896,7 @@ async fn handle_protocol_proxy_connection(
             return Ok(());
         }
         if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
-            let mut bytes_stream = upstream.response.bytes_stream();
+            let mut bytes_stream = upstream.take_response()?.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
                 if let Ok(bytes) = chunk {
                     stream.write_all(&bytes).await?;
@@ -1895,7 +1918,7 @@ async fn handle_protocol_proxy_connection(
             .as_ref()
             .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
             .unwrap_or_default();
-        let mut bytes_stream = upstream.response.bytes_stream();
+        let mut bytes_stream = upstream.take_response()?.bytes_stream();
         let mut stream_failed = false;
         while let Some(chunk) = bytes_stream.next().await {
             match chunk {
@@ -1934,7 +1957,7 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-    let upstream_body = upstream.response.bytes().await?;
+    let upstream_body = upstream.read_body().await?;
     if upstream.compaction {
         // v2 远程压缩非流式路径：同样重组为单个 compaction 输出项。
         let body = crate::protocol_proxy::wrap_non_stream_response_as_compaction(
@@ -2005,7 +2028,7 @@ async fn handle_audio_transcriptions_proxy_connection(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let upstream = match crate::protocol_proxy::open_audio_transcriptions_proxy_request(
+    let mut upstream = match crate::protocol_proxy::open_audio_transcriptions_proxy_request(
         request_body,
         request_content_type.unwrap_or_default(),
         request_user_agent,
@@ -2043,7 +2066,7 @@ async fn handle_audio_transcriptions_proxy_connection(
     } else {
         upstream.content_type.clone()
     };
-    let body = upstream.response.bytes().await?.to_vec();
+    let body = upstream.read_body().await?;
     write_http_response(stream, &status, &content_type, &body).await?;
     log_helper_response(
         if is_success {
@@ -2083,7 +2106,7 @@ async fn handle_image_proxy_connection(
         )
         .await
     };
-    let upstream = match upstream {
+    let mut upstream = match upstream {
         Ok(upstream) => upstream,
         Err(error) => {
             let body = serde_json::to_vec(&serde_json::json!({
@@ -2108,14 +2131,14 @@ async fn handle_image_proxy_connection(
             return Ok(());
         }
     };
-    let status = upstream.response.status().to_string();
-    let is_success = upstream.response.status().is_success();
+    let status = upstream.status();
+    let is_success = upstream.is_success();
     let content_type = if upstream.content_type.is_empty() {
         "application/json; charset=utf-8".to_string()
     } else {
         upstream.content_type.clone()
     };
-    let body = upstream.response.bytes().await?.to_vec();
+    let body = upstream.read_body().await?;
     write_http_response(stream, &status, &content_type, &body).await?;
     log_helper_response(
         if is_success {
@@ -2140,7 +2163,7 @@ async fn handle_chat_completions_proxy_connection(
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let upstream = match crate::protocol_proxy::open_chat_completions_proxy_request(
+    let mut upstream = match crate::protocol_proxy::open_chat_completions_proxy_request(
         request_body,
         request_user_agent,
     )
@@ -2178,7 +2201,7 @@ async fn handle_chat_completions_proxy_connection(
     };
     if upstream.is_stream && is_success {
         write_http_stream_headers(stream, &status, &content_type).await?;
-        let mut bytes_stream = upstream.response.bytes_stream();
+        let mut bytes_stream = upstream.take_response()?.bytes_stream();
         while let Some(chunk) = bytes_stream.next().await {
             stream.write_all(&chunk?).await?;
         }
@@ -2192,7 +2215,7 @@ async fn handle_chat_completions_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-    let body = upstream.response.bytes().await?.to_vec();
+    let body = upstream.read_body().await?;
     write_http_response(stream, &status, &content_type, &body).await?;
     log_helper_response(
         if is_success {
