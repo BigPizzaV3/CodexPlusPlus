@@ -1196,6 +1196,21 @@ export const EN_PLAIN: Record<string, string> = {
     "Custom headers apply to the connection test, the model list and proxied requests alike.",
   "Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。":
     "Transport headers such as Host and Content-Length are managed by the proxy and cannot be overridden. When Authorization is set here it takes precedence and the API key is not injected.",
+  "渠道保护": "Channel protection",
+  "仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。":
+    "Applies only to the current provider; helps reduce the chance of hitting shared-channel 429, 500, or RPM limits.",
+  "启用错误冷却": "Enable error cooldown",
+  "命中下方状态码后，当前供应商暂停请求至少 30 秒并自动继续；最多自动重试 3 次，3 次仍失败则返回错误；上游 Retry-After 更长时优先使用上游时间。":
+    "After one of the status codes below is hit, requests for this provider pause for at least 30 seconds and then continue automatically; retry up to 3 times, return the error if all 3 retries fail; a longer upstream Retry-After takes precedence.",
+  "启用同渠道队列": "Enable per-provider queue",
+  "当前供应商的请求按顺序发送，并按每分钟上限预留请求次数。":
+    "Requests for this provider are sent in order, reserving capacity under the per-minute limit.",
+  "每分钟请求数": "Requests per minute",
+  "请填入供应商提供的最大RPM": "Enter the maximum RPM provided by the provider",
+  "触发冷却的状态码": "Cooldown-triggering status codes",
+  "输入状态码后回车": "Enter a status code and press Enter",
+  "默认状态码为 429 和 500；删除某个状态码即可停止该状态触发冷却。":
+    "The default status codes are 429 and 500; remove a status code to stop it from triggering cooldown.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.

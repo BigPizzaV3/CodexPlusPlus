@@ -33,6 +33,7 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
+const MAX_COOLDOWN_RETRIES: usize = 3;
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -51,6 +52,10 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+
+fn should_retry_after_cooldown(retries: usize) -> bool {
+    retries < MAX_COOLDOWN_RETRIES
+}
 
 /// codex v2 远程压缩请求在 input 末尾携带的控制 item（openai/codex compact_remote_v2）。
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
@@ -407,6 +412,7 @@ pub struct UpstreamProxyResponse {
     /// 响应必须由代理重组为单个 `compaction` 输出项。
     pub compaction: bool,
     pub response: reqwest::Response,
+    pub(crate) _channel_permit: Option<crate::channel_protection::ChannelPermit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -1135,9 +1141,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         Some(relay.id.as_str())
     );
     let relay_count = relays.len();
-    let mut is_compaction_request;
-    for (attempt, relay) in relays.into_iter().enumerate() {
+    let mut cooldown_retries = 0_usize;
+    'request: loop {
+        for (attempt, relay) in relays.iter().cloned().enumerate() {
         validate_upstream(&relay)?;
+        let channel_key = crate::channel_protection::key_for_relay(&relay);
+        let channel_permit =
+            crate::channel_protection::acquire(&channel_key, &relay).await;
         let model_override = aggregate_upstream_model_override(&settings, &relay);
         let (endpoint, upstream_body, wire_api, compaction) = upstream_request_parts(
             &relay,
@@ -1146,7 +1156,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             model_override.as_deref(),
         )
         .await?;
-        is_compaction_request = compaction;
+        let is_compaction_request = compaction;
         let has_more_candidates = attempt + 1 < relay_count;
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1186,6 +1196,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let upstream = match send_upstream_request_for_responses(builder, is_stream).await {
             Ok(upstream) => upstream,
             Err(error) => {
+                drop(channel_permit);
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "protocol_proxy.upstream_request_failed",
                     json!({
@@ -1214,6 +1225,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             }
         };
         let status_code = upstream.status().as_u16();
+        let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "protocol_proxy.upstream_response",
             json!({
@@ -1244,6 +1256,30 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             .unwrap_or("")
             .to_string();
         if (200..300).contains(&status_code) || !has_more_candidates {
+            if !(200..300).contains(&status_code) {
+                let cooldown_started = crate::channel_protection::mark_failure(
+                    &channel_key,
+                    &relay,
+                    status_code,
+                    retry_after,
+                )
+                .await;
+                if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
+                    cooldown_retries = cooldown_retries.saturating_add(1);
+                    drop(channel_permit);
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.channel_cooldown_retry",
+                        json!({
+                            "relayId": relay.id,
+                            "relayName": relay.name,
+                            "statusCode": status_code,
+                            "retryAfterSeconds": retry_after.map(|value| value.as_secs()),
+                            "retry": cooldown_retries
+                        }),
+                    );
+                    continue 'request;
+                }
+            }
             return Ok(UpstreamProxyResponse {
                 status_code,
                 is_stream: is_stream || content_type.contains("text/event-stream"),
@@ -1251,8 +1287,17 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 wire_api,
                 compaction: is_compaction_request,
                 response: upstream,
+                _channel_permit: Some(channel_permit),
             });
         }
+        crate::channel_protection::mark_failure(
+            &channel_key,
+            &relay,
+            status_code,
+            retry_after,
+        )
+        .await;
+        drop(channel_permit);
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "protocol_proxy.upstream_failover",
             json!({
@@ -1267,8 +1312,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 "headerTimeoutSeconds": header_timeout.as_secs()
             }),
         );
+        }
+        anyhow::bail!("未找到可用的聚合供应商成员")
     }
-    anyhow::bail!("未找到可用的聚合供应商成员")
 }
 
 fn select_model_route(
@@ -1365,6 +1411,7 @@ pub async fn open_models_proxy_request(
         wire_api: UpstreamWireApi::Responses,
         compaction: false,
         response: upstream,
+        _channel_permit: None,
     })
 }
 
@@ -1415,6 +1462,7 @@ pub async fn open_audio_transcriptions_proxy_request(
         wire_api: UpstreamWireApi::AudioTranscriptions,
         compaction: false,
         response: upstream,
+        _channel_permit: None,
     })
 }
 
@@ -1547,6 +1595,7 @@ async fn open_image_proxy_request(
         wire_api,
         compaction: false,
         response: upstream,
+        _channel_permit: None,
     })
 }
 
@@ -1579,30 +1628,68 @@ pub async fn open_chat_completions_proxy_request(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let request = crate::http_client::proxied_client(&effective_user_agent(
-        &relay.user_agent,
-        original_user_agent,
-    ))?
-    .post(chat_completions_url(&relay.base_url))
-    .header(reqwest::header::CONTENT_TYPE, "application/json")
-    .json(&request_json);
-    let upstream = with_relay_auth(request, &relay).send().await?;
-    let status_code = upstream.status().as_u16();
-    let content_type = upstream
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let channel_key = crate::channel_protection::key_for_relay(&relay);
+    let mut cooldown_retries = 0_usize;
+    loop {
+        let channel_permit =
+            crate::channel_protection::acquire(&channel_key, &relay).await;
+        let request = crate::http_client::proxied_client(&effective_user_agent(
+            &relay.user_agent,
+            original_user_agent,
+        ))?
+        .post(chat_completions_url(&relay.base_url))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&request_json);
+        let upstream = match with_relay_auth(request, &relay).send().await {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                drop(channel_permit);
+                return Err(error.into());
+            }
+        };
+        let status_code = upstream.status().as_u16();
+        let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
+        if !(200..300).contains(&status_code) {
+            let cooldown_started = crate::channel_protection::mark_failure(
+                &channel_key,
+                &relay,
+                status_code,
+                retry_after,
+            )
+            .await;
+            if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
+                cooldown_retries = cooldown_retries.saturating_add(1);
+                drop(channel_permit);
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.channel_cooldown_retry",
+                    json!({
+                        "relayId": relay.id,
+                        "relayName": relay.name,
+                        "statusCode": status_code,
+                        "retryAfterSeconds": retry_after.map(|value| value.as_secs()),
+                        "retry": cooldown_retries
+                    }),
+                );
+                continue;
+            }
+        }
+        let content_type = upstream
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
 
-    Ok(UpstreamProxyResponse {
-        status_code,
-        is_stream: is_stream || content_type.contains("text/event-stream"),
-        content_type,
-        wire_api: UpstreamWireApi::ChatCompletions,
-        compaction: false,
-        response: upstream,
-    })
+        return Ok(UpstreamProxyResponse {
+            status_code,
+            is_stream: is_stream || content_type.contains("text/event-stream"),
+            content_type,
+            wire_api: UpstreamWireApi::ChatCompletions,
+            compaction: false,
+            response: upstream,
+            _channel_permit: Some(channel_permit),
+        });
+    }
 }
 
 async fn upstream_request_parts(
@@ -5966,5 +6053,19 @@ mod relay_custom_header_tests {
             request.headers().get("authorization").unwrap(),
             "Bearer explicit"
         );
+    }
+}
+
+#[cfg(test)]
+mod channel_cooldown_retry_tests {
+    use super::*;
+
+    #[test]
+    fn cooldown_allows_three_automatic_retries_only() {
+        assert!(should_retry_after_cooldown(0));
+        assert!(should_retry_after_cooldown(1));
+        assert!(should_retry_after_cooldown(2));
+        assert!(!should_retry_after_cooldown(3));
+        assert!(!should_retry_after_cooldown(usize::MAX));
     }
 }
