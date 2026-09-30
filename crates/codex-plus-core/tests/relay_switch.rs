@@ -812,3 +812,60 @@ base_url = "{base_url}"
         ..RelayProfile::default()
     }
 }
+
+/// issue #1097 问题 2 端到端回归：被污染的 live `model =`（整段转义后的供应商
+/// 配置）在真实切换链路（backfill → save → load+normalize → apply）中逐轮转义
+/// 放大。修复前每轮反斜杠翻倍、settings.json 膨胀；修复后首轮即被清洗且有界。
+#[test]
+fn switch_cycles_do_not_amplify_polluted_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir_all(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "gpt-5.6-sol\n\nmodel_provider = \"custom\"\nbase_url = \"https://a.example/v1\"\n"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://a.example/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-a"}"#).unwrap();
+
+    let mut settings = BackendSettings {
+        active_relay_id: "a".to_string(),
+        relay_profiles: vec![
+            pure_profile("a", "https://a.example/v1", "sk-a"),
+            pure_profile("b", "https://b.example/v1", "sk-b"),
+        ],
+        ..BackendSettings::default()
+    };
+    store.save(&settings).unwrap();
+
+    for cycle in 0..10 {
+        let previous = settings.active_relay_id.clone();
+        settings.active_relay_id = if cycle % 2 == 0 { "b" } else { "a" }.to_string();
+        let result =
+            switch_relay_profile_in_home(&store, &home, settings.clone(), &previous).unwrap();
+        settings = result.settings;
+    }
+
+    let final_config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    let final_settings_len = std::fs::read(temp.path().join("settings.json")).unwrap().len();
+    assert!(
+        !final_config.contains(r"\nmodel_provider"),
+        "污染的 model 值残留于 live config:\n{final_config}"
+    );
+    assert!(
+        final_settings_len < 20_000,
+        "settings.json 经 10 轮切换膨胀到 {final_settings_len} 字节"
+    );
+    // 切换链路本身未被破坏：live config 仍是最后一个激活供应商（a）的合法配置
+    assert!(final_config.contains(r#"base_url = "https://a.example/v1""#));
+}
