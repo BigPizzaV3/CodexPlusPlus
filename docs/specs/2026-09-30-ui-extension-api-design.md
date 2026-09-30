@@ -369,7 +369,7 @@ window.codexPlus.ui.constants = {
 
 ### Step 5 — 文档与类型
 - `types/codex-plus-extensions.d.ts`（从注册中心 schema 生成）
-- `docs/extension-ui-api.md`：快速上手、完整 API、类名契约、生命周期契约、失败排查
+- `EXTENSIONS.md`（仓库根目录）：快速上手、完整 API、类名契约、生命周期契约、失败排查
 - AGENTS.md 补「已发布的类名/接口不再更名」约定
 
 ---
