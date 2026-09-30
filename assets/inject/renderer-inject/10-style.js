@@ -884,13 +884,6 @@
         background: var(--codex-plus-bg-selected);
         color: var(--codex-plus-text);
       }
-      .${codexPlusPageClass} .codex-plus-modal-close {
-        min-width: 56px;
-        padding: 5px 12px;
-        border: 1px solid rgba(255,255,255,.14);
-        border-radius: 8px;
-        font-size: 13px;
-      }
       .codex-plus-modal-close {
         border: 0;
         background: transparent;

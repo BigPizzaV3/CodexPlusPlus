@@ -412,7 +412,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "22";
+  const codexDeleteStyleVersion = "23";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1493,13 +1493,6 @@
       .codex-plus-page-nav-item:hover .codex-plus-page-nav-item-action {
         background: var(--codex-plus-bg-selected);
         color: var(--codex-plus-text);
-      }
-      .${codexPlusPageClass} .codex-plus-modal-close {
-        min-width: 56px;
-        padding: 5px 12px;
-        border: 1px solid rgba(255,255,255,.14);
-        border-radius: 8px;
-        font-size: 13px;
       }
       .codex-plus-modal-close {
         border: 0;
@@ -5437,7 +5430,7 @@
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
           <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
-          <button type="button" class="codex-plus-modal-close" aria-label="${pageMode ? "返回" : "关闭"}">${pageMode ? "返回" : "×"}</button>
+          ${pageMode ? "" : `<button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>`}
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
@@ -5609,11 +5602,6 @@
     }, true);
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if ((!pageMode && event.target === overlay) || target?.closest(".codex-plus-modal-close")) {
-        overlay.remove();
-        if (pageMode) setCodexPlusSidebarNavActive(false);
-        return;
-      }
       // 左面板的分组导航（仅拓展页有左面板）。
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {
