@@ -1059,9 +1059,6 @@
        * 一张卡 = 图标 + 名称/简介 + 右上箭头 + 底部优惠条。用 auto-fill + minmax
        * 让列数随宽度自适应（宽屏 4 列、窄屏递减），卡片等高对齐。
        */
-      .codex-plus-ad-section { display: grid; gap: 12px; margin-top: 20px; }
-      .codex-plus-ad-section:first-of-type { margin-top: 0; }
-      .codex-plus-ad-section-title { color: #f8fafc; font-size: 13px; font-weight: 600; margin: 0; }
       .codex-plus-ad-list {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
@@ -1288,8 +1285,7 @@
       .codex-plus-ad-card:focus-visible { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-hover); }
       .codex-plus-ad-icon { background: var(--codex-plus-bg-hover); }
       .codex-plus-ad-icon-fallback { color: var(--codex-plus-text); }
-      .codex-plus-ad-title,
-      .codex-plus-ad-section-title { color: var(--codex-plus-text); }
+      .codex-plus-ad-title { color: var(--codex-plus-text); }
       .codex-plus-ad-description { color: var(--codex-plus-text-secondary); }
       .codex-plus-ad-arrow { color: var(--codex-plus-text-tertiary); }
       .codex-plus-ad-card:hover .codex-plus-ad-arrow,

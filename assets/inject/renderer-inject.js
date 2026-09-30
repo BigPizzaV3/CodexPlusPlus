@@ -1667,9 +1667,6 @@
        * 一张卡 = 图标 + 名称/简介 + 右上箭头 + 底部优惠条。用 auto-fill + minmax
        * 让列数随宽度自适应（宽屏 4 列、窄屏递减），卡片等高对齐。
        */
-      .codex-plus-ad-section { display: grid; gap: 12px; margin-top: 20px; }
-      .codex-plus-ad-section:first-of-type { margin-top: 0; }
-      .codex-plus-ad-section-title { color: #f8fafc; font-size: 13px; font-weight: 600; margin: 0; }
       .codex-plus-ad-list {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
@@ -1896,8 +1893,7 @@
       .codex-plus-ad-card:focus-visible { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-hover); }
       .codex-plus-ad-icon { background: var(--codex-plus-bg-hover); }
       .codex-plus-ad-icon-fallback { color: var(--codex-plus-text); }
-      .codex-plus-ad-title,
-      .codex-plus-ad-section-title { color: var(--codex-plus-text); }
+      .codex-plus-ad-title { color: var(--codex-plus-text); }
       .codex-plus-ad-description { color: var(--codex-plus-text-secondary); }
       .codex-plus-ad-arrow { color: var(--codex-plus-text-tertiary); }
       .codex-plus-ad-card:hover .codex-plus-ad-arrow,
@@ -5072,8 +5068,10 @@
 
   function normalizeCodexPlusAds(payload) {
     if (!payload || !Array.isArray(payload.ads)) return [];
+    // 只留赞助商推荐。上游清单里的 normal 条目在前端没有归属（页面不再有分组），
+    // 放进来只会让「有数据但渲染不出东西」的状态变得难以判断。
     return payload.ads.filter((ad) => {
-      return ad && ["sponsor", "normal"].includes(ad.type) && ad.title && ad.description && ad.url && !isCodexPlusAdExpired(ad);
+      return ad && ad.type === "sponsor" && ad.title && ad.description && ad.url && !isCodexPlusAdExpired(ad);
     }).map((ad) => ({
       id: String(ad.id || ad.title),
       type: ad.type,
@@ -5094,9 +5092,9 @@
   /** 推荐卡片的右上角外链箭头，跟 VSCode/Codex 的「新窗口打开」同一语义。 */
   const codexPlusAdArrowIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 10.5 10.5 5.5"/><path d="M6.5 5.5h4v4"/></svg>';
 
-  function renderCodexPlusAdGroup(type, emptyText) {
-    const ads = codexPlusAds.filter((ad) => ad.type === type);
-    if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
+  function renderCodexPlusAdGroup() {
+    const ads = codexPlusAds;
+    if (!ads.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
     return ads.map((ad) => {
       const name = formatCodexPlusAdTitle(ad.title);
       // 底部那条优惠信息：取第一个亮点。没有就不渲染整条，免得留一段空白。
@@ -5124,16 +5122,8 @@
   function renderCodexPlusAds() {
     if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">推荐内容加载中…</div>`;
     if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
-    return `
-      <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">赞助商推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", "暂无赞助商推荐。")}</div>
-      </section>
-      <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">普通推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", "暂无普通推荐。")}</div>
-      </section>
-    `;
+    // 只有赞助商推荐这一个分组，所以不再套一层分组标题，直接铺卡片。
+    return `<div class="codex-plus-ad-list">${renderCodexPlusAdGroup()}</div>`;
   }
 
   function cacheBustCodexPlusAdUrl(url, version) {
@@ -5564,7 +5554,7 @@
             <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${pageMode ? renderCodexPlusExtensionsDetail() : ""}</div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
+            <div class="codex-plus-sponsor-text">以下推荐来自支持 Codex++ 继续维护的合作方。</div>
             <div class="codex-plus-ad-remote">
               ${renderCodexPlusAds()}
             </div>
