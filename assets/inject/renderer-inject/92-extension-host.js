@@ -79,10 +79,15 @@
     window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(overlay);
     window.addEventListener("resize", window.__codexPlusPageResizeHandler);
     // 与内置页面一致：点图标栏上的任何原生按钮就关掉这个覆盖层。
+    //
+    // 注意必须连拓展自己的入口一起排除：拓展入口 id 是动态生成的，不在那三个内置
+    // id 里，若只排除内置项，点自己的入口会被当成「点了原生按钮」，页面刚打开就
+    // 被这条监听关掉。
     const rail = document.querySelector(codexPlusRailSelector);
     rail?.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+      if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
       if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
     }, true);
 
@@ -145,6 +150,14 @@
     setCodexPlusSidebarNavActive(false);
   }
 
+  /** 拓展入口的 DOM 标记：用它反查注册表项，dispose 后据此清理。 */
+  const codexPlusExtensionRailAttribute = "data-codex-plus-ext-rail";
+
+  /** 拓展入口的稳定 id。用注册表 id 推导，dispose 与重建都能算回同一个值。 */
+  function codexPlusExtensionRailElementId(entry) {
+    return `codex-plus-ext-rail-${String(entry.id).replace(/[^\w-]/g, "_")}`;
+  }
+
   /**
    * 图标栏上的拓展入口。
    *
@@ -155,6 +168,15 @@
     const rail = document.querySelector(codexPlusRailSelector);
     if (!rail) return false;
     const entries = codexPlusExtensionItems(codexPlusRegistry.navEntries);
+    // 注意值域：属性里存的是注册表 id，所以这里也必须用注册表 id 比对。
+    // 若拿元素 id（codex-plus-ext-rail-xxx）去比，两边永远不等，每次刷新都会把
+    // 自己的入口当孤儿删掉，表现为「点了入口高亮立刻消失」。
+    const liveIds = new Set(entries.map((entry) => entry.id));
+    // 先清掉已不在注册表里的入口。dispose 之后没人来删 DOM，必须在这里收口，
+    // 否则用户点一个已经注销的入口会什么都不发生。
+    document.querySelectorAll(`[${codexPlusExtensionRailAttribute}]`).forEach((node) => {
+      if (!liveIds.has(node.getAttribute(codexPlusExtensionRailAttribute) || "")) node.remove();
+    });
     if (!entries.length) return false;
     const anchor = codexPlusRailPrimaryAnchor(rail);
     const host = anchor?.parentElement || rail;
@@ -166,7 +188,7 @@
       if (node) cursor = node;
     });
     entries.forEach((entry) => {
-      const elementId = `codex-plus-ext-rail-${entry.id.replace(/[^\w-]/g, "_")}`;
+      const elementId = codexPlusExtensionRailElementId(entry);
       let wrapper = document.getElementById(elementId);
       if (!wrapper || wrapper.parentElement !== host) {
         wrapper?.remove();
@@ -190,6 +212,9 @@
           },
         });
         if (!wrapper) return;
+        // 这个属性是 dispose 后清理 DOM 的唯一线索，必须写。只靠
+        // data-codex-plus-ext 认不出「这是 rail 入口」还是别的什么扩展节点。
+        wrapper.setAttribute(codexPlusExtensionRailAttribute, entry.id);
         markCodexPlusExtensionNode(wrapper, entry.scriptKey);
         markCodexPlusExtensionNode(wrapper.firstElementChild || wrapper, entry.scriptKey);
       }

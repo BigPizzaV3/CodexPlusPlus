@@ -6101,6 +6101,9 @@
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+        // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
+        // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
+        if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
@@ -8999,6 +9002,25 @@
    */
   const codexPlusToastLimit = 3;
   const codexPlusToastLifetimeMs = 10000;
+  const codexPlusToastGapPx = 48;
+
+  /**
+   * 按当前 DOM 顺序重排所有提示的纵向位置。
+   *
+   * 必须在每次「新增」和「移除」之后都调用：位置只在插入那一刻算的话，一旦有
+   * 人被挤掉或超时消失，剩下几条会停在自己的旧层号上，出现空档和重叠。
+   */
+  function layoutCodexPlusToasts() {
+    document.querySelectorAll(".codex-delete-toast").forEach((node, index) => {
+      node.style.bottom = `${18 + index * codexPlusToastGapPx}px`;
+    });
+  }
+
+  /** 移除一条提示并立刻重排剩下的。 */
+  function dismissCodexPlusToast(toast) {
+    toast.remove();
+    layoutCodexPlusToasts();
+  }
 
   /**
    * 显示一条提示。
@@ -9014,17 +9036,16 @@
     const undoToken = settings.undoToken;
     const type = typeof settings.type === "string" ? settings.type : "";
     const live = document.querySelectorAll(".codex-delete-toast");
-    // 队列满时挤掉最旧的（DOM 顺序即插入顺序）。
+    // 队列满时挤掉最旧的（DOM 顺序即插入顺序）。用 dismiss 而不是裸 remove，
+    // 它会顺带重排剩下几条的位置。
     if (live.length >= codexPlusToastLimit) {
       for (let index = 0; index <= live.length - codexPlusToastLimit; index += 1) {
-        live[index].remove();
+        dismissCodexPlusToast(live[index]);
       }
     }
     const toast = document.createElement("div");
     toast.className = "codex-delete-toast";
     if (type) toast.dataset.toastType = type;
-    // 多条并存时靠 bottom 偏移叠起来，否则会完全重合。
-    toast.style.bottom = `${18 + document.querySelectorAll(".codex-delete-toast").length * 48}px`;
     toast.textContent = message;
     if (undoToken) {
       const undo = document.createElement("button");
@@ -9036,13 +9057,15 @@
           const refreshed = await refreshRecentConversationsForHost();
           if (!refreshed) window.location.reload();
         }
-        setTimeout(() => toast.remove(), 5000);
+        setTimeout(() => dismissCodexPlusToast(toast), 5000);
       });
       toast.appendChild(undo);
     }
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), codexPlusToastLifetimeMs);
-    return () => toast.remove();
+    // append 之后统一重排：此时这条才进入 DOM，索引才是它真实的层号。
+    layoutCodexPlusToasts();
+    setTimeout(() => dismissCodexPlusToast(toast), codexPlusToastLifetimeMs);
+    return () => dismissCodexPlusToast(toast);
   }
 
   function shareBase64Url(bytes) {
@@ -11559,10 +11582,15 @@
     window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(overlay);
     window.addEventListener("resize", window.__codexPlusPageResizeHandler);
     // 与内置页面一致：点图标栏上的任何原生按钮就关掉这个覆盖层。
+    //
+    // 注意必须连拓展自己的入口一起排除：拓展入口 id 是动态生成的，不在那三个内置
+    // id 里，若只排除内置项，点自己的入口会被当成「点了原生按钮」，页面刚打开就
+    // 被这条监听关掉。
     const rail = document.querySelector(codexPlusRailSelector);
     rail?.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+      if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
       if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
     }, true);
 
@@ -11625,6 +11653,14 @@
     setCodexPlusSidebarNavActive(false);
   }
 
+  /** 拓展入口的 DOM 标记：用它反查注册表项，dispose 后据此清理。 */
+  const codexPlusExtensionRailAttribute = "data-codex-plus-ext-rail";
+
+  /** 拓展入口的稳定 id。用注册表 id 推导，dispose 与重建都能算回同一个值。 */
+  function codexPlusExtensionRailElementId(entry) {
+    return `codex-plus-ext-rail-${String(entry.id).replace(/[^\w-]/g, "_")}`;
+  }
+
   /**
    * 图标栏上的拓展入口。
    *
@@ -11635,6 +11671,15 @@
     const rail = document.querySelector(codexPlusRailSelector);
     if (!rail) return false;
     const entries = codexPlusExtensionItems(codexPlusRegistry.navEntries);
+    // 注意值域：属性里存的是注册表 id，所以这里也必须用注册表 id 比对。
+    // 若拿元素 id（codex-plus-ext-rail-xxx）去比，两边永远不等，每次刷新都会把
+    // 自己的入口当孤儿删掉，表现为「点了入口高亮立刻消失」。
+    const liveIds = new Set(entries.map((entry) => entry.id));
+    // 先清掉已不在注册表里的入口。dispose 之后没人来删 DOM，必须在这里收口，
+    // 否则用户点一个已经注销的入口会什么都不发生。
+    document.querySelectorAll(`[${codexPlusExtensionRailAttribute}]`).forEach((node) => {
+      if (!liveIds.has(node.getAttribute(codexPlusExtensionRailAttribute) || "")) node.remove();
+    });
     if (!entries.length) return false;
     const anchor = codexPlusRailPrimaryAnchor(rail);
     const host = anchor?.parentElement || rail;
@@ -11646,7 +11691,7 @@
       if (node) cursor = node;
     });
     entries.forEach((entry) => {
-      const elementId = `codex-plus-ext-rail-${entry.id.replace(/[^\w-]/g, "_")}`;
+      const elementId = codexPlusExtensionRailElementId(entry);
       let wrapper = document.getElementById(elementId);
       if (!wrapper || wrapper.parentElement !== host) {
         wrapper?.remove();
@@ -11670,6 +11715,9 @@
           },
         });
         if (!wrapper) return;
+        // 这个属性是 dispose 后清理 DOM 的唯一线索，必须写。只靠
+        // data-codex-plus-ext 认不出「这是 rail 入口」还是别的什么扩展节点。
+        wrapper.setAttribute(codexPlusExtensionRailAttribute, entry.id);
         markCodexPlusExtensionNode(wrapper, entry.scriptKey);
         markCodexPlusExtensionNode(wrapper.firstElementChild || wrapper, entry.scriptKey);
       }

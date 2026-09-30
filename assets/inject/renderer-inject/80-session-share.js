@@ -53,6 +53,25 @@
    */
   const codexPlusToastLimit = 3;
   const codexPlusToastLifetimeMs = 10000;
+  const codexPlusToastGapPx = 48;
+
+  /**
+   * 按当前 DOM 顺序重排所有提示的纵向位置。
+   *
+   * 必须在每次「新增」和「移除」之后都调用：位置只在插入那一刻算的话，一旦有
+   * 人被挤掉或超时消失，剩下几条会停在自己的旧层号上，出现空档和重叠。
+   */
+  function layoutCodexPlusToasts() {
+    document.querySelectorAll(".codex-delete-toast").forEach((node, index) => {
+      node.style.bottom = `${18 + index * codexPlusToastGapPx}px`;
+    });
+  }
+
+  /** 移除一条提示并立刻重排剩下的。 */
+  function dismissCodexPlusToast(toast) {
+    toast.remove();
+    layoutCodexPlusToasts();
+  }
 
   /**
    * 显示一条提示。
@@ -68,17 +87,16 @@
     const undoToken = settings.undoToken;
     const type = typeof settings.type === "string" ? settings.type : "";
     const live = document.querySelectorAll(".codex-delete-toast");
-    // 队列满时挤掉最旧的（DOM 顺序即插入顺序）。
+    // 队列满时挤掉最旧的（DOM 顺序即插入顺序）。用 dismiss 而不是裸 remove，
+    // 它会顺带重排剩下几条的位置。
     if (live.length >= codexPlusToastLimit) {
       for (let index = 0; index <= live.length - codexPlusToastLimit; index += 1) {
-        live[index].remove();
+        dismissCodexPlusToast(live[index]);
       }
     }
     const toast = document.createElement("div");
     toast.className = "codex-delete-toast";
     if (type) toast.dataset.toastType = type;
-    // 多条并存时靠 bottom 偏移叠起来，否则会完全重合。
-    toast.style.bottom = `${18 + document.querySelectorAll(".codex-delete-toast").length * 48}px`;
     toast.textContent = message;
     if (undoToken) {
       const undo = document.createElement("button");
@@ -90,13 +108,15 @@
           const refreshed = await refreshRecentConversationsForHost();
           if (!refreshed) window.location.reload();
         }
-        setTimeout(() => toast.remove(), 5000);
+        setTimeout(() => dismissCodexPlusToast(toast), 5000);
       });
       toast.appendChild(undo);
     }
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), codexPlusToastLifetimeMs);
-    return () => toast.remove();
+    // append 之后统一重排：此时这条才进入 DOM，索引才是它真实的层号。
+    layoutCodexPlusToasts();
+    setTimeout(() => dismissCodexPlusToast(toast), codexPlusToastLifetimeMs);
+    return () => dismissCodexPlusToast(toast);
   }
 
   function shareBase64Url(bytes) {
