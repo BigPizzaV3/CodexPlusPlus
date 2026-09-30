@@ -480,6 +480,7 @@ export const EN_PLAIN: Record<string, string> = {
   "JSON 无法解析，修复后即可保存": "JSON cannot be parsed; fix it to enable saving",
   "上下文窗口与自动压缩值无效，无法同步模型配置。": "The context window or auto-compaction value is invalid, so the model configuration cannot be synchronized.",
   "保存此模型": "Save this model",
+  "保存供应商": "Save provider",
   "保存后清除该模型的自定义配置，生成时回退默认模板": "Saving clears this model's custom configuration; generation falls back to the default template",
   "内容与内置元数据一致，保存后使用内置元数据": "Identical to the built-in metadata; saving switches this model to the built-in data",
   "更新此模型配置": "Update this model's configuration",
