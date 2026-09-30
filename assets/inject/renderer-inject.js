@@ -410,7 +410,9 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "21";
+  // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
+  // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
+  const codexDeleteStyleVersion = "22";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1149,6 +1151,13 @@
         padding: 4px 10px 16px;
         scrollbar-width: thin;
         scrollbar-color: rgba(255,255,255,.28) transparent;
+        /*
+         * 左面板是导航/列表，不是内容：拖动时不该把条目文字或分组标题选蓝
+         * （列表项本来就是整行可点，选中态由 data-active 表达）。
+         * 右侧详情区不设，那里的描述文字要能复制。
+         */
+        user-select: none;
+        -webkit-user-select: none;
       }
       .${codexPlusPageClass} .codex-plus-page-main {
         flex: 1 1 auto;
