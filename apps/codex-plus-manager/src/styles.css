@@ -1175,6 +1175,13 @@ body {
   min-width: 0;
 }
 
+.relay-editor-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .relay-editor-heading-copy {
   display: grid;
   flex: 1;
@@ -1734,6 +1741,65 @@ body {
   background: hsl(var(--surface-raised) / 0.45);
   padding: 14px;
 }
+
+/* 渠道保护默认折叠：details 复用 .relay-config-section 的外观，
+   summary 直接当区块标题用。 */
+details.relay-config-section > summary.relay-config-section-head {
+  cursor: pointer;
+  list-style: none;
+}
+
+details.relay-config-section > summary.relay-config-section-head::-webkit-details-marker {
+  display: none;
+}
+
+details.relay-config-section > summary.relay-config-section-head::after {
+  content: "\25BE";
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+details.relay-config-section[open] > summary.relay-config-section-head::after {
+  transform: rotate(180deg);
+}
+
+/* 通用配置默认折叠为一行文字：summary 复用 .relay-file-head 的排版，
+   展开后才显示提取按钮与编辑器。 */
+details.relay-common-config-panel > summary.relay-common-config-summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details.relay-common-config-panel > summary.relay-common-config-summary::-webkit-details-marker {
+  display: none;
+}
+
+details.relay-common-config-panel > summary.relay-common-config-summary::after {
+  content: "\25BE";
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+details.relay-common-config-panel[open] > summary.relay-common-config-summary::after {
+  transform: rotate(180deg);
+}
+
+/* 折叠态必须显式隐藏：Chrome 现在用 `::details-content` 的 visibility 实现
+   折叠，给子元素设 display/grid 会让它继续占位（实测 details 高 81px、
+   内容仍撑到 285px 并溢出）。展开时才用 grid 排布。 */
+details.relay-common-config-panel:not([open]) > .relay-common-config-body {
+  display: none;
+}
+
+details.relay-common-config-panel[open] > .relay-common-config-body {
+  display: grid;
+  gap: 12px;
+}
+
 
 .relay-config-section-head {
   display: flex;
@@ -4016,6 +4082,31 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 
 input[type="range"]:disabled {
   opacity: 0.5;
+}
+
+/* cb3c7fa7 改版时误删了这两条：JSX 一直在用 .inline-check，但样式没了，
+   复选框退化成浏览器原生小方块（13×13），与同页 .switch-row 的开关形态
+   不一致。恢复为带描边的 40px 行内控件。 */
+.inline-check {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  padding: 0 12px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 650;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease);
+}
+
+.inline-check input {
+  width: 16px;
+  height: 16px;
 }
 
 .check-row {

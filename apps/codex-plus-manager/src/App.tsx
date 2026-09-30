@@ -7837,7 +7837,6 @@ function RelayProfileEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeImportSlug, builtinMatchSlug, metadataImportTarget, importPrefillSource]);
 
-  const [metadataImportPreview, setMetadataImportPreview] = useState<ImportedModelMetadata | null>(null);
   const [channelStatusInput, setChannelStatusInput] = useState("");
   const modelSlugOriginsRef = useRef(modelWindowRows.map((row) => row.model.trim()));
   useEffect(() => {
@@ -8317,13 +8316,13 @@ function RelayProfileEditor({
           </div>
         ) : null}
         {!isAggregateRelayProfile(profile) ? (
-          <section className="relay-config-section relay-channel-protection">
-            <div className="relay-config-section-head">
+          <details className="relay-config-section relay-channel-protection">
+            <summary className="relay-config-section-head">
               <div>
                 <strong>{t("渠道保护")}</strong>
                 <span>{t("仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。")}</span>
               </div>
-            </div>
+            </summary>
             <label className="switch-row compact">
               <input
                 checked={profile.rateLimitCooldownEnabled}
@@ -8399,7 +8398,7 @@ function RelayProfileEditor({
             <p className="field-hint">
               {t("默认状态码为 429 和 500；删除某个状态码即可停止该状态触发冷却。")}
             </p>
-          </section>
+          </details>
         ) : null}
         {profile.relayMode === "official" ? (
           <Field className="relay-field-official-key" label="API Key">
@@ -9815,49 +9814,51 @@ function RelayFileEditors({
           }}
         />
       </div>
-      <div className="relay-file-panel">
-        <div className="relay-file-head">
+      <details className="relay-file-panel relay-common-config-panel">
+        <summary className="relay-file-head relay-common-config-summary">
           <div>
             <strong>{t("通用配置文件")}</strong>
-            <span>{t("只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。")}</span>
+            <span>{t("只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。点此展开编辑。")}</span>
           </div>
-          <Button
-            onClick={async () => {
-              const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
-              if (!extracted) return;
-              const split = splitContextConfigText(extracted.commonConfigContents || "");
-              if (!split.common.trim() && !split.context.trim()) {
-                await actions.showMessage(t("通用配置文件"), t("当前供应商 config.toml 里没有可提取的通用配置。"), "failed");
-                return;
-              }
-              const promotedProfile = {
-                ...profile,
-                configContents: extracted.profileConfigContents,
-              };
-              const next = syncLegacyRelayFields({
-                ...form,
-                relayCommonConfigContents: split.common,
-                relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
-                relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
-              });
-              onFormChange(next);
-              onProfileChange(promotedProfile);
-              await actions.saveSettingsValue(next, false);
-            }}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            <Download className="h-4 w-4" />
-            {t("提取当前供应商配置")}
-          </Button>
+        </summary>
+        <div className="relay-common-config-body">
+            <Button
+              onClick={async () => {
+                const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
+                if (!extracted) return;
+                const split = splitContextConfigText(extracted.commonConfigContents || "");
+                if (!split.common.trim() && !split.context.trim()) {
+                  await actions.showMessage(t("通用配置文件"), t("当前供应商 config.toml 里没有可提取的通用配置。"), "failed");
+                  return;
+                }
+                const promotedProfile = {
+                  ...profile,
+                  configContents: extracted.profileConfigContents,
+                };
+                const next = syncLegacyRelayFields({
+                  ...form,
+                  relayCommonConfigContents: split.common,
+                  relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
+                  relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
+                });
+                onFormChange(next);
+                onProfileChange(promotedProfile);
+                await actions.saveSettingsValue(next, false);
+              }}
+              size="sm"
+              type="button"
+              variant="secondary"
+            >
+              <Download className="h-4 w-4" />
+              {t("提取当前供应商配置")}
+            </Button>
+          <SyncedTextarea
+            className="relay-file-textarea"
+            value={form.relayCommonConfigContents}
+            onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
+          />
         </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={form.relayCommonConfigContents}
-          onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
-        />
-      </div>
+      </details>
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
