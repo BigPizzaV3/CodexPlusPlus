@@ -1712,7 +1712,9 @@
       }
       .codex-plus-ad-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
       .codex-plus-ad-title { overflow: hidden; color: #f8fafc; font-size: 14px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-ad-description { overflow: hidden; color: #a1a1aa; font-size: 13px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+      /* 简介不再压成一行：卡片按内容撑高，最多 3 行，超出才省略。
+         nowrap 会让「提供 Claude 与 ...」这类较长简介只露前几个字。 */
+      .codex-plus-ad-description { display: -webkit-box; overflow: hidden; color: #a1a1aa; font-size: 13px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
       .codex-plus-ad-arrow { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 2px; color: #71717a; }
       .codex-plus-ad-arrow svg { width: 14px; height: 14px; display: block; }
       .codex-plus-ad-card:hover .codex-plus-ad-arrow,
@@ -4657,7 +4659,7 @@
 
     const group = (title, entries, emptyText, count, headAction = "") => {
       // 只在「搜索无匹配」时省略分组；否则空分组要留着显示占位文案，
-      // 不然「正在读取脚本市场…」和加载失败提示都会被一起藏掉，面板全空。
+      // 不然「正在读取拓展…」和加载失败提示都会被一起藏掉，面板全空。
       if (!entries.length && searching) return "";
       const body = entries.length
         ? entries.map(itemHtml).join("")
@@ -4677,8 +4679,8 @@
     };
 
     const marketEmpty = loading
-      ? "正在读取脚本市场…"
-      : (codexPlusScriptMarket.message || "市场里没有可安装的脚本。");
+      ? "正在读取拓展…"
+      : (codexPlusScriptMarket.message || "市场里没有可安装的拓展。");
     const anyShown = shownInstalled.length || shownMarket.length;
     const hint = searching && !anyShown
       ? `<div class="codex-plus-page-nav-empty">没有匹配「${escapeHtml(codexPlusExtensionsQuery)}」的拓展。</div>`
@@ -4690,9 +4692,9 @@
           placeholder="搜索拓展" value="${escapeHtml(codexPlusExtensionsQuery)}" spellcheck="false" />
       </div>
       ${hint}
-      ${group("已安装", shownInstalled, codexPlusUserScriptsLoaded ? "未发现已安装的脚本。" : "正在读取用户脚本…", installed.length)}
+      ${group("已安装", shownInstalled, codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…", installed.length)}
       ${group("市场", shownMarket, marketEmpty, market.length,
-        `<button type="button" class="codex-plus-page-nav-group-action" data-codex-market-refresh="true" title="刷新脚本市场">刷新</button>`)}
+        `<button type="button" class="codex-plus-page-nav-group-action" data-codex-market-refresh="true" title="刷新拓展">刷新</button>`)}
     `;
   }
 
@@ -4950,7 +4952,7 @@
         ...codexPlusScriptMarket,
         loaded: true,
         loading: false,
-        message: result?.message || "脚本市场加载失败",
+        message: result?.message || "拓展加载失败",
       };
     }
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
@@ -5082,7 +5084,7 @@
         ? `<img class="codex-plus-ad-icon" src="${escapeHtml(ad.image)}" alt="" loading="lazy" />`
         : `<span class="codex-plus-ad-icon codex-plus-ad-icon-fallback" aria-hidden="true">${escapeHtml(name.slice(0, 1))}</span>`;
       return `
-        <a class="codex-plus-ad-card" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer" title="${escapeHtml(name)}">
+        <a class="codex-plus-ad-card" data-codex-plus-ad-url="${escapeHtml(ad.url)}" href="${escapeHtml(ad.url)}" rel="noreferrer" title="${escapeHtml(name)}">
           <span class="codex-plus-ad-main">
             ${icon}
             <span class="codex-plus-ad-text">
@@ -5505,11 +5507,11 @@
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、会话管理等全部页面能力。"}</div></div>
+              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出和用户拓展，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、会话管理等全部页面能力。"}</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
+              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户拓展报错。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
@@ -5590,6 +5592,18 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      // 推荐卡片用 window.open 而非原生 <a target="_blank">：Codex 是 Electron
+      // 应用，原生新窗口跳转在它的 webview 里不会交给系统浏览器（同页的
+      // Discord / Telegram / Issues 按钮也一律走 window.open）。
+      const adCard = target?.closest("[data-codex-plus-ad-url]");
+      if (adCard) {
+        const adUrl = adCard.getAttribute("data-codex-plus-ad-url") || "";
+        if (/^https?:\/\//i.test(adUrl)) {
+          event.preventDefault();
+          window.open(adUrl, "_blank", "noopener,noreferrer");
+        }
         return;
       }
       if (target?.closest("[data-codex-plus-discord]")) {
