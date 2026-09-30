@@ -62,6 +62,7 @@ pub fn run() {
             let main_window = main_window_builder.build()?;
             if startup_is_background() {
                 main_window.hide()?;
+                set_manager_activation_policy(app.handle(), false);
             }
             install_tray(app)?;
             commands::start_weixin_connect_from_saved_settings();
@@ -352,6 +353,7 @@ fn register_main_window_events<R: tauri::Runtime>(
 
             api.prevent_close();
             let _ = close_event_window.hide();
+            set_manager_activation_policy(&close_event_app, false);
         }
         _ => {}
     });
@@ -392,7 +394,9 @@ fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 
 #[tauri::command]
 fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
+    let app_handle = window.app_handle();
     let _ = window.hide();
+    set_manager_activation_policy(&app_handle, false);
 }
 
 #[tauri::command]
@@ -463,10 +467,31 @@ fn record_tray_dream_skin_result(action: &str, result: anyhow::Result<()>) {
 
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     if let Some(window) = app_handle.get_webview_window("main") {
+        set_manager_activation_policy(app_handle, true);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+#[cfg(target_os = "macos")]
+fn set_manager_activation_policy<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    main_window_visible: bool,
+) {
+    let policy = if main_window_visible {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    let _ = app_handle.set_activation_policy(policy);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_manager_activation_policy<R: tauri::Runtime>(
+    _app_handle: &tauri::AppHandle<R>,
+    _main_window_visible: bool,
+) {
 }
 
 /// Restores and focuses an existing manager window on Windows.
