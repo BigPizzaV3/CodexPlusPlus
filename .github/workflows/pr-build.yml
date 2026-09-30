@@ -100,7 +100,21 @@ jobs:
           & $installer /S "/D=$installRoot"
           if ($LASTEXITCODE -ne 0) { throw "Silent Windows install failed with exit code $LASTEXITCODE" }
           try {
-            node scripts/installer/taskboard-health-smoke.mjs (Join-Path $installRoot "codex-taskboard")
+            $runtimeRoot = Join-Path $installRoot "codex-taskboard"
+            $runtimeFiles = @(
+              (Join-Path $runtimeRoot "dist/web/index.html"),
+              (Join-Path $runtimeRoot "scripts/codex-injector.mjs"),
+              (Join-Path $runtimeRoot "server/index.mjs")
+            )
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((@($runtimeFiles | Where-Object { -not (Test-Path $_) }).Count -gt 0) -and (Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 250
+            }
+            $missingRuntimeFiles = @($runtimeFiles | Where-Object { -not (Test-Path $_) })
+            if ($missingRuntimeFiles.Count -gt 0) {
+              throw "Silent install did not finish staging Taskboard runtime: $($missingRuntimeFiles -join ', ')"
+            }
+            node scripts/installer/taskboard-health-smoke.mjs $runtimeRoot
           } finally {
             $uninstaller = Join-Path $installRoot "uninstall.exe"
             if (Test-Path $uninstaller) { & $uninstaller /S }
