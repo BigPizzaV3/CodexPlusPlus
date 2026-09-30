@@ -297,6 +297,67 @@ fn model_ui_metadata_exposes_fast_service_tier_capability() {
 }
 
 #[test]
+fn gpt61_sol_metadata_exposes_max_ultra_fast_and_272k_default() {
+    use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
+
+    assert!(requires_bundled_metadata_catalog("gpt-6.1-sol"));
+    assert!(requires_bundled_metadata_catalog("GPT-6.1-SOL"));
+    assert!(!requires_bundled_metadata_catalog("gpt-6.1-sol-custom"));
+    assert!(model_ui_metadata("gpt-6.1-sol-custom").is_none());
+    let entries = collect_catalog_entries("gpt-6.1-sol", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let model = &catalog["models"][0];
+    let ui = model_ui_metadata("gpt-6.1-sol").unwrap();
+    for (levels, key) in [
+        (&model["supported_reasoning_levels"], "effort"),
+        (&ui["supportedReasoningEfforts"], "reasoningEffort"),
+    ] {
+        let efforts = levels
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level[key].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(efforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+    }
+    assert_eq!(model["slug"], "gpt-6.1-sol");
+    assert_eq!(model["display_name"], "GPT-6.1-Sol");
+    assert_eq!(ui["displayName"], model["display_name"]);
+    assert_eq!(ui["description"], model["description"]);
+    assert_eq!(model["default_reasoning_level"], "medium");
+    assert_eq!(ui["defaultReasoningEffort"], "medium");
+    assert_eq!(model["context_window"], 272_000);
+    assert_eq!(model["max_context_window"], 872_000);
+    assert_eq!(model["effective_context_window_percent"], 100);
+    assert!(model["auto_compact_token_limit"].is_null());
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(ui["additionalSpeedTiers"], model["additional_speed_tiers"]);
+    assert_eq!(model["service_tiers"][0]["id"], "priority");
+    assert_eq!(model["service_tiers"][0]["name"], "Fast");
+    assert_eq!(ui["serviceTiers"], model["service_tiers"]);
+    assert_eq!(model["input_modalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(model["supports_search_tool"], true);
+    assert_eq!(model["use_responses_lite"], false);
+
+    let mut windows = HashMap::new();
+    windows.insert("gpt-6.1-sol".to_string(), "200K".to_string());
+    for (entries, fallback, expected_window) in [
+        (&entries, Some(300_000), 300_000),
+        (
+            &collect_catalog_entries("gpt-6.1-sol", &windows, &HashMap::new(), ""),
+            Some(300_000),
+            200_000,
+        ),
+    ] {
+        let overridden: serde_json::Value =
+            serde_json::from_str(&build_model_catalog_json(entries, fallback)).unwrap();
+        assert_eq!(overridden["models"][0]["context_window"], expected_window);
+        assert_eq!(overridden["models"][0]["max_context_window"], expected_window);
+    }
+}
+
+#[test]
 fn collect_entries_adopts_suffix_for_current_model_from_list() {
     // 当前 model 本身无后缀，但 model_list 中靠后位置有同名带后缀条目。
     let mut windows = HashMap::new();

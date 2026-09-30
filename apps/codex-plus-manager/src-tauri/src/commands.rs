@@ -847,7 +847,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         Ok(snapshot) => snapshot,
         Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
     };
-    if let Err(error) = stop_codex_plus_for_restart(
+    let native_browser_shutdown = match stop_codex_plus_for_restart(
         || codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port),
         || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
         || {
@@ -858,8 +858,27 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             Ok(())
         },
     ) {
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            return failed(
+                &restart_stop_failure_message(&error),
+                json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+            );
+        }
+    };
+    let native_browser_restore_failed = matches!(
+        native_browser_shutdown,
+        codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
+    );
+    if native_browser_restore_failed {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "native_browser.cleanup_not_restored",
+            json!({"state": "blocked"}),
+        );
+    }
+    if let Err(error) = prepare_fixed_helper_port_for_restart(settings.as_ref()) {
         return failed(
-            &format!("Codex 已请求停止，但原生浏览器清理或旧启动器退出未完成；未强制终止启动器或启动新实例：{error}"),
+            &format!("重启 Codex++ 失败：{error}"),
             json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
         );
     }
@@ -897,7 +916,8 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
                 "debugPort": request.debug_port,
                 "helperPort": request.helper_port,
                 "syncActiveRelay": request.sync_active_relay,
-                "launchStartedAtMs": launch_started_at_ms
+                "launchStartedAtMs": launch_started_at_ms,
+                "nativeBrowserRestoreFailed": native_browser_restore_failed
             }),
         },
         Err(error) => {
@@ -910,7 +930,8 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
                     "debugPort": request.debug_port,
                     "helperPort": request.helper_port,
                     "syncActiveRelay": request.sync_active_relay,
-                    "launchStartedAtMs": launch_started_at_ms
+                    "launchStartedAtMs": launch_started_at_ms,
+                    "nativeBrowserRestoreFailed": native_browser_restore_failed
                 }),
             )
         }
@@ -919,13 +940,68 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 
 fn stop_codex_plus_for_restart(
     stop_codex: impl FnOnce(),
-    wait_native: impl FnOnce() -> anyhow::Result<()>,
+    wait_native: impl FnOnce() -> anyhow::Result<codex_plus_core::native_browser::NativeBrowserShutdown>,
     stop_launcher: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+) -> Result<codex_plus_core::native_browser::NativeBrowserShutdown, RestartStopError> {
     // The launcher owns native recovery; terminating it first skips that cleanup.
     stop_codex();
-    wait_native()?;
-    stop_launcher()?;
+    let shutdown = wait_native().map_err(RestartStopError::NativeBrowser)?;
+    stop_launcher().map_err(RestartStopError::Launcher)?;
+    Ok(shutdown)
+}
+
+#[derive(Debug)]
+enum RestartStopError {
+    NativeBrowser(anyhow::Error),
+    Launcher(anyhow::Error),
+}
+
+fn restart_stop_failure_message(error: &RestartStopError) -> String {
+    match error {
+        RestartStopError::NativeBrowser(error) => {
+            let summary = if error
+                .downcast_ref::<codex_plus_core::native_browser::NativeBrowserCleanupStillRunning>()
+                .is_some()
+            {
+                "仍在恢复"
+            } else {
+                "恢复失败"
+            };
+            format!("Codex 已请求停止，但原生浏览器文件{summary}，未启动新实例：{error}")
+        }
+        RestartStopError::Launcher(error) => format!(
+            "Codex 已请求停止，但旧启动器尚未退出，未启动新实例：{error}"
+        ),
+    }
+}
+
+fn prepare_fixed_helper_port_for_restart(settings: Option<&BackendSettings>) -> anyhow::Result<()> {
+    let loaded;
+    let settings = match settings {
+        Some(settings) => settings,
+        None => match SettingsStore::default().load() {
+            Ok(value) => {
+                loaded = value;
+                &loaded
+            }
+            // 读不到设置时仍交给 launcher 自己等。这里失败不应把一次普通重启拦死。
+            Err(_) => return Ok(()),
+        },
+    };
+    let Some(port) = codex_plus_core::launcher::required_fixed_helper_port(settings) else {
+        return Ok(());
+    };
+    codex_plus_core::launcher::wait_for_fixed_helper_port(
+        port,
+        codex_plus_core::launcher::protocol_proxy_bind_retry_timeout_ms(),
+        codex_plus_core::launcher::helper_bind_retry_interval_ms(),
+        probe_loopback_port,
+        |interval_ms| std::thread::sleep(std::time::Duration::from_millis(interval_ms)),
+    )
+}
+
+fn probe_loopback_port(port: u16) -> std::io::Result<()> {
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
     Ok(())
 }
 
@@ -1652,9 +1728,21 @@ fn empty_weixin_qr_payload(status: &str) -> WeixinQrPayload {
     }
 }
 
+#[derive(serde::Serialize)]
+pub struct NativeBrowserDiagnostics {
+    compatibility: codex_plus_core::native_browser::BrowserStatus,
+    connection: codex_plus_core::native_browser_connection::ConnectionStatus,
+}
+
 #[tauri::command]
-pub fn native_browser_status() -> codex_plus_core::native_browser::BrowserStatus {
-    codex_plus_core::native_browser::read_status()
+pub async fn native_browser_status() -> NativeBrowserDiagnostics {
+    let compatibility = tauri::async_runtime::spawn_blocking(codex_plus_core::native_browser::read_status)
+        .await
+        .unwrap_or_else(|_| codex_plus_core::native_browser::BrowserStatus {
+            state: "unavailable".into(), detail: String::new(),
+        });
+    let connection = codex_plus_core::native_browser_connection::check_connection().await;
+    NativeBrowserDiagnostics { compatibility, connection }
 }
 
 #[tauri::command]
@@ -3316,6 +3404,35 @@ fn merge_manual_provider_sync_targets(
             .cmp(&left.is_current_provider)
             .then_with(|| left.id.cmp(&right.id))
     });
+}
+
+#[tauri::command]
+pub async fn repair_session_index() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_session_index(None))
+        .await
+        .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))
+        .and_then(|result| result);
+    match result {
+        Ok(report) => ok(
+            &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
+            json!(report),
+        ),
+        Err(error) => failed(&format!("修复会话索引失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn load_session_index_repair_report() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::load_session_index_repair_report(None)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session index report task failed: {error}"))
+    .and_then(|result| result);
+    match result {
+        Ok(report) => ok("已读取会话索引修复报告。", json!({ "report": report })),
+        Err(error) => failed(&format!("读取会话索引修复报告失败：{error}"), json!({})),
+    }
 }
 
 #[tauri::command]
@@ -6507,6 +6624,26 @@ mod tests {
     }
 
     #[test]
+    fn native_browser_diagnostics_keeps_connection_independent_from_patch_status() {
+        let result = NativeBrowserDiagnostics {
+            compatibility: codex_plus_core::native_browser::BrowserStatus {
+                state: "runtime_unverified".into(), detail: "Legacy runtime mismatch".into(),
+            },
+            connection: codex_plus_core::native_browser_connection::ConnectionStatus {
+                state: "available".into(), failed_checks: 0,
+                browsers: vec![codex_plus_core::native_browser_connection::ConnectedBrowser {
+                    family: "edge".into(), header_enabled: Some(true),
+                }],
+            },
+        };
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["compatibility"]["state"], "runtime_unverified");
+        assert_eq!(json["connection"]["state"], "available");
+        assert_eq!(json["connection"]["browsers"][0]["headerEnabled"], true);
+        assert_eq!(json["connection"]["failedChecks"], 0);
+    }
+
+    #[test]
     fn requested_launch_status_identifies_the_current_request() {
         let request = LaunchRequest {
             app_path: "C:/Program Files/Codex".to_string(),
@@ -7313,10 +7450,54 @@ base_url = "https://example.invalid/v1"
         let events = std::cell::RefCell::new(Vec::new());
         stop_codex_plus_for_restart(
             || events.borrow_mut().push("codex"),
-            || { events.borrow_mut().push("cleanup"); Ok(()) },
+            || {
+                events.borrow_mut().push("cleanup");
+                Ok(codex_plus_core::native_browser::NativeBrowserShutdown::Ready)
+            },
             || { events.borrow_mut().push("launcher"); Ok(()) },
         ).unwrap();
         assert_eq!(*events.borrow(), ["codex", "cleanup", "launcher"]);
+    }
+
+    #[test]
+    fn restore_failure_still_stops_the_old_launcher() {
+        let stopped_launcher = std::cell::Cell::new(false);
+        let shutdown = stop_codex_plus_for_restart(
+            || {},
+            || Ok(codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed),
+            || {
+                stopped_launcher.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            shutdown,
+            codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
+        );
+        assert!(stopped_launcher.get());
+    }
+
+    #[test]
+    fn restart_stop_errors_name_the_step_that_failed() {
+        let browser = restart_stop_failure_message(&RestartStopError::NativeBrowser(
+            anyhow::Error::new(
+                codex_plus_core::native_browser::NativeBrowserCleanupStillRunning,
+            ),
+        ));
+        let launcher = restart_stop_failure_message(&RestartStopError::Launcher(anyhow::anyhow!(
+            "old launcher still exiting"
+        )));
+        assert!(browser.contains("原生浏览器文件仍在恢复"));
+        assert!(!browser.contains("旧启动器尚未退出"));
+        assert!(launcher.contains("旧启动器尚未退出"));
+        assert!(!launcher.contains("原生浏览器文件仍在恢复"));
+
+        let failed = restart_stop_failure_message(&RestartStopError::NativeBrowser(
+            anyhow::anyhow!("Invalid native cleanup receipt"),
+        ));
+        assert!(failed.contains("原生浏览器文件恢复失败"));
+        assert!(!failed.contains("原生浏览器文件仍在恢复"));
     }
 
     #[test]

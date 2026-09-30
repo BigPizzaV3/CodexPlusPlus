@@ -1,0 +1,79 @@
+{
+  "fragments": [
+    {
+      "name": "00-prelude.js",
+      "description": "IIFE 开头、环境守卫、平台探测、常量与工具函数",
+      "lines": 602
+    },
+    {
+      "name": "10-style.js",
+      "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
+      "lines": 2037
+    },
+    {
+      "name": "20-menu.js",
+      "description": "Codex++ 菜单、后端设置加载、插件解锁策略与版本判定",
+      "lines": 472
+    },
+    {
+      "name": "30-service-tier.js",
+      "description": "服务等级（service tier）读写、线程覆盖与控件同步",
+      "lines": 1084
+    },
+    {
+      "name": "40-backend-settings.js",
+      "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
+      "lines": 1491
+    },
+    {
+      "name": "50-navigation.js",
+      "description": "导航入口安装、rail 按钮、页面布局与选中态同步",
+      "lines": 243
+    },
+    {
+      "name": "60-plugin-marketplace.js",
+      "description": "插件市场请求/响应补丁、本地兜底与合并",
+      "lines": 1619
+    },
+    {
+      "name": "70-model-catalog.js",
+      "description": "全局状态、模型目录、模型白名单与解锁",
+      "lines": 933
+    },
+    {
+      "name": "80-session-share.js",
+      "description": "会话分享、项目区、toast、工作区路径归一",
+      "lines": 1458
+    },
+    {
+      "name": "90-action-groups.js",
+      "description": "会话行操作按钮布局、更多菜单、工具提示",
+      "lines": 808
+    },
+    {
+      "name": "95-conversation-view.js",
+      "description": "会话视图运行时、官方用量策略重写、扫描主循环",
+      "lines": 1240
+    },
+    {
+      "name": "98-scan-schedule.js",
+      "description": "扫描相关性判定与调度，启动重试",
+      "lines": 120
+    },
+    {
+      "name": "99-startup.js",
+      "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
+      "lines": 30
+    },
+    {
+      "name": "99-tail.js",
+      "description": "主 IIFE 收尾 `})();`",
+      "lines": 3
+    },
+    {
+      "name": "zz-paste-fix.js",
+      "description": "粘贴修复块：Word 粘贴降级为纯文本",
+      "lines": 39
+    }
+  ]
+}

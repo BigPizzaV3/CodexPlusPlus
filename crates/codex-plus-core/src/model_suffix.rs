@@ -202,6 +202,11 @@ const GPT6_SOL_LUNA_METADATA_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/gpt6-sol-luna-model-metadata-compat.json"
 ));
+const GPT61_SOL_METADATA_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/gpt61-sol-model-metadata-compat.json"
+));
+
 /// 精调/供应商 metadata 来源。数组顺序就是覆盖优先级，条目和来源名始终成对维护。
 const COMPATIBILITY_METADATA_SOURCES: &[(&'static str, &'static str)] = &[
     (GPT56_METADATA_JSON, "gpt-5.6 兼容"),
@@ -306,6 +311,7 @@ const COMPATIBILITY_METADATA_SOURCES: &[(&'static str, &'static str)] = &[
         "gpt-oss",
     ),
     (GPT6_SOL_LUNA_METADATA_JSON, "gpt-6 Sol/Luna 兼容"),
+    (GPT61_SOL_METADATA_JSON, "gpt-6.1 Sol 兼容"),
 ];
 
 /// 该 slug 是否需要落一份内置元数据 catalog（无用户窗口/元数据时也要生成）。

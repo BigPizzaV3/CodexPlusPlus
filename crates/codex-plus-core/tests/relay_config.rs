@@ -777,6 +777,94 @@ base_url = "https://relay.example.test/v1"
     let _ = temp;
 }
 
+/// issue #1097 问题 2：live config 的 `model =` 被污染成整段转义后的供应商配置时，
+/// backfill 不得把脏值固化进 profile.model（否则随保存/切换逐轮转义放大）。
+#[test]
+fn backfill_rejects_polluted_model_line() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "gpt-5.6-sol\n\nmodel_provider = \"custom\"\nbase_url = \"https://relay.example.test/v1\"\n"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example.test/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#,
+    )
+    .unwrap();
+
+    let mut profile = RelayProfile::default();
+    backfill_relay_profile_from_home(home, &mut profile).unwrap();
+
+    assert!(profile.model.trim().is_empty());
+}
+
+/// issue #1097 问题 2：normalize 重写快照时剥掉/替换 config_contents 里被污染的
+/// `model =`，且多轮 normalize 幂等——修复前读侧不反转义，每轮写侧再转义一层，
+/// settings.json 会指数膨胀。
+#[test]
+fn normalize_drops_polluted_model_and_stays_idempotent() {
+    let polluted_config = r#"model = "gpt-5.6-sol\n\nmodel_provider = \"custom\"\nbase_url = \"https://relay.example.test/v1\"\n"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example.test/v1"
+"#
+    .to_string();
+
+    // model_list 有合法条目时，污染值被替换为 model_list 第一条
+    let mut profile = RelayProfile {
+        id: "custom".to_string(),
+        relay_mode: RelayMode::MixedApi,
+        protocol: RelayProtocol::Responses,
+        base_url: "https://relay.example.test/v1".to_string(),
+        upstream_base_url: "https://relay.example.test/v1".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        config_contents: polluted_config.clone(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        model_list: "deepseek-v4-flash\ngpt-5.6-sol".to_string(),
+        ..RelayProfile::default()
+    };
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert!(profile.config_contents.contains(r#"model = "deepseek-v4-flash""#));
+    assert!(!profile.config_contents.contains(r"\nmodel_provider"));
+    // modelList 不被污染值侵入
+    assert!(!profile.model_list.contains('\\'));
+
+    // 幂等：再次 normalize 输出稳定（修复前每轮转义翻倍增长）
+    let once = profile.config_contents.clone();
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+    assert_eq!(profile.config_contents, once);
+
+    // model_list 也为空时，污染的 model 键直接剥除而非保留
+    let mut bare = RelayProfile {
+        id: "custom".to_string(),
+        relay_mode: RelayMode::MixedApi,
+        protocol: RelayProtocol::Responses,
+        base_url: "https://relay.example.test/v1".to_string(),
+        upstream_base_url: "https://relay.example.test/v1".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        config_contents: polluted_config,
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    normalize_relay_profile_for_storage(&mut bare).unwrap();
+    assert!(!bare.config_contents.contains("model = "));
+    assert!(!bare.config_contents.contains(r"\nmodel_provider"));
+}
+
 #[test]
 fn openai_session_provider_keeps_openai_name_for_official_identity() {
     let temp = tempfile::tempdir().unwrap();
@@ -4702,6 +4790,69 @@ base_url = "https://relay.example/v1"
         efforts,
         vec!["low", "medium", "high", "xhigh", "max", "ultra"]
     );
+}
+
+#[test]
+fn apply_relay_profile_generates_gpt61_sol_catalog_without_window_override() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-gpt61".to_string(),
+        model: "gpt-6.1-sol".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-6.1-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let read_model = || {
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-gpt61.json""#));
+        let catalog: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("model-catalogs/relay-gpt61.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(catalog["models"].as_array().unwrap().len(), 1);
+        catalog["models"][0].clone()
+    };
+    let model = read_model();
+    assert_eq!(model["slug"], "gpt-6.1-sol");
+    assert_eq!(model["display_name"], "GPT-6.1-Sol");
+    assert_eq!(model["default_reasoning_level"], "medium");
+    assert_eq!(model["context_window"], 272_000);
+    assert_eq!(model["max_context_window"], 872_000);
+    assert_eq!(model["use_responses_lite"], false);
+    assert_eq!(model["multi_agent_version"], "v2");
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(model["service_tiers"][0]["id"], "priority");
+    assert_eq!(
+        model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["low", "medium", "high", "xhigh", "max", "ultra"]
+    );
+
+    let mut overridden = profile.clone();
+    overridden.model_windows = serde_json::json!({"gpt-6.1-sol": "200K"}).to_string();
+    apply_relay_profile_files_to_home_with_context(temp.path(), &overridden, "").unwrap();
+    let model = read_model();
+    assert_eq!(model["context_window"], 200_000);
+    assert_eq!(model["max_context_window"], 200_000);
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    assert_eq!(read_model()["context_window"], 272_000);
 }
 
 #[test]

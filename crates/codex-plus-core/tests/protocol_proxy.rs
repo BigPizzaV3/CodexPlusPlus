@@ -92,6 +92,66 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
 }
 
 #[test]
+fn compaction_stream_emits_one_done_item_before_completed() {
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_summary_text("Preserve this summary.");
+    let events = compaction_sse_events(&converter.finish());
+    let mut items = Vec::new();
+    let mut completed = None;
+    for event in &events {
+        match event["type"].as_str() {
+            Some("response.output_item.done") => items.push(event["item"].clone()),
+            Some("response.completed") => {
+                completed = Some(&event["response"]);
+                break;
+            }
+            _ => {}
+        }
+    }
+    // Match Codex compact v2: collect done events, not completed.response.output.
+    assert_eq!(
+        items.len(),
+        1,
+        "compact v2 must receive one output-item event"
+    );
+    assert_eq!(items[0]["type"], "compaction");
+    assert_eq!(items[0]["encrypted_content"], "Preserve this summary.");
+    assert!(
+        items[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("cmp_")),
+        "compaction item id must use the cmp_ prefix: {}",
+        items[0]["id"]
+    );
+    assert_eq!(completed.unwrap()["output"], json!(items));
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "response.created",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.completed"
+        ]
+    );
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence_number"], index);
+    }
+}
+
+fn compaction_sse_events(payload: &[u8]) -> Vec<Value> {
+    std::str::from_utf8(payload)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect()
+}
+
+#[test]
 fn wrap_non_stream_response_produces_single_compaction_item() {
     let upstream = json!({
         "id": "resp_up",
@@ -109,8 +169,13 @@ fn wrap_non_stream_response_produces_single_compaction_item() {
     assert!(text.contains("\"type\":\"compaction\""));
     assert!(text.contains("SUMMARYfromRESPONSES"));
     assert!(text.contains("data: [DONE]"));
-    // 恰好一个 compaction 输出项
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    assert_eq!(
+        compaction_sse_events(text.as_bytes())
+            .iter()
+            .filter(|event| event["type"] == "response.output_item.done")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -124,7 +189,13 @@ fn wrap_non_stream_chat_response_produces_single_compaction_item() {
     let wrapped = wrap_non_stream_response_as_compaction(upstream.as_bytes(), "deepseek").unwrap();
     let text = String::from_utf8(wrapped).unwrap();
     assert!(text.contains("SUMMARYfromCHAT"));
-    assert_eq!(text.matches("\"type\":\"compaction\"").count(), 1);
+    assert_eq!(
+        compaction_sse_events(text.as_bytes())
+            .iter()
+            .filter(|event| event["type"] == "response.output_item.done")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -134,6 +205,14 @@ fn wrap_empty_upstream_yields_failed_compaction_response() {
     let text = String::from_utf8(wrapped).unwrap();
     assert!(text.contains("\"status\":\"failed\""));
     assert!(text.contains("compaction_empty_summary") || text.contains("空摘要"));
+    let events = compaction_sse_events(text.as_bytes());
+    assert_eq!(events.last().unwrap()["type"], "response.failed");
+    assert!(
+        events
+            .iter()
+            .all(|event| event["type"] != "response.output_item.done"
+                && event["type"] != "response.completed")
+    );
 }
 
 #[test]
@@ -146,6 +225,93 @@ fn compaction_converter_extracts_output_text_deltas_and_ignores_reasoning() {
     let mut silent = CompactionSseConverter::new("deepseek");
     silent.push_upstream_bytes(b"not sse");
     assert_eq!(silent.summary_text(), "");
+}
+
+#[test]
+fn compaction_converter_accepts_data_only_responses_events() {
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(
+        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Summary\"}\n\n",
+    );
+    assert_eq!(converter.summary_text(), "Summary");
+    assert!(
+        compaction_sse_events(&converter.finish())
+            .iter()
+            .any(|event| event["type"] == "response.output_item.done"
+                && event["item"]["encrypted_content"] == "Summary")
+    );
+}
+
+#[test]
+fn compaction_converter_accepts_complete_text_from_done_events() {
+    let upstream = concat!(
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"Summary from done\"}\n\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Summary from item\"}]}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Summary from completed\"}]}]}}\n\n",
+    );
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(upstream.as_bytes());
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_eq!(
+        compaction["item"]["encrypted_content"],
+        "Summary from completed"
+    );
+}
+
+#[test]
+fn compaction_converter_accepts_native_compaction_item_without_deltas() {
+    let upstream = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque-summary\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+    );
+    let mut converter = CompactionSseConverter::new("custom-model");
+    converter.push_upstream_bytes(upstream.as_bytes());
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_eq!(compaction["item"]["encrypted_content"], "opaque-summary");
+}
+
+#[test]
+fn compaction_converter_accepts_complete_chat_message_without_delta() {
+    let upstream = b"data: {\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Chat summary\"}}]}\n\n";
+    let mut converter = CompactionSseConverter::new("custom-model").with_chat_upstream();
+    converter.push_upstream_bytes(upstream);
+    let events = compaction_sse_events(&converter.finish());
+    let compaction = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_eq!(compaction["item"]["encrypted_content"], "Chat summary");
+}
+
+#[test]
+fn compaction_converter_never_completes_a_failed_partial_summary() {
+    for upstream_error in [
+        json!({"type":"response.failed","response":{"error":{"code":"upstream_failed","message":"Upstream failed"}}}),
+        json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}),
+        json!({"error":{"code":"upstream_failed","message":"Upstream failed"}}),
+    ] {
+        let mut converter = CompactionSseConverter::new("custom-model");
+        converter.push_summary_text("Partial summary must not become a checkpoint.");
+        converter.push_upstream_bytes(format!("data: {upstream_error}\n\n").as_bytes());
+        let events = compaction_sse_events(&converter.finish());
+        let failed = events.last().unwrap();
+        assert_eq!(failed["type"], "response.failed");
+        assert_eq!(failed["response"]["output"], json!([]));
+        assert!(
+            events
+                .iter()
+                .all(|event| event["type"] != "response.output_item.done"
+                    && event["type"] != "response.completed")
+        );
+    }
 }
 
 #[test]
@@ -203,7 +369,6 @@ fn compaction_converter_pure_think_block_yields_failed_response() {
     let payload = String::from_utf8(converter.finish()).unwrap();
     assert!(!payload.contains("internal reasoning"));
     assert!(payload.contains("\"status\":\"failed\""));
-    // finish() 的 error 输出只带 message，error_type 供调用方分类、不进入响应体。
     assert!(payload.contains("空摘要"));
     assert!(!payload.contains("\"status\":\"completed\""));
 }
@@ -217,12 +382,13 @@ fn compaction_converter_stream_error_yields_failed_response() {
     let payload = String::from_utf8(converter.finish()).unwrap();
     assert!(payload.contains("\"status\":\"failed\""));
     assert!(payload.contains("Stream error: broken pipe"));
-    // failed 状态已阻止 codex 安装空 checkpoint，无需判断 encrypted_content 内容。
+    assert!(!payload.contains("event: response.completed"));
+    assert!(!payload.contains("\"type\":\"compaction\""));
     assert!(!payload.contains("\"status\":\"completed\""));
 }
 
 #[tokio::test]
-async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
+async fn chat_compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -281,6 +447,7 @@ async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
         relay_profiles: vec![RelayProfile {
             id: "compact".to_string(),
             name: "compact".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
             base_url: format!("http://{addr}/v1"),
             api_key: "sk-compact".to_string(),
             relay_mode: RelayMode::Official,
@@ -309,7 +476,7 @@ async fn compaction_v2_request_routes_to_summary_endpoint_and_flags_response() {
     let request = server.await.unwrap();
 
     // 上游端点保持普通 /v1/responses，请求体剥离了 trigger 并注入了摘要指令。
-    assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
+    assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
     assert!(request.contains("CONTEXT CHECKPOINT COMPACTION"));
     assert!(!request.contains("compaction_trigger"));
 
@@ -3069,20 +3236,8 @@ async fn model_route_preserves_responses_compact_endpoint() {
     let (headers, upstream_body) = target_server.await.unwrap();
 
     assert!(headers.starts_with("POST /v1/responses/compact HTTP/1.1"));
-    // legacy compact 请求同样被改写为摘要生成：注入摘要指令并禁用工具，
-    // 端点与 model/stream 字段保持不变。
-    assert_eq!(
-        upstream_body["input"].as_array().unwrap().last().unwrap()["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("CONTEXT CHECKPOINT COMPACTION"),
-        true
-    );
-    assert_eq!(upstream_body["tools"], json!([]));
-    assert_eq!(upstream_body["tool_choice"], json!("none"));
-    assert_eq!(upstream_body["parallel_tool_calls"], json!(false));
-    assert_eq!(upstream_body["model"], request["model"]);
-    assert_eq!(upstream_body["stream"], request["stream"]);
+    assert_eq!(upstream_body, request);
+    assert!(!result.compaction);
 }
 
 #[tokio::test]
@@ -3289,6 +3444,19 @@ async fn capture_request_and_respond_once(
 async fn capture_json_request_once(
     listener: tokio::net::TcpListener,
 ) -> (String, serde_json::Value) {
+    capture_request_with_response(
+        listener,
+        "application/json",
+        r#"{"id":"resp_model_route","object":"response"}"#.to_string(),
+    )
+    .await
+}
+
+async fn capture_request_with_response(
+    listener: tokio::net::TcpListener,
+    content_type: &str,
+    response_body: String,
+) -> (String, serde_json::Value) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let mut buffer = Vec::new();
     let mut chunk = [0; 4096];
@@ -3319,9 +3487,8 @@ async fn capture_json_request_once(
     }
     let headers = String::from_utf8_lossy(&buffer[..header_end - 4]).to_string();
     let body = serde_json::from_slice(&buffer[header_end..header_end + content_length]).unwrap();
-    let response_body = r#"{"id":"resp_model_route","object":"response"}"#;
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: {content_type}\r\n\r\n{}",
         response_body.len(),
         response_body
     );
@@ -4230,6 +4397,8 @@ fn responses_item_id_normalization_repairs_legacy_prefixes() {
             { "type": "message", "id": "msg_01a03855-357e-7b40-a", "role": "assistant", "content": "ok" },
             { "type": "reasoning", "id": "06b2506d2a33704f5737670841d1a928_rs", "summary": [] },
             { "type": "reasoning", "id": "rs_0ded2efd183d1065", "summary": [] },
+            { "type": "compaction", "id": "cp_resp_compact_1790246125219", "encrypted_content": "summary" },
+            { "type": "compaction", "id": "cmp_01a03855-357e-7b40-a", "encrypted_content": "summary" },
             { "type": "function_call", "id": "item_c270d5511c7129adc7475632", "call_id": "call_a", "name": "wait", "arguments": "{}" },
             { "type": "function_call_output", "id": "fc_call_a", "call_id": "call_a", "output": "ok" },
             { "type": "custom_tool_call", "id": "fc_call_b", "call_id": "call_b", "name": "exec", "input": "{}" },
@@ -4250,14 +4419,19 @@ fn responses_item_id_normalization_repairs_legacy_prefixes() {
     assert_eq!(ids[1], "msg_01a03855-357e-7b40-a", "已正确的前缀不该被改动");
     assert_eq!(ids[2], "rs_06b2506d2a33704f5737670841d1a928_rs");
     assert_eq!(ids[3], "rs_0ded2efd183d1065");
-    assert_eq!(ids[4], "fc_c270d5511c7129adc7475632");
-    assert_eq!(ids[5], "fco_call_a", "fco 不能被剥成 fc_");
     assert_eq!(
-        ids[6], "ctc_call_b",
+        ids[4], "cmp_resp_compact_1790246125219",
+        "旧 cp_ 压缩项必须修复为 cmp_"
+    );
+    assert_eq!(ids[5], "cmp_01a03855-357e-7b40-a");
+    assert_eq!(ids[6], "fc_c270d5511c7129adc7475632");
+    assert_eq!(ids[7], "fco_call_a", "fco 不能被剥成 fc_");
+    assert_eq!(
+        ids[8], "ctc_call_b",
         "fc_ 要剥掉再换成 ctc_，不能叠成 fc_ctc_"
     );
-    assert_eq!(ids[7], "ctco_call_b");
-    assert_eq!(ids[8], "whatever_external", "未知类型必须原样通过");
+    assert_eq!(ids[9], "ctco_call_b");
+    assert_eq!(ids[10], "whatever_external", "未知类型必须原样通过");
 }
 
 /// id 恰好等于某个前缀时，剥完是空串，应退回 call_id 而不是产出裸前缀。
@@ -4364,7 +4538,10 @@ fn responses_request_passes_tool_search_through_to_chat_tools() {
         .expect("tool_search 必须出现在转换后的 tools 里");
     assert_eq!(tool_search["type"], "function");
     assert_eq!(tool_search["function"]["name"], "tool_search");
-    assert_eq!(tool_search["function"]["description"], "Search exposed tools");
+    assert_eq!(
+        tool_search["function"]["description"],
+        "Search exposed tools"
+    );
     assert_eq!(
         tool_search["function"]["parameters"]["properties"]["query"]["type"],
         "string"
@@ -4374,7 +4551,11 @@ fn responses_request_passes_tool_search_through_to_chat_tools() {
         "query"
     );
     // 其它工具不受影响
-    assert!(tools.iter().any(|tool| tool["function"]["name"] == "exec_command"));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "exec_command")
+    );
 }
 
 /// #2263：模型调用回 tool_search 时必须还原成 `tool_search_call` item，
@@ -4527,9 +4708,11 @@ key = "value"
     )
     .unwrap();
 
-    let preserved =
-        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
-            .unwrap();
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
 
     assert!(
         preserved.contains("[mcp_servers.context7]"),
@@ -4718,12 +4901,85 @@ fn preserve_live_app_settings_does_not_invent_mcp_servers() {
     let home = dir.path();
     std::fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
 
-    let preserved =
-        codex_plus_core::relay_config::preserve_live_app_settings_for_test(home, "[profile]\nname = \"x\"\n")
-            .unwrap();
+    let preserved = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        home,
+        "[profile]\nname = \"x\"\n",
+    )
+    .unwrap();
 
     assert!(
         !preserved.contains("mcp_servers"),
         "live 无 mcp_servers 时不得注入该段，实际：{preserved}"
     );
+}
+
+#[tokio::test]
+async fn native_compaction_preserves_protocol_and_opaque_state() {
+    use codex_plus_core::protocol_proxy::open_responses_proxy_request_with_settings_for_path_and_beta;
+    let item = json!({"id":"cmp_native", "type":"compaction", "encrypted_content":"opaque-native-state", "future":{"kept":true}});
+    for streaming in [false, true] {
+        for replay in [false, true] {
+            for beta in [None, Some("remote_compaction_v2,another_feature")] {
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .unwrap();
+                let address = listener.local_addr().unwrap();
+                let final_response = json!({"id":"resp_native", "object":"response", "status":"completed", "output":[item.clone()]});
+                let response_body = if streaming {
+                    format!(
+                        "data: {}\n\ndata: {}\n\n",
+                        json!({"type":"response.output_item.done","output_index":0,"item":item.clone()}),
+                        json!({"type":"response.completed","response":final_response})
+                    )
+                } else {
+                    final_response.to_string()
+                };
+                let expected_response = response_body.clone();
+                let server = tokio::spawn(capture_request_with_response(
+                    listener,
+                    if streaming {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                    response_body,
+                ));
+                let request = json!({
+                    "model":"gpt-5.6-luna", "stream":streaming, "store":false,
+                    "prompt_cache_key":"native-cache", "reasoning":{"effort":"max","context":"all_turns"},
+                    "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+                    "input":if replay {json!([item.clone(),{"type":"message","role":"user","content":"continue"}])} else {json!([{"type":"message","role":"user","content":"history"},{"type":"compaction_trigger","future":"keep"}])}
+                });
+                let settings =
+                    model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
+                let result = open_responses_proxy_request_with_settings_for_path_and_beta(
+                    &request.to_string(),
+                    settings,
+                    "/v1/responses",
+                    beta,
+                )
+                .await
+                .unwrap();
+                assert!(
+                    !result.compaction,
+                    "native Responses must not enter the synthetic wrapper"
+                );
+                assert_eq!(result.response.text().await.unwrap(), expected_response);
+                let (headers, sent) = server.await.unwrap();
+                assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+                assert_eq!(
+                    sent, request,
+                    "trigger, opaque state, and request fields must survive"
+                );
+                let header = headers.lines().find(|line| {
+                    line.to_ascii_lowercase()
+                        .starts_with("x-codex-beta-features:")
+                });
+                assert_eq!(
+                    header.map(|line| line.split_once(':').unwrap().1.trim()),
+                    beta
+                );
+            }
+        }
+    }
 }

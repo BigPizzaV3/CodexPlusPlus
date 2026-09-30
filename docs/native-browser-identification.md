@@ -34,8 +34,8 @@ and user-stop handling remain in the original execution path.
 
 ## Compatibility And Status
 
-The adapter accepts only these Windows stable extension pairs and the following
-bundled runtime fingerprints. Cross-paired IDs, beta extensions, other browsers
+The adapter accepts only these Windows stable extension pairs and the two
+bundled runtime fingerprints below. Cross-paired IDs, beta extensions, other browsers
 and unknown runtimes fall back to the original decision or fail compatibility
 checks. Version labels alone are not accepted.
 
@@ -44,20 +44,31 @@ checks. Version labels alone are not accepted.
 | `edge` | `odlomjlbamekndcpllcnffbgeohgkmjh` |
 | `chrome` | `hehggadaopoacecdllhhajmbjkdcmajg` |
 
-Both IDs are listed in the pinned service's production extension registry.
+Both IDs are listed in the supported services' production extension registries.
 Locally inspected Edge and Chrome extension packages at version
 `1.26.901.11451` have byte-identical background scripts. This is static protocol
 evidence, not proof that a connected client loaded that particular disk copy.
 The helper checks the actual client's family, ID, instance and Boolean
 identification state, and rejects client or browser-pair changes across I/O.
 
-| Component | SHA-256 |
-| --- | --- |
-| Browser service | `3e6fd4a8cf09f57549d63f2c9cbfa2abf42f0a6b0c09c3d6605fe07c8ba09e4a` |
-| Native worker | `ef53f8f0d957b7cf437020499b6b9d880dee381214788930107b549237f7949c` |
-| Node executable | `be14417b6c4b4a5af06be7c16bda58730f26b912c3e8c6489d12392ef08f35bf` |
-| Runtime manifest | `ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc` |
-| CUA entry point | `992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278` |
+| Component | 0.0.11 runtime SHA-256 | 0.0.24 runtime SHA-256 |
+| --- | --- | --- |
+| Browser service | `3e6fd4a8cf09f57549d63f2c9cbfa2abf42f0a6b0c09c3d6605fe07c8ba09e4a` | `fc0660ba45e6c10b532d8faa0c1bac704d987dad3d4b74478f49fdd82bf90086` |
+| Native worker | `ef53f8f0d957b7cf437020499b6b9d880dee381214788930107b549237f7949c` | `e42e0d846b9c1e5da3ec7b5e069fdae3643df590f4e304f433cfaa7fbd8732a7` |
+| Node executable | `be14417b6c4b4a5af06be7c16bda58730f26b912c3e8c6489d12392ef08f35bf` | `d3c3c290b11d55ef747e63f5a63538e0d8ca95f3f9668bb6a8081a25ba2befab` |
+| Runtime manifest | `ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc` | `2c8ea57bfab596fb3b9cf78673b62a763f8d484aa8d380e341324354ce9e90e8` |
+| CUA entry point | `992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278` | `992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278` |
+
+The 0.0.24 service changes the browser constructor and metadata/policy callback
+from `nf/ze/cD` to `eh/je/sv`. The adaptation binds the same first-party,
+turn-scoped identification reader at the new callback, only for the verified
+Chrome/Edge extension pair and while the opt-in control is enabled. It does not
+change the native worker's authentication, impersonate account credentials, or
+disable browser site checks and operation approvals. A new extension with
+identification off can otherwise ask the original policy callback for caller
+identity and encounter `unsupported Codex auth method: apikey`; an already
+enabled extension can avoid that path even without the adapter. A successful
+`getInfo` probe alone does not test this request path.
 
 The generated `unified-computer-use/.mcp.json` descriptors must agree on the
 native Node path and original browser service. Ambiguous descriptors, unknown
@@ -162,7 +173,7 @@ $env:CPP_NATIVE_BROWSER_DESCRIPTOR = 'C:\path\to\unified-computer-use\version\.m
 cargo test -p codex-plus-core native_browser::tests::pinned_fixture_transaction_recovery_and_external_change --lib -- --ignored --exact
 ```
 
-`CPP_NATIVE_BROWSER_FIXTURE` must be the actual 16-character runtime directory
+`CPP_NATIVE_BROWSER_FIXTURE` must be an unmodified, supported 16-character runtime directory
 selected by that descriptor, not an independently relocated offline copy.
 The test itself performs the relocation; it never writes to the supplied runtime.
 

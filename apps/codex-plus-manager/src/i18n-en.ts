@@ -5,6 +5,25 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "读取会话索引修复报告失败": "Failed to read the session index repair report",
+  "最后检查：": "Last checked: ",
+  "旧版报告未记录时间": "Timestamp unavailable in this older report",
+  "短暂等待": "Waiting for records to settle",
+  "持续无法恢复": "Still unable to restore",
+  "等待与持续无法恢复详情": "Waiting and unresolved items",
+  "任务 ID：": "Task ID: ",
+  "轮次 ID：": "Turn ID: ",
+  "原因：": "Reason: ",
+  "首次发现：": "First seen: ",
+  "检查次数：": "Checks: ",
+  "修复已中止：": "Repair aborted: ",
+  "修复警告：": "Repair warning: ",
+  "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。":
+    "Repair session ownership and check for missing messages before launch; recheck the index every 30 minutes while running. Save settings to apply.",
+  "自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":
+    "Automatic checks require the Codex++ launcher to be running and automatic repair to be enabled and saved; checks repeat 30 minutes after the previous check finishes. This page refreshes the report every 15 seconds without starting a repair; another check does not guarantee recovery.",
+  "短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。":
+    "Items wait for up to 30 minutes; when both the original message and its record file have been unchanged for more than 24 hours, the item goes directly to review. A missing native turn or completion state means there is insufficient evidence to safely restore it; later checks will still verify it.",
   "主导航": "Main navigation",
   "工作区": "Workspace",
   "扩展": "Extensions",
@@ -15,6 +34,8 @@ export const EN_PLAIN: Record<string, string> = {
   "启动中": "Starting",
   "启动仍在后台进行，可在概览的“最近启动”中查看状态。": "Startup is still running in the background. Check Recent Launch on Overview for its status.",
   "正在等待 Codex 重新启动…": "Waiting for Codex to restart...",
+  "原生浏览器文件恢复失败，仍会继续启动。":
+    "Native browser files could not be restored. Codex will still start.",
   "正在等待 Codex 启动结果…": "Waiting for the Codex startup result...",
   "运行中（增强等待中）": "Running (waiting for enhancements)",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
@@ -286,6 +307,7 @@ export const EN_PLAIN: Record<string, string> = {
   "上次更新结果": "Last update result",
   "上游协议": "Upstream protocol",
   "纯标准协议": "Standard protocol only",
+  "仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。": "Available only when the upstream protocol is Chat Completions. Responses API requests are forwarded unchanged.",
   "强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。": "Force the standard OpenAI protocol without vendor-specific reasoning parameters, for third-party gateways that accept only standard OpenAI fields and reject vendor-bundled private parameters.",
   "上一页": "Previous page",
   "下一页": "Next page",
@@ -483,7 +505,7 @@ export const EN_PLAIN: Record<string, string> = {
   "切换 thread 时恢复上一次浏览位置。": "Restore the last scroll position when switching threads.",
   "切换中": "Switching",
   "切换主题": "Toggle theme",
-  "切换到此供应商时会写入 ~/.codex/auth.json": "Switching to this provider writes ~/.codex/auth.json",
+  "切换到此供应商时会写入 Codex 主目录的 auth.json": "Switching to this provider writes auth.json under the Codex home directory",
   "切换到此供应商时会写入的预览；上下文开关变化会立即反映": "Preview of what gets written when switching to this provider; context toggles are reflected immediately",
   "切换到中文": "Switch to Chinese",
   "切换到英文": "Switch to English",
@@ -646,8 +668,8 @@ export const EN_PLAIN: Record<string, string> = {
   "当前为兼容增强模式，插件市场解锁不会启用；其他页面功能仍可用。":
     "Currently in compatible enhancement mode; plugin marketplace unlock is not enabled, but other page features still work.",
   "当前会话": "Current session",
-  "当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档":
-    "Currently in use: backfilled from ~/.codex/auth.json when opened; saving stores it as this provider's auth archive",
+  "当前使用中：打开时从 Codex 主目录的 auth.json 回填，保存后会作为此供应商 auth 存档":
+    "Currently in use: backfilled from auth.json under the Codex home directory when opened; saving stores it as this provider's auth archive",
   "当前供应商 config.toml 里没有可提取的通用配置。": "The current provider's config.toml has no extractable common config.",
   "当前供应商切换后会写入的预览；上下文开关变化会立即反映": "Preview of what the current provider writes after switching; context toggles are reflected immediately",
   "当前供应商还没有完整 config.toml / API Key 存档。": "The current provider doesn't have a complete config.toml / API Key archive yet.",
@@ -1214,6 +1236,21 @@ export const EN_PLAIN: Record<string, string> = {
     "Custom headers apply to the connection test, the model list and proxied requests alike.",
   "Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。":
     "Transport headers such as Host and Content-Length are managed by the proxy and cannot be overridden. When Authorization is set here it takes precedence and the API key is not injected.",
+  "渠道保护": "Channel protection",
+  "仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。":
+    "Applies only to the current provider; helps reduce the chance of hitting shared-channel 429, 500, or RPM limits.",
+  "启用错误冷却": "Enable error cooldown",
+  "命中下方状态码后，当前供应商暂停请求至少 30 秒并自动继续；最多自动重试 3 次，3 次仍失败则返回错误；上游 Retry-After 更长时优先使用上游时间。":
+    "After one of the status codes below is hit, requests for this provider pause for at least 30 seconds and then continue automatically; retry up to 3 times, return the error if all 3 retries fail; a longer upstream Retry-After takes precedence.",
+  "启用同渠道队列": "Enable per-provider queue",
+  "当前供应商的请求按顺序发送，并按每分钟上限预留请求次数。":
+    "Requests for this provider are sent in order, reserving capacity under the per-minute limit.",
+  "每分钟请求数": "Requests per minute",
+  "请填入供应商提供的最大RPM": "Enter the maximum RPM provided by the provider",
+  "触发冷却的状态码": "Cooldown-triggering status codes",
+  "输入状态码后回车": "Enter a status code and press Enter",
+  "默认状态码为 429 和 500；删除某个状态码即可停止该状态触发冷却。":
+    "The default status codes are 429 and 500; remove a status code to stop it from triggering cooldown.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -1224,6 +1261,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "内置元数据：{0}": "Built-in metadata: {0}",
   "无内置元数据，生成时回退 {0} 官方模板": "No built-in metadata; generation falls back to the {0} official template",
   "已导入自定义元数据，生成时覆盖内置（{0}）": "Custom metadata imported; overrides the built-in data ({0}) at generation",
+  "读取会话索引修复报告失败：{0}": "Failed to read the session index repair report: {0}",
+  "另有 {0} 条检查详情因报告上限未显示。": "{0} additional issue(s) are not shown because of the report limit.",
   "路由规则「{0}」的优先级必须是大于等于 0 的整数。":
     "Route rule \"{0}\" priority must be an integer greater than or equal to 0.",
   "路由规则「{0}」的目标供应商必须是聚合成员，请先将其勾选为成员。":

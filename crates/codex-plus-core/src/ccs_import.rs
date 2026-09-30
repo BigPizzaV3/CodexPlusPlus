@@ -172,6 +172,10 @@ pub fn relay_profile_from_ccs(
         model_routes: Vec::new(),
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
+        rate_limit_cooldown_enabled: false,
+        channel_queue_enabled: false,
+        channel_requests_per_minute: crate::settings::default_channel_requests_per_minute(),
+        cooldown_error_statuses: crate::settings::default_cooldown_error_statuses(),
     }
 }
 
