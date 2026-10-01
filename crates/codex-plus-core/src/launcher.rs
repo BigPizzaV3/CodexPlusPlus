@@ -1027,6 +1027,15 @@ impl LaunchHooks for DefaultLaunchHooks {
                                 "error": error.to_string()
                             }),
                         );
+                        // 提权进程无法激活打包应用，按路径启动的进程会因缺少
+                        // 包身份（APPMODEL_ERROR_NO_PACKAGE）随即退出，注入也必然
+                        // 失败；此时必须如实失败并给出指引，而不是静默回退导致
+                        // latest-status.json 误报 running（issue #2351）。
+                        if let Some(reason) = packaged_activation_fallback_block_reason(
+                            crate::windows_integration::current_process_is_elevated(),
+                        ) {
+                            anyhow::bail!("{reason}（激活错误：{error}）");
+                        }
                     }
                 }
             }
@@ -3472,6 +3481,22 @@ pub async fn activate_packaged_app(
 }
 
 #[cfg(windows)]
+/// 提权运行时禁止「AUMID 激活失败 → 按路径直接启动」回退的原因；
+/// 非提权返回 None 以保留回退（兜底清单 Application Id 变化等场景）。
+fn packaged_activation_fallback_block_reason(is_elevated: bool) -> Option<&'static str> {
+    if is_elevated {
+        Some(
+            "Codex 打包应用激活失败，且 Codex++ 当前以管理员（提权）身份运行：\
+             Windows 不允许提权进程激活 MSIX 打包应用，按路径启动的进程会因缺少\
+             包身份立即退出。请取消可执行文件「属性 → 兼容性 → 以管理员身份运行\
+             此程序」的勾选（或清除 AppCompatFlags\\Layers 中的 RUNASADMIN 标记），\
+             然后以普通权限重新启动 Codex++",
+        )
+    } else {
+        None
+    }
+}
+
 pub async fn activate_packaged_app(
     app_user_model_id: &str,
     arguments: &str,
@@ -3527,6 +3552,26 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn elevated_activation_failure_blocks_path_fallback_with_guidance() {
+        let reason = packaged_activation_fallback_block_reason(true)
+            .expect("elevated activation failure must block the path fallback");
+        assert!(reason.contains("管理员"));
+        assert!(reason.contains("以普通权限"));
+    }
+
+    #[test]
+    fn unelevated_activation_failure_keeps_path_fallback() {
+        assert!(packaged_activation_fallback_block_reason(false).is_none());
+    }
+
+    #[test]
+    fn elevation_probe_is_false_for_normal_ci_shell() {
+        // CI 与常规开发 shell 都是非提权令牌；提权分支依赖 issue #2351 的
+        // 手动复现步骤验收（勾选兼容性「以管理员身份运行」后应得到指引错误）。
+        assert!(!crate::windows_integration::current_process_is_elevated());
+    }
 
     fn counted_reinjector(calls: Arc<AtomicUsize>) -> BridgeReinjector {
         Arc::new(move || {
