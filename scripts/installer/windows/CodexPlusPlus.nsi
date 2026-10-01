@@ -1,5 +1,8 @@
 ﻿Unicode true
 !include "MUI2.nsh"
+!include "StrFunc.nsh"
+${Using:StrFunc} StrStr
+${Using:StrFunc} UnStrStr
 
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -25,6 +28,39 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 
+; taskkill 只发出终止指令，且进程从进程表消失也不代表镜像文件锁已释放
+; （进程退出清理、WebView2 子进程树、杀软扫描等会延迟数秒）。
+; 轮询等待进程真正退出：500ms 一次、最多 10 秒；等到过进程再补 500ms 锁释放缓冲，
+; 避免紧随其后的 File/Delete 撞上残留文件锁（issue #2362）。
+; 判据用 tasklist 输出 + 字符串包含，不用其退出码（实测 Win11 无匹配仍返回 0），
+; 也不用 cmd 管道 find（PATH 里的 Unix find.exe 会劫持、多层引号易变形）。
+!macro WAIT_FOR_PROCESS_EXIT UNFUNC UNSTR
+  Function ${UNFUNC}
+    Pop $1
+    StrCpy $2 0
+  wait_loop:
+    nsExec::ExecToStack '$SYSDIR\tasklist.exe /FI "IMAGENAME eq $1" /NH'
+    Pop $0
+    Pop $9
+    !if "${UNSTR}" == ""
+      ${StrStr} $8 "$9" "$1"
+    !else
+      ${UnStrStr} $8 "$9" "$1"
+    !endif
+    StrCmp $8 "" wait_done 0
+    IntOp $2 $2 + 1
+    IntCmp $2 20 wait_done 0 wait_done
+    Sleep 500
+    Goto wait_loop
+  wait_done:
+    IntCmp $2 0 lock_buffer_done 0 lock_buffer_done
+    Sleep 500
+  lock_buffer_done:
+  FunctionEnd
+!macroend
+!insertmacro WAIT_FOR_PROCESS_EXIT WaitForProcessExit ""
+!insertmacro WAIT_FOR_PROCESS_EXIT un.WaitForProcessExit un.
+
 Section "Install"
   SetOutPath "$INSTDIR"
 
@@ -32,6 +68,10 @@ Section "Install"
   Pop $0
   nsExec::ExecToLog 'taskkill /IM codex-plus-plus-manager.exe /F'
   Pop $0
+  Push "codex-plus-plus.exe"
+  Call WaitForProcessExit
+  Push "codex-plus-plus-manager.exe"
+  Call WaitForProcessExit
 
   File "${ROOT}\dist\windows\app\codex-plus-plus.exe"
   File "${ROOT}\dist\windows\app\codex-plus-plus-manager.exe"
@@ -61,6 +101,10 @@ Section "Uninstall"
   Pop $0
   nsExec::ExecToLog 'taskkill /IM codex-plus-plus-manager.exe /F'
   Pop $0
+  Push "codex-plus-plus.exe"
+  Call un.WaitForProcessExit
+  Push "codex-plus-plus-manager.exe"
+  Call un.WaitForProcessExit
 
   Delete "$DESKTOP\Codex++.lnk"
   Delete "$DESKTOP\Codex++ 管理工具.lnk"
@@ -73,6 +117,12 @@ Section "Uninstall"
 
   Delete "$INSTDIR\codex-plus-plus.exe"
   Delete "$INSTDIR\codex-plus-plus-manager.exe"
+
+  ; NSIS 的 Delete 遇到被占用文件会静默失败，用户会误以为卸载干净。
+  ; 残留检测提示用户先从托盘退出，避免“卸载后重装”继续失败（issue #2362）。
+  IfFileExists "$INSTDIR\codex-plus-plus-manager.exe" 0 +2
+    MessageBox MB_OK|MB_ICONEXCLAMATION "codex-plus-plus-manager.exe 仍被占用，未能删除。请从系统托盘退出 Codex++（或结束该进程）后重新卸载或安装。"
+
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
