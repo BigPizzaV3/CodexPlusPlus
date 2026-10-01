@@ -54,6 +54,16 @@ Section "Install"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "DisplayIcon" "$INSTDIR\codex-plus-plus-manager.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "UninstallString" "$INSTDIR\uninstall.exe"
+
+  ; 注册 codexplusplus:// 与 dreamskin:// URL 协议（issue #2354）。
+  ; 键名与值同 codex-plus-core 的 install::windows::register_url_protocol 保持一致，
+  ; 管理工具内"安装入口/修复快捷方式"会以相同键幂等覆盖，两边互不冲突。
+  WriteRegStr HKCU "Software\Classes\codexplusplus" "" "URL:Codex++ Import Protocol"
+  WriteRegStr HKCU "Software\Classes\codexplusplus" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\codexplusplus\shell\open\command" "" '"$INSTDIR\codex-plus-plus-manager.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\dreamskin" "" "URL:DreamSkin Community Theme Protocol"
+  WriteRegStr HKCU "Software\Classes\dreamskin" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\dreamskin\shell\open\command" "" '"$INSTDIR\codex-plus-plus-manager.exe" "%1"'
 SectionEnd
 
 Section "Uninstall"
@@ -78,4 +88,9 @@ Section "Uninstall"
 
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++"
   DeleteRegKey HKCU "Software\Codex++"
+
+  ; 清理安装器注册的 URL 协议（与 install::windows::uninstall_shortcuts 行为一致）。
+  ; 仅删除本产品自有键，不影响用户其他协议注册。
+  DeleteRegKey HKCU "Software\Classes\codexplusplus"
+  DeleteRegKey HKCU "Software\Classes\dreamskin"
 SectionEnd
