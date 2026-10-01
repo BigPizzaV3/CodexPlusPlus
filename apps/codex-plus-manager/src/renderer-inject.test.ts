@@ -810,6 +810,49 @@ describe("renderer injection plugin marketplace patch", () => {
     assert.equal(harness.sweeps(), 1);
     assert.deepEqual(harness.diagnostics(), ["plugin_marketplace_request_patch_installed"]);
   });
+
+  // 26.928.31416 起 Codex 又把过滤器里的标识符换了一轮名（!Mj(e.marketplaceName)||e.marketplaceName===n）。
+  // 过去按压缩字面量匹配，发版即失效：补丁照装，但 plugin_build_flavor_filter_bypassed 从不触发，
+  // 插件解锁静默失灵。现在改用结构正则，下面把历史形态与新形态一起钉住。
+  function extractFilterPattern(renderer: string, name: string): RegExp {
+    const match = renderer.match(new RegExp(`const ${name}\\s*=\\s*\\/([\\s\\S]*?)\\/;`));
+    assert.ok(match, `${name} 未在产物中找到`);
+    return new RegExp(match![1]);
+  }
+
+  it("matches build-flavor filter shapes across Codex builds", async () => {
+    const pattern = extractFilterPattern(await readFile(rendererPath, "utf8"), "codexPluginBuildFlavorFilterSourcePattern");
+    const shapes = [
+      "function EHr({buildFlavor:e,plugins:t}){let n=Gpt(e);return t.filter(e=>!Mj(e.marketplaceName)||e.marketplaceName===n)}", // 26.928.31416
+      "e.filter(e=>!u(e.marketplaceName)||e.marketplaceName===r)",
+      "e.filter(e=>!ne(e.marketplaceName)||e.marketplaceName===n)",
+      "e.filter(e=>!Eu(e.marketplaceName)||e.marketplaceName===n)",
+    ];
+    for (const source of shapes) assert.ok(pattern.test(source), `应命中: ${source}`);
+    assert.ok(!pattern.test("e.filter(x=>x.enabled&&x.name.length>3)"), "不应命中无关过滤器");
+  });
+
+  it("detects the featured plugin id filter separately", async () => {
+    const pattern = extractFilterPattern(await readFile(rendererPath, "utf8"), "codexPluginFeaturedFilterSourcePattern");
+    // featuredPluginIds 那条入参是字符串 id，形态与 build-flavor 不同，必须单独认。
+    assert.ok(pattern.test("function THr({buildFlavor:e,featuredPluginIds:t}){let n=Gpt(e);return t.filter(e=>{let t=Gj(e);return t==null||!Mj(t)||t===n})}"));
+    assert.ok(!pattern.test("e.filter(e=>!Mj(e.marketplaceName)||e.marketplaceName===n)"), "不应与 build-flavor 过滤器混淆");
+    // 真实 bundle 里存在这个形状相近的无关函数；右值 `SFe(t)` 是调用，
+    // 早期写法 `(?!\s*\()` 会被贪婪回溯绕过（SFe 退成 SF），实测踩过。
+    assert.ok(
+      !pattern.test("let r=bSe(e.path)?.pluginMarketplaceName??null;return t==null||r==null||!ds(r)||r===SFe(t)"),
+      "不应命中 bundle 里的无关 null-guard",
+    );
+  });
+
+  it("matches hidden-marketplace filter shapes structurally", async () => {
+    const pattern = extractFilterPattern(await readFile(rendererPath, "utf8"), "codexPluginHiddenFilterSourcePattern");
+    assert.ok(pattern.test("function hHr(e,t){return t.length===0?e:e.filter(e=>!t.includes(e.name))}"));
+    assert.ok(pattern.test("marketplaces:a.filter(e=>!n.includes(e.name)&&(!r.Po(e.name)||e.name===c))"));
+    assert.ok(!pattern.test("e.filter(e=>e.plugins.some(p=>p.name))"), "不应命中无关过滤器");
+    // 真实 bundle 里的无关守卫：不是 filter 箭头形态，必须排掉。
+    assert.ok(!pattern.test("if(n[t.name]=t,!w4.includes(t.name)&&typeof t.setupOnce==`function`"), "不应命中非 filter 守卫");
+  });
 });
 
 describe("relay pureApi provider resolution", () => {

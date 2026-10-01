@@ -495,7 +495,7 @@
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
-  const codexPluginMarketplaceUnlockVersion = "15";
+  const codexPluginMarketplaceUnlockVersion = "16";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -6390,25 +6390,56 @@
     return source;
   }
 
+  // 这三种 marketplace 过滤器由 Codex 打包后压缩，标识符每版都会换名
+  // （历史形态: !u(e.marketplaceName)||e.marketplaceName===r / !ne(...) / !Eu(...) /
+  // 26.928.31416 起: !Mj(e.marketplaceName)||e.marketplaceName===n）。
+  // 所以按「结构」而不是按字面量识别，避免每次发版都要补一个新变体。
+  const codexPluginBuildFlavorFilterSourcePattern =
+    /!\s*([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\.marketplaceName\s*\)\s*\|\|\s*\2\s*\.marketplaceName\s*===\s*[A-Za-z_$][\w$]*/;
+  // featuredPluginIds 那条：{let t=Gj(e);return t==null||!Mj(t)||t===n}
+  // 入参是 plugin id 字符串（不是对象），先取 marketplace 再判，形态和上面不同，需单独认。
+  // 三个 X 必须同一个标识符，且 `===` 右边是标识符而非调用——否则会误伤 bundle 里
+  // 形如 `t==null||r==null||!ds(r)||r===SFe(t)` 的无关函数（实测存在）。
+  // 右值后面必须紧跟非标识符字符（`(?![\w$(])`），光写 `(?!\s*\()` 会被贪婪回溯绕过：
+  // `===SFe(t)` 里 `SFe` 可退回 `SF`，后面 `e` 不是 `(`，前瞻就放行了。实测踩过。
+  const codexPluginFeaturedFilterSourcePattern =
+    /([A-Za-z_$][\w$]*)\s*==\s*null\s*\|\|\s*!\s*[A-Za-z_$][\w$]*\s*\(\s*\1\s*\)\s*\|\|\s*\1\s*===\s*[A-Za-z_$][\w$]*(?![\w$(])/;
+
   function isCodexPluginBuildFlavorFilter(callback, sample, filtered = null) {
     if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
     if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
     const source = codexPluginFilterCallbackSource(callback);
     if (!source) return false;
-    const isKnownFilterSource = source.includes("!u(e.marketplaceName)||e.marketplaceName===r")
-      || source.includes("!ne(e.marketplaceName)||e.marketplaceName===n")
-      || source.includes("!Eu(e.marketplaceName)||e.marketplaceName===n");
-    if (!isKnownFilterSource) return false;
+    if (!codexPluginBuildFlavorFilterSourcePattern.test(source)) return false;
     return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName)
       && (Array.isArray(filtered) ? !filtered.includes(plugin) : !callback(plugin)));
   }
+
+  // featuredPluginIds 过滤：sample 是字符串数组，回调按 id 反查 marketplace 后剔除官方目录。
+  // 外部拿不到 id→marketplace 的映射，所以这里只做「结构 + 确实过滤掉了元素」的判定。
+  function isCodexPluginFeaturedFilter(callback, sample, filtered = null) {
+    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
+    if (!sample.every((id) => typeof id === "string")) return false;
+    const source = codexPluginFilterCallbackSource(callback);
+    if (!source) return false;
+    if (!codexPluginFeaturedFilterSourcePattern.test(source)) return false;
+    if (Array.isArray(filtered) && filtered.length >= sample.length) return false;
+    return true;
+  }
+
+  // 结构式匹配 `<arr>.filter(p => !<list>.includes(p.name))`：
+  // list 标识符每版都换名，写死会失效（历史写死过 "!t.includes(e.name)"）。
+  // 必须锚定 filter 箭头形态且箭头参数与 `.name` 的宿主同名，
+  // 否则会误伤 bundle 里 `!w4.includes(t.name)` 这类与插件无关的守卫（实测存在）。
+  const codexPluginHiddenFilterSourcePattern =
+    /filter\s*\(\s*([A-Za-z_$][\w$]*)\s*=>\s*!\s*[A-Za-z_$][\w$]*\s*\.includes\s*\(\s*\1\s*\.name\s*\)/;
 
   function isCodexPluginMarketplaceHiddenFilter(callback, sample, filtered = null) {
     if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
     if (!sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name))) return false;
     const source = codexPluginFilterCallbackSource(callback);
     if (!source) return false;
-    if (!source.includes("!t.includes(e.name)")) return false;
+    if (!codexPluginHiddenFilterSourcePattern.test(source)) return false;
     return sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name)
       && (Array.isArray(filtered) ? !filtered.includes(marketplace) : !callback(marketplace)));
   }
@@ -6438,6 +6469,10 @@
       }
       if (isCodexPluginMarketplaceHiddenFilter(callback, this, filtered)) {
         sendCodexPlusDiagnostic("plugin_marketplace_hidden_filter_bypassed", { marketplaceCount: this.length });
+        return Array.from(this);
+      }
+      if (isCodexPluginFeaturedFilter(callback, this, filtered)) {
+        sendCodexPlusDiagnostic("plugin_featured_filter_bypassed", { featuredCount: this.length });
         return Array.from(this);
       }
       return filtered;

@@ -1,9 +1,16 @@
+  // 结构式匹配 `<arr>.filter(p => !<list>.includes(p.name))`：
+  // list 标识符每版都换名，写死会失效（历史写死过 "!t.includes(e.name)"）。
+  // 必须锚定 filter 箭头形态且箭头参数与 `.name` 的宿主同名，
+  // 否则会误伤 bundle 里 `!w4.includes(t.name)` 这类与插件无关的守卫（实测存在）。
+  const codexPluginHiddenFilterSourcePattern =
+    /filter\s*\(\s*([A-Za-z_$][\w$]*)\s*=>\s*!\s*[A-Za-z_$][\w$]*\s*\.includes\s*\(\s*\1\s*\.name\s*\)/;
+
   function isCodexPluginMarketplaceHiddenFilter(callback, sample, filtered = null) {
     if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
     if (!sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name))) return false;
     const source = codexPluginFilterCallbackSource(callback);
     if (!source) return false;
-    if (!source.includes("!t.includes(e.name)")) return false;
+    if (!codexPluginHiddenFilterSourcePattern.test(source)) return false;
     return sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name)
       && (Array.isArray(filtered) ? !filtered.includes(marketplace) : !callback(marketplace)));
   }
@@ -33,6 +40,10 @@
       }
       if (isCodexPluginMarketplaceHiddenFilter(callback, this, filtered)) {
         sendCodexPlusDiagnostic("plugin_marketplace_hidden_filter_bypassed", { marketplaceCount: this.length });
+        return Array.from(this);
+      }
+      if (isCodexPluginFeaturedFilter(callback, this, filtered)) {
+        sendCodexPlusDiagnostic("plugin_featured_filter_bypassed", { featuredCount: this.length });
         return Array.from(this);
       }
       return filtered;
