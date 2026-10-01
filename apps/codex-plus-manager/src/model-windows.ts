@@ -42,6 +42,28 @@ export type ModelWindowRowsValidationIssue = {
   model: string;
 };
 
+/// 按拖动结果移动模型行，保留行内的窗口、压缩和图片处理配置。
+/// 索引无效或指向同一行时返回原数组引用，避免无意义的状态更新。
+export function reorderModelWindowRows(
+  rows: ModelWindowRow[],
+  activeIndex: number,
+  overIndex: number,
+): ModelWindowRow[] {
+  if (
+    activeIndex < 0
+    || activeIndex >= rows.length
+    || overIndex < 0
+    || overIndex >= rows.length
+    || activeIndex === overIndex
+  ) {
+    return rows;
+  }
+  const next = [...rows];
+  const [moved] = next.splice(activeIndex, 1);
+  next.splice(overIndex, 0, moved);
+  return next;
+}
+
 function asStringMap(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, string>;

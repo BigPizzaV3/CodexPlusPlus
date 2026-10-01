@@ -127,6 +127,7 @@ import {
   modelWindowRowsFromProfile,
   modelWindowRowsValidationError,
   serializeModelWindowRows,
+  reorderModelWindowRows,
   type ImageHandling,
   type ModelWindowRowsValidationIssue,
   type ModelWindowRow,
@@ -7730,6 +7731,29 @@ function ContextScreen({
   );
 }
 
+type SortableModelWindowEntryProps = {
+  id: string;
+  children: (sortable: ReturnType<typeof useSortable>) => ReactNode;
+};
+
+function SortableModelWindowEntry({ id, children }: SortableModelWindowEntryProps) {
+  const sortable = useSortable({ id });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(sortable.transform),
+    transition: sortable.transition,
+  };
+
+  return (
+    <div
+      className={`relay-model-entry ${sortable.isDragging ? "dragging" : ""}`}
+      ref={sortable.setNodeRef}
+      style={style}
+    >
+      {children(sortable)}
+    </div>
+  );
+}
+
 function RelayProfileEditor({
   profile,
   form,
@@ -7757,6 +7781,14 @@ function RelayProfileEditor({
   const [builtinQueryState, setBuiltinQueryState] = useState<BuiltinMetadataQueryState | null>(null);
   const [importPrefillSource, setImportPrefillSource] = useState<"builtin" | "existing" | null>(null);
   const [builtinIndex, setBuiltinIndex] = useState<Map<string, { source: string; context_window: unknown; auto_compact_token_limit: unknown }>>(new Map());
+  const modelSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
   // 面板内置查询的请求代数：begin/rematch 是命令式调用（没有 effect cleanup
   // 的 cancelled 通道），响应返回时代数不匹配即丢弃全部 setState——防止迟到
   // 响应把已取消的面板重新打开，或覆盖用户改名后的新查询结果。
@@ -7964,6 +7996,22 @@ function RelayProfileEditor({
     builtinQuerySeqRef.current += 1;
     setActiveImportDraft(null);
     setMetadataImportError("");
+  };
+  const handleModelRowsDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const activeIndex = Number(String(active.id).replace("model-row-", ""));
+    const overIndex = Number(String(over.id).replace("model-row-", ""));
+    if (!Number.isInteger(activeIndex) || !Number.isInteger(overIndex)) return;
+    const nextRows = reorderModelWindowRows(modelWindowRows, activeIndex, overIndex);
+    if (nextRows === modelWindowRows) return;
+    // 导入面板的身份按行索引保存；排序时关闭它，避免面板跟着错误的行移动。
+    if (activeImportDraft) closeModelMetadataImport();
+    const nextOrigins = [...modelSlugOriginsRef.current];
+    const [movedOrigin] = nextOrigins.splice(activeIndex, 1);
+    nextOrigins.splice(overIndex, 0, movedOrigin);
+    modelSlugOriginsRef.current = nextOrigins;
+    setModelWindowRows(nextRows);
   };
   const cancelModelMetadataImport = () => {
     if (activeImportDraft) {
@@ -8561,6 +8609,7 @@ function RelayProfileEditor({
             </div>
             <div className="relay-model-row-editor">
               <div className="relay-model-row relay-model-row-head">
+                <span aria-hidden="true" />
                 <span>{t("模型名称")}</span>
                 <span>{t("上下文窗口")}</span>
                 <span>{t("自动压缩")}</span>
@@ -8568,37 +8617,58 @@ function RelayProfileEditor({
                 <span>{t("模型配置")}</span>
                 <span aria-hidden="true" />
               </div>
-              {modelWindowRows.map((row, index) => {
-                const slug = row.model.trim();
-                // 面板身份只用 index：slug 双轨（draft 副本 vs 实时输入）曾导致
-                // 改名时面板整体卸载、blur 后重挂抢焦点。
-                const importing = metadataImportTarget?.index === index;
-                // 配置可能还挂在「改名尚未提交」的旧 key 下，按行解析而不是按实时名硬查。
-                const imported = resolveModelMetadataRowKey(importedModelMetadata, {
-                  current: slug,
-                  origin: modelSlugOriginsRef.current[index],
-                }) !== null;
-                // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
-                // 面板关闭时不创建导入控件，避免用一个面板级状态为所有行派生按钮状态。
-                const importControls = importing
-                  ? importPanelControls({
-                      slug,
-                      document: metadataImportDocument,
-                      imported,
-                      // 空文档（清除后）不算解析失败：保存键保持可用，
-                      // 走「放弃自定义回退内置」的保存路径。
-                      parseOk: !metadataImportDocument.trim() || Boolean(metadataImportPreview),
-                      matched: builtinQueryState?.status === "error" ? false : Boolean(builtinMatch?.matched),
-                      // 面板内容与内置条目全字段等价：保存的目标态就是「用内置」。
-                      matchesBuiltin: metadataImportPreview
-                        ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
-                        : false,
-                    })
-                  : null;
+              <DndContext
+                sensors={modelSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleModelRowsDragEnd}
+              >
+                <SortableContext
+                  items={modelWindowRows.map((_, index) => `model-row-${index}`)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {modelWindowRows.map((row, index) => {
+                    const slug = row.model.trim();
+                    // 面板身份只用 index：slug 双轨（draft 副本 vs 实时输入）曾导致
+                    // 改名时面板整体卸载、blur 后重挂抢焦点。
+                    const importing = metadataImportTarget?.index === index;
+                    // 配置可能还挂在「改名尚未提交」的旧 key 下，按行解析而不是按实时名硬查。
+                    const imported = resolveModelMetadataRowKey(importedModelMetadata, {
+                      current: slug,
+                      origin: modelSlugOriginsRef.current[index],
+                    }) !== null;
+                    // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
+                    // 面板关闭时不创建导入控件，避免用一个面板级状态为所有行派生按钮状态。
+                    const importControls = importing
+                      ? importPanelControls({
+                          slug,
+                          document: metadataImportDocument,
+                          imported,
+                          // 空文档（清除后）不算解析失败：保存键保持可用，
+                          // 走「放弃自定义回退内置」的保存路径。
+                          parseOk: !metadataImportDocument.trim() || Boolean(metadataImportPreview),
+                          matched: builtinQueryState?.status === "error" ? false : Boolean(builtinMatch?.matched),
+                          // 面板内容与内置条目全字段等价：保存的目标态就是「用内置」。
+                          matchesBuiltin: metadataImportPreview
+                            ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
+                            : false,
+                        })
+                      : null;
 
-                return (
-                  <div className="relay-model-entry" key={index}>
+                    return (
+                  <SortableModelWindowEntry id={`model-row-${index}`} key={index}>
+                    {(sortable) => (
+                      <>
                     <div className="relay-model-row">
+                      <button
+                        aria-label={t("拖动排序")}
+                        className="relay-model-drag"
+                        title={t("拖动排序")}
+                        type="button"
+                        {...sortable.attributes}
+                        {...sortable.listeners}
+                      >
+                        <GripVertical className="h-4 w-4" />
+                      </button>
                       <Input
                         value={row.model}
                         onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
@@ -8806,9 +8876,13 @@ function RelayProfileEditor({
                         </div>
                       </section>
                     ) : null}
-                  </div>
-                );
-              })}
+                      </>
+                    )}
+                  </SortableModelWindowEntry>
+                    );
+                  })}
+                </SortableContext>
+              </DndContext>
             </div>
             {modelRowsError ? <div className="relay-model-metadata-import-error" role="alert">{modelRowsError}</div> : null}
             <p className="field-hint">
