@@ -401,7 +401,7 @@ struct AppliedSessionChanges {
     skipped_locked_rollout_files: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BulkSessionRewritePlan {
     path: PathBuf,
     original_sha256: String,
@@ -409,7 +409,7 @@ struct BulkSessionRewritePlan {
     original_session_meta_lines: Vec<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct BulkSessionScan {
     rewrite_plans: Vec<BulkSessionRewritePlan>,
     skipped_locked_rollout_files: Vec<PathBuf>,
@@ -2179,6 +2179,132 @@ fn scan_bulk_session_rewrites(
     explicit_user_thread_ids: &HashSet<String>,
     report_progress: &mut dyn FnMut(ProviderSyncProgress),
 ) -> anyhow::Result<BulkSessionScan> {
+    scan_bulk_session_rewrites_with_parser(
+        home,
+        target_provider,
+        excluded_thread_ids,
+        explicit_user_thread_ids,
+        report_progress,
+        parse_session_meta_record,
+        false,
+    )
+}
+
+#[derive(Deserialize)]
+struct BulkRolloutEnvelope<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: Option<&'a serde_json::value::RawValue>,
+    #[serde(rename = "payload", borrow)]
+    _payload: Option<&'a serde_json::value::RawValue>,
+}
+
+fn parse_session_meta_record(line: &str) -> Option<Value> {
+    // Validate JSON without materializing large response/tool payloads. Escaped keys,
+    // arbitrary field order and duplicate-key last-value semantics remain supported.
+    let envelope = match serde_json::from_str::<BulkRolloutEnvelope<'_>>(line) {
+        Ok(envelope) => envelope,
+        // Derived structs reject duplicate fields, whereas Value keeps the last.
+        Err(_) => return serde_json::from_str::<Value>(line).ok()
+            .filter(|record| record["type"].as_str() == Some("session_meta")),
+    };
+    let kind = envelope.kind?.get().trim();
+    let metadata = kind == "\"session_meta\""
+        || (kind.contains('\\')
+            && serde_json::from_str::<String>(kind).ok().as_deref() == Some("session_meta"));
+    if !metadata {
+        return None;
+    }
+    serde_json::from_str(line).ok()
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct BulkRolloutFacts {
+    session_meta_count: usize,
+    thread_id: Option<String>,
+    cwd: Option<String>,
+    providers: Vec<String>,
+    original_session_meta_lines: Vec<String>,
+    rewrite_needed: bool,
+    rollout_marks_non_root_agent: bool,
+    has_user_event: bool,
+    has_encrypted_content: bool,
+}
+
+fn scan_bulk_rollout(
+    reader: &mut impl BufRead,
+    target_provider: &str,
+    parse_record: &impl Fn(&str) -> Option<Value>,
+    hash_source: bool,
+) -> anyhow::Result<(BulkRolloutFacts, Option<String>)> {
+    let mut facts = BulkRolloutFacts::default();
+    let mut line = String::new();
+    let mut hasher = hash_source.then(Sha256::new);
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        if let Some(hasher) = &mut hasher {
+            hasher.update(line.as_bytes());
+        }
+        facts.has_user_event = facts.has_user_event
+            || line.contains("\"user_message\"") || line.contains("\"user_input\"");
+        facts.has_encrypted_content = facts.has_encrypted_content || line.contains("encrypted_content");
+        let (record_line, _) = split_line_ending(&line);
+        if record_line.trim().is_empty() {
+            continue;
+        }
+        let Some(record) = parse_record(record_line) else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let Some(payload) = record.get("payload").and_then(Value::as_object) else {
+            continue;
+        };
+        facts.session_meta_count += 1;
+        facts.original_session_meta_lines.push(record_line.to_string());
+        if facts.thread_id.is_none() {
+            facts.thread_id = payload.get("id").and_then(Value::as_str).map(ToString::to_string);
+        }
+        if facts.cwd.is_none() {
+            facts.cwd = payload.get("cwd").and_then(Value::as_str).and_then(to_desktop_workspace_path);
+        }
+        facts.providers.push(
+            payload.get("model_provider").and_then(Value::as_str).unwrap_or("(missing)").to_string(),
+        );
+        facts.rewrite_needed |=
+            payload.get("model_provider").and_then(Value::as_str) != Some(target_provider);
+        facts.rollout_marks_non_root_agent |=
+            payload.get("source").is_some_and(source_value_marks_non_root_agent);
+    }
+    Ok((facts, hasher.map(|hasher| format!("{:x}", hasher.finalize()))))
+}
+
+fn hash_bulk_rollout_plan(
+    reader: &mut (impl BufRead + Seek),
+    target_provider: &str,
+    parse_record: &impl Fn(&str) -> Option<Value>,
+    expected: &BulkRolloutFacts,
+) -> anyhow::Result<String> {
+    // A write plan still needs an exact preimage. Rewind the same handle and
+    // revalidate all scan facts while hashing, including metadata late in a file.
+    reader.seek(SeekFrom::Start(0))?;
+    let (actual, digest) = scan_bulk_rollout(reader, target_provider, parse_record, true)?;
+    anyhow::ensure!(actual == *expected, "Rollout changed while planning provider sync");
+    digest.ok_or_else(|| anyhow::anyhow!("Missing rollout source hash"))
+}
+
+fn scan_bulk_session_rewrites_with_parser(
+    home: &Path,
+    target_provider: &str,
+    excluded_thread_ids: &HashSet<String>,
+    explicit_user_thread_ids: &HashSet<String>,
+    report_progress: &mut dyn FnMut(ProviderSyncProgress),
+    parse_record: impl Fn(&str) -> Option<Value>,
+    hash_all_sources: bool,
+) -> anyhow::Result<BulkSessionScan> {
     let paths = rollout_files(home)?;
     let mut scan = BulkSessionScan {
         total_rollout_files: paths.len(),
@@ -2210,68 +2336,25 @@ fn scan_bulk_session_rewrites(
             Err(error) => return Err(error.into()),
         };
 
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        let mut original_hasher = Sha256::new();
-        let mut session_meta_count = 0;
-        let mut thread_id = None;
-        let mut cwd = None;
-        let mut providers = Vec::new();
-        let mut original_session_meta_lines = Vec::new();
-        let mut rewrite_needed = false;
-        let mut rollout_marks_non_root_agent = false;
-        let mut has_user_event = false;
-        let mut has_encrypted_content = false;
-
-        loop {
-            line.clear();
-            if reader.read_line(&mut line)? == 0 {
-                break;
-            }
-            original_hasher.update(line.as_bytes());
-            has_user_event |= line.contains("\"user_message\"") || line.contains("\"user_input\"");
-            has_encrypted_content |= line.contains("encrypted_content");
-
-            let (record_line, _) = split_line_ending(&line);
-            if record_line.trim().is_empty() {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<Value>(record_line) else {
-                continue;
-            };
-            if record.get("type").and_then(Value::as_str) != Some("session_meta") {
-                continue;
-            }
-            let Some(payload) = record.get("payload").and_then(Value::as_object) else {
-                continue;
-            };
-
-            session_meta_count += 1;
-            original_session_meta_lines.push(record_line.to_string());
-            if thread_id.is_none() {
-                thread_id = payload
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
-            }
-            if cwd.is_none() {
-                cwd = payload
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .and_then(to_desktop_workspace_path);
-            }
-            let provider = payload
-                .get("model_provider")
-                .and_then(Value::as_str)
-                .unwrap_or("(missing)")
-                .to_string();
-            providers.push(provider);
-            rewrite_needed |=
-                payload.get("model_provider").and_then(Value::as_str) != Some(target_provider);
-            rollout_marks_non_root_agent |= payload
-                .get("source")
-                .is_some_and(source_value_marks_non_root_agent);
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        let (facts, mut original_sha256) =
+            scan_bulk_rollout(&mut reader, target_provider, &parse_record, hash_all_sources)?;
+        let is_explicit_user = facts.thread_id
+            .as_ref()
+            .is_some_and(|id| explicit_user_thread_ids.contains(id));
+        let excluded = facts.rollout_marks_non_root_agent
+            || (!is_explicit_user && facts.thread_id
+                .as_ref()
+                .is_some_and(|id| excluded_thread_ids.contains(id)));
+        if facts.rewrite_needed && !excluded && original_sha256.is_none() {
+            original_sha256 = Some(hash_bulk_rollout_plan(
+                &mut reader, target_provider, &parse_record, &facts,
+            )?);
         }
+        let BulkRolloutFacts {
+            session_meta_count, thread_id, cwd, providers, original_session_meta_lines,
+            rewrite_needed, rollout_marks_non_root_agent, has_user_event, has_encrypted_content,
+        } = facts;
 
         if session_meta_count > 0 {
             // issue #982：带 session_meta 且无需改写的文件计入「已就绪」，仅用于诊断。
@@ -2280,9 +2363,6 @@ fn scan_bulk_session_rewrites(
             if !rewrite_needed {
                 scan.rollout_files_already_on_target += 1;
             }
-            let is_explicit_user = thread_id
-                .as_ref()
-                .is_some_and(|id| explicit_user_thread_ids.contains(id));
             if rollout_marks_non_root_agent {
                 if let Some(thread_id) = thread_id {
                     scan.subagent_thread_ids.insert(thread_id);
@@ -2310,7 +2390,8 @@ fn scan_bulk_session_rewrites(
                 if rewrite_needed {
                     scan.rewrite_plans.push(BulkSessionRewritePlan {
                         path: path.clone(),
-                        original_sha256: format!("{:x}", original_hasher.finalize()),
+                        original_sha256: original_sha256
+                            .ok_or_else(|| anyhow::anyhow!("Missing rollout source hash"))?,
                         original_mtime: fs::metadata(path)
                             .and_then(|metadata| metadata.modified())
                             .ok(),
@@ -5965,6 +6046,142 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod startup_scan_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_parser_matches_value_semantics_without_substring_guessing() {
+        for line in [
+            r#"{"type":"session_meta","payload":{"id":"t","model_provider":"old"}}"#,
+            r#"{"payload":{"id":"t"},"type" : "session_meta"}"#,
+            r#"{"ty\u0070e":"session\u005fmeta","payload":{"id":"t"}}"#,
+            r#"{"type":"response_item","type":"session_meta","payload":{"id":"t"}}"#,
+            r#"{"type":"session_meta","type":"response_item","payload":{"id":"t"}}"#,
+            r#"{"type":"session_meta","payload":{"id":"old"},"payload":{"id":"new"}}"#,
+            r#"{"type":"response_item","payload":{"text":"\"type\":\"session_meta\""}}"#,
+            r#"{"type":null,"payload":{}}"#,
+            r#"{"type":42,"payload":{}}"#,
+            r#"{"payload":{"type":"session_meta"}}"#,
+            r#"["session_meta"]"#,
+            r#"{"type":"session_meta","payload":{"id":"t"}"#,
+            r#"{"type":"session_meta","payload":{"id":"t"}} trailing"#,
+            r#"{"type":"response_item","payload":{"nested":[invalid]}}"#,
+        ] {
+            let expected = serde_json::from_str::<Value>(line)
+                .ok()
+                .filter(|record| record["type"].as_str() == Some("session_meta"));
+            assert_eq!(parse_session_meta_record(line), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn bulk_scan_matches_legacy_plans_hashes_and_all_summary_facts() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        for (name, meta) in [
+            ("user", r#"{"type":"session_meta","payload":{"id":"user","cwd":"C:/workspace","model_provider":"old"}}"#),
+            ("child", r#"{"type":"session_meta","payload":{"id":"child","source":{"subagent":{"depth":1}},"model_provider":"old"}}"#),
+            ("excluded", r#"{"type":"session_meta","payload":{"id":"excluded","model_provider":"old"}}"#),
+            ("explicit", r#"{"type":"session_meta","payload":{"id":"explicit","model_provider":"old"}}"#),
+            ("missing", r#"{"type":"session_meta","payload":{"id":"missing"}}"#),
+            ("escaped", r#"{"payload":{"id":"escaped","model_provider":"old"},"ty\u0070e":"session\u005fmeta"}"#),
+            ("same", r#"{"type":"session_meta","payload":{"id":"same","model_provider":"new"}}"#),
+        ] {
+            let body = format!(
+                "{meta}\r\n{}\n{}\n{meta}\nmalformed\n",
+                json!({"type":"event_msg","payload":{"type":"user_message"}}),
+                json!({"type":"response_item","payload":{"encrypted_content":"opaque","large":["x".repeat(1024 * 1024)],"metadata_decoy":"session_meta"}}),
+            );
+            fs::write(sessions.join(format!("rollout-{name}.jsonl")), body).unwrap();
+        }
+        let excluded = HashSet::from(["excluded".into(), "explicit".into()]);
+        let explicit = HashSet::from(["explicit".into()]);
+        let mut legacy_progress = Vec::new();
+        let legacy = scan_bulk_session_rewrites_with_parser(
+            temp.path(), "new", &excluded, &explicit, &mut |p| legacy_progress.push(p),
+            |line| serde_json::from_str::<Value>(line).ok(), true,
+        ).unwrap();
+        let mut progress = Vec::new();
+        let optimized = scan_bulk_session_rewrites(
+            temp.path(), "new", &excluded, &explicit, &mut |p| progress.push(p),
+        ).unwrap();
+        assert_eq!(optimized, legacy);
+        assert_eq!(serde_json::to_value(progress).unwrap(), serde_json::to_value(legacy_progress).unwrap());
+        assert_eq!(optimized.rewrite_plans.len(), 4);
+        assert!(optimized.thread_ids_with_user_events.contains("explicit"));
+        assert!(!optimized.thread_ids_with_user_events.contains("excluded"));
+        assert!(optimized.subagent_thread_ids.contains("child"));
+    }
+
+    #[test]
+    fn unchanged_scan_has_no_digest_but_late_metadata_rewrite_hashes_exact_bytes() {
+        let current = b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"t\",\"model_provider\":\"new\"}}\r\n";
+        let mut reader = std::io::Cursor::new(current.to_vec());
+        let (facts, digest) = scan_bulk_rollout(&mut reader, "new", &parse_session_meta_record, false).unwrap();
+        assert!(!facts.rewrite_needed);
+        assert!(digest.is_none());
+        let mut bytes = current.to_vec();
+        bytes.extend_from_slice(b"{\"type\":\"response_item\",\"payload\":{\"text\":\"body\"}}\n");
+        bytes.extend_from_slice(b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"t\",\"model_provider\":\"old\"}}\n");
+        let mut reader = std::io::Cursor::new(bytes.clone());
+        let (facts, digest) = scan_bulk_rollout(&mut reader, "new", &parse_session_meta_record, false).unwrap();
+        assert!(facts.rewrite_needed);
+        assert_eq!(facts.session_meta_count, 2);
+        assert!(digest.is_none());
+        let digest = hash_bulk_rollout_plan(&mut reader, "new", &parse_session_meta_record, &facts).unwrap();
+        assert_eq!(digest, format!("{:x}", Sha256::digest(&bytes)));
+    }
+
+    #[test]
+    fn write_plan_hash_pass_refuses_changed_metadata_or_summary_facts() {
+        let original = b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"t\",\"model_provider\":\"old\"}}\n";
+        let mut reader = std::io::Cursor::new(original.to_vec());
+        let (facts, _) = scan_bulk_rollout(&mut reader, "new", &parse_session_meta_record, false).unwrap();
+        for changed in [
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"other\",\"model_provider\":\"old\"}}\n",
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t\",\"model_provider\":\"new\"}}\n",
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t\",\"model_provider\":\"old\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\"}}\n",
+        ] {
+            let mut reader = std::io::Cursor::new(changed.as_bytes());
+            let error = hash_bulk_rollout_plan(&mut reader, "new", &parse_session_meta_record, &facts).unwrap_err();
+            assert!(error.to_string().contains("Rollout changed while planning"));
+        }
+    }
+
+    #[test]
+    #[ignore = "read-only timing; requires CPP_PROVIDER_SCAN_HOME; never runs sync/repair"]
+    fn measure_provider_scan_read_only() {
+        let home = PathBuf::from(std::env::var_os("CPP_PROVIDER_SCAN_HOME").unwrap());
+        let kinds = sqlite_provider_sync_thread_kinds(&provider_sync_db_paths(&home)).unwrap();
+        let target = resolve_provider_sync_target_snapshot(&home.join("config.toml"), None)
+            .unwrap().target_provider;
+        let start = std::time::Instant::now();
+        let legacy = scan_bulk_session_rewrites_with_parser(
+            &home, &target, &kinds.subagent_thread_ids, &kinds.explicit_user_thread_ids,
+            &mut |_| {}, |line| serde_json::from_str::<Value>(line).ok(), true,
+        ).unwrap();
+        let legacy_ms = start.elapsed().as_millis();
+        let start = std::time::Instant::now();
+        let optimized = scan_bulk_session_rewrites(
+            &home, &target, &kinds.subagent_thread_ids, &kinds.explicit_user_thread_ids,
+            &mut |_| {},
+        ).unwrap();
+        eprintln!(
+            "READ_ONLY_SCAN legacy_ms={legacy_ms} optimized_ms={} legacy_files={} optimized_files={} legacy_plans={} optimized_plans={}",
+            start.elapsed().as_millis(), legacy.total_rollout_files, optimized.total_rollout_files,
+            legacy.rewrite_plans.len(), optimized.rewrite_plans.len(),
+        );
+        let start = std::time::Instant::now();
+        scan_bulk_session_rewrites_with_parser(
+            &home, &target, &kinds.subagent_thread_ids, &kinds.explicit_user_thread_ids,
+            &mut |_| {}, |_| None, false,
+        ).unwrap();
+        eprintln!("READ_ONLY_SCAN parse_free_read_and_flags_ms={}", start.elapsed().as_millis());
+    }
 }
 
 #[cfg(test)]
