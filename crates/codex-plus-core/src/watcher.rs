@@ -669,6 +669,16 @@ pub fn stop_codex_processes_and_wait() {
 pub fn stop_codex_processes_and_wait() {}
 
 #[cfg(target_os = "macos")]
+pub fn find_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
+    find_macos_codex_processes_for_debug_port(debug_port)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn find_codex_processes_for_debug_port(_debug_port: u16) -> Vec<u32> {
+    find_codex_processes()
+}
+
+#[cfg(target_os = "macos")]
 pub fn stop_codex_processes_for_debug_port_and_wait(debug_port: u16) {
     terminate_macos_processes_and_wait(
         find_macos_codex_processes_for_debug_port(debug_port),
