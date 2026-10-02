@@ -1,6 +1,6 @@
 export type BrowserConnection = {
   state: string;
-  browsers: { family: string; headerEnabled: boolean | null }[];
+  browsers: { family: string; headerEnabled: boolean | null; recognized?: boolean }[];
   failedChecks: number;
 };
 
@@ -27,6 +27,13 @@ export function browserHeaderLabel(enabled: boolean | null): string {
   return enabled === true ? "请求标识：已开启（扩展报告）"
     : enabled === false ? "请求标识：已关闭（扩展报告）"
     : "请求标识：扩展未提供状态";
+}
+
+/// 「扩展连上了，但这个版本不认识」与「扩展没连上」是两回事（issue #2209）：
+/// 前者说明链路是通的、只是该扩展 ID 未登记，后者才是真的没连上。
+/// 不区分会让用户把版本适配问题误判成扩展故障，往错误方向排查。
+export function browserRecognizedSuffix(recognized: boolean | undefined): string {
+  return recognized === false ? "（扩展版本未登记）" : "";
 }
 
 export function nativeBrowserStatusLabel(state: string): string {

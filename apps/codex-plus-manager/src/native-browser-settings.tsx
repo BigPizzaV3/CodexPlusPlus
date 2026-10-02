@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { browserConnectionLabel, browserHeaderLabel, nativeBrowserStatusLabel, type NativeBrowserDiagnostics } from "./native-browser-status";
+import { browserConnectionLabel, browserHeaderLabel, browserRecognizedSuffix, nativeBrowserStatusLabel, type NativeBrowserDiagnostics } from "./native-browser-status";
 
 export const nativeBrowserConsent =
   "启用原生 Edge / Chrome 请求标识兼容？\n\n" +
@@ -59,7 +59,7 @@ export function NativeBrowserStatusView() {
             <small>{browserConnectionLabel(connection)}</small>
           </div>
           {connection.browsers.map(browser => <small className="block" key={`${browser.family}-${browser.headerEnabled}`}>
-            {browser.family === "edge" ? "Edge" : "Chrome"} · {browserHeaderLabel(browser.headerEnabled)}
+            {browser.family === "edge" ? "Edge" : "Chrome"} · {browserHeaderLabel(browser.headerEnabled)}{browserRecognizedSuffix(browser.recognized)}
           </small>)}
           {compatibility.state === "blocked"
             ? <small className="block">兼容补丁文件检查或恢复受阻</small> : null}

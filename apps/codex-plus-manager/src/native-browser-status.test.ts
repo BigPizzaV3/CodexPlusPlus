@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { browserConnectionLabel, browserHeaderLabel, nativeBrowserStatusLabel } from "./native-browser-status.ts";
+import { browserConnectionLabel, browserHeaderLabel, browserRecognizedSuffix, nativeBrowserStatusLabel } from "./native-browser-status.ts";
 
 test("adapter refusal is distinct from browser availability and header state", () => {
   assert.match(nativeBrowserStatusLabel("runtime_unverified"), /未应用旧版兼容补丁/);
@@ -26,6 +26,27 @@ test("disconnect, check failure, and header setting have distinct labels", () =>
   assert.match(browserHeaderLabel(true), /已开启.*扩展报告/);
   assert.match(browserHeaderLabel(false), /已关闭.*扩展报告/);
   assert.match(browserHeaderLabel(null), /未提供/);
+});
+
+test("unrecognized extension is distinct from a disconnected one", () => {
+  // issue #2209：同 family 但 ID 未登记 = 连上了但版本不认识，不该显示成「没连上」。
+  assert.equal(browserRecognizedSuffix(false), "（扩展版本未登记）");
+  assert.equal(browserRecognizedSuffix(true), "");
+  assert.equal(browserRecognizedSuffix(undefined), "");
+  // 已登记（true）与旧后端不带该字段（undefined）都必须保持原样。
+  assert.equal(
+    browserConnectionLabel({
+      state: "available",
+      failedChecks: 0,
+      browsers: [{ family: "edge", headerEnabled: true, recognized: false }],
+    }),
+    "Edge 浏览器可用"
+  );
+});
+
+test("settings renders the unrecognized-extension suffix", async () => {
+  const component = await readFile(new URL("./native-browser-settings.tsx", import.meta.url), "utf8");
+  assert.match(component, /browserRecognizedSuffix\(browser\.recognized\)/);
 });
 
 test("patch diagnostics are separate from live availability with bounded visible refresh", async () => {
