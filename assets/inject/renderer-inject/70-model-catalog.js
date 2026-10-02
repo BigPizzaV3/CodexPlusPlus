@@ -892,11 +892,15 @@
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
     sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    const startedAt = Date.now();
+    const retryOffsets = [400, 1200, 2500];
+    let retryIndex = 0;
     const tick = () => {
       codexModelWhitelistRefreshTimer = 0;
       runCodexModelWhitelistRefreshPass();
-      if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+      if (retryIndex < retryOffsets.length && Date.now() < codexModelWhitelistRefreshUntil) {
+        const nextOffset = retryOffsets[retryIndex++];
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, Math.max(0, nextOffset - (Date.now() - startedAt)));
       }
     };
     tick();

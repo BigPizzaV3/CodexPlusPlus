@@ -51,6 +51,7 @@
    * 同一套外壳 + 自定义内容，所以单独走一遍，但外壳结构与类名完全对齐。
    */
   function openCodexPlusModalForExtension(id, definition) {
+    closeCodexPlusPage();
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
@@ -71,6 +72,8 @@
       </div>
     `;
     document.body.appendChild(overlay);
+    window.__codexPlusPageLayoutObserver = new ResizeObserver(() => positionCodexPlusPage(overlay));
+    window.__codexPlusPageLayoutTargets = {};
     positionCodexPlusPage(overlay);
     // 拓展入口不在内置的三个 id 里，setCodexPlusSidebarNavActive 认不出来，
     // 所以自己点亮该入口，再调一次 sync 让原生选中态被压下去。
@@ -146,6 +149,9 @@
       } catch {}
     }
     window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutObserver = null;
+    window.__codexPlusPageLayoutTargets = null;
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
   }

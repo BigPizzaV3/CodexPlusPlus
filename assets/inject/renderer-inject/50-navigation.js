@@ -1,10 +1,64 @@
+  function updateCodexPlusTitlebarStatus(status) {
+    const button = document.getElementById(codexPlusTitlebarEntryId)?.querySelector("button");
+    if (!button) return;
+    const label = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "后端未连接";
+    const title = `Codex++ · ${label}`;
+    if (button.title !== title) {
+      button.title = title;
+      button.setAttribute("aria-label", title);
+    }
+    const indicator = button.querySelector(".codex-plus-titlebar-status");
+    if (indicator && indicator.dataset.status !== status) indicator.dataset.status = status;
+  }
+
+  function installCodexPlusTitlebarEntry() {
+    // Keep native menu identity and keyboard ownership; do not anchor to labels or coordinates.
+    const help = document.getElementById("application-menu-trigger-help-menu");
+    const menu = help?.closest('[role="menubar"]') || document.querySelector('[role="menubar"]');
+    const template = help || Array.from(menu?.querySelectorAll('[role="menuitem"]') || []).at(-1);
+    const parent = menu?.parentElement;
+    if (!parent || !template) return false;
+    let wrapper = document.getElementById(codexPlusTitlebarEntryId);
+    if (!wrapper) {
+      wrapper = document.createElement("div");
+      wrapper.id = codexPlusTitlebarEntryId;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = template.className;
+      button.innerHTML = '<span class="codex-plus-titlebar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="codex-plus-titlebar-label">Codex++</span><span class="codex-plus-titlebar-status" aria-hidden="true">!</span>';
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (codexPlusActiveEntry() === "home") closeCodexPlusPage();
+        else openCodexPlusPage();
+      });
+      wrapper.appendChild(button);
+    }
+    if (menu.nextElementSibling !== wrapper) parent.insertBefore(wrapper, menu.nextSibling);
+    const rawStatus = codexPlusBackendStatus.status || "checking";
+    updateCodexPlusTitlebarStatus(rawStatus);
+    const activeEntry = codexPlusActiveEntry();
+    setCodexPlusSidebarNavActive(!!activeEntry, activeEntry || "home");
+    const page = document.querySelector(`.${codexPlusPageClass}`);
+    if (page) positionCodexPlusPage(page);
+    return true;
+  }
+
   function installCodexPlusNavigationEntries() {
-    if (installCodexPlusRailNavigation()) {
+    const titlebarInstalled = installCodexPlusTitlebarEntry();
+    if (!titlebarInstalled) document.getElementById(codexPlusTitlebarEntryId)?.remove();
+    if (installCodexPlusRailNavigation(!titlebarInstalled)) {
       detachCodexPlusSidebarNavigation();
+      const activeEntry = codexPlusActiveEntry();
+      setCodexPlusSidebarNavActive(!!activeEntry, activeEntry || "home");
+      const page = document.querySelector(`.${codexPlusPageClass}`);
+      if (page) positionCodexPlusPage(page);
       return;
     }
     removeCodexPlusRailNavigation();
-    installCodexPlusSidebarNavigation();
+    installCodexPlusSidebarNavigation(titlebarInstalled);
+    const activeEntry = codexPlusActiveEntry();
+    setCodexPlusSidebarNavActive(!!activeEntry, activeEntry || "home");
   }
 
   const codexPluginRemoteOnlyMarketplaceKinds = new Set(["created-by-me-remote", "shared-with-me"]);
@@ -264,4 +318,3 @@
     if (Array.isArray(filtered) && filtered.length >= sample.length) return false;
     return true;
   }
-

@@ -133,6 +133,7 @@
       sidebarStatus.dataset.status = status;
       sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
+    updateCodexPlusTitlebarStatus(status);
     refreshCodexServiceTierControls();
   }
 
@@ -780,6 +781,7 @@
   function codexPlusActiveEntry() {
     const overlay = document.querySelector(`.${codexPlusPageClass}`);
     if (!overlay) return null;
+    if (overlay.dataset?.codexPlusExtensionPage) return "extension";
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
     if (tab === codexPlusExtensionsTab) return "extensions";
     if (tab === codexPlusSponsorTab) return "sponsor";
@@ -787,12 +789,14 @@
   }
 
   function setCodexPlusSidebarNavActive(active, entry = "home") {
-    const nav = document.getElementById(codexPlusSidebarNavId);
-    const button = nav?.querySelector("button");
-    if (button) {
+    for (const id of [codexPlusSidebarNavId, codexPlusTitlebarEntryId]) {
+      const button = document.getElementById(id)?.querySelector("button");
+      if (!button) continue;
       const on = Boolean(active) && entry === "home";
       button.dataset.active = String(on);
-      button.setAttribute("aria-current", on ? "page" : "false");
+      if (on) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+      button.setAttribute("aria-expanded", String(on));
     }
     [
       [codexPlusRailNavId, "home"],
@@ -803,7 +807,8 @@
       if (!railButton) return;
       const on = Boolean(active) && entry === name;
       railButton.dataset.active = String(on);
-      railButton.setAttribute("aria-current", on ? "page" : "false");
+      if (on) railButton.setAttribute("aria-current", "page");
+      else railButton.removeAttribute("aria-current");
       // 原生 rail 按钮的选中色由 data-selected 驱动（且需无 data-suppress-active-style）。
       if (on) railButton.setAttribute("data-selected", "");
       else railButton.removeAttribute("data-selected");
@@ -836,7 +841,9 @@
   function positionCodexPlusPage(overlay) {
     if (!overlay?.classList?.contains(codexPlusPageClass)) return;
     const sidebar = document.querySelector("aside.app-shell-left-panel");
-    const rect = sidebar?.getBoundingClientRect?.();
+    const sidebarRect = sidebar?.getBoundingClientRect?.();
+    const main = document.querySelector("main");
+    const mainRect = main?.getBoundingClientRect?.();
     const rail = document.querySelector(codexPlusRailSelector);
     const railRect = rail?.getBoundingClientRect?.();
     // 新版：页面要顶替原生侧边栏——从图标栏右边界起铺满，把宽面板整个盖住，
@@ -844,14 +851,31 @@
     // 旧版没有图标栏，我们的入口就在 aside 内部，此时退回 aside 右边界。
     const left = railRect && railRect.width > 0
       ? Math.max(0, railRect.right)
-      : (rect && rect.width > 0 ? Math.max(0, rect.right) : 0);
+      : (mainRect && mainRect.width > 0 ? mainRect.left : sidebarRect?.right || 0);
+    const top = mainRect && mainRect.height > 0
+      ? mainRect.top
+      : (railRect && railRect.width > 0 ? railRect.top : sidebarRect?.top || 0);
     // 量出来的是视觉坐标，而 overlay 在缩放空间里布局，所以统一折算成布局坐标。
     // CSS 的 calc(100vw / zoom - left) 用的也是这个空间的量，两边才配得上。
     const zoom = codexPlusWindowZoom();
-    const layoutLeft = zoom === 1 ? left : left / zoom;
+    const layoutLeft = zoom === 1 ? Math.max(0, left) : Math.max(0, left) / zoom;
+    const layoutTop = Math.max(0, top) / zoom;
     overlay.style.setProperty("--codex-plus-page-left", `${layoutLeft}px`);
-    overlay.style.left = `${layoutLeft}px`;
-    overlay.style.top = "0px";
+    overlay.style.setProperty("--codex-plus-page-top", `${layoutTop}px`);
+    const nextLeft = `${layoutLeft}px`;
+    const nextTop = `${layoutTop}px`;
+    if (overlay.style.left !== nextLeft) overlay.style.left = nextLeft;
+    if (overlay.style.top !== nextTop) overlay.style.top = nextTop;
+    if (window.__codexPlusPageLayoutObserver &&
+        (window.__codexPlusPageLayoutTargets?.main !== main ||
+         window.__codexPlusPageLayoutTargets?.sidebar !== sidebar ||
+         window.__codexPlusPageLayoutTargets?.rail !== rail)) {
+      window.__codexPlusPageLayoutObserver.disconnect();
+      for (const target of new Set([main, sidebar, rail])) {
+        if (target) window.__codexPlusPageLayoutObserver.observe(target);
+      }
+      window.__codexPlusPageLayoutTargets = { main, sidebar, rail };
+    }
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -1003,6 +1027,7 @@
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
+    closeCodexPlusPage();
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
@@ -1155,8 +1180,8 @@
     closeButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      overlay.remove();
-      if (pageMode) setCodexPlusSidebarNavActive(false);
+      if (pageMode) closeCodexPlusPage();
+      else overlay.remove();
     }, true);
     overlay.addEventListener("input", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -1316,6 +1341,8 @@
     overlay.addEventListener("error", handleExtensionIconError, true);
     document.body.appendChild(overlay);
     if (pageMode) {
+      window.__codexPlusPageLayoutObserver = new ResizeObserver(() => positionCodexPlusPage(overlay));
+      window.__codexPlusPageLayoutTargets = {};
       positionCodexPlusPage(overlay);
       // 必须在 selectCodexPlusTab 之前建好两栏，否则刷新左面板时找不到容器。
       installCodexPlusPageLayout(overlay, initialTab);
@@ -1352,6 +1379,8 @@
 
   function closeCodexPlusPage() {
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutTargets = null;
     setCodexPlusSidebarNavActive(false);
   }
 
@@ -1375,8 +1404,14 @@
     document.addEventListener("click", window.__codexPlusPageNavigationCloseHandler, true);
   }
 
-  function installCodexPlusSidebarNavigation() {
+  function installCodexPlusSidebarNavigation(titlebarInstalled = false) {
     document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
+    if (titlebarInstalled) {
+      detachCodexPlusSidebarNavigation();
+      const activeEntry = codexPlusActiveEntry();
+      setCodexPlusSidebarNavActive(!!activeEntry, activeEntry || "home");
+      return;
+    }
     // 旧版的侧边栏会话列表在 aside 里带 role="navigation"。新版把这个 role 挪去了
     // 缩略图面板/演示目录，所以留一条限定在 aside 内的兜底。
     // 注意：新版图标栏也是 aside 里的 <nav>，且文档顺序在前，而 querySelector 的选择器
@@ -1392,7 +1427,7 @@
       const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
       return /^(插件|Plugins)$/i.test(label);
     });
-    const insertionButton = pluginButton || navButtons.find((button) => {
+    const templateButton = pluginButton || navButtons.find((button) => {
       const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
       return /^(已安排|Scheduled|拉取请求|Pull requests|新对话|New chat)$/i.test(label);
     });
@@ -1405,13 +1440,11 @@
       }, true);
     }
     let wrapper = document.getElementById(codexPlusSidebarNavId);
-    const parent = insertionButton?.parentElement || navigation;
-    if (!wrapper || wrapper.parentElement !== parent) {
-      wrapper?.remove();
+    if (!wrapper) {
       wrapper = document.createElement("div");
       wrapper.id = codexPlusSidebarNavId;
       wrapper.dataset.codexPlusSidebarNav = "true";
-      const button = (insertionButton || document.createElement("button")).cloneNode(true);
+      const button = (templateButton || document.createElement("button")).cloneNode(true);
       if (!(button instanceof HTMLElement)) return;
       if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
       button.type = "button";
@@ -1428,16 +1461,13 @@
         openCodexPlusPage();
       }, true);
       wrapper.appendChild(button);
-      if (insertionButton?.nextSibling) {
-        parent.insertBefore(wrapper, insertionButton.nextSibling);
-      } else {
-        parent.appendChild(wrapper);
-      }
     }
+    if (wrapper.parentElement !== navigation || wrapper.nextElementSibling) navigation.appendChild(wrapper);
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
-    const active = !!document.querySelector(`.${codexPlusPageClass}`);
-    setCodexPlusSidebarNavActive(active);
+    const activeEntry = codexPlusActiveEntry();
+    setCodexPlusSidebarNavActive(!!activeEntry, activeEntry || "home");
+    if (activeEntry) positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
   }
 
   function removeCodexPlusRailNavigation() {
@@ -1521,7 +1551,7 @@
    *
    * Codex 的 rail 渲染晚于注入，所以这里每次 scan 都会被调用；靠 id 判存避免重复插入。
    */
-  function installCodexPlusRailNavigation() {
+  function installCodexPlusRailNavigation(includeHome = true) {
     document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
     const rail = document.querySelector(codexPlusRailSelector);
     if (!rail) return false;
@@ -1556,7 +1586,7 @@
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
-    ];
+    ].filter((spec) => includeHome || spec.id !== codexPlusRailNavId);
 
     const anchor = codexPlusRailPrimaryAnchor(rail);
     // 插到锚点所在的父容器里，而不是 nav 顶层：原生按钮可能嵌在 nav 内部的分组 div 中，

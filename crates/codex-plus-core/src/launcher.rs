@@ -2867,11 +2867,11 @@ async fn check_and_reinject_bridge_inner(
     health_failures: &mut u8,
     backoff: &mut BridgeReinjectBackoff,
 ) -> bool {
-    let healthy = if browser_identity_changed {
+    let mut healthy = if browser_identity_changed {
         Some(false)
     } else {
         match bridge_health_ok(debug_port).await {
-            Ok(healthy) => Some(healthy),
+            Ok(healthy) => healthy,
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "bridge.health_check_failed",
@@ -2889,14 +2889,13 @@ async fn check_and_reinject_bridge_inner(
             }
         }
     };
-    match healthy {
-        // 持续健康一段时间才清掉退避（见 BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS）；
-        // 探测不确定时不改变退避状态。失效计数由 should_reinject_* 统一管理。
-        Some(true) => backoff.observe_healthy(std::time::Instant::now()),
-        None => {}
-        Some(false) => backoff.observe_unhealthy(),
+    // Resolve stale heartbeat evidence before changing either watchdog state.
+    if !browser_identity_changed && healthy == Some(false) {
+        healthy = bridge_active_health_probe_ok(debug_port).await.unwrap_or(None);
     }
-    if !should_reinject_after_health_result(healthy, browser_identity_changed, health_failures) {
+    if !observe_bridge_health(
+        healthy, browser_identity_changed, health_failures, backoff, std::time::Instant::now(),
+    ) {
         return false;
     }
     if browser_identity_changed {
@@ -2968,20 +2967,54 @@ async fn run_bridge_reinjector(
     }
 }
 
-async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+fn observe_bridge_health(
+    healthy: Option<bool>,
+    browser_identity_changed: bool,
+    health_failures: &mut u8,
+    backoff: &mut BridgeReinjectBackoff,
+    now: std::time::Instant,
+) -> bool {
+    match healthy {
+        Some(true) => backoff.observe_healthy(now),
+        Some(false) => backoff.observe_unhealthy(),
+        None => return false,
+    }
+    should_reinject_after_health_result(healthy, browser_identity_changed, health_failures)
+}
+
+async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<Option<bool>> {
+    evaluate_bridge_health_script(debug_port, crate::bridge::bridge_health_check_script()).await
+}
+
+async fn bridge_active_health_probe_ok(debug_port: u16) -> anyhow::Result<Option<bool>> {
+    evaluate_bridge_health_script(
+        debug_port,
+        crate::bridge::bridge_active_health_probe_script(),
+    )
+    .await
+}
+
+async fn evaluate_bridge_health_script(debug_port: u16, script: &str) -> anyhow::Result<Option<bool>> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let result = crate::bridge::evaluate_script_with_await_promise(
-        websocket_url,
-        crate::bridge::bridge_health_check_script(),
-        true,
-    )
-    .await?;
-    Ok(runtime_evaluate_result_is_true(&result))
+    let result =
+        crate::bridge::evaluate_script_with_await_promise(websocket_url, script, true).await?;
+    if result
+        .get("result")
+        .and_then(|value| value.get("exceptionDetails"))
+        .is_some()
+    {
+        anyhow::bail!("bridge health probe raised a renderer exception");
+    }
+    Ok(result
+        .get("result")
+        .and_then(|result| result.get("result"))
+        .and_then(|result| result.get("value"))
+        .and_then(Value::as_bool))
 }
 
 fn runtime_evaluate_result_is_true(result: &Value) -> bool {
@@ -3654,6 +3687,35 @@ mod tests {
             true,
             &mut failures
         ));
+    }
+
+    #[test]
+    fn active_probe_observations_preserve_backoff_until_sustained_health() {
+        let now = std::time::Instant::now();
+        let mut backoff = BridgeReinjectBackoff::default();
+        backoff.record_attempt(now);
+        let deadline = backoff.next_allowed_at;
+        let mut failures = BRIDGE_HEALTH_FAILURE_THRESHOLD;
+        assert!(!observe_bridge_health(Some(true), false, &mut failures, &mut backoff, now));
+        assert_eq!(failures, 0);
+        let healthy_since = backoff.healthy_since;
+        assert!(!observe_bridge_health(None, false, &mut failures, &mut backoff, now + std::time::Duration::from_secs(30)));
+        assert_eq!(backoff.consecutive_attempts, 1);
+        assert_eq!(backoff.next_allowed_at, deadline);
+        assert_eq!(backoff.healthy_since, healthy_since);
+        assert_eq!(failures, 0);
+        assert!(!observe_bridge_health(Some(true), false, &mut failures, &mut backoff, now + std::time::Duration::from_secs(59)));
+        assert_eq!(backoff.consecutive_attempts, 1);
+        assert!(!observe_bridge_health(Some(true), false, &mut failures, &mut backoff, now + std::time::Duration::from_secs(60)));
+        assert_eq!(backoff.consecutive_attempts, 0);
+
+        backoff.record_attempt(now);
+        failures = 1;
+        assert!(!observe_bridge_health(None, false, &mut failures, &mut backoff, now));
+        assert_eq!(failures, 1);
+        assert!(observe_bridge_health(Some(false), false, &mut failures, &mut backoff, now));
+        assert_eq!(backoff.consecutive_attempts, 1);
+        assert!(backoff.healthy_since.is_none());
     }
 
     #[test]
