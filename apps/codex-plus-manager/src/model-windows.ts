@@ -1,4 +1,5 @@
 import { DEFAULT_AUTO_COMPACT_PERCENT, isValidAutoCompactPercent, normalizeAutoCompactPercent } from "./auto-compact.ts";
+import { modelSlugFromRowName } from "./model-metadata.ts";
 
 /// 把 model_windows JSON map 按 model_list 行顺序转成文本（每行一个窗口，空行表示默认）。
 export function modelWindowsMapToText(modelList: string, modelWindows: string): string {
@@ -47,6 +48,37 @@ function asStringMap(value: unknown): Record<string, string> {
   return value as Record<string, string>;
 }
 
+/// 归一化模型行名得到的 map key：剥掉 `[1M]` 窗口后缀，**保留原大小写**。
+///
+/// 运行期查表用的是请求体里的 model 字符串：`vision.rs` 的 `image_handling_mode`
+/// 做全字匹配（大小写敏感），codex 侧 `collect_catalog_entries` 也按原样 slug
+/// 查 `model_windows`。所以 key 必须等于剥掉后缀后的原始 slug——统一小写会把
+/// `GLM-5.3` 这类驼峰 slug 写成 `glm-5.3`，上游请求仍发 `GLM-5.3`，查表全落空
+/// 反而引入新故障。归一化只做「去后缀」这一件事（issue #2345）。
+export function modelMapKeyFromRowName(rowName: string): string {
+  return modelSlugFromRowName(rowName.trim());
+}
+
+/// 按模型查 map：先按归一化 key 查，再依次回退到原始行名、大小写不敏感匹配。
+///
+/// 回退分支专门吃历史数据——旧版本保存过的 key 可能是带后缀的行名原样，直接
+/// 丢掉会让用户已配好的值看起来「被重置」。
+export function lookupModelMapEntry<T>(
+  map: Record<string, T>,
+  modelName: string,
+): T | undefined {
+  const raw = modelName.trim();
+  if (!raw) return undefined;
+  const slug = modelSlugFromRowName(raw);
+  const direct = map[slug] ?? map[raw];
+  if (direct !== undefined) return direct;
+  const lower = slug.toLowerCase();
+  for (const [key, value] of Object.entries(map)) {
+    if (key.toLowerCase() === lower) return value;
+  }
+  return undefined;
+}
+
 export function isValidModelWindow(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;
@@ -62,12 +94,15 @@ export function isValidModelWindow(value: string): boolean {
 }
 
 export function modelWindowRowsValidationError(rows: ModelWindowRow[]): ModelWindowRowsValidationIssue | null {
+  // 同样按规范 slug 判重：带后缀与不带后缀的同名行会写进同一组 map key，
+  // 静默覆盖比报错更难排查（issue #2345）。
   const seen = new Set<string>();
   for (const row of rows) {
     const model = row.model.trim();
     if (!model) continue;
-    if (seen.has(model)) return { code: "duplicateModel", model };
-    seen.add(model);
+    const dedupeKey = modelMapKeyFromRowName(model) || model;
+    if (seen.has(dedupeKey)) return { code: "duplicateModel", model };
+    seen.add(dedupeKey);
     if (!isValidModelWindow(row.window)) return { code: "invalidWindow", model };
     if (!isValidAutoCompactPercent(row.autoCompact ?? "")) {
       return { code: "invalidAutoCompact", model };
@@ -81,11 +116,15 @@ export function mergeModelWindowRows(
   incomingRows: ModelWindowRow[],
 ): ModelWindowRow[] {
   const rows: ModelWindowRow[] = [];
+  // 去重按规范 slug：`deepseek-v4-pro[1M]` 与 `deepseek-v4-pro` 是同一个模型的
+  // 两种写法，同时存在会在序列化时互相覆盖同一张 map 的同一个 key（issue #2345）。
   const seen = new Set<string>();
   const append = (row: ModelWindowRow) => {
     const model = row.model.trim();
-    if (!model || seen.has(model)) return;
-    seen.add(model);
+    if (!model) return;
+    const dedupeKey = modelMapKeyFromRowName(model) || model;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
     rows.push({
       model,
       window: row.window.trim(),
@@ -116,35 +155,41 @@ export function modelWindowRowsFromProfile(
   } catch {
     autoCompactMap = {};
   }
-  // 解析 modelVlm JSON：`{"model": "vlm"/"strip"}`
-  let vlmMap: Record<string, ImageHandling> = {};
+  // 解析 modelVlm JSON：`{"model": "vlm"/"strip"}`。
+  // key 按规范 slug 归一后再存：历史数据里的 key 可能是带 `[1M]` 后缀的行名，
+  // 而归一化让读写两侧始终落在同一个 key 上（issue #2345）。
+  const vlmMap: Record<string, ImageHandling> = {};
   try {
     const raw = JSON.parse(modelVlm || "{}") as Record<string, unknown>;
     for (const [model, value] of Object.entries(raw)) {
+      const key = modelMapKeyFromRowName(model);
+      if (!key) continue;
       if (value === "vlm") {
-        vlmMap[model] = "vlm";
+        vlmMap[key] = "vlm";
       } else if (value === "strip") {
-        vlmMap[model] = "strip";
+        vlmMap[key] = "strip";
       }
-      // 其他值 → 不记录
+      // 其他值 → 不记录（未知值不静默变 send-as-is 改写用户数据，读侧忽略即可）
     }
   } catch {
-    vlmMap = {};
+    // vlmMap 保持空对象
   }
   const rows = modelList
     .split("\n")
     .map((model) => model.trim())
     .filter(Boolean)
-    .map((model) => ({
-      model,
-      window: typeof map[model] === "string" ? map[model] : "",
-      autoCompact: normalizeAutoCompactPercent(
-        typeof autoCompactMap[model] === "string"
-          ? autoCompactMap[model]
-          : DEFAULT_AUTO_COMPACT_PERCENT,
-      ),
-      imageHandling: vlmMap[model] ?? "send-as-is",
-    }));
+    .map((model) => {
+      const window = lookupModelMapEntry(map, model);
+      const autoCompact = lookupModelMapEntry(autoCompactMap, model);
+      return {
+        model,
+        window: typeof window === "string" ? window : "",
+        autoCompact: normalizeAutoCompactPercent(
+          typeof autoCompact === "string" ? autoCompact : DEFAULT_AUTO_COMPACT_PERCENT,
+        ),
+        imageHandling: lookupModelMapEntry(vlmMap, model) ?? "send-as-is",
+      };
+    });
   return rows.length ? rows : [{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }];
 }
 
@@ -161,19 +206,23 @@ export function serializeModelWindowRows(rows: ModelWindowRow[]): {
   mergeModelWindowRows(rows, []).forEach((row) => {
     const model = row.model.trim();
     if (!model) return;
+    // model_list 保留用户原样行名（含 `[1M]` 后缀，codex 侧按后缀识别窗口）；
+    // 三张配置 map 的 key 统一用规范 slug——运行期查表用的是剥掉后缀的 model
+    // 字符串，带后缀的 key 永远查不中（issue #2345）。
+    const key = modelMapKeyFromRowName(model) || model;
     modelList.push(model);
     const window = row.window.trim();
     if (window) {
-      modelWindows[model] = window;
+      modelWindows[key] = window;
     }
     // 只持久化非默认值
     if (row.imageHandling === "vlm" || row.imageHandling === "strip") {
-      modelVlm[model] = row.imageHandling;
+      modelVlm[key] = row.imageHandling;
     }
     const autoCompact = normalizeAutoCompactPercent(
       row.autoCompact?.trim() || DEFAULT_AUTO_COMPACT_PERCENT,
     );
-    modelAutoCompact[model] = autoCompact;
+    modelAutoCompact[key] = autoCompact;
   });
   return {
     modelList: modelList.join("\n"),
