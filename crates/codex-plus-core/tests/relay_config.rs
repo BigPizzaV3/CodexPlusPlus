@@ -1835,6 +1835,61 @@ fn apply_relay_profile_files_for_aggregate_keeps_live_oauth_tokens() {
     );
 }
 
+#[test]
+fn apply_pure_api_profile_with_openai_session_keeps_live_oauth_tokens() {
+    // issue #2173：PureApi 分支过去直接写 profile 快照，而 Aggregate / Official
+    // 都会先读 live auth.json 再合并。会话身份是 openai 的纯 API 供应商每切换一次
+    // 就可能把 live 里的 `tokens` 抹掉，从而静默摧毁「OpenAI 会话身份」这个唯一能让
+    // CUA 浏览器插件可用的前提——用户表现为「本来能用，某天开始报 apikey」且无任何
+    // 配置报错。注意只对 openai 会话身份生效：普通纯 API 供应商本就该清掉官方凭据。
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"access-token"},"extra_live_key":"keep-me"}"#,
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "pure".to_string(),
+        name: "纯 API".to_string(),
+        relay_mode: RelayMode::PureApi,
+        // 会话身份是 openai（model_provider = "openai"）时才需要保留登录态。
+        config_contents: r#"model = "gpt-5.5"
+model_provider = "openai"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-pure-api"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .expect("纯 API apply 后 auth.json 必须是合法 JSON");
+    assert_eq!(
+        auth.get("tokens")
+            .and_then(|tokens| tokens.get("access_token"))
+            .and_then(|token| token.as_str()),
+        Some("access-token"),
+        "纯 API apply 不能清掉官方 OAuth token"
+    );
+    assert_eq!(
+        auth.get("auth_mode").and_then(|mode| mode.as_str()),
+        Some("chatgpt"),
+        "auth_mode 必须保留，否则 auth_contents_looks_like_chatgpt_auth 判否"
+    );
+    assert_eq!(
+        auth.get("extra_live_key").and_then(|value| value.as_str()),
+        Some("keep-me"),
+        "live 里本 profile 未声明的键也应继承，与 Aggregate / Official 对齐"
+    );
+    assert_eq!(
+        auth.get("OPENAI_API_KEY").and_then(|value| value.as_str()),
+        Some("sk-pure-api"),
+        "本 profile 声明的字段仍以快照为准"
+    );
+}
+
 fn lists_codex_context_entries_from_common_config() {
     let entries = list_context_entries_from_common_config(
         r#"[mcp_servers.context7]

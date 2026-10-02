@@ -719,7 +719,14 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
             apply_deepseek_responses_compatibility(profile, &config_with_catalog)?;
 
         if profile.relay_mode == crate::settings::RelayMode::PureApi {
-            apply_relay_files_to_home(home, &compatible_config, &profile.auth_contents)
+            // 与 Aggregate / Official 分支对称：先读 live auth.json 再合并，
+            // 不能直接把 profile 快照整体写进去（issue #2173）。
+            // 纯 API 供应商每切换一次就可能把 live 里的 `tokens` 抹掉，从而静默
+            // 摧毁「OpenAI 会话身份」这个唯一能让 CUA 浏览器插件可用的 workaround——
+            // 用户表现为「本来能用，某天开始报 unsupported Codex auth method: apikey」，
+            // 且没有任何配置报错。
+            let auth_contents = pure_api_auth_contents_with_live_login(home, profile)?;
+            apply_relay_files_to_home(home, &compatible_config, &auth_contents)
         } else if profile.relay_mode == crate::settings::RelayMode::Aggregate {
             // 聚合模式的实际请求发往本地代理，它需要 API 模式的凭据。
             // 不能走 Official 分支删 OPENAI_API_KEY，否则 auth.json 会被清成空文件/空对象，
@@ -3556,6 +3563,77 @@ fn auth_contents_with_proxy_key(
         "{}\n",
         serde_json::to_string_pretty(&json!({ "OPENAI_API_KEY": bearer_token }))?
     ))
+}
+
+/// 纯 API 模式写 auth.json 前的合并（issue #2173）。
+///
+/// Aggregate / Official 两条分支都会先经 `auth_contents_with_proxy_key` 读 live
+/// auth.json 再合并，只有 PureApi 过去是直接写 profile 快照。那把 live 里的
+/// `tokens` / `auth_mode` 整体覆盖掉，而 `tokens` 正是「OpenAI 会话身份」
+/// （`auth_contents_looks_like_chatgpt_auth` 依赖它）让 CUA 浏览器插件可用的前提，
+/// 于是纯 API 供应商每切换一次就可能静默弄坏插件，且不报任何配置错误。
+///
+/// 策略：以 profile 快照为基底（它承载本供应商需要的 `OPENAI_API_KEY` 等字段），
+/// 但把 live 里已有的登录态键原样保留——本 profile 没声明的键也一并继承，
+/// 使写入结果与 Aggregate / Official 的行为对齐。
+fn pure_api_auth_contents_with_live_login(
+    home: &Path,
+    profile: &RelayProfile,
+) -> anyhow::Result<String> {
+    let auth_contents = profile.auth_contents.as_str();
+    // 只有会话身份是 openai 的 profile 才保留 live 的 ChatGPT 登录态。
+    // 普通纯 API 供应商本就该清掉官方凭据（切换语义要求），无条件保留会破坏它。
+    if relay_session_provider_from_config(&profile.config_contents) != RelaySessionProvider::Openai {
+        return Ok(auth_contents.to_string());
+    }
+    let live = read_optional_text(&home.join("auth.json"))?;
+    let Some(mut snapshot) = parse_json_object(auth_contents) else {
+        // 快照本身不是合法 JSON 对象：沿用旧的「快照为空白则视为无凭据」语义，
+        // 非空但损坏时报错，避免写入损坏内容。
+        if auth_contents.trim().is_empty() {
+            return Ok(auth_contents.to_string());
+        }
+        anyhow::bail!(
+            "供应商快照里的 auth.json 不是有效 JSON 对象，已停止切换以避免写入损坏内容"
+        );
+    };
+    let Some(live_object) = parse_json_object(&live) else {
+        return Ok(auth_contents.to_string());
+    };
+
+    // 登录态键：live 有就保留，避免把用户的 ChatGPT 登录凭据抹掉。
+    const LOGIN_STATE_KEYS: [&str; 2] = ["tokens", "auth_mode"];
+    for key in LOGIN_STATE_KEYS {
+        if let Some(value) = live_object.get(key) {
+            if !value.is_null() {
+                snapshot.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+
+    // live 里本 profile 未声明的其它键也继承，保持与 Aggregate / Official 一致。
+    for (key, value) in &live_object {
+        if value.is_null() || snapshot.contains_key(key) {
+            continue;
+        }
+        snapshot.insert(key.clone(), value.clone());
+    }
+
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&Value::Object(snapshot))?
+    ))
+}
+
+/// 解析成 JSON 对象；来源为空、非 JSON 或不是对象时返回 None。
+fn parse_json_object(source: &str) -> Option<serde_json::Map<String, Value>> {
+    if source.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str::<Value>(source)
+        .ok()?
+        .as_object()
+        .cloned()
 }
 
 /// 把代理 token 合进一份 auth.json 文本；来源为空或不是 JSON 对象时返回 None，
