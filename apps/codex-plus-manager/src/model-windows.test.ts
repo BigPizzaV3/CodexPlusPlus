@@ -8,6 +8,8 @@ import {
   modelWindowsTextToMap,
   serializeModelWindowRows,
   mergeModelWindowRows,
+  sortModelWindowRowsByName,
+  sortModelWindowRowsWithOrigins,
 } from "./model-windows.ts";
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 和 modelVlm 字段
@@ -190,5 +192,72 @@ describe("model-windows helpers", () => {
         { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
       ],
     );
+  });
+
+  it("sortModelWindowRowsByName 按名称忽略大小写排序，数字段按数值比较", () => {
+    const rows = [
+      { model: "gpt-10", window: "", autoCompact: "", imageHandling: "send-as-is" as const },
+      { model: "OpenAI/gpt-4", window: "", autoCompact: "", imageHandling: "send-as-is" as const },
+      { model: "deepseek/v4", window: "", autoCompact: "", imageHandling: "send-as-is" as const },
+      { model: "gpt-4", window: "", autoCompact: "", imageHandling: "send-as-is" as const },
+      { model: "GPT-5", window: "", autoCompact: "", imageHandling: "send-as-is" as const },
+    ];
+    assert.deepStrictEqual(
+      sortModelWindowRowsByName(rows).map((row) => row.model),
+      ["deepseek/v4", "gpt-4", "GPT-5", "gpt-10", "OpenAI/gpt-4"],
+    );
+    // 不修改入参。
+    assert.strictEqual(rows[0].model, "gpt-10");
+  });
+
+  it("sortModelWindowRowsByName 把空模型行留在末尾，且不丢失行内容", () => {
+    const sorted = sortModelWindowRowsByName([
+      { model: "", window: "400K", autoCompact: "70%", imageHandling: "send-as-is" },
+      { model: "b", window: "1M", autoCompact: "80%", imageHandling: "vlm" },
+      { model: "a", window: "200K", autoCompact: "90%", imageHandling: "strip" },
+    ]);
+    assert.deepStrictEqual(sorted, [
+      { model: "a", window: "200K", autoCompact: "90%", imageHandling: "strip" },
+      { model: "b", window: "1M", autoCompact: "80%", imageHandling: "vlm" },
+      { model: "", window: "400K", autoCompact: "70%", imageHandling: "send-as-is" },
+    ]);
+  });
+
+  it("sortModelWindowRowsWithOrigins 同步重排原始模型名，空白行回退到当前名", () => {
+    const sorted = sortModelWindowRowsWithOrigins(
+      [
+        { model: "z-new-name", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "", imageHandling: "send-as-is" },
+      ],
+      ["z-old-name", ""],
+    );
+    assert.deepStrictEqual(sorted.origins, ["a", "z-old-name"]);
+    assert.deepStrictEqual(sorted.rows.map((row) => row.model), ["a", "z-new-name"]);
+  });
+
+  it("sortModelWindowRowsByName 降序时未命名空行仍留在末尾", () => {
+    const sorted = sortModelWindowRowsByName(
+      [
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "c", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "a", window: "", autoCompact: "", imageHandling: "send-as-is" },
+      ],
+      "desc",
+    );
+    assert.deepStrictEqual(sorted.map((row) => row.model), ["c", "b", "a", ""]);
+  });
+
+  it("sortModelWindowRowsWithOrigins 降序时同步重排原始模型名", () => {
+    const sorted = sortModelWindowRowsWithOrigins(
+      [
+        { model: "a", window: "", autoCompact: "", imageHandling: "send-as-is" },
+        { model: "b", window: "", autoCompact: "", imageHandling: "send-as-is" },
+      ],
+      ["a-origin", "b-origin"],
+      "desc",
+    );
+    assert.deepStrictEqual(sorted.rows.map((row) => row.model), ["b", "a"]);
+    assert.deepStrictEqual(sorted.origins, ["b-origin", "a-origin"]);
   });
 });

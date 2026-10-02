@@ -18,8 +18,11 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
+  ArrowDownAZ,
   ArrowLeft,
   ArrowRight,
+  ArrowUpAZ,
+  ArrowUpDown,
   Bell,
   Blocks,
   Bot,
@@ -127,6 +130,7 @@ import {
   modelWindowRowsFromProfile,
   modelWindowRowsValidationError,
   serializeModelWindowRows,
+  sortModelWindowRowsWithOrigins,
   type ImageHandling,
   type ModelWindowRowsValidationIssue,
   type ModelWindowRow,
@@ -7749,6 +7753,8 @@ function RelayProfileEditor({
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [vlmTestOpen, setVlmTestOpen] = useState(false);
+  /// 模型列表当前的人工排序方向；null 表示未排序（保持 model_list 的存储顺序）。
+  const [modelSortDirection, setModelSortDirection] = useState<"asc" | "desc" | null>(null);
   const useCommonConfig = profile.useCommonConfig !== false;
   const [activeImportDraft, setActiveImportDraft] = useState<ActiveImportDraft | null>(null);
   const [metadataImportError, setMetadataImportError] = useState("");
@@ -7840,6 +7846,7 @@ function RelayProfileEditor({
   const modelSlugOriginsRef = useRef(modelWindowRows.map((row) => row.model.trim()));
   useEffect(() => {
     modelSlugOriginsRef.current = modelWindowRows.map((row) => row.model.trim());
+    setModelSortDirection(null);
   }, [profile.id, profile.modelList]);
   const importedModelMetadata = useMemo(
     () => parseModelMetadataMap(profile.modelMetadata),
@@ -8189,6 +8196,16 @@ function RelayProfileEditor({
   const appendEmptyModelRow = () => {
     modelSlugOriginsRef.current = [...modelSlugOriginsRef.current, ""];
     setModelWindowRows([...modelWindowRows, { model: "", window: "", autoCompact: "", imageHandling: "" }]);
+  };
+  const toggleModelSortByName = () => {
+    const nextDirection = modelSortDirection === "asc" ? "desc" : "asc";
+    // 排序只改变展示顺序；原始模型名跟着行走，后续重命名才能正确迁移 modelMetadata。
+    const sorted = sortModelWindowRowsWithOrigins(modelWindowRows, modelSlugOriginsRef.current, nextDirection);
+    modelSlugOriginsRef.current = sorted.origins;
+    setModelWindowRows(sorted.rows);
+    setModelSortDirection(nextDirection);
+    // 导入面板按行号定位，重排后必须关闭，避免把编辑结果写回其他模型。
+    if (metadataImportTarget) closeModelMetadataImport();
   };
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
   const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
@@ -8561,7 +8578,26 @@ function RelayProfileEditor({
             </div>
             <div className="relay-model-row-editor">
               <div className="relay-model-row relay-model-row-head">
-                <span>{t("模型名称")}</span>
+                <button
+                  className="relay-model-sort-button"
+                  disabled={modelWindowRows.filter((row) => row.model.trim()).length < 2}
+                  onClick={toggleModelSortByName}
+                  title={modelSortDirection === "asc"
+                    ? t("当前升序，点击改为降序")
+                    : modelSortDirection === "desc"
+                      ? t("当前降序，点击改为升序")
+                      : t("按模型名称排序")}
+                  type="button"
+                >
+                  {t("模型名称")}
+                  {modelSortDirection === "asc" ? (
+                    <ArrowUpAZ aria-hidden="true" className="h-3.5 w-3.5" />
+                  ) : modelSortDirection === "desc" ? (
+                    <ArrowDownAZ aria-hidden="true" className="h-3.5 w-3.5" />
+                  ) : (
+                    <ArrowUpDown aria-hidden="true" className="h-3.5 w-3.5" />
+                  )}
+                </button>
                 <span>{t("上下文窗口")}</span>
                 <span>{t("自动压缩")}</span>
                 <span>{t("图片处理方式")}</span>

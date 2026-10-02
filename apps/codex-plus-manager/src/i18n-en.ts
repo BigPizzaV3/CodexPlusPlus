@@ -713,6 +713,9 @@ export const EN_PLAIN: Record<string, string> = {
   "按请求轮转": "Per-request round-robin",
   "按请求轮转会逐请求切换成员，适合供应商能力接近的场景。":
     "Per-request round-robin switches members request by request, suited to providers with similar capabilities.",
+  "按模型名称排序": "Sort by model name",
+  "当前升序，点击改为降序": "Sorted ascending; click to sort descending",
+  "当前降序，点击改为升序": "Sorted descending; click to sort ascending",
   "接入模式": "Access mode",
   "推荐内容": "Recommendations",
   "提取当前供应商配置": "Extract current provider config",

@@ -5840,6 +5840,67 @@ experimental_bearer_token = "sk-new"
     assert!(!windows.contains_key("deepseek-v4-pro"));
 }
 
+/// 保存时模型列表保持界面里排定的顺序：默认模型已在列表中就不再被提到首位，
+/// 否则「按名称排序」保存后会回弹成默认模型排第一。
+#[test]
+fn normalize_relay_profile_keeps_sorted_model_list_order() {
+    let mut profile = RelayProfile {
+        id: "relay-sorted".to_string(),
+        name: "Sorted".to_string(),
+        model: "deepseek/deepseek-flash".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_list: "ai-gateway-doc\ndeepseek/deepseek-flash\nz-ai/glm-5.3-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+
+    assert_eq!(
+        profile.model_list,
+        "ai-gateway-doc\ndeepseek/deepseek-flash\nz-ai/glm-5.3-flash"
+    );
+
+    // 现场复现形态：official + 混用 API key 的供应商，默认模型只写在 config.toml 里，
+    // `model` 字段本身不落盘（skip_serializing），保存时要按列表里已有的位置保留它。
+    let mut official = RelayProfile {
+        id: "relay-sorted-official".to_string(),
+        name: "SortedOfficial".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        config_contents: r#"model = "deepseek/deepseek-flash"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+"#
+        .to_string(),
+        model_list: "ai-gateway-doc\ndeepseek/deepseek-flash\nz-ai/glm-5.3-flash".to_string(),
+        ..RelayProfile::default()
+    };
+
+    normalize_relay_profile_for_storage(&mut official).unwrap();
+
+    assert_eq!(official.model, "deepseek/deepseek-flash");
+    assert_eq!(
+        official.model_list,
+        "ai-gateway-doc\ndeepseek/deepseek-flash\nz-ai/glm-5.3-flash"
+    );
+}
+
 #[test]
 fn apply_model_auto_compact_generates_explicit_threshold_without_changing_fallback_behavior() {
     let temp = tempfile::tempdir().unwrap();

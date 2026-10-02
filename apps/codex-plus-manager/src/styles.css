@@ -5199,6 +5199,33 @@ input[type="range"]:disabled {
   white-space: nowrap;
 }
 
+.relay-model-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: start;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.relay-model-sort-button:hover:not(:disabled) {
+  color: hsl(var(--foreground));
+}
+
+.relay-model-sort-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.relay-model-sort-button svg {
+  opacity: 0.8;
+}
+
 .relay-model-row input {
   min-width: 0;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
