@@ -564,13 +564,15 @@ fn transform_binding(source: &[u8], control: &Path, _contract: &RuntimeContract)
     let rewritten = &output[..output.len() - HELPER.len() - 1];
     // 替换串里构造器用一次、policy 回调用一次、元数据回调用两次
     //（`()=>ze(...)` 的调用 + 传给 reader 的实参），所以只有后者 +1。
+    // The inserted JSON path is data, not another use of a minified identifier.
     for (name, added) in [
         (&binding.constructor, 0),
         (&binding.runtime_getter, 1),
         (&binding.policy, 0),
     ] {
         ensure!(
-            count_occurrences(rewritten, name) == count_occurrences(text, name) + added,
+            count_occurrences(rewritten, name)
+                == count_occurrences(text, name) + added + count_occurrences(&path, name),
             "Binding rewrite changed the {name} occurrence count"
         );
     }
@@ -1590,6 +1592,22 @@ mod tests {
             plain_path(&root.join("a").join("..").join("b")).is_err(),
             "含 .. 的路径应被拒"
         );
+    }
+
+    #[test]
+    fn control_path_substrings_are_not_identifier_drift() {
+        let text = format!("fixture;{ANCHOR};original");
+        let contract = RuntimeContract {
+            service_sha: sha(text.as_bytes()),
+            files: vec![],
+            adaptive: false,
+        };
+        let output = transform(
+            text.as_bytes(), Path::new("C:/conflict/nf-ze-cD/control.json"), &contract,
+        ).unwrap();
+        let rewritten = String::from_utf8(output).unwrap();
+        assert!(rewritten.contains("C:/conflict/nf-ze-cD/control.json"));
+        assert!(rewritten.contains("cppNativeIdentificationReader(this.runtime,cD,ze,"));
     }
 
     #[test]
