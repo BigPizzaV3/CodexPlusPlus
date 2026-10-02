@@ -1520,6 +1520,106 @@ fn responses_request_to_chat_inlines_ref_siblings_in_tool_defs() {
 }
 
 #[test]
+fn responses_request_flattens_top_level_one_of_in_tool_parameters() {
+    // issue #2367：zod-to-json-schema 会生成顶层 oneOf 的 schema，
+    // Anthropic（Claude）上游直接拒绝、整轮 400、模型完全不可用。
+    // 转换后顶层不得再有组合器，且各分支贡献的字段要出现在 properties 里。
+    let converted = responses_to_chat_completions(json!({
+        "model": "claude-sonnet",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "automation_update",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "oneOf": [
+                    { "$ref": "#/$defs/__schema0" },
+                    { "$ref": "#/$defs/__schema1" }
+                ],
+                "$defs": {
+                    "__schema0": {
+                        "type": "object",
+                        "properties": {
+                            "mode": { "type": "string" },
+                            "targetThreadId": { "type": "string" }
+                        },
+                        "required": ["mode", "targetThreadId"]
+                    },
+                    "__schema1": {
+                        "type": "object",
+                        "properties": {
+                            "mode": { "type": "string" },
+                            "note": { "type": "string" }
+                        },
+                        "required": ["mode"]
+                    }
+                }
+            }
+        }]
+    }))
+    .unwrap();
+
+    let parameters = &converted["tools"][0]["function"]["parameters"];
+    assert!(
+        parameters.get("oneOf").is_none(),
+        "顶层 oneOf 必须被摊平：{parameters}"
+    );
+    assert!(parameters.get("anyOf").is_none());
+    assert!(parameters.get("allOf").is_none());
+    assert_eq!(parameters["type"], "object");
+
+    let properties = parameters["properties"].as_object().unwrap();
+    assert!(properties.contains_key("mode"), "分支共有的字段应并入");
+    assert!(properties.contains_key("targetThreadId"), "分支独有字段应并入");
+    assert!(properties.contains_key("note"), "第二个分支的独有字段应并入");
+
+    // required 取交集：只有 mode 是所有分支都要求的。
+    let required: Vec<&str> = parameters["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert_eq!(required, vec!["mode"]);
+}
+
+#[test]
+fn responses_request_degrades_unmergeable_top_level_combinator_without_losing_tool() {
+    // 分支不是对象（此处是字符串）时无法摊平，但**不能丢掉工具**——
+    // 降级成带说明的私有字段，schema 仍合法。
+    let converted = responses_to_chat_completions(json!({
+        "model": "claude-sonnet",
+        "input": "hi",
+        "tools": [{
+            "type": "function",
+            "name": "transfer_voice_call",
+            "parameters": {
+                "type": "object",
+                "anyOf": [
+                    { "type": "string", "description": "转人工" },
+                    { "type": "string", "description": "转语音信箱" }
+                ]
+            }
+        }]
+    }))
+    .unwrap();
+
+    let tools = converted["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1, "工具不得因无法摊平而消失");
+    let parameters = &tools[0]["function"]["parameters"];
+    assert!(parameters.get("anyOf").is_none(), "顶层组合器仍须剥掉");
+    assert_eq!(parameters["type"], "object");
+    let fallback = &parameters["x-merged-combinator"];
+    assert_eq!(fallback["kind"], "anyOf");
+    assert_eq!(fallback["branches"].as_array().unwrap().len(), 2);
+    assert!(
+        fallback["description"].as_str().unwrap().contains("转人工"),
+        "分支说明应被保留"
+    );
+}
+
+#[test]
 fn invalid_defs_container_does_not_panic() {
     let converted = responses_to_chat_completions(json!({
         "model": "k3",
