@@ -106,6 +106,33 @@ fn installer_exports_expected_two_entrypoint_names() {
 }
 
 #[test]
+fn windows_installer_writes_the_same_uninstall_key_as_the_runtime() {
+    // issue #2339：NSIS 曾写/删 Uninstall\Codex++，而运行时 install::windows
+    // 把 Uninstall\CodexPlusPlus 当正式键、Uninstall\Codex++ 当 legacy。
+    // 两侧不一致会让卸载项残留（两种安装顺序各留一条、且都删不干净）。
+    let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi")
+        .expect("read Windows NSIS installer script");
+
+    assert!(
+        nsi.contains(r"Uninstall\CodexPlusPlus"),
+        "安装器必须写正式卸载键 CodexPlusPlus，否则与运行时不一致"
+    );
+    assert!(
+        nsi.contains(r#"DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus""#),
+        "卸载段必须删除正式键"
+    );
+    assert!(
+        nsi.contains(r#"DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++""#),
+        "卸载段必须保留 legacy 键清理：存量用户靠它收尸"
+    );
+    // 不得再往 legacy 键写卸载项，否则两条并存的问题会复发。
+    assert!(
+        !nsi.contains(r#"WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++""#),
+        "不得再向 legacy 卸载键写入"
+    );
+}
+
+#[test]
 fn macos_dmg_includes_applications_shortcut_for_drag_install() {
     let script = std::fs::read_to_string("../../scripts/installer/macos/package-dmg.sh")
         .expect("read macOS DMG packaging script");

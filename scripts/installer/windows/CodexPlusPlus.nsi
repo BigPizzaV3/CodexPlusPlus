@@ -88,12 +88,18 @@ Section "Install"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "Software\Codex++" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "DisplayName" "Codex++"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "Publisher" "BigPizzaV3"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "DisplayIcon" "$INSTDIR\codex-plus-plus-manager.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "UninstallString" "$INSTDIR\uninstall.exe"
+  ; 卸载项键名统一到运行时的正式键 CodexPlusPlus（issue #2339）。
+  ; 运行时 install/windows.rs 把 Uninstall\CodexPlusPlus 当正式键、Uninstall\Codex++
+  ; 当 legacy；这里若继续写 Codex++，经安装器装过又被管理工具碰过的机器会留下两条
+  ; 卸载项，而运行时装过、之后走 NSIS 卸载的机器永远删不掉 CodexPlusPlus 那条。
+  ; 写之前先清掉 legacy 键：存量用户靠这一步收尸，别删。
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus" "DisplayName" "Codex++"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus" "Publisher" "BigPizzaV3"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus" "DisplayIcon" "$INSTDIR\codex-plus-plus-manager.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus" "UninstallString" "$INSTDIR\uninstall.exe"
 
   ; 注册 codexplusplus:// 与 dreamskin:// URL 协议（issue #2354）。
   ; 键名与值同 codex-plus-core 的 install::windows::register_url_protocol 保持一致，
@@ -136,6 +142,9 @@ Section "Uninstall"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
+  ; 正式键 + legacy 键都删（issue #2339）：正式键是运行时写入的 CodexPlusPlus，
+  ; legacy 是历史安装器和旧版运行时的 Codex++，存量机器上可能两条并存。
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++"
   DeleteRegKey HKCU "Software\Codex++"
 
