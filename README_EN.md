@@ -37,10 +37,6 @@ For first-time setup, open the manager, verify the detected app path, configure 
 
 Join <a href="https://qm.qq.com/q/5h3pxpxg7S">Codex++ community group 4 (QQ group: 1127858981)</a> to report issues, share feedback, or suggest features.
 
-WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">get the latest group QR code</a>.
-
-<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="260">
-
 Telegram: <https://t.me/CodexPlusPlus>
 
 Friendly link: <a href="https://linux.do">LINUX DO</a>
