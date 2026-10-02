@@ -170,8 +170,8 @@
       }
       .${sessionShareButtonClass}:hover,
       .${sessionShareButtonClass}:focus-visible {
-        background: var(--token-list-hover-background, rgba(70,70,70,.96));
-        color: var(--token-text-default, #fff);
+        background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover));
+        color: var(--color-token-text-primary, var(--codex-plus-text));
         outline: none;
       }
       .${sessionShareButtonClass}[aria-busy="true"] {
@@ -229,7 +229,7 @@
         max-width: min(220px, calc(100vw - 32px));
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
-        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
         font: inherit;
         font-size: 13px;
@@ -1194,7 +1194,7 @@
       .${actionTooltipClass} {
         border-color: var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
-        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
         font-family: inherit;
         font-size: 13px;

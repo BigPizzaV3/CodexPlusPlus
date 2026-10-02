@@ -412,7 +412,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "24";
+  const codexDeleteStyleVersion = "25";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -957,8 +957,8 @@
       }
       .${sessionShareButtonClass}:hover,
       .${sessionShareButtonClass}:focus-visible {
-        background: var(--token-list-hover-background, rgba(70,70,70,.96));
-        color: var(--token-text-default, #fff);
+        background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover));
+        color: var(--color-token-text-primary, var(--codex-plus-text));
         outline: none;
       }
       .${sessionShareButtonClass}[aria-busy="true"] {
@@ -1016,7 +1016,7 @@
         max-width: min(220px, calc(100vw - 32px));
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
-        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
         font: inherit;
         font-size: 13px;
@@ -1981,7 +1981,7 @@
       .${actionTooltipClass} {
         border-color: var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
-        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
         font-family: inherit;
         font-size: 13px;
