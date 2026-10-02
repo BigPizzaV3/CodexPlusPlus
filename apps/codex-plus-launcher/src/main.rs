@@ -104,7 +104,12 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
         let _ = notify_manager_when_update_available().await;
     });
     let hooks = LauncherHooks::default();
+    let started = std::time::Instant::now();
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.startup_phase",
+        json!({"phase": "launch_and_inject", "elapsed_ms": started.elapsed().as_millis()}),
+    );
     run_periodic_until_exit(
         handle.wait_for_codex_exit(),
         std::time::Duration::from_secs(30 * 60),
@@ -122,11 +127,17 @@ where
     W: std::future::Future<Output = ()>,
 {
     tokio::pin!(exit);
+    // The initial index check runs only after App launch/injection. Keep all started
+    // transactions inside this lifetime and do not start one after App exit.
+    let mut delay = std::time::Duration::ZERO;
     loop {
         tokio::select! {
             biased;
             result = &mut exit => return result,
-            _ = tokio::time::sleep(interval) => check().await,
+            _ = tokio::time::sleep(delay) => {
+                check().await;
+                delay = interval;
+            },
         }
     }
 }
@@ -136,7 +147,16 @@ async fn repair_session_index_automatically(check_setting: bool) {
         if check_setting && !codex_plus_core::settings::SettingsStore::default().load()?.provider_sync_enabled {
             return Ok(());
         }
-        codex_plus_data::repair_session_index(None)?;
+        let report = codex_plus_data::repair_session_index(None)?;
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.session_index_repair.completed",
+            json!({
+                "elapsed_ms": report.elapsed_ms,
+                "scanned_files": report.scanned_files,
+                "cached_files": report.cached_files,
+                "repaired_items": report.repaired_items,
+            }),
+        );
         Ok(())
     })
     .await
@@ -433,10 +453,15 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn start_native_browser_compatibility(&self, settings: &codex_plus_core::settings::BackendSettings) {
+        let started = std::time::Instant::now();
         let monitor = codex_plus_core::native_browser::start_monitor(
             settings.enhancements_enabled && settings.codex_app_native_browser_require_identification,
         ).await;
         *self.browser_monitor.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = monitor;
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.startup_phase",
+            json!({"phase": "native_browser", "elapsed_ms": started.elapsed().as_millis()}),
+        );
     }
 
     async fn stop_native_browser_compatibility(&self) {
@@ -451,11 +476,19 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
+        let started = std::time::Instant::now();
         let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
             .await
             .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.startup_phase",
+            json!({
+                "phase": "provider_sync",
+                "elapsed_ms": started.elapsed().as_millis(),
+                "status": result.status,
+            }),
+        );
         require_completed_provider_sync(&result.status, &result.message)?;
-        repair_session_index_automatically(false).await;
         Ok(())
     }
 
@@ -1241,6 +1274,36 @@ fn default_user_scripts_config_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn session_index_monitor_runs_initial_check_without_waiting_for_interval() {
+        let (done, exit) = tokio::sync::oneshot::channel::<()>();
+        let mut done = Some(done);
+        let checks = std::cell::Cell::new(0);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_periodic_until_exit(exit, std::time::Duration::from_secs(30 * 60), || {
+                checks.set(checks.get() + 1);
+                done.take().expect("only one check").send(()).unwrap();
+                std::future::ready(())
+            }),
+        ).await.unwrap().unwrap();
+        assert_eq!(checks.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_index_monitor_waits_between_checks() {
+        let checks = std::cell::Cell::new(0);
+        run_periodic_until_exit(
+            tokio::time::sleep(std::time::Duration::from_millis(30)),
+            std::time::Duration::from_secs(30 * 60),
+            || {
+                checks.set(checks.get() + 1);
+                std::future::ready(())
+            },
+        ).await;
+        assert_eq!(checks.get(), 1);
+    }
 
     #[tokio::test]
     async fn session_index_monitor_does_not_start_after_exit() {
