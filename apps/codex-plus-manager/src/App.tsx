@@ -3663,6 +3663,7 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
+              launchPending={launchPending}
               pluginMarketplaceProgress={pluginMarketplaceProgress}
               ads={ads}
               activeTool={activeTool}
@@ -3742,6 +3743,7 @@ export function App() {
           {route === "dreamSkin" ? (
             <DreamSkinScreen
               form={settingsForm}
+              launchPending={launchPending}
               library={dreamSkinLibrary}
               market={dreamSkinMarket}
               community={dreamSkinCommunity}
@@ -3764,6 +3766,7 @@ export function App() {
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
+              launchPending={launchPending}
               watcher={watcher}
               settings={settings}
               launchForm={launchForm}
@@ -4489,6 +4492,7 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
 
 function OverviewScreen({
   overview,
+  launchPending,
   pluginMarketplaceProgress,
   ads,
   activeTool,
@@ -4496,6 +4500,7 @@ function OverviewScreen({
   actions,
 }: {
   overview: OverviewResult | null;
+  launchPending: boolean;
   pluginMarketplaceProgress: TaskProgress;
   ads: AdsResult | null;
   activeTool: ToolId;
@@ -5075,6 +5080,7 @@ function EnhanceScreen({
 
 function DreamSkinScreen({
   form,
+  launchPending,
   library,
   market,
   community,
@@ -5089,6 +5095,7 @@ function DreamSkinScreen({
   actions,
 }: {
   form: BackendSettings;
+  launchPending: boolean;
   library: DreamSkinThemeLibrary | null;
   market: DreamSkinMarketResult | null;
   community: DreamSkinCommunityResult | null;
@@ -6716,6 +6723,7 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
 
 function MaintenanceScreen({
   overview,
+  launchPending,
   watcher,
   settings,
   launchForm,
@@ -6725,6 +6733,7 @@ function MaintenanceScreen({
   actions,
 }: {
   overview: OverviewResult | null;
+  launchPending: boolean;
   watcher: WatcherResult | null;
   settings: SettingsResult | null;
   launchForm: { appPath: string; debugPort: string; helperPort: string };
