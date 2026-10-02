@@ -1595,6 +1595,18 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 
             if probe_native_compaction {
                 let success = (200..300).contains(&status_code);
+                let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
+                if !success {
+                    // 探测不重试摘要，但同通道的后续请求仍须遵守错误冷却。
+                    // 在读取响应体/释放 permit 前记录，避免排队请求抢先通过。
+                    crate::channel_protection::mark_failure(
+                        &channel_key,
+                        &relay,
+                        status_code,
+                        retry_after,
+                    )
+                    .await;
+                }
                 let probed = match upstream.bytes().await {
                     Ok(body) => body.to_vec(),
                     Err(error) => {
