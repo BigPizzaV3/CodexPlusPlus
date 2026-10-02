@@ -1842,6 +1842,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     let mut cooldown_retries = 0_usize;
     'request: loop {
         for (attempt, relay) in relays.iter().cloned().enumerate() {
+            let has_more_candidates = attempt + 1 < relay_count;
             validate_upstream(&relay)?;
             let channel_key = crate::channel_protection::key_for_relay(&relay);
             let mut channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
@@ -1865,11 +1866,14 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     Ok(parts) => parts,
                     Err(error) => {
                         drop(channel_permit);
+                        if has_more_candidates && error.is::<NativeCompactionUnsupported>() {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                            continue;
+                        }
                         return native_compaction_unsupported_result(error);
                     }
                 };
             let is_compaction_request = compaction || probe_native_compaction;
-            let has_more_candidates = attempt + 1 < relay_count;
             let header_timeout = response_header_timeout(is_stream);
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.upstream_request",
@@ -2083,7 +2087,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 .await;
                 let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
                     Ok(parts) => parts,
-                    Err(error) => return native_compaction_unsupported_result(error),
+                    Err(error) => {
+                        if has_more_candidates && error.is::<NativeCompactionUnsupported>() {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                            continue;
+                        }
+                        return native_compaction_unsupported_result(error);
+                    }
                 };
                 endpoint = fallback_endpoint;
                 upstream_body = fallback_body;
