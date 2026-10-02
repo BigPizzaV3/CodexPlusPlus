@@ -1154,12 +1154,18 @@ fn response_body_is_stream(content_type: &str, body: &[u8]) -> bool {
 
 fn output_compaction_count(output: Option<&Value>) -> Option<usize> {
     let items = output?.as_array()?;
-    Some(
-        items
-            .iter()
-            .filter(|item| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE))
-            .count(),
-    )
+    let compactions = items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE));
+    if compactions.clone().any(|item| {
+        !item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .is_some_and(|content| !content.is_empty())
+    }) {
+        return Some(0);
+    }
+    Some(compactions.count())
 }
 
 fn json_compaction_count(value: &Value) -> Option<usize> {
@@ -1936,7 +1942,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 
             if probe_native_compaction {
                 let success = (200..300).contains(&status_code);
-                let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
+                let retry_after =
+                    crate::channel_protection::retry_after_duration(upstream.headers());
                 if !success {
                     // 探测不重试摘要，但同通道的后续请求仍须遵守错误冷却。
                     // 在读取响应体/释放 permit 前记录，避免排队请求抢先通过。
@@ -2176,9 +2183,16 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         continue 'request;
                     }
                 }
+                // 请求了 SSE 的兼容上游也可能返回 JSON 摘要；让调用方选择 JSON 包装器。
+                let json_compaction = is_compaction_request
+                    && content_type
+                        .split(';')
+                        .next()
+                        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"));
                 return Ok(UpstreamProxyResponse {
                     status_code,
-                    is_stream: is_stream || content_type.contains("text/event-stream"),
+                    is_stream: (is_stream && !json_compaction)
+                        || content_type.contains("text/event-stream"),
                     content_type,
                     wire_api,
                     compaction: is_compaction_request,
