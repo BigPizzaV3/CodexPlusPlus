@@ -905,3 +905,40 @@ send-as-is ——用户表现为「保存后图片处理全部变回原样发送
 与 `conversationViewApplyNativeWidth`（同文件）——**不在** `10-style.js`。
 `10-style.js` 里只有 `normalizeConversationViewWidth` 与 `conversationViewWidth()`，
 它们是「设置为上限」的输入方，不是缺陷方。
+
+### A.8 #2116 的修复方案是错的，已否决（附权威证据）
+
+正文 §4.29 判定「app-server 只接受 `readOnly` / `workspaceWrite` / `dangerFullAccess`，
+需把内部 kebab-case 档位转成 camelCase」。**该结论错误，不应实施。**
+
+证据来自 app-server 自身生成的协议 schema（本机 ChatGPT.app 内置
+`codex-cli 0.159.2`，`codex app-server generate-json-schema --out <dir> --experimental`）：
+
+```
+v2/ThreadStartParams.json → properties.sandbox → $ref SandboxMode
+
+definitions.SandboxMode = {
+  "enum": ["read-only", "workspace-write", "danger-full-access"],
+  "type": "string"
+}
+```
+
+即 **wire 格式就是 kebab-case**，正是 `connect/app_server.rs:359` 现在发的值。
+旁证三条：
+- `readOnly` / `workspaceWrite` / `dangerFullAccess` 三种 camelCase 形态在本仓
+  （排除 node_modules）零命中，唯一命中是 React 的 JSX `readOnly` 属性，与 sandbox 无关；
+- 报告让参照的 `ad76ae51`（"fix: normalize Windows sandbox before launch"）**无关**——
+  它改的是 `windows.sandbox = "elevated"/"unelevated"` 的 Windows 提权模式，
+  与大小写转换毫无关系，属引用错误；
+- `docs/` 下没有任何 app-server 协议材料支撑 camelCase 说法。
+
+**#2116 的真实处置**：用户报障版本是 1.2.56，而整条微信链路已在
+`789369e3`（2026-09-22，"fix(weixin): Windows 微信连接改用桌面版维护的标准 CLI，
+零配置跑通全链路"，issue #2028/#1879）重写，该提交已进 v1.4.0 / v1.5.0 且是 main 祖先。
+处置改为：**不做代码改动**，回帖请用户升级到 v1.5.0 复测；
+若仍复现，需索取 app-server stderr 尾部（`collect_stderr_tail` 会把它附进错误信息）
+再定位——那是握手/协议层问题，不是 sandbox 取值问题。
+
+> 方法论教训：本轮多处结论依赖「读源码推断 wire 格式」。凡涉及与外部进程的协议契约，
+> 应优先用对方自带的 schema 生成能力取一手证据（本例一行命令即可证伪），
+> 而不是从调用方代码反推。
