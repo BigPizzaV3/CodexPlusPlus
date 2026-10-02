@@ -941,15 +941,24 @@ fn compaction_input_rejected(status_code: u16, body: &[u8]) -> bool {
     if status_code != 400 && status_code != 422 {
         return false;
     }
-    let text = String::from_utf8_lossy(body).to_ascii_lowercase();
-    if text.contains(COMPACTION_TRIGGER_TYPE) {
-        return true;
+    // 只读取错误本身，避免回显请求中的 trigger 让无关参数错误触发降级。
+    let text = match serde_json::from_slice::<Value>(body) {
+        Ok(json) => {
+            let error = json.get("error").unwrap_or(&json);
+            [
+                error.as_str(),
+                error.get("message").and_then(Value::as_str),
+                error.get("code").and_then(Value::as_str),
+                error.get("param").and_then(Value::as_str),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ")
+        }
+        Err(_) => String::from_utf8_lossy(body).into_owned(),
     }
-    let mentions_item = text.contains("input")
-        || text.contains("item")
-        || text.contains("schema")
-        || text.contains("field")
-        || text.contains("parameter");
+    .to_ascii_lowercase();
     let unrecognized = text.contains("unknown")
         || text.contains("unrecognized")
         || text.contains("unsupported")
@@ -958,12 +967,7 @@ fn compaction_input_rejected(status_code: u16, body: &[u8]) -> bool {
         || text.contains("invalid type")
         || text.contains("invalid_type")
         || text.contains("additional propert");
-    if unrecognized && mentions_item {
-        return true;
-    }
-    text.contains("invalid")
-        && text.contains("type")
-        && (text.contains("item") || text.contains("input"))
+    text.contains(COMPACTION_TRIGGER_TYPE) && unrecognized
 }
 
 fn sse_block_type(block: &str) -> Option<String> {
