@@ -118,14 +118,52 @@ pub enum ImageHandling {
     Vlm,
 }
 
+/// 归一化 per-model map 的查表 key：剥掉 `[1M]` 窗口后缀，**保留原大小写**。
+///
+/// 后缀剥离复用 `model_suffix::parse_model_suffix`（与 catalog 生成同一套语义），
+/// 与前端 `model-windows.ts` 的 `modelMapKeyFromRowName` 逐字对齐：
+/// 只剥「合法窗口后缀」，`x[abc]`/`x[0]` 这类非法后缀整串保留。
+fn normalize_model_key(raw: &str) -> String {
+    crate::model_suffix::parse_model_suffix(raw).0
+}
+
+/// 在 per-model map 中逐级查表：原始名 → 规范 slug（剥后缀）→ 剥后缀 + 大小写不敏感。
+///
+/// 三级回退与前端 `model-windows.ts::lookupModelMapEntry` 同源（issue #2345）：
+/// - 直接命中：上游请求里的 model 字符串与 map key 逐字相同；
+/// - 规范 slug：请求带 `[1M]` 后缀而 key 不带（前端落盘的新数据）；
+/// - 归一化后大小写不敏感：**两侧都先剥后缀再比大小写**——只剥请求侧不够，
+///   历史数据的 key 是带后缀的行名原样（`deepseek-v4-pro[1M]`），请求侧不带后缀时
+///   会整个漏掉。同时覆盖供应商 slug 大小写不统一（`GLM-5.3` vs `glm-5.3`）。
+///
+/// 大小写不敏感一级按 BTreeMap 的字典序取第一个匹配，保证同一份配置的多次请求
+/// 解析结果稳定（不会因 HashMap 迭代序在两个同名不同 case 的 key 之间抖动）。
+fn lookup_model_map<'a, T>(
+    map: &'a std::collections::BTreeMap<String, T>,
+    model: &str,
+) -> Option<&'a T> {
+    if let Some(value) = map.get(model) {
+        return Some(value);
+    }
+    let slug = normalize_model_key(model);
+    if let Some(value) = map.get(&slug) {
+        return Some(value);
+    }
+    map.iter()
+        .find(|(key, _)| normalize_model_key(key).to_lowercase() == slug.to_lowercase())
+        .map(|(_, value)| value)
+}
+
 /// 解析 model_vlm JSON，返回该模型的图片处理模式。
+///
+/// 未命中任何一级回退时返回 `SendAsIs`（默认行为不变，per-profile 单值配置也
+/// 不进这张 map，不受影响）。
 pub fn image_handling_mode(model: &str, model_vlm_json: &str) -> ImageHandling {
     if let Ok(map) =
         serde_json::from_str::<std::collections::BTreeMap<String, ImageHandling>>(model_vlm_json)
+        && let Some(mode) = lookup_model_map(&map, model)
     {
-        if let Some(mode) = map.get(model) {
-            return *mode;
-        }
+        return *mode;
     }
     ImageHandling::SendAsIs
 }
@@ -297,6 +335,8 @@ fn strip_all_images(messages: &mut [Value]) {
 
 /// 从 relay 配置解析模型上下文窗口上限（token 数）。
 /// 三级 fallback：model_windows JSON → context_window 全局 → 272_000 硬兜底。
+/// map 查表走与 `image_handling_mode` 同一套 key 归一化（剥后缀 + 大小写回退），
+/// 否则按模型配好的窗口会被请求体里的 `[1M]` 后缀整条错过（issue #2345）。
 fn resolve_context_window(
     model_windows_json: &str,
     context_window_str: &str,
@@ -304,13 +344,11 @@ fn resolve_context_window(
 ) -> u64 {
     let model_name = request_model.rsplit('/').next().unwrap_or(request_model);
     if let Ok(map) =
-        serde_json::from_str::<std::collections::HashMap<String, String>>(model_windows_json)
+        serde_json::from_str::<std::collections::BTreeMap<String, String>>(model_windows_json)
+        && let Some(token) = lookup_model_map(&map, model_name)
+        && let Some(w) = crate::model_suffix::parse_window_token(&token)
     {
-        if let Some(token) = map.get(model_name) {
-            if let Some(w) = crate::model_suffix::parse_window_token(token) {
-                return w;
-            }
-        }
+        return w;
     }
     if let Ok(w) = context_window_str.parse::<u64>() {
         if w > 0 {
@@ -1259,6 +1297,123 @@ mod tests {
     #[test]
     fn handling_mode_defaults_to_send_as_is_for_empty_string() {
         assert_eq!(image_handling_mode("gpt-4", ""), ImageHandling::SendAsIs);
+    }
+
+    // ── image_handling_mode：key 归一化与三级回退（issue #2345）─────
+
+    #[test]
+    fn handling_mode_matches_suffixless_key_when_request_has_window_suffix() {
+        // 前端落盘的 key 是剥掉后缀的 slug，而上游请求体里的 model 可能带 `[1M]`。
+        assert_eq!(
+            image_handling_mode("deepseek-v4-pro[1M]", r#"{"deepseek-v4-pro":"vlm"}"#),
+            ImageHandling::Vlm
+        );
+        assert_eq!(
+            image_handling_mode("deepseek-v4-pro[256K]", r#"{"deepseek-v4-pro":"strip"}"#),
+            ImageHandling::Strip
+        );
+    }
+
+    #[test]
+    fn handling_mode_matches_request_without_suffix_against_legacy_suffixed_key() {
+        // 历史数据：旧版本把行名原样（带后缀）写成 map key，不能因为剥后缀就丢掉。
+        assert_eq!(
+            image_handling_mode("deepseek-v4-pro", r#"{"deepseek-v4-pro[1M]":"vlm"}"#),
+            ImageHandling::Vlm
+        );
+        // 两侧都带后缀时也应命中。
+        assert_eq!(
+            image_handling_mode("deepseek-v4-pro[1M]", r#"{"deepseek-v4-pro[1M]":"vlm"}"#),
+            ImageHandling::Vlm
+        );
+    }
+
+    #[test]
+    fn handling_mode_matches_ignoring_case() {
+        // 供应商 slug 大小写不统一（GLM-5.3 vs glm-5.3），上游对大小写宽容。
+        assert_eq!(
+            image_handling_mode("GLM-5.3", r#"{"glm-5.3":"vlm"}"#),
+            ImageHandling::Vlm
+        );
+        assert_eq!(
+            image_handling_mode("glm-5.3", r#"{"GLM-5.3":"vlm"}"#),
+            ImageHandling::Vlm
+        );
+        // 带后缀 + 大小写差异同时存在时，两级回退要串起来。
+        assert_eq!(
+            image_handling_mode("GLM-5.3[1M]", r#"{"glm-5.3":"vlm"}"#),
+            ImageHandling::Vlm
+        );
+    }
+
+    #[test]
+    fn handling_mode_keeps_exact_match_priority_over_case_insensitive() {
+        // 精确命中优先于大小写回退：两个 key 同时存在时不得被回退分支抢走。
+        let map = r#"{"GLM-5.3":"strip","glm-5.3":"vlm"}"#;
+        assert_eq!(image_handling_mode("GLM-5.3", map), ImageHandling::Strip);
+        assert_eq!(image_handling_mode("glm-5.3", map), ImageHandling::Vlm);
+    }
+
+    #[test]
+    fn handling_mode_does_not_strip_invalid_suffix() {
+        // 括号内不是合法窗口 token 时整串保留（与前端 MODEL_SUFFIX_PATTERN 同口径），
+        // 因此 `gpt-4[abc]` 不该命中 `gpt-4`。
+        assert_eq!(
+            image_handling_mode("gpt-4[abc]", r#"{"gpt-4":"vlm"}"#),
+            ImageHandling::SendAsIs
+        );
+        assert_eq!(
+            image_handling_mode("gpt-4[0]", r#"{"gpt-4":"vlm"}"#),
+            ImageHandling::SendAsIs
+        );
+        // 但这类字面量 key 本身仍可被逐字命中。
+        assert_eq!(
+            image_handling_mode("gpt-4[abc]", r#"{"gpt-4[abc]":"vlm"}"#),
+            ImageHandling::Vlm
+        );
+    }
+
+    #[test]
+    fn handling_mode_defaults_when_neither_slug_nor_case_matches() {
+        assert_eq!(
+            image_handling_mode("deepseek-v4-pro[1M]", r#"{"gpt-4":"vlm"}"#),
+            ImageHandling::SendAsIs
+        );
+    }
+
+    #[test]
+    fn resolve_context_window_matches_suffixed_request_model() {
+        // 与 image_handling_mode 同一套 key 归一化：带后缀的请求也要读到按模型配的窗口。
+        assert_eq!(
+            resolve_context_window(
+                r#"{"deepseek-v4-pro":"256000"}"#,
+                "200000",
+                "deepseek-v4-pro[1M]"
+            ),
+            256_000
+        );
+        // 大小写回退。
+        assert_eq!(
+            resolve_context_window(r#"{"glm-5.3":"128000"}"#, "200000", "GLM-5.3"),
+            128_000
+        );
+        // 历史带后缀 key。
+        assert_eq!(
+            resolve_context_window(
+                r#"{"deepseek-v4-pro[1M]":"256000"}"#,
+                "200000",
+                "deepseek-v4-pro"
+            ),
+            256_000
+        );
+    }
+
+    #[test]
+    fn resolve_context_window_still_falls_back_when_model_absent() {
+        assert_eq!(
+            resolve_context_window(r#"{"gpt-4":"100000"}"#, "200000", "other[1M]"),
+            200_000
+        );
     }
 
     // ── build_vlm_request_body（测试 VLM 同源契约）─────────────────
