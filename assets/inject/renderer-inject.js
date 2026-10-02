@@ -412,7 +412,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "23";
+  const codexDeleteStyleVersion = "24";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -815,7 +815,7 @@
         border: 0;
         border-radius: 6px;
         background: transparent;
-        color: var(--codex-session-action-color, var(--token-text-tertiary, rgba(255,255,255,.5)));
+        color: var(--codex-session-action-color, var(--color-token-text-tertiary, var(--codex-plus-text-tertiary, rgba(255,255,255,.5))));
         font: 14px/1 system-ui, sans-serif;
         padding: 0;
         cursor: default;
@@ -829,7 +829,7 @@
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
         background: var(--codex-session-action-hover-background, transparent);
-        color: var(--codex-session-action-hover-color, var(--codex-session-action-color, var(--token-text-default, #f4f4f5)));
+        color: var(--codex-session-action-hover-color, var(--codex-session-action-color, var(--color-token-text-primary, #f4f4f5)));
         outline: none;
       }
       .${moreMenuClass} {
@@ -878,7 +878,7 @@
         align-items: center;
         max-width: 152px;
         margin-right: 8px;
-        color: var(--text-secondary, var(--token-text-secondary, rgba(142,142,160,.95)));
+        color: var(--text-secondary, var(--color-token-text-secondary, var(--codex-plus-text-secondary, rgba(142,142,160,.95))));
         font: 11px/1.1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
         letter-spacing: .01em;
         opacity: .9;
@@ -897,10 +897,10 @@
         min-width: 0;
       }
       .codex-archive-row-button {
-        border: 1px solid var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
+        border: 1px solid var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
         border-radius: var(--border-radius-sm, 6px);
-        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
-        color: var(--color-token-text-secondary, var(--token-text-secondary, inherit));
+        background: var(--color-token-bg-secondary, transparent);
+        color: var(--color-token-text-secondary, inherit);
         font: inherit;
         font-size: 13px;
         line-height: 16px;
@@ -913,15 +913,15 @@
         color: var(--color-text-danger, #dc2626);
       }
       .codex-archive-row-button.${exportButtonClass} {
-        border-color: var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
-        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
-        color: var(--color-token-text-primary, var(--token-text-primary, inherit));
+        border-color: var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
+        background: var(--color-token-bg-secondary, transparent);
+        color: var(--color-token-text-primary, inherit);
       }
       .${zedRemoteButtonClass} {
-        border: 1px solid var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
+        border: 1px solid var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
         border-radius: var(--border-radius-sm, 6px);
-        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
-        color: var(--color-token-text-primary, var(--token-text-primary, inherit));
+        background: var(--color-token-bg-secondary, transparent);
+        color: var(--color-token-text-primary, inherit);
         font: inherit;
         font-size: 13px;
         line-height: 16px;
@@ -931,7 +931,7 @@
       }
       .${zedRemoteButtonClass}:hover,
       .${zedRemoteButtonClass}:focus-visible {
-        background: var(--color-token-interactive-bg-secondary-hover, var(--token-list-hover-background, rgba(0,0,0,.06)));
+        background: var(--color-token-interactive-bg-secondary-hover, rgba(0,0,0,.06));
         outline: none;
       }
       .${zedRemoteOpenInMenuItemClass} {
@@ -1199,8 +1199,8 @@
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="failed"] { background: #ef4444; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="checking"] { background: #fbbf24; }
       #${codexPlusSidebarNavId} button[data-active="true"] {
-        background: var(--token-list-hover-background, rgba(255,255,255,.08));
-        color: var(--token-text-primary, inherit);
+        background: var(--codex-plus-bg-selected);
+        color: var(--codex-plus-text);
       }
       /*
        * 新版导航图标栏里的 Codex++ / 拓展 / 推荐内容入口：原生按钮只放图标，
@@ -1251,13 +1251,13 @@
        * 主题切换时下次同步会重算。
        */
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] {
-        color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
+        color: var(--codex-plus-rail-dim, var(--codex-plus-text-tertiary, currentColor)) !important;
       }
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"]::before {
         opacity: 0 !important;
       }
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] * {
-        color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
+        color: var(--codex-plus-rail-dim, var(--codex-plus-text-tertiary, currentColor)) !important;
       }
       /*
        * 页面 overlay 的 left 由 positionCodexPlusPage 按图标栏右边界算好写进来。
@@ -1277,7 +1277,7 @@
         height: calc(100vh / var(--codex-plus-zoom, 1));
         z-index: 2147483644;
         display: block;
-        background: var(--token-bg-primary, #212121);
+        background: var(--codex-plus-bg-primary, #fff);
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
@@ -1287,7 +1287,7 @@
         max-height: none;
         border: 0;
         border-radius: 0;
-        background: var(--token-bg-primary, #212121);
+        background: var(--codex-plus-bg-primary, #fff);
         box-shadow: none;
       }
       .${codexPlusPageClass} .codex-plus-modal-header {
@@ -1566,7 +1566,8 @@
         font-size: 13px;
       }
       .codex-plus-extensions-detail-sep { margin: 0 6px; color: var(--codex-plus-text-tertiary); }
-      .codex-plus-extensions-detail-update { margin-top: 5px; color: #fbbf24; font-size: 13px; }
+      /* issue #2359：原 #fbbf24 在浅色主题下对比度仅 1.56:1，改为随主题走的警告色。 */
+      .codex-plus-extensions-detail-update { margin-top: 5px; color: var(--codex-plus-warning); font-size: 13px; }
       .codex-plus-extensions-detail-actions {
         flex: 0 0 auto;
         display: inline-flex;
@@ -1624,13 +1625,13 @@
         line-height: 1.7;
       }
       .codex-plus-extensions-detail-link { margin-top: 16px; font-size: 13px; }
-      .codex-plus-extensions-detail-link a { color: #10a37f; word-break: break-all; }
+      .codex-plus-extensions-detail-link a { color: var(--codex-plus-success); word-break: break-all; }
       .codex-plus-extensions-detail-error {
         margin-top: 14px;
         padding: 8px 10px;
         border-radius: 8px;
-        background: rgba(239,68,68,.12);
-        color: #ef4444;
+        background: var(--codex-plus-danger-bg);
+        color: var(--codex-plus-danger);
         font-size: 13px;
       }
       .codex-plus-page-nav-group { margin-bottom: 10px; }
@@ -1813,7 +1814,9 @@
         display: grid;
         gap: 4px;
         margin-top: 10px;
-        color: #d4d4d8;
+        /* issue #2359：原来是写死的 #d4d4d8，浅色主题下对比度只有 1.38:1（≈看不见）。
+           标签文字改跟主题走。 */
+        color: var(--codex-plus-text-secondary);
         font-size: 13px;
         font-family: inherit;
         text-align: left;
@@ -1914,20 +1917,32 @@
         white-space: nowrap;
       }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
-      /* Keep injected surfaces on Codex's own semantic palette in both themes. */
+      /*
+       * 注入面板的语义色板：前景/背景必须取自同一套 token，且都要能被主题切换带走。
+       *
+       * issue #2359（Windows 浅色主题下黑底黑字）：旧写法在中间塞了一整层
+       * --token-* 回退名（--token-bg-primary / --token-text-primary /
+       * --token-border / --token-list-hover-background / --token-text-default /
+       * --token-bg-fog / --token-text-tertiary …）。实测 Codex 客户端（26.9xx）
+       * 的产物里这些名字**一个都不存在**——真正在用的一套是 --color-token-*。
+       * 于是三级回退链的中间那级永远落空，浅色主题下只靠最后一级写死的深色值
+       * 兜底，前景与背景各自独立兜底时明度撞在一起，就成了黑底黑字。
+       * 这里把死名删掉，直接接到确实存在、且**由 Codex 自己按主题重算**的
+       * --color-token-* 上；末级兜底仅作最后保险，不再承担主题判断。
+       */
       :root {
-        --codex-plus-bg-primary: var(--color-token-bg-primary, var(--token-bg-primary, #fff));
-        --codex-plus-bg-secondary: var(--color-token-bg-secondary, var(--token-bg-secondary, #f7f7f7));
-        --codex-plus-bg-elevated: var(--color-token-dropdown-background, var(--color-token-bg-elevated-secondary, var(--codex-plus-bg-primary)));
-        --codex-plus-bg-hover: var(--color-token-interactive-bg-secondary-hover, var(--token-list-hover-background, rgba(0,0,0,.06)));
+        --codex-plus-bg-primary: var(--color-token-bg-primary, var(--color-token-main-surface-primary, #fff));
+        --codex-plus-bg-secondary: var(--color-token-bg-secondary, var(--codex-plus-bg-primary));
+        --codex-plus-bg-elevated: var(--color-token-dropdown-background, var(--color-token-bg-secondary, var(--codex-plus-bg-primary)));
+        --codex-plus-bg-hover: var(--color-token-interactive-bg-secondary-hover, var(--color-token-list-hover-background, rgba(0,0,0,.06)));
         --codex-plus-bg-selected: var(--color-token-interactive-bg-secondary-selected, var(--codex-plus-bg-hover));
-        --codex-plus-text: var(--color-token-text-primary, var(--token-text-primary, #171717));
-        --codex-plus-text-secondary: var(--color-token-text-secondary, var(--token-text-secondary, #5d5d5d));
-        --codex-plus-text-tertiary: var(--color-token-text-tertiary, var(--token-text-tertiary, #8a8a8a));
-        --codex-plus-border: var(--color-token-border-light, var(--color-token-border, var(--token-border, rgba(0,0,0,.12))));
-        --codex-plus-border-subtle: var(--color-token-border-subtle, var(--codex-plus-border));
+        --codex-plus-text: var(--color-token-text-primary, var(--color-token-foreground, #171717));
+        --codex-plus-text-secondary: var(--color-token-text-secondary, var(--codex-plus-text));
+        --codex-plus-text-tertiary: var(--color-token-text-tertiary, var(--codex-plus-text-secondary));
+        --codex-plus-border: var(--color-token-border-light, var(--color-token-border, var(--color-token-border-default, rgba(0,0,0,.12))));
+        --codex-plus-border-subtle: var(--codex-plus-border);
         --codex-plus-focus: var(--color-token-focus-border, var(--color-border-focus, currentColor));
-        --codex-plus-danger: var(--color-text-danger, var(--color-token-text-error, #dc2626));
+        --codex-plus-danger: var(--color-text-danger, #dc2626);
         --codex-plus-danger-bg: var(--color-background-danger-soft, rgba(220,38,38,.1));
         --codex-plus-success: var(--color-text-success, #15803d);
         --codex-plus-warning: var(--color-text-warning, #a16207);
