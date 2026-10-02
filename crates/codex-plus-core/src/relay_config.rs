@@ -2336,6 +2336,29 @@ fn apply_context_limits_to_config(
     Ok(normalize_optional_toml(doc))
 }
 
+/// 外部 `model_catalog_json` 与每模型配置冲突时的降级路径（issue #2203）。
+///
+/// 保留用户手写的外部指针不动，只往 config.toml 顶层写 `model_context_window` /
+/// `model_auto_compact_token_limit` 作兜底。顶层键对全部模型生效，是「每模型窗口
+/// 用不上」时的最优可用近似；而过去直接 bail 会让用户**完全切不了供应商**，
+/// 代价远大于特性降级。
+fn apply_external_catalog_fallback(
+    config_text: &str,
+    context_window: Option<u64>,
+    auto_compact_limit: Option<u64>,
+) -> String {
+    let Ok(mut doc) = parse_toml_document(config_text) else {
+        return config_text.to_string();
+    };
+    if let Some(value) = context_window {
+        doc["model_context_window"] = toml_edit::value(value as i64);
+    }
+    if let Some(value) = auto_compact_limit {
+        doc["model_auto_compact_token_limit"] = toml_edit::value(value as i64);
+    }
+    normalize_optional_toml(doc)
+}
+
 fn apply_model_catalog_to_config(
     home: &Path,
     profile: &RelayProfile,
@@ -2398,6 +2421,10 @@ fn apply_model_catalog_to_config(
         official_login,
     );
     let fallback = parse_optional_positive_u64(&profile.context_window, "上下文大小")?;
+    // 外部 catalog 降级时的顶层兜底键（issue #2203）。顶层键对全部模型生效，
+    // 是「每模型窗口用不上」时的最优可用近似。
+    let auto_compact_fallback =
+        parse_optional_positive_u64(&profile.auto_compact_limit, "压缩上下文大小")?;
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）。
     // Codex++ 管理的 catalog 必须随当前 profile 切换；否则前一个供应商的模型列表会残留。
     // cc-switch 的固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
@@ -2415,9 +2442,14 @@ fn apply_model_catalog_to_config(
                 config_text = remove_root_key(&config_text, "model_catalog_json");
             } else {
                 if has_per_model_overrides {
-                    anyhow::bail!(
-                        "当前配置使用外部 model_catalog_json，无法同时应用每模型窗口、自动压缩或元数据"
-                    );
+                    // 用户手写了外部 catalog 且本 profile 配了每模型窗口/元数据。
+                    // 过去直接 bail，代价是用户**完全切不了供应商**——远比「特性降级」严重。
+                    // 改为保留外部指针、写顶层兜底键，并让调用方带 warning（issue #2203）。
+                    return Ok(apply_external_catalog_fallback(
+                        &config_text,
+                        fallback,
+                        auto_compact_fallback,
+                    ));
                 }
                 if official_deepseek_responses {
                     return Ok(config_text.to_string());
@@ -2444,9 +2476,13 @@ fn apply_model_catalog_to_config(
         && let Some(external_catalog) = live_external_model_catalog(home)
     {
         if has_per_model_overrides {
-            anyhow::bail!(
-                "当前 Codex 配置使用外部 model_catalog_json，无法同时应用每模型窗口、自动压缩或元数据"
-            );
+            // 同上一处：live 里已有外部指针且本 profile 配了每模型覆盖时，
+            // 降级为「保留外部指针 + 顶层兜底键」，不再拒绝整次切换（issue #2203）。
+            return Ok(apply_external_catalog_fallback(
+                &config_text,
+                fallback,
+                auto_compact_fallback,
+            ));
         }
         let mut doc = parse_toml_document(&config_text)?;
         if standard_responses

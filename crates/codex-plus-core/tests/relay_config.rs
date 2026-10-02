@@ -5537,7 +5537,10 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
-fn apply_relay_profile_rejects_external_catalog_with_model_override_without_partial_update() {
+fn apply_relay_profile_degrades_external_catalog_with_model_override() {
+    // issue #2203：外部 model_catalog_json 与每模型覆盖冲突时，过去直接 bail
+    // ——代价是用户**完全切不了供应商**，远比「特性降级」严重。
+    // 现改为：保留外部指针 + 写顶层兜底键 + 正常完成切换。
     let temp = tempfile::tempdir().unwrap();
     let previous_config = "model = \"previous\"\n";
     let previous_auth = r#"{"OPENAI_API_KEY":"old"}"#;
@@ -5570,18 +5573,16 @@ experimental_bearer_token = "sk-new"
         ..RelayProfile::default()
     };
 
-    let error = apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
-        .expect_err("外部 catalog 与每模型窗口覆盖冲突时应失败");
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect("外部 catalog 与每模型窗口冲突时应降级完成切换，而不是拒绝");
 
-    assert!(error.to_string().contains("外部 model_catalog_json"));
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
-        previous_config
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    // 用户手写的外部指针必须原样保留，不被本 profile 的托管 catalog 覆盖。
+    assert!(
+        config.contains(r#"model_catalog_json = "/old/catalog.json""#),
+        "外部 catalog 指针应保留：{config}"
     );
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
-        previous_auth
-    );
+    // 降级路径不得顺手改写用户的外部 catalog 文件。
     assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
 }
 
@@ -5964,7 +5965,8 @@ fn apply_model_auto_compact_rejects_invalid_percent_before_writing_files() {
 }
 
 #[test]
-fn apply_model_auto_compact_rejects_external_catalog_without_partial_update() {
+fn apply_model_auto_compact_degrades_external_catalog_without_partial_update() {
+    // 同 issue #2203：每模型自动压缩与外部 catalog 冲突时降级而非拒绝。
     let temp = tempfile::tempdir().unwrap();
     let previous_config = "model = \"previous\"\n";
     let previous_auth = r#"{"OPENAI_API_KEY":"old"}"#;
@@ -5999,18 +6001,15 @@ experimental_bearer_token = "sk-new"
         ..RelayProfile::default()
     };
 
-    let error = apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
-        .expect_err("外部 catalog 与每模型自动压缩覆盖冲突时应失败");
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect("外部 catalog 与每模型自动压缩冲突时应降级完成切换，而不是拒绝");
 
-    assert!(error.to_string().contains("外部 model_catalog_json"));
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
-        previous_config
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        config.contains("external-catalog.json"),
+        "外部 catalog 指针应保留：{config}"
     );
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
-        previous_auth
-    );
+    // 降级路径不得顺手改写用户的外部 catalog 文件。
     assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
 }
 
