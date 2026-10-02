@@ -6631,7 +6631,7 @@ mod tests {
             connection: codex_plus_core::native_browser_connection::ConnectionStatus {
                 state: "available".into(), failed_checks: 0,
                 browsers: vec![codex_plus_core::native_browser_connection::ConnectedBrowser {
-                    family: "edge".into(), header_enabled: Some(true),
+                    family: "edge".into(), header_enabled: Some(true), recognized: true,
                 }],
             },
         };

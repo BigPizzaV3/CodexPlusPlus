@@ -16,15 +16,19 @@ use sha2::{Digest, Sha256};
 const SERVICE: &str = "bin/node_modules/@oai/browser-desktop/scripts/browser-service.mjs";
 const ORIGINAL_SHA: &str = "3e6fd4a8cf09f57549d63f2c9cbfa2abf42f0a6b0c09c3d6605fe07c8ba09e4a";
 const NATIVE_SHA: &str = "ef53f8f0d957b7cf437020499b6b9d880dee381214788930107b549237f7949c";
-const ANCHOR: &str = "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEndedTracker,cD)";
 const CURRENT_ORIGINAL_SHA: &str =
     "fc0660ba45e6c10b532d8faa0c1bac704d987dad3d4b74478f49fdd82bf90086";
 const CURRENT_MANIFEST_SHA: &str =
     "2c8ea57bfab596fb3b9cf78673b62a763f8d484aa8d380e341324354ce9e90e8";
-const CURRENT_ANCHOR: &str =
-    "new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,sv)";
 const HELPER: &str = include_str!("../../../assets/native-browser/require-identification.mjs");
 const MAX_SERVICE: u64 = 32 * 1024 * 1024;
+
+/// issue #2294 / #2209：结构不变量取代「再堆第三个哈希常量」。
+/// 0.0.11 → 0.0.24 已经证明「一个版本发一次就作废整张表」，所以未知哈希不再直接失败，
+/// 而是退回结构校验；只有结构不变量本身被破坏时才拒绝。
+const CUA_ENTRY: &str = "bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs";
+const MANIFEST: &str = "manifest.json";
+const MIN_RUNTIME_VERSION: (u32, u32, u32) = (0, 0, 11);
 
 #[derive(Debug)]
 struct UnverifiedRuntime(String);
@@ -37,31 +41,51 @@ impl std::fmt::Display for UnverifiedRuntime {
 
 impl std::error::Error for UnverifiedRuntime {}
 
+/// 每个必需组件要么给出「已知良好」的哈希，要么只校验结构。
+/// `Structural` 是 issue #2294 的降级通道：未知哈希不再让整条链路 fail-closed。
+#[derive(Clone)]
+enum FileCheck {
+    Known(String),
+    Structural,
+}
+
 #[derive(Clone)]
 struct RuntimeContract {
     service_sha: String,
-    files: Vec<(&'static str, String)>,
+    files: Vec<(&'static str, FileCheck)>,
+    /// 未知版本经结构校验后接受时置位，用于状态展示与诊断留痕。
+    adaptive: bool,
 }
+
+/// 新旧两代的共享组件清单：浏览器服务始终单独校验，其余在此登记。
+const RUNTIME_FILES: [&str; 4] = ["bin/node_repl.exe", "bin/node.exe", MANIFEST, CUA_ENTRY];
 
 impl RuntimeContract {
     fn pinned() -> Self {
         Self {
             service_sha: ORIGINAL_SHA.into(),
             files: vec![
-                ("bin/node_repl.exe", NATIVE_SHA.into()),
+                ("bin/node_repl.exe", FileCheck::Known(NATIVE_SHA.into())),
                 (
                     "bin/node.exe",
-                    "be14417b6c4b4a5af06be7c16bda58730f26b912c3e8c6489d12392ef08f35bf".into(),
+                    FileCheck::Known(
+                        "be14417b6c4b4a5af06be7c16bda58730f26b912c3e8c6489d12392ef08f35bf".into(),
+                    ),
                 ),
                 (
-                    "manifest.json",
-                    "ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc".into(),
+                    MANIFEST,
+                    FileCheck::Known(
+                        "ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc".into(),
+                    ),
                 ),
                 (
-                    "bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs",
-                    "992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278".into(),
+                    CUA_ENTRY,
+                    FileCheck::Known(
+                        "992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278".into(),
+                    ),
                 ),
             ],
+            adaptive: false,
         }
     }
 
@@ -71,32 +95,129 @@ impl RuntimeContract {
             files: vec![
                 (
                     "bin/node_repl.exe",
-                    "e42e0d846b9c1e5da3ec7b5e069fdae3643df590f4e304f433cfaa7fbd8732a7".into(),
+                    FileCheck::Known(
+                        "e42e0d846b9c1e5da3ec7b5e069fdae3643df590f4e304f433cfaa7fbd8732a7".into(),
+                    ),
                 ),
                 (
                     "bin/node.exe",
-                    "d3c3c290b11d55ef747e63f5a63538e0d8ca95f3f9668bb6a8081a25ba2befab".into(),
+                    FileCheck::Known(
+                        "d3c3c290b11d55ef747e63f5a63538e0d8ca95f3f9668bb6a8081a25ba2befab".into(),
+                    ),
                 ),
-                ("manifest.json", CURRENT_MANIFEST_SHA.into()),
+                (MANIFEST, FileCheck::Known(CURRENT_MANIFEST_SHA.into())),
                 (
-                    "bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs",
-                    "992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278".into(),
+                    CUA_ENTRY,
+                    FileCheck::Known(
+                        "992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278".into(),
+                    ),
                 ),
             ],
+            adaptive: false,
         }
     }
 
-    fn for_manifest(hash: &str) -> Result<Self> {
-        match hash {
+    /// 未知 manifest 版本的降级契约：组件只校验结构，服务本体的 SHA 由
+    /// `resolve_contract` 现算，绝不写死。
+    fn adapted(service_sha: String) -> Self {
+        Self {
+            service_sha,
+            files: RUNTIME_FILES
+                .iter()
+                .map(|file| (*file, FileCheck::Structural))
+                .collect(),
+            adaptive: true,
+        }
+    }
+
+    /// 已知良好版本走哈希快路径；未知版本走结构校验（issue #2294）。
+    /// `manifest` 是 manifest.json 的原始字节，`runtime` 是其所在目录，
+    /// 结构校验需要落到文件系统确认必需组件确实存在。
+    fn for_manifest(manifest: &[u8], runtime: &Path, service_sha: String) -> Result<Self> {
+        match sha(manifest).as_str() {
             "ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc" => {
                 Ok(Self::pinned())
             }
             CURRENT_MANIFEST_SHA => Ok(Self::current()),
-            _ => Err(anyhow::anyhow!(
-                "Unsupported native runtime component: manifest.json"
-            )),
+            _ => {
+                let parsed = parse_manifest(manifest)?;
+                ensure!(
+                    parsed.at_least(MIN_RUNTIME_VERSION),
+                    "Native runtime is older than the supported minimum"
+                );
+                for file in RUNTIME_FILES {
+                    let path = runtime.join(file);
+                    ensure!(path.exists(), "Native runtime is missing {file}");
+                    let meta = fs::metadata(&path)?;
+                    ensure!(
+                        meta.is_file() && meta.len() <= 128 * 1024 * 1024,
+                        "Unexpected native runtime component: {file}"
+                    );
+                }
+                Ok(Self::adapted(service_sha))
+            }
         }
     }
+}
+
+struct ManifestVersion {
+    parts: (u32, u32, u32),
+    raw: String,
+}
+
+impl ManifestVersion {
+    fn at_least(&self, minimum: (u32, u32, u32)) -> bool {
+        self.parts >= minimum
+    }
+}
+
+impl std::fmt::Debug for ManifestVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "ManifestVersion({})", self.raw)
+    }
+}
+
+/// 解析 manifest.json 的结构不变量：必要字段、版本号可解析且不低于下限。
+/// 语言/时区差异、额外字段、字段顺序都不得影响判定。
+fn parse_manifest(manifest: &[u8]) -> Result<ManifestVersion> {
+    let value: Value = serde_json::from_slice(manifest)?;
+    let object = value.as_object().context("Native runtime manifest is not an object")?;
+    for required in ["name", "version"] {
+        ensure!(
+            object.get(required).is_some_and(|field| !field.is_null()),
+            "Native runtime manifest is missing {required}"
+        );
+    }
+    let raw = value["version"]
+        .as_str()
+        .context("Native runtime version is not a string")?
+        .trim()
+        .to_owned();
+    parse_version(&raw).with_context(|| format!("Unsupported native runtime version: {raw}"))
+}
+
+/// 只接受 `<major>.<minor>.<patch>` 形状（允许前后空白与 `v` 前缀）。
+/// 预发布后缀不参与比较：契约只关心「不低于某个功能下限」。
+fn parse_version(raw: &str) -> Result<ManifestVersion> {
+    let core = raw.trim().trim_start_matches(['v', 'V']);
+    let core = core.split(['-', '+']).next().unwrap_or_default();
+    let segments: Vec<&str> = core.split('.').collect();
+    let [major, minor, patch] = segments.as_slice() else {
+        anyhow::bail!("Expected a major.minor.patch version");
+    };
+    let number = |part: &str, name: &str| -> Result<u32> {
+        part.trim()
+            .parse::<u32>()
+            .with_context(|| format!("Invalid {name} version"))
+    };
+    Ok(ManifestVersion {
+        parts: (
+            number(major, "major")?,
+            number(minor, "minor")?,
+            number(patch, "patch")?,
+        ),
+        raw: raw.into(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -309,29 +430,151 @@ fn transform(source: &[u8], control: &Path, contract: &RuntimeContract) -> Resul
     transform_binding(source, control, contract)
 }
 
-fn transform_binding(source: &[u8], control: &Path, contract: &RuntimeContract) -> Result<Vec<u8>> {
+/// 从一次回调绑定里摘出的四个压缩标识符。
+/// 构造器名不必保留（替换串自带），但元数据回调与 policy 回调必须原样回填。
+struct Binding {
+    start: usize,
+    end: usize,
+    constructor: String,
+    runtime_getter: String,
+    policy: String,
+}
+
+impl Binding {
+    fn original(&self) -> String {
+        format!(
+            "new {}(r,this.clientApi,()=>{}(this.runtime),this.turnEndedTracker,{})",
+            self.constructor, self.runtime_getter, self.policy
+        )
+    }
+}
+
+/// 整段文本里符合绑定形状的位置数。压缩名可以各不相同，所以不能只比字面量：
+/// 两处不同世代或不同名字的绑定同样算冲突（issue #2294）。
+fn matching_bindings(text: &str) -> usize {
+    let mut count = 0;
+    let mut cursor = 0;
+    while let Some(found) = text[cursor..].find("this.turnEndedTracker") {
+        let live = cursor + found;
+        cursor = live + "this.turnEndedTracker".len();
+        if let Some(start) = text[..live].rfind("new ") {
+            if find_binding(&text[start..]).is_some_and(|binding| binding.start == 0) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn identifier_len(text: &str, start: usize) -> usize {
+    let mut len = 0;
+    for (offset, ch) in text[start..].char_indices() {
+        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$') {
+            return offset;
+        }
+        len = offset + ch.len_utf8();
+    }
+    len
+}
+
+/// 结构正则的等价手写实现（本 crate 无 regex 依赖）：
+/// `new \w+\(r,this\.clientApi,\(\)=>\w+\(this\.runtime\),this\.turnEndedTracker,\w+\)`
+/// 只认形状不认压缩名，所以 `nf/ze/cD` 与 `uh/We/wv` 都能吃下（issue #2294）。
+fn find_binding(text: &str) -> Option<Binding> {
+    /// 前进一个固定字面量，返回其后是否跟上指定字面量。
+    fn expect(text: &str, cursor: &mut usize, literal: &str) -> Option<()> {
+        let rest = text.get(*cursor..)?;
+        rest.strip_prefix(literal)?;
+        *cursor += literal.len();
+        Some(())
+    }
+
+    /// 前进一个 JS 标识符并返回它；空串视为不匹配。
+    fn identifier(text: &str, cursor: &mut usize) -> Option<String> {
+        let len = identifier_len(text, *cursor);
+        let name = text.get(*cursor..*cursor + len)?;
+        (*cursor) += len;
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
+    // 真实绑定形如 `new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,sv)`：
+    // `new `、`r`、`this.clientApi`、`this.runtime`、`this.turnEndedTracker` 都是稳定形状，
+    // 只有四个压缩标识符会随发版变化，所以逐个按结构吃下、再原样回填。
+    let live = text.find("this.turnEndedTracker")?;
+    let start = text[..live].rfind("new ")?;
+    let mut cursor = start;
+    expect(text, &mut cursor, "new ")?;
+    let constructor = identifier(text, &mut cursor)?;
+    expect(text, &mut cursor, "(r,this.clientApi,()=>")?;
+    let runtime_getter = identifier(text, &mut cursor)?;
+    // 元数据回调名已在上一步被吃下，这里接的是它的实参列表。
+    expect(text, &mut cursor, "(this.runtime),this.turnEndedTracker,")?;
+    let policy = identifier(text, &mut cursor)?;
+    expect(text, &mut cursor, ")")?;
+
+    Some(Binding {
+        start,
+        end: cursor,
+        constructor,
+        runtime_getter,
+        policy,
+    })
+}
+
+fn count_occurrences(text: &str, needle: &str) -> usize {
+    text.match_indices(needle).count()
+}
+
+/// 参数契约只用于调用点对称；匹配与替换完全由源码结构决定（issue #2294）。
+fn transform_binding(source: &[u8], control: &Path, _contract: &RuntimeContract) -> Result<Vec<u8>> {
     let text = std::str::from_utf8(source)?;
-    let current = contract.service_sha == CURRENT_ORIGINAL_SHA;
-    let anchor = if current { CURRENT_ANCHOR } else { ANCHOR };
-    ensure!(
-        text.matches(anchor).count() == 1,
-        "Expected one callback binding"
-    );
     ensure!(
         !text.contains("cppNativeIdentificationReader"),
         "Conflicting adapter"
     );
+    let binding = find_binding(text).context("Expected one callback binding")?;
+    let original = binding.original();
+    // 唯一命中：整段文本里这种形状的回调绑定只能有一处（压缩名可以各不相同），
+    // 第二处一律拒绝——猜哪一处是浏览器控制入口风险太高（issue #2294）。
+    ensure!(
+        matching_bindings(text) == 1,
+        "Expected one callback binding"
+    );
     let path = serde_json::to_string(&control.to_str().context("Non-Unicode control path")?)?;
-    let replacement = if current {
-        format!(
-            "new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,sv,je,{path}))"
-        )
-    } else {
-        format!(
-            "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,cD,ze,{path}))"
-        )
-    };
-    Ok(format!("{}\n{HELPER}", text.replacen(anchor, &replacement, 1)).into_bytes())
+    // policy 回调名是版本相关的（0.0.24 为 sv，0.0.27 为 wv），必须从原文带过来。
+    let replacement = format!(
+        // 参数顺序与 0.0.24 一致：policy 回调在前、元数据回调在后、控制文件最后。
+        "new {}(r,this.clientApi,()=>{}(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,{},{},{}))",
+        binding.constructor, binding.runtime_getter, binding.policy, binding.runtime_getter, path
+    );
+    let output = format!(
+        "{}{}{}\n{HELPER}",
+        &text[..binding.start],
+        replacement,
+        &text[binding.end..]
+    );
+    // 运行时自检（issue #2294 第 2 条）：原绑定不得残留，替换串必须落地，
+    // 且三个压缩标识符的出现次数必须与替换串里的用法严格对得上。
+    ensure!(
+        count_occurrences(&output, &original) == 0,
+        "Binding rewrite left the original callback in place"
+    );
+    // 计数只看被改写的正文：HELPER 是追加的独立脚本，里面可能偶然包含
+    // 同名子串（例如 `nf` 出现在 `clientInfo` 里），算进来会误报。
+    let rewritten = &output[..output.len() - HELPER.len() - 1];
+    // 替换串里构造器用一次、policy 回调用一次、元数据回调用两次
+    //（`()=>ze(...)` 的调用 + 传给 reader 的实参），所以只有后者 +1。
+    for (name, added) in [
+        (&binding.constructor, 0),
+        (&binding.runtime_getter, 1),
+        (&binding.policy, 0),
+    ] {
+        ensure!(
+            count_occurrences(rewritten, name) == count_occurrences(text, name) + added,
+            "Binding rewrite changed the {name} occurrence count"
+        );
+    }
+    Ok(output.into_bytes())
 }
 
 fn selected_key(descriptor: &Value, root: &Path) -> Result<String> {
@@ -380,9 +623,7 @@ fn selected_key(descriptor: &Value, root: &Path) -> Result<String> {
     let args = server["args"]
         .as_array()
         .context("Missing native entry point")?;
-    let entry = root
-        .join(key)
-        .join("bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs");
+    let entry = root.join(key).join(CUA_ENTRY);
     ensure!(
         args.len() == 1 && args[0].as_str().map(Path::new) == Some(entry.as_path()),
         "Unsupported native entry point"
@@ -427,11 +668,18 @@ fn prepare(paths: &BrowserPaths, key: &str, contract: &RuntimeContract) -> Resul
     let runtime = paths.runtime_root.join(key);
     let target = runtime.join(SERVICE);
     let _runtime_guards = pin_parents(&target)?;
+    // 已知良好版本比哈希；未知版本（issue #2294 的降级通道）在 for_manifest 里
+    // 已经确认过结构不变量，这里只再确认文件仍然可读且未被换成链接。
     for (file, expected) in &contract.files {
-        ensure!(
-            sha(&read_regular(&runtime.join(file), 128 * 1024 * 1024)?) == *expected,
-            UnverifiedRuntime((*file).into())
-        );
+        match expected {
+            FileCheck::Known(expected) => ensure!(
+                sha(&read_regular(&runtime.join(file), 128 * 1024 * 1024)?) == *expected,
+                UnverifiedRuntime((*file).into())
+            ),
+            FileCheck::Structural => {
+                read_regular(&runtime.join(file), 128 * 1024 * 1024)?;
+            }
+        }
     }
     let mut current = read_regular(&target, MAX_SERVICE)?;
     let backup_dir = paths.state_root.join(key);
@@ -442,7 +690,7 @@ fn prepare(paths: &BrowserPaths, key: &str, contract: &RuntimeContract) -> Resul
     let journal_path = backup_dir.join("journal.json");
     let control = paths.state_root.join("control.json");
     if journal_path.exists() {
-        let (journal, original, recorded_candidate) = recovery_material(paths, key, contract)?;
+        let (journal, original, recorded_candidate) = recovery_material(paths, key)?;
         let candidate = transform(&original, &control, contract)?;
         if current == recorded_candidate {
             if candidate == recorded_candidate {
@@ -496,7 +744,7 @@ fn prepare(paths: &BrowserPaths, key: &str, contract: &RuntimeContract) -> Resul
         // Durable original and journal precede any runtime write.
         atomic_write(&journal_path, &serde_json::to_vec(&journal)?)?;
     }
-    let (journal, original, candidate) = recovery_material(paths, key, contract)?;
+    let (journal, original, candidate) = recovery_material(paths, key)?;
     if current == candidate {
         return Ok(());
     }
@@ -516,11 +764,7 @@ fn prepare(paths: &BrowserPaths, key: &str, contract: &RuntimeContract) -> Resul
     Ok(())
 }
 
-fn recovery_material(
-    paths: &BrowserPaths,
-    key: &str,
-    contract: &RuntimeContract,
-) -> Result<(Journal, Vec<u8>, Vec<u8>)> {
+fn recovery_material(paths: &BrowserPaths, key: &str) -> Result<(Journal, Vec<u8>, Vec<u8>)> {
     ensure!(key_valid(key), "Invalid recovery key");
     let dir = paths.state_root.join(key);
     let journal: Journal = serde_json::from_slice(&read_regular(&dir.join("journal.json"), 4096)?)?;
@@ -536,9 +780,9 @@ fn recovery_material(
     )?;
     ensure!(
         journal.schema == 1
-            && (journal.original_sha == contract.service_sha
-                || journal.original_sha == ORIGINAL_SHA
-                || journal.original_sha == CURRENT_ORIGINAL_SHA)
+            // issue #2294：不再要求 original_sha 属于某个登记的哈希表——未登记版本的服务
+            // SHA 是现算的，禁用时的契约也未必是解析当前 runtime 得到的那个。
+            // 真正的约束是「日志里记的哈希必须等于备份文件的实际内容」，那条保持不变。
             && sha(&original) == journal.original_sha
             && journal.candidate_sha == sha(&candidate)
             && journal.modified_nanos < 1_000_000_000,
@@ -547,7 +791,7 @@ fn recovery_material(
     Ok((journal, original, candidate))
 }
 
-fn restore_all(paths: &BrowserPaths, keep: Option<&str>, contract: &RuntimeContract) -> Result<()> {
+fn restore_all(paths: &BrowserPaths, keep: Option<&str>) -> Result<()> {
     let mut pending = Vec::new();
     let mut guards = Vec::new();
     for entry in fs::read_dir(&paths.state_root)? {
@@ -565,7 +809,7 @@ fn restore_all(paths: &BrowserPaths, keep: Option<&str>, contract: &RuntimeContr
         if !target.exists() {
             continue; // Desktop owns cache deletion; never resurrect an obsolete runtime.
         }
-        let (journal, original, candidate) = recovery_material(paths, &key, contract)?;
+        let (journal, original, candidate) = recovery_material(paths, &key)?;
         guards.extend(pin_parents(&target)?);
         let current = read_regular(&target, MAX_SERVICE)?;
         ensure!(
@@ -644,7 +888,7 @@ fn reconcile_locked(
     let control = paths.state_root.join("control.json");
     if !enabled {
         atomic_write(&control, br#"{"schema":1,"requireIdentification":false}"#)?;
-        restore_all(paths, None, contract)?;
+        restore_all(paths, None)?;
         return Ok(BrowserStatus::new(
             "restored",
             "Service restored; extension identification may remain enabled",
@@ -657,22 +901,51 @@ fn reconcile_locked(
             "Waiting for a native browser runtime descriptor",
         ));
     };
-    restore_all(paths, Some(&key), contract)?;
+    // 先解析契约、再恢复：恢复记录的 original SHA 必须与当前契约对得上，
+    // 否则适配过的新版本一重启就会把自己的日志判成伪造（issue #2294）。
+    // 只有默认（pinned）入口才按运行时自身重新解析；夹具注入的自定义契约必须原样生效。
     let selected = if contract.service_sha == ORIGINAL_SHA {
-        let manifest = read_regular(
-            &paths.runtime_root.join(&key).join("manifest.json"),
-            1024 * 1024,
-        )?;
-        Some(RuntimeContract::for_manifest(&sha(&manifest))?)
+        resolve_contract(paths, &key)?
     } else {
-        None
+        contract.clone()
     };
-    prepare(paths, &key, selected.as_ref().unwrap_or(contract))?;
+    restore_all(paths, Some(&key))?;
+    prepare(paths, &key, &selected)?;
     atomic_write(&control, br#"{"schema":1,"requireIdentification":true}"#)?;
     Ok(BrowserStatus::new(
         "prepared",
-        "Prepared for a new native worker; browser operation is not yet verified",
+        if selected.adaptive {
+            "Prepared for an unverified newer native runtime; browser operation is not yet verified"
+        } else {
+            "Prepared for a new native worker; browser operation is not yet verified"
+        },
     ))
+}
+
+/// 先按 manifest 结构判定版本世代，再用**实际服务字节**的 SHA 约束它。
+/// 这样「manifest 是 0.0.24 但服务文件是别的」这种混搭不会被当成已知良好放行（issue #2294）。
+/// 已知良好 → 走原哈希快路径；未知但结构合法 → 降级契约，服务 SHA 取现算值。
+fn resolve_contract(paths: &BrowserPaths, key: &str) -> Result<RuntimeContract> {
+    ensure!(key_valid(key), "Invalid runtime key");
+    let runtime = paths.runtime_root.join(key);
+    let manifest = read_regular(&runtime.join(MANIFEST), 1024 * 1024).context(MANIFEST)?;
+    let service_sha = sha(&read_regular(&runtime.join(SERVICE), MAX_SERVICE)?);
+    let contract = RuntimeContract::for_manifest(&manifest, &runtime, service_sha.clone())
+        .context(MANIFEST)?;
+    if !contract.adaptive {
+        ensure!(
+            contract.service_sha == service_sha,
+            UnverifiedRuntime("browser service".into())
+        );
+    }
+    if contract.adaptive {
+        crate::diagnostic_log::append_diagnostic_log(
+            "native_browser.runtime_adapted_unknown",
+            json!({"serviceSha": service_sha, "manifestSha": sha(&manifest)}),
+        )
+        .ok();
+    }
+    Ok(contract)
 }
 
 pub fn read_status() -> BrowserStatus {
@@ -776,7 +1049,7 @@ fn verify_restored_state(paths: &BrowserPaths) -> Result<()> {
         }
         let target = paths.runtime_root.join(&key).join(SERVICE);
         if target.exists() {
-            let (_, original, _) = recovery_material(paths, &key, &RuntimeContract::pinned())?;
+            let (_, original, _) = recovery_material(paths, &key)?;
             ensure!(
                 read_regular(&target, MAX_SERVICE)? == original,
                 "Native browser service has not been restored"
@@ -1025,7 +1298,7 @@ fn observation(paths: &BrowserPaths) -> Result<String> {
     for key in keys {
         let runtime = paths.runtime_root.join(key);
         files.insert(runtime.join(SERVICE));
-        for (file, _) in RuntimeContract::pinned().files {
+        for file in RUNTIME_FILES {
             files.insert(runtime.join(file));
         }
     }
@@ -1107,6 +1380,12 @@ async fn monitor_once(
 mod tests {
     use super::*;
 
+    /// 两代已登记运行时的原始绑定，作为结构匹配的输入夹具。
+    /// 生产代码不再依赖它们的字面量，只依赖 `find_binding` 描述的形状（issue #2294）。
+    const ANCHOR: &str = "new nf(r,this.clientApi,()=>ze(this.runtime),this.turnEndedTracker,cD)";
+    const CURRENT_ANCHOR: &str =
+        "new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,sv)";
+
     /// `plain_path` 拒绝祖先链上含软链的路径（防 junction / symlink 攻击，见该函数注释）。
     /// macOS 上 `/var` 是指向 `/private/var` 的系统软链，而 `tempfile` 默认建在
     /// `/var/folders/...` 下——直接用 `temp.path()` 会让所有测试都撞上这条校验。
@@ -1176,10 +1455,16 @@ mod tests {
             )
             .is_err()
         );
-        assert!(RuntimeContract::for_manifest("unknown").is_err());
-        assert_eq!(
-            RuntimeContract::for_manifest(CURRENT_MANIFEST_SHA).unwrap().service_sha,
-            CURRENT_ORIGINAL_SHA
+        // 只有真实登记的 manifest 字节才能命中哈希快路径；结构合法但未登记的
+        // 版本必须走降级通道（下方 `newer_manifest_shape_*` 用例覆盖）。
+        assert!(
+            RuntimeContract::for_manifest(
+                br#"{"name":"@oai/cua-node","version":"0.0.24"}"#,
+                Path::new("C:/runtime"),
+                CURRENT_ORIGINAL_SHA.into(),
+            )
+            .is_err(),
+            "未登记的 manifest 字节在结构校验缺失组件时必须失败"
         );
     }
 
@@ -1196,6 +1481,75 @@ mod tests {
             serde_json::from_slice(&fs::read(paths.state_root.join("control.json")).unwrap())
                 .unwrap();
         assert_eq!(control["requireIdentification"], false);
+    }
+
+    /// issue #2294 主路径：未登记的新版本不再 fail-closed，而是走结构校验后放行。
+    #[test]
+    fn newer_manifest_shape_is_accepted_and_enables_identification() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, _, service) = synthetic_with(&temp, "0.0.27");
+        let original = fs::read(&service).unwrap();
+        let status = reconcile(&paths, true).unwrap();
+        assert_eq!(status.state, "prepared", "{}", status.detail);
+        let candidate = String::from_utf8(fs::read(&service).unwrap()).unwrap();
+        assert!(candidate.contains("cppNativeIdentificationReader"), "{candidate}");
+        assert_ne!(fs::read(&service).unwrap(), original);
+        let control: Value =
+            serde_json::from_slice(&fs::read(paths.state_root.join("control.json")).unwrap())
+                .unwrap();
+        // 这一条正是 #2209 的判据：白名单过窄时这里会被写成 false，回到云端策略。
+        assert_eq!(control["requireIdentification"], true);
+        assert_eq!(reconcile(&paths, false).unwrap().state, "restored");
+        assert_eq!(fs::read(&service).unwrap(), original);
+    }
+
+    /// 回归：结构校验必须真的校验结构。挖掉 cua-repl 入口后 for_manifest 必须 Err。
+    #[test]
+    fn missing_cua_repl_entry_rejects_an_otherwise_valid_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, _, _) = synthetic_with(&temp, "0.0.27");
+        let key = "0123456789abcdef";
+        let runtime = paths.runtime_root.join(key);
+        let manifest = fs::read(runtime.join(MANIFEST)).unwrap();
+        let service_sha = sha(&fs::read(runtime.join(SERVICE)).unwrap());
+        // 结构齐备时接受
+        assert!(RuntimeContract::for_manifest(&manifest, &runtime, service_sha.clone()).is_ok());
+        // 挖掉入口后必须拒绝，且不得降级成「接受」
+        fs::remove_file(runtime.join(CUA_ENTRY)).unwrap();
+        let error = RuntimeContract::for_manifest(&manifest, &runtime, service_sha)
+            .err()
+            .expect("缺少 cua-repl 入口时必须拒绝");
+        assert!(error.to_string().contains(CUA_ENTRY), "{error}");
+    }
+
+    #[test]
+    fn manifest_requires_fields_version_floor_and_parsable_versions() {
+        let temp = tempfile::tempdir().unwrap();
+        let (paths, _, _) = synthetic_with(&temp, "0.0.27");
+        let runtime = paths.runtime_root.join("0123456789abcdef");
+        let sha = sha(&fs::read(runtime.join(SERVICE)).unwrap());
+        let accepts = |manifest: &str| {
+            RuntimeContract::for_manifest(manifest.as_bytes(), &runtime, sha.clone()).is_ok()
+        };
+        // 缺失必要字段
+        assert!(!accepts(r#"{"name":"@oai/cua-node"}"#));
+        assert!(!accepts(r#"{"version":"0.0.27"}"#));
+        assert!(!accepts(r#"{"name":null,"version":"0.0.27"}"#));
+        // 非 JSON / 非对象
+        assert!(!accepts("not json"));
+        assert!(!accepts("[1,2,3]"));
+        // 版本号必须可解析且不低于 0.0.11
+        assert!(!accepts(r#"{"name":"x","version":"0.0.10"}"#));
+        assert!(!accepts(r#"{"name":"x","version":"0.0"}"#));
+        assert!(!accepts(r#"{"name":"x","version":"latest"}"#));
+        assert!(!accepts(r#"{"name":"x","version":27}"#));
+        // 新版、预发布后缀、v 前缀、额外字段都必须照常接受
+        for version in ["0.0.27", "0.0.11", "v1.0.0", "0.1.0-beta.1", " 2.0.0 "] {
+            assert!(
+                accepts(&format!(r#"{{"name":"x","version":"{version}","extra":1}}"#)),
+                "版本 {version} 应被接受"
+            );
+        }
     }
 
     #[test]
@@ -1261,16 +1615,97 @@ mod tests {
     fn current_binding_uses_current_metadata_and_policy_callback() {
         let path = Path::new("C:/state/control.json");
         let contract = RuntimeContract::current();
-        for source in [ANCHOR.to_owned(), CURRENT_ANCHOR.repeat(2)] {
+        // 结构匹配不认压缩名，所以 0.0.11 的锚点在 0.0.24 契约下同样能改；
+        // 唯一性才是拒绝条件。
+        for source in ["no binding".to_owned(), CURRENT_ANCHOR.repeat(2), ANCHOR.repeat(2)] {
             assert!(transform_binding(source.as_bytes(), path, &contract).is_err());
         }
         let source = format!("prefix;{CURRENT_ANCHOR};suffix");
         let output =
             String::from_utf8(transform_binding(source.as_bytes(), path, &contract).unwrap())
                 .unwrap();
+        // policy 回调 `sv` 与元数据回调 `je` 都必须按原文回填。
         assert!(output.contains("new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,sv,je,"));
         assert!(output.ends_with(HELPER));
         assert!(output.contains(";suffix\n"));
+    }
+
+    /// issue #2294：0.0.27 把构造器/回调名整批换新（`eh/je/sv` → `uh/We/wv`）。
+    /// 旧实现写死字面锚点，一次发版即失灵；结构匹配必须吃下这一代与以后各代。
+    const NEW_ANCHOR: &str =
+        "new uh(r,this.clientApi,()=>We(this.runtime),this.turnEndedTracker,wv)";
+
+    #[test]
+    fn newer_binding_uses_structural_match_and_carries_policy_callback() {
+        let path = Path::new("C:/state/control.json");
+        let contract = RuntimeContract::adapted("0".repeat(64).into());
+        // 旧的两代锚点在这种契约下同样必须可用（结构不认名字）。
+        for source in [ANCHOR.to_owned(), CURRENT_ANCHOR.to_owned()] {
+            assert!(
+                transform_binding(source.as_bytes(), path, &contract).is_ok(),
+                "结构匹配应接受已知各代锚点：{source}"
+            );
+        }
+        let source = format!("prefix;{NEW_ANCHOR};suffix");
+        let output =
+            String::from_utf8(transform_binding(source.as_bytes(), path, &contract).unwrap())
+                .unwrap();
+        // 第三个捕获组（policy 回调名 wv）必须原样带进替换串，元数据回调 We 也一样。
+        assert!(
+            output.contains(
+                "new uh(r,this.clientApi,()=>We(this.runtime),this.turnEndedTracker,cppNativeIdentificationReader(this.runtime,wv,We,"
+            ),
+            "{output}"
+        );
+        assert!(output.starts_with("prefix;new uh("));
+        assert!(output.contains(";suffix\n"));
+        assert!(output.ends_with(HELPER));
+        // 自检口径：构造器与 policy 回调计数不变，元数据回调因多了一次实参而 +1。
+        for (name, added) in [("uh", 0), ("We", 1), ("wv", 0)] {
+            assert_eq!(
+                count_occurrences(&output, name),
+                count_occurrences(&source, name) + added,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn structural_binding_still_rejects_ambiguity_and_conflicts() {
+        let path = Path::new("C:/state/control.json");
+        let contract = RuntimeContract::adapted("0".repeat(64).into());
+        // 两处同类绑定：不能猜一个改。
+        assert!(
+            transform_binding(
+                format!("{NEW_ANCHOR};{CURRENT_ANCHOR}").as_bytes(),
+                path,
+                &contract
+            )
+            .is_err()
+        );
+        // 完全不成形
+        for source in ["no binding", "new uh(r,this.clientApi)", "this.turnEndedTracker"] {
+            assert!(transform_binding(source.as_bytes(), path, &contract).is_err());
+        }
+        // 已经适配过：拒绝二次注入。
+        assert!(
+            transform_binding(
+                format!("cppNativeIdentificationReader(this.runtime,wv,We,x)").as_bytes(),
+                path,
+                &contract
+            )
+            .is_err()
+        );
+        // 参数名不被换掉（否则会改到别的构造函数或方法调用上）。
+        assert!(
+            transform_binding(
+                "new uh(record,this.clientApi,()=>We(this.runtime),this.turnEndedTracker,wv)"
+                    .as_bytes(),
+                path,
+                &contract
+            )
+            .is_err()
+        );
     }
 
     fn descriptor(root: &Path, key: &str) -> Value {
@@ -1464,7 +1899,10 @@ mod tests {
         assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), restored);
     }
 
-    fn synthetic(temp: &tempfile::TempDir) -> (BrowserPaths, RuntimeContract, PathBuf) {
+    /// 合成运行时夹具。`version` 决定它落在哈希快路径还是结构降级通道：
+    /// 夹具 manifest 的 SHA 永远不等于登记的 `CURRENT_MANIFEST_SHA`，
+    /// 所以结构校验必须真的通过，`prepare` 才会被调用。
+    fn synthetic_with(temp: &tempfile::TempDir, version: &str) -> (BrowserPaths, RuntimeContract, PathBuf) {
         let paths = paths(temp);
         let key = "0123456789abcdef";
         let service = paths.runtime_root.join(key).join(SERVICE);
@@ -1473,13 +1911,22 @@ mod tests {
         fs::write(&service, &original).unwrap();
         let contract = RuntimeContract {
             service_sha: sha(original.as_bytes()),
-            files: vec![("bin/node.exe", sha(b"fixture-node"))],
+            files: vec![("bin/node.exe", FileCheck::Known(sha(b"fixture-node")))],
+            adaptive: false,
         };
-        fs::write(
-            paths.runtime_root.join(key).join("bin/node.exe"),
-            b"fixture-node",
-        )
-        .unwrap();
+        for file in RUNTIME_FILES {
+            let path = paths.runtime_root.join(key).join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                match file {
+                    MANIFEST => format!(r#"{{"name":"@oai/cua-node","version":"{version}"}}"#),
+                    "bin/node.exe" => "fixture-node".into(),
+                    other => format!("fixture:{other}"),
+                },
+            )
+            .unwrap();
+        }
         let dir = paths
             .codex_home
             .join("plugins/cache/openai-bundled/unified-computer-use/test");
@@ -1490,6 +1937,10 @@ mod tests {
         )
         .unwrap();
         (paths, contract, service)
+    }
+
+    fn synthetic(temp: &tempfile::TempDir) -> (BrowserPaths, RuntimeContract, PathBuf) {
+        synthetic_with(temp, "0.0.24")
     }
 
     #[test]
@@ -1534,7 +1985,7 @@ mod tests {
         reconcile_contract(&paths, true, &contract).unwrap();
         let key = "0123456789abcdef";
         let (mut journal, original, current_candidate) =
-            recovery_material(&paths, key, &contract).unwrap();
+            recovery_material(&paths, key).unwrap();
         let old_candidate = [
             current_candidate.as_slice(),
             b"\n// previous adapter revision\n",
@@ -1822,7 +2273,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (paths, mut contract, service) = synthetic(&temp);
         let before = fs::read(&service).unwrap();
-        contract.files.push(("bin/node.exe", "unknown-version".into()));
+        contract
+            .files
+            .push(("bin/node.exe", FileCheck::Known("unknown-version".into())));
         // The synthetic descriptor determines the runtime, not the actual user installation.
         let key = discover(&paths).unwrap().unwrap();
         let node = paths.runtime_root.join(key).join("bin/node.exe");
@@ -1839,8 +2292,13 @@ mod tests {
     fn pinned_fixture_transaction_recovery_and_external_change() {
         let fixture = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_FIXTURE").unwrap());
         let generated = PathBuf::from(std::env::var_os("CPP_NATIVE_BROWSER_DESCRIPTOR").unwrap());
-        let manifest = read_regular(&fixture.join("manifest.json"), 1024 * 1024).unwrap();
-        let contract = RuntimeContract::for_manifest(&sha(&manifest)).unwrap();
+        // 真机夹具可能已经是比登记表更新的版本，此时结构降级契约也必须成立（issue #2294）。
+        RuntimeContract::for_manifest(
+            &read_regular(&fixture.join(MANIFEST), 1024 * 1024).unwrap(),
+            &fixture,
+            sha(&read_regular(&fixture.join(SERVICE), MAX_SERVICE).unwrap()),
+        )
+        .unwrap();
         let mut data: Value = serde_json::from_slice(&fs::read(&generated).unwrap()).unwrap();
         let source_key = selected_key(&data, fixture.parent().unwrap()).unwrap();
         assert_eq!(
@@ -1867,7 +2325,7 @@ mod tests {
         let service = runtime.join(SERVICE);
         fs::create_dir_all(service.parent().unwrap()).unwrap();
         fs::copy(fixture.join(SERVICE), &service).unwrap();
-        for (file, _) in contract.files {
+        for file in RUNTIME_FILES {
             let target = runtime.join(file);
             fs::create_dir_all(target.parent().unwrap()).unwrap();
             fs::copy(fixture.join(file), target).unwrap();
@@ -1906,3 +2364,6 @@ mod tests {
         assert_eq!(fs::read(&service).unwrap(), original);
     }
 }
+
+
+

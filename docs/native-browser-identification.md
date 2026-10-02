@@ -34,10 +34,14 @@ and user-stop handling remain in the original execution path.
 
 ## Compatibility And Status
 
-The adapter accepts only these Windows stable extension pairs and the two
-bundled runtime fingerprints below. Cross-paired IDs, beta extensions, other browsers
-and unknown runtimes fall back to the original decision or fail compatibility
-checks. Version labels alone are not accepted.
+The adapter accepts only these Windows stable extension pairs. Cross-paired IDs,
+beta extensions and other browsers fall back to the original decision or fail
+compatibility checks, and version labels alone are never accepted.
+
+For runtimes there are two tiers, described in full below: the two bundled
+fingerprints are known-good fast paths verified by exact SHA-256, and a runtime
+whose manifest is not one of those is accepted only after the structural
+invariants hold. A runtime that fails either tier is not adapted.
 
 | Browser family | Extension ID |
 | --- | --- |
@@ -51,6 +55,10 @@ evidence, not proof that a connected client loaded that particular disk copy.
 The helper checks the actual client's family, ID, instance and Boolean
 identification state, and rejects client or browser-pair changes across I/O.
 
+**Known-good fingerprints (fast path).** Two runtime generations are registered by
+content. They are accepted without re-deriving anything, and their files are
+verified by exact SHA-256 as listed below.
+
 | Component | 0.0.11 runtime SHA-256 | 0.0.24 runtime SHA-256 |
 | --- | --- | --- |
 | Browser service | `3e6fd4a8cf09f57549d63f2c9cbfa2abf42f0a6b0c09c3d6605fe07c8ba09e4a` | `fc0660ba45e6c10b532d8faa0c1bac704d987dad3d4b74478f49fdd82bf90086` |
@@ -59,21 +67,63 @@ identification state, and rejects client or browser-pair changes across I/O.
 | Runtime manifest | `ba3691b0717b6df8064c3841a75c784e8af9633c7b47f2fdb56d8de099efe6fc` | `2c8ea57bfab596fb3b9cf78673b62a763f8d484aa8d380e341324354ce9e90e8` |
 | CUA entry point | `992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278` | `992174a5e637645aeb444adfdb1bae688e997bb84d7db07532f68e358e60f278` |
 
-The 0.0.24 service changes the browser constructor and metadata/policy callback
-from `nf/ze/cD` to `eh/je/sv`. The adaptation binds the same first-party,
-turn-scoped identification reader at the new callback, only for the verified
-Chrome/Edge extension pair and while the opt-in control is enabled. It does not
-change the native worker's authentication, impersonate account credentials, or
-disable browser site checks and operation approvals. A new extension with
-identification off can otherwise ask the original policy callback for caller
-identity and encounter `unsupported Codex auth method: apikey`; an already
-enabled extension can avoid that path even without the adapter. A successful
-`getInfo` probe alone does not test this request path.
+**Structural acceptance for other versions.** This table is a fast path, not the
+whitelist it used to be. A manifest whose hash is not listed above is parsed and
+accepted when its structure holds:
+
+- the manifest is a JSON object carrying non-null `name` and `version`;
+- `version` parses as `major.minor.patch` (optionally `v`-prefixed, optional
+  pre-release/build suffix) and is not below `0.0.11`;
+- the runtime directory contains `bin/node_repl.exe`, `bin/node.exe`,
+  `manifest.json` and
+  `bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs`, each a regular file within
+  size limits.
+
+Only then is the runtime treated as *adapted-unknown*: the browser service is
+still bound by the SHA-256 computed from the bytes on disk, the status detail says
+the runtime is unverified, and the launcher records
+`native_browser.runtime_adapted_unknown` with both hashes. If any structural
+invariant fails, compatibility still fails closed and `control.json` is written
+with `requireIdentification:false`.
+
+This exists because a hash table is invalidated by a single upstream release:
+pinning 0.0.11 and 0.0.24 meant that a newer runtime failed the manifest check,
+which wrote `requireIdentification:false`, which fell back to the cloud rollout
+decision, which reports API-key sessions as unusable
+(`unsupported Codex auth method: apikey`). Version labels alone are still not
+accepted; the structural invariants are.
+
+The browser constructor and metadata/policy callback carry no fixed names in the
+adapter. `nf/ze/cD` (0.0.11), `eh/je/sv` (0.0.24) and any later generation are
+matched by shape — `new <ctor>(r,this.clientApi,()=><getter>(this.runtime),this.turnEndedTracker,<policy>)`
+— with the policy callback name carried over from the source. Exactly one such
+binding must be present; ambiguity is refused rather than guessed. After
+rewriting, the adapter re-checks that the original binding is gone and that no
+compressed identifier changed its occurrence count.
+
+The adaptation binds the same first-party, turn-scoped identification reader at
+the callback, only for the verified Chrome/Edge extension pair and while the
+opt-in control is enabled. It does not change the native worker's
+authentication, impersonate account credentials, or disable browser site checks
+and operation approvals. A new extension with identification off can otherwise
+ask the original policy callback for caller identity and encounter
+`unsupported Codex auth method: apikey`; an already enabled extension can avoid
+that path even without the adapter. A successful `getInfo` probe alone does not
+test this request path.
+
+**Connection reporting.** Read-only discovery over the native pipe reports the
+connected extension's family, its reported identification state, and whether its
+extension ID is one of the two registered pairs above. An extension that
+connects from the same family with an unregistered ID (for example a newer
+store build) is shown as connected but unrecognized rather than as
+disconnected, so the manager can distinguish "the extension never connected"
+from "it connected and this build does not recognize it". Both readings refuse
+compatibility; only the registered pairs are accepted by the adapter.
 
 The generated `unified-computer-use/.mcp.json` descriptors must agree on the
-native Node path and original browser service. Ambiguous descriptors, unknown
-hashes, linked paths, and external file changes prevent enablement. No remote
-runtime is downloaded or redistributed.
+native Node path and original browser service. Ambiguous descriptors, manifests
+that fail the structural invariants above, linked paths, and external file
+changes prevent enablement. No remote runtime is downloaded or redistributed.
 
 The launcher checks for late-created or rebuilt caches, initially at bounded
 500 ms intervals while waiting for a descriptor or incomplete runtime, then every
@@ -139,8 +189,10 @@ candidate service.
 
 This is not a security boundary against another process with the same user's
 write access. In particular, a malicious process able to replace both recovery
-records and files can compromise local integrity. Future adapter versions must
-retain support for restoring previously supported original-service fingerprints.
+records and files can compromise local integrity. What recovery does enforce is
+that a journal's recorded original hash matches the bytes of the actual backup
+it points at: records and files must be replaced together to forge one, and
+backups from a runtime that is no longer registered still restore.
 
 ## Page Preparation Failures
 

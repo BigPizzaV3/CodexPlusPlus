@@ -19,6 +19,9 @@ const PIPE_PREFIX: &str = r"\\.\pipe\codex-browser-use";
 pub struct ConnectedBrowser {
     pub family: String,
     pub header_enabled: Option<bool>,
+    /// issue #2294 / #2209：扩展连上了但 ID 未登记时为 false。
+    /// 用来区分「扩展没连上」与「连上了但本版本不认识」，避免用户只看到「未连接」。
+    pub recognized: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -73,21 +76,29 @@ fn browser_info(info: &Value) -> Result<Option<ConnectedBrowser>> {
     let family = info["family"].as_str().unwrap_or_default();
     let extension = info["metadata"]["extensionId"].as_str().unwrap_or_default();
     ensure!(
-        matches!(
-            (family, extension),
-            ("edge", "odlomjlbamekndcpllcnffbgeohgkmjh")
-                | ("chrome", "hehggadaopoacecdllhhajmbjkdcmajg")
-        ),
-        "Unknown browser extension"
-    );
-    ensure!(
         info.get("agentRequestHeaderEnabled")
             .is_none_or(Value::is_boolean),
         "Invalid header status"
     );
+    // 已登记的两对 ID 照旧直接接受；同 family 但 ID 未登记的扩展降级展示，
+    // 让用户在 UI 上能区分「扩展没连上」与「连上了但本版本不认识它的 ID」。
+    let recognized = matches!(
+        (family, extension),
+        ("edge", "odlomjlbamekndcpllcnffbgeohgkmjh")
+            | ("chrome", "hehggadaopoacecdllhhajmbjkdcmajg")
+    );
+    if !recognized {
+        // 仍要求 family 是我们支持的两个浏览器之一，否则宁可报错也不猜。
+        ensure!(
+            matches!(family, "edge" | "chrome"),
+            "Unknown browser extension"
+        );
+        ensure!(extension.len() <= 128, "Invalid extension id");
+    }
     Ok(Some(ConnectedBrowser {
         family: family.into(),
         header_enabled: info["agentRequestHeaderEnabled"].as_bool(),
+        recognized,
     }))
 }
 
@@ -237,11 +248,38 @@ mod tests {
     fn rejects_unknown_extensions_and_malformed_status() {
         assert!(browser_info(&json!({})).is_err());
         assert!(browser_info(&edge(json!("true"))).is_err());
-        let mut info = edge(json!(true));
-        info["metadata"]["extensionId"] = json!("other");
-        assert!(browser_info(&info).is_err());
         assert_eq!(browser_info(&json!({"type":"iab"})).unwrap(), None);
         assert_eq!(browser_info(&json!({"type":"cdp"})).unwrap(), None);
+        // 已登记的 ID 必须标记为 recognized。
+        assert!(browser_info(&edge(json!(true))).unwrap().unwrap().recognized);
+        // 既不是 edge/chrome 也不是 extension 的后端仍然拒绝。
+        let mut info = edge(json!(true));
+        info["family"] = json!("firefox");
+        info["metadata"]["extensionId"] = json!("other");
+        assert!(browser_info(&info).is_err());
+    }
+
+    /// issue #2294 / #2209：同 family 但 ID 未登记时降级展示，而不是当成「没连上」。
+    #[test]
+    fn unregistered_extension_of_a_known_family_is_shown_as_unrecognized() {
+        for family in ["edge", "chrome"] {
+            let mut info = edge(json!(true));
+            info["family"] = json!(family);
+            info["metadata"]["extensionId"] = json!("unregistered-extension-id");
+            let browser = browser_info(&info).unwrap().unwrap();
+            assert_eq!(browser.family, family);
+            assert!(!browser.recognized);
+            assert_eq!(browser.header_enabled, Some(true));
+        }
+        // 降级展示不影响连接状态判定：它确实是连上的。
+        let mut info = edge(json!(false));
+        info["metadata"]["extensionId"] = json!("unregistered");
+        let browser = browser_info(&info).unwrap().unwrap();
+        assert_eq!(summarize(vec![browser], 0).state, "available");
+        // 畸形 ID 仍拒绝。
+        let mut info = edge(json!(true));
+        info["metadata"]["extensionId"] = json!("x".repeat(129));
+        assert!(browser_info(&info).is_err());
     }
 
     #[test]
