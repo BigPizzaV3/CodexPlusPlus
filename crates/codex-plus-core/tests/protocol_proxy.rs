@@ -1278,6 +1278,161 @@ fn responses_request_merges_reasoning_text_and_tool_calls_like_ccx() {
 }
 
 #[test]
+fn responses_request_keeps_reasoning_when_text_message_precedes_tool_call() {
+    // issue #2210：reasoning → 不带 tool_calls 的 assistant 文本消息 → function_call。
+    // 文本消息先把 pending_reasoning 消费掉，随后的 function_call 走
+    // flush_tool_calls 的 merge 分支（最后一条已是 assistant），旧实现在那里
+    // 提前 return，把这条 reasoning 静默丢弃。
+    // 注意与 responses_request_merges_reasoning_text_and_tool_calls_like_ccx 的区别：
+    // 那个用例里 reasoning 直接跟在 assistant 之后，走的是新建 assistant 分支。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-pro",
+        "input": [
+            {
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{ "type": "summary_text", "text": "先看仓库状态。" }]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "我先检查一下。" }]
+            },
+            {
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{ "type": "summary_text", "text": "需要跑 git status。" }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_009",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_009",
+                "output": "clean"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let assistant = converted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message.get("tool_calls").is_some())
+        .expect("应存在带 tool_calls 的 assistant 消息");
+
+    assert_eq!(assistant["content"], "我先检查一下。");
+    assert_eq!(assistant["tool_calls"][0]["id"], "call_009");
+    // 两段 reasoning 归并到同一条 assistant 上（先来的已由文本消息附着，
+    // 后来的由 merge 分支追加）。关键是**一点都不能丢**。
+    let reasoning = assistant["reasoning_content"].as_str().unwrap_or("");
+    assert!(
+        reasoning.contains("先看仓库状态。"),
+        "文本消息阶段的 reasoning 不能丢：{reasoning:?}"
+    );
+    assert!(
+        reasoning.contains("需要跑 git status。"),
+        "merge 分支必须消费 pending_reasoning，不能静默丢弃：{reasoning:?}"
+    );
+}
+
+#[test]
+fn responses_request_relocates_developer_notice_between_tool_outputs() {
+    // issue #2275 / #2257：<image_resize_notice> 这类提示以 developer（映射成 system）
+    // 形式插在两条 tool 结果之间。配对判定用 take_while 只数连续 tool 消息，
+    // 数到夹心就停，于是第二个 tool_call 被判 orphaned 从 tool_calls 摘掉，
+    // 而它的 tool 消息还在原位 → 上游 400「No tool output found for tool call」。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-pro",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_a",
+                "name": "view_image",
+                "arguments": "{\"path\":\"a.png\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_b",
+                "name": "view_image",
+                "arguments": "{\"path\":\"b.png\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_a",
+                "output": "a ok"
+            },
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": "<image_resize_notice>a.png resized</image_resize_notice>" }]
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_b",
+                "output": "b ok"
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "继续" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+
+    // 每个 tool 消息都必须能找到恰好一条含该 tool_call_id 的 assistant.tool_calls。
+    let mut declared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for message in messages {
+        if let Some(tool_calls) = message.get("tool_calls").and_then(|value| value.as_array()) {
+            for tool_call in tool_calls {
+                declared.insert(tool_call["id"].as_str().unwrap().to_string());
+            }
+        }
+    }
+    assert!(declared.contains("call_a"), "call_a 不应被判 orphaned");
+    assert!(
+        declared.contains("call_b"),
+        "call_b 不应被判 orphaned（夹心消息必须被搬走）"
+    );
+
+    for (position, message) in messages.iter().enumerate() {
+        if message.get("role").and_then(|value| value.as_str()) != Some("tool") {
+            continue;
+        }
+        let id = message["tool_call_id"].as_str().unwrap();
+        assert!(
+            declared.contains(id),
+            "第 {position} 条 tool 消息（{id}）没有前置 tool_calls"
+        );
+        // 相邻前一条不能是 developer 通知（说明夹心已被搬走）。
+        if position > 0 {
+            let previous = messages[position - 1]["content"]
+                .as_str()
+                .unwrap_or("");
+            assert!(
+                !previous.contains("image_resize_notice"),
+                "夹心通知仍插在 tool 结果之间"
+            );
+        }
+    }
+
+    // 至少有一条 tool 消息承载了 b 的结果，且内容没丢。
+    assert!(
+        messages.iter().any(|message| {
+            message.get("tool_call_id").and_then(|value| value.as_str()) == Some("call_b")
+        }),
+        "call_b 的结果不能丢失"
+    );
+}
+
+#[test]
 fn responses_request_normalizes_empty_assistant_messages_for_chat_upstream() {
     let converted = responses_to_chat_completions(json!({
         "model": "deepseek-chat",

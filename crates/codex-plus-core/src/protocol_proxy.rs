@@ -246,7 +246,11 @@ pub fn responses_to_chat_completions_with_options(
     if let Some(input) = body.get("input") {
         append_responses_input(input, &mut messages);
     }
+    // 必须在 enforce_tool_call_pairing 之前：配对一旦被错误摘除就无法恢复。
+    relocate_interleaved_non_tool_messages(&mut messages);
     enforce_tool_call_pairing(&mut messages);
+    // 配对判定之后仍有无主 tool 消息（上游会直接 400），降级成 user 保住内容。
+    degrade_unpaired_tool_messages(&mut messages);
     // 必须在 enforce_tool_call_pairing 之后：它依赖 tool 消息的连续性，
     // 而这一步会往中间插入 user 消息。
     relocate_tool_output_images(&mut messages);
@@ -3374,6 +3378,114 @@ fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
 ///
 /// 这里把没有配对 output 的 tool_call 从消息里摘掉，降级成文本保留在历史中，
 /// 避免丢失「模型曾试图调用某工具」这一信息。
+/// 把插在「连续 tool 结果」之间的非 tool 消息整体搬到该 tool 区之后
+/// （issue #2275 / #2257）。
+///
+/// 上游 codex 会把 `<image_resize_notice>` 这类提示以 developer（映射成 system）
+/// 或 user 消息的形式插在两条 tool 结果之间，形成夹心结构：
+/// `assistant(tool_calls=[a,b]) → tool(a) → developer → tool(b)`。
+/// `enforce_tool_call_pairing` 用 `take_while` 只收集「role 连续为 tool」的后续消息，
+/// 数到夹心就停，于是 followers 只有 1 条、`b` 被误判 orphaned 并从 `tool_calls`
+/// 摘掉，但 `b` 的 tool 消息还留在原地 —— 这正是「role 'tool' 无前置 tool_calls」
+/// 与「No tool output found for tool call」的来源。
+///
+/// 这里在配对判定**之前**把夹心消息移到 tool 区之后，使 tool 结果重新连续。
+/// system 形态的夹心会被后续的 `collapse_system_messages_to_head` 带到头部（合法），
+/// user 形态的则留在 tool 区之后（同样合法）。
+fn relocate_interleaved_non_tool_messages(messages: &mut Vec<Value>) {
+    let mut index = 0;
+    while index < messages.len() {
+        let Some(tool_calls) = messages[index].get("tool_calls").and_then(Value::as_array) else {
+            index += 1;
+            continue;
+        };
+        let mut unanswered: BTreeSet<String> = tool_calls
+            .iter()
+            .filter_map(|tool_call| tool_call.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect();
+        if unanswered.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        // 从本条 assistant 往后扫，收集本轮的所有 tool 结果与夹在其中的非 tool 消息，
+        // 直到 tool_call 集合配齐、撞上下一条 assistant（新轮次，不能越界）、或到底。
+        let mut tool_messages: Vec<Value> = Vec::new();
+        let mut interleaved: Vec<Value> = Vec::new();
+        let mut scan = index + 1;
+        while scan < messages.len() {
+            let role = messages[scan].get("role").and_then(Value::as_str);
+            if role == Some("assistant") {
+                break;
+            }
+            if role == Some("tool") {
+                if let Some(id) = messages[scan].get("tool_call_id").and_then(Value::as_str) {
+                    unanswered.remove(id);
+                }
+                tool_messages.push(messages[scan].clone());
+            } else if !tool_messages.is_empty() {
+                // 只有已经收到过 tool 结果之后的夹心才值得搬：
+                // 本条 assistant 尚未收到任何结果时，中间的消息是正常历史，不是夹心。
+                interleaved.push(messages[scan].clone());
+            }
+            scan += 1;
+            if unanswered.is_empty() {
+                break;
+            }
+        }
+
+        if interleaved.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        // 重建这段区间：tool 结果。配齐时）在前、夹心消息在后。
+        let rebuilt: Vec<Value> = tool_messages.into_iter().chain(interleaved).collect();
+        let rebuilt_len = rebuilt.len();
+        messages.splice(index + 1..scan, rebuilt);
+        // 跳过刚重建的区间，避免在搬动过的消息上重复扫描导致死循环。
+        index += 1 + rebuilt_len;
+    }
+}
+
+/// 把没有前置 `tool_calls` 的 tool 消息降级成 user（issue #2275 / #2257 的防线）。
+///
+/// `enforce_tool_call_pairing` 目前只清理 assistant 侧（把 orphaned 的 tool_call
+/// 从 `tool_calls` 摘掉），被摘掉的那些 tool 消息本身仍留在原位，上游会直接
+/// 400「No tool output found for tool call」。这里把它们降级成 user，保住内容
+/// 且不再触发协议错误。
+fn degrade_unpaired_tool_messages(messages: &mut [Value]) {
+    let mut known: BTreeSet<String> = BTreeSet::new();
+    for message in messages.iter() {
+        if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for tool_call in tool_calls {
+                if let Some(id) = tool_call.get("id").and_then(Value::as_str) {
+                    known.insert(id.to_string());
+                }
+            }
+        }
+    }
+
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(Value::as_str) != Some("tool") {
+            continue;
+        }
+        let paired = message
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| known.contains(id));
+        if paired {
+            continue;
+        }
+        let content = message.get("content").cloned().unwrap_or(Value::Null);
+        *message = json!({
+            "role": "user",
+            "content": content
+        });
+    }
+}
+
 fn enforce_tool_call_pairing(messages: &mut [Value]) {
     let mut index = 0;
     while index < messages.len() {
@@ -3648,6 +3760,19 @@ fn flush_tool_calls(
     if let Some(last) = messages.last_mut() {
         if last.get("role").and_then(Value::as_str) == Some("assistant") {
             merge_tool_calls_into_message(last, std::mem::take(pending_tool_calls));
+            // 合并路径同样要消费 pending_reasoning（issue #2210）。
+            // 触发时序：reasoning item → 不带 tool_calls 的 assistant 文本消息
+            // （pending_tool_calls 为空，reasoning 被附加到该文本消息并 take）→
+            // function_call。此时最后一条已是 assistant，走本分支提前 return，
+            // 若这里不追加，随后的 reasoning 就随函数返回被静默丢弃；
+            // 而 ensure_tool_call_reasoning_content 只补 content 与
+            // reasoning_content 同时为空的占位，content 非空时补不上。
+            if !pending_reasoning.is_empty() {
+                append_reasoning_to_assistant_message(
+                    last,
+                    &std::mem::take(pending_reasoning).join("\n"),
+                );
+            }
             return;
         }
     }
