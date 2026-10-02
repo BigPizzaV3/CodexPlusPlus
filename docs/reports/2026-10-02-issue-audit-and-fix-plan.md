@@ -830,6 +830,78 @@
 
 ---
 
+### 9.1 执行结果（2026-10-02 晚，实测更新）
+
+上表是审计当时的判断。实际执行时逐条复核，**有两处结论被推翻**，另有一处判断被更正。
+
+| PR | 上表处置 | 实际执行 | 变动原因 |
+|---|---|---|---|
+| #2366 | 要求修改（与 #2333 合并） | ✅ **已合入** `ea82bc74` | 实测不碰 `crates/`、无冲突、331 passed；与 #2333 的重叠可留待后者 rebase 时处理，不必阻塞 |
+| #2337 | 要求修改后合并 | ✅ **关闭**，由 `5bb4f636` 覆盖 | 已按其思路落地且改的是分片而非产物 |
+| #2371 | 建议合并 | ✅ **关闭**，由 `93a66453` 覆盖 | 其两处缺陷（cfg 属性被注释挤偏、测试断言 CI 非提权）在落地时修正 |
+| #2333 | 与 #2366 合并 | ⚠️ **要求修改** | **实测发现真实回归**，见下 |
+| #2309 | 要求修改 | ⚠️ **要求修改** | 两个阻断项经核实成立，见下 |
+| #2313 | 要求修改（范围过大） | ⚠️ **可合，先 rebase** | 更正：冲突是陈旧基线而非设计问题 |
+| #2303 | 要求修改后合并 | ⚠️ **可合，先 rebase** | **推翻「并发验证是阻断项」**，见下 |
+
+#### 推翻 1：#2333 的回归（上表未发现）
+
+上表只提「与 #2366 冲突」，未发现它引入了**静默换模型**。
+
+实测（独立 worktree，PR 分支 `43c53e50`）：
+
+```
+test model_catalog_uses_active_relay_profile_model_list_and_actual_provider ... FAILED
+  left: String("deepseek-coder")   right: "qwen3-coder"
+```
+
+链条：`relay_config.rs:4079-4082` 的 `merge_model_into_model_list` 无条件把配置模型提到首位 →
+`model_catalog.rs:227` 的 `any("item == &model")` 必然命中 → PR 改成「已在列表中就不提升」后首位变化 →
+落空 → 走 `models.first()` → 默认模型被换成 `modelList` 第一条。
+
+作者只跑 `--lib` 与 `--test relay_config`，恰好漏掉会红的 `tests/model_catalog.rs`，因此标了 MERGEABLE。
+
+**教训**：审查贡献者 PR 时，「PR 自带测试是否覆盖了整个 workspace」必须单独验；只信 PR 描述里的测试命令会漏掉跨 target 的回归。
+
+#### 推翻 2：#2303 的「并发验证阻断项」（上表判断有误）
+
+上表称「唯一合入阻断项 = 重跑并发验证连续 5 次」。实测：
+
+- 默认并发下 5 次**全过**（139 passed × 5），未能复现失败；
+- `--test-threads=32` 加压后本 PR 分支 5 次挂 3 次，失败用例是
+  `upstream_request_returns_when_provider_accepts_but_never_sends_headers`
+  （`assert!(started.elapsed() < Duration::from_secs(1))`，墙钟断言）；
+- **决定性对照：main 上同样加压同样会挂同一个用例**（`protocol_proxy.rs:3269`，函数体逐字节相同）。
+
+结论：那是 main 上**既有的**时间敏感 flake，不是本 PR 引入的。把它当阻断项会误判。
+真正的阻断项是分支落后 main 34 个提交、且 `App.tsx` 那条改动在 main 上早已由 `443c8348` 完成。
+
+另更正上表的一条约束：「保留 `compaction: bool` 单一标记路线」是反的——加入原生透传后，
+`compaction` 语义已分裂为「需要代理重组」，单靠它无法区分透传与合成，多字段反而更清晰。
+
+#### 更正：#2313 的冲突性质
+
+上表称「范围过大需拆分」。复核后：方案质量高（真锁替换轮询消除 TOCTOU、退出改为事后核实、
+停止顺序短路），冲突只有 1 处且是**陈旧基线**——main 的 `04ab6290`（#2294）把
+`recovery_material` 从 3 参改成 2 参，取 main 侧即可、不丢任何语义。
+在临时 worktree 按此解冲突后整棵树编译并全绿（1395 / 75 / 331）。
+
+需作者改的只有一处幽灵参数（`verify_restored_state` 的 `contract` 已零使用）。
+**不应因这次冲突要求改设计。**
+
+#### #2309 的两个阻断项（均经实测核实）
+
+1. **`codexDeleteStyleVersion` 撞车**：main 与本 PR 分支**都写成 `"25"`**，内容不同、值相同 →
+   git 判无冲突静默取 25 → 本 PR 的 78 行标题栏 CSS 在已装过 main 版 25 的页面上永不生效。
+   必须 rebase 成 26。
+2. **`Err(_)` 抵消 `5bb4f636`**：`Ok(true) | Err(_) => backoff.reset()` 立即清零退避；
+   且 `evaluate_bridge_health_script` 把 renderer 抛异常判为 `Err` → **越忙越清零**，方向相反。
+
+另：1039 行混了 5 个关注点，其中看门狗主动探测那组（`bridge.rs` / `launcher.rs` / `cdp_bridge.rs`）
+应整组拆出单独讨论；标题栏入口本身是真能力。
+
+---
+
 ## 附：结论计数
 
 - issue 结论总数：**116 条**（`confirmed-in-code` 31 / `likely` 37 / `already-fixed` 19 / `not-our-bug` 17 / `insufficient-info` 12）
