@@ -5184,7 +5184,7 @@ input[type="range"]:disabled {
 
 .relay-model-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(110px, 0.6fr) minmax(180px, 1fr) 40px 40px;
+  grid-template-columns: 32px minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(110px, 0.6fr) minmax(180px, 1fr) 40px 40px;
   align-items: center;
   gap: 8px;
   min-height: var(--relay-control-height);
@@ -5204,9 +5204,44 @@ input[type="range"]:disabled {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
+.relay-model-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: grab;
+  touch-action: none;
+}
+
+.relay-model-drag:hover,
+.relay-model-drag:focus-visible {
+  border-color: hsl(var(--border));
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+}
+
+.relay-model-drag:active {
+  cursor: grabbing;
+}
+
+.relay-model-drag svg {
+  pointer-events: none;
+}
+
 .relay-model-entry {
   display: grid;
   gap: 8px;
+}
+
+.relay-model-entry.dragging {
+  position: relative;
+  z-index: 1;
+  opacity: 0.82;
 }
 
 .relay-model-import-workbench {
