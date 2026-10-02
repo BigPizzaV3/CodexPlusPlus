@@ -1571,3 +1571,329 @@ describe("拓展菜单项", () => {
     assert.ok(!/try\s*{[\s\S]*item\.onActivate\(/.test(body), "不应裸调 onActivate");
   });
 });
+
+/**
+ * 会话视图对齐（issue #2258 / #2085）的夹具运行时。
+ *
+ * 这里跑的是产物里真实的目标查找与宽度计算函数，配一个极简 DOM 桩——
+ * 只实现查找链路真正用到的方法（querySelector/matches/closest/getBoundingClientRect）。
+ * 类名夹具直接取自 Codex 打包产物里的字符串，不手写臆造。
+ */
+function conversationViewRuntime(renderer: string) {
+  const start = renderer.indexOf("  // 旧版（26.9xx 之前）内容容器类名清单");
+  const end = renderer.indexOf("  function codexServiceTierBadgeVisibleElement(", start);
+  assert.ok(start >= 0 && end > start, "conversation view target finder block not found");
+  const finderSource = renderer.slice(start, end);
+  // 宽度计算与目标查找在文件里不相邻，单独切一段。
+  const widthStart = renderer.indexOf("  function conversationViewEffectiveWidth(");
+  const widthEnd = renderer.indexOf("  function conversationViewHtmlCenter(", widthStart);
+  assert.ok(widthStart >= 0 && widthEnd > widthStart, "conversation view width block not found");
+  const widthSource = renderer.slice(widthStart, widthEnd);
+  const source = `${finderSource}\n${widthSource}`;
+
+  const selectorStart = renderer.indexOf("  const selectors = {");
+  const selectorEnd = renderer.indexOf("  };", selectorStart) + 4;
+  assert.ok(selectorStart >= 0, "selectors table not found");
+  const selectorsTable = renderer.slice(selectorStart, selectorEnd);
+
+  type FakeEl = {
+    tagName: string;
+    className: string;
+    attrs: Record<string, string>;
+    children: FakeEl[];
+    parentElement: FakeEl | null;
+    style: Record<string, string>;
+    dataset: Record<string, string>;
+    rect: { left: number; width: number };
+    vars: Record<string, string>;
+    padding: { left: string; right: string };
+    querySelectorAll(selector: string): FakeEl[];
+    querySelector(selector: string): FakeEl | null;
+    matches(selector: string): boolean;
+    closest(selector: string): FakeEl | null;
+    getBoundingClientRect(): { left: number; width: number; right: number; top: number; bottom: number; height: number };
+  };
+
+  function matches(el: FakeEl, selector: string): boolean {
+    if (selector === "div") return el.tagName === "DIV";
+    if (selector.startsWith("[") && selector.endsWith("]")) {
+      const body = selector.slice(1, -1);
+      const eq = body.indexOf("=");
+      const name = eq === -1 ? body : body.slice(0, eq);
+      const value = eq === -1 ? null : body.slice(eq + 1).replace(/^["']|["']$/g, "");
+      const actual = el.attrs[name];
+      if (actual === undefined) return false;
+      return value === null ? true : actual === value;
+    }
+    if (selector.startsWith(".")) return el.className.split(/\s+/).includes(selector.slice(1));
+    throw new Error(`夹具未实现的选择器: ${selector}`);
+  }
+
+  function descendants(root: FakeEl, out: FakeEl[] = []): FakeEl[] {
+    for (const child of root.children) {
+      out.push(child);
+      descendants(child, out);
+    }
+    return out;
+  }
+
+  function query(root: FakeEl, selector: string): FakeEl[] {
+    const parts = selector.split(",").map((part) => part.trim());
+    return descendants(root).filter((el) => parts.some((part) => matches(el, part)));
+  }
+
+  function el(tag: string, className = "", attrs: Record<string, string> = {}): FakeEl {
+    const node: FakeEl = {
+      tagName: tag.toUpperCase(),
+      className,
+      attrs,
+      children: [],
+      parentElement: null,
+      style: {},
+      dataset: {},
+      rect: { left: 0, width: 0 },
+      vars: {},
+      padding: { left: "", right: "" },
+      querySelectorAll: (selector: string) => query(node, selector),
+      querySelector: (selector: string) => query(node, selector)[0] ?? null,
+      matches: (selector) => matches(node, selector),
+      closest: (selector) => {
+        let current: FakeEl | null = node;
+        while (current) {
+          if (matches(current, selector)) return current;
+          current = current.parentElement;
+        }
+        return null;
+      },
+      getBoundingClientRect: () => ({
+        left: node.rect.left,
+        width: node.rect.width,
+        right: node.rect.left + node.rect.width,
+        top: 0,
+        bottom: 0,
+        height: 0,
+      }),
+    };
+    return node;
+  }
+
+  function append(parent: FakeEl, child: FakeEl): FakeEl {
+    parent.children.push(child);
+    child.parentElement = parent;
+    return child;
+  }
+
+  const root = el("body");
+  const documentValue = {
+    querySelector: (selector: string) => query(root, selector)[0] ?? null,
+    querySelectorAll: (selector: string) => query(root, selector),
+    documentElement: { getBoundingClientRect: () => ({ left: 0, width: 1440, right: 1440, top: 0, bottom: 0, height: 0 }) },
+  };
+  const factory = new Function(
+    "document",
+    "getComputedStyle",
+    "sendCodexPlusDiagnostic",
+    "codexPlusSettings",
+    "localStorage",
+    `${selectorsTable}
+const conversationViewMinWidth = 320;
+const conversationViewMaxAllowedWidth = 4000;
+const conversationViewDefaultWidth = 900;
+const conversationViewLegacyWidthKey = "codexPlus.threadCenter.maxWidth";
+// 夹具只需要观察 style 写入结果，原始值记录这一步用空实现顶掉。
+function conversationViewRememberOriginals() {}
+function normalizeConversationViewWidth(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(320, Math.min(4000, Math.round(number)));
+}
+function conversationViewWidth() {
+  const settingsWidth = normalizeConversationViewWidth(codexPlusSettings().conversationViewMaxWidth);
+  if (settingsWidth) return settingsWidth;
+  const legacyWidth = normalizeConversationViewWidth(localStorage.getItem(conversationViewLegacyWidthKey));
+  return legacyWidth || 900;
+}
+${source}
+return {
+  findContent: conversationViewFindContentEl,
+  findComposer: conversationViewFindComposerEl,
+  effective: conversationViewEffectiveWidth,
+  available: conversationViewAvailableWidth,
+  apply: conversationViewApplyNativeWidth,
+};`,
+  );
+
+  const api = factory(
+    documentValue,
+    (node: FakeEl) => {
+      // 同时充当 padding 来源与 CSSStyleDeclaration：兜底的变量反查会读索引属性。
+      const style: Record<string, unknown> = {
+        paddingLeft: node.padding.left,
+        paddingRight: node.padding.right,
+        length: Object.keys(node.vars).length,
+        getPropertyValue: (name: string) => node.vars[name] ?? "",
+      };
+      Object.keys(node.vars).forEach((name, index) => { style[index] = name; });
+      return style;
+    },
+    () => undefined,
+    () => ({ conversationView: true, conversationViewMaxWidth: 900 }),
+    { getItem: () => null },
+  ) as {
+    findContent(): FakeEl | null;
+    findComposer(): FakeEl | null;
+    effective(containerWidth: number): number;
+    available(el: FakeEl): number;
+    apply(el: FakeEl, effectiveWidth: number): void;
+  };
+
+  return { root, el, append, api };
+}
+
+describe("renderer injection conversation view alignment", () => {
+  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  // 夹具类名取自真实产物：
+  //   旧版内容容器 "… flex shrink-0 flex-col pb-8"
+  //   新版内容容器 "relative flex flex-1 shrink-0 flex-col"
+  //   页脚包裹层   "relative z-10 flex flex-col mx-auto w-full max-w-(--thread-content-max-width) px-toolbar"
+  const legacyContentClass = "mx-auto w-full max-w-(--thread-content-max-width) px-toolbar relative flex shrink-0 flex-col pb-8";
+  const newContentClass = "relative flex flex-1 shrink-0 flex-col";
+
+  async function buildFixture(mode: "legacy" | "modern") {
+    const runtime = conversationViewRuntime(await readFile(rendererPath, "utf8"));
+    const scroller = runtime.append(runtime.root, runtime.el("div", "thread-scroll-container"));
+    const host = runtime.append(scroller, runtime.el("div", "h-full flex"));
+    if (mode === "legacy") {
+      runtime.append(host, runtime.el("div", legacyContentClass));
+    } else {
+      // 新版：结构上只剩居中 + 满宽 + thread 宽度工具类，pb-8 已并入条件组合。
+      runtime.append(host, runtime.el(
+        "div",
+        "relative flex flex-1 shrink-0 flex-col",
+        { "data-thread-user-message-navigation-content": "" },
+      ));
+    }
+    // 页脚包裹层带同样的宽度工具类，是最容易被误认成内容容器的节点。
+    const footer = runtime.append(host, runtime.el(
+      "div",
+      "relative z-10 flex flex-col mx-auto w-full max-w-(--thread-content-max-width) px-toolbar",
+      { "data-thread-scroll-footer": "true" },
+    ));
+    runtime.append(footer, runtime.el(
+      "div",
+      "mx-auto flex w-full max-w-(--thread-body-max-width) flex-col gap-8",
+    ));
+    return { runtime, scroller, host, footer };
+  }
+
+  it("旧版类名容器仍然命中", async () => {
+    const { runtime } = await buildFixture("legacy");
+    const found = runtime.api.findContent();
+    assert.ok(found, "旧版类名应命中");
+    assert.match(found.className, /pb-8/);
+  });
+
+  // 回归点：新版 Codex 把 max-w-(--thread-content-max-width) 换成
+  // max-w-(--thread-body-max-width)、pb-8 消失后，全等匹配归零、居中宽度规则整体失效（#2258）。
+  it("新版容器结构变化后仍能命中内容容器", async () => {
+    const { runtime, footer } = await buildFixture("modern");
+    const found = runtime.api.findContent();
+    assert.ok(found, "新版类名变化后必须仍有降级路径，不能返回 null");
+    assert.notEqual(found, footer, "不能把页脚包裹层当成内容容器");
+    assert.equal(found.attrs["data-thread-user-message-navigation-content"], "");
+  });
+
+  it("作曲器优先落在页脚结构内，而不是内容容器", async () => {
+    const { runtime, footer } = await buildFixture("modern");
+    const found = runtime.api.findComposer();
+    assert.ok(found, "作曲器应命中");
+    assert.ok(found.closest("[data-thread-scroll-footer]"), "作曲器应在页脚包裹层内");
+    assert.notEqual(found, footer);
+  });
+
+  // 用途词换过好几轮（content → body），所以按形状而不是字面量识别；
+  // 与 50-navigation.js 的 ...FilterSourcePattern 同一套做法。
+  it("宽度工具类按形状识别，换用途词也认", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const match = renderer.match(/const conversationViewThreadWidthTokenPattern\s*=\s*\/([\s\S]*?)\/;/);
+    assert.ok(match, "未找到 conversationViewThreadWidthTokenPattern");
+    const pattern = new RegExp(match![1]);
+    for (const token of [
+      "max-w-(--thread-content-max-width)", // 旧版
+      "max-w-(--thread-body-max-width)", // 26.9xx 起
+      "max-w-(--thread-content-responsive-max-width)",
+      "md:max-w-(--thread-content-max-width)", // 带断点前缀
+    ]) {
+      assert.ok(pattern.test(token), `应命中: ${token}`);
+    }
+    // 哈希类名与无关工具类必须排掉；尤其不能把 max-w-2xl 这类固定宽度也算进来。
+    for (const token of ["max-w-2xl", "_shell_151xi_3", "max-w-full", "w-full"]) {
+      assert.ok(!pattern.test(token), `不应命中: ${token}`);
+    }
+  });
+
+  it("两处类名都不对时按 CSS 变量反查宿主节点", async () => {
+    const runtime = conversationViewRuntime(await readFile(rendererPath, "utf8"));
+    const scroller = runtime.append(runtime.root, runtime.el("div", "thread-scroll-container"));
+    const host = runtime.append(scroller, runtime.el("div", "h-full flex"));
+    // 既没有新版类名工具类，也没有 data-* 锚点，只剩 Codex 注入的 CSS 变量。
+    const bare = runtime.append(host, runtime.el("div", "some-renamed-class"));
+    bare.vars["--thread-body-max-width"] = "calc(900px + 0px)";
+    const found = runtime.api.findContent();
+    assert.ok(found, "兜底候选应能反查到宿主节点");
+    assert.equal(found, bare);
+  });
+
+  it("目标全部缺失时上报诊断，不再静默 return", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const start = renderer.indexOf("  function conversationViewAlignNow()");
+    const end = renderer.indexOf("  function conversationViewHasRoomForHtmlCenterAt(", start);
+    assert.ok(start >= 0 && end > start);
+    const body = renderer.slice(start, end);
+    assert.match(body, /conversationViewReportMissingTargets\(\)/, "归零路径必须上报诊断");
+    assert.match(renderer, /"conversation_view_target_not_found"/);
+  });
+
+  // #2085：设置值是上限，实际宽度按容器可用宽度收敛。
+  it("容器窄于设置上限时按容器宽度收敛，宽于上限时用上限", async () => {
+    const { runtime } = await buildFixture("modern");
+    // 设置 900（夹具里 conversationViewMaxWidth = 900）。
+    assert.equal(runtime.api.effective(1400), 900, "宽容器应按设置上限");
+    assert.equal(runtime.api.effective(600), 600, "窄容器应按容器可用宽度");
+    assert.equal(runtime.api.effective(0), 900, "拿不到几何时回落设置上限");
+    assert.equal(runtime.api.effective(Number.NaN), 900);
+    // 硬下限仍是既有边界，不因自适应而改变。
+    assert.equal(runtime.api.effective(100), 320);
+  });
+
+  it("可用宽度取宿主内容盒（扣掉左右内边距）", async () => {
+    const { runtime, host } = await buildFixture("modern");
+    host.rect.width = 1000;
+    host.padding.left = "16px";
+    host.padding.right = "16px";
+    const target = runtime.api.findContent()!;
+    assert.equal(runtime.api.available(target), 968);
+    // 写进 style 的是收敛后的值，不是写死设置值。
+    runtime.api.apply(target, runtime.api.effective(runtime.api.available(target)));
+    assert.equal(target.style.maxWidth, "900px");
+    host.rect.width = 500;
+    runtime.api.apply(target, runtime.api.effective(runtime.api.available(target)));
+    assert.equal(target.style.maxWidth, "468px");
+  });
+
+  // 自适应计算必须留在既有的「先统一写 style、再统一读几何」两阶段里，
+  // 否则退回 commit 82fb0924 修掉的读-写交替强制重排。
+  it("自适应计算不引入逐元素读-写交替", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const start = renderer.indexOf("  function conversationViewAlignNow()");
+    const end = renderer.indexOf("  function conversationViewReportMissingTargets(", start);
+    const body = renderer.slice(start, end);
+    // 宽度读取必须集中在写之前，且是一次 map 批量读取。
+    const readIndex = body.indexOf("conversationViewAvailableWidth(el)");
+    const writeIndex = body.indexOf("conversationViewApplyNativeWidth(el");
+    assert.ok(readIndex >= 0 && writeIndex > readIndex, "读取必须在写入之前");
+    assert.match(body, /targets\.map\(\(el\) => conversationViewAvailableWidth\(el\)\)/);
+  });
+});
