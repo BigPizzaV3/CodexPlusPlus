@@ -1,6 +1,6 @@
 # Native Edge / Chrome Request Identification Compatibility
 
-This experimental Windows option adapts a pinned native browser service so a
+This experimental Windows option adapts a verified native browser service so a
 local user can require request identification without using the service's
 cloud rollout decision for that requirement. Browser execution still uses the
 original Edge or Chrome extension and bundled native runtime. It does not install another
@@ -71,8 +71,11 @@ verified by exact SHA-256 as listed below.
 whitelist it used to be. A manifest whose hash is not listed above is parsed and
 accepted when its structure holds:
 
-- the manifest is a JSON object carrying non-null `name` and `version`;
-- `version` parses as `major.minor.patch` (optionally `v`-prefixed, optional
+- the manifest is a JSON object carrying either package `name` / `version`,
+  or Desktop's generated `runtime_archive_version` / `runtime_archive_name`;
+  the generated archive name must agree with its version and build identity;
+- the package version, or the version before `/` in an archive identity,
+  parses as `major.minor.patch` (optionally `v`-prefixed, optional
   pre-release/build suffix) and is not below `0.0.11`;
 - the runtime directory contains `bin/node_repl.exe`, `bin/node.exe`,
   `manifest.json` and
@@ -94,12 +97,13 @@ decision, which reports API-key sessions as unusable
 accepted; the structural invariants are.
 
 The browser constructor and metadata/policy callback carry no fixed names in the
-adapter. `nf/ze/cD` (0.0.11), `eh/je/sv` (0.0.24) and any later generation are
+adapter. Known profiles `nf/ze/cD` (0.0.11) and `eh/je/sv` (0.0.24) are
 matched by shape — `new <ctor>(r,this.clientApi,()=><getter>(this.runtime),this.turnEndedTracker,<policy>)`
 — with the policy callback name carried over from the source. Exactly one such
 binding must be present; ambiguity is refused rather than guessed. After
 rewriting, the adapter re-checks that the original binding is gone and that no
-compressed identifier changed its occurrence count.
+compressed identifier changed its occurrence count, accounting for inserted
+control-path literals. Unknown profiles use the AST binding checks below.
 
 The adaptation binds the same first-party, turn-scoped identification reader at
 the callback, only for the verified Chrome/Edge extension pair and while the
@@ -119,6 +123,52 @@ store build) is shown as connected but unrecognized rather than as
 disconnected, so the manager can distinguish "the extension never connected"
 from "it connected and this build does not recognize it". Both readings refuse
 compatibility; only the registered pairs are accepted by the adapter.
+
+### Semantic Compatibility
+
+A runtime update does not require a new complete-file fingerprint when its
+browser callback contract is unchanged. For builds outside the two known
+profiles, the adapter:
+
+1. Checks the generated descriptor, Windows x64 manifest paths, native executable
+   format, browser package export and the CUA worker entry's bound, awaited
+   `@oai/cua-repl.launch()` call. The manifest version must be at least 0.0.11.
+   Entry comments, formatting and added diagnostics do not require new hashes.
+2. Uses an embedded Babel AST inspector to resolve the actual constructor,
+   metadata reader and policy callback in their lexical scopes. The constructor,
+   metadata reader, policy callback, client handshake and session-request method
+   retain their callback relationships. Known session-request AST shapes are
+   fast paths; other shapes qualify through bound session parameters, awaited
+   policy invocation, header-decision data flow and request forwarding.
+   Instrumentation, local renaming and unrelated command exclusions are not
+   grounds for rejection. Metadata and policy semantics remain checked;
+   ambiguity, rebinding and changed callback relationships are rejected.
+3. Replaces only the selected policy argument with the existing local
+   identification reader. Every other service byte is retained; the helper is
+   appended. It does not rewrite worker authentication or execute the service
+   during inspection.
+
+The inspector runs in a separate, hidden instance of the selected runtime's Node,
+with inherited environment removed, a bounded heap and deadline. Input comes
+from a temporary regular file, not a potentially blocked pipe writer; the child
+is killed and reaped on timeout and the input file removed. Its source and
+vendored dependency licenses are embedded in the application. It needs no
+additional Node installation, runtime download or separately installed parser
+at runtime. Building the embedded bundle uses explicitly pinned Babel and
+esbuild devDependencies; CI verifies the complete generated bundle.
+The current contracts cover the service structures observed in CUA 0.0.11,
+0.0.24 and 0.0.27; a real protocol change, ambiguous constructor, changed callback,
+changed worker entry signature, malformed manifest or incompatible platform still blocks
+adaptation. This is not an assurance of compatibility with arbitrary future
+runtime versions.
+
+All inspected component hashes become exact transaction guards: an intervening
+file change still prevents deployment. The full original and candidate service
+hashes remain mandatory for integrity and restoration. A passing AST check or
+`prepared` status is not proof of browser connectivity or first-use success.
+Acceptance should use a clean extension profile with identification initially
+off; an already-enabled extension can skip the original failing policy callback
+even when no service patch is active.
 
 The generated `unified-computer-use/.mcp.json` descriptors must agree on the
 native Node path and original browser service. Ambiguous descriptors, manifests
@@ -161,6 +211,20 @@ reopen the target to update metadata after publishing the restored content.
 All known caches are preflighted before recovery;
 conflicting user changes are never deliberately overwritten.
 
+Known fingerprint profiles retain schema-1 recovery records. Semantically
+qualified builds use schema-2 records containing the checked callback position,
+binding names and the normalized request-method digest for audit (not a
+fixed admission list). Restoration recomputes the
+minimal transformation and requires it to equal the recorded candidate; hashes
+alone are insufficient. Both formats remain recoverable without starting Node,
+with a missing descriptor, or after other runtime components have changed.
+Deleted service caches are not recreated. Older Codex++ builds and the standalone
+browser unlocker v0.1.0 do not understand schema 2: restore with this or a newer
+compatible Codex++ before downgrading or switching recovery tools. Future
+helper or insertion-format changes must retain or version the schema-2
+reconstruction algorithm so existing journals remain recoverable. Do not delete
+the journal to suppress a conflict.
+
 To disable the adapter, save the option as off and restart Codex++ and Codex.
 The new launcher disables the helper control file and restores known candidates.
 Already-original files keep their modification times; deleted caches are not
@@ -188,7 +252,10 @@ existing control and recovery records show no remaining enabled adapter or
 candidate service.
 
 This is not a security boundary against another process with the same user's
-write access. In particular, a malicious process able to replace both recovery
+write access. The selected runtime's `node.exe` is a trust root: PE x64 validation
+does not authenticate its publisher or detect a malicious replacement before
+inspection. Component snapshots prevent subsequent drift, not pre-existing
+compromise. In particular, a malicious process able to replace both recovery
 records and files can compromise local integrity. What recovery does enforce is
 that a journal's recorded original hash matches the bytes of the actual backup
 it points at: records and files must be replaced together to forge one, and
@@ -212,8 +279,12 @@ existing tab automatically, or replace native browser execution to hide it.
 
 ## Validation
 
-Normal Rust tests use synthetic fixtures and never execute bundled proprietary
-code. Windows regression tests cover independently spelled path separators and
+Normal Rust tests use public synthetic runtimes and never execute bundled
+proprietary code. CI's Node 22 runs only our embedded inspector on the public
+service specimen; synthetic PE files are not executed. Detection, version and
+layout rejection, entry signatures, component drift, schema-2 transactions and
+recovery without Node are covered without private fixtures. Windows regression
+tests cover independently spelled path separators and
 reject genuinely conflicting paths. The explicit ignored fixture test reads a
 locally supplied pinned runtime and its actual generated descriptor, validates
 the original selection read-only, then relocates the descriptor and runtime to
