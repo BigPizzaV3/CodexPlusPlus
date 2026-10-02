@@ -75,7 +75,7 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
         "input": [
             { "type": "message", "role": "user",
               "content": [{ "type": "input_text", "text": "latest question" }] },
-            { "type": "compaction", "encrypted_content": "PRIOR_SUMMARY" }
+            local_compaction_item("PRIOR_SUMMARY")
         ]
     }))
     .unwrap();
@@ -205,7 +205,7 @@ fn compaction_stream_emits_one_done_item_before_completed() {
         "compact v2 must receive one output-item event"
     );
     assert_eq!(items[0]["type"], "compaction");
-    assert_eq!(items[0]["encrypted_content"], "Preserve this summary.");
+    assert_local_compaction_summary(&items[0], "Preserve this summary.");
     assert!(
         items[0]["id"]
             .as_str()
@@ -239,6 +239,44 @@ fn compaction_sse_events(payload: &[u8]) -> Vec<Value> {
         .filter(|data| *data != "[DONE]")
         .map(|data| serde_json::from_str(data).unwrap())
         .collect()
+}
+
+fn local_compaction_item(summary: &str) -> Value {
+    let mut converter = CompactionSseConverter::new("model");
+    converter.push_summary_text(summary);
+    compaction_sse_events(&converter.finish())
+        .into_iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap()["item"]
+        .clone()
+}
+
+fn assert_local_compaction_summary(item: &Value, summary: &str) {
+    let replay = responses_to_chat_completions(json!({"input": [item]})).unwrap();
+    let text = replay["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        text.ends_with(summary),
+        "summary must survive replay: {text}"
+    );
+}
+
+#[test]
+fn chat_conversion_rejects_unmarked_or_invalid_compaction_history() {
+    for content in [
+        "OPAQUE_NATIVE",
+        "unmarked legacy summary",
+        "codexplusplus:summary:v1:not-json",
+        "codexplusplus:summary:v1:{}",
+        "codexplusplus:summary:v1:\"\"",
+        "codexplusplus:summary:v2:\"future-format\"",
+    ] {
+        for input in [
+            json!({"type": "compaction", "encrypted_content": content}),
+            json!([{"type": "compaction", "encrypted_content": content}]),
+        ] {
+            assert!(responses_to_chat_completions(json!({"input": input})).is_err());
+        }
+    }
 }
 
 #[test]
@@ -324,12 +362,12 @@ fn compaction_converter_accepts_data_only_responses_events() {
         b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Summary\"}\n\n",
     );
     assert_eq!(converter.summary_text(), "Summary");
-    assert!(
-        compaction_sse_events(&converter.finish())
-            .iter()
-            .any(|event| event["type"] == "response.output_item.done"
-                && event["item"]["encrypted_content"] == "Summary")
-    );
+    let events = compaction_sse_events(&converter.finish());
+    let item = &events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap()["item"];
+    assert_local_compaction_summary(item, "Summary");
 }
 
 #[test]
@@ -346,14 +384,11 @@ fn compaction_converter_accepts_complete_text_from_done_events() {
         .iter()
         .find(|event| event["type"] == "response.output_item.done")
         .unwrap();
-    assert_eq!(
-        compaction["item"]["encrypted_content"],
-        "Summary from completed"
-    );
+    assert_local_compaction_summary(&compaction["item"], "Summary from completed");
 }
 
 #[test]
-fn compaction_converter_accepts_native_compaction_item_without_deltas() {
+fn summary_converter_does_not_relabel_native_compaction_as_local_text() {
     let upstream = concat!(
         "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"encrypted_content\":\"opaque-summary\"}}\n\n",
         "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
@@ -361,11 +396,26 @@ fn compaction_converter_accepts_native_compaction_item_without_deltas() {
     let mut converter = CompactionSseConverter::new("custom-model");
     converter.push_upstream_bytes(upstream.as_bytes());
     let events = compaction_sse_events(&converter.finish());
-    let compaction = events
-        .iter()
-        .find(|event| event["type"] == "response.output_item.done")
-        .unwrap();
-    assert_eq!(compaction["item"]["encrypted_content"], "opaque-summary");
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "response.failed")
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["type"] == "response.output_item.done")
+    );
+    let wrapped = wrap_non_stream_response_as_compaction(
+        br#"{"output":[{"type":"compaction","encrypted_content":"opaque-summary"}]}"#,
+        "model",
+    )
+    .unwrap();
+    assert!(
+        compaction_sse_events(&wrapped)
+            .iter()
+            .any(|event| event["type"] == "response.failed")
+    );
 }
 
 #[test]
@@ -378,7 +428,7 @@ fn compaction_converter_accepts_complete_chat_message_without_delta() {
         .iter()
         .find(|event| event["type"] == "response.output_item.done")
         .unwrap();
-    assert_eq!(compaction["item"]["encrypted_content"], "Chat summary");
+    assert_local_compaction_summary(&compaction["item"], "Chat summary");
 }
 
 #[test]
@@ -1035,7 +1085,7 @@ async fn native_compaction_history_returns_responses_error_without_fallback() {
     assert!(!retried);
     assert_eq!(result.status_code, 400);
     let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
-    assert!(body.contains("原生 v2 压缩历史"));
+    assert!(body.contains("native_compaction_unsupported"));
     assert!(body.contains("compaction_incompatible"));
 }
 
@@ -1058,7 +1108,7 @@ async fn native_compaction_history_on_chat_upstream_returns_responses_error() {
 
     assert_eq!(result.status_code, 400);
     let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
-    assert!(body.contains("原生 v2 压缩历史"));
+    assert!(body.contains("native_compaction_unsupported"));
     assert!(body.contains("compaction_incompatible"));
 }
 

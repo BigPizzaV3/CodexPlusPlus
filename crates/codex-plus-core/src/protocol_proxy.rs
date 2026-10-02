@@ -156,6 +156,9 @@ fn should_retry_after_cooldown(retries: usize) -> bool {
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
 /// codex 期望响应里恰好包含一个的压缩结果 item，`encrypted_content` 只透传不校验。
 const COMPACTION_OUTPUT_TYPE: &str = "compaction";
+/// 本地摘要的持久化格式标识；原生 encrypted_content 不使用这个命名空间。
+/// 后缀为 JSON string，不依赖客户端可能丢弃的 item id 或额外字段。
+const LOCAL_COMPACTION_PREFIX: &str = "codexplusplus:summary:v1:";
 /// 本地代理生成摘要时注入的 user 指令（对齐 openai/codex prompts/templates/compact/prompt.md）。
 const COMPACTION_SUMMARY_INSTRUCTION: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.";
 /// 历史回放时 `compaction` item 展开成的文本前缀（对齐 codex SUMMARY_PREFIX 语义）。
@@ -358,9 +361,13 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
 }
 
 pub fn responses_to_chat_completions_with_options(
-    body: Value,
+    mut body: Value,
     standard: bool,
 ) -> anyhow::Result<Value> {
+    expand_local_compaction_history(&mut body);
+    if input_has_native_compaction(&body) {
+        return Err(NativeCompactionUnsupported::history().into());
+    }
     // agent 加密内容没有 Chat 文本映射。发送前明确拒绝；不按字段名猜测明文，
     // 也不遍历工具参数/输出里的用户 JSON。reasoning 和 compaction 保持原契约。
     if body.get("input").is_some_and(input_has_encrypted_agent_content) {
@@ -1013,7 +1020,7 @@ impl CompactionSseConverter {
         let compaction_item = json!({
             "id": self.compaction_id,
             "type": COMPACTION_OUTPUT_TYPE,
-            "encrypted_content": self.summary
+            "encrypted_content": format!("{LOCAL_COMPACTION_PREFIX}{}", json!(self.summary))
         });
         for (sequence_number, event_type) in [
             (1, "response.output_item.added"),
@@ -1115,11 +1122,6 @@ fn extract_summary_text_from_response_item(item: &Value) -> String {
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join("\n"),
-        Some(COMPACTION_OUTPUT_TYPE) => item
-            .get("encrypted_content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
         _ => String::new(),
     }
 }
@@ -1399,7 +1401,7 @@ struct NativeCompactionUnsupported {
 impl NativeCompactionUnsupported {
     fn history() -> Self {
         Self {
-            message: "原生 v2 压缩历史无法由不支持 v2 的上游生成兼容摘要",
+            message: "This compaction checkpoint cannot be converted to a text summary. Use a compatible Responses upstream or start a new conversation.",
         }
     }
 }
@@ -1431,7 +1433,7 @@ fn native_compaction_unsupported_result(
             content_type: "application/json".to_string(),
             is_stream: false,
             wire_api: UpstreamWireApi::Responses,
-            compaction: true,
+            compaction: false,
             native_compaction_passthrough: false,
             buffered_body: Some(serde_json::to_vec(&body).unwrap_or_default()),
             response: None,
@@ -1452,17 +1454,44 @@ fn input_has_native_compaction(body: &Value) -> bool {
     }
 }
 
-/// 历史回放：把 codex 历史里的 `compaction` item 展开成明文 user 消息。
-/// codex 下游请求会把上次压缩结果作为 `{"type":"compaction","encrypted_content":"..."}`
-/// 放进 input，第三方模型看不懂该类型，必须转成文本。
+/// 只展开带版本标识、可解码的本地摘要；未知/旧格式仍视为原生状态。
 fn expand_compaction_item(item: &Value) -> Option<Value> {
-    let summary = item.get("encrypted_content").and_then(Value::as_str)?;
+    if item.get("type").and_then(Value::as_str) != Some(COMPACTION_OUTPUT_TYPE) {
+        return None;
+    }
+    let encoded = item
+        .get("encrypted_content")?
+        .as_str()?
+        .strip_prefix(LOCAL_COMPACTION_PREFIX)?;
+    let summary: String = serde_json::from_str(encoded).ok()?;
+    if summary.trim().is_empty() {
+        return None;
+    }
     let mut text = COMPACTION_REPLAY_PREFIX.to_string();
-    text.push_str(summary);
+    text.push_str(&summary);
     Some(json!({
+        "type": "message",
         "role": "user",
-        "content": text
+        "content": [{ "type": "input_text", "text": text }]
     }))
+}
+
+fn expand_local_compaction_history(body: &mut Value) {
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Some(message) = expand_compaction_item(item) {
+                    *item = message;
+                }
+            }
+        }
+        Some(input @ Value::Object(_)) => {
+            if let Some(message) = expand_compaction_item(input) {
+                *input = json!([message]);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Default for ChatSseToResponsesConverter {
@@ -1763,6 +1792,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     session_headers: ProxySessionHeaders<'_>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
+    expand_local_compaction_history(&mut request_json);
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -4256,15 +4286,6 @@ fn append_responses_item(
                 if !text.is_empty() {
                     pending_reasoning.push(text);
                 }
-            }
-        }
-        Some(COMPACTION_OUTPUT_TYPE) => {
-            // codex 历史回放：上次压缩的结果以 `compaction` item 形式出现在 input
-            // 里，`encrypted_content` 是我们生成的明文摘要，展开成 user 消息喂给上游。
-            flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
-            flush_reasoning(messages, pending_reasoning);
-            if let Some(message) = expand_compaction_item(item) {
-                messages.push(message);
             }
         }
         Some(COMPACTION_TRIGGER_TYPE) => {
