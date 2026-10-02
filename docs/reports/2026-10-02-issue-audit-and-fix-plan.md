@@ -902,6 +902,54 @@ test model_catalog_uses_active_relay_profile_model_list_and_actual_provider ... 
 
 ---
 
+### 9.2 #2378（当晚新提，补审）
+
+@Yuimi-chaya 的第三个 PR，`fix(browser): Windows API 浏览器语义契约兼容与可验证恢复`，
++1370/-16、11 文件。**处置：要求修改。**
+
+它与已合入的 `04ab6290`（issue #2294）改同一块 `native_browser.rs`，是本次审查的核心问题。
+
+**结论：技术增量真实存在，但当前提交是「替换式」而非「叠加式」，会收窄 main 刚建立的降级通道。**
+
+三条经独立核实的阻断项：
+
+1. **`FileCheck::Structural` 降级通道被整体旁路**。main 的 `for_manifest` 收完整 manifest 字节并在
+   内部做结构校验；本 PR 改成只收哈希字符串（`native_browser.rs:95-102`），调用点传
+   `&sha(&manifest)`，于是**未知版本必然 `Err`** → 每次转向 `structural::detect`，
+   main 的 `Structural` 分支在未知版本上变成不可达代码。
+2. **`ENTRY_SHA` 重新引入哈希白名单**。`native_browser_contract.rs:5`、`:201-205` 对入口
+   `cua-repl.mjs` 做**无条件的硬哈希准入**。main 没有该常量（只用存在性检查）。
+   后果：下一个 CUA 版本动一次入口文件就全链路 fail-closed —— 正是 issue #2294 的病根，
+   从原件层搬到了 AST 层（`PROTOCOL_SHAPES` 双元素白名单同理）。
+   作者「不是重复追加 0.0.27 哈希」的说法字面属实，但语义层面不成立。
+3. **版本下限检查被静默弱化**：`detect` 不解析 manifest 版本，main 的
+   `MIN_RUNTIME_VERSION` 检查丢失。
+
+**确属增量的部分（应保留）**：组件级事务守卫（PE x64 头 + `package.json` exports 校验 +
+现算哈希写入 `contract.files`）、schema-2 可重算恢复（重算最小变换并要求逐字节相等）、
+绑定级 AST 校验（实测能做到 main 做不到的语义漂移拒绝）。
+
+**依赖合规**：`@babel/parser` / `@babel/traverse` **零膨胀**（main lock 里本就有，经
+`@vitejs/plugin-react` → `@babel/core` 传递引入，版本恰好相同），188 → 188 packages。
+精确版本锁定是正确的（AST 哈希依赖 Babel 输出形状）。但要补：构建脚本 `--check` 未接 CI、
+`esbuild` 未显式声明（靠 vite 传递依赖，脆弱）。
+
+**实测**：`codex-plus-core` 1383 passed / 0 failed / 6 ignored（作者称 1708，属 workspace 口径差异）；
+`npm test` 315 pass / 1 skip；tsc、assemble --check 通过。
+**但**最有价值的负例（真实版本识别、歧义、遮蔽）全在被 CI skip 的 fixture 测试里，
+`structural::detect` 新代码路径**在 CI 上零覆盖**。
+
+**安全**：子进程隔离（`env_clear` + `--no-addons` + 内存上限 + 20s 截止）与写盘原子性均落实；
+**worker 身份认证 / 伪造登录已独立确认未触碰**（grep 命中全落在 Babel 许可证文本，
+`require-identification.mjs` 与 main 逐字节相同）。建议文档补上「`node.exe` 只验 PE 头是信任根」。
+
+**合并顺序**：#2378 / #2309 / #2313 **都不含 `04ab6290`**，谁先合都会互相覆盖，都必须先 rebase。
+建议先合 #2378 的 rebase 版（去掉硬编码准入面后），另外两个再来。
+注意 `native-browser-status.ts`（main 新增的 `browserRecognizedSuffix`）不在 #2378 的改动列表里，
+rebase 冲突不会提示，属**静默丢失风险**，需人工确认。
+
+---
+
 ## 附：结论计数
 
 - issue 结论总数：**116 条**（`confirmed-in-code` 31 / `likely` 37 / `already-fixed` 19 / `not-our-bug` 17 / `insufficient-info` 12）
