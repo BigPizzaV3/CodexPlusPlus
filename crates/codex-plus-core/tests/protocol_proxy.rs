@@ -905,6 +905,56 @@ async fn responses_compaction_v2_auth_error_is_not_retried_as_summary() {
 }
 
 #[tokio::test]
+async fn native_compaction_errors_preserve_cooldown_without_summary_retry() {
+    use codex_plus_core::channel_protection;
+    use futures_util::poll;
+    use std::task::Poll;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    for status in [429, 503] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("Retry-After", "60")
+                    .set_body_json(json!({"error": {"message": "capacity exceeded"}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut config = remote_compaction_settings(&server.uri(), RelayProtocol::Responses);
+        let id = format!("native-compaction-cooldown-{status}");
+        config.active_relay_id = id.clone();
+        let relay = &mut config.relay_profiles[0];
+        relay.id = id;
+        relay.rate_limit_cooldown_enabled = true;
+        relay.cooldown_error_statuses = vec![status];
+        let relay = relay.clone();
+        let mut response = open_responses_proxy_request_with_settings(
+            &json!({"model": "model", "stream": true, "input": [{"type": "compaction_trigger"}]})
+                .to_string(),
+            config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status_code, status);
+        assert!(
+            String::from_utf8(response.read_body().await.unwrap())
+                .unwrap()
+                .contains("capacity exceeded")
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(String::from_utf8_lossy(&requests[0].body).contains("compaction_trigger"));
+
+        // 状态已写入后立即 poll，无需脆弱的墙钟上限断言或实际等待冷却结束。
+        let key = channel_protection::key_for_relay(&relay);
+        let mut next = std::pin::pin!(channel_protection::acquire(&key, &relay));
+        assert!(matches!(poll!(next.as_mut()), Poll::Pending));
+    }
+}
+
+#[tokio::test]
 async fn responses_compaction_v2_stream_failure_is_forwarded_without_summary_retry() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
