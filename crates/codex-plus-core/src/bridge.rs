@@ -142,6 +142,11 @@ pub fn bridge_health_check_script() -> &'static str {
   const bridge = window.__codexSessionDeleteBridge;
   const health = window.__codexPlusBridgeHealth;
   if (typeof bridge !== "function" || !health) return false;
+  // 窗口隐藏时 Chromium 会把后台定时器钳到约每分钟一次，心跳时间戳必然过期。
+  // 此时桥接对象仍在，不判定失效，避免看门狗按失败阈值每分钟重注入整份脚本
+  // （issue #2330）。
+  // 必须放在 bridge/health 存在性检查之后：页面重载后真丢桥时仍要能修复。
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") return true;
   const now = Date.now();
   const lastSuccessAt = Number(health.lastSuccessAt) || 0;
   const lastInjectionAt = Number(health.lastInjectionAt) || 0;
