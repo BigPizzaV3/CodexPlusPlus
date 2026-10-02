@@ -176,7 +176,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /openCodexPlusPage\(\)/);
     assert.match(renderer, /codex-plus-page-overlay/);
     assert.match(renderer, /positionCodexPlusPage/);
-    assert.match(renderer, /overlay\.remove\(\);\s*if \(pageMode\) setCodexPlusSidebarNavActive\(false\);/);
+    assert.match(renderer, /if \(pageMode\) closeCodexPlusPage\(\);\s*else overlay\.remove\(\);/);
     assert.match(renderer, /function closeCodexPlusPage\(\)/);
     assert.match(renderer, /function installCodexPlusPageNavigationCloseHandler\(\)/);
     assert.match(renderer, /target\?\.closest\(selectors\.sidebarThread\)/);
