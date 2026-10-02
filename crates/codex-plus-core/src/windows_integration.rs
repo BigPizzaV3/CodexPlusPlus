@@ -60,6 +60,20 @@ use windows::core::{Interface, PCWSTR, PROPVARIANT, PWSTR};
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// 当前进程是否以提权（管理员 / 高完整性令牌）运行。
+///
+/// 启动器用它守卫 MSIX 打包应用激活：Windows 不允许提权进程激活打包应用，
+/// 该场景必须明确失败，不能静默回退到按路径启动（issue #2351）。
+#[cfg(windows)]
+pub fn current_process_is_elevated() -> bool {
+    unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() }
+}
+
+#[cfg(not(windows))]
+pub fn current_process_is_elevated() -> bool {
+    false
+}
+
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsProcessInfo {
