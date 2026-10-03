@@ -5428,7 +5428,9 @@ select {
   gap: 11px;
   min-height: 52px;
   border-bottom: 1px solid hsl(var(--sidebar-border));
-  padding: 2px 6px 14px;
+  /* 右侧与 .nav(padding-right) + .nav-item 的内边距之和一致，
+     顶部状态灯才能和下方列表项的状态灯共线（#1975）。 */
+  padding: 2px 12px 14px;
 }
 
 /* 品牌标记：渐变方块 + C++ 字形 */

@@ -240,7 +240,14 @@ fn local_marketplace_plugin_names(
         .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
     let marketplace: serde_json::Value = serde_json::from_str(&text)
         .with_context(|| format!("failed to parse {}", marketplace_path.display()))?;
-    if marketplace.get("name").and_then(serde_json::Value::as_str) != Some(marketplace_name) {
+    let name = marketplace.get("name").and_then(serde_json::Value::as_str);
+    // 内置市场的名字要认两档：磁盘上可能还是旧的保留名。
+    // 清理路径（cleanup_managed_reserved_marketplace_configs）在改写磁盘之前
+    // 就需要读这份插件清单，只认新名会在升级的第一次启动上拿到空表，
+    // 迁移就被整段跳过了（#2072）。
+    let name_matches = name == Some(marketplace_name)
+        || (marketplace_name == CODEX_PLUS_MARKETPLACE && is_codex_plus_marketplace_name(name));
+    if !name_matches {
         return Ok(Vec::new());
     }
     Ok(marketplace
@@ -697,6 +704,10 @@ pub fn cleanup_managed_reserved_marketplace_configs(home: &Path) -> anyhow::Resu
     if remove_marketplaces_table {
         doc.as_table_mut().remove("marketplaces");
     }
+    // 市场条目和它下面的插件条目是一对：只删市场不改插件，`x@openai-curated`
+    // 就成了悬空条目，codex 直接不列出，用户表现为「插件装了但列表和会话工具里都没有」
+    // （#2072）。改名（02a23e14 / 6b65c094）只处理了市场侧，这里补上插件侧迁移。
+    changed |= migrate_orphaned_reserved_marketplace_plugins(&mut doc, home)?;
     if !changed {
         return Ok(false);
     }
@@ -705,6 +716,70 @@ pub fn cleanup_managed_reserved_marketplace_configs(home: &Path) -> anyhow::Resu
         ensure_trailing_newline(doc.to_string()).as_bytes(),
     )?;
     Ok(true)
+}
+
+/// 把仍挂在保留市场名下的插件条目迁移到 `CODEX_PLUS_MARKETPLACE`。
+///
+/// 只处理「插件 ID 的 `@` 后半段是旧市场名」的条目：改名前落盘的都是这种形状
+/// （`github@openai-curated`）。`@` 前是同名插件时保留原条目（含 `enabled`），
+/// 否则改写 ID；新市场里已经没有这个插件时整个删除——留着它 codex 依然不认。
+///
+/// 迁移目标只认当前托管目录里真实存在的插件，避免把用户自建的同名市场条目
+/// 误当成我们的历史遗留改掉。
+fn migrate_orphaned_reserved_marketplace_plugins(
+    doc: &mut DocumentMut,
+    home: &Path,
+) -> anyhow::Result<bool> {
+    let legacy_names = [
+        OPENAI_CURATED_MARKETPLACE,
+        OPENAI_API_CURATED_MARKETPLACE,
+        LEGACY_REMOTE_MARKETPLACE,
+    ];
+    // 新市场里实际提供的插件名。取不到就整段跳过：没有清单我们无法判断
+    // 哪个插件还存在，此时宁可不动配置。
+    let Some(marketplace_root) = local_openai_curated_remote_marketplace_root(home)? else {
+        return Ok(false);
+    };
+    let available = local_marketplace_plugin_names(&marketplace_root, CODEX_PLUS_MARKETPLACE)?;
+    if available.is_empty() {
+        return Ok(false);
+    }
+
+    let Some(plugins) = doc.get_mut("plugins").and_then(Item::as_table_mut) else {
+        return Ok(false);
+    };
+    let orphaned = plugins
+        .iter()
+        .filter_map(|(key, _)| {
+            let (name, marketplace) = key.split_once('@')?;
+            legacy_names
+                .contains(&marketplace)
+                .then(|| name.to_string())
+        })
+        .collect::<Vec<_>>();
+    let mut changed = false;
+    for name in orphaned {
+        for legacy in legacy_names {
+            let legacy_id = format!("{name}@{legacy}");
+            let Some(entry) = plugins.remove(&legacy_id) else {
+                continue;
+            };
+            changed = true;
+            if !available.contains(&name) {
+                // 新市场里没有这个插件了，条目留着也是悬空。
+                continue;
+            }
+            let migrated_id = format!("{name}@{CODEX_PLUS_MARKETPLACE}");
+            // 新 ID 已经存在时不覆盖：用户在新市场里重新装过一次，以它为准。
+            if plugins.get(&migrated_id).is_none() {
+                plugins.insert(&migrated_id, entry);
+            }
+        }
+    }
+    if plugins.is_empty() {
+        doc.as_table_mut().remove("plugins");
+    }
+    Ok(changed)
 }
 
 fn managed_reserved_marketplace_config_present(home: &Path) -> bool {
@@ -968,6 +1043,97 @@ source = {}
             parsed["marketplaces"]["codex-plus-curated"]["source"].as_str(),
             Some(expected_marketplace_path(&home.join(".tmp").join("plugins-remote")).as_str())
         );
+    }
+
+    /// #2072：市场改名后，`x@openai-curated` 这类旧插件条目会悬空，
+    /// codex 既不列在插件列表也不挂到会话工具上。清理市场条目时要一并迁移。
+    #[test]
+    fn cleanup_migrates_orphaned_reserved_marketplace_plugin_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_marketplace(home);
+        write_remote_marketplace(home);
+        let plugins_source = home.join(".tmp").join("plugins").display().to_string();
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                r#"[marketplaces.openai-curated]
+source_type = "local"
+source = {}
+
+[plugins."product-design@openai-curated-remote"]
+enabled = false
+
+[plugins."ghost@openai-curated"]
+enabled = true
+"#,
+                toml_edit::value(plugins_source),
+            ),
+        )
+        .unwrap();
+
+        let changed = cleanup_managed_reserved_marketplace_configs(home).unwrap();
+
+        assert!(changed);
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        // product-design 在新市场清单里，迁移到新市场名并保留用户关掉的开关。
+        assert_eq!(
+            parsed["plugins"][format!("product-design@{CODEX_PLUS_MARKETPLACE}")]["enabled"]
+                .as_bool(),
+            Some(false)
+        );
+        assert!(
+            parsed["plugins"]
+                .get("product-design@openai-curated-remote")
+                .is_none(),
+            "旧市场名下的条目不应残留"
+        );
+        // ghost 不在任何托管市场清单里，悬空条目直接清掉。
+        assert!(parsed["plugins"].get("ghost@openai-curated").is_none());
+    }
+
+    /// 磁盘上仍是旧的保留名时（升级后第一次启动），清理路径也必须能读到插件清单，
+    /// 否则迁移会被 `available.is_empty()` 整段跳过（#2072）。
+    #[test]
+    fn cleanup_migrates_plugins_while_disk_still_has_the_legacy_marketplace_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        write_remote_marketplace(home);
+        std::fs::write(
+            home.join("config.toml"),
+            "[plugins.\"product-design@openai-curated-remote\"]\nenabled = true\n",
+        )
+        .unwrap();
+
+        let changed = cleanup_managed_reserved_marketplace_configs(home).unwrap();
+
+        assert!(changed);
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let parsed = config.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            parsed["plugins"][format!("product-design@{CODEX_PLUS_MARKETPLACE}")]["enabled"]
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn cleanup_keeps_plugin_entries_when_no_managed_marketplace_is_installed() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        // 没有托管市场目录：无法判断插件是否存在，配置必须原样不动。
+        std::fs::write(
+            home.join("config.toml"),
+            "[plugins.\"github@openai-curated\"]\nenabled = true\n",
+        )
+        .unwrap();
+
+        let changed = cleanup_managed_reserved_marketplace_configs(home).unwrap();
+
+        assert!(!changed);
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(config.contains("[plugins.\"github@openai-curated\"]"));
     }
 
     #[test]
