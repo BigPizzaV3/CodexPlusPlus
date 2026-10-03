@@ -96,6 +96,7 @@ import {
   metadataSourceTags,
   modelSlugFromRowName,
   suffixWindowString,
+  normalizeTokenCountInput,
   modelMetadataKey,
   parseModelMetadataDocument,
   parseModelMetadataMap,
@@ -8364,7 +8365,7 @@ function RelayProfileEditor({
               <Input
                 inputMode="numeric"
                 value={profile.contextWindow}
-                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                onChange={(event) => updateDraft({ contextWindow: normalizeTokenCountInput(event.currentTarget.value) })}
                 placeholder={t("留空不改写，例如 200000")}
               />
             </Field>
@@ -8372,7 +8373,7 @@ function RelayProfileEditor({
               <Input
                 inputMode="numeric"
                 value={profile.autoCompactLimit}
-                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                onChange={(event) => updateDraft({ autoCompactLimit: normalizeTokenCountInput(event.currentTarget.value) })}
                 placeholder={t("留空不改写，例如 160000")}
               />
             </Field>

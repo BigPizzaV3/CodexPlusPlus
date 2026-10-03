@@ -18,6 +18,7 @@ import {
   modelMetadataKey,
   parseModelRowName,
   modelSlugFromRowName,
+  normalizeTokenCountInput,
   parseModelMetadataDocument,
   parseModelMetadataMap,
   remapModelMetadataSlugs,
@@ -625,6 +626,24 @@ describe("model metadata helpers", () => {
     assert.strictEqual(suffixWindowTokens("abc"), null);
     assert.strictEqual(suffixWindowTokens("1.5M"), null);
     assert.strictEqual(suffixWindowTokens("-1M"), null);
+  });
+
+  it("normalizeTokenCountInput 把 1M/256K 展开成 token 数，不再静默剥成 1（issue #2302）", () => {
+    // 回归点：旧实现 replace(/[^\d]/g,"") 会把 "1M" 变成 "1"，
+    // 写进 config.toml 后模型窗口变成 1 个 token，Codex 反复重跑任务。
+    assert.strictEqual(normalizeTokenCountInput("1M"), "1000000");
+    assert.strictEqual(normalizeTokenCountInput("256K"), "256000");
+    assert.strictEqual(normalizeTokenCountInput("128k"), "128000");
+    assert.strictEqual(normalizeTokenCountInput(" 1m "), "1000000");
+    // 纯数字原样保留
+    assert.strictEqual(normalizeTokenCountInput("200000"), "200000");
+    assert.strictEqual(normalizeTokenCountInput("160000"), "160000");
+    // 空输入留给调用方判空（不改写 config）
+    assert.strictEqual(normalizeTokenCountInput(""), "");
+    assert.strictEqual(normalizeTokenCountInput("   "), "");
+    // 整体识别不了时退回剥数字，保持可编辑（输入到一半的中间态）
+    assert.strictEqual(normalizeTokenCountInput("1M2"), "12");
+    assert.strictEqual(normalizeTokenCountInput("abc"), "");
   });
 
   it("modelSlugFromRowName 剥掉合法后缀、保留非法后缀原文", () => {

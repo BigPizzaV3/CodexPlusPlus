@@ -229,6 +229,27 @@ export function suffixWindowString(rowName: string): string | null {
   return parseModelRowName(rowName).suffixWindow;
 }
 
+/// 归一化「上下文大小 / 压缩上下文大小」这类顶层数字输入框的内容（issue #2302）。
+///
+/// 背景：这两个字段写进 config.toml 时必须是纯数字，用户按模型列表的 `[1M]` 习惯
+/// 输入 `1M` / `256K` 时，旧的 `replace(/[^\d]/g, "")` 会把 `1M` 静默剥成 `1`——
+/// 于是写入的窗口变成 1，Codex 反复重跑任务，而界面上看不出任何异常。
+///
+/// 这里把可识别的 K/M 单位展开成 token 数（复用 suffixWindowTokens 的同一套单位
+/// 规则，避免两处对「什么算合法输入」判断分叉）；识别不了的输入按原样返回，交给
+/// 调用方继续保持原有的「只保留数字」行为。
+/// - `"1M"` → `"1000000"`；`"256k"` → `"256000"`；`"200000"` → `"200000"`
+/// - `"1M5"` → `"15"`（非法单位位置，退回剥数字）；`""` → `""`
+export function normalizeTokenCountInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const suffixTokens = suffixWindowTokens(trimmed);
+  if (suffixTokens !== null) return String(suffixTokens);
+  // 不能整体识别时（例如输入到一半的 `1M2`），退回剥数字，保持可编辑。
+  const digits = trimmed.replace(/[^\d]/g, "");
+  return digits === "0" ? "" : digits;
+}
+
 /// 内置元数据命中时的行列回填裁决（窗口 + 压缩）：仅当对应列为空且无 [1M]
 /// 后缀时回填，后缀与用户已填值都是显式意图，不得覆盖。
 /// - 窗口：取内置 context_window（对内置命中的模型，留空的真实含义就是
