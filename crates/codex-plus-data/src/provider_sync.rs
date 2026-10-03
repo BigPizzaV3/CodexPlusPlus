@@ -273,6 +273,24 @@ pub struct ProviderSyncAudit {
     pub catalog_only_with_current_rollout: usize,
     pub catalog_only_with_backup_database: usize,
     pub catalog_only_without_recovery_source: usize,
+    // issue #982：以下为「可诊断性」字段。用户报「同步一次：0 个会话文件，0 行索引」时，
+    // 光看两个 0 分不清是「目录里本来就没有会话文件」还是「筛选条件把它们全漏掉了」。
+    // 把实际扫描到的范围一并带出来，下一次报障就能自助定位，不必再索要目录结构。
+    /// 本次实际扫描到的 rollout 会话文件数。
+    #[serde(default)]
+    pub scanned_rollout_files: usize,
+    /// 其中 session_meta 的 model_provider 已等于目标、本来就不需要改写的文件数。
+    #[serde(default)]
+    pub rollout_files_already_on_target: usize,
+    /// canonical `threads` 表行数（跨所有候选库去重）。
+    #[serde(default)]
+    pub canonical_thread_rows: usize,
+    /// catalog（用户可见侧边栏索引）行数（跨所有候选库去重）。
+    #[serde(default)]
+    pub catalog_thread_rows: usize,
+    /// 实际存在并被扫描的会话目录名（sessions / archived_sessions）。
+    #[serde(default)]
+    pub scanned_session_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,6 +408,10 @@ struct BulkSessionScan {
     thread_ids_with_user_events: HashSet<String>,
     cwd_by_thread_id: HashMap<String, String>,
     total_rollout_files: usize,
+    /// issue #982：扫描中顺手统计的「已带 session_meta 且 model_provider 已是目标、
+    /// 本来就不需要改写」的文件数。用来把「没有会话文件」和「会话文件都已在目标供应商上」
+    /// 这两种同样表现为 0 改动的情形区分开。
+    rollout_files_already_on_target: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1008,7 +1030,12 @@ where
             thread_ids_with_user_events,
             cwd_by_thread_id: scanned_cwd_by_thread_id,
             total_rollout_files,
+            rollout_files_already_on_target: scanned_already_on_target,
         } = scan;
+        // issue #982：扫描已经逐个读过这些文件，这里直接复用其结果，不再二次读盘。
+        let mut repair_audit = repair_audit;
+        repair_audit.scanned_rollout_files = total_rollout_files;
+        repair_audit.rollout_files_already_on_target = scanned_already_on_target;
         let mut subagent_thread_ids = thread_kinds.subagent_thread_ids;
         subagent_thread_ids.extend(scanned_subagent_thread_ids);
         let encrypted_content_warning =
@@ -1478,11 +1505,27 @@ fn result(
 }
 
 fn provider_sync_message_with_audit(message: &str, audit: &ProviderSyncAudit) -> String {
+    // issue #982：把本次实际扫描范围附在结果后面。用户看到「0 个会话文件，0 行索引」
+    // 时，这条诊断能直接说明是「目录里没有会话文件」还是「有文件但都已就绪」，
+    // 以及 canonical/catalog 两侧各有多少行可对齐。
+    let scanned_dirs = if audit.scanned_session_dirs.is_empty() {
+        "无（sessions 与 archived_sessions 均不存在）".to_string()
+    } else {
+        audit.scanned_session_dirs.join(", ")
+    };
+    let diagnostics = format!(
+        "本次扫描：会话目录 [{}]，rollout 文件 {} 个（其中 {} 个已指向目标供应商无需改写），canonical 行 {} 条，catalog 行 {} 条。",
+        scanned_dirs,
+        audit.scanned_rollout_files,
+        audit.rollout_files_already_on_target,
+        audit.canonical_thread_rows,
+        audit.catalog_thread_rows,
+    );
     if audit.catalog_only_sessions == 0 {
-        return message.to_string();
+        return format!("{message}；{diagnostics}");
     }
     format!(
-        "{message}；审计发现 {} 条仅存在于本地会话目录的记录，其中 {} 条仍有当前 rollout、{} 条只能在历史数据库备份中找到，{} 条没有可用恢复来源；未自动重建缺失的 canonical 会话（rollout 文件仍在、可安全补建的那些本次已补建）。",
+        "{message}；审计发现 {} 条仅存在于本地会话目录的记录，其中 {} 条仍有当前 rollout、{} 条只能在历史数据库备份中找到，{} 条没有可用恢复来源；未自动重建缺失的 canonical 会话（rollout 文件仍在、可安全补建的那些本次已补建）。{diagnostics}",
         audit.catalog_only_sessions,
         audit.catalog_only_with_current_rollout,
         audit.catalog_only_with_backup_database,
@@ -1511,22 +1554,42 @@ fn audit_provider_sync_state(
         catalog_thread_ids.extend(sqlite_user_thread_ids(path)?);
     }
 
-    let catalog_only = catalog_thread_ids
-        .difference(&canonical_thread_ids)
-        .cloned()
-        .collect::<HashSet<_>>();
-    if catalog_only.is_empty() {
-        return Ok(ProviderSyncAudit::default());
-    }
-
-    let current_rollout_ids = rollout_files(home)?
-        .into_iter()
+    // issue #982：可诊断字段无论有没有 catalog-only 记录都要填。
+    // 原来的实现一进 catalog_only.is_empty() 就返回 default()，于是
+    // 「0 个会话文件，0 行索引」背后到底是「目录里真没文件」还是「库是空的」
+    // 全都看不出来，正是报障时卡住的那一步。
+    let scanned_session_dirs = SESSION_DIRS
+        .iter()
+        .filter(|dirname| home.join(dirname).exists())
+        .map(|dirname| (*dirname).to_string())
+        .collect::<Vec<_>>();
+    let rollout_paths = rollout_files(home)?;
+    let scanned_rollout_files = rollout_paths.len();
+    let current_rollout_ids = rollout_paths
+        .iter()
         .filter_map(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
                 .and_then(rollout_thread_id_from_filename)
         })
         .collect::<HashSet<_>>();
+    let mut audit = ProviderSyncAudit {
+        scanned_rollout_files,
+        rollout_files_already_on_target: 0,
+        canonical_thread_rows: canonical_thread_ids.len(),
+        catalog_thread_rows: catalog_thread_ids.len(),
+        scanned_session_dirs,
+        ..ProviderSyncAudit::default()
+    };
+
+    let catalog_only = catalog_thread_ids
+        .difference(&canonical_thread_ids)
+        .cloned()
+        .collect::<HashSet<_>>();
+    if catalog_only.is_empty() {
+        return Ok(audit);
+    }
+
     let backup_database_ids = backup_database_thread_ids(home)?;
     let with_current_rollout = catalog_only
         .iter()
@@ -1539,19 +1602,18 @@ fn audit_provider_sync_state(
         })
         .count();
 
-    Ok(ProviderSyncAudit {
-        catalog_only_sessions: catalog_only.len(),
-        catalog_only_with_current_rollout: with_current_rollout,
-        catalog_only_with_backup_database: with_backup_database,
-        catalog_only_without_recovery_source: catalog_only
-            .iter()
-            .filter(|thread_id| {
-                !current_rollout_ids.contains(*thread_id)
-                    && !backup_database_ids.contains(*thread_id)
-            })
-            .count(),
-    })
+    audit.catalog_only_sessions = catalog_only.len();
+    audit.catalog_only_with_current_rollout = with_current_rollout;
+    audit.catalog_only_with_backup_database = with_backup_database;
+    audit.catalog_only_without_recovery_source = catalog_only
+        .iter()
+        .filter(|thread_id| {
+            !current_rollout_ids.contains(*thread_id) && !backup_database_ids.contains(*thread_id)
+        })
+        .count();
+    Ok(audit)
 }
+
 
 fn backup_database_thread_ids(home: &Path) -> anyhow::Result<HashSet<String>> {
     let root = home.join("backups_state/provider-sync");
@@ -2196,6 +2258,12 @@ fn scan_bulk_session_rewrites(
         }
 
         if session_meta_count > 0 {
+            // issue #982：带 session_meta 且无需改写的文件计入「已就绪」，仅用于诊断。
+            // 放在子任务/显式用户筛选之前，表示「这个文件本身已经是目标供应商」，
+            // 与它是否参与本次改写无关。
+            if !rewrite_needed {
+                scan.rollout_files_already_on_target += 1;
+            }
             let is_explicit_user = thread_id
                 .as_ref()
                 .is_some_and(|id| explicit_user_thread_ids.contains(id));
@@ -6610,5 +6678,173 @@ mod canonical_thread_rebuild_tests {
             )
             .unwrap();
         assert_eq!(count, 1, "已存在的 canonical 行不能被补成两行");
+    }
+}
+
+#[cfg(test)]
+mod sync_diagnostics_tests {
+    use super::*;
+
+    fn write_config(home: &Path, provider: &str) {
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "model_provider = {provider:?}\n\n[model_providers.{provider:?}]\nname = {provider:?}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_rollout(home: &Path, dirname: &str, thread_id: &str, provider: &str) {
+        let path = home
+            .join(dirname)
+            .join("2026/10/03")
+            .join(format!("rollout-2026-10-03T10-00-00-{thread_id}.jsonl"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": thread_id,
+                        "model_provider": provider,
+                        "cwd": "C:/workspace"
+                    }
+                }),
+                json!({"type": "event_msg", "payload": {"type": "user_message"}}),
+            ),
+        )
+        .unwrap();
+    }
+
+    /// issue #982：没有任何会话文件时，结果必须说明「扫了哪些目录、扫到 0 个文件」，
+    /// 而不是只留一句无从下手的「0 个会话文件，0 行索引」。
+    #[test]
+    fn audit_reports_scanned_scope_without_rollout_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+        write_config(&home, "relay-alpha");
+
+        let result = run_provider_sync(Some(&home));
+
+        assert_eq!(result.repair_audit.scanned_rollout_files, 0);
+        assert!(result.repair_audit.scanned_session_dirs.is_empty());
+        assert!(
+            result.message.contains("均不存在"),
+            "{}",
+            result.message
+        );
+        assert!(
+            result.message.contains("rollout 文件 0 个"),
+            "{}",
+            result.message
+        );
+    }
+
+    /// issue #982：会话文件已全部指向目标供应商时，诊断要能区分出
+    /// 「有文件、但都已就绪」，不能和「一个文件都没有」显示成同一个样子。
+    #[test]
+    fn audit_distinguishes_already_on_target_from_no_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+        write_config(&home, "relay-alpha");
+        // 两个文件都已指向 relay-alpha，同步后无任何改写计划。
+        write_rollout(
+            &home,
+            "sessions",
+            "01a01579-4a5d-77e3-89c0-751d38ad21fa",
+            "relay-alpha",
+        );
+        write_rollout(
+            &home,
+            "archived_sessions",
+            "01a01579-4a5d-77e3-89c0-751d38ad21fb",
+            "relay-alpha",
+        );
+
+        let result = run_provider_sync(Some(&home));
+
+        assert_eq!(result.repair_audit.scanned_rollout_files, 2);
+        assert_eq!(result.repair_audit.rollout_files_already_on_target, 2);
+        assert_eq!(result.changed_session_files, 0);
+        assert_eq!(
+            result.repair_audit.scanned_session_dirs,
+            vec!["sessions".to_string(), "archived_sessions".to_string()]
+        );
+        assert!(
+            result.message.contains("其中 2 个已指向目标供应商无需改写"),
+            "{}",
+            result.message
+        );
+    }
+
+    /// 诊断字段只统计「已就绪」的文件，真正需要改写的不该被算进去。
+    #[test]
+    fn already_on_target_count_excludes_files_needing_rewrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+        write_config(&home, "relay-alpha");
+        write_rollout(
+            &home,
+            "sessions",
+            "01a01579-4a5d-77e3-89c0-751d38ad21fa",
+            "relay-alpha",
+        );
+        write_rollout(
+            &home,
+            "sessions",
+            "01a01579-4a5d-77e3-89c0-751d38ad21fb",
+            "openai",
+        );
+
+        let result = run_provider_sync(Some(&home));
+
+        assert_eq!(result.repair_audit.scanned_rollout_files, 2);
+        assert_eq!(
+            result.repair_audit.rollout_files_already_on_target, 1,
+            "只有已是 relay-alpha 的那个文件算已就绪"
+        );
+        assert_eq!(result.changed_session_files, 1);
+    }
+
+    /// 预览同样要带上诊断字段，且依旧只读。
+    #[test]
+    fn preview_reports_scanned_scope_and_stays_read_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+        write_config(&home, "relay-alpha");
+        write_rollout(
+            &home,
+            "sessions",
+            "01a01579-4a5d-77e3-89c0-751d38ad21fa",
+            "openai",
+        );
+
+        let preview = preview_provider_sync(Some(&home)).unwrap();
+
+        assert_eq!(preview.audit.scanned_rollout_files, 1);
+        assert_eq!(preview.audit.scanned_session_dirs, vec!["sessions".to_string()]);
+        assert!(!home.join("tmp/provider-sync.lock").exists());
+        assert!(!preview.backup_root.exists());
+    }
+
+    /// 可诊断字段不改变既有审计语义：没有 catalog-only 记录时仍然全为 0。
+    #[test]
+    fn diagnostics_do_not_change_catalog_only_semantics() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+        write_config(&home, "relay-alpha");
+
+        let result = run_provider_sync(Some(&home));
+
+        assert_eq!(result.repair_audit.catalog_only_sessions, 0);
+        assert_eq!(result.repair_audit.catalog_only_without_recovery_source, 0);
     }
 }
