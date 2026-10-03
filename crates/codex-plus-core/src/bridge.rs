@@ -273,6 +273,57 @@ pub async fn add_script_to_new_documents(
         .await
 }
 
+/// 独立于增强模式的混合模式额度门禁单次注入。
+/// 仅在页面加载时通过 Page.addScriptToEvaluateOnNewDocument 进行轻量挂载，
+/// 坚决不启动任何周期性看门狗线程，永远不发重复的 Runtime.evaluate！
+pub async fn install_isolated_api_quota_gate(websocket_url: &str) -> anyhow::Result<()> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+
+    // 1. 注册新文档自动求值：让脚本在页面任何子文档加载时第一微秒生效
+    let _ = session
+        .send_command(
+            1,
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": crate::assets::api_quota_gate_script() }),
+        )
+        .await;
+
+    // 2. 如果当前页面已经就绪，直接执行一次初始化与断点探测
+    let script = format!(
+        r#"(() => {{
+            {}
+            const gate = window.__codexPlusApiQuotaGate;
+            if (gate && typeof gate.locate === "function") {{
+                for (const script of Array.from(document.querySelectorAll("script[src]"))) {{
+                    if (script.src && script.src.includes("app-initial-")) {{
+                        fetch(script.src).then(r => r.text()).then(text => {{
+                            const loc = gate.locate(text, script.src);
+                            if (loc) {{
+                                window.__codexPlusApiQuotaBreakpoint = loc;
+                                gate.refreshComposers?.(loc, true);
+                            }}
+                        }}).catch(() => {{}});
+                        break;
+                    }}
+                }}
+            }}
+        }})()"#,
+        crate::assets::api_quota_gate_script()
+    );
+
+    let _ = session
+        .send_command(
+            2,
+            "Runtime.evaluate",
+            runtime_evaluate_params(&script),
+        )
+        .await;
+
+    session.close().await;
+    Ok(())
+}
+
 /// issue #2177：AppServerRequestClient 在 Codex 26.908+ 被藏进模块闭包且不再导出，
 /// 渲染层扫描无法触达，直接改写 dispatcher 又会撞上不可写的 RPC stub。
 /// 分两段接管：渲染层用纯文本定位算出 sendRequest 的断点坐标并放到
