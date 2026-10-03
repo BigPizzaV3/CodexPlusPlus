@@ -84,7 +84,7 @@
 | M | [#618](https://github.com/BigPizzaV3/CodexPlusPlus/issues/618) | [Config]: 供应商切换回填失败：config.toml TOML 解析失败 | apps/codex-plus-manager/src-tauri 的 backfill_relay_profile_from_live 命令（经 rela | small |
 | M | [#609](https://github.com/BigPizzaV3/CodexPlusPlus/issues/609) | [Bug]: Codex++ 重写 config.toml 并清空 bundled 插件缓存 | crates/codex-plus-core/src/relay_config.rs:2082 preserve_live_app_settings ——  | small |
 | M | [#597](https://github.com/BigPizzaV3/CodexPlusPlus/issues/597) | [Config]: 添加插件或 MCP 导致已有插件全部消失 | crates/codex-plus-core/src/relay_config.rs:2082 preserve_live_app_settings ——  | small |
-| M | [#500](https://github.com/BigPizzaV3/CodexPlusPlus/issues/500) | [Bug]: 侧边的Timeline不准，而且时不时会抖动 | assets/inject/renderer-inject/（Timeline 标记的生成与 refresh 逻辑：标记需以稳定的消息标识为锚，而不是按当前 | medium |
+| M | [#500](https://github.com/BigPizzaV3/CodexPlusPlus/issues/500) | [Bug]: 侧边的Timeline不准，而且时不时会抖动 | **已不适用**：Timeline 已于 v1.2.19 整体移除（见 §3.1 订正说明），本仓当前无此组件 | n/a |
 | M | [#300](https://github.com/BigPizzaV3/CodexPlusPlus/issues/300) | macOS 自动更新只挂载 DMG 未执行安装 | apps/codex-plus-manager/src-tauri/src/commands.rs（更新命令）—— 需在挂载后增加把 .app 复制到 /A | medium |
 | M | [#239](https://github.com/BigPizzaV3/CodexPlusPlus/issues/239) | 启动 Codex++ 失败：failed to query CDP targets | 先复测：升级到 v1.5.0 后重跑，若仍失败则看 `ports.rs:72-80` 是否把端口让到了 9229 之外而状态文件仍报 9229（`statu | small |
 | M | [#1650](https://github.com/BigPizzaV3/CodexPlusPlus/issues/1650) | 纯官方登录供应商无法持久化/恢复专属 config.toml | 待定：crates/codex-plus-core/src/relay_switch.rs:35-46 与 relay_config.rs 的 backfi | medium |
@@ -438,10 +438,14 @@
 
 **#500** — [Bug]: 侧边的Timeline不准，而且时不时会抖动
 
-- 结论：`confirmed-in-code` / P2 / 置信 medium / 工作量 medium
-- 根因：用户报告 Timeline 时间点跳动、点击跳转位置不准、数量还会变化。仓库中确实存在一段会话 Timeline 实现的历史（含「均匀分布标记」「按聊天更新刷新」「优化交互」「修复检测」等多次改动），这类「标记数量随对话更新重算」的实现天然会出现他描述的数量变化与位置抖动，与代码形态吻合，可判为本仓实现问题。
-- 证据：git log 显示 Timeline 相关提交链存在：f82a813f Build conversation timeline markers、65d550f4 Add conversation timeline style contract、cd07cb03 Optimize conversation timeline interaction、cb3dee23 Fix conversation timeline detection in Codex UI、270d35b6 Refresh conversation timeline on chat updates、4ed9c7ae Spread conversation timeline markers evenly、e50161e4 Add conversation timeline menu toggle、cd562017 Impr
-- 落点：assets/inject/renderer-inject/（Timeline 标记的生成与 refresh 逻辑：标记需以稳定的消息标识为锚，而不是按当前可见消息重算并均摊）
+- 结论：**`needs-investigation`（已订正）** —— 原结论 `confirmed-in-code` 是错的。
+- **订正说明（2026-10-03 复核）**：Timeline **已于 v1.2.19（`2eeb4d69`）整体移除**，不是「并入其它分片」：
+  - `grep -ic timeline assets/inject/renderer-inject.js` = **0**；各分片同样为 0。
+  - `2eeb4d69` 从旧 `renderer-inject.js` 删除 113 行 timeline 代码、新增 0 行，README 同步移除 `Timeline` 一词。
+  - 原证据列的提交链（f82a813f、65d550f4、cd07cb03…）都是**删除之前**的历史提交，被误读成「现存实现」。
+- **影响**：按原结论会向用户承认「我们这边确实有问题，标记是随对话更新重算的」——而该组件根本不存在。本条目**始终未关闭**（在 needs-investigation 组），因此错误回复从未发出，无实际损害。
+- **正确处置**：回复用户说明该功能在 1.2.19 已下线、请确认版本；若仍有需求属新功能提案。
+- 原落点（`assets/inject/renderer-inject/` 的 Timeline 标记逻辑）**已不存在**，不可执行。
 
 **#300** — macOS 自动更新只挂载 DMG 未执行安装
 
