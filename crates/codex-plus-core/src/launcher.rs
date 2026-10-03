@@ -1738,11 +1738,11 @@ async fn handle_models_proxy_connection(
                 &body,
             )
             .await?;
-            log_helper_response(
+            log_helper_proxy_failure(
                 "helper.models_proxy_failed",
                 method,
                 path,
-                "502 Bad Gateway",
+                &error.to_string(),
                 remote_addr_text,
             );
             stream.shutdown().await?;
@@ -1802,11 +1802,11 @@ async fn handle_protocol_proxy_connection(
                 &body,
             )
             .await?;
-            log_helper_response(
+            log_helper_proxy_failure(
                 "helper.protocol_proxy_failed",
                 method,
                 path,
-                "502 Bad Gateway",
+                &error.to_string(),
                 remote_addr_text,
             );
             stream.shutdown().await?;
@@ -2025,11 +2025,11 @@ async fn handle_audio_transcriptions_proxy_connection(
                 &body,
             )
             .await?;
-            log_helper_response(
+            log_helper_proxy_failure(
                 "helper.audio_transcriptions_proxy_failed",
                 method,
                 path,
-                "502 Bad Gateway",
+                &error.to_string(),
                 remote_addr_text,
             );
             stream.shutdown().await?;
@@ -2097,11 +2097,11 @@ async fn handle_image_proxy_connection(
                 &body,
             )
             .await?;
-            log_helper_response(
+            log_helper_proxy_failure(
                 "helper.image_proxy_failed",
                 method,
                 path,
-                "502 Bad Gateway",
+                &error.to_string(),
                 remote_addr_text,
             );
             stream.shutdown().await?;
@@ -2158,11 +2158,11 @@ async fn handle_chat_completions_proxy_connection(
                 &body,
             )
             .await?;
-            log_helper_response(
+            log_helper_proxy_failure(
                 "helper.chat_completions_proxy_failed",
                 method,
                 path,
-                "502 Bad Gateway",
+                &error.to_string(),
                 remote_addr_text,
             );
             stream.shutdown().await?;
@@ -2249,6 +2249,32 @@ fn log_helper_response(
             "method": method,
             "path": path,
             "status": status,
+            "remote_addr": remote_addr_text
+        }),
+    );
+}
+
+/// 代理失败（502）专用日志：在通用字段之外带上**失败原因**。
+///
+/// 这些分支把 error 写进了响应体，旧实现却只记 method/path/status，于是
+/// 客户端只看到「unexpected status 502 Bad Gateway: Unknown error」，
+/// 日志里也查不到为什么（issue #2385）。原因必须落进日志，否则
+/// 「上游不可达 / 没配可用中转 / 请求体解析失败」这几种完全不同的故障
+/// 在现场长得一模一样。
+fn log_helper_proxy_failure(
+    event: &str,
+    method: &str,
+    path: &str,
+    error: &str,
+    remote_addr_text: Option<String>,
+) {
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        event,
+        serde_json::json!({
+            "method": method,
+            "path": path,
+            "status": "502 Bad Gateway",
+            "error": error,
             "remote_addr": remote_addr_text
         }),
     );
