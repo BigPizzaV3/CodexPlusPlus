@@ -80,12 +80,18 @@ install_system_deps() {
 
 # ── 2. 安装 Rust toolchain（无需 sudo）───────────────────────
 install_rust() {
+    if [ -f "$HOME/.cargo/env" ]; then
+        . "$HOME/.cargo/env"
+    fi
     if command -v cargo &>/dev/null; then
         echo ">>> Rust 已安装: $(cargo --version)"
         return
     fi
     echo ">>> 安装 Rust toolchain (rustup)..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+    if [ -f "$HOME/.cargo/env" ]; then
+        . "$HOME/.cargo/env"
+    fi
     echo ">>> Rust 安装完成: $(cargo --version)"
 }
 
