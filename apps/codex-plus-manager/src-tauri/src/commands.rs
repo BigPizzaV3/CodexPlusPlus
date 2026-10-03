@@ -4915,6 +4915,35 @@ pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Val
     }
 }
 
+/// 预检 live config.toml 能否被回填流程解析（issue #618）。
+///
+/// core 侧的 `backfill_relay_profile_from_home_with_common` 会先做重复表头/重复
+/// 根键的语义归一化（`normalize_duplicate_toml_text`，公开入口是
+/// `normalize_config_text`），再对归一化结果做整份 TOML 解析。所以这里必须走同一
+/// 条归一化路径，否则会对「只是有重复表头」的文件误报语法错误。
+///
+/// 返回 `Some(错误描述)` 表示回填注定失败：要么读文件失败，要么归一化后仍不是合法
+/// TOML。返回 `None` 表示可以继续回填。文件不存在等同于空文件，属可回填。
+fn live_config_backfill_blocking_error(home: &Path) -> Option<String> {
+    let config_path = home.join("config.toml");
+    let contents = match fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        // 不存在按空文件处理，与 core 的 read_optional_text 一致。
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(format!("读取 {} 失败：{error}", config_path.display())),
+    };
+    // 与 core 的 parse_toml_document 一样先剥掉 BOM。
+    let contents = contents.trim_start_matches('\u{feff}');
+    if contents.trim().is_empty() {
+        return None;
+    }
+    let normalized = codex_plus_core::relay_config::normalize_config_text(contents);
+    match normalized.parse::<toml_edit::DocumentMut>() {
+        Ok(_) => None,
+        Err(error) => Some(format!("{error}")),
+    }
+}
+
 #[tauri::command]
 pub fn backfill_relay_profile_from_live(
     request: BackfillRelayProfileRequest,
@@ -4929,10 +4958,10 @@ pub fn backfill_relay_profile_from_live(
             "activeRelayId": settings.active_relay_id
         }),
     );
-    let Some(profile) = settings
+    let Some(profile_index) = settings
         .relay_profiles
-        .iter_mut()
-        .find(|profile| profile.id == request.profile_id)
+        .iter()
+        .position(|profile| profile.id == request.profile_id)
     else {
         log_manager_event(
             "manager.backfill_relay_profile_from_live.missing_profile",
@@ -4946,12 +4975,37 @@ pub fn backfill_relay_profile_from_live(
         );
     };
 
+    // live 的 config.toml 只要有一处手写语法错误，core 的整份 TOML 解析就会失败
+    // （relay_config.rs 的 parse_toml_document），回填因此无法进行。但「回填」只是
+    // 切换前的一次快照采集，不是切换到新供应商的必要条件；让整条切换流程失败会
+    // 把用户卡死在中转态（issue #618）。这里比照同文件 2089 / 2350 两处既有写法，
+    // 在解析失败时降级：保留原 settings 不动、只提示用户先修 config.toml 语法。
+    if let Some(error) = live_config_backfill_blocking_error(&home) {
+        log_manager_event(
+            "manager.backfill_relay_profile_from_live.degraded",
+            json!({
+                "profileId": requested_profile_id,
+                "error": error
+            }),
+        );
+        return degraded(
+            &format!("config.toml 有语法错误，已跳过回填并保留原有配置（切换照常进行）：{error}"),
+            SettingsBackfillPayload { settings },
+        );
+    }
+
+    // 回填会就地改写 profile 与公共配置。先在副本上跑，成功才提交，避免中途
+    // 失败时留下「改了一半」的 profile 被后续切换流程用上。
+    let mut next_profile = settings.relay_profiles[profile_index].clone();
+    let mut next_context = settings.relay_context_config_contents.clone();
     match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
         &home,
-        profile,
-        &mut settings.relay_context_config_contents,
+        &mut next_profile,
+        &mut next_context,
     ) {
         Ok(()) => {
+            settings.relay_profiles[profile_index] = next_profile;
+            settings.relay_context_config_contents = next_context;
             log_manager_event(
                 "manager.backfill_relay_profile_from_live.ok",
                 json!({
@@ -6663,6 +6717,16 @@ fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     }
 }
 
+/// 「功能降级但流程可继续」：与 `failed` 区分开，让调用方能继续走后面的步骤，
+/// 同时仍然把原因提示给用户（issue #618 的回填跳过即属此列）。
+fn degraded<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
+    CommandResult {
+        status: "degraded".to_string(),
+        message: message.to_string(),
+        payload,
+    }
+}
+
 // Hold ownership across stop and config sync, then release before the successor starts.
 fn ensure_provider_sync_is_idle_before_stop() -> Result<codex_plus_data::ProviderSyncLifecycleGuard, String> {
     codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None).map_err(|error| {
@@ -6750,6 +6814,75 @@ mod tests {
         let status = requested_launch_status(&request, "starting", "starting", 1);
 
         assert_eq!(status.codex_app, None);
+    }
+
+    /// issue #618：live config.toml 有语法错误时必须被判成「可降级」，而不是让
+    /// 整条供应商切换流程失败。缺失文件等同于空文件，同样不阻断。
+    #[test]
+    fn live_config_backfill_blocking_error_only_flags_unparseable_toml() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+
+        // 文件不存在（全新安装）→ 不阻断。
+        assert_eq!(live_config_backfill_blocking_error(home), None);
+
+        // 空文件 / 只有空白 → 不阻断。
+        std::fs::write(home.join("config.toml"), "  \n").unwrap();
+        assert_eq!(live_config_backfill_blocking_error(home), None);
+
+        // 正常 TOML → 不阻断。
+        std::fs::write(
+            home.join("config.toml"),
+            "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\n",
+        )
+        .unwrap();
+        assert_eq!(live_config_backfill_blocking_error(home), None);
+
+        // 手写坏掉的 TOML（未闭合数组）→ 必须阻断并带上位置信息。
+        std::fs::write(
+            home.join("config.toml"),
+            "model_provider = \"custom\"\nmodel_list = [\"a\", \n",
+        )
+        .unwrap();
+        let error = live_config_backfill_blocking_error(home)
+            .expect("unparseable live config must be reported as blocking");
+        assert!(!error.is_empty(), "error detail must not be empty");
+    }
+
+    /// 重复表头/重复根键属于 core 归一层能修好的形态，预检不能误报成语法错误——
+    /// 否则 #618 的降级路径会吃掉本来能成功的回填。
+    #[test]
+    fn live_config_backfill_blocking_error_tolerates_duplicate_tables_and_root_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "\
+model = \"a\"
+model = \"b\"
+
+[mcp_servers.node_repl]
+command = \"node\"
+
+[mcp_servers.node_repl]
+cwd = \"/tmp\"
+",
+        )
+        .unwrap();
+
+        assert_eq!(live_config_backfill_blocking_error(temp.path()), None);
+    }
+
+    /// 预检必须与 core 的读取路径同样剥掉 BOM，否则带 BOM 的正常文件会被误判。
+    #[test]
+    fn live_config_backfill_blocking_error_ignores_utf8_bom() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "\u{feff}model_provider = \"openai\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(live_config_backfill_blocking_error(temp.path()), None);
     }
 
     #[test]

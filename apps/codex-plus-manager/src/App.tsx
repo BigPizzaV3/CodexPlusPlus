@@ -3095,6 +3095,13 @@ export function App() {
     );
     if (!result) return next;
     const normalized = normalizeSettings(result.settings);
+    // degraded = 后端跳过了回填（例如 live config.toml 有语法错误，issue #618）。
+    // 切换本身照常继续，只是用原配置走；提示一下原因即可，不能按 failed 处理，
+    // 否则会把用户卡在中转态回不去。
+    if (isDegradedStatus(result.status)) {
+      showNotice(t("供应商切换"), result.message, result.status);
+      return normalized;
+    }
     if (!isSuccessStatus(result.status)) {
       showNotice(t("供应商切换"), result.message, result.status);
       return next;
@@ -4740,6 +4747,28 @@ function RelayScreen({
     setThirdPartyImportOpen((open) => !open);
     if (!ccsProviders) void actions.refreshCcsProviders(true);
   };
+  /// issue #595：切到中转后没有回官方登录态的路。
+  ///
+  /// 直接调 `clear_relay_injection` 会丢掉切换所需的 profile 上下文（它读的是
+  /// 磁盘上 current 的那一份），而且在中转 profile 已经是 active 时不会把
+  /// settings 的 activeRelayId 拨回来。所以这里走既有的供应商切换链路：复用一个
+  /// 「官方登录（不混入 API）」profile，没有就建一个，再设为当前。清理由
+  /// relay_config 的 clear 路径完成，与手动选该 profile 完全一致。
+  const restoreOfficialRelayProfile = async () => {
+    if (actions.relaySwitching) return;
+    const existing = normalized.relayProfiles.find(
+      (profile) => profile.relayMode === "official" && !profile.officialMixApiKey && !isAggregateRelayProfile(profile),
+    );
+    const nextProfile = existing ?? createRelayProfile(normalized);
+    const next = syncLegacyRelayFields({
+      ...normalized,
+      relayProfiles: existing
+        ? normalized.relayProfiles
+        : [...normalized.relayProfiles, nextProfile],
+      activeRelayId: nextProfile.id,
+    });
+    await actions.switchRelayProfile(next, normalized.activeRelayId);
+  };
 
   if (detailProfile) {
     return (
@@ -4800,6 +4829,23 @@ function RelayScreen({
             >
               <Plus className="h-4 w-4" />
               {t("添加聚合供应商")}
+            </Button>
+            {/* issue #595：缺一个「回到官方登录态」的显式入口。当前已经是官方登录
+                （无混入）时置灰，避免无意义的重写。 */}
+            <Button
+              disabled={!normalized.relayProfilesEnabled || actions.relaySwitching || isOfficialLoginActive(normalized)}
+              onClick={() => void restoreOfficialRelayProfile()}
+              title={
+                !normalized.relayProfilesEnabled
+                  ? t("供应商配置总开关已关闭")
+                  : isOfficialLoginActive(normalized)
+                    ? t("当前已是官方登录态")
+                    : t("清除中转 API 配置，切回 ChatGPT 官方登录")
+              }
+              variant="secondary"
+            >
+              <RotateCcw className="h-4 w-4" />
+              {t("恢复官方登录")}
             </Button>
             <div className="third-party-import">
               <Button
@@ -11726,6 +11772,7 @@ function statusLabel(status: string) {
     ok: t("正常"),
     running: t("运行中"),
     running_degraded: t("运行中（增强等待中）"),
+    degraded: t("已降级"),
     starting: t("启动中"),
     failed: t("失败"),
     archived: t("已归档"),
@@ -11746,6 +11793,12 @@ function statusClass(status: string) {
 
 function isSuccessStatus(status?: Status) {
   return status === "ok" || status === "accepted";
+}
+
+/// 后端「降级但流程可继续」的状态。目前用于回填跳过（live config.toml 语法
+/// 错误，issue #618）：要在提示用户的同时继续执行，不能当成失败中断。
+function isDegradedStatus(status?: Status) {
+  return status === "degraded";
 }
 
 function truncateSessionDeletePreview(value: string) {
@@ -12024,6 +12077,13 @@ function activeRelayProfile(settings: BackendSettings): RelayProfile {
 
 function relayProtocolLabel(protocol: RelayProtocol): string {
   return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
+}
+
+/// 当前 active 供应商是否就是「纯官方登录」（官方模式且不混入 API Key）。
+/// 用于给「恢复官方登录」按钮置灰（issue #595）。
+function isOfficialLoginActive(settings: BackendSettings): boolean {
+  const active = activeRelayProfile(settings);
+  return active.relayMode === "official" && !active.officialMixApiKey && !isAggregateRelayProfile(active);
 }
 
 function ccsProviderSummary(result: CcsProvidersResult | null): string {

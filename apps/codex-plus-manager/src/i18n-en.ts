@@ -38,6 +38,11 @@ export const EN_PLAIN: Record<string, string> = {
     "Native browser files could not be restored. Codex will still start.",
   "正在等待 Codex 启动结果…": "Waiting for the Codex startup result...",
   "运行中（增强等待中）": "Running (waiting for enhancements)",
+  "已降级": "Degraded",
+  "恢复官方登录": "Restore official login",
+  "当前已是官方登录态": "Already using official login",
+  "清除中转 API 配置，切回 ChatGPT 官方登录":
+    "Clear relay API configuration and switch back to ChatGPT official login",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
