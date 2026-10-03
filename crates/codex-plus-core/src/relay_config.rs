@@ -849,11 +849,22 @@ pub fn apply_pure_api_config_to_home_with_session_provider(
     })
 }
 
+/// 官方登录的接入地址。官方 profile 的 `configContents` 在管理端归一化时会被清空
+/// （App.tsx 里 `relayMode === "official"` 分支写空串），于是 `relay_profile_base_url`
+/// 返回空串、被下面的空值校验直接拒绝 —— 而官方模式下界面根本没有 base_url 输入框，
+/// 用户无处可填（issue #1488）。这里给官方模式兜一个内置地址。
+const OFFICIAL_LOGIN_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+
 pub async fn test_relay_profile(
     profile: &RelayProfile,
     model: &str,
 ) -> anyhow::Result<RelayProfileTestResult> {
-    let base_url = relay_profile_base_url(profile);
+    let mut base_url = relay_profile_base_url(profile);
+    if base_url.trim().is_empty()
+        && profile.relay_mode == crate::settings::RelayMode::Official
+    {
+        base_url = OFFICIAL_LOGIN_BASE_URL.to_string();
+    }
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");

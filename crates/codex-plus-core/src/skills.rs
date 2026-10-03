@@ -312,7 +312,56 @@ impl SkillsManager {
             entries.entry(skill.id.clone()).or_insert(skill);
         }
 
+        // 用户让 Codex 自己建的 skill（或手工放进 skills 目录的）不会进 state.installed，
+        // 也不在远端清单里，此前因此完全不显示（issue #862）。这里扫描 linked_dir 补上。
+        for skill in self.list_local_skills() {
+            entries.entry(skill.id.clone()).or_insert(skill);
+        }
+
         entries.into_values().collect()
+    }
+
+    /// 扫描 `$CODEX_HOME/skills` 下带 `SKILL.md` 的目录，收拢前面几轮没覆盖到的条目。
+    ///
+    /// 软链（本工具安装的）与 `.system` 已在别的分支处理过，这里只兜底「本地自建」，
+    /// 因此不做安装/卸载，只读展示。
+    fn list_local_skills(&self) -> Vec<SkillEntry> {
+        let root = self.linked_dir();
+        let Ok(dir) = std::fs::read_dir(&root) else {
+            return Vec::new();
+        };
+        let mut skills = Vec::new();
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if id == BUNDLED_SKILLS_DIR || id.starts_with('.') {
+                continue;
+            }
+            let manifest = path.join(SKILL_MANIFEST_FILE);
+            if !manifest.is_file() {
+                continue;
+            }
+            let (name, description) = read_skill_manifest(&manifest, id);
+            skills.push(SkillEntry {
+                id: id.to_string(),
+                name,
+                description,
+                repo_key: String::new(),
+                repo_path: String::new(),
+                installed: false,
+                enabled: true,
+                bundled: false,
+                content_hash: String::new(),
+                remote_hash: String::new(),
+                update_available: false,
+            });
+        }
+        skills
     }
 
     /// codex 随包附带的 `.system` skill，只列出来让用户知道有这些，不参与安装。
@@ -1451,6 +1500,54 @@ mod tests {
         let imagegen = entries.iter().find(|entry| entry.id == "imagegen").unwrap();
         assert!(imagegen.bundled);
         assert_eq!(imagegen.description, "内置");
+    }
+
+    /// #862：用户让 Codex 自己建的 skill 只落在 `$CODEX_HOME/skills/<id>/`，
+    /// 不进 state.installed、也不在远端清单里，此前在管理工具里完全不显示。
+    #[test]
+    fn merged_entries_include_locally_created_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let local = manager.linked_dir().join("my-own-skill");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(
+            local.join(SKILL_MANIFEST_FILE),
+            "---\nname: 我的技能\ndescription: 本地自建\n---\n",
+        )
+        .unwrap();
+
+        let entries = manager.merge_entries(&[]);
+
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "my-own-skill")
+            .unwrap();
+        assert_eq!(entry.name, "我的技能");
+        assert_eq!(entry.description, "本地自建");
+        assert!(!entry.bundled);
+        assert!(entry.enabled);
+    }
+
+    /// 没有 SKILL.md 的目录、以及 `.system` 自带目录，都不应被当成「本地自建」重复收录。
+    #[test]
+    fn local_scan_ignores_manifest_less_and_bundled_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        std::fs::create_dir_all(manager.linked_dir().join("no-manifest")).unwrap();
+        let bundled = manager.linked_dir().join(BUNDLED_SKILLS_DIR).join("imagegen");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(
+            bundled.join(SKILL_MANIFEST_FILE),
+            "---\nname: imagegen\ndescription: 内置\n---\n",
+        )
+        .unwrap();
+
+        let entries = manager.merge_entries(&[]);
+
+        assert!(entries.iter().all(|entry| entry.id != "no-manifest"));
+        let imagegen: Vec<_> = entries.iter().filter(|entry| entry.id == "imagegen").collect();
+        assert_eq!(imagegen.len(), 1, "自带 skill 不应被本地扫描重复收录");
+        assert!(imagegen[0].bundled);
     }
 
     /// #1989：四个仓库全部「文件树返回错误状态」，看不出是限流、网络还是仓库没了。
