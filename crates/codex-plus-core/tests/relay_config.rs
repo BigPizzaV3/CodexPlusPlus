@@ -588,6 +588,62 @@ model = "gpt-5-mini"
     assert!(updated.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
 }
 
+/// 回归（#890 / #597 / #609）：模板里没有 `[plugins.*]` 时，重写 config.toml
+/// 必须从 live 补回用户的插件条目（含带引号的 dotted key），否则切换供应商
+/// 会把插件表整段丢掉、界面显示为「未安装」。
+#[test]
+fn apply_relay_config_preserves_live_plugin_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"[plugins."figma@openai-curated"]
+enabled = true
+
+[plugins."trello@openai-curated"]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    apply_relay_config_to_home(
+        temp.path(),
+        "https://relay.example.test/v1",
+        "sk-test-redacted",
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(
+        updated.contains(r#"[plugins."figma@openai-curated"]"#),
+        "带引号的插件条目必须保留，实际：{updated}"
+    );
+    assert!(updated.contains(r#"[plugins."trello@openai-curated"]"#));
+    // 值也要原样保留，不能只留下空表头。
+    assert!(updated.contains("enabled = false"));
+    // 同时不能破坏既有的供应商隔离行为。
+    assert!(updated.contains("[model_providers.custom]"));
+}
+
+/// 上式负例：live 里本来就没有 plugins 时不得凭空注入空段。
+#[test]
+fn apply_relay_config_does_not_invent_empty_plugins_table() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+
+    apply_relay_config_to_home(
+        temp.path(),
+        "https://relay.example.test/v1",
+        "sk-test-redacted",
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(
+        !updated.contains("[plugins]"),
+        "live 无 plugins 时不得注入该段，实际：{updated}"
+    );
+}
+
 #[test]
 fn apply_chat_protocol_relay_points_codex_to_local_responses_proxy() {
     let temp = tempfile::tempdir().unwrap();

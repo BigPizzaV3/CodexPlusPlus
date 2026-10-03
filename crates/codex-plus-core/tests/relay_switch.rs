@@ -869,3 +869,45 @@ base_url = "https://a.example/v1"
     // 切换链路本身未被破坏：live config 仍是最后一个激活供应商（a）的合法配置
     assert!(final_config.contains(r#"base_url = "https://a.example/v1""#));
 }
+
+/// 回归（issue #1888）：上一个供应商已不在配置列表里时，错误里必须带上它的 id，
+/// 用户才知道是哪一个没了（否则只看到「回填当前供应商配置失败」这一句无从下手）。
+#[test]
+fn switch_reports_previous_profile_id_when_it_is_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    store
+        .save(&BackendSettings {
+            active_relay_id: "a".to_string(),
+            relay_profiles: vec![pure_profile("a", "https://a.example/v1", "sk-a")],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    // 目标设置里只剩 b，上一个活跃的 a 已被删掉。
+    let next = BackendSettings {
+        active_relay_id: "b".to_string(),
+        relay_profiles: vec![
+            pure_profile("a", "https://a.example/v1", "sk-a"),
+            pure_profile("b", "https://b.example/v1", "sk-b"),
+        ],
+        ..BackendSettings::default()
+    };
+
+    let error = switch_relay_profile_in_home(&store, &home, next, "deleted-id")
+        .expect_err("上一个供应商不存在时必须中止切换");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("deleted-id"),
+        "错误信息要带上缺失的供应商 id，实际：{message}"
+    );
+    assert!(
+        message.contains("已不在配置列表中"),
+        "错误信息要说明原因，实际：{message}"
+    );
+    // 中止切换后不能覆盖用户的磁盘配置。
+    assert_eq!(store.load().unwrap().active_relay_id, "a");
+    assert!(!home.join("config.toml").exists());
+}

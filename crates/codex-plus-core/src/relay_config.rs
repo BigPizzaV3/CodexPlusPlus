@@ -2119,6 +2119,11 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     repair_mcp_servers_from_live(&mut target_doc, &live_doc);
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     preserve_missing_table_keys(&mut target_doc, &live_doc, "features");
+    // 同上：`[plugins."<id>"]` 由用户与 Codex 桌面端管理，模板里没有时从 live 补回。
+    // 这条是兜底——正常切换路径已经在 preserve_unmanaged_live_context_entries 补过，
+    // 但 apply_relay_files_to_home / apply_relay_config_file_to_home 等入口不经过那一步，
+    // 模板缺 plugins 段时会把用户的插件表整段丢掉（#890 / #597 / #609）。
+    preserve_missing_table_keys(&mut target_doc, &live_doc, "plugins");
     // hooks 的定义部分（除 state 外的键）同样由用户/桌面端管理，模板里没有时
     // 从 live 补回，否则切换供应商会把定义整段丢掉，只剩 hooks.state。
     preserve_live_hook_definitions(&mut target_doc, &live_doc);
