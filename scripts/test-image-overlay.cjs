@@ -31,9 +31,10 @@ async function main() {
  const browser=await chromium.launch({channel:'msedge',headless:true});
  const results=[];
  try {
-  for(const width of [480,1088,1727]) for(const zoom of [.8,1,1.25]) {
+  for(const width of (process.env.CODEX_OVERLAY_QUICK ? [1088] : [480,1088,1727])) for(const zoom of (process.env.CODEX_OVERLAY_QUICK ? [1] : [.8,1,1.25])) {
    const page=await browser.newPage({viewport:{width,height:900},deviceScaleFactor:1});
    const errors=[];page.on('pageerror',e=>errors.push(e.message));
+   let maxWheelDrift=0,maxNestedDrift=0;
    await page.route('**/*',route=>route.request().url().startsWith('data:')?route.continue():route.abort());
    await page.setContent(`<!doctype html><html><head><style>${nativeCSS}</style><style>
     *{box-sizing:border-box}[hidden]:not([hidden="until-found"]){display:none!important}html{--color-surface:#181818}body{margin:0;background:#202020;color:#eee;font:14px Arial;overflow:hidden}
@@ -70,7 +71,13 @@ async function main() {
    const geometryBefore=await page.locator('#controlled').boundingBox();
    const neighborBefore=await page.locator('#clip').boundingBox();
    await page.locator('textarea').focus();
-   await page.evaluate(()=>{window.rafCalls=0;const raf=window.requestAnimationFrame;window.requestAnimationFrame=cb=>{window.rafCalls++;return raf(cb)}});
+   await page.evaluate(()=>{
+    window.rafCalls=0;window.deferredOverlayFrames=[];const raf=window.requestAnimationFrame;
+    window.requestAnimationFrame=cb=>{window.rafCalls++;return raf(time=>{
+     if(window.deferOverlayFrames)window.deferredOverlayFrames.push(cb);else cb(time);
+    })};
+    window.resumeOverlayFrames=()=>{window.deferOverlayFrames=false;for(const cb of window.deferredOverlayFrames.splice(0))raf(cb)};
+   });
    await page.evaluate(install);
    assert.equal(await page.locator('textarea').evaluate(e=>e===document.activeElement),true,'promotion does not steal focus');
    const screenshot=async()=>PNG.sync.read(await page.screenshot());
@@ -87,6 +94,24 @@ async function main() {
    await expectColor('#clear',[24,24,24],'transparent image backplane');
    await expectColor('#video',[220,40,50],'video first frame');
    await expectColor('#canvas',[220,40,50],'canvas first frame');
+   // Wheel scrolling is compositor-driven. Waiting for layout to settle hid
+   // the old fixed-copy lag, so deliberately defer only injected RAF work.
+   await page.evaluate(()=>{window.deferOverlayFrames=true});
+   const wheelBox=await page.locator('#scroller').boundingBox();
+   await page.mouse.move(wheelBox.x+wheelBox.width-20,wheelBox.y+wheelBox.height/2);
+   for(const delta of [14,14,-10,-18]) {
+    await page.mouse.wheel(0,delta);
+    await page.waitForTimeout(90);
+    const drift=await page.evaluate(()=>['photo','gif','clear','video','canvas'].map((id,index)=>{
+     const source=document.getElementById(id).getBoundingClientRect();
+     const copy=document.querySelectorAll('.codex-plus-media-copy')[index].getBoundingClientRect();
+     return {id,dx:Math.abs(source.x-copy.x),dy:Math.abs(source.y-copy.y)};
+    }));
+    assert.ok(drift.every(x=>x.dx<1 && x.dy<1),'wheel motion must not wait for injected layout: '+JSON.stringify(drift));
+    maxWheelDrift=Math.max(maxWheelDrift,...drift.flatMap(x=>[x.dx,x.dy]));
+   }
+   await page.evaluate(()=>{document.querySelector('#scroller').scrollTop=0;window.resumeOverlayFrames()});
+   await page.waitForTimeout(80);
    assert.equal(await page.locator('#controlled').evaluate(e=>e===window.controlledSource && e.controls && e.srcObject===window.stream),true,'original video and controls retained');
    const controlGeometry=await page.locator('#controlled').boundingBox();
    const placeholderGeometry=await page.locator('#row > [data-codex-plus-ext="image-overlay"]').boundingBox();
@@ -129,6 +154,58 @@ async function main() {
    assert.ok(!near(pixel(scrollShot,clip.x+clip.width+5,clip.y+25*zoom),[220,40,50]),'image must not escape horizontal clip');
    await page.evaluate(()=>{document.querySelector('#scroller').scrollTop=0;document.querySelector('#spacer').style.height='0px'});
    await expectColor('#photo',[220,40,50],'scroll back');
+   await page.evaluate(({red})=>{
+    const nested=document.createElement('div');nested.id='nested';
+    nested.style.cssText='width:160px;height:140px;overflow:auto;border:3px solid white;position:relative';
+    const content=document.createElement('div');content.id='nested-content';
+    content.style.cssText='width:500px;height:500px;padding:32px';
+    const img=new Image();img.id='nested-photo';img.src=red;img.style.cssText='width:80px;height:80px';
+    content.append(img);nested.append(content);document.querySelector('#scroller').prepend(nested);
+   },{red});
+   await expectColor('#nested-photo',[220,40,50],'nested initial');
+   for(const rtl of [false,true]) {
+    await page.evaluate(rtl=>{document.querySelector('#nested').style.direction=rtl?'rtl':'ltr'},rtl);
+    await page.waitForTimeout(80);
+    await page.evaluate(()=>{window.deferOverlayFrames=true});
+    for(const amount of [12,24,8,0]) {
+     await page.evaluate(({amount,rtl})=>{
+      document.querySelector('#nested').scrollTop=amount;
+      document.querySelector('#nested').scrollLeft=rtl?-amount:amount;
+      document.querySelector('#scroller').scrollTop=amount/2;
+     },{amount,rtl});
+     await page.waitForTimeout(60);
+     const delta=await page.evaluate(()=>{
+      const source=document.querySelector('#nested-photo').getBoundingClientRect();
+      const copy=[...document.querySelectorAll('.codex-plus-media-copy')].at(-1).getBoundingClientRect();
+      return [Math.abs(source.x-copy.x),Math.abs(source.y-copy.y)];
+     });
+     assert.ok(delta.every(d=>d<1),'nested scroll alignment rtl='+rtl+': '+delta);
+     maxNestedDrift=Math.max(maxNestedDrift,...delta);
+    }
+    await page.evaluate(()=>window.resumeOverlayFrames());
+   }
+   await page.evaluate(()=>{document.querySelector('#nested-content').style.height='730px';document.querySelector('#nested').style.direction='ltr'});
+   await page.waitForTimeout(80);
+   await page.evaluate(()=>{document.querySelector('#nested').style.overflow='clip'});
+   await page.waitForTimeout(80);
+   await page.evaluate(()=>{document.querySelector('#nested').style.overflow='auto'});
+   await page.waitForTimeout(80);
+   await page.evaluate(()=>{window.deferOverlayFrames=true;document.querySelector('#nested').scrollTop=26});
+   await page.waitForTimeout(80);
+   await expectColor('#nested-photo',[220,40,50],'changed scroll extent');
+   await page.evaluate(()=>{window.resumeOverlayFrames();document.querySelector('#nested').remove();document.querySelector('#scroller').scrollTop=0});
+   await page.waitForTimeout(80);
+   await page.evaluate(()=>{
+    const photo=document.querySelector('#photo'),scale=photo.currentCSSZoom||1;
+    photo.style.cssText='position:fixed;left:'+(innerWidth-100)/scale+'px;top:'+220/scale+'px';
+   });
+   await expectColor('#photo',[220,40,50],'fixed media fallback');
+   assert.equal(await page.locator('.codex-plus-media-copy').first().evaluate(e=>e.closest('.codex-plus-media-scrollport')),null,'fixed media must not follow ancestor scroll');
+   await page.evaluate(()=>{document.querySelector('#scroller').scrollTop=40});
+   await page.waitForTimeout(80);
+   await expectColor('#photo',[220,40,50],'fixed media after scroll');
+   await page.evaluate(()=>{document.querySelector('#photo').removeAttribute('style');document.querySelector('#scroller').scrollTop=0});
+   await page.waitForTimeout(80);
    await page.evaluate(()=>paint('rgb(30,180,60)'));
    await expectColor('#video',[30,180,60],'video frame update');
    await page.evaluate(()=>document.querySelector('#video').pause());
@@ -194,6 +271,7 @@ async function main() {
    const baseline=await screenshot();
    for(const [x,y] of ordinaryPoints)assert.deepEqual(pixel(finalShot,x,y),pixel(baseline,x,y),'ordinary upstream overlay equivalence');
    assert.equal(await page.locator('.codex-plus-media-plane').count(),0,'cleanup planes');
+   assert.equal(await page.evaluate(()=>document.getAnimations().filter(a=>a.timeline instanceof ScrollTimeline).length),0,'cleanup scroll animations');
    assert.equal(await page.locator('#controlled').getAttribute('popover'),null,'native video restored');
    assert.equal(await page.locator('#row > [data-codex-plus-ext="image-overlay"]').count(),0,'placeholder removed');
    assert.deepEqual(await page.locator('#controlled').boundingBox(),geometryBefore,'native geometry restored on cleanup');
@@ -202,7 +280,7 @@ async function main() {
    assert.equal(await page.locator('.codex-plus-media-plane').count(),0,'repeated cleanup');
    await page.evaluate(()=>{clearInterval(paintTimer);stream.getTracks().forEach(t=>t.stop())});
    assert.deepEqual(errors,[],'page errors');
-   results.push({width,zoom,passed:true});
+   results.push({width,zoom,passed:true,maxWheelDrift,maxNestedDrift});
    await page.close();
    console.log(`PASS ${width} zoom=${zoom}`);
   }

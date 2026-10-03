@@ -676,6 +676,13 @@
         max-width: none !important; max-height: none !important;
         pointer-events: none !important;
       }
+      .codex-plus-media-scrollport, .codex-plus-media-scroll-offset {
+        position: absolute !important; margin: 0 !important; padding: 0 !important;
+        border: 0 !important; background: transparent !important;
+        pointer-events: none !important; display: block !important;
+      }
+      .codex-plus-media-scroll-offset { inset: 0; }
+      .codex-plus-media-scrollport .codex-plus-media-copy { position: absolute !important; }
       .codex-plus-media-plane[hidden] { display: none !important; }
       [data-codex-plus-native-media]::backdrop { display: none !important; }
     `;
@@ -821,6 +828,93 @@
       native.applied.set(name, host.style.getPropertyValue(name));
       native.style = host.getAttribute('style');
     };
+    const clearScrollLayers = record => {
+      for (const layer of record.scrollLayers || []) {
+        layer.xAnimation?.cancel();
+        layer.yAnimation?.cancel();
+      }
+      if (record.scrollLayers?.length) {
+        record.plane.appendChild(record.copy);
+        record.scrollLayers[0].port.remove();
+      }
+      record.scrollLayers = [];
+    };
+    const positionScrollCopy = (record, rect) => {
+      if (record.native || typeof ScrollTimeline !== 'function') return false;
+      if (/^(fixed|sticky)$/.test(readStyle(record.source).position)) {
+        clearScrollLayers(record);
+        return false;
+      }
+      const parents = [];
+      for (let node = record.source.parentElement; node; node = node.parentElement) {
+        const css = readStyle(node);
+        // Sticky motion is constrained by layout, not a linear scroll offset.
+        if (css.position === 'sticky') { clearScrollLayers(record); return false; }
+        if (/^(auto|scroll|hidden|clip)$/.test(css.overflowX) ||
+            /^(auto|scroll|hidden|clip)$/.test(css.overflowY) || node === document.scrollingElement) parents.unshift(node);
+        if (css.position === 'fixed') break;
+      }
+      if (!parents.length) { clearScrollLayers(record); return false; }
+      if (parents.length !== record.scrollLayers?.length ||
+          parents.some((node, index) => record.scrollLayers[index].source !== node)) {
+        clearScrollLayers(record);
+        let container = record.plane;
+        for (const source of parents) {
+          const port = document.createElement('div');
+          port.className = 'codex-plus-media-scrollport';
+          const x = document.createElement('div');
+          const y = document.createElement('div');
+          x.className = y.className = 'codex-plus-media-scroll-offset';
+          port.appendChild(x); x.appendChild(y); container.appendChild(port);
+          record.scrollLayers.push({ source, port, x, y });
+          container = y;
+        }
+        container.appendChild(record.copy);
+      }
+      let originX = 0, originY = 0;
+      for (const layer of record.scrollLayers) {
+        const { source, port } = layer;
+        const css = readStyle(source);
+        const root = source === document.scrollingElement;
+        const zoom = source.currentCSSZoom || 1;
+        const box = root ? { left: 0, top: 0 } : readRect(source);
+        const left = box.left + (root ? 0 : source.clientLeft * zoom);
+        const top = box.top + (root ? 0 : source.clientTop * zoom);
+        const width = root ? innerWidth : source.clientWidth * zoom;
+        const height = root ? innerHeight : source.clientHeight * zoom;
+        const clipsX = root || /^(auto|scroll|hidden|clip)$/.test(css.overflowX);
+        const clipsY = root || /^(auto|scroll|hidden|clip)$/.test(css.overflowY);
+        Object.assign(port.style, { left: `${left - originX}px`, top: `${top - originY}px`,
+          width: `${width}px`, height: `${height}px`,
+          clipPath: `inset(${clipsY ? 0 : -100000}px ${clipsX ? 0 : -100000}px)` });
+        for (const axis of ['x', 'y']) {
+          const horizontal = axis === 'x';
+          const extent = Math.max(0, horizontal ? source.scrollWidth - source.clientWidth : source.scrollHeight - source.clientHeight);
+          const reverse = horizontal ? css.direction === 'rtl' : css.display.includes('flex') && css.flexDirection === 'column-reverse';
+          const distance = (reverse ? 1 : -1) * extent * zoom;
+          const key = axis + 'Animation';
+          const enabled = extent > 0 && css[horizontal ? 'overflowX' : 'overflowY'] !== 'clip';
+          if (layer[axis + 'Distance'] === distance && layer[axis + 'Enabled'] === enabled) continue;
+          layer[key]?.cancel();
+          layer[key] = null;
+          layer[axis + 'Distance'] = distance;
+          layer[axis + 'Enabled'] = enabled;
+          // The compositor samples the source scroll position even when the
+          // main thread is busy. Do not chase wheel events with fixed left/top.
+          if (enabled) {
+            layer[key] = layer[axis].animate([
+              { transform: 'translate' + axis.toUpperCase() + '(0px)' },
+              { transform: 'translate' + axis.toUpperCase() + '(' + distance + 'px)' },
+            ], { duration: 1, fill: 'both', timeline: new ScrollTimeline({ source, axis }) });
+          }
+        }
+        originX = left - source.scrollLeft * zoom;
+        originY = top - source.scrollTop * zoom;
+      }
+      record.copy.style.left = `${rect.left - originX}px`;
+      record.copy.style.top = `${rect.top - originY}px`;
+      return true;
+    };
     const refresh = source => {
       if (disposed) return;
       if (source) dirty.add(source);
@@ -898,6 +992,13 @@
         width: `${rect.width}px`,
         height: `${rect.height}px`,
       });
+      if (positionScrollCopy(record, rect)) {
+        // Only the media scrollports clip. The complete decorative overlay
+        // stays untouched; its copy must not retain a stale source-rect clip.
+        const footer = thread && document.querySelector('[data-thread-scroll-footer]');
+        const footerBox = footer && visibleRect(footer);
+        record.plane.style.clipPath = `inset(0px 0px ${footerBox ? Math.max(0, innerHeight - footerBox.top) : 0}px 0px)`;
+      }
       if (record.native) {
         const zoom = geometry.currentCSSZoom || 1;
         for (const [name, value] of Object.entries({position:'fixed', margin:'0', inset:'auto',
@@ -999,6 +1100,7 @@
       unwatch(record.watched);
       if (record.videoFrame !== null) source.cancelVideoFrameCallback(record.videoFrame);
       stopStream(record);
+      clearScrollLayers(record);
       if (record.native) {
         const host = record.native.host;
         if (host.matches(':popover-open')) host.hidePopover();
@@ -1087,6 +1189,17 @@
       blockerPaths.delete(element);
     };
     const layoutChanged = () => refresh();
+    const scrollChanged = event => {
+      const target = event.target === document ? document.scrollingElement : event.target;
+      resetGeometry();
+      const hasVisibleBlocker = [...blockers].some(element => !!visibleRect(element));
+      for (const source of visibleMedia) {
+        if (!target?.contains(source)) continue;
+        const record = records.get(source);
+        if (record?.scrollLayers?.length && !hasVisibleBlocker) continue;
+        refresh(source);
+      }
+    };
     const invalidateLayout = target => {
       for (const source of visibleMedia) {
         const record = records.get(source);
@@ -1095,7 +1208,7 @@
       }
     };
     window.addEventListener("resize", layoutChanged, { passive: true });
-    document.addEventListener("scroll", layoutChanged, { passive: true, capture: true });
+    document.addEventListener("scroll", scrollChanged, { passive: true, capture: true });
     document.addEventListener("transitionend", layoutChanged, true);
     document.addEventListener("fullscreenchange", layoutChanged, true);
     const mediaLoaded = event => { if (event.target.matches?.(mediaSelector)) { add(event.target); refresh(event.target); } };
@@ -1133,7 +1246,7 @@
       disposed = true;
       changes.disconnect();
       window.removeEventListener("resize", layoutChanged);
-      document.removeEventListener("scroll", layoutChanged, true);
+      document.removeEventListener("scroll", scrollChanged, true);
       document.removeEventListener("transitionend", layoutChanged, true);
       document.removeEventListener("fullscreenchange", layoutChanged, true);
       document.removeEventListener("load", mediaLoaded, true);

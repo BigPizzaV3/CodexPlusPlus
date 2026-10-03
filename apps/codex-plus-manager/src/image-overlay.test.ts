@@ -10,6 +10,15 @@ function functionSource(name: string) {
   return match[0];
 }
 
+it('uses native scroll timelines and releases owned animations', () => {
+  const foreground = functionSource('installCodexPlusImageOverlayForeground');
+  for (const fragment of ['new ScrollTimeline', 'typeof ScrollTimeline',
+    'clearScrollLayers(record)', 'xAnimation?.cancel()', 'yAnimation?.cancel()']) {
+    assert.ok(foreground.includes(fragment), fragment);
+  }
+  assert.ok(!foreground.includes('preventDefault('));
+});
+
 it("keeps the complete upstream tint layer and its configured opacity", () => {
   const install = functionSource("installCodexPlusImageOverlay");
   assert.match(install, /width: "100vw"/);
