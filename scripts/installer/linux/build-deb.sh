@@ -11,7 +11,40 @@ PROJECT_DIR="$REPO_DIR/apps/codex-plus-manager"
 BUILD_DIR="$REPO_DIR/.linux-build"
 DEB_DIR="$BUILD_DIR/deb"
 PACKAGE_NAME="codex-plus-plus"
-VERSION="${1:-1.3.0}"
+# 自动读取 package.json 版本号作为默认版本
+DEFAULT_VERSION="1.5.0"
+if [ -f "$PROJECT_DIR/package.json" ]; then
+    DEFAULT_VERSION="$(node -p 'try{require("./apps/codex-plus-manager/package.json").version || "1.5.0"}catch(e){"1.5.0"}' 2>/dev/null || echo "1.5.0")"
+fi
+
+ACTION="all"
+VERSION="$DEFAULT_VERSION"
+
+for arg in "$@"; do
+    case "$arg" in
+        --package-only)
+            ACTION="package"
+            ;;
+        --frontend-only)
+            ACTION="frontend"
+            ;;
+        --rust-only)
+            ACTION="rust"
+            ;;
+        --deps-only)
+            ACTION="deps"
+            ;;
+        -h|--help)
+            echo "用法: $0 [--package-only|--frontend-only|--rust-only|--deps-only] [VERSION]"
+            exit 0
+            ;;
+        *)
+            if [[ ! "$arg" =~ ^-- ]]; then
+                VERSION="$arg"
+            fi
+            ;;
+    esac
+done
 ARCH="$(dpkg --print-architecture)"
 # Node / 包管理器：优先从环境变量取，其次探测 PATH。
 # 不要写死绝对路径——这里是给所有贡献者和 CI 用的，不是某台机器的构建脚本。
@@ -47,12 +80,18 @@ install_system_deps() {
 
 # ── 2. 安装 Rust toolchain（无需 sudo）───────────────────────
 install_rust() {
+    if [ -f "$HOME/.cargo/env" ]; then
+        . "$HOME/.cargo/env"
+    fi
     if command -v cargo &>/dev/null; then
         echo ">>> Rust 已安装: $(cargo --version)"
         return
     fi
     echo ">>> 安装 Rust toolchain (rustup)..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+    if [ -f "$HOME/.cargo/env" ]; then
+        . "$HOME/.cargo/env"
+    fi
     echo ">>> Rust 安装完成: $(cargo --version)"
 }
 
@@ -60,22 +99,24 @@ install_rust() {
 build_frontend() {
     echo ">>> 构建前端..."
     cd "$PROJECT_DIR"
-    # vite 需要 node 在 PATH 上；允许通过 NODE_BIN 指定非 PATH 中的安装。
     if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then
         export PATH="$(dirname "$NODE_BIN"):$PATH"
     fi
-    local PM="$PNPM_BIN"
-    if [ -z "$PM" ] || [ ! -x "$PM" ]; then
-        PM="$(command -v pnpm || true)"
-    fi
-    if [ -z "$PM" ]; then
-        echo "error: 找不到 pnpm。请安装（npm i -g pnpm）或用 PNPM_BIN=/path/to/pnpm 指定。" >&2
+
+    if command -v npm &>/dev/null; then
+        npm ci || npm install
+        npm run vite:build
+    elif command -v pnpm &>/dev/null; then
+        pnpm install
+        pnpm run vite:build
+    elif [ -n "$PNPM_BIN" ] && [ -x "$PNPM_BIN" ]; then
+        export PATH="$(dirname "$PNPM_BIN"):$PATH"
+        "$PNPM_BIN" install
+        node_modules/.bin/vite build
+    else
+        echo "error: 找不到 npm 或 pnpm。请安装 npm/pnpm 后重试。" >&2
         return 1
     fi
-    export PATH="$(dirname "$PM"):$PATH"
-    "$PM" install
-    # Build vite directly (skip npm/pnpm wrapper issues)
-    node_modules/.bin/vite build
     echo ">>> 前端构建完成"
 }
 
@@ -124,6 +165,7 @@ package_deb() {
     local icon_src="$PROJECT_DIR/src-tauri/icons/icon.png"
     if [ -f "$icon_src" ]; then
         cp "$icon_src" "$stage/share/icons/hicolor/128x128/apps/${PACKAGE_NAME}-manager.png"
+        cp "$icon_src" "$stage/share/icons/hicolor/128x128/apps/${PACKAGE_NAME}.png"
     fi
 
     # ── Desktop 文件 ──
@@ -158,7 +200,8 @@ EOF
 
     # ── control 文件 ──
     local installed_size
-    installed_size=$(du -sk "$stage" | awk '{print $1}')
+    installed_size=$(du -sk "$DEB_DIR" | awk '{print $1}')
+
     cat > "$DEB_DIR/DEBIAN/control" <<EOF
 Package: ${PACKAGE_NAME}
 Version: ${VERSION}
@@ -166,9 +209,8 @@ Section: misc
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: BigPizzaV3 <1727732@qq.com>
-Installed-Size: 70620
-Depends: libc6 (>= 2.34), libgcc-s1 (>= 4.2), libstdc++6 (>= 13), libdbus-1-3, libglib2.0-0t64, libgtk-3-0t64, libwebkit2gtk-4.1-0, libsoup-3.0-0, libjavascriptcoregtk-4.1-0, libssl3t64 (>= 3.0.0), libz3-4, libatspi2.0-0t64, libasound2t64
-
+Installed-Size: ${installed_size}
+Depends: libc6 (>= 2.34), libgcc-s1 (>= 4.2), libstdc++6 (>= 13), libdbus-1-3, libglib2.0-0 | libglib2.0-0t64, libgtk-3-0 | libgtk-3-0t64, libwebkit2gtk-4.1-0, libsoup-3.0-0, libjavascriptcoregtk-4.1-0, libssl3 | libssl3t64, libayatana-appindicator3-1
 Recommends: codex
 Description: Codex++ is an external launcher and manager for OpenAI Codex / ChatGPT desktop apps.
  It provides provider switching, protocol conversion, session management and UI enhancements
@@ -212,18 +254,37 @@ EOF
 
 # ── 主流程 ─────────────────────────────────────────────────
 main() {
-    install_system_deps
-    install_rust
-    build_frontend
-    build_rust
-    package_deb
+    case "$ACTION" in
+        deps)
+            install_system_deps
+            install_rust
+            ;;
+        frontend)
+            build_frontend
+            ;;
+        rust)
+            build_rust
+            ;;
+        package)
+            package_deb
+            ;;
+        all)
+            install_system_deps
+            install_rust
+            build_frontend
+            build_rust
+            package_deb
+            ;;
+    esac
 
     echo ""
-    echo "=== 构建完成 ==="
-    local deb_name="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
-    echo "Deb 包路径: $REPO_DIR/dist/linux/$deb_name"
-    echo ""
-    echo "安装命令: sudo dpkg -i $REPO_DIR/dist/linux/$deb_name"
+    echo "=== 完成 ==="
+    if [ "$ACTION" = "all" ] || [ "$ACTION" = "package" ]; then
+        local deb_name="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
+        echo "Deb 包路径: $REPO_DIR/dist/linux/$deb_name"
+        echo ""
+        echo "安装命令: sudo dpkg -i $REPO_DIR/dist/linux/$deb_name"
+    fi
 }
 
 main "$@"
