@@ -3720,18 +3720,42 @@ fn normalize_chat_messages(messages: &mut [Value]) {
     }
 }
 
+/// 把所有 system 消息折叠成一条、前置到数组头部。
+///
+/// 之前只处理 content 是字符串的 system 消息：数组形态（content parts）与 null
+/// 的会原样留在**原位**，于是出现「system 不在最前」——MiniMax 这类上游会直接
+/// 拒绝（issue #1394 / #410）；空内容的 system 也照样发出去。
+/// 现在无论 content 是什么形态都统一收拢，空的直接丢弃。
+/// 取出 system 消息的纯文本：字符串直接返回，content parts 数组把 text 段拼起来，
+/// 其余形态（null / 对象）按空处理。
+fn system_message_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => String::new(),
+    }
+}
+
 fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
     let mut system_chunks = Vec::new();
     let mut rest = Vec::with_capacity(messages.len());
 
     for message in messages {
         if message.get("role").and_then(Value::as_str) == Some("system") {
-            if let Some(text) = message.get("content").and_then(Value::as_str) {
-                if !text.trim().is_empty() {
-                    system_chunks.push(text.to_string());
-                }
-                continue;
+            let text = system_message_text(message.get("content"));
+            if !text.trim().is_empty() {
+                system_chunks.push(text);
             }
+            continue;
         }
         rest.push(message);
     }
