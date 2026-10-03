@@ -573,6 +573,8 @@
   window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
 
   function installCodexPlusImageOverlay() {
+    window.__codexPlusImageOverlayCleanup?.();
+    window.__codexPlusImageOverlayCleanup = null;
     const config = window.__CODEX_PLUS_IMAGE_OVERLAY__ || {};
     const canQueryById = typeof document?.getElementById === "function";
     const existing = canQueryById ? document.getElementById(codexPlusImageOverlayId) : null;
@@ -604,6 +606,7 @@
     if (existing && existing !== overlay) existing.remove();
     overlay.id = codexPlusImageOverlayId;
     overlay.setAttribute("aria-hidden", "true");
+    overlay.setAttribute("data-codex-plus-ext", "image-overlay");
     Object.assign(overlay.style, {
       position: "fixed",
       inset: "0",
@@ -619,6 +622,7 @@
       userSelect: "none",
     });
     if (!overlay.parentElement) root.appendChild(overlay);
+    installCodexPlusImageOverlayForeground();
     sendCodexPlusDiagnostic("image_overlay_installed", {
       opacity,
       fitMode,
@@ -626,13 +630,267 @@
     });
   }
 
+  function installCodexPlusImageOverlayForeground() {
+    // Keep upstream's single tint layer intact. Only actual media receives a
+    // foreground plane; geometry is refreshed on bounded layout events.
+    const mediaSelector = "img, video, canvas";
+    const raisedSelector = '[role="dialog"]:has([data-testid="image-preview-dismiss-area"]), [role="dialog"]:has(video), [data-browser-sidebar-webview]';
+    const records = new Map();
+    const raised = new Map();
+    const owned = node => node?.closest?.('[data-codex-plus-ext="image-overlay"]');
+    let blocked = false;
+    let disposed = false;
+    const style = document.createElement("style");
+    style.setAttribute("data-codex-plus-ext", "image-overlay");
+    style.textContent = `
+      .codex-plus-media-plane {
+        position: fixed !important; inset: 0 !important; margin: 0 !important;
+        padding: 0 !important; border: 0 !important; background: transparent !important;
+        pointer-events: none !important; user-select: none !important;
+        z-index: 2147483647 !important; display: block !important;
+        width: 100vw; height: 100vh;
+      }
+      .codex-plus-media-copy {
+        position: fixed !important; inset: auto;
+        left: 0; top: 0; width: 0; height: 0;
+        margin: 0 !important; padding: 0 !important; border: 0 !important;
+        max-width: none !important; max-height: none !important;
+        pointer-events: none !important;
+      }
+    `;
+    document.documentElement.appendChild(style);
+    const preserveStyle = (element, name, value) => {
+      const previous = element.style.getPropertyValue(name);
+      const priority = element.style.getPropertyPriority(name);
+      element.style.setProperty(name, value, "important");
+      const applied = element.style.getPropertyValue(name);
+      return () => {
+        if (element.style.getPropertyValue(name) !== applied ||
+            element.style.getPropertyPriority(name) !== "important") return;
+        if (previous) element.style.setProperty(name, previous, priority);
+        else element.style.removeProperty(name);
+      };
+    };
+    const stopStream = record => {
+      record.copy.srcObject = null;
+      if (record.ownsStream) record.stream?.getTracks().forEach(track => track.stop());
+      record.stream = null;
+      record.ownsStream = false;
+    };
+    const display = record => {
+      if (disposed || records.get(record.source) !== record || !record.plane.isConnected) return;
+      const visible = record.visible && record.inViewport && !blocked;
+      if (!visible) {
+        record.plane.hidden = true;
+        if (record.stream) stopStream(record);
+        return;
+      }
+      if (record.source.tagName === "IMG" && (!record.copy.complete || !record.copy.naturalWidth)) {
+        record.plane.hidden = true;
+        return;
+      }
+      if (record.source.tagName !== "IMG" && !record.stream) {
+        try {
+          if (record.source.tagName === "VIDEO" && record.source.srcObject) {
+            record.stream = record.source.srcObject;
+            record.ownsStream = false;
+          } else {
+            record.stream = record.source.captureStream?.(15);
+            record.ownsStream = true;
+          }
+          if (record.stream) {
+            record.copy.srcObject = record.stream;
+          } else if (record.source.tagName === "VIDEO" && record.source.currentSrc) {
+            record.copy.src = record.source.currentSrc;
+          } else {
+            record.plane.hidden = true;
+            return;
+          }
+          record.copy.play().catch(() => {});
+        } catch (error) {
+          sendCodexPlusDiagnostic("image_overlay_video_error", { message: String(error?.message || error) });
+          stopStream(record);
+          return;
+        }
+      }
+      record.plane.hidden = false;
+    };
+    const update = source => {
+      const record = records.get(source);
+      if (!record) return;
+      const css = getComputedStyle(source);
+      const copy = record.copy;
+      copy.style.objectFit = css.objectFit;
+      copy.style.objectPosition = css.objectPosition;
+      copy.style.borderRadius = css.borderRadius;
+      copy.style.backgroundColor = css.backgroundColor === "rgba(0, 0, 0, 0)"
+        ? "var(--color-surface, var(--color-token-bg-primary, Canvas))" : css.backgroundColor;
+      if (source.tagName === "IMG") {
+        const src = source.currentSrc || source.src;
+        if (copy.src !== src) copy.src = src;
+      }
+      if (source.tagName === "VIDEO" && !record.stream && !source.currentSrc && !record.retryQueued) {
+        record.retryQueued = true;
+        requestAnimationFrame(() => {
+          record.retryQueued = false;
+          if (records.get(source) === record) update(source);
+        });
+      }
+      const rect = source.getBoundingClientRect();
+      record.inViewport = rect.width > 0 && rect.height > 0 &&
+        rect.bottom > 0 && rect.right > 0 &&
+        rect.left < window.innerWidth && rect.top < window.innerHeight;
+      Object.assign(copy.style, {
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+      });
+      display(record);
+    };
+    const sourceChanges = new MutationObserver(changes => {
+      for (const source of new Set(changes.map(change => change.target))) update(source);
+    });
+    const add = source => {
+      if (records.has(source) || owned(source) || !source.isConnected ||
+          source.closest(raisedSelector) || source.getAttribute("aria-hidden") === "true") return;
+      const css = getComputedStyle(source);
+      if (Math.max(parseFloat(css.width) || 0, parseFloat(css.height) || 0) < 48) return;
+      const plane = document.createElement("div");
+      plane.className = "codex-plus-media-plane";
+      plane.setAttribute("data-codex-plus-ext", "image-overlay");
+      plane.setAttribute("aria-hidden", "true");
+      plane.hidden = true;
+      const copy = document.createElement(source.tagName === "IMG" ? "img" : "video");
+      copy.className = "codex-plus-media-copy";
+      copy.setAttribute("aria-hidden", "true");
+      copy.draggable = false;
+      if (copy.tagName === "VIDEO") {
+        copy.muted = true;
+        copy.playsInline = true;
+      }
+      const record = {
+        source, plane, copy, stream: null, ownsStream: false, visible: true,
+        inViewport: false, retryQueued: false, listeners: [], scrollTargets: [], resizeObserver: null,
+      };
+      copy.addEventListener("load", () => display(record));
+      plane.appendChild(copy);
+      document.documentElement.appendChild(plane);
+      records.set(source, record);
+      for (const event of ["load", "loadeddata", "loadedmetadata", "canplay", "play", "playing"]) {
+        const listener = () => update(source);
+        source.addEventListener(event, listener);
+        record.listeners.push([event, listener]);
+      }
+      sourceChanges.observe(source, { attributes: true, attributeFilter: ["src", "srcset", "sizes", "class", "style"] });
+      const refresh = () => {
+        if (record.refreshQueued) return;
+        record.refreshQueued = true;
+        requestAnimationFrame(() => {
+          record.refreshQueued = false;
+          update(source);
+        });
+      };
+      window.addEventListener("resize", refresh, { passive: true });
+      record.listeners.push(["resize", refresh, window]);
+      for (let node = source.parentElement; node && node !== document.body; node = node.parentElement) {
+        const native = getComputedStyle(node);
+        if (![native.overflowX, native.overflowY].some(value => /^(auto|scroll|hidden|clip)$/.test(value))) continue;
+        node.addEventListener("scroll", refresh, { passive: true });
+        record.scrollTargets.push([node, refresh]);
+      }
+      if (typeof ResizeObserver === "function") {
+        record.resizeObserver = new ResizeObserver(refresh);
+        record.resizeObserver.observe(source);
+      }
+      update(source);
+    };
+    const remove = source => {
+      const record = records.get(source);
+      if (!record) return;
+      records.delete(source);
+      for (const [event, listener, target = source] of record.listeners) target.removeEventListener(event, listener);
+      record.scrollTargets.forEach(([target, listener]) => target.removeEventListener("scroll", listener));
+      record.resizeObserver?.disconnect();
+      stopStream(record);
+      record.plane.remove();
+    };
+    const raise = element => {
+      if (raised.has(element) || owned(element)) return;
+      let target = element;
+      for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        if (parent.id === "root" || parent === document.documentElement) return;
+        if (getComputedStyle(parent).position !== "static") target = parent;
+      }
+      raised.set(element, preserveStyle(target, "z-index", "2147483647"));
+    };
+    const visit = (node, callback, selector) => {
+      if (node.nodeType !== 1 || owned(node)) return;
+      if (node.matches(selector)) callback(node);
+      if (node.childElementCount) node.querySelectorAll(selector).forEach(callback);
+    };
+    const updateBlockers = () => {
+      const next = !!document.querySelector(
+        '[role="menu"]:not([data-state="closed"]), [role="listbox"]:not([data-state="closed"]), [role="tooltip"], [role="dialog"]');
+      if (next === blocked) return;
+      blocked = next;
+      records.forEach(display);
+    };
+    const changes = new MutationObserver(mutations => {
+      let needsBlockers = false;
+      for (const mutation of mutations) {
+        for (const node of mutation.removedNodes) {
+          if (node.nodeType !== 1 || owned(node)) continue;
+          visit(node, source => {
+            remove(source);
+          }, mediaSelector);
+          visit(node, element => {
+            if (element.isConnected) return;
+            raised.get(element)?.();
+            raised.delete(element);
+          }, raisedSelector);
+          if (node.matches('[role], [data-radix-popper-content-wrapper]') ||
+              node.querySelector('[role="menu"], [role="listbox"], [role="dialog"]')) needsBlockers = true;
+        }
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== 1 || owned(node)) continue;
+          visit(node, raise, raisedSelector);
+          visit(node, add, mediaSelector);
+          if (node.matches('[role], [data-radix-popper-content-wrapper]') ||
+              node.querySelector('[role="menu"], [role="listbox"], [role="dialog"]')) needsBlockers = true;
+        }
+      }
+      if (needsBlockers) updateBlockers();
+    });
+    document.querySelectorAll(raisedSelector).forEach(raise);
+    updateBlockers();
+    document.querySelectorAll(mediaSelector).forEach(add);
+    changes.observe(document.body, { childList: true, subtree: true });
+    window.__codexPlusImageOverlayCleanup = () => {
+      disposed = true;
+      changes.disconnect();
+      sourceChanges.disconnect();
+      [...records.keys()].forEach(remove);
+      raised.forEach(restore => restore());
+      raised.clear();
+      style.remove();
+    };
+  }
+
   function scheduleCodexPlusImageOverlay() {
+    window.__codexPlusImageOverlayReadyCleanup?.();
+    window.__codexPlusImageOverlayReadyCleanup = null;
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", installCodexPlusImageOverlay, { once: true });
+      const onReady = () => {
+        window.__codexPlusImageOverlayReadyCleanup = null;
+        installCodexPlusImageOverlay();
+      };
+      document.addEventListener("DOMContentLoaded", onReady, { once: true });
+      window.__codexPlusImageOverlayReadyCleanup = () =>
+        document.removeEventListener("DOMContentLoaded", onReady);
       return;
     }
     installCodexPlusImageOverlay();
-    setTimeout(installCodexPlusImageOverlay, 250);
   }
 
   scheduleCodexPlusImageOverlay();
@@ -667,4 +925,3 @@
     conversationViewFooter: "[data-thread-scroll-footer]",
   };
   const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
-
