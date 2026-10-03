@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -13,6 +15,99 @@ use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
+
+/// 工具调用上需要跨 turn 原样带回的供应商附带数据，按 `call_id` 索引。
+///
+/// Gemini 3 系在 functionCall 上要求回传 `thought_signature`（OpenAI 兼容层放在
+/// tool_call 的 `extra_content.google.thought_signature`），缺失时整轮 400
+/// （issue #332 / #1012）。这类字段由上游产生、本仓不理解其语义，因此不硬编码
+/// 任何字段名，而是把整个 `extra_content` 原样记住，下一轮构造请求时挂回对应
+/// tool_call。只做透传，解析失败/无该字段时行为与改动前完全一致。
+///
+/// 键是 call_id：上游保证同一次调用内唯一，跨 turn 也由客户端原样回传。
+fn tool_call_extra_content_cache() -> &'static Mutex<ExtraContentCache> {
+    static CACHE: OnceLock<Mutex<ExtraContentCache>> = OnceLock::new();
+    // 缓存上限：一次会话里同时活跃的工具调用远小于此数；超出后按插入序淘汰最旧的，
+    // 避免长时间运行时无界增长。
+    CACHE.get_or_init(|| Mutex::new(ExtraContentCache::new(256)))
+}
+
+#[derive(Debug)]
+struct ExtraContentCache {
+    entries: BTreeMap<String, Value>,
+    order: VecDeque<String>,
+    capacity: usize,
+}
+
+impl ExtraContentCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn remember(&mut self, call_id: &str, extra_content: Value) {
+        if call_id.is_empty() {
+            return;
+        }
+        if self.entries.insert(call_id.to_string(), extra_content).is_none() {
+            self.order.push_back(call_id.to_string());
+        }
+        while self.order.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                // 只有仍是最旧那一条时才删，避免把刚更新过的键误删。
+                if !self.order.contains(&oldest) {
+                    self.entries.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    fn recall(&self, call_id: &str) -> Option<Value> {
+        self.entries.get(call_id).cloned()
+    }
+}
+
+/// 从 chat 侧的 tool_call 里取出需要透传的附带数据。
+///
+/// `extra_content` 是 OpenAI 兼容层的通用扩展位（Gemini 的 thought_signature 在此）；
+/// 部分供应商也会用 `thought_signature` / `thoughtSignature` 直接挂在 tool_call 上，
+/// 两种形态都收。
+fn tool_call_extra_content(tool_call: &Value) -> Option<Value> {
+    if let Some(value) = tool_call.get("extra_content") {
+        if value.is_object() && !value.as_object().is_some_and(Map::is_empty) {
+            return Some(value.clone());
+        }
+    }
+    for key in ["thought_signature", "thoughtSignature"] {
+        if let Some(value) = tool_call.get(key) {
+            if !value.is_null() {
+                return Some(json!({ "google": { "thought_signature": value } }));
+            }
+        }
+    }
+    None
+}
+
+/// 记住本次上游返回的工具调用附带数据（按 call_id）。
+fn remember_tool_call_extra_content(call_id: &str, tool_call: &Value) {
+    let Some(extra) = tool_call_extra_content(tool_call) else {
+        return;
+    };
+    if let Ok(mut cache) = tool_call_extra_content_cache().lock() {
+        cache.remember(call_id, extra);
+    }
+}
+
+/// 取回该 call_id 之前记住的附带数据，用于下一轮请求回传。
+fn recall_tool_call_extra_content(call_id: &str) -> Option<Value> {
+    tool_call_extra_content_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.recall(call_id))
+}
 
 /// 协议代理的实际生效端口，默认 [`DEFAULT_PROTOCOL_PROXY_PORT`]，
 /// 可用环境变量 `CODEX_PLUS_PROTOCOL_PROXY_PORT` 覆盖。
@@ -2545,6 +2640,11 @@ impl ChatSseState {
             if let Some(id) = id_delta {
                 state.call_id = id;
             }
+            // 流式场景下 thought_signature/extra_content 通常随首个分片到达，
+            // 此时 call_id 已就位；按 call_id 记住，供下一轮回传（issue #332/#1012）。
+            if !state.call_id.is_empty() {
+                remember_tool_call_extra_content(&state.call_id, tool_call);
+            }
             if let Some(name) = name_delta {
                 if !name.is_empty() {
                     state.name = name;
@@ -3161,6 +3261,13 @@ fn append_responses_item(
                     "arguments": responses_arguments_to_chat(item.get("arguments").unwrap_or(&json!({})))
                 }
             }));
+            // 把上一轮上游附带的透传数据挂回（Gemini thought_signature 等）。
+            // 缺失时保持原样，不影响其它供应商。
+            if let Some(extra) = recall_tool_call_extra_content(call_id) {
+                if let Some(last) = pending_tool_calls.last_mut() {
+                    last["extra_content"] = extra;
+                }
+            }
         }
         Some("function_call_output") => {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -5093,6 +5200,9 @@ fn chat_tool_call_to_response_item(
     let function = tool_call.get("function").unwrap_or(&Value::Null);
     let name = function.get("name").and_then(Value::as_str).unwrap_or("");
     let arguments = responses_arguments_to_chat(function.get("arguments").unwrap_or(&json!({})));
+    // 记住供应商在本轮工具调用上附带的透传数据（Gemini thought_signature 等），
+    // 下一轮构造请求时挂回，否则整轮 400（issue #332 / #1012）。
+    remember_tool_call_extra_content(&call_id, tool_call);
     response_tool_call_item(&call_id, name, &arguments, tool_context)
 }
 
