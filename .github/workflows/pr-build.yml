@@ -161,3 +161,88 @@ jobs:
           name: codex-plus-plus-macos-${{ matrix.arch }}-dmg
           path: dist/macos/*.dmg
           if-no-files-found: error
+
+  linux-deb:
+    name: Linux DEB (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            git \
+            pkg-config \
+            libssl-dev \
+            libsqlite3-dev \
+            libdbus-1-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Frontend tests
+        working-directory: apps/codex-plus-manager
+        run: npm test
+
+      - name: Check native browser inspector bundle
+        run: node scripts/assemble-native-browser-inspector.mjs --check
+
+      - name: TypeScript check
+        working-directory: apps/codex-plus-manager
+        run: npm run check
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Build release binaries
+        run: cargo build --release
+
+      - name: Build Linux DEB package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION#V}"
+          VERSION="${VERSION//\//-}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then
+            VERSION="0.0.0-${GITHUB_RUN_NUMBER}"
+          fi
+          bash scripts/installer/linux/build-deb.sh --package-only "$VERSION"
+
+      - name: Verify Linux DEB structure
+        run: |
+          set -euo pipefail
+          deb_file=$(ls dist/linux/*.deb | head -n 1)
+          dpkg-deb -I "$deb_file"
+          dpkg-deb -c "$deb_file"
+          dpkg-deb -c "$deb_file" | grep -q "usr/bin/codex-plus-plus"
+          dpkg-deb -c "$deb_file" | grep -q "usr/bin/codex-plus-plus-manager"
+          echo "verified: $deb_file"
+
+      - name: Upload Linux DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-plus-plus-linux-x64-deb
+          path: dist/linux/*.deb
+          if-no-files-found: error

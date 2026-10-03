@@ -5,6 +5,7 @@ venv/
 *.egg-info/
 build/
 dist/
+.linux-build/
 target/
 node_modules/
 apps/codex-plus-manager/src-tauri/gen/
