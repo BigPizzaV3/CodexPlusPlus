@@ -201,7 +201,13 @@
       return;
     }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
+    if (activeThreadId) {
+      bindDraftServiceTierToThread(activeThreadId);
+      // 界面判 Fast 用「当前线程的模型」，不再回落全局 catalog：线程中途换模型后
+      // 全局值可能是旧的，会让 UI 落后一拍（issue #1463）。
+      const activeModel = codexServiceTierUiModelName(activeThreadId);
+      if (activeModel) codexServiceTierRememberThreadModel(activeThreadId, activeModel);
+    }
     const storedState = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(storedState.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(storedState.defaultMode);
@@ -438,6 +444,9 @@
     const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
     const requestedFast = isFastServiceTierValue(requestedServiceTier);
     const modelName = codexServiceTierModelForRequest(params, modelHint);
+    // 请求路径是唯一能拿到「本 turn 真正用的模型」的地方，顺手记下来供界面判定使用，
+    // 这样线程中途换模型后 UI 下一次刷新就跟得上（issue #1463）。
+    codexServiceTierRememberThreadModel(threadId, modelName);
     const fastSupported = !requestedFast || codexServiceTierFastSupportedForModel(modelName);
     return {
       threadId,

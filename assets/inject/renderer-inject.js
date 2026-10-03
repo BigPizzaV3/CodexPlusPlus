@@ -3267,6 +3267,22 @@
   // 实测空闲时 301 次请求/秒，主线程 TaskOtherDuration 占满一半 CPU，JS 堆每秒涨约 1MB，
   // Sentry 又给每个请求记一条 breadcrumb 并回同步一次 scope，把量再翻一倍推给 browser 进程。
   // 记住失败 + 冷却重试，让下游即便还在轮询也只会周期性地试一次。
+  // 「这个 asset 找不到」是可预期的、会随 Codex 版本变化的情形，
+  // 不是异常。用结构化标记而不是靠 message 字符串比对来区分：字符串比对让
+  // loadOptionalCodexAppModule 的「可选」语义只对精确复刻了那段 message 的调用方生效，
+  // 任何一个自己抛错或包了一层的调用方都会漏判，把可选依赖的缺失当成硬失败中断整条流程
+  // （issue #1316 的「未找到 Codex App asset: vscode-api-」就是这么冒到用户面前的）。
+  function codexAppAssetMissingError(namePart) {
+    const error = new Error(`未找到 Codex App asset: ${namePart}`);
+    error.code = "CODEX_PLUS_ASSET_MISSING";
+    error.assetNamePart = namePart;
+    return error;
+  }
+
+  function isCodexAppAssetMissingError(error) {
+    return !!error && (error.code === "CODEX_PLUS_ASSET_MISSING" || error.name === "CodexPlusAssetMissingError");
+  }
+
   async function loadCodexAppModule(namePart) {
     if (!codexServiceTierModulePromises.has(namePart)) {
       const failure = codexAppModuleFailures.get(namePart);
@@ -3277,7 +3293,7 @@
       }
       const promise = Promise.resolve().then(async () => {
         const url = codexAppAssetUrl(namePart) || await codexAppAssetUrlFromScriptText(namePart);
-        if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
+        if (!url) throw codexAppAssetMissingError(namePart);
         return await import(url);
       }).then((module) => {
         // Codex 更新后 asset 可能又出现，成功时把失败记录清掉，冷却计数重新开始。
@@ -3301,8 +3317,9 @@
     try {
       return await loadCodexAppModule(namePart);
     } catch (error) {
-      const message = String(error?.message || error);
-      if (message.includes(`未找到 Codex App asset: ${namePart}`)) return null;
+      // 结构化标记优先；保留字符串兜底以便老缓存里的 Error 也能被认出来。
+      if (isCodexAppAssetMissingError(error)) return null;
+      if (String(error?.message || error).includes(`未找到 Codex App asset: ${namePart}`)) return null;
       throw error;
     }
   }
@@ -3503,6 +3520,39 @@
     return codexServiceTierModelFromValue(codexModelCatalog.model) || codexServiceTierModelFromValue(codexModelCatalog.default_model);
   }
 
+  // threadId -> 模型名。挂在 window 上跨重注入保留（重注入不该丢掉已知的线程模型）。
+  // 只在请求路径观测到模型时写入，用于让界面判定跟上线程当前模型（issue #1463）。
+  const codexServiceTierThreadModels = window.__codexPlusServiceTierThreadModels
+    || (window.__codexPlusServiceTierThreadModels = new Map());
+
+  // 线程中途换模型后，全局 catalog 的 model 字段往往还没更新，直接拿它判 Fast 可用性
+  // 会落后一拍。因此界面优先读「当前线程最近一次实际请求用的模型」，读不到才回落全局。
+  function codexServiceTierUiModelName(threadId = "") {
+    const key = typeof validThreadScrollSessionKey === "function"
+      ? validThreadScrollSessionKey(threadId)
+      : String(threadId || "");
+    if (key) {
+      const cached = codexServiceTierThreadModels.get(key);
+      if (cached) return cached;
+    }
+    return codexServiceTierCurrentModelName();
+  }
+
+  function codexServiceTierRememberThreadModel(threadId, modelName) {
+    const key = typeof validThreadScrollSessionKey === "function"
+      ? validThreadScrollSessionKey(threadId)
+      : String(threadId || "");
+    const model = codexServiceTierModelFromValue(modelName);
+    if (!key || !model) return;
+    codexServiceTierThreadModels.set(key, model);
+    // 简易上界，避免长会话里 Map 无限增长；Map 的插入序即写入序，删最旧的即可。
+    while (codexServiceTierThreadModels.size > 64) {
+      const oldest = codexServiceTierThreadModels.keys().next().value;
+      if (oldest === undefined) break;
+      codexServiceTierThreadModels.delete(oldest);
+    }
+  }
+
   function codexServiceTierModelForRequest(params, modelHint = "") {
     return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
   }
@@ -3537,11 +3587,20 @@
     });
   }
 
-  function codexServiceTierFastAvailability(modelName = codexServiceTierCurrentModelName()) {
+  // UI 侧「Fast 是否可用」的唯一判据。这里必须复用 codexServiceTierFastSupportedForModel，
+  // 不能再自己对照 codexServiceTierSupportedFastModels：那套只认内置名单，中转场景下
+  // 模型名带前缀（或仅靠上游元数据声明 priority）时，界面会判「不支持/未读取」，而真正
+  // 发请求的路径却按同一模型放了 service_tier=priority——两条判据不一致就会自相矛盾
+  // （issue #772）。
+  //
+  // 默认模型名优先取最近一次在线程里观测到的模型（见 codexServiceTierRememberThreadModel），
+  // 只有完全没观测过时才回落到全局 catalog——否则线程中途换模型后 UI 会落后一拍
+  // （issue #1463）。
+  function codexServiceTierFastAvailability(modelName = codexServiceTierUiModelName()) {
     const normalizedModel = normalizeCodexServiceTierModelName(modelName);
     return {
       modelName: modelName || "",
-      supported: !!normalizedModel && codexServiceTierSupportedFastModels.has(normalizedModel),
+      supported: !!normalizedModel && codexServiceTierFastSupportedForModel(modelName),
     };
   }
 
@@ -3783,7 +3842,13 @@
       return;
     }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
+    if (activeThreadId) {
+      bindDraftServiceTierToThread(activeThreadId);
+      // 界面判 Fast 用「当前线程的模型」，不再回落全局 catalog：线程中途换模型后
+      // 全局值可能是旧的，会让 UI 落后一拍（issue #1463）。
+      const activeModel = codexServiceTierUiModelName(activeThreadId);
+      if (activeModel) codexServiceTierRememberThreadModel(activeThreadId, activeModel);
+    }
     const storedState = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(storedState.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(storedState.defaultMode);
@@ -4020,6 +4085,9 @@
     const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
     const requestedFast = isFastServiceTierValue(requestedServiceTier);
     const modelName = codexServiceTierModelForRequest(params, modelHint);
+    // 请求路径是唯一能拿到「本 turn 真正用的模型」的地方，顺手记下来供界面判定使用，
+    // 这样线程中途换模型后 UI 下一次刷新就跟得上（issue #1463）。
+    codexServiceTierRememberThreadModel(threadId, modelName);
     const fastSupported = !requestedFast || codexServiceTierFastSupportedForModel(modelName);
     return {
       threadId,
@@ -6348,7 +6416,13 @@
 
   function patchPluginMarketplaceObject(marketplace) {
     if (!marketplace || typeof marketplace !== "object" || marketplace.__codexPlusMarketplaceUnlockPatched) return false;
-    const displayName = displayNameForPluginMarketplaceName(marketplace.name, marketplace.displayName || marketplace.title || marketplace.label || marketplace.name);
+    // 上游已经给了显示名就用上游的（issue #692：此前无条件用上面的中文编号覆盖，
+    // 用户看到的是「OpenAI插件1(Codex++)」而不是市场真实名字）。
+    // 编号映射只在市场上游确实没给显示名时兜底；去重仍走 restorePluginMarketplaceName，
+    // 与显示名无关，所以不会因此退回重复条目。
+    const upstreamDisplayName = marketplace.displayName || marketplace.title || marketplace.label || "";
+    const displayName = upstreamDisplayName
+      || displayNameForPluginMarketplaceName(marketplace.name, marketplace.name);
     if (!displayName || displayName === marketplace.name) return false;
     marketplace.displayName = displayName;
     marketplace.title = displayName;

@@ -93,7 +93,13 @@
 
   function patchPluginMarketplaceObject(marketplace) {
     if (!marketplace || typeof marketplace !== "object" || marketplace.__codexPlusMarketplaceUnlockPatched) return false;
-    const displayName = displayNameForPluginMarketplaceName(marketplace.name, marketplace.displayName || marketplace.title || marketplace.label || marketplace.name);
+    // 上游已经给了显示名就用上游的（issue #692：此前无条件用上面的中文编号覆盖，
+    // 用户看到的是「OpenAI插件1(Codex++)」而不是市场真实名字）。
+    // 编号映射只在市场上游确实没给显示名时兜底；去重仍走 restorePluginMarketplaceName，
+    // 与显示名无关，所以不会因此退回重复条目。
+    const upstreamDisplayName = marketplace.displayName || marketplace.title || marketplace.label || "";
+    const displayName = upstreamDisplayName
+      || displayNameForPluginMarketplaceName(marketplace.name, marketplace.name);
     if (!displayName || displayName === marketplace.name) return false;
     marketplace.displayName = displayName;
     marketplace.title = displayName;
