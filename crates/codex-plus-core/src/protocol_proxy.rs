@@ -266,10 +266,10 @@ pub fn responses_to_chat_completions_with_options(
     relocate_tool_output_images(&mut messages);
     ensure_tool_call_reasoning_content(&mut messages);
     normalize_chat_messages(&mut messages);
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+    normalize_image_data_urls_for_model(&mut messages, model);
     let messages = collapse_system_messages_to_head(messages);
     result["messages"] = json!(messages);
-
-    let model = body.get("model").and_then(Value::as_str).unwrap_or("");
     if let Some(value) = body.get("max_output_tokens") {
         if is_openai_o_series(model) {
             result["max_completion_tokens"] = value.clone();
@@ -5668,6 +5668,60 @@ fn response_output_text(value: &Value) -> String {
 }
 
 const IMAGE_DATA_URL_PREFIX: &str = "data:image/";
+
+/// 这些上游只接受**纯 base64**，不认 `data:image/png;base64,` 前缀，收到就 400
+/// （issue #2031：GLM-5.3-Flash 的本地图片被拒）。只对这类供应商剥离前缀，
+/// 标准 data URL 上游（OpenAI 等）保持原样，免得把能用的改坏。
+fn upstream_needs_bare_base64(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("glm-") || model.starts_with("zhipu") || model.contains("/glm-")
+}
+
+/// 就地改写 messages 里 `image_url` 的 url：对需要纯 base64 的模型剥掉 data URL 前缀。
+fn normalize_image_data_urls_for_model(messages: &mut [Value], model: &str) {
+    if !upstream_needs_bare_base64(model) {
+        return;
+    }
+    for message in messages.iter_mut() {
+        let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for part in parts.iter_mut() {
+            if !is_image_part(part) {
+                continue;
+            }
+            let Some(url) = part
+                .get_mut("image_url")
+                .and_then(|value| {
+                    if value.is_object() {
+                        value.get_mut("url")
+                    } else {
+                        Some(value)
+                    }
+                })
+                .and_then(|value| value.as_str().map(str::to_string))
+            else {
+                continue;
+            };
+            let Some(bare) = strip_data_url_prefix(&url) else {
+                continue;
+            };
+            let target = part.get_mut("image_url").expect("checked above");
+            if target.is_object() {
+                target["url"] = json!(bare);
+            } else {
+                *target = json!(bare);
+            }
+        }
+    }
+}
+
+/// `data:image/png;base64,AAAA` → `AAAA`；不是 data URL 则返回 `None`。
+fn strip_data_url_prefix(url: &str) -> Option<String> {
+    let rest = url.strip_prefix(IMAGE_DATA_URL_PREFIX)?;
+    let (_, payload) = rest.split_once(";base64,")?;
+    Some(payload.to_string())
+}
 
 /// 若 `text` 含 base64 图片 data URL，返回替换成占位符后的文本；否则 `None`。
 fn redact_image_data_urls(text: &str) -> Option<String> {
