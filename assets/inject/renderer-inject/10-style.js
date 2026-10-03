@@ -487,7 +487,7 @@
         bottom: 0;
         left: 0;
         width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px));
-        height: calc(100vh / var(--codex-plus-zoom, 1));
+        height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px));
         z-index: 2147483644;
         display: block;
         background: var(--codex-plus-bg-primary, #fff);

@@ -792,7 +792,8 @@
     if (button) {
       const on = Boolean(active) && entry === "home";
       button.dataset.active = String(on);
-      button.setAttribute("aria-current", on ? "page" : "false");
+      if (on) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
     }
     [
       [codexPlusRailNavId, "home"],
@@ -803,7 +804,8 @@
       if (!railButton) return;
       const on = Boolean(active) && entry === name;
       railButton.dataset.active = String(on);
-      railButton.setAttribute("aria-current", on ? "page" : "false");
+      if (on) railButton.setAttribute("aria-current", "page");
+      else railButton.removeAttribute("aria-current");
       // 原生 rail 按钮的选中色由 data-selected 驱动（且需无 data-suppress-active-style）。
       if (on) railButton.setAttribute("data-selected", "");
       else railButton.removeAttribute("data-selected");
@@ -837,6 +839,8 @@
     if (!overlay?.classList?.contains(codexPlusPageClass)) return;
     const sidebar = document.querySelector("aside.app-shell-left-panel");
     const rect = sidebar?.getBoundingClientRect?.();
+    const main = document.querySelector("main");
+    const mainRect = main?.getBoundingClientRect?.();
     const rail = document.querySelector(codexPlusRailSelector);
     const railRect = rail?.getBoundingClientRect?.();
     // 新版：页面要顶替原生侧边栏——从图标栏右边界起铺满，把宽面板整个盖住，
@@ -845,13 +849,43 @@
     const left = railRect && railRect.width > 0
       ? Math.max(0, railRect.right)
       : (rect && rect.width > 0 ? Math.max(0, rect.right) : 0);
+    const top = mainRect && mainRect.height > 0
+      ? mainRect.top
+      : (railRect && railRect.width > 0 ? railRect.top : rect?.top || 0);
     // 量出来的是视觉坐标，而 overlay 在缩放空间里布局，所以统一折算成布局坐标。
     // CSS 的 calc(100vw / zoom - left) 用的也是这个空间的量，两边才配得上。
     const zoom = codexPlusWindowZoom();
     const layoutLeft = zoom === 1 ? left : left / zoom;
+    const layoutTop = Math.max(0, top) / zoom;
     overlay.style.setProperty("--codex-plus-page-left", `${layoutLeft}px`);
-    overlay.style.left = `${layoutLeft}px`;
-    overlay.style.top = "0px";
+    overlay.style.setProperty("--codex-plus-page-top", `${layoutTop}px`);
+    const nextLeft = `${layoutLeft}px`;
+    const nextTop = `${layoutTop}px`;
+    if (overlay.style.left !== nextLeft) overlay.style.left = nextLeft;
+    if (overlay.style.top !== nextTop) overlay.style.top = nextTop;
+    if (window.__codexPlusPageLayoutObserver &&
+        (window.__codexPlusPageLayoutTargets?.main !== main ||
+         window.__codexPlusPageLayoutTargets?.sidebar !== sidebar ||
+         window.__codexPlusPageLayoutTargets?.rail !== rail)) {
+      window.__codexPlusPageLayoutObserver.disconnect();
+      for (const target of new Set([main, sidebar, rail])) {
+        if (target) window.__codexPlusPageLayoutObserver.observe(target);
+      }
+      window.__codexPlusPageLayoutTargets = { main, sidebar, rail };
+    }
+  }
+
+  function observeCodexPlusPageLayout(overlay) {
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    const reposition = () => {
+      if (overlay.isConnected) positionCodexPlusPage(overlay);
+    };
+    window.__codexPlusPageLayoutObserver = new ResizeObserver(reposition);
+    window.__codexPlusPageLayoutTargets = {};
+    window.__codexPlusPageResizeHandler = reposition;
+    window.addEventListener("resize", reposition);
+    positionCodexPlusPage(overlay);
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -1003,6 +1037,7 @@
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
+    closeCodexPlusPage();
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
@@ -1155,8 +1190,8 @@
     closeButton?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      overlay.remove();
-      if (pageMode) setCodexPlusSidebarNavActive(false);
+      if (pageMode) closeCodexPlusPage();
+      else overlay.remove();
     }, true);
     overlay.addEventListener("input", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -1316,13 +1351,9 @@
     overlay.addEventListener("error", handleExtensionIconError, true);
     document.body.appendChild(overlay);
     if (pageMode) {
-      positionCodexPlusPage(overlay);
+      observeCodexPlusPageLayout(overlay);
       // 必须在 selectCodexPlusTab 之前建好两栏，否则刷新左面板时找不到容器。
       installCodexPlusPageLayout(overlay, initialTab);
-      if (!window.__codexPlusPageResizeHandler) {
-        window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
-        window.addEventListener("resize", window.__codexPlusPageResizeHandler);
-      }
     }
     if (!codexPlusAdsLoaded) fetchCodexPlusAds();
     selectCodexPlusTab(initialTab);
@@ -1351,6 +1382,11 @@
   }
 
   function closeCodexPlusPage() {
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageResizeHandler = null;
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutObserver = null;
+    window.__codexPlusPageLayoutTargets = null;
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
   }
