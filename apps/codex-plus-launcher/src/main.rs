@@ -150,6 +150,36 @@ async fn repair_session_index_automatically(check_setting: bool) {
     }
 }
 
+/// 「激活已有实例」路径上的供应商同步。
+///
+/// 与完整启动流程保持一致：仅在设置里启用了供应商同步时执行，
+/// 前后各取一次 app state 快照；会话索引修复由 run_provider_sync 本身串联
+/// （见 LauncherHooks::run_provider_sync）。同步失败只记日志——用户这次点击
+/// 的诉求是把已有窗口拉到前台，不能因为同步失败就整个中止。
+async fn run_activation_provider_sync(
+    hooks: &LauncherHooks,
+    settings: &codex_plus_core::settings::BackendSettings,
+) {
+    if !settings.provider_sync_enabled {
+        return;
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+        &home,
+        "launcher.activate_existing.before",
+    );
+    if let Err(error) = hooks.run_provider_sync().await {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.activate_existing_provider_sync.failed",
+            json!({ "message": error.to_string() }),
+        );
+    }
+    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+        &home,
+        "launcher.activate_existing.after_provider_sync",
+    );
+}
+
 fn current_timestamp_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -302,6 +332,11 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             json!({"blocking_process_ids": blocking_process_ids}),
         );
     }
+    // 快捷方式启动且 Codex 已在运行时，这里会走到「激活已有实例」的早退分支。
+    // 过去该分支直接返回，跳过了完整启动流程里的供应商同步与会话索引修复，
+    // 于是「切换登录方式后 model_provider 没跟着切换」「历史会话没被自动修复」，
+    // 只有管理工具的「重启」才生效（issue #2080）。失败不阻断激活，只记日志。
+    run_activation_provider_sync(&hooks, &settings).await;
     let launch_result = hooks
         .launch_codex(
             &app_dir,
@@ -1388,6 +1423,48 @@ mod tests {
         assert!(!body.contains("hooks.ensure_injection"));
         assert!(!body.contains("hooks.start_bridge_watchdog"));
         assert!(body.contains("can_connect_loopback_port(options.helper_port)"));
+    }
+
+    #[test]
+    fn existing_launcher_path_runs_provider_sync_before_activation() {
+        // issue #2080：快捷方式启动且 Codex 已在运行时走早退分支，过去直接返回，
+        // 跳过了供应商同步与会话索引修复，只有管理工具的「重启」才生效。
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("existing launcher activation function");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after existing launcher activation");
+        let body = &source[start..end];
+
+        let sync = body
+            .find("run_activation_provider_sync(&hooks, &settings)")
+            .expect("provider sync on the activation path");
+        let launch = body
+            .find("let launch_result = hooks")
+            .expect("Codex activation");
+        assert!(sync < launch, "provider sync must run before activation");
+    }
+
+    #[test]
+    fn activation_provider_sync_respects_the_setting_and_is_non_fatal() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn run_activation_provider_sync")
+            .expect("activation provider sync helper");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after the helper");
+        let body = &source[start..end];
+
+        // 只在设置启用时同步，与完整启动流程一致。
+        assert!(body.contains("if !settings.provider_sync_enabled"));
+        // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
+        assert!(!body.contains("hooks.run_provider_sync().await?"));
+        assert!(body.contains("launcher.activate_existing_provider_sync.failed"));
     }
 
     #[test]

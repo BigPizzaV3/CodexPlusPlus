@@ -118,6 +118,7 @@ pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
         None
     }
 
+
 }
 #[cfg(windows)]
 fn find_latest_codex_app_dir_from_appx_package() -> anyhow::Result<Option<PathBuf>> {
@@ -554,7 +555,20 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
 }
 
 /// Codex++ 管理控制台/安装根，绝不能当作 OpenAI Codex 桌面应用。
+///
+/// 目录名只是线索，不能单独作为判据：用户完全可能把真正的 Codex 放在
+/// `C:\codex++` 这类目录下（issue #1036），此时按名字一刀切会连真 Codex 一起拒掉，
+/// 表现为「能找到 codex_app 但版本为 null、启动报 failed to launch」。
+/// 因此只有目录里确实带着本产品自身的文件（管理工具可执行文件 / 卸载器）时才排除。
 fn is_codex_plus_plus_path(path: &Path) -> bool {
+    if !codex_plus_plus_name_path(path) {
+        return false;
+    }
+    has_codex_plus_plus_marker(path)
+}
+
+/// 路径中是否存在「像 Codex++ 安装目录」的目录名。
+fn codex_plus_plus_name_path(path: &Path) -> bool {
     for component in path.components() {
         let std::path::Component::Normal(name) = component else {
             continue;
@@ -562,10 +576,16 @@ fn is_codex_plus_plus_path(path: &Path) -> bool {
         let Some(name) = name.to_str() else {
             continue;
         };
-        let lower = name.to_ascii_lowercase();
+        // macOS 下安装根是 `Codex++.app`，去掉 bundle 扩展名再比对，
+        // 否则 `codex++` 这一档永远命不中。
+        let lower = name
+            .strip_suffix(".app")
+            .unwrap_or(name)
+            .to_ascii_lowercase();
         if lower == "codex++"
             || lower == "codexplusplus"
             || lower == "codex-plus-plus"
+            || lower == "codex++ manager"
             || lower.contains("codex-plus-manager")
         {
             return true;
@@ -578,6 +598,47 @@ fn is_codex_plus_plus_path(path: &Path) -> bool {
     normalized.contains("\\programs\\codex++")
         || normalized.contains("\\codex++\\")
         || normalized.ends_with("\\codex++")
+}
+
+/// 目录里是否存在本产品自己铺设的文件。用于确认「这个名字像 Codex++ 的目录」
+/// 确实是 Codex++ 的安装位置，而不是用户恰好这样命名的普通 Codex 目录。
+fn has_codex_plus_plus_marker(path: &Path) -> bool {
+    // 沿祖先链向上看：调用方可能传入安装根，也可能传入根里的可执行文件，还可能
+    // 传入 .app 包内的 Contents/MacOS/<exe>。安装器把 MANAGER_BINARY /
+    // uninstall.exe 放在安装根，macOS 则把 bundle 可执行文件放在 Contents/MacOS。
+    let mut roots: Vec<&Path> = Vec::new();
+    let mut cursor = Some(path);
+    while let Some(current) = cursor {
+        roots.push(current);
+        cursor = current.parent();
+    }
+    // macOS 的 .app 包把可执行文件放在 Contents/MacOS 下，名字取自 bundle 的
+    // CFBundleExecutable（CodexPlusPlus / CodexPlusPlusManager），与安装根里的
+    // 二进制名不同，因此两条都列。
+    const MARKERS: &[&str] = &[
+        "codex-plus-plus-manager.exe",
+        "uninstall.exe",
+        "codex-plus-plus-manager",
+        "codex-plus-plus",
+        "CodexPlusPlusManager",
+        "CodexPlusPlus",
+    ];
+    for root in roots {
+        for marker in MARKERS {
+            if root.join(marker).is_file() {
+                return true;
+            }
+        }
+        let macos_dir = root.join("Contents").join("MacOS");
+        if macos_dir.is_dir()
+            && MARKERS
+                .iter()
+                .any(|marker| macos_dir.join(marker).is_file())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_codex_store_package_dir(path: &Path) -> bool {
@@ -688,6 +749,51 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
         .or_else(|| codex_directory_version(app_dir))
         .or_else(|| codex_version_file(package_dir))
         .or_else(|| codex_version_file(app_dir))
+        // 免安装/自解包布局（如 …\Codex\app）既没有 MSIX 包目录名，也没有 version
+        // 文件，只在目录里留一个以版本号命名的清单，如 `149.0.7827.115.manifest`。
+        // 少了这一档，版本解析为空 → 健康检查显示「未检测到」、插件解锁策略退化成
+        // unknown（issue #1160）。
+        .or_else(|| codex_manifest_version(package_dir))
+        .or_else(|| codex_manifest_version(app_dir))
+}
+
+/// 从解包目录里形如 `149.0.7827.115.manifest` 的清单文件名取版本号。
+///
+/// 按 is_version_like 校验文件名主干，避免把无关的 `*.manifest` 误当成版本；
+/// 同时命中多个时取版本最高的一个。
+fn codex_manifest_version(app_dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(app_dir).ok()?;
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let stem = name.strip_suffix(".manifest")?;
+            is_version_like(stem).then(|| stem.to_string())
+        })
+        .max_by(|left, right| compare_version_strings(left, right))
+}
+
+/// 按点分数字段逐个比较版本号；字段数不同时先比公共前缀，
+/// 完全相同再按字段数多者为大（`149.0` < `149.0.0`）。
+///
+/// 逐字段按数值比较，不能按字符串比较：`"115"` 在字典序上小于 `"20"`，
+/// 会把 `…7827.115` 判成低于 `…7827.20`。
+fn compare_version_strings(left: &str, right: &str) -> std::cmp::Ordering {
+    let parts = |version: &str| {
+        version
+            .split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Vec<_>>()
+    };
+    let (left, right) = (parts(left), parts(right));
+    for (left_part, right_part) in left.iter().zip(right.iter()) {
+        let ordering = left_part.cmp(right_part);
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
 }
 
 pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {

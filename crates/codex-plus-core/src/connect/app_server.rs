@@ -146,6 +146,14 @@ impl CodexAppServer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Windows 下不设 CREATE_NO_WINDOW 时，app-server 会拿到可见控制台并弹出
+        // CMD/Windows Terminal 窗口，它派生的 MCP 子进程（memory 等）也会各起一个
+        // conhost。仓库其它 spawn 路径都已设该标志，仅此处遗漏（issue #2048）。
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+        }
         let mut child = command.spawn().map_err(|error| {
             let hint = spawn_failure_hint(&executable, error.kind());
             anyhow::anyhow!("无法启动 Codex app-server（{executable}）{hint}（{error}）")

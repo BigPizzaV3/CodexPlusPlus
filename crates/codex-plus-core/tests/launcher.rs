@@ -445,16 +445,102 @@ fn app_paths_rejects_codex_plus_plus_install_dir_as_codex_app() {
     let temp = tempfile::tempdir().unwrap();
     let manager = temp.path().join("Programs").join("Codex++");
     std::fs::create_dir_all(&manager).unwrap();
-    std::fs::write(manager.join("Codex++ Manager.exe"), "").unwrap();
+    // 真实安装根里是产品自己的文件：管理工具二进制 + 卸载器（见 install/windows.rs）。
+    std::fs::write(manager.join("codex-plus-plus-manager.exe"), "").unwrap();
+    std::fs::write(manager.join("uninstall.exe"), "").unwrap();
 
     assert_eq!(normalize_codex_app_path(&manager), None);
     assert_eq!(
-        normalize_codex_app_path(&manager.join("Codex++ Manager.exe")),
+        normalize_codex_app_path(&manager.join("codex-plus-plus-manager.exe")),
         None
     );
 
     let resolved = resolve_codex_app_dir_with_saved(None, Some(&manager.to_string_lossy()));
     assert_ne!(resolved.as_deref(), Some(manager.as_path()));
+}
+
+#[test]
+fn app_paths_accepts_real_codex_inside_a_codex_plus_plus_named_directory() {
+    // issue #1036：用户把真正的 Codex 放在 C:\codex++ 下，按目录名一刀切会连真
+    // Codex 一起拒掉（版本为 null、启动报 failed to launch）。目录名只是线索，
+    // 没有本产品文件时应当放行。
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("codex++");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+
+    assert_eq!(
+        normalize_codex_app_path(&app_dir).as_deref(),
+        Some(app_dir.as_path())
+    );
+    assert_eq!(
+        normalize_codex_app_path(&app_dir.join("Codex.exe")).as_deref(),
+        Some(app_dir.as_path())
+    );
+}
+
+#[test]
+fn app_paths_rejects_codex_plus_plus_app_bundle_by_its_macos_executable() {
+    // macOS 布局：安装根下是 Codex++.app，Contents/MacOS 里是 bundle 可执行文件名。
+    let temp = tempfile::tempdir().unwrap();
+    let bundle = temp.path().join("Applications").join("Codex++.app");
+    let macos_dir = bundle.join("Contents").join("MacOS");
+    std::fs::create_dir_all(&macos_dir).unwrap();
+    std::fs::write(macos_dir.join("CodexPlusPlusManager"), "").unwrap();
+
+    assert_eq!(normalize_codex_app_path(&bundle), None);
+    assert_eq!(
+        normalize_codex_app_path(&macos_dir.join("CodexPlusPlusManager")),
+        None
+    );
+}
+
+#[test]
+fn app_paths_reads_version_from_unpacked_manifest_file_name() {
+    // issue #1160：免安装/自解包目录（…\Codex\app）没有 MSIX 包目录名也没有
+    // version 文件，只有以版本号命名的清单文件。
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex").join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    std::fs::write(app_dir.join("149.0.7827.115.manifest"), "").unwrap();
+
+    assert_eq!(
+        codex_app_version(&app_dir).as_deref(),
+        Some("149.0.7827.115")
+    );
+}
+
+#[test]
+fn app_paths_manifest_version_picks_numerically_highest_and_ignores_noise() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex").join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    // 字符串比较会把 "115" 判成小于 "20"，必须按数值比较。
+    std::fs::write(app_dir.join("149.0.7827.20.manifest"), "").unwrap();
+    std::fs::write(app_dir.join("149.0.7827.115.manifest"), "").unwrap();
+    // 非版本号命名的清单不能吞进来。
+    std::fs::write(app_dir.join("app.manifest"), "").unwrap();
+    std::fs::write(app_dir.join("uninstall.manifest"), "").unwrap();
+
+    assert_eq!(
+        codex_app_version(&app_dir).as_deref(),
+        Some("149.0.7827.115")
+    );
+}
+
+#[test]
+fn app_paths_manifest_version_does_not_override_explicit_version_file() {
+    // version 文件是更明确的信号，manifest 只是兜底。
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("versions").join("current");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    std::fs::write(app_dir.join("version"), "42.1.0\n").unwrap();
+    std::fs::write(app_dir.join("149.0.7827.115.manifest"), "").unwrap();
+
+    assert_eq!(codex_app_version(&app_dir).as_deref(), Some("42.1.0"));
 }
 
 #[test]

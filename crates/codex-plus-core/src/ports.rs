@@ -194,30 +194,27 @@ fn acquire_resilient_loopback_port_guard_at(
     port: u16,
     state_dir: &Path,
 ) -> std::io::Result<LoopbackPortGuard> {
-    acquire_resilient_loopback_port_guard_with(
-        port,
-        state_dir,
-        acquire_loopback_port_guard,
-        can_connect_loopback_port,
-    )
+    acquire_resilient_loopback_port_guard_with(port, state_dir, acquire_loopback_port_guard)
 }
 
 fn acquire_resilient_loopback_port_guard_with(
     port: u16,
     state_dir: &Path,
     bind: impl Fn(u16) -> std::io::Result<TcpListener>,
-    can_connect: impl Fn(u16) -> bool,
 ) -> std::io::Result<LoopbackPortGuard> {
     if port == 0 {
         return bind(port).map(LoopbackPortGuard::listener);
     }
 
+    // 走到这里说明本进程拿到了排他锁，即「没有别的 Codex++ 实例正持有该守卫」。
+    // 这一点必须作为唯一判据：端口能 connect 只说明那个端口上有东西在监听，
+    // 说明不了监听者是本产品。端口被无关进程（或已退出实例留下的僵尸监听）
+    // 占着时仍可 connect，若据此返回 AddrInUse，调用方会判定「已有实例在跑」
+    // 并静默退出，用户侧就是「退出后不重启系统就打不开」（issue #1083）。
+    // 因此端口占用一律降级成锁文件守卫：单实例语义由锁保证，端口只是加速项。
     let (file, path) = acquire_lock_guard(port, state_dir)?;
     match bind(port) {
         Ok(listener) => Ok(LoopbackPortGuard::locked_listener(file, path, listener)),
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && can_connect(port) => {
-            Err(error)
-        }
         Err(error)
             if error.kind() == std::io::ErrorKind::AddrInUse || port_bind_forbidden(&error) =>
         {
@@ -289,54 +286,42 @@ mod tests {
     }
 
     #[test]
-    fn resilient_guard_reports_conflict_when_requested_port_is_connectable() {
+    fn resilient_guard_uses_lock_fallback_when_requested_port_is_taken() {
+        // 端口被占（哪怕上面还有进程能 connect）时不能再判成「已有实例」：
+        // 判据只有锁，否则僵尸监听会让新实例静默退出（issue #1083）。
         let temp = tempfile::tempdir().unwrap();
-        let error = acquire_resilient_loopback_port_guard_with(
-            57319,
-            temp.path(),
-            |_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
-                    "port busy",
-                ))
-            },
-            |_| true,
-        )
-        .unwrap_err();
+        let guard = acquire_resilient_loopback_port_guard_with(57319, temp.path(), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "port busy",
+            ))
+        })
+        .unwrap();
 
-        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(guard._listener.is_none());
+        assert!(guard.fallback_path().is_some());
     }
 
     #[test]
     fn resilient_guard_uses_lock_fallback_when_requested_port_is_not_connectable() {
         let temp = tempfile::tempdir().unwrap();
-        let guard = acquire_resilient_loopback_port_guard_with(
-            57319,
-            temp.path(),
-            |_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
-                    "stale port",
-                ))
-            },
-            |_| false,
-        )
+        let guard = acquire_resilient_loopback_port_guard_with(57319, temp.path(), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "stale port",
+            ))
+        })
         .unwrap();
 
         assert!(guard._listener.is_none());
         assert!(guard.fallback_path().is_some());
 
-        let second = acquire_resilient_loopback_port_guard_with(
-            57319,
-            temp.path(),
-            |_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
-                    "stale port",
-                ))
-            },
-            |_| false,
-        )
+        let second = acquire_resilient_loopback_port_guard_with(57319, temp.path(), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "stale port",
+            ))
+        })
         .unwrap_err();
         assert_eq!(second.kind(), std::io::ErrorKind::WouldBlock);
     }
@@ -344,12 +329,9 @@ mod tests {
     #[test]
     fn resilient_guard_uses_lock_fallback_when_port_bind_is_forbidden() {
         let temp = tempfile::tempdir().unwrap();
-        let guard = acquire_resilient_loopback_port_guard_with(
-            57319,
-            temp.path(),
-            |_| Err(std::io::Error::from_raw_os_error(10013)),
-            |_| false,
-        )
+        let guard = acquire_resilient_loopback_port_guard_with(57319, temp.path(), |_| {
+            Err(std::io::Error::from_raw_os_error(10013))
+        })
         .unwrap();
 
         assert!(guard._listener.is_none());
