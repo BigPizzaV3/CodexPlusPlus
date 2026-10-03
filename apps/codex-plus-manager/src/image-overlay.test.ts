@@ -37,15 +37,18 @@ it("uses bounded media geometry updates and restores every owned resource", () =
   assert.match(foreground, /addEventListener\("scroll"/);
   assert.match(foreground, /new ResizeObserver/);
   assert.match(foreground, /record\.plane\.remove\(\)/);
-  assert.match(foreground, /record\.resizeObserver\?\.disconnect\(\)/);
+  assert.match(foreground, /resizeObserver\.disconnect\(\)/);
   assert.match(foreground, /target\.removeEventListener/);
   assert.doesNotMatch(foreground, /setInterval|setTimeout/);
 });
 
-it("does not mutate native media DOM or depend on CSS anchor positioning", () => {
+it("retains native media parents and uses the original video for playback controls", () => {
   const foreground = functionSource("installCodexPlusImageOverlayForeground");
   assert.doesNotMatch(foreground, /anchor-name|positionAnchor|anchor-size|anchor\(/);
   assert.match(foreground, /document\.documentElement\.appendChild\(plane\)/);
   assert.match(foreground, /pointer-events: none/);
-  assert.match(foreground, /copy\.srcObject/);
+  assert.match(foreground, /drawImage\(source/);
+  assert.match(foreground, /native\.host\.showPopover\(\)/);
+  assert.doesNotMatch(foreground, /appendChild\(source\)|append\(source\)/);
+  assert.doesNotMatch(foreground, /copy\.src\s*=\s*record\.source\.currentSrc/);
 });
