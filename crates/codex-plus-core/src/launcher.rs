@@ -658,6 +658,10 @@ where
             }
         }
 
+        if !settings.enhancements_enabled && active_relay_profile_is_official_mix(&settings) {
+            tokio::spawn(retry_isolated_quota_gate_injection(debug_port));
+        }
+
         if !settings.enhancements_enabled || !injection_degraded {
             let status = launch_status(
                 "running",
@@ -708,6 +712,14 @@ fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
 }
 
 fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
+    let profile = settings.active_relay_profile();
+    profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
+}
+
+fn active_relay_profile_is_official_mix(settings: &BackendSettings) -> bool {
+    if !settings.relay_profiles_enabled {
+        return false;
+    }
     let profile = settings.active_relay_profile();
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
@@ -2795,6 +2807,29 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
+}
+
+async fn try_inject_isolated_quota_gate(debug_port: u16) -> anyhow::Result<()> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    crate::bridge::install_isolated_api_quota_gate(websocket_url).await
+}
+
+async fn retry_isolated_quota_gate_injection(debug_port: u16) {
+    for _ in 0..20 {
+        if try_inject_isolated_quota_gate(debug_port).await.is_ok() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.isolated_quota_gate_injected",
+                serde_json::json!({ "debug_port": debug_port }),
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
