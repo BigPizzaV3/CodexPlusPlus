@@ -75,21 +75,25 @@ pub fn select_platform_loopback_port(requested: u16) -> u16 {
 pub fn select_packaged_codex_debug_port(requested: u16) -> u16 {
     select_packaged_codex_debug_port_with(
         requested,
-        cfg!(windows),
         can_bind_loopback_port,
         crate::cdp::endpoint_available,
         find_available_loopback_port,
     )
 }
 
+/// 挑选调试端口：能绑定就用请求值；已被占用但确实是 Codex 自己的 CDP 端点也沿用
+/// （避免把正在运行的实例判成冲突而重复拉起）；被别的进程占用时改用空闲端口。
+///
+/// 早期实现只在 Windows 做占用检测（`!is_windows` 直接短路），macOS 无条件把请求
+/// 端口交给 Codex。于是 9229 被第三方进程（如 SkyComputerUseService）占用时，
+/// 新实例拿不到该端口、注入永久失败（issue #247）。
 pub fn select_packaged_codex_debug_port_with(
     requested: u16,
-    is_windows: bool,
     can_bind: impl Fn(u16) -> bool,
     is_existing_cdp: impl Fn(u16) -> bool,
     find_available: impl Fn() -> u16,
 ) -> u16 {
-    if !is_windows || can_bind(requested) || is_existing_cdp(requested) {
+    if can_bind(requested) || is_existing_cdp(requested) {
         requested
     } else {
         find_available()

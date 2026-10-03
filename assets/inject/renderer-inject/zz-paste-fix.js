@@ -12,12 +12,22 @@ if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled =
 
     const TAG = '[PasteFix]';
 
+    // 超过这个长度就不再拦截，交回 Codex 原生的「超长文本转附件」逻辑。
+    // 否则整段长文本会被 insertText 直接塞进输入框，造成渲染层卡死（issue #1931）。
+    const MAX_INLINE_LENGTH = 20000;
+
     const handler = (e) => {
       const cd = e.clipboardData;
       if (!cd) return;
 
       const text = cd.getData('text/plain');
       if (typeof text !== 'string' || text.length === 0) return;
+
+      // 长文本放行：让 Codex 自己决定是否转成附件
+      if (text.length > MAX_INLINE_LENGTH) {
+        console.log(TAG, `text too long (${text.length} chars); letting Codex handle it`);
+        return;
+      }
 
       e.preventDefault();
       e.stopImmediatePropagation();

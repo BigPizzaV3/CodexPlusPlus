@@ -953,18 +953,33 @@ fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
 }
 
 #[test]
-fn ports_windows_packaged_debug_falls_back_to_ephemeral_when_requested_is_busy() {
-    let selected =
-        select_packaged_codex_debug_port_with(9229, true, |_| false, |_| false, || 43001);
+fn ports_packaged_debug_falls_back_to_ephemeral_when_requested_is_busy() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| false, |_| false, || 43001);
 
     assert_eq!(selected, 43001);
 }
 
 #[test]
-fn ports_windows_packaged_debug_keeps_requested_when_existing_cdp_is_available() {
-    let selected = select_packaged_codex_debug_port_with(9229, true, |_| false, |_| true, || 43001);
+fn ports_packaged_debug_keeps_requested_when_existing_cdp_is_available() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| false, |_| true, || 43001);
 
     assert_eq!(selected, 9229);
+}
+
+#[test]
+fn ports_packaged_debug_keeps_requested_when_bindable() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| true, |_| false, || 43001);
+
+    assert_eq!(selected, 9229);
+}
+
+/// #247：调试端口被第三方进程（如 macOS 上的 SkyComputerUseService）占用时，
+/// 非 Windows 平台也必须改用空闲端口，而不是把请求端口原样交给 Codex。
+#[test]
+fn ports_packaged_debug_falls_back_even_on_non_windows() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| false, |_| false, || 43001);
+
+    assert_eq!(selected, 43001);
 }
 
 #[test]
