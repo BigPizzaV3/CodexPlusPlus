@@ -573,6 +573,8 @@
   window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
 
   function installCodexPlusImageOverlay() {
+    window.__codexPlusImageOverlayCleanup?.();
+    window.__codexPlusImageOverlayCleanup = null;
     const config = window.__CODEX_PLUS_IMAGE_OVERLAY__ || {};
     const canQueryById = typeof document?.getElementById === "function";
     const existing = canQueryById ? document.getElementById(codexPlusImageOverlayId) : null;
@@ -604,6 +606,7 @@
     if (existing && existing !== overlay) existing.remove();
     overlay.id = codexPlusImageOverlayId;
     overlay.setAttribute("aria-hidden", "true");
+    overlay.setAttribute("data-codex-plus-ext", "image-overlay");
     Object.assign(overlay.style, {
       position: "fixed",
       inset: "0",
@@ -619,6 +622,7 @@
       userSelect: "none",
     });
     if (!overlay.parentElement) root.appendChild(overlay);
+    installCodexPlusImageOverlayForeground();
     sendCodexPlusDiagnostic("image_overlay_installed", {
       opacity,
       fitMode,
@@ -626,13 +630,654 @@
     });
   }
 
+  function installCodexPlusImageOverlayForeground() {
+    // Keep upstream's single tint layer intact. Only actual media receives a
+    // foreground plane; geometry is refreshed on bounded layout events.
+    const mediaSelector = "img, video, canvas";
+    const raisedSelector = '[role="dialog"]:has([data-testid="image-preview-dismiss-area"]), [data-browser-sidebar-webview]';
+    const blockerSelector = '[role="menu"], [role="listbox"], [role="tooltip"], [role="dialog"]';
+    const records = new Map();
+    const nativeHosts = new Map();
+    const raised = new Map();
+    const owned = node => node?.closest?.('[data-codex-plus-ext="image-overlay"]');
+    const blockers = new Set();
+    const dirty = new Set();
+    const visibleMedia = new Set();
+    const watched = new Map();
+    const layoutRoots = new Map();
+    let frame = 0;
+    let reobserveQueued = false;
+    let disposed = false;
+    let frameStyles = new Map();
+    let frameRects = new Map();
+    const readStyle = element => {
+      if (!frameStyles.has(element)) frameStyles.set(element, getComputedStyle(element));
+      return frameStyles.get(element);
+    };
+    const readRect = element => {
+      if (!frameRects.has(element)) frameRects.set(element, element.getBoundingClientRect());
+      return frameRects.get(element);
+    };
+    const resetGeometry = () => { frameStyles = new Map(); frameRects = new Map(); };
+    const style = document.createElement("style");
+    style.setAttribute("data-codex-plus-ext", "image-overlay");
+    style.textContent = `
+      .codex-plus-media-plane {
+        position: fixed !important; inset: 0 !important; margin: 0 !important;
+        padding: 0 !important; border: 0 !important; background: transparent !important;
+        pointer-events: none !important; user-select: none !important;
+        z-index: 2147483647 !important; display: block !important;
+        width: 100vw; height: 100vh;
+      }
+      .codex-plus-media-copy {
+        position: fixed !important; inset: auto;
+        left: 0; top: 0; width: 0; height: 0;
+        margin: 0 !important; padding: 0 !important; border: 0 !important;
+        max-width: none !important; max-height: none !important;
+        pointer-events: none !important;
+      }
+      .codex-plus-media-scrollport, .codex-plus-media-scroll-offset {
+        position: absolute !important; margin: 0 !important; padding: 0 !important;
+        border: 0 !important; background: transparent !important;
+        pointer-events: none !important; display: block !important;
+      }
+      .codex-plus-media-scroll-offset { inset: 0; }
+      .codex-plus-media-scrollport .codex-plus-media-copy { position: absolute !important; }
+      .codex-plus-media-plane[hidden] { display: none !important; }
+      [data-codex-plus-native-media]::backdrop { display: none !important; }
+    `;
+    document.documentElement.appendChild(style);
+    const preserveStyle = (element, name, value) => {
+      const previous = element.style.getPropertyValue(name);
+      const priority = element.style.getPropertyPriority(name);
+      element.style.setProperty(name, value, "important");
+      const applied = element.style.getPropertyValue(name);
+      return () => {
+        if (element.style.getPropertyValue(name) !== applied ||
+            element.style.getPropertyPriority(name) !== "important") return;
+        if (previous) element.style.setProperty(name, previous, priority);
+        else element.style.removeProperty(name);
+      };
+    };
+    const stopStream = record => {
+      if (record.player) {
+        if (record.canvasFrame != null) record.player.cancelVideoFrameCallback(record.canvasFrame);
+        record.player.pause();
+        record.player.srcObject = null;
+      }
+      if (record.ownsStream) record.stream?.getTracks().forEach(track => track.stop());
+      record.stream = null;
+      record.ownsStream = false;
+    };
+    const display = record => {
+      if (disposed || records.get(record.source) !== record || !record.plane.isConnected) return;
+      const visible = record.visible && record.inViewport && !record.blocked;
+      if (record.native) {
+        record.plane.hidden = true;
+        if (document.fullscreenElement?.contains(record.source)) return;
+        if (visible && !record.native.host.matches(':popover-open')) record.native.host.showPopover();
+        else if (!visible && record.native.host.matches(':popover-open')) record.native.host.hidePopover();
+        return;
+      }
+      if (record.source.tagName === 'VIDEO' && record.source.controls) {
+        // Unknown compound layouts keep their usable native player. Never
+        // conceal its controls with a frame copy or reparent React-owned DOM.
+        record.plane.hidden = true;
+        return;
+      }
+      if (record.nextVideoFrame) {
+        if (visible && record.videoFrame == null) record.videoFrame = record.source.requestVideoFrameCallback(record.nextVideoFrame);
+        else if (!visible && record.videoFrame != null) {
+          record.source.cancelVideoFrameCallback(record.videoFrame);
+          record.videoFrame = null;
+        }
+      }
+      if (!visible) {
+        record.plane.hidden = true;
+        if (record.stream) stopStream(record);
+        return;
+      }
+      if (record.source.tagName === "IMG" && (!record.copy.complete || !record.copy.naturalWidth)) {
+        record.plane.hidden = true;
+        return;
+      }
+      if (record.source.tagName === "CANVAS" && !record.stream) {
+        try {
+          const { source, copy } = record;
+          if (copy.width !== source.width) copy.width = source.width;
+          if (copy.height !== source.height) copy.height = source.height;
+          copy.getContext("2d").drawImage(source, 0, 0);
+          record.stream = record.source.captureStream?.(15);
+          record.ownsStream = true;
+          if (record.stream) {
+            const player = record.player || (record.player = document.createElement("video"));
+            player.muted = true;
+            player.srcObject = record.stream;
+            const paint = () => {
+              if (disposed || !record.stream || !records.has(source)) return;
+              if (player.readyState >= 2) {
+                if (copy.width !== source.width) copy.width = source.width;
+                if (copy.height !== source.height) copy.height = source.height;
+                copy.getContext("2d").drawImage(player, 0, 0, copy.width, copy.height);
+              }
+              record.canvasFrame = player.requestVideoFrameCallback(paint);
+            };
+            record.canvasFrame = player.requestVideoFrameCallback(paint);
+            player.play().catch(() => {});
+          }
+        } catch (error) {
+          sendCodexPlusDiagnostic("image_overlay_video_error", { message: String(error?.message || error) });
+          stopStream(record);
+          record.plane.hidden = true;
+          return;
+        }
+      }
+      record.plane.hidden = false;
+    };
+    const visibleRect = element => {
+      if (!element.isConnected || element.hidden || element.getAttribute("data-state") === "closed") return null;
+      if (!element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return null;
+      const rect = readRect(element);
+      return rect.width > 0 && rect.height > 0 ? rect : null;
+    };
+    const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const drawVideo = record => {
+      const { source, copy } = record;
+      if (source.readyState < 2 || !record.visible || !record.inViewport || record.blocked) return;
+      const width = source.videoWidth;
+      const height = source.videoHeight;
+      if (!width || !height) return;
+      if (copy.width !== width) copy.width = width;
+      if (copy.height !== height) copy.height = height;
+      copy.getContext("2d").drawImage(source, 0, 0, width, height);
+    };
+    const nativeVideo = record => {
+      const source = record.source;
+      const host = source.parentElement;
+      if (!source.controls || !host || host.id === 'root' || host === document.body ||
+          host.childElementCount !== 1 || host.textContent.trim() || host.hasAttribute('popover') || !host.showPopover) return;
+      const placeholder = document.createElement(host.tagName);
+      for (const name of ['class', 'style']) {
+        if (host.hasAttribute(name)) placeholder.setAttribute(name, host.getAttribute(name));
+      }
+      const spacer = document.createElement('video');
+      for (const name of ['class', 'style', 'width', 'height']) {
+        if (source.hasAttribute(name)) spacer.setAttribute(name, source.getAttribute(name));
+      }
+      const css = getComputedStyle(source);
+      spacer.style.width = css.width;
+      spacer.style.height = css.height;
+      spacer.style.maxWidth = '100%';
+      placeholder.append(spacer);
+      placeholder.setAttribute('data-codex-plus-ext', 'image-overlay');
+      placeholder.setAttribute('aria-hidden', 'true');
+      placeholder.style.setProperty('visibility', 'hidden', 'important');
+      placeholder.style.setProperty('pointer-events', 'none', 'important');
+      host.before(placeholder);
+      record.native = { host, placeholder, spacer, saved: new Map(), applied: new Map() };
+      nativeHosts.set(host, record);
+      host.setAttribute('data-codex-plus-native-media', '');
+      host.setAttribute('popover', 'manual');
+      resizeObserver.observe(placeholder);
+    };
+    const setNativeStyle = (record, name, value) => {
+      const { native } = record;
+      const host = native.host;
+      if (!native.saved.has(name)) native.saved.set(name, [host.style.getPropertyValue(name), host.style.getPropertyPriority(name)]);
+      host.style.setProperty(name, value, 'important');
+      native.applied.set(name, host.style.getPropertyValue(name));
+      native.style = host.getAttribute('style');
+    };
+    const clearScrollLayers = record => {
+      for (const layer of record.scrollLayers || []) {
+        layer.xAnimation?.cancel();
+        layer.yAnimation?.cancel();
+      }
+      if (record.scrollLayers?.length) {
+        record.plane.appendChild(record.copy);
+        record.scrollLayers[0].port.remove();
+      }
+      record.scrollLayers = [];
+    };
+    const positionScrollCopy = (record, rect) => {
+      if (record.native || typeof ScrollTimeline !== 'function') return false;
+      if (/^(fixed|sticky)$/.test(readStyle(record.source).position)) {
+        clearScrollLayers(record);
+        return false;
+      }
+      const parents = [];
+      for (let node = record.source.parentElement; node; node = node.parentElement) {
+        const css = readStyle(node);
+        // Sticky motion is constrained by layout, not a linear scroll offset.
+        if (css.position === 'sticky') { clearScrollLayers(record); return false; }
+        if (/^(auto|scroll|hidden|clip)$/.test(css.overflowX) ||
+            /^(auto|scroll|hidden|clip)$/.test(css.overflowY) || node === document.scrollingElement) parents.unshift(node);
+        if (css.position === 'fixed') break;
+      }
+      if (!parents.length) { clearScrollLayers(record); return false; }
+      if (parents.length !== record.scrollLayers?.length ||
+          parents.some((node, index) => record.scrollLayers[index].source !== node)) {
+        clearScrollLayers(record);
+        let container = record.plane;
+        for (const source of parents) {
+          const port = document.createElement('div');
+          port.className = 'codex-plus-media-scrollport';
+          const x = document.createElement('div');
+          const y = document.createElement('div');
+          x.className = y.className = 'codex-plus-media-scroll-offset';
+          port.appendChild(x); x.appendChild(y); container.appendChild(port);
+          record.scrollLayers.push({ source, port, x, y });
+          container = y;
+        }
+        container.appendChild(record.copy);
+      }
+      let originX = 0, originY = 0;
+      for (const layer of record.scrollLayers) {
+        const { source, port } = layer;
+        const css = readStyle(source);
+        const root = source === document.scrollingElement;
+        const zoom = source.currentCSSZoom || 1;
+        const box = root ? { left: 0, top: 0 } : readRect(source);
+        const left = box.left + (root ? 0 : source.clientLeft * zoom);
+        const top = box.top + (root ? 0 : source.clientTop * zoom);
+        const width = root ? innerWidth : source.clientWidth * zoom;
+        const height = root ? innerHeight : source.clientHeight * zoom;
+        const clipsX = root || /^(auto|scroll|hidden|clip)$/.test(css.overflowX);
+        const clipsY = root || /^(auto|scroll|hidden|clip)$/.test(css.overflowY);
+        Object.assign(port.style, { left: `${left - originX}px`, top: `${top - originY}px`,
+          width: `${width}px`, height: `${height}px`,
+          clipPath: `inset(${clipsY ? 0 : -100000}px ${clipsX ? 0 : -100000}px)` });
+        for (const axis of ['x', 'y']) {
+          const horizontal = axis === 'x';
+          const extent = Math.max(0, horizontal ? source.scrollWidth - source.clientWidth : source.scrollHeight - source.clientHeight);
+          const reverse = horizontal ? css.direction === 'rtl' : css.display.includes('flex') && css.flexDirection === 'column-reverse';
+          const distance = (reverse ? 1 : -1) * extent * zoom;
+          const key = axis + 'Animation';
+          const enabled = extent > 0 && css[horizontal ? 'overflowX' : 'overflowY'] !== 'clip';
+          if (layer[axis + 'Distance'] === distance && layer[axis + 'Enabled'] === enabled) continue;
+          layer[key]?.cancel();
+          layer[key] = null;
+          layer[axis + 'Distance'] = distance;
+          layer[axis + 'Enabled'] = enabled;
+          // The compositor samples the source scroll position even when the
+          // main thread is busy. Do not chase wheel events with fixed left/top.
+          if (enabled) {
+            layer[key] = layer[axis].animate([
+              { transform: 'translate' + axis.toUpperCase() + '(0px)' },
+              { transform: 'translate' + axis.toUpperCase() + '(' + distance + 'px)' },
+            ], { duration: 1, fill: 'both', timeline: new ScrollTimeline({ source, axis }) });
+          }
+        }
+        originX = left - source.scrollLeft * zoom;
+        originY = top - source.scrollTop * zoom;
+      }
+      record.copy.style.left = `${rect.left - originX}px`;
+      record.copy.style.top = `${rect.top - originY}px`;
+      return true;
+    };
+    const refresh = source => {
+      if (disposed) return;
+      if (source) dirty.add(source);
+      else visibleMedia.forEach(element => dirty.add(element));
+      if (frame || !dirty.size) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        resetGeometry();
+        const pending = [...dirty];
+        dirty.clear();
+        pending.forEach(update);
+      });
+    };
+    const update = source => {
+      const record = records.get(source);
+      if (!record) return;
+      if (record.native && document.fullscreenElement?.contains(source)) return;
+      const geometry = record.native?.placeholder || source;
+      const css = readStyle(geometry);
+      const copy = record.copy;
+      copy.style.objectFit = css.objectFit;
+      copy.style.objectPosition = css.objectPosition;
+      copy.style.borderRadius = css.borderRadius;
+      copy.style.backgroundColor = css.backgroundColor === "rgba(0, 0, 0, 0)"
+        ? "var(--color-surface, var(--color-token-bg-primary, Canvas))" : css.backgroundColor;
+      if (source.tagName === "IMG") {
+        const src = source.currentSrc || source.src;
+        if (copy.src !== src) copy.src = src;
+      }
+      const rect = readRect(geometry);
+      if (rect.bottom <= 0 || rect.right <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) {
+        record.inViewport = false;
+        display(record);
+        return;
+      }
+      record.visible = Math.max(rect.width, rect.height) >= 48 && (record.native
+        ? geometry.isConnected && !geometry.closest('[hidden]') && rect.width > 0 && rect.height > 0
+        : !!visibleRect(source));
+      if (record.native) {
+        for (let node = source; node; node = node.parentElement) {
+          const native = readStyle(node);
+          if (native.visibility !== 'visible' || (native.display === 'none' && node !== record.native.host) || Number(native.opacity) === 0 ||
+              node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true') record.visible = false;
+        }
+      }
+      if (source.tagName === "VIDEO" && !record.native && source.readyState < 2) record.visible = false;
+      record.blocked = [...blockers].some(element => {
+        if (element.contains(source)) return false;
+        const box = visibleRect(element);
+        return box && intersects(rect, box);
+      });
+      const clip = { left: Math.max(0, rect.left), top: Math.max(0, rect.top),
+        right: Math.min(innerWidth, rect.right), bottom: Math.min(innerHeight, rect.bottom) };
+      for (let parent = geometry.parentElement; parent && parent !== document.documentElement; parent = parent.parentElement) {
+        const native = readStyle(parent);
+        const clipsX = /^(auto|scroll|hidden|clip)$/.test(native.overflowX);
+        const clipsY = /^(auto|scroll|hidden|clip)$/.test(native.overflowY);
+        if (!clipsX && !clipsY) continue;
+        const box = readRect(parent);
+        if (clipsX) { clip.left = Math.max(clip.left, box.left); clip.right = Math.min(clip.right, box.right); }
+        if (clipsY) { clip.top = Math.max(clip.top, box.top); clip.bottom = Math.min(clip.bottom, box.bottom); }
+      }
+      const thread = source.closest('.thread-scroll-container');
+      if (thread) {
+        const footer = document.querySelector('[data-thread-scroll-footer]');
+        const box = footer && visibleRect(footer);
+        if (box && intersects(rect, box)) clip.bottom = Math.min(clip.bottom, box.top);
+      }
+      record.inViewport = rect.width > 0 && rect.height > 0 &&
+        clip.right > clip.left && clip.bottom > clip.top;
+      record.plane.style.clipPath = `inset(${Math.max(0, clip.top)}px ${Math.max(0, innerWidth - clip.right)}px ${Math.max(0, innerHeight - clip.bottom)}px ${Math.max(0, clip.left)}px)`;
+      Object.assign(copy.style, {
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+      });
+      if (positionScrollCopy(record, rect)) {
+        // Only the media scrollports clip. The complete decorative overlay
+        // stays untouched; its copy must not retain a stale source-rect clip.
+        const footer = thread && document.querySelector('[data-thread-scroll-footer]');
+        const footerBox = footer && visibleRect(footer);
+        record.plane.style.clipPath = `inset(0px 0px ${footerBox ? Math.max(0, innerHeight - footerBox.top) : 0}px 0px)`;
+      }
+      if (record.native) {
+        const zoom = geometry.currentCSSZoom || 1;
+        for (const [name, value] of Object.entries({position:'fixed', margin:'0', inset:'auto',
+          left:`${rect.left / zoom}px`, top:`${rect.top / zoom}px`, width:`${rect.width / zoom}px`, height:`${rect.height / zoom}px`,
+          'max-width':'none', 'max-height':'none', 'box-sizing':'border-box', padding:css.padding, border:css.border, 'background-color':css.backgroundColor,
+          'clip-path':`inset(${Math.max(0, clip.top - rect.top) / zoom}px ${Math.max(0, rect.right - clip.right) / zoom}px ${Math.max(0, rect.bottom - clip.bottom) / zoom}px ${Math.max(0, clip.left - rect.left) / zoom}px)`})) setNativeStyle(record, name, value);
+      } else if (source.tagName === "VIDEO") drawVideo(record);
+      display(record);
+    };
+    const watch = element => {
+      const path = [];
+      const layoutRoot = element.closest('.thread-scroll-container, [role="tabpanel"], [data-testid="image-preview-dismiss-area"]');
+      if (layoutRoot) layoutRoots.set(layoutRoot, (layoutRoots.get(layoutRoot) || 0) + 1);
+      for (let node = element; node; node = node.parentElement) {
+        path.push(node);
+        watched.set(node, (watched.get(node) || 0) + 1);
+        if (watched.get(node) !== 1 && node !== layoutRoot) continue;
+        attributes.observe(node, { attributes: true, subtree: layoutRoots.has(node),
+          attributeFilter: ["src", "srcset", "sizes", "class", "style", "hidden", "data-state", "aria-hidden"] });
+        resizeObserver.observe(node);
+      }
+      return { path, layoutRoot };
+    };
+    const unwatch = ({ path, layoutRoot }) => {
+      if (layoutRoot) {
+        const count = layoutRoots.get(layoutRoot) - 1;
+        if (count) layoutRoots.set(layoutRoot, count);
+        else layoutRoots.delete(layoutRoot);
+      }
+      for (const node of path) {
+        const count = watched.get(node) - 1;
+        if (count) watched.set(node, count);
+        else { watched.delete(node); resizeObserver.unobserve(node); }
+      }
+      if (disposed || reobserveQueued) return;
+      reobserveQueued = true;
+      queueMicrotask(() => {
+        reobserveQueued = false;
+        if (disposed) return;
+        attributes.disconnect();
+        watched.forEach((_, node) => attributes.observe(node, { attributes: true, subtree: layoutRoots.has(node),
+          attributeFilter: ["src", "srcset", "sizes", "class", "style", "hidden", "data-state", "aria-hidden"] }));
+      });
+    };
+    const add = source => {
+      if (records.has(source) || owned(source) || !source.isConnected ||
+          [...raised.keys()].some(element => element.contains(source)) || source.getAttribute("aria-hidden") === "true") return;
+      const css = getComputedStyle(source);
+      if (Math.max(parseFloat(css.width) || 0, parseFloat(css.height) || 0, source.naturalWidth || 0, source.naturalHeight || 0) < 48) return;
+      const plane = document.createElement("div");
+      plane.className = "codex-plus-media-plane";
+      plane.setAttribute("data-codex-plus-ext", "image-overlay");
+      plane.setAttribute("aria-hidden", "true");
+      plane.hidden = true;
+      const copy = document.createElement(source.tagName === "IMG" ? "img" : "canvas");
+      copy.className = "codex-plus-media-copy";
+      copy.setAttribute("aria-hidden", "true");
+      copy.draggable = false;
+      const record = {
+        source, plane, copy, stream: null, ownsStream: false, visible: true,
+        inViewport: false, listeners: [], videoFrame: null,
+      };
+      copy.addEventListener("load", () => display(record));
+      plane.appendChild(copy);
+      document.documentElement.appendChild(plane);
+      records.set(source, record);
+      if (source.tagName === 'VIDEO') nativeVideo(record);
+      visibleMedia.add(source);
+      intersectionObserver.observe(record.native?.placeholder || source);
+      for (const event of ["load", "loadeddata", "loadedmetadata", "canplay", "play", "playing", "pause", "seeked", "emptied"]) {
+        const listener = () => refresh(source);
+        source.addEventListener(event, listener);
+        record.listeners.push([event, listener]);
+      }
+      record.watched = watch(source);
+      if (source.tagName === "VIDEO" && !source.controls && !record.native && source.requestVideoFrameCallback) {
+        const nextFrame = () => {
+          if (disposed || !records.has(source)) return;
+          record.videoFrame = null;
+          if (record.visible && record.inViewport && !record.blocked) {
+            drawVideo(record);
+            record.videoFrame = source.requestVideoFrameCallback(nextFrame);
+          }
+        };
+        record.nextVideoFrame = nextFrame;
+        record.videoFrame = source.requestVideoFrameCallback(nextFrame);
+      }
+      resetGeometry();
+      update(source);
+    };
+    const remove = source => {
+      const record = records.get(source);
+      if (!record) return;
+      records.delete(source);
+      visibleMedia.delete(source);
+      intersectionObserver.unobserve(record.native?.placeholder || source);
+      dirty.delete(source);
+      for (const [event, listener, target = source] of record.listeners) target.removeEventListener(event, listener);
+      unwatch(record.watched);
+      if (record.videoFrame !== null) source.cancelVideoFrameCallback(record.videoFrame);
+      stopStream(record);
+      clearScrollLayers(record);
+      if (record.native) {
+        const host = record.native.host;
+        if (host.matches(':popover-open')) host.hidePopover();
+        host.removeAttribute('popover');
+        host.removeAttribute('data-codex-plus-native-media');
+        for (const [name, [value, priority]] of record.native.saved) {
+          if (host.style.getPropertyValue(name) !== record.native.applied.get(name)) continue;
+          if (value) host.style.setProperty(name, value, priority);
+          else host.style.removeProperty(name);
+        }
+        nativeHosts.delete(host);
+        resizeObserver.unobserve(record.native.placeholder);
+        record.native.placeholder.remove();
+      }
+      record.plane.remove();
+    };
+    const raise = element => {
+      if (raised.has(element) || owned(element)) return;
+      let target = element;
+      for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const css = getComputedStyle(parent);
+        if (element.matches('[data-browser-sidebar-webview]')) {
+          if (parent.id === "root" || parent === document.documentElement) return;
+          if (css.position !== "static") target = parent;
+          continue;
+        }
+        const stacking = css.transform !== "none" || css.isolation === "isolate" ||
+          css.zIndex !== "auto" || Number(css.opacity) < 1 || /paint|layout/.test(css.contain) ||
+          css.filter !== "none" || css.perspective !== "none" || /^(fixed|sticky)$/.test(css.position);
+        if (!stacking) continue;
+        // A native portal wrapper can be lifted with its child; an app surface
+        // containing unrelated UI cannot. Its media keeps the copy fallback.
+        if (parent.id === "root" || parent.childElementCount !== 1) return;
+        target = parent;
+      }
+      if (getComputedStyle(target).position === "static") return;
+      if ([...raised.keys()].some(node => node.contains(element))) return;
+      raised.set(element, preserveStyle(target, "z-index", "2147483647"));
+      element.querySelectorAll(mediaSelector).forEach(remove);
+    };
+    const visit = (node, callback, selector) => {
+      if (node.nodeType !== 1 || owned(node)) return;
+      if (node.matches(selector)) callback(node);
+      if (node.childElementCount) node.querySelectorAll(selector).forEach(callback);
+    };
+    const resizeObserver = new ResizeObserver(() => refresh());
+    const intersectionObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const target = records.has(entry.target) ? entry.target : [...records.values()].find(record => record.native?.placeholder === entry.target)?.source;
+        if (!target) continue;
+        if (entry.isIntersecting) visibleMedia.add(target);
+        else visibleMedia.delete(target);
+        refresh(target);
+      }
+    });
+    const attributes = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        if (owned(mutation.target)) continue;
+        const record = nativeHosts.get(mutation.target);
+        if (record?.native && mutation.attributeName === 'style' && record.native.style === mutation.target.getAttribute('style')) continue;
+        if (record?.native) {
+          if (mutation.attributeName === 'class') record.native.placeholder.className = record.native.host.className;
+          if (mutation.attributeName === 'style') {
+            for (const [name, expected] of record.native.applied) {
+              const value = record.native.host.style.getPropertyValue(name);
+              if (value === expected) continue;
+              const priority = record.native.host.style.getPropertyPriority(name);
+              record.native.saved.set(name, [value, priority]);
+              if (value) record.native.placeholder.style.setProperty(name, value, priority);
+              else record.native.placeholder.style.removeProperty(name);
+            }
+          }
+        }
+        invalidateLayout(mutation.target);
+      }
+    });
+    const blockerPaths = new Map();
+    const addBlocker = element => {
+      if (blockers.has(element)) return;
+      blockers.add(element);
+      blockerPaths.set(element, watch(element));
+    };
+    const removeBlocker = element => {
+      if (element.isConnected || !blockers.delete(element)) return;
+      unwatch(blockerPaths.get(element));
+      blockerPaths.delete(element);
+    };
+    const layoutChanged = () => refresh();
+    const scrollChanged = event => {
+      const target = event.target === document ? document.scrollingElement : event.target;
+      resetGeometry();
+      const hasVisibleBlocker = [...blockers].some(element => !!visibleRect(element));
+      for (const source of visibleMedia) {
+        if (!target?.contains(source)) continue;
+        const record = records.get(source);
+        if (record?.scrollLayers?.length && !hasVisibleBlocker) continue;
+        refresh(source);
+      }
+    };
+    const invalidateLayout = target => {
+      for (const source of visibleMedia) {
+        const record = records.get(source);
+        const root = record?.watched.layoutRoot || source.parentElement;
+        if (root && (root.contains(target) || target.contains?.(root) || blockers.has(target))) refresh(source);
+      }
+    };
+    window.addEventListener("resize", layoutChanged, { passive: true });
+    document.addEventListener("scroll", scrollChanged, { passive: true, capture: true });
+    document.addEventListener("transitionend", layoutChanged, true);
+    document.addEventListener("fullscreenchange", layoutChanged, true);
+    const mediaLoaded = event => { if (event.target.matches?.(mediaSelector)) { add(event.target); refresh(event.target); } };
+    document.addEventListener("load", mediaLoaded, true);
+    resizeObserver.observe(document.body);
+    const changes = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        if (owned(mutation.target)) continue;
+        invalidateLayout(mutation.target);
+        for (const node of mutation.removedNodes) {
+          if (node.nodeType !== 1 || owned(node)) continue;
+          visit(node, source => {
+            remove(source);
+          }, mediaSelector);
+          visit(node, element => {
+            if (element.isConnected) return;
+            raised.get(element)?.();
+            raised.delete(element);
+          }, raisedSelector);
+          visit(node, removeBlocker, blockerSelector);
+        }
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== 1 || owned(node)) continue;
+          visit(node, raise, raisedSelector);
+          visit(node, add, mediaSelector);
+          visit(node, addBlocker, blockerSelector);
+        }
+      }
+    });
+    document.querySelectorAll(raisedSelector).forEach(raise);
+    document.querySelectorAll(blockerSelector).forEach(addBlocker);
+    document.querySelectorAll(mediaSelector).forEach(add);
+    changes.observe(document.body, { childList: true, subtree: true, characterData: true });
+    window.__codexPlusImageOverlayCleanup = () => {
+      disposed = true;
+      changes.disconnect();
+      window.removeEventListener("resize", layoutChanged);
+      document.removeEventListener("scroll", scrollChanged, true);
+      document.removeEventListener("transitionend", layoutChanged, true);
+      document.removeEventListener("fullscreenchange", layoutChanged, true);
+      document.removeEventListener("load", mediaLoaded, true);
+      cancelAnimationFrame(frame);
+      [...records.keys()].forEach(remove);
+      attributes.disconnect();
+      resizeObserver.disconnect();
+      intersectionObserver.disconnect();
+      watched.clear();
+      layoutRoots.clear();
+      blockerPaths.clear();
+      raised.forEach(restore => restore());
+      raised.clear();
+      style.remove();
+    };
+  }
+
   function scheduleCodexPlusImageOverlay() {
+    window.__codexPlusImageOverlayReadyCleanup?.();
+    window.__codexPlusImageOverlayReadyCleanup = null;
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", installCodexPlusImageOverlay, { once: true });
+      const onReady = () => {
+        window.__codexPlusImageOverlayReadyCleanup = null;
+        installCodexPlusImageOverlay();
+      };
+      document.addEventListener("DOMContentLoaded", onReady, { once: true });
+      window.__codexPlusImageOverlayReadyCleanup = () =>
+        document.removeEventListener("DOMContentLoaded", onReady);
       return;
     }
     installCodexPlusImageOverlay();
-    setTimeout(installCodexPlusImageOverlay, 250);
   }
 
   scheduleCodexPlusImageOverlay();
@@ -667,4 +1312,3 @@
     conversationViewFooter: "[data-thread-scroll-footer]",
   };
   const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
-
