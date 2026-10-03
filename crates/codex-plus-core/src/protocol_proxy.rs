@@ -197,6 +197,16 @@ impl CodexToolContext {
             == Some(CodexCustomToolKind::ToolSearch)
     }
 
+    /// 上游把 codex 的原生 `web_search` 工具当成普通自定义工具回传时，中转层
+    /// 此前一律产出 `custom_tool_call`，而客户端只认 `web_search_call`
+    /// （issue #1209 / #586：web_search 被错译成 custom_tool_call 后，客户端
+    /// 拿不到搜索结果，表现为「工具调用后无反应」或上游报 tool 名不识别）。
+    fn is_builtin_web_search_proxy(&self, upstream_name: &str) -> bool {
+        self.custom_tools.get(upstream_name).is_some_and(|spec| {
+            spec.kind == CodexCustomToolKind::BuiltIn && spec.openai_name == "web_search"
+        })
+    }
+
     fn original_custom_tool_name(&self, upstream_name: &str) -> String {
         self.custom_tools
             .get(upstream_name)
@@ -5085,6 +5095,21 @@ fn tool_call_added_item(
     output_index: u32,
     tool_context: &CodexToolContext,
 ) -> Value {
+    if tool_context.is_builtin_web_search_proxy(&state.name) {
+        // 客户端只认 web_search_call；用 custom_tool_call 会被当作未知工具丢弃，
+        // 上游那轮的搜索结果就再也回不到会话里（issue #1209 / #586）。
+        return json!({
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {
+                "id": web_search_item_id(&state.call_id),
+                "type": "web_search_call",
+                "status": "in_progress",
+                "call_id": state.call_id,
+                "action": web_search_action_from_arguments(&state.arguments)
+            }
+        });
+    }
     if tool_context.is_custom_tool_proxy(&state.name) {
         if tool_context.is_tool_search_proxy(&state.name) {
             return json!({
@@ -5139,8 +5164,11 @@ fn push_tool_call_delta_sse(
     delta: &str,
     tool_context: &CodexToolContext,
 ) {
-    if tool_context.is_tool_search_proxy(&state.name) {
-        // tool_search 走 function 参数流，客户端按 tool_search_call.arguments 聚合。
+    if tool_context.is_tool_search_proxy(&state.name)
+        || tool_context.is_builtin_web_search_proxy(&state.name)
+    {
+        // tool_search 与原生 web_search 都走 function 参数流，客户端按
+        // tool_search_call.arguments / web_search_call 聚合。
         push_sse(
             output,
             "response.function_call_arguments.delta",
@@ -5226,6 +5254,16 @@ fn response_tool_call_item(
     arguments: &str,
     tool_context: &CodexToolContext,
 ) -> Value {
+    if tool_context.is_builtin_web_search_proxy(name) {
+        // 客户端只认 web_search_call，custom_tool_call 会被当作未知工具丢弃。
+        return json!({
+            "id": web_search_item_id(call_id),
+            "type": "web_search_call",
+            "status": "completed",
+            "call_id": call_id,
+            "action": web_search_action_from_arguments(arguments)
+        });
+    }
     if tool_context.is_custom_tool_proxy(name) {
         if tool_context.is_tool_search_proxy(name) {
             // 官方客户端的 tool_search handler 只接受 tool_search_call item，
@@ -5264,7 +5302,61 @@ fn response_tool_call_item(
     item
 }
 
+/// 官方客户端给 `web_search_call` 分配的 item id 前缀（见 codex id_prefix）。
+fn web_search_item_id(call_id: &str) -> String {
+    format!("ws_{call_id}")
+}
+
+/// 把上游 web_search 工具调用的 arguments 映射成客户端 action 结构。
+///
+/// 客户端 rollout 里的形态是 `{"type":"search","query":…,"queries":[…]}` 或
+/// `{"type":"open_page","url":…}`。上游各家字段名不一（query / queries / url），
+/// 这里按存在性择一，都取不到就退化成 `{"type":"search"}`，让客户端自己判空。
+fn web_search_action_from_arguments(arguments: &str) -> Value {
+    let parsed = responses_arguments_to_chat_parse(arguments);
+    let query = parsed
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let url = parsed
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    if let Some(url) = url {
+        return json!({ "type": "open_page", "url": url });
+    }
+    let queries = parsed
+        .get("queries")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| json!(value))
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty());
+    match (query, queries) {
+        (Some(query), Some(queries)) => {
+            json!({ "type": "search", "query": query, "queries": queries })
+        }
+        (Some(query), None) => json!({ "type": "search", "query": query }),
+        (None, Some(queries)) => {
+            let first = queries
+                .first()
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            json!({ "type": "search", "query": first, "queries": queries })
+        }
+        (None, None) => json!({ "type": "search" }),
+    }
+}
+
 fn tool_call_item_id(call_id: &str, name: &str, tool_context: &CodexToolContext) -> String {
+    if tool_context.is_builtin_web_search_proxy(name) {
+        return web_search_item_id(call_id);
+    }
     let prefix = if tool_context.is_custom_tool_proxy(name) {
         if tool_context.is_tool_search_proxy(name) {
             // 官方客户端给 tool_search_call 分配的 item id 前缀（见 codex id_prefix）。
