@@ -917,10 +917,14 @@ fn validate_manifest(manifest: &DreamSkinPackageManifest, platform: &str) -> any
     if !valid_semver(&manifest.version) || !valid_semver(&manifest.min_client_version) {
         bail!("manifest 版本号无效");
     }
-    if compare_semver(&manifest.min_client_version, "1.5.12").is_gt() {
+    // 门限跟着客户端自身版本走，不再写死常量（issue #2339）：
+    // 写死会在每次发版后把本可安装的主题包拒之门外，且报错文案里的版本号
+    // 与实际支持的协议版本对不上。
+    if compare_semver(&manifest.min_client_version, crate::version::VERSION).is_gt() {
         bail!(
-            "主题包需要更新版本的 Dream Skin 协议：{}",
-            manifest.min_client_version
+            "主题包需要更新版本的 Dream Skin 协议：需要 {}，当前客户端 {}",
+            manifest.min_client_version,
+            crate::version::VERSION
         );
     }
     if manifest.platforms.is_empty()

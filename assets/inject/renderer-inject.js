@@ -296,8 +296,57 @@
       return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
     };
 
+    // 语言包的加载 gate 读的是 Layer 而不是 DynamicConfig（issue #2329 根因 a）：
+    // 应用用 useLayer('72216192').get('enable_i18n', false) 取开关，Layer 的 memo
+    // 缓存键恒为 NoValues，于是即使 DynamicConfig 被补成 enable_i18n:true 也不生效。
+    // 这里给 layer 对象补上同样的取值覆盖；__value 是 Statsig 存原始值的字段，
+    // 一并 assign，避免应用直接从 __value 读时绕过 get。
+    const patchI18nLayer = (layer) => {
+      if (!layer || typeof layer !== "object") return layer;
+      const value = layer.__value && typeof layer.__value === "object" ? layer.__value : {};
+      const nextValue = {
+        ...value,
+        enable_i18n: true,
+        locale_source: "SYSTEM",
+      };
+      try {
+        layer.__value = nextValue;
+      } catch {
+      }
+      try {
+        layer.value = nextValue;
+      } catch {
+      }
+      if (typeof layer.get === "function" && !layer.__codexPlusForceChineseLocaleLayerPatched) {
+        const originalGet = layer.get.bind(layer);
+        layer.get = (key, fallback) => {
+          if (key === "enable_i18n") return true;
+          if (key === "locale_source") return "SYSTEM";
+          return originalGet(key, fallback);
+        };
+        layer.__codexPlusForceChineseLocaleLayerPatched = true;
+      }
+      return layer;
+    };
+
     const patchStatsigClient = (client) => {
       if (!client || typeof client !== "object") return;
+      if (typeof client.getLayer === "function" && !client.__codexPlusForceChineseLocaleLayerChannelPatched) {
+        const originalGetLayer = client.getLayer.bind(client);
+        client.getLayer = (name, options) => {
+          const result = originalGetLayer(name, options);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerChannelPatched = true;
+      }
+      if (typeof client._getLayerImpl === "function" && !client.__codexPlusForceChineseLocaleLayerImplPatched) {
+        const originalGetLayerImpl = client._getLayerImpl.bind(client);
+        client._getLayerImpl = function (name, ...rest) {
+          const result = originalGetLayerImpl(name, ...rest);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerImplPatched = true;
+      }
       if (typeof client.getDynamicConfig !== "function") return;
       if (!client.__codexPlusForceChineseLocalePatched) {
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
@@ -309,6 +358,12 @@
       }
       try {
         patchI18nConfig(client.getDynamicConfig("72216192", { disableExposureLog: true }));
+      } catch {
+      }
+      try {
+        if (typeof client.getLayer === "function") {
+          patchI18nLayer(client.getLayer("72216192", { disableExposureLog: true }));
+        }
       } catch {
       }
     };

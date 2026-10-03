@@ -70,13 +70,16 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     let plan = build_windows_entrypoint_plan(options);
     let install_root = PathBuf::from(&plan.install_root);
     std::fs::create_dir_all(&install_root)?;
-    create_entrypoint_shortcut(
+    // 桌面图标只在不存在时创建（issue #2376）：用户删掉图标后，覆盖升级/修复
+    // 安装不该把它加回来。与 NSIS 段的 IfFileExists 判断保持一致，否则经
+    // 管理器触发的那条安装路径仍会把图标重新堆到桌面上。
+    create_desktop_shortcut_if_absent(
         PathBuf::from(&plan.silent_shortcut),
         PathBuf::from(&plan.launcher_path),
         "Launch Codex++ silently",
         PathBuf::from(&plan.silent_icon_path),
     )?;
-    create_entrypoint_shortcut(
+    create_desktop_shortcut_if_absent(
         PathBuf::from(&plan.manager_shortcut),
         PathBuf::from(&plan.manager_path),
         "Open Codex++ management tool",
@@ -85,6 +88,21 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     register_url_protocol(&plan.manager_path)?;
     write_uninstall_registration(&plan)?;
     Ok(())
+}
+
+/// 桌面入口专用：目标已存在就原样保留，避免覆盖升级把用户删掉的图标加回来。
+/// 开始菜单入口不走这条，缺失会让人找不到程序。
+#[cfg(windows)]
+fn create_desktop_shortcut_if_absent(
+    path: PathBuf,
+    target: PathBuf,
+    description: &str,
+    icon: PathBuf,
+) -> anyhow::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    create_entrypoint_shortcut(path, target, description, icon)
 }
 
 #[cfg(windows)]

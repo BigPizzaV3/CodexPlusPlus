@@ -79,8 +79,15 @@ Section "Install"
   Delete "$DESKTOP\Codex++ 绠＄悊宸ュ叿.lnk"
   Delete "$SMPROGRAMS\Codex++\Codex++ 绠＄悊宸ュ叿.lnk"
 
+  ; 桌面图标只在目标不存在时创建（issue #2376）：用户删掉图标后，覆盖升级
+  ; 不应把它加回来。首次安装时目标不存在，照常创建；升级时若用户留着旧图标，
+  ; 也照常覆盖刷新指向。开始菜单不套这条，入口缺失会让程序找不到。
+  IfFileExists "$DESKTOP\Codex++.lnk" desktop_silent_done 0
   CreateShortcut "$DESKTOP\Codex++.lnk" "$INSTDIR\codex-plus-plus.exe" "" "$INSTDIR\codex-plus-plus.exe"
+  desktop_silent_done:
+  IfFileExists "$DESKTOP\Codex++ 管理工具.lnk" desktop_manager_done 0
   CreateShortcut "$DESKTOP\Codex++ 管理工具.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
+  desktop_manager_done:
   CreateDirectory "$SMPROGRAMS\Codex++"
   CreateShortcut "$SMPROGRAMS\Codex++\Codex++.lnk" "$INSTDIR\codex-plus-plus.exe" "" "$INSTDIR\codex-plus-plus.exe"
   CreateShortcut "$SMPROGRAMS\Codex++\Codex++ 管理工具.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
