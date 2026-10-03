@@ -159,6 +159,7 @@ package_deb() {
     local icon_src="$PROJECT_DIR/src-tauri/icons/icon.png"
     if [ -f "$icon_src" ]; then
         cp "$icon_src" "$stage/share/icons/hicolor/128x128/apps/${PACKAGE_NAME}-manager.png"
+        cp "$icon_src" "$stage/share/icons/hicolor/128x128/apps/${PACKAGE_NAME}.png"
     fi
 
     # ── Desktop 文件 ──
