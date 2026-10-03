@@ -132,6 +132,7 @@ pub fn run() {
             commands::repair_session_index,
             commands::load_session_index_repair_report,
             commands::preview_session_index_cleanup,
+            commands::preview_provider_sync,
             commands::apply_session_index_cleanup,
             commands::sync_providers_now,
             commands::load_ads,
