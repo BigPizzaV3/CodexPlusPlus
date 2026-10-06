@@ -646,29 +646,85 @@
     return { lineNumber, columnNumber: braceIdx - lastNewline - 1 };
   }
 
+  // issue #2399：抓取目标不能再按 asset 文件名前缀写死。Codex 26.930 把
+  // AppServerRequestClient 从 `app-initial-*.js` 搬到了 `app-shared-*.js`，
+  // 按前缀找资产必然 anchor_missing，模型白名单解锁在整条 app-server 路径上失效。
+  // 加一项前缀只治当前这一版，下次改名又会失灵，所以改成**按内容找类定义**：
+  // 遍历已加载的 app asset，谁包含 marker 文本谁就是目标，两代产物都能覆盖。
+  // 排序只做「可能的更靠前」的启发式，不影响正确性；命中全靠文本匹配。
+  const codexAppServerClientBundleHints = ["app-shared-", "app-initial-", "app-main-", "chatg"];
+  const codexAppServerClientAssetFetchLimit = 24;
+
+  function codexAppServerClientAssetCandidateUrls() {
+    const urls = codexAppAssetCandidateUrls();
+    const rank = (url) => {
+      const name = (url.split("/").pop() || "").toLowerCase();
+      const hint = codexAppServerClientBundleHints.findIndex((part) => name.includes(part));
+      return hint < 0 ? codexAppServerClientBundleHints.length : hint;
+    };
+    // 按「像主 bundle」在前、体积（URL 长度做代理）大的在前排序，再截断。
+    // 全量 fetch 所有 app asset 会重蹈 #1960 的覆辙，所以限制尝试数量。
+    return urls
+      .slice()
+      .sort((left, right) => rank(left) - rank(right) || right.length - left.length)
+      .slice(0, codexAppServerClientAssetFetchLimit);
+  }
+
+  // 返回 { url, location }；找不到返回 null。diagnostics 由调用方按命中/未命中归类。
+  async function locateCodexAppServerClientInAssets() {
+    const urls = codexAppServerClientAssetCandidateUrls();
+    if (urls.length === 0) return { urls, hit: null };
+    // 先走廉价的 asset loader（有 30s 失败冷却与重试上限），脚本里已经内联了
+    // asset 名时能直接命中，省掉整轮 fetch；不可用就退回到全量文本匹配。
+    const hinted = resolveCodexAppServerClientHintedUrl();
+    const ordered = hinted
+      ? [hinted, ...urls.filter((url) => url !== hinted)]
+      : urls;
+    for (const url of ordered) {
+      try {
+        const text = await fetch(url).then((response) => response.ok ? response.text() : "");
+        if (!text) continue;
+        const location = locateCodexAppServerClientBreakpoint(text);
+        if (location) return { urls, hit: { url, location } };
+      } catch {
+        // 单个 asset 拉取失败不影响其余候选，继续下一个。
+      }
+    }
+    return { urls, hit: null };
+  }
+
+  // 兼容旧路径：asset 名确实内联在入口脚本里时，用 loader 的缓存直接拿到 URL，
+  // 不必为了它把所有 asset 拉一遍。找不到就返回空串，交给内容匹配兜底。
+  function resolveCodexAppServerClientHintedUrl() {
+    for (const prefix of codexAppServerClientBundleHints) {
+      const url = codexAppAssetUrl(prefix);
+      if (url) return url;
+    }
+    return "";
+  }
+
     let codexAppServerClientCaptureStarted = false;
   async function installCodexAppServerClientCapture() {
     if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
     codexAppServerClientCaptureStarted = true;
     try {
       if (typeof fetch !== "function") return;
-      const url = codexAppAssetUrl("app-initial-") || await codexAppAssetUrlFromScriptText("app-initial-");
-      if (!url) {
-        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "asset_url_missing" });
+      const { urls, hit } = await locateCodexAppServerClientInAssets();
+      if (!hit) {
+        // 区分「一个候选资产都没有」和「有资产但没有类定义」：
+        // 前者是页面还没加载完，后者才是 Codex 真的改了产物形状。
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
+          reason: urls.length === 0 ? "asset_url_missing" : "anchor_missing",
+          candidateCount: urls.length,
+        });
         return;
       }
-      const response = await fetch(url);
-      const text = response.ok ? await response.text() : "";
-      const location = locateCodexAppServerClientBreakpoint(text);
-      if (!location) {
-        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
-        return;
-      }
-      const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      window.__codexPlusAppServerClientCapture = { urlRegex, ...location };
+      const urlRegex = hit.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      window.__codexPlusAppServerClientCapture = { urlRegex, ...hit.location };
       sendCodexPlusDiagnostic("app_server_client_capture_located", {
-        lineNumber: location.lineNumber,
-        columnNumber: location.columnNumber,
+        lineNumber: hit.location.lineNumber,
+        columnNumber: hit.location.columnNumber,
+        asset: (hit.url.split("/").pop() || "").split("?")[0],
       });
     } catch (error) {
       codexAppServerClientCaptureStarted = false;

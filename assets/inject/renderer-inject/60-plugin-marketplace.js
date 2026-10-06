@@ -693,25 +693,31 @@
     };
   }
 
-  function wrapThreadTitleForBadge(row, titleNode) {
-    const parent = titleNode?.parentElement;
-    if (!parent) return null;
-    if (parent.dataset?.codexThreadIdBadgeWrap === "true") return parent;
-    const wrapper = document.createElement("span");
-    wrapper.dataset.codexThreadIdBadgeWrap = "true";
-    parent.insertBefore(wrapper, titleNode);
-    wrapper.appendChild(titleNode);
-    return wrapper;
+  // issue #2180：过去这里把官方 React 管理的标题节点塞进自建的 wrapper 里
+  // （parent.insertBefore(wrapper, titleNode) + wrapper.appendChild(titleNode)）。
+  // 标题节点一旦被搬走，React 的移除链路就会对着自己记录的旧父节点做
+  // removeChild，抛 `NotFoundError: The node to be removed is not a child of this node`。
+  // 新建对话几分钟后标题从临时名转正式名、侧栏重排时正好命中，页面直接进错误页。
+  // 现在不搬动任何 React 节点：徽章作为 titleNode 的**兄弟**插在它前面，
+  // 行的 flex 布局本来就按顺序排（徽章自带 flex:0 0 auto + margin-right）。
+  function threadIdBadgeInsertBefore(titleNode) {
+    return titleNode?.parentElement || titleNode?.parentNode || null;
   }
 
-  function removeThreadIdBadges(root = document) {
-    root.querySelectorAll?.(`.${threadIdBadgeClass}`).forEach((badge) => badge.remove());
+  // 存量数据清理：旧版留下的 wrapper 需要还原一次，否则标题会一直被困在里面。
+  // 只做还原，不再新建任何 wrapper。
+  function unwrapThreadIdBadgeWrappers(root = document) {
     root.querySelectorAll?.('[data-codex-thread-id-badge-wrap="true"]').forEach((wrapper) => {
       const parent = wrapper.parentElement;
       if (!parent) return;
       while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper);
       wrapper.remove();
     });
+  }
+
+  function removeThreadIdBadges(root = document) {
+    root.querySelectorAll?.(`.${threadIdBadgeClass}`).forEach((badge) => badge.remove());
+    unwrapThreadIdBadgeWrappers(root);
     const rows = root.matches?.(selectors.sidebarThread) ? [root] : Array.from(root.querySelectorAll?.(selectors.sidebarThread) || []);
     rows.forEach((row) => {
       delete row.dataset.codexThreadIdBadge;
@@ -732,14 +738,19 @@
       return;
     }
 
-    const wrapper = wrapThreadTitleForBadge(row, titleNode);
-    if (!wrapper) return;
+    // 旧 wrapper 先还原，保证 badge 与 titleNode 在同一个父节点下做兄弟。
+    unwrapThreadIdBadgeWrappers(row);
 
-    let badge = wrapper.querySelector(`.${threadIdBadgeClass}`);
-    if (!badge) {
+    const parent = threadIdBadgeInsertBefore(titleNode);
+    if (!parent) return;
+
+    let badge = row.querySelector(`.${threadIdBadgeClass}`);
+    if (!badge || badge.parentElement !== parent) {
+      badge?.remove();
       badge = document.createElement("span");
       badge.className = threadIdBadgeClass;
-      wrapper.insertBefore(badge, titleNode);
+      // 只插自己的节点，不碰官方节点。
+      parent.insertBefore(badge, titleNode);
     }
 
     badge.dataset.codexThreadIdBadgeVersion = codexThreadIdBadgeVersion;
@@ -1597,13 +1608,37 @@
     if (assetPrefix.startsWith("app-initial-")) {
       return typeof module?.qut === "function" ? module.qut : null;
     }
+    if (assetPrefix.startsWith("app-shared-")) {
+      return codexStateCallByCapability(module);
+    }
     return null;
+  }
+
+  // issue #2399：26.930 起 state API 随 AppServerRequestClient 一起搬进 app-shared-*，
+  // 而这批产物每次构建都会重排压缩导出名（旧版是 qut），按字面量取必然落空。
+  // 改成按能力找：函数源码里带 get-global-state / set-global-state 的就是它。
+  function codexStateCallByCapability(module) {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    return values.find((candidate) => {
+      if (typeof candidate !== "function") return false;
+      let source = "";
+      try {
+        source = String(candidate);
+      } catch {
+        return false;
+      }
+      return source.includes("get-global-state")
+        && source.includes("set-global-state")
+        && source.includes("params");
+    }) || null;
   }
 
   async function codexStateApi() {
     codexStateApiPromise = codexStateApiPromise || (async () => {
       const errors = [];
-      for (const assetPrefix of ["vscode-api-", "app-initial-"]) {
+      // 前三项是历史前缀（列表字面量本身是契约的一部分，不要改写）；
+      // app-shared- 是 26.930+ 的新位置，靠内容识别，不依赖压缩导出名。
+      for (const assetPrefix of [...["vscode-api-", "app-initial-"], "app-shared-"]) {
         try {
           const api = await loadCodexAppModule(assetPrefix);
           const call = codexStateApiFromModule(api, assetPrefix);
