@@ -444,6 +444,7 @@ export const EN_PLAIN: Record<string, string> = {
   "修复入口": "Repair entrypoints",
   "修复快捷方式": "Repair shortcuts",
   "修复插件市场": "Repair plugin marketplace",
+  "修复仍在进行（估算进度，等待后端返回结果）…": "Repair in progress (estimated progress; waiting for the backend to return)…",
   "健康检查": "Health check",
   "先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。":
     "Add at least 1 API provider with a Base URL / Key before creating an aggregate provider.",

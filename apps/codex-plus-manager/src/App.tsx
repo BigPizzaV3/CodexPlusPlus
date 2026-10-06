@@ -2302,6 +2302,8 @@ export function App() {
     const progressTimer = window.setInterval(() => {
       setPluginMarketplaceProgress((current) => {
         if (!current.active) return current;
+        // 这里是估算进度：后端一次性返回结果，拿不到真实分步。封顶 92%，
+        // 到位后停在「等待后端返回」而不是谎称在写入配置，避免观感卡在 92%。
         const nextPercent = Math.min(92, current.percent + 9);
         const message =
           nextPercent < 28
@@ -2310,7 +2312,7 @@ export function App() {
               ? t("正在下载插件市场快照…")
               : nextPercent < 84
                 ? t("正在解压并校验插件文件…")
-                : t("正在写入 Codex 配置…");
+                : t("修复仍在进行（估算进度，等待后端返回结果）…");
         return { ...current, percent: nextPercent, message };
       });
     }, 500);
@@ -2361,13 +2363,14 @@ export function App() {
     const progressTimer = window.setInterval(() => {
       setRemotePluginMarketplaceProgress((current) => {
         if (!current.active) return current;
+        // 同样是估算进度，封顶 92%；到位后如实说明在等后端，而不是继续假装在刷新。
         const nextPercent = Math.min(92, current.percent + 18);
         const message =
           nextPercent < 50
             ? t("正在释放内置远端插件快照…")
             : nextPercent < 78
               ? t("正在注册官方远端插件市场…")
-              : t("正在刷新官方远端插件缓存状态…");
+              : t("修复仍在进行（估算进度，等待后端返回结果）…");
         return { ...current, percent: nextPercent, message };
       });
     }, 450);
@@ -6256,6 +6259,16 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
     });
   }, [marketSearch, marketScripts]);
   const installedCount = marketScripts.filter((script) => script.installed).length;
+  // market_id -> 本地脚本 key。只用 user 来源的脚本：内置脚本走的是 builtin: 前缀，
+  // 后端 delete_user_script 只接受 user:，映射过去会直接报错。
+  const installedKeyByMarketId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const script of scripts) {
+      if (script.source !== "user" || !script.market_id) continue;
+      map.set(script.market_id, script.key);
+    }
+    return map;
+  }, [scripts]);
   return (
     <>
       <Panel>
@@ -6332,7 +6345,13 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
             filteredMarketScripts.length ? (
               <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
                 {filteredMarketScripts.map((script) => (
-                  <MarketScriptCard key={script.id} script={script} actions={actions} view={marketView} />
+                  <MarketScriptCard
+                    actions={actions}
+                    installedKey={installedKeyByMarketId.get(script.id)}
+                    key={script.id}
+                    script={script}
+                    view={marketView}
+                  />
                 ))}
               </div>
             ) : (
@@ -7480,7 +7499,19 @@ function SortableRelayProfileCard({
   );
 }
 
-function MarketScriptCard({ script, actions, view = "grid" }: { script: ScriptMarketItem; actions: Actions; view?: "grid" | "list" }) {
+function MarketScriptCard({
+  script,
+  actions,
+  view = "grid",
+  installedKey,
+}: {
+  script: ScriptMarketItem;
+  actions: Actions;
+  view?: "grid" | "list";
+  /// 已安装市场脚本在本地清单里的 key（`user:market-*.js`）。后端按 id 生成文件名，
+  /// 前端不重算，直接取自 user_scripts 清单；为空表示未安装或不可删除。
+  installedKey?: string;
+}) {
   const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : t("未安装");
   const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
   const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
@@ -7525,6 +7556,12 @@ function MarketScriptCard({ script, actions, view = "grid" }: { script: ScriptMa
                 {t("主页")}
               </>
             )}
+          </Button>
+        ) : null}
+        {installedKey ? (
+          <Button onClick={() => void actions.deleteUserScript(installedKey)} size="sm" variant="outline">
+            <Trash2 className="h-4 w-4" />
+            {t("卸载")}
           </Button>
         ) : null}
       </div>
