@@ -1233,11 +1233,104 @@ pub fn merge_common_config_into_config(
         .and_then(|features| features.get("goals"))
         .and_then(Item::as_bool);
     let source_doc = parse_toml_document(trimmed)?;
+    // 合并前先给 profile 侧已有的 mcp_servers 条目留一份备份（#2147）。
+    let profile_mcp_servers = target_doc
+        .get("mcp_servers")
+        .and_then(Item::as_table_like)
+        .map(|servers| {
+            servers
+                .iter()
+                .map(|(id, item)| (id.to_string(), item.clone()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     merge_toml_table_like(target_doc.as_table_mut(), source_doc.as_table());
     if let Some(enabled) = profile_goals_override {
         table_mut_or_insert(&mut target_doc, "features")?["goals"] = toml_edit::value(enabled);
     }
+    // 合并后校验 MCP 条目完整性并做一次修复回填（#2147）。
+    repair_merged_mcp_servers(&mut target_doc, &profile_mcp_servers);
     Ok(normalize_optional_toml(target_doc))
+}
+
+/// 一条 `[mcp_servers.<id>]` 是否是一份 codex 能接受的传输配置。
+///
+/// codex 的 `RawMcpServerConfig` 由 `command` / `url` 是否存在推断传输方式：
+/// 两者都没有（例如只剩一个 `enabled_tools`，或被合并覆盖成空表）时它会报
+/// `invalid transport`，并且**不是跳过这一条，而是拒载整份 config.toml**。
+/// 用户表现为「编辑通用配置后 MCP 连接配置丢失」，实际是整份配置都没加载
+/// （#2147 / #1997 / #2123 同源）。
+fn mcp_server_entry_has_transport(table: &dyn TableLike) -> bool {
+    ["command", "url"].iter().any(|key| {
+        table
+            .get(key)
+            .and_then(Item::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+/// 落盘前的 MCP 完整性校验（#2147）。
+///
+/// 通用配置与 profile 配置是两份独立 TOML，表合并本身按语义递归、正常不丢键；
+/// 但通用配置里可能存在历史脚本/手改留下的残缺条目（例如只写 `enabled_tools`
+/// 的 `[mcp_servers.codex_app]`），它会作为新表整条并入，让 config.toml 多出一条
+/// 永远加载不起来的 MCP 条目。这里做两件事：
+///
+/// 1. **回填**：残缺条目若在 profile 侧本来有完整定义，就用备份把它补回来——
+///    这是「合并把已有连接配置弄丢」的直接修复。补的方式是**只补缺键**，不是整条
+///    替换：通用配置新写的键（例如 `.env` 子表）必须留下；
+/// 2. **丢弃**：回填后仍无 `command` / `url` 的条目，唯一后果是让整份配置拒载，
+///    因此直接移除并记诊断日志，把故障范围从「什么都用不了」收缩到「少一个本来
+///    就无法工作的条目」。
+fn repair_merged_mcp_servers(doc: &mut DocumentMut, profile_servers: &HashMap<String, Item>) {
+    let Some(servers) = doc.get_mut("mcp_servers").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    let ids: Vec<String> = servers.iter().map(|(id, _)| id.to_string()).collect();
+    let mut dropped: Vec<String> = Vec::new();
+    let mut restored: Vec<String> = Vec::new();
+    for id in ids {
+        let is_valid = servers
+            .get(id.as_str())
+            .and_then(Item::as_table_like)
+            .is_some_and(mcp_server_entry_has_transport);
+        if is_valid {
+            continue;
+        }
+        // 残缺条目：优先用 profile 侧的同名完整定义补缺（不覆盖合并进来的新键）。
+        if let Some(backup) = profile_servers.get(&id)
+            && backup
+                .as_table_like()
+                .is_some_and(mcp_server_entry_has_transport)
+            && let Some(existing) = servers.get_mut(id.as_str())
+        {
+            fill_missing_toml_item(existing, backup);
+            if existing
+                .as_table_like()
+                .is_some_and(mcp_server_entry_has_transport)
+            {
+                restored.push(id);
+                continue;
+            }
+        }
+        servers.remove(id.as_str());
+        dropped.push(id);
+    }
+    if servers.is_empty() {
+        doc.as_table_mut().remove("mcp_servers");
+    }
+    if dropped.is_empty() && restored.is_empty() {
+        return;
+    }
+    // 丢弃/回填是替用户改配置，留一条诊断记录方便排障时回溯。
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "relay_config.mcp_server_entries_repaired",
+        serde_json::json!({
+            "restored": restored,
+            "dropped": dropped,
+            "reason": "mcp server entry lacked both `command` and `url`; codex rejects the whole config.toml with `invalid transport`",
+        }),
+    );
 }
 
 pub fn list_context_entries_from_common_config(
@@ -2451,10 +2544,16 @@ fn apply_model_catalog_to_config(
                 || is_cc_switch_model_catalog(&existing)
             {
                 config_text = remove_root_key(&config_text, "model_catalog_json");
-            } else if model_catalog_pointer_has_unexpanded_variable(&existing) {
+            } else if model_catalog_pointer_has_unexpanded_variable(&existing)
+                || model_catalog_pointer_file_missing(home, &existing)
+            {
                 // `%userprofile%\.codex\codex-models.json` 这类指针 codex 不展开变量，
-                // 在任何机器上都读不到，留着会让 codex 拒绝加载整份 config.toml
-                // （#2123）。去掉它不会比现在更差——这份 catalog 反正从未生效过。
+                // 在任何机器上都读不到；「变量已展开但文件其实不存在」的形态（用户
+                // 删了 catalog、换机器后路径失效、Windows 上写死别的用户目录）后果
+                // 完全相同——留着会让 codex 拒绝加载整份 config.toml（#2123）。
+                // 去掉它不会比现在更差——这份 catalog 反正从未生效过。后续流程会照
+                // 常生成本 profile 的托管 catalog，每模型窗口得以生效，而不是整份
+                // 配置拒载。
                 config_text = remove_root_key(&config_text, "model_catalog_json");
             } else {
                 if has_per_model_overrides {
@@ -3084,7 +3183,10 @@ fn live_external_model_catalog(home: &Path) -> Option<String> {
     let path = live.get("model_catalog_json")?.as_str()?.trim();
     (!path.is_empty()
         && !is_codex_plus_managed_model_catalog(home, path)
-        && !is_cc_switch_model_catalog(path))
+        && !is_cc_switch_model_catalog(path)
+        // 指向不存在的文件时会和显式指针一样让 codex 拒载整份配置（#2123）：
+        // 这种「外部指针」没有任何可保留的价值，当作不存在，走正常的托管生成路径。
+        && !model_catalog_pointer_file_missing(home, path))
     .then(|| path.to_string())
 }
 
@@ -3141,14 +3243,38 @@ fn sanitize_catalog_filename(id: &str) -> String {
 /// （`os error 3`），用户侧表现为"无法加载 config.toml，因此此对话串无法继续"，
 /// 报错信息和真正的故障点毫无关系，极难自诊。所以这种指针绝不能落盘。
 ///
-/// 这里只认定**未展开的 shell 变量**这一种形态：codex 自己不做变量展开，所以
+/// 这里认定**未展开的 shell 变量**这一种形态：codex 自己不做变量展开，所以
 /// `%userprofile%\.codex\...` 在任何机器上都不存在，判定是确定的、不会误伤。
-/// 其余"文件恰好不存在"的路径不做处理——那可能是挂载盘未就绪、或用户自己
-/// 删掉了 catalog 但还想留着手改，按既有语义交给上层保护逻辑（#2123 建议的
-/// "保存前校验并提示"是另一个更大的改动，不在本次范围）。
+/// 「变量已展开但文件确实不存在」另由 `model_catalog_pointer_file_missing`
+/// 判定（#2123）——两者后果相同，都是整份 config.toml 拒载。
 fn model_catalog_pointer_has_unexpanded_variable(pointer: &str) -> bool {
     let pointer = pointer.trim();
     !pointer.is_empty() && (pointer.contains('%') || pointer.contains('$'))
+}
+
+/// 指针指向的 catalog 文件是否**确定不在磁盘上**（#2123）。
+///
+/// 与 `model_catalog_pointer_has_unexpanded_variable` 是同一族护栏：#2123 报的
+/// 是两个形态，「变量没展开」和「变量展开了、但那个路径下什么都没有」。后者常见
+/// 于用户换机器/换用户名后指针还写着上一个用户的绝对路径、用户自己清理过
+/// `model-catalogs/`，或从别处抄来的配置。codex 遇到读不到的 catalog 直接拒载
+/// **整份** config.toml，报错还落在完全无关的行上，所以这种指针同样不能落盘。
+///
+/// 只按「路径存在性」判定，不做任何猜测：绝对路径直接查；相对路径按 codex 的
+/// 语义相对 `CODEX_HOME`（即 `home`）解析。含未展开变量的指针一律视为「无法
+/// 判定」，交回上一条护栏处理，避免两次判定互相打架。
+fn model_catalog_pointer_file_missing(home: &Path, pointer: &str) -> bool {
+    let pointer = pointer.trim();
+    if pointer.is_empty() || model_catalog_pointer_has_unexpanded_variable(pointer) {
+        return false;
+    }
+    let path = Path::new(pointer);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        home.join(path)
+    };
+    !resolved.is_file()
 }
 
 fn sync_context_limits_from_config(profile: &mut RelayProfile, config_text: &str) {

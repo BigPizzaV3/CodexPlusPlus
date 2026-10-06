@@ -8,14 +8,104 @@ use codex_plus_core::relay_config::{
     clear_relay_config_to_home, clear_relay_config_to_home_with_auth,
     delete_context_entry_from_common_config, ensure_active_protocol_proxy_config_in_home,
     extract_common_config_from_config, list_context_entries_from_common_config,
-    normalize_relay_profile_for_storage, prepare_common_config_for_apply,
-    relay_config_status_from_home, relay_profile_api_key, sanitize_common_config_contents,
-    set_codex_goals_feature_in_home, strip_common_config_from_config,
-    sync_live_config_context_entries, upsert_context_entry_in_common_config,
+    merge_common_config_into_config, normalize_relay_profile_for_storage,
+    prepare_common_config_for_apply, relay_config_status_from_home, relay_profile_api_key,
+    sanitize_common_config_contents, set_codex_goals_feature_in_home,
+    strip_common_config_from_config, sync_live_config_context_entries,
+    upsert_context_entry_in_common_config,
 };
 use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
 };
+
+/// 回归（issue #2147）：通用配置里混进「只有 `enabled_tools`、没有 `command`/`url`」
+/// 的残缺 MCP 条目时，合并后必须把它丢掉——codex 对缺传输方式的条目不是跳过，
+/// 而是拒载**整份** config.toml（`invalid transport`），用户表现是「编辑通用配置后
+/// MCP 连接配置全没了」。
+#[test]
+fn merge_common_config_drops_incomplete_mcp_server_entries() {
+    let profile = r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+
+[mcp_servers.obsidian]
+url = "http://127.0.0.1:27123/mcp"
+"#;
+    let common = r#"[mcp_servers.codex_app]
+enabled_tools = ["search"]
+
+[mcp_servers.context7]
+command = "npx"
+"#;
+
+    let merged = merge_common_config_into_config(profile, common).unwrap();
+    let doc = merged.parse::<toml_edit::DocumentMut>().unwrap();
+    let servers = doc["mcp_servers"]
+        .as_table()
+        .expect("mcp_servers must stay");
+
+    assert!(
+        servers.get("codex_app").is_none(),
+        "残缺条目必须丢弃，否则 codex 拒载整份配置：{merged}"
+    );
+    // 合法条目一律不动。
+    assert_eq!(
+        servers["obsidian"]["url"].as_str(),
+        Some("http://127.0.0.1:27123/mcp")
+    );
+    assert_eq!(servers["context7"]["command"].as_str(), Some("npx"));
+}
+
+/// 回归（issue #2147）：profile 里本来完整的 MCP 条目，不能被通用配置里的残缺
+/// 同名条目覆盖掉——合并前备份、合并后按备份回填缺键。
+#[test]
+fn merge_common_config_restores_profile_mcp_server_entry_clobbered_by_common() {
+    let profile = r#"model = "gpt-5"
+
+[mcp_servers.obsidian]
+url = "http://127.0.0.1:27123/mcp"
+bearer_token = "sk-obsidian"
+"#;
+    // 通用配置里同名条目只剩一个残留子表（历史脚本/手改留下的形状）。
+    let common = r#"[mcp_servers.obsidian.env]
+CODEX_HOME = "/home/user/.codex"
+"#;
+
+    let merged = merge_common_config_into_config(profile, common).unwrap();
+    let doc = merged.parse::<toml_edit::DocumentMut>().unwrap();
+    let obsidian = &doc["mcp_servers"]["obsidian"];
+
+    assert_eq!(
+        obsidian["url"].as_str(),
+        Some("http://127.0.0.1:27123/mcp"),
+        "profile 的传输配置必须还在：{merged}"
+    );
+    assert_eq!(
+        obsidian["env"]["CODEX_HOME"].as_str(),
+        Some("/home/user/.codex"),
+        "通用配置新增的子表不能丢：{merged}"
+    );
+}
+
+/// 合并不得因为校验而误伤：丢弃残缺条目后不应留下空表。
+#[test]
+fn merge_common_config_removes_empty_mcp_servers_table() {
+    let merged = merge_common_config_into_config(
+        "model = \"gpt-5\"\n",
+        "[mcp_servers.codex_app]\nenabled_tools = [\"search\"]\n",
+    )
+    .unwrap();
+
+    assert!(
+        !merged.contains("[mcp_servers"),
+        "丢弃残缺条目后不应留下空表：{merged}"
+    );
+}
 
 /// 回归（issue #1685）：自定义请求头在保存时做结构校验，传输头不允许覆盖。
 #[test]
@@ -2472,11 +2562,118 @@ experimental_bearer_token = "sk-new"
 #[test]
 fn apply_relay_profile_preserves_user_model_catalog_json() {
     let temp = tempfile::tempdir().unwrap();
+    // 外部 catalog 必须真实存在才谈得上「保留」：#2123 起，指向不存在文件的
+    // 指针会被当作坏指针丢弃（否则 codex 拒载整份 config.toml）。
+    let external_catalog = temp.path().join("user-catalog.json");
+    std::fs::write(&external_catalog, r#"{"models":[]}"#).unwrap();
     let profile = RelayProfile {
         id: "relay-a".to_string(),
         relay_mode: RelayMode::PureApi,
-        config_contents: r#"model = "qwen3-coder"
-model_catalog_json = "C:\\old\\catalog.json"
+        config_contents: format!(
+            r#"model = "qwen3-coder"
+model_catalog_json = "{}"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#,
+            external_catalog.display()
+        ),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_insert_mode: Default::default(),
+        model_list: "deepseek-coder".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        config.contains(&format!(
+            r#"model_catalog_json = "{}""#,
+            external_catalog.display()
+        )),
+        "存在的外部 catalog 必须原样保留：{config}"
+    );
+    assert!(
+        !temp
+            .path()
+            .join("model-catalogs")
+            .join("relay-a.json")
+            .exists()
+    );
+}
+
+/// #2123：指针指向不存在的文件时，codex 会拒绝加载**整份** config.toml，用户侧
+/// 表现是「配置加载失败，此对话串无法继续」，与真正的故障点毫无关系。这种指针
+/// 反正从未生效过，去掉它并照常生成本 profile 的托管 catalog。
+#[test]
+fn apply_relay_profile_drops_model_catalog_json_pointing_at_missing_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("gone").join("catalog.json");
+    assert!(!missing.exists());
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: format!(
+            r#"model = "deepseek-v4-pro"
+model_catalog_json = "{}"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#,
+            missing.display()
+        ),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        model_list: "deepseek-v4-pro[1M]".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        !config.contains(&missing.display().to_string()),
+        "坏 catalog 指针不得落盘：{config}"
+    );
+    // 降级而非拒载：本 profile 的托管 catalog 照常生成，每模型窗口仍然生效。
+    assert_eq!(
+        config.parse::<toml_edit::DocumentMut>().unwrap()["model_catalog_json"].as_str(),
+        Some("model-catalogs/relay-a.json")
+    );
+    assert!(
+        temp.path()
+            .join("model-catalogs")
+            .join("relay-a.json")
+            .exists()
+    );
+}
+
+/// #2123 的第二处入口：坏指针只在 live config.toml 里（模板里没有）时的降级。
+#[test]
+fn apply_relay_profile_ignores_live_model_catalog_json_pointing_at_missing_file() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5.5"
+model_catalog_json = "/nonexistent/codex-plus-test/gpt56-model-catalog.json"
+"#,
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        model: "deepseek-v4-pro".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "deepseek-v4-pro"
 model_provider = "custom"
 
 [model_providers.custom]
@@ -2488,32 +2685,32 @@ experimental_bearer_token = "sk-new"
 "#
         .to_string(),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
-        model_insert_mode: Default::default(),
-        model_list: "deepseek-coder".to_string(),
+        model_list: "deepseek-v4-pro[1M]".to_string(),
         ..RelayProfile::default()
     };
 
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "C:\\old\\catalog.json""#));
-    assert!(
-        !temp
-            .path()
-            .join("model-catalogs")
-            .join("relay-a.json")
-            .exists()
+    assert!(!config.contains("/nonexistent/codex-plus-test/"));
+    assert_eq!(
+        config.parse::<toml_edit::DocumentMut>().unwrap()["model_catalog_json"].as_str(),
+        Some("model-catalogs/relay-a.json")
     );
 }
 
 #[test]
 fn apply_relay_profile_preserves_live_external_model_catalog() {
     let temp = tempfile::tempdir().unwrap();
+    // 同 preserves_user_model_catalog_json：外部目录必须真实存在（#2123）。
+    let external_catalog = temp.path().join("gpt56-model-catalog.json");
+    std::fs::write(&external_catalog, r#"{"models":[]}"#).unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
-        r#"model = "gpt-5.5"
-model_catalog_json = "D:/metadata/gpt56-model-catalog.json"
-"#,
+        format!(
+            "model = \"gpt-5.5\"\nmodel_catalog_json = \"{}\"\n",
+            external_catalog.display()
+        ),
     )
     .unwrap();
     let profile = RelayProfile {
@@ -2539,7 +2736,10 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "D:/metadata/gpt56-model-catalog.json""#));
+    assert!(config.contains(&format!(
+        r#"model_catalog_json = "{}""#,
+        external_catalog.display()
+    )));
     assert!(!config.contains("model-catalogs/relay-a.json"));
     assert!(!temp.path().join("model-catalogs").exists());
 }
@@ -5606,13 +5806,18 @@ fn apply_relay_profile_degrades_external_catalog_with_model_override() {
     std::fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
     let previous_catalog = br#"{"models":[{"slug":"previous"}]}"#;
     std::fs::write(&catalog_path, previous_catalog).unwrap();
+    // 外部 catalog 必须真实存在：指向不存在文件的指针会按 #2123 被丢弃，
+    // 那样走的就是「坏指针降级」而不是本用例要验证的 #2203 冲突降级。
+    let user_catalog = temp.path().join("user-external-catalog.json");
+    std::fs::write(&user_catalog, previous_catalog).unwrap();
     let profile = RelayProfile {
         id: "relay-a".to_string(),
         name: "Relay A".to_string(),
         model: "deepseek-v4-pro".to_string(),
         relay_mode: RelayMode::PureApi,
-        config_contents: r#"model = "deepseek-v4-pro"
-model_catalog_json = "/old/catalog.json"
+        config_contents: format!(
+            r#"model = "deepseek-v4-pro"
+model_catalog_json = "{}"
 model_provider = "custom"
 
 [model_providers.custom]
@@ -5621,8 +5826,9 @@ wire_api = "responses"
 requires_openai_auth = true
 base_url = "https://relay.example/v1"
 experimental_bearer_token = "sk-new"
-"#
-        .to_string(),
+"#,
+            user_catalog.display()
+        ),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_insert_mode: Default::default(),
         model_list: "deepseek-v4-pro[1M]".to_string(),
@@ -5635,11 +5841,15 @@ experimental_bearer_token = "sk-new"
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     // 用户手写的外部指针必须原样保留，不被本 profile 的托管 catalog 覆盖。
     assert!(
-        config.contains(r#"model_catalog_json = "/old/catalog.json""#),
+        config.contains(&format!(
+            r#"model_catalog_json = "{}""#,
+            user_catalog.display()
+        )),
         "外部 catalog 指针应保留：{config}"
     );
     // 降级路径不得顺手改写用户的外部 catalog 文件。
     assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
+    assert_eq!(std::fs::read(&user_catalog).unwrap(), previous_catalog);
 }
 
 #[test]
@@ -6035,6 +6245,10 @@ fn apply_model_auto_compact_degrades_external_catalog_without_partial_update() {
     std::fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
     let previous_catalog = br#"{"models":[{"slug":"previous"}]}"#;
     std::fs::write(&catalog_path, previous_catalog).unwrap();
+    // 外部 catalog 必须真实存在（#2123）：否则走的是「坏指针丢弃」而不是本用例
+    // 要验证的 #2203 冲突降级。
+    let user_catalog = temp.path().join("external-catalog.json");
+    std::fs::write(&user_catalog, previous_catalog).unwrap();
     let profile = RelayProfile {
         id: "relay-external-auto".to_string(),
         relay_mode: RelayMode::PureApi,
@@ -6066,7 +6280,46 @@ experimental_bearer_token = "sk-new"
         "外部 catalog 指针应保留：{config}"
     );
     // 降级路径不得顺手改写用户的外部 catalog 文件。
+    assert_eq!(std::fs::read(&user_catalog).unwrap(), previous_catalog);
     assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
+}
+
+/// 上一用例的对照：相对路径的外部 catalog 真实不存在时，指针会按 #2123 丢弃
+/// （codex 读不到就拒载整份 config.toml），本 profile 的托管 catalog 照常生成。
+#[test]
+fn apply_relay_profile_drops_missing_relative_external_catalog_pointer() {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(!temp.path().join("external-catalog.json").exists());
+    let profile = RelayProfile {
+        id: "relay-external-missing".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model: "qwen3-coder".to_string(),
+        model_list: "qwen3-coder[1M]".to_string(),
+        config_contents: r#"model = "qwen3-coder"
+model_catalog_json = "external-catalog.json"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-new"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect("坏指针应降级，而不是拒绝切换");
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert_eq!(
+        config.parse::<toml_edit::DocumentMut>().unwrap()["model_catalog_json"].as_str(),
+        Some("model-catalogs/relay-external-missing.json"),
+        "坏指针应被本 profile 的托管 catalog 取代：{config}"
+    );
 }
 
 #[test]
@@ -6182,7 +6435,10 @@ experimental_bearer_token = "sk-new"
 /// 收窄的边界：**只**认未展开变量这一种。普通的相对/绝对路径即使当前读不到，
 /// 也仍然按既有语义保留（用户在挂载盘、或自己删了 catalog 但想留着手改）。
 #[test]
-fn apply_relay_profile_keeps_plain_catalog_pointer_even_if_missing() {
+fn apply_relay_profile_drops_plain_catalog_pointer_when_file_missing() {
+    // 边界变化：494b12a8 只拦「带未展开变量的指针」，把「普通路径恰好不存在」
+    // 留给上层；#2123 要求的正是后者——两种形态对 codex 的后果完全一样（读不到
+    // 就拒载整份 config.toml），而且这份指针从来就没生效过。
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
         id: "relay-a".to_string(),
@@ -6207,8 +6463,8 @@ experimental_bearer_token = "sk-new"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(
-        config.contains("/mnt/external/catalog.json"),
-        "普通路径不属于本次修复范围，必须原样保留：{config}"
+        !config.contains("/mnt/external/catalog.json"),
+        "指向不存在文件的指针必须丢弃，否则 codex 拒载整份配置：{config}"
     );
 }
 
