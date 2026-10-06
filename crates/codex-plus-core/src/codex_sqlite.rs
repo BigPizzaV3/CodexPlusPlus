@@ -229,6 +229,56 @@ pub fn sanitize_thread_model_suffixes(home: &Path) -> anyhow::Result<SanitizeMod
     Ok(result)
 }
 
+/// 把仍然停留在「上一次默认模型」的会话回填为新选中的默认模型（issue #2081）。
+///
+/// Codex 桌面端把每个会话的模型固化在 `threads.model`，`config.toml` 顶层的
+/// `model` 只影响新会话，所以切换供应商/模型后旧对话仍用创建时的旧模型。
+///
+/// 判据刻意收窄：只改**仍等于 `previous_model`** 的行。用户手动改过模型的会话
+/// 不会命中，因而不会被回填覆盖。
+///
+/// 调用方负责确认 Codex 已退出（sqlite 无 WAL 写锁），并在切换成功后调用；
+/// 这里不做进程探测，避免把锁等待拖进启动链路。
+pub fn backfill_thread_models_to_default(
+    home: &Path,
+    previous_model: &str,
+    new_model: &str,
+) -> anyhow::Result<usize> {
+    let previous_model = previous_model.trim();
+    let new_model = new_model.trim();
+    if previous_model.is_empty() || new_model.is_empty() || previous_model == new_model {
+        return Ok(0);
+    }
+    let mut updated = 0;
+    for db_path in codex_session_db_paths_from_home(home) {
+        if !db_path.exists() {
+            continue;
+        }
+        updated += backfill_thread_models_in_db(&db_path, previous_model, new_model)?;
+    }
+    Ok(updated)
+}
+
+fn backfill_thread_models_in_db(
+    db_path: &Path,
+    previous_model: &str,
+    new_model: &str,
+) -> anyhow::Result<usize> {
+    let mut conn = Connection::open(db_path)?;
+    // schema 不匹配时安静跳过，与 sanitize_thread_model_suffixes_in_db 一致。
+    if !connection_has_table(&conn, "threads") || !connection_has_column(&conn, "threads", "model")
+    {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    let updated = tx.execute(
+        "UPDATE threads SET model = ?1 WHERE model = ?2",
+        [new_model, previous_model],
+    )?;
+    tx.commit()?;
+    Ok(updated)
+}
+
 /// 同时清理 threads.model 与 logs_2.sqlite 中残留的带后缀模型名。
 /// 返回的 scanned/updated 只统计 threads 表的改动数量；日志清理仅作为副作用。
 pub fn sanitize_historical_model_suffixes(
@@ -288,9 +338,19 @@ fn sanitize_thread_model_suffixes_in_db(db_path: &Path) -> anyhow::Result<(usize
     Ok((scanned, updated))
 }
 
+/// 日志清理每批处理的行数。feedback_log_body 是完整请求/响应文本，命中行总量
+/// 可达 GB 级，一次性 collect 会把整表读进内存（issue #2244 的冷启动卡顿）。
+const LOG_SANITIZE_BATCH_SIZE: i64 = 500;
+
 /// 清理 logs_2.sqlite 中 feedback_log_body 字段里包含模型后缀的日志。
 /// 这些日志只是历史记录，不会直接影响模型选择器，但清理后可避免
 /// 诊断/遥测中继续出现已废弃的带后缀模型名。
+///
+/// issue #2244：原实现对 logs 表跑无短路的全表 content 扫描
+/// （`SELECT rowid, feedback_log_body FROM logs WHERE feedback_log_body LIKE '%[%'`），
+/// 每次启动都要把命中行整段读进内存，且没有任何「上次已清理」的记忆。
+/// 现在先做一次 COUNT 预检（干净机器上通常是 0，直接返回、连事务都不开），
+/// 命中时再按 rowid 分批读、逐批写。
 fn sanitize_logs_model_suffixes(home: &Path) -> anyhow::Result<()> {
     let db_path = codex_logs_db_path_from_home(home);
     if !db_path.exists() {
@@ -317,26 +377,54 @@ fn sanitize_logs_model_suffixes(home: &Path) -> anyhow::Result<()> {
     if !has_body {
         return Ok(());
     }
-    // 用保守模式匹配：包含 '[' 且以 ']%' 或包含 '[1M]' 等常见后缀。
-    // 这里只替换明确符合 parse_model_suffix 规则的模型名，避免误改无关日志文本。
-    let mut stmt = conn
-        .prepare("SELECT rowid, feedback_log_body FROM logs WHERE feedback_log_body LIKE '%[%'")?;
-    let rows: Vec<(i64, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .filter_map(Result::ok)
-        .collect();
-    drop(stmt);
-
-    let tx = conn.transaction()?;
-    let mut update = tx.prepare("UPDATE logs SET feedback_log_body = ?1 WHERE rowid = ?2")?;
-    for (rowid, body) in rows {
-        let sanitized = sanitize_model_suffixes_in_text(&body);
-        if sanitized != body {
-            update.execute([&sanitized, &rowid.to_string()])?;
-        }
+    // 短路预检：likes 命中为 0 时不做任何读取，这是绝大多数机器的常态。
+    let candidates: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM logs WHERE feedback_log_body LIKE '%[%'",
+        [],
+        |row| row.get(0),
+    )?;
+    if candidates == 0 {
+        return Ok(());
     }
-    drop(update);
-    tx.commit()?;
+
+    let mut cursor = i64::MIN;
+    loop {
+        // 分批：每轮只把这一批的 rowid 与 body 读进内存，避免整表驻留。
+        let mut stmt = conn.prepare(
+            "SELECT rowid, feedback_log_body FROM logs \
+             WHERE rowid > ?1 AND feedback_log_body LIKE '%[%' \
+             ORDER BY rowid LIMIT ?2",
+        )?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map(rusqlite::params![cursor, LOG_SANITIZE_BATCH_SIZE], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .filter_map(Result::ok)
+            .collect();
+        drop(stmt);
+        if rows.is_empty() {
+            break;
+        }
+        let last_rowid = rows[rows.len() - 1].0;
+        // 用保守模式匹配：包含 '[' 且以 ']%' 或包含 '[1M]' 等常见后缀。
+        // 这里只替换明确符合 parse_model_suffix 规则的模型名，避免误改无关日志文本。
+        let tx = conn.transaction()?;
+        let mut update = tx.prepare("UPDATE logs SET feedback_log_body = ?1 WHERE rowid = ?2")?;
+        for (rowid, body) in rows {
+            let sanitized = sanitize_model_suffixes_in_text(&body);
+            if sanitized != body {
+                update.execute([&sanitized, &rowid.to_string()])?;
+            }
+        }
+        drop(update);
+        tx.commit()?;
+
+        if last_rowid <= cursor {
+            // 防御性终止：rowid 没前进说明查询语义与预期不符，继续会死循环。
+            break;
+        }
+        cursor = last_rowid;
+    }
     Ok(())
 }
 

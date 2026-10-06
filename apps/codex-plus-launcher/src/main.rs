@@ -69,6 +69,8 @@ async fn main() -> Result<()> {
                     .app_dir
                     .map(|path| path.to_string_lossy().to_string()),
                 aumid: None,
+                // 终态不带进行中的阶段（issue #2244 的 phase/progress）。
+                ..LaunchStatus::default()
             });
         }
         return Err(error);
@@ -97,6 +99,7 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
                 .app_dir
                 .map(|path| path.to_string_lossy().to_string()),
             aumid: None,
+            ..LaunchStatus::default()
         })?;
         return Ok(());
     };
@@ -486,10 +489,33 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        require_completed_provider_sync(&result.status, &result.message)?;
+        // issue #2160：同步失败不再中断启动。前置读取（典型是 .codex-global-state.json
+        // 为空或被截断）失败时，provider sync 返回 Skipped 并带上底层 serde_json 原文；
+        // 以前这里用 `?` 把它变成致命的，用户看到一句无从下手的英文就直接退出了。
+        // 口径与 run_activation_provider_sync 一致：失败只记诊断日志，不阻断启动。
+        let outcome =
+            tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None)).await;
+        match outcome {
+            Ok(result) => {
+                if let Err(error) = require_completed_provider_sync(&result.status, &result.message)
+                {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "launcher.provider_sync.degraded",
+                        json!({
+                            "status": format!("{:?}", result.status),
+                            "message": error.to_string(),
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "launcher.provider_sync.degraded",
+                    json!({ "message": format!("provider sync task failed: {error}") }),
+                );
+            }
+        }
+        // 同步没做成，索引该修的还是要修——它们各自独立，不能因为一路失败连坐。
         repair_session_index_automatically(false).await;
         Ok(())
     }
@@ -1346,6 +1372,34 @@ mod tests {
                 .expect_err("an incomplete provider sync must stop launch");
             assert!(error.to_string().contains("target is unresolved"));
         }
+    }
+
+    /// issue #2160：判定函数仍然把不完整同步视作失败，但启动路径必须把它降级成
+    /// 一条诊断日志——.codex-global-state.json 坏掉不能把整次启动带下去。
+    #[test]
+    fn startup_provider_sync_failure_is_non_fatal() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn run_provider_sync(&self)")
+            .expect("provider sync hook");
+        let end = source[start..]
+            .find("fn has_pending_remote_control_session_recoveries")
+            .map(|offset| start + offset)
+            .expect("next method after the hook");
+        let body = &source[start..end];
+
+        // 不再用 `?` 把同步失败变成致命错误。
+        assert!(
+            !body.contains("require_completed_provider_sync(&result.status, &result.message)?"),
+            "provider sync 失败不得中断启动"
+        );
+        assert!(
+            body.contains("launcher.provider_sync.degraded"),
+            "降级要留下诊断日志"
+        );
+        // 同步失败不连坐：索引修复照常执行。
+        assert!(body.contains("repair_session_index_automatically(false).await"));
+        assert!(body.trim_end().ends_with("Ok(())\n    }"));
     }
 
     #[test]

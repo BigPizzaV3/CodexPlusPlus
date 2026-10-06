@@ -522,11 +522,18 @@ where
     let mut keep_launched_on_error = false;
 
     let result: anyhow::Result<LaunchHandle> = async {
+        // issue #2244：冷启动 80~110 秒期间既没有 latest-status 阶段，也没有带耗时的
+        // 日志，用户无法区分「正在处理」与「已经卡死」。每个前置步骤前后都打一次
+        // 阶段标记与耗时。
+        let timeline = LaunchTimeline::new(options.status_store.clone());
+        timeline.mark("start_native_browser_compatibility", 5);
         hooks.start_native_browser_compatibility(&settings).await;
         let home = crate::relay_config::default_codex_home_dir();
+        timeline.mark("cleanup_unsupported_config", 10);
         hooks.cleanup_unsupported_config()?;
         crate::relay_config::ensure_windows_sandbox_usable_for_current_user(&home)?;
         if settings.provider_sync_enabled {
+            timeline.mark("provider_sync", 15);
             crate::codex_app_state::capture_app_state_snapshot_nonfatal(&home, "launcher.before");
             hooks.run_provider_sync().await?;
             crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
@@ -537,6 +544,7 @@ where
         if hooks.has_pending_remote_control_session_recoveries()
             && hooks.remote_control_session_recovery_is_safe_to_run()
         {
+            timeline.mark("remote_control_session_recovery", 25);
             hooks.run_remote_control_session_recovery().await?;
         } else if hooks.has_pending_remote_control_session_recoveries() {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -544,6 +552,7 @@ where
                 serde_json::json!({"reason": "desktop_writer_active"}),
             );
         }
+        timeline.mark("dream_skin_theme", 30);
         crate::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
                 && settings.codex_app_dream_skin_enabled
@@ -558,6 +567,9 @@ where
                 }),
             );
         }
+        // 这一步在 #2244 的采样里是嫌疑最大的同步全表扫描，单独标记起止，
+        // 从 latest-status 就能看出冷启动时间是否耗在这里。
+        timeline.mark("sanitize_historical_model_suffixes", 40);
         match crate::codex_sqlite::sanitize_historical_model_suffixes(&home) {
             Ok(result) if result.updated > 0 => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -578,6 +590,7 @@ where
                 );
             }
         }
+        timeline.mark("sanitize_historical_model_suffixes_done", 50);
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
             || remote_control_provider_proxy_enabled(&settings);
         // issue #2264：重启链路上的模型漂移修复。launcher 不重放完整 apply（那会
@@ -599,11 +612,13 @@ where
             }
         }
         if protocol_proxy_enabled {
+            timeline.mark("protocol_proxy_config", 55);
             hooks.ensure_active_protocol_proxy_config(&settings).await?;
             helper_port = crate::protocol_proxy::protocol_proxy_port();
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
             // macOS 重启时旧 launcher 的 socket 释放可能稍晚于进程退出。
+            timeline.mark("helper_bind", 60);
             let bind_retry_timeout_ms =
                 helper_bind_retry_timeout_ms(protocol_proxy_enabled, cfg!(target_os = "macos"));
             start_helper_waiting_for_busy_port(
@@ -622,19 +637,24 @@ where
                 )
             })?;
             helper_started = true;
+            timeline.mark("helper_listening", 65);
         }
 
+        timeline.mark("launch_codex", 70);
         let launch = hooks
             .launch_codex(&app_dir, debug_port, &settings, &settings.codex_extra_args)
             .await?;
         launched = Some(launch.clone());
         keep_launched_on_error = true;
+        timeline.mark("launch_codex_done", 80);
 
         let mut injection_degraded = false;
         if settings.enhancements_enabled {
+            timeline.mark("ensure_injection", 85);
             let injection_ready = hooks
                 .ensure_injection(debug_port, helper_port, &app_dir)
                 .await;
+            timeline.mark("ensure_injection_done", 95);
             if injection_ready {
                 keep_launched_on_error = false;
                 // 注入成功后页面已加载，此时可以通过 CDP 清理 Electron Local Storage
@@ -659,6 +679,7 @@ where
         }
 
         if !settings.enhancements_enabled || !injection_degraded {
+            timeline.mark("ready", 100);
             let status = launch_status(
                 "running",
                 "Codex++ launcher ready",
@@ -819,7 +840,23 @@ impl LaunchHooks for DefaultLaunchHooks {
             app_dir,
             Some(settings.codex_app_path.as_str()),
         )
-        .ok_or_else(|| anyhow::anyhow!("Codex App directory not found"))
+        .ok_or_else(|| {
+            // issue #2204：原来四种失败原因（不存在 / 是 Codex++ 目录 / 无可执行文件 /
+            // 纯自动探测落空）共用一句「Codex App directory not found」，用户看不出
+            // 该改什么。这里按来源细分，并保留原句前缀以便既有日志检索与用户既有
+            // 报障文本仍能对上。
+            let saved = settings.codex_app_path.trim();
+            let message = crate::app_paths::describe_codex_app_dir_not_found(app_dir, Some(saved));
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.app_dir_not_found",
+                serde_json::json!({
+                    "explicit_app_path": app_dir.map(|path| path.to_string_lossy().to_string()),
+                    "saved_app_path": saved,
+                    "reason": message,
+                }),
+            );
+            anyhow::anyhow!(message)
+        })
     }
 
     fn select_debug_port(&self, requested: u16) -> u16 {
@@ -3478,6 +3515,43 @@ fn launch_status(
         helper_port: Some(helper_port),
         codex_app: Some(app_dir.to_string_lossy().to_string()),
         aumid: crate::app_paths::packaged_app_user_model_id(app_dir),
+        // 终态不再是「某个进行中的阶段」；进度固定 100 便于 manager 判断已结束。
+        phase: None,
+        progress: Some(100),
+    }
+}
+
+/// 启动阶段埋点（issue #2244）。
+///
+/// 把每个前置步骤写进 `latest-status.json` 的 `phase`/`progress`，同时往
+/// `codex-plus.log` 记一条带「距启动开始多少毫秒」的日志。冷启动慢的时候，
+/// 用户与维护者由此能直接指出卡在哪一步，而不用靠进程采样反推。
+struct LaunchTimeline {
+    status_store: StatusStore,
+    started: std::time::Instant,
+}
+
+impl LaunchTimeline {
+    fn new(status_store: StatusStore) -> Self {
+        Self {
+            status_store,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// 进入某个阶段。状态写入与日志写入都是 best-effort：埋点失败绝不能
+    /// 影响启动本身。
+    fn mark(&self, phase: &str, progress: u8) {
+        let elapsed_ms = self.started.elapsed().as_millis() as u64;
+        let _ = self.status_store.save_phase(phase, progress);
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.phase",
+            serde_json::json!({
+                "phase": phase,
+                "progress": progress,
+                "elapsed_ms": elapsed_ms,
+            }),
+        );
     }
 }
 
