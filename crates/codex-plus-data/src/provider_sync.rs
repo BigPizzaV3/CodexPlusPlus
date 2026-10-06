@@ -15,6 +15,16 @@ const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
 const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
 const PROVIDER_SYNC_PROGRESS_INTERVAL: usize = 32;
+/// 全局状态的旁路备份名；解析失败时指向它作为恢复来源（issue #2160）。
+const GLOBAL_STATE_BACKUP_FILE_NAME: &str = ".codex-global-state.json.bak";
+/// 删除墓碑（issue #2199）。放在 `tmp/` 下，和同步锁同级：
+/// 既不属于会话数据，也不在 `rollout_files` 的扫描范围（只扫 sessions/archived_sessions）里，
+/// 因此不会被同步逻辑当成会话读取。
+const THREAD_TOMBSTONE_RELATIVE_PATH: &str = "tmp/provider-sync-tombstones.json";
+/// 墓碑只增不删，长期使用会攒条目；超过这个数量就丢掉最旧的一批。
+/// 丢墓碑最坏的结果是「被删的会话可能被重建回来」，与不记墓碑时一致，
+/// 不会损坏任何数据，所以这里的上限不必设得很大。
+const MAX_THREAD_TOMBSTONES: usize = 4096;
 
 /// `create_lock` 先建目录再写 `owner.json`，两步之间被强杀会留下没有 owner 的锁目录。
 /// 该窗口只有几毫秒，因此超过这个时长仍缺 owner 的锁一定是中断残留，可以安全回收；
@@ -1331,9 +1341,15 @@ fn collect_rebuildable_canonical_threads(
         })
         .collect::<HashSet<_>>();
 
+    // issue #2199：这是「删了又回来」的另一条重建入口——catalog 里还有行、canonical
+    // `threads` 里没有、rollout 文件还在，就会被补回列表。已被删除的会话要排除在外。
+    let thread_tombstones = load_thread_tombstones(home);
     let mut rebuildable = Vec::new();
     for path in sqlite_paths {
         for thread in catalog_only_threads_for_path(path, &canonical_thread_ids)? {
+            if thread_tombstones.contains(&thread.id) {
+                continue;
+            }
             if current_rollout_ids.contains(&thread.id) {
                 rebuildable.push(CatalogRepairThread {
                     model_provider: target_provider.to_string(),
@@ -3078,6 +3094,14 @@ pub fn restore_thread_sidebar_references(
         .unwrap_or_default();
     let mut restored = restore_thread_to_global_state(codex_home, thread_id, snapshot)?;
     restored += restore_thread_to_catalog_dbs(codex_home, thread_id, snapshot)?;
+    // issue #2199：撤销删除要连墓碑一起撤，否则恢复的会话在下次修复时又被跳过。
+    // 放在恢复之后：恢复本身可能失败，但用户的「恢复」意图已经明确表达。
+    if !thread_id.is_empty() {
+        clear_thread_tombstones(
+            codex_home,
+            &HashSet::from([thread_id.strip_prefix("local:").unwrap_or(thread_id).to_string()]),
+        );
+    }
     Ok(restored)
 }
 
@@ -3414,11 +3438,81 @@ fn sidebar_atom_key_matches(key: &str, thread_id: &str) -> bool {
     .any(|candidate| key == candidate)
 }
 
+fn thread_tombstone_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(THREAD_TOMBSTONE_RELATIVE_PATH)
+}
+
+/// 读取删除墓碑（已删除、不得被索引重建复活的 thread id）。
+///
+/// 墓碑只是「修复时跳过」的抑制信息，不是用户数据：文件缺失、读不动、内容坏了都
+/// 一律按「没有墓碑」处理——最坏结果是退回旧行为（可能复活），绝不因为墓碑本身
+/// 让同步或删除失败。见 issue #2199。
+fn load_thread_tombstones(codex_home: &Path) -> HashSet<String> {
+    let path = thread_tombstone_path(codex_home);
+    let Ok(bytes) = fs::read(&path) else {
+        return HashSet::new();
+    };
+    serde_json::from_slice::<Vec<String>>(&bytes)
+        .map(|ids| ids.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// 记一条删除墓碑。顺序按写入先后保留，超出上限时丢掉最旧的一批。
+///
+/// 只写不删（除了上限淘汰），因此不存在「墓碑误删会话数据」的路径；
+/// 调用方在删除流程中尽力而为，失败只影响「将来会不会复活」。
+fn record_thread_tombstone(codex_home: &Path, thread_id: &str) -> anyhow::Result<()> {
+    let path = thread_tombstone_path(codex_home);
+    let mut ids = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+        .unwrap_or_default();
+    ids.retain(|existing| existing != thread_id);
+    ids.push(thread_id.to_string());
+    if ids.len() > MAX_THREAD_TOMBSTONES {
+        ids.drain(..ids.len() - MAX_THREAD_TOMBSTONES);
+    }
+    codex_plus_core::settings::atomic_write(&path, serde_json::to_vec(&ids)?.as_slice())
+}
+
+/// 撤销删除时清除墓碑，否则刚恢复的会话会被重建流程一直挡在列表外。
+fn clear_thread_tombstones(codex_home: &Path, thread_ids: &HashSet<String>) {
+    if thread_ids.is_empty() {
+        return;
+    }
+    let path = thread_tombstone_path(codex_home);
+    let Ok(bytes) = fs::read(&path) else {
+        return;
+    };
+    let Ok(mut ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
+        return;
+    };
+    let before = ids.len();
+    ids.retain(|id| !thread_ids.contains(id));
+    if ids.len() == before {
+        return;
+    }
+    // 清墓碑是尽力而为：写失败只意味着恢复出来的会话仍被跳过，不影响已恢复的数据。
+    if let Ok(bytes) = serde_json::to_vec(&ids) {
+        let _ = codex_plus_core::settings::atomic_write(&path, &bytes);
+    }
+}
+
 pub fn remove_thread_sidebar_references(
     codex_home: &Path,
     thread_id: &str,
 ) -> anyhow::Result<ThreadSidebarCleanupResult> {
     let thread_id = thread_id.strip_prefix("local:").unwrap_or(thread_id);
+    // issue #2199：删除侧只有「清理」，重建侧却只看资格判定（rollout 还在就补回来），
+    // 于是删掉的会话切个页面又出现，而归档（archived=1）反而真的消失。
+    // 这里在清理之前先记墓碑：后面两个清理步骤可能失败，但「用户删过这条」这件事
+    // 必须先落盘，否则重建还会把它写回来。墓碑只抑制修复、不删数据。
+    if let Err(error) = record_thread_tombstone(codex_home, thread_id) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "provider_sync.thread_tombstone_write_failed",
+            json!({ "thread_id": thread_id, "error": error.to_string() }),
+        );
+    }
     let (global_state_entries_removed, global_error) =
         match remove_thread_from_global_state(codex_home, thread_id) {
             Ok(count) => (count, None),
@@ -3576,11 +3670,15 @@ pub fn restore_session_index_entries(
         next_text.push('\n');
     }
     let mut appended = 0usize;
+    // issue #2199：撤销删除等于用户明确要求「把这条会话还给我」，所以这里要撤掉墓碑，
+    // 否则恢复出来的会话会被重建路径一直挡在列表外——撤销看起来没生效。
+    let mut restored_ids = HashSet::new();
     for line in lines {
         if let Some(candidate) = known_session_index_candidate(line) {
             if existing_ids.contains(&candidate.id) {
                 continue;
             }
+            restored_ids.insert(candidate.id.clone());
             existing_ids.insert(candidate.id);
         }
         next_text.push_str(line);
@@ -3594,6 +3692,7 @@ pub fn restore_session_index_entries(
         return Ok(0);
     }
     codex_plus_core::settings::atomic_write(&path, next_text.as_bytes())?;
+    clear_thread_tombstones(codex_home, &restored_ids);
     Ok(appended)
 }
 
@@ -5056,6 +5155,9 @@ fn collect_catalog_repair_plan(
     thread_ids: Option<&HashSet<String>>,
 ) -> anyhow::Result<CatalogRepairPlan> {
     let spawned_child_ids = collect_spawned_child_thread_ids(paths)?;
+    // issue #2199：删除墓碑一票否决。这里的候选会被 INSERT 回 `local_thread_catalog`，
+    // 是「删了又回来」的重建入口之一。
+    let thread_tombstones = load_thread_tombstones(home);
     let mut catalog_non_root_thread_ids =
         collect_catalog_marked_non_root_thread_ids(paths, &spawned_child_ids)?;
     let mut observed_threads = HashMap::new();
@@ -5117,6 +5219,12 @@ fn collect_catalog_repair_plan(
         })?;
         for item in rows {
             let (thread, archived, has_user_content, agent_role) = item?;
+            // issue #2199：删除墓碑一票否决。资格判定里没有「删除态」，只要 rollout
+            // 文件还在（删除失败或被别的进程锁住等），被删的会话就会被重新插回 catalog。
+            // 在收集阶段直接跳过，它既不进候选，也不会在下面的择优平局里胜出。
+            if thread_tombstones.contains(&thread.id) {
+                continue;
+            }
             let marked_non_user = columns.contains("thread_source")
                 && thread.thread_source.as_deref().is_some_and(|value| {
                     let value = value.trim();
@@ -5620,11 +5728,25 @@ fn global_state_snapshot(path: &Path) -> anyhow::Result<(Vec<u8>, Map<String, Va
         }
         Err(error) => return Err(error.into()),
     };
-    let state = serde_json::from_slice::<Value>(&bytes)?
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    // issue #2160：这里是全局状态唯一的解析入口。以前的报错是 serde_json 原文
+    // （空文件/被截断时报 `expected value at line 1 column 1`），既没说是哪个文件，
+    // 也没说怎么办；这条消息会一路冒到启动器的提示里，用户完全无法自助。
+    // 这里统一补上文件路径和可操作建议。
+    let state = serde_json::from_slice::<Value>(&bytes).map_err(|error| {
+        anyhow::anyhow!(
+            "{error}。{} 不是合法 JSON（常见于文件为空或被写了一半）；\
+             请把它改成合法 JSON——内容丢了可以从同目录的 {} 恢复",
+            global_state_path_display(path),
+            GLOBAL_STATE_BACKUP_FILE_NAME,
+        )
+    })?;
+    let state = state.as_object().cloned().unwrap_or_default();
     Ok((bytes, state))
+}
+
+/// 报错里的路径按用户视角展示，Windows 上 `C:\Users\x\.codex\...` 太具体也容易看错。
+fn global_state_path_display(path: &Path) -> String {
+    format!("{}（全局状态文件）", path.display())
 }
 
 fn load_global_state(path: &Path) -> anyhow::Result<Map<String, Value>> {
@@ -6595,7 +6717,12 @@ mod canonical_thread_rebuild_tests {
 
         let result = run_provider_sync(Some(&home));
 
-        assert_eq!(result.status, ProviderSyncStatus::Synced, "{}", result.message);
+        assert_eq!(
+            result.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            result.message
+        );
         let after = thread_ids(&state_db);
         assert!(after.contains(&thread_id.to_string()), "缺失的 canonical 行应被补建：{after:?}");
         for id in before {
@@ -6812,6 +6939,39 @@ mod sync_diagnostics_tests {
         assert_eq!(result.changed_session_files, 1);
     }
 
+    /// 全局状态解析失败时，给用户的必须是「哪个文件 + 怎么修」，
+    /// 不能只说一句 serde_json 的 `expected value at line 1 column 1`（issue #2160）。
+    #[test]
+    fn global_state_parse_failure_names_the_file_and_the_fix() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+        write_config(&home, "relay-alpha");
+        let global_state = home.join(".codex-global-state.json");
+        assert_eq!(global_state.file_name().unwrap(), ".codex-global-state.json");
+        // 空文件 / 被截断的文件：解析报 `expected value at line 1 column 1`。
+        fs::write(&global_state, "{\"projectless-thread-ids\": [").unwrap();
+
+        let result = run_provider_sync(Some(&home));
+
+        assert_eq!(result.status, ProviderSyncStatus::Skipped);
+        assert!(
+            result.message.contains(".codex-global-state.json"),
+            "报错要带上文件路径：{}",
+            result.message
+        );
+        assert!(
+            result.message.contains("合法 JSON"),
+            "报错要给出可操作建议：{}",
+            result.message
+        );
+        assert!(
+            result.message.contains(GLOBAL_STATE_BACKUP_FILE_NAME),
+            "报错要指出恢复来源：{}",
+            result.message
+        );
+    }
+
     /// 预览同样要带上诊断字段，且依旧只读。
     #[test]
     fn preview_reports_scanned_scope_and_stays_read_only() {
@@ -6846,5 +7006,353 @@ mod sync_diagnostics_tests {
 
         assert_eq!(result.repair_audit.catalog_only_sessions, 0);
         assert_eq!(result.repair_audit.catalog_only_without_recovery_source, 0);
+    }
+}
+
+#[cfg(test)]
+mod deleted_thread_tombstone_tests {
+    use super::*;
+
+    fn write_config(home: &Path, provider: &str) {
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "model_provider = {provider:?}\n\n[model_providers.{provider:?}]\nname = {provider:?}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_rollout(home: &Path, thread_id: &str, provider: &str) {
+        let path = home
+            .join("sessions/2026/10/03")
+            .join(format!("rollout-2026-10-03T10-00-00-{thread_id}.jsonl"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": thread_id,
+                        "model_provider": provider,
+                        "cwd": "C:/workspace"
+                    }
+                }),
+                json!({"type": "event_msg", "payload": {"type": "user_message"}}),
+            ),
+        )
+        .unwrap();
+    }
+
+    fn create_catalog_db(path: &Path, thread_id: &str, provider: &str) {
+        let db = Connection::open(path).unwrap();
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS local_thread_catalog (
+                host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT NOT NULL,
+                source_created_at REAL NOT NULL, source_updated_at REAL NOT NULL,
+                cwd TEXT NOT NULL, source_kind TEXT NOT NULL, source_detail TEXT,
+                model_provider TEXT NOT NULL, git_branch TEXT,
+                observation_sequence INTEGER NOT NULL,
+                missing_candidate INTEGER NOT NULL DEFAULT 0, thread_source TEXT,
+                PRIMARY KEY (host_id, thread_id))",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS local_thread_catalog_hosts (host_id TEXT PRIMARY KEY, host_kind TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO local_thread_catalog_hosts VALUES ('local', 'local')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL DEFAULT 0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO local_thread_catalog_metadata VALUES (1, 0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO local_thread_catalog
+             (host_id, thread_id, display_title, source_created_at, source_updated_at,
+              cwd, source_kind, source_detail, model_provider, git_branch,
+              observation_sequence, missing_candidate, thread_source)
+             VALUES ('local', ?1, ?1, 100.0, 200.0, 'C:/workspace', 'vscode', ?2,
+                     'custom', 'main', 1, 0, 'user')",
+            rusqlite::params![thread_id, ""],
+        )
+        .unwrap();
+    }
+
+    fn create_threads_db(path: &Path) {
+        let db = Connection::open(path).unwrap();
+        db.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER,
+                has_user_event INTEGER, cwd TEXT, title TEXT, rollout_path TEXT,
+                source TEXT, created_at_ms INTEGER, updated_at_ms INTEGER,
+                git_branch TEXT, thread_source TEXT)",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn canonical_ids(path: &Path) -> Vec<String> {
+        let db = Connection::open(path).unwrap();
+        let mut ids = db
+            .prepare("SELECT id FROM threads ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        ids.sort();
+        ids
+    }
+
+    fn catalog_ids(path: &Path) -> Vec<String> {
+        let db = Connection::open(path).unwrap();
+        let mut ids = db
+            .prepare("SELECT thread_id FROM local_thread_catalog ORDER BY thread_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        ids.sort();
+        ids
+    }
+
+    /// issue #2199 回归：删掉的会话不会在下一次索引重建里复活。
+    ///
+    /// 复现的是真实场景：删除只清掉了 catalog 行，canonical `threads` 行（或 rollout
+    /// 文件）因为删除失败/被占用留了下来。旧实现的重建只看资格判定（rollout 还在
+    /// 就算数），于是重建把行写回去，用户切页面回来会话又出现了。
+    #[test]
+    fn deleted_thread_stays_deleted_after_a_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        write_config(&home, "custom");
+
+        let thread_id = "01a01579-4a5d-77e3-89c0-751d38ad21f8";
+        write_rollout(&home, thread_id, "custom");
+        let state_db = home.join("state_5.sqlite");
+        let catalog_db = sqlite_dir.join("codex-dev.db");
+        create_threads_db(&state_db);
+        create_catalog_db(&catalog_db, thread_id, "custom");
+
+        // 第一次同步把 canonical 行补齐（既有行为，不该被墓碑影响）。
+        let first = run_provider_sync(Some(&home));
+        assert_eq!(
+            first.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            first.message
+        );
+        assert!(
+            canonical_ids(&state_db).contains(&thread_id.to_string()),
+            "同步正常补建 canonical 行"
+        );
+
+        // 用户删除：清侧边栏引用（catalog 行），并记下墓碑。
+        remove_thread_sidebar_references(&home, thread_id).unwrap();
+        assert!(
+            !catalog_ids(&catalog_db).contains(&thread_id.to_string()),
+            "删除应清掉 catalog 行"
+        );
+
+        // 重建：rollout 文件仍在，canonical 行仍在，旧实现会把它写回列表。
+        let second = run_provider_sync(Some(&home));
+        assert_eq!(
+            second.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            second.message
+        );
+
+        // catalog 行不能回来（这是列表的数据源），canonical 行也不该被当成待补建项。
+        assert!(
+            !catalog_ids(&catalog_db).contains(&thread_id.to_string()),
+            "被删的会话不得被重建回 catalog：{:?}",
+            second.message
+        );
+        assert!(
+            collect_rebuildable_canonical_threads(&home, &[state_db.clone()], "custom")
+                .unwrap()
+                .iter()
+                .all(|thread| thread.id != thread_id),
+            "被删的会话不得进入 canonical 补建候选"
+        );
+
+        // 再同步一次，反复重建也不会复活。
+        let third = run_provider_sync(Some(&home));
+        assert_eq!(
+            third.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            third.message
+        );
+        assert!(
+            !catalog_ids(&catalog_db).contains(&thread_id.to_string()),
+            "反复重建依然不得复活被删的会话"
+        );
+    }
+
+    /// 墓碑只挡「被删的那条」：同一批同步里的其他会话照常补建。
+    #[test]
+    fn tombstone_only_suppresses_the_deleted_thread() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        write_config(&home, "custom");
+
+        let deleted = "01a01579-4a5d-77e3-89c0-751d38ad21f8";
+        let kept = "01a01579-4a5d-77e3-89c0-751d38ad21f9";
+        write_rollout(&home, deleted, "custom");
+        write_rollout(&home, kept, "custom");
+        let state_db = home.join("state_5.sqlite");
+        let catalog_db = sqlite_dir.join("codex-dev.db");
+        create_threads_db(&state_db);
+        create_catalog_db(&catalog_db, deleted, "custom");
+        create_catalog_db(&catalog_db, kept, "custom");
+
+        remove_thread_sidebar_references(&home, deleted).unwrap();
+
+        let result = run_provider_sync(Some(&home));
+        assert_eq!(
+            result.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            result.message
+        );
+        let ids = catalog_ids(&catalog_db);
+        assert!(!ids.contains(&deleted.to_string()), "被删的不复活：{ids:?}");
+        assert!(ids.contains(&kept.to_string()), "未删的照常补建：{ids:?}");
+    }
+
+    /// 撤销删除（undo）必须清掉墓碑，否则恢复出来的会话会被一直挡在列表外。
+    #[test]
+    fn undo_clears_the_tombstone() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        fs::write(home.join("session_index.jsonl"), "").unwrap();
+        write_config(&home, "custom");
+
+        let thread_id = "01a01579-4a5d-77e3-89c0-751d38ad21f8";
+        write_rollout(&home, thread_id, "custom");
+        let state_db = home.join("state_5.sqlite");
+        let catalog_db = sqlite_dir.join("codex-dev.db");
+        create_threads_db(&state_db);
+        create_catalog_db(&catalog_db, thread_id, "custom");
+        // 先做一次同步，让会话的 canonical 行就位（这是「已经在列表里」的状态）。
+        let _ = run_provider_sync(Some(&home));
+        assert!(canonical_ids(&state_db).contains(&thread_id.to_string()));
+
+        remove_thread_sidebar_references(&home, thread_id).unwrap();
+        assert!(
+            load_thread_tombstones(&home).contains(thread_id),
+            "删除应写下墓碑"
+        );
+
+        // undo 走的是恢复 session_index 这一条（storage 的恢复流程）。
+        let line = json!({
+            "id": thread_id,
+            "thread_name": thread_id,
+            "updated_at": "2026-10-03T10:00:00Z"
+        })
+        .to_string();
+        assert_eq!(restore_session_index_entries(&home, &[line]).unwrap(), 1);
+
+        assert!(
+            !load_thread_tombstones(&home).contains(thread_id),
+            "撤销删除后墓碑必须清掉"
+        );
+
+        // 撤销之后重建能把会话写回列表——墓碑不残留，撤销看起来才是生效的。
+        // （canonical 行本来就没被删除流程碰过，这里验证的是它不再被墓碑压制。）
+        let result = run_provider_sync(Some(&home));
+        assert_eq!(
+            result.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            result.message
+        );
+        assert!(
+            canonical_ids(&state_db).contains(&thread_id.to_string()),
+            "撤销后会话应回到列表"
+        );
+    }
+
+    /// 墓碑文件损坏 / 不存在都不能让同步失败——最坏只是退回「可能复活」。
+    #[test]
+    fn damaged_tombstone_file_is_ignored() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        let sqlite_dir = home.join("sqlite");
+        fs::create_dir_all(&sqlite_dir).unwrap();
+        write_config(&home, "custom");
+
+        let thread_id = "01a01579-4a5d-77e3-89c0-751d38ad21f8";
+        write_rollout(&home, thread_id, "custom");
+        create_threads_db(&home.join("state_5.sqlite"));
+        create_catalog_db(&sqlite_dir.join("codex-dev.db"), thread_id, "custom");
+
+        // 写一半的墓碑文件。
+        fs::create_dir_all(home.join("tmp")).unwrap();
+        fs::write(home.join(THREAD_TOMBSTONE_RELATIVE_PATH), "[{\"thr").unwrap();
+
+        assert!(load_thread_tombstones(&home).is_empty());
+        let result = run_provider_sync(Some(&home));
+        assert_eq!(
+            result.status,
+            ProviderSyncStatus::Synced,
+            "{}",
+            result.message
+        );
+    }
+
+    /// 墓碑按上限裁剪，只丢最旧的；裁剪不会删除任何会话数据。
+    #[test]
+    fn tombstones_are_capped_by_dropping_the_oldest() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+
+        for index in 0..MAX_THREAD_TOMBSTONES + 3 {
+            record_thread_tombstone(&home, &format!("thread-{index:05}")).unwrap();
+        }
+
+        let ids = load_thread_tombstones(&home);
+        assert_eq!(ids.len(), MAX_THREAD_TOMBSTONES);
+        assert!(!ids.contains("thread-00000"), "最旧的墓碑先被丢掉");
+        assert!(ids.contains(&format!("thread-{:05}", MAX_THREAD_TOMBSTONES + 2)));
+    }
+
+    /// 同一条会话重复删除只留一条墓碑。
+    #[test]
+    fn repeated_deletion_records_a_single_tombstone() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join(".codex");
+        fs::create_dir_all(&home).unwrap();
+
+        record_thread_tombstone(&home, "thread-1").unwrap();
+        record_thread_tombstone(&home, "thread-1").unwrap();
+
+        let ids: Vec<String> =
+            serde_json::from_slice(&fs::read(thread_tombstone_path(&home)).unwrap()).unwrap();
+        assert_eq!(ids, vec!["thread-1".to_string()]);
     }
 }
