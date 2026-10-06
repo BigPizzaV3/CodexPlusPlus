@@ -13,6 +13,10 @@ pub const CDP_PROBE_TIMEOUT_SECONDS: f64 = 0.5;
 pub const TAKEOVER_FAILURE_BACKOFF_SECONDS: f64 = 30.0;
 pub const RESTART_STOP_WAIT_TIMEOUT_MS: u64 = 5_000;
 const RESTART_STOP_WAIT_INTERVAL_MS: u64 = 100;
+/// 「等旧启动器退出」轮询退避的上限。
+const LAUNCHER_WAIT_BACKOFF_MAX_MS: u64 = 1_000;
+/// 强制结束后，再等多久确认残留实例已经消失。
+const LAUNCHER_FORCE_KILL_GRACE_MS: u64 = 2_000;
 pub const WATCHER_RUN_NAME: &str = "CodexPlusPlusWatcher";
 pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "CodexPlusPlusWatcher.lnk";
@@ -300,7 +304,132 @@ mod process_identity_tests {
             "  46 /usr/bin/open -W -a /Applications/ChatGPT.app",
         ];
 
-        assert_eq!(macos_codex_process_ids(processes), vec![11, 42]);
+        // 真机上的 `ChatGPT.app` 是 Codex 桌面版（bundle id com.openai.codex），
+        // `Codex Dev` 用点分子标识符；注入查表避免依赖本机是否装了这两个 App。
+        let identifiers = |app_dir: &Path| match app_dir.to_string_lossy().as_ref() {
+            "/Applications/ChatGPT.app" => Some("com.openai.codex".to_string()),
+            "/Applications/Codex Dev.app" => Some("com.openai.codex.dev".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            macos_codex_process_ids_with(processes, identifiers),
+            vec![11, 42]
+        );
+    }
+
+    /// issue #2222：`ChatGPT Classic.app` 的主可执行文件也叫 `ChatGPT`，只按可执行名
+    /// 匹配会把「普通 ChatGPT 会话」误判成「Codex 在运行」，导致 provider sync 的前置
+    /// 守卫拦下供应商切换。bundle id 是 `com.openai.chat`，必须判为不是 Codex。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn chatgpt_classic_is_not_treated_as_codex_desktop() {
+        let processes = [
+            "  51 /Applications/ChatGPT Classic.app/Contents/MacOS/ChatGPT",
+            "  52 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+        ];
+
+        let identifiers = |app_dir: &Path| match app_dir.to_string_lossy().as_ref() {
+            "/Applications/ChatGPT Classic.app" => Some("com.openai.chat".to_string()),
+            "/Applications/ChatGPT.app" => Some("com.openai.codex".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            macos_codex_process_ids_with(processes, identifiers),
+            vec![52]
+        );
+    }
+
+    /// bundle id 读不到（二进制 plist / 文件缺失）时才退回可执行名判据。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_codex_scan_falls_back_to_executable_name_without_bundle_identifier() {
+        assert!(is_macos_codex_desktop_main_with(
+            "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+            |_| None
+        ));
+        assert!(is_macos_codex_desktop_main_with(
+            "/Applications/Codex Dev.app/Contents/MacOS/Codex Dev",
+            |_| None
+        ));
+        // 可执行名不在兜底列表里，即便读不到 bundle id 也不能命中。
+        assert!(!is_macos_codex_desktop_main_with(
+            "/Applications/ChatGPT Classic.app/Contents/MacOS/ChatGPT Classic",
+            |_| None
+        ));
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    #[test]
+    fn codex_bundle_identifier_matches_only_the_codex_family() {
+        assert!(is_macos_codex_bundle_identifier("com.openai.codex"));
+        assert!(is_macos_codex_bundle_identifier("com.openai.codex.dev"));
+        assert!(is_macos_codex_bundle_identifier("com.openai.codex.beta"));
+        assert!(!is_macos_codex_bundle_identifier("com.openai.chat"));
+        assert!(!is_macos_codex_bundle_identifier("com.openai.chatgpt"));
+        // 前缀相同但不是点分子标识符，不能算同一族。
+        assert!(!is_macos_codex_bundle_identifier(
+            "com.openai.codexextension"
+        ));
+        assert!(!is_macos_codex_bundle_identifier(""));
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    #[test]
+    fn plist_string_value_reads_the_requested_key() {
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.openai.chat</string>
+	<key>CFBundleName</key>
+	<string>ChatGPT</string>
+</dict>
+</plist>
+"#;
+
+        assert_eq!(
+            plist_string_value(plist, "CFBundleIdentifier").as_deref(),
+            Some("com.openai.chat")
+        );
+        assert_eq!(
+            plist_string_value(plist, "CFBundleName").as_deref(),
+            Some("ChatGPT")
+        );
+        assert_eq!(plist_string_value(plist, "CFBundleVersion"), None);
+    }
+
+    /// 端到端走一遍真实的 plist 读取：临时目录里摆出 `.app` 布局，
+    /// 断言从可执行路径推出的 bundle id 判据生效。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_codex_app_layout_is_detected_through_the_real_plist_reader() {
+        let temp = tempfile::tempdir().unwrap();
+        let write_app = |name: &str, executable: &str, identifier: &str| {
+            let contents = temp.path().join(name).join("Contents");
+            std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+            std::fs::write(
+                contents.join("Info.plist"),
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>CFBundleIdentifier</key>\n\t<string>{identifier}</string>\n</dict>\n</plist>\n"
+                ),
+            )
+            .unwrap();
+            format!(
+                "{}/Contents/MacOS/{executable}",
+                temp.path().join(name).display()
+            )
+        };
+
+        let codex = write_app("ChatGPT.app", "ChatGPT", "com.openai.codex");
+        let classic = write_app("ChatGPT Classic.app", "ChatGPT", "com.openai.chat");
+
+        assert!(is_macos_codex_desktop_main(&codex));
+        assert!(
+            !is_macos_codex_desktop_main(&classic),
+            "ChatGPT Classic.app 不能被当成 Codex 桌面版"
+        );
     }
 
     #[cfg(windows)]
@@ -571,22 +700,130 @@ impl LauncherExitSnapshot {
         Ok(Self { processes: captured })
     }
 
-    pub fn wait_for_exit(self, timeout: Duration) -> anyhow::Result<()> {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            let remaining = launcher_incarnations_still_running(
-                &self.processes,
-                |pid| crate::windows_integration::process_birth_id(pid),
+    pub fn wait_for_exit_or_force(self, timeout: Duration) -> LauncherExitOutcome {
+        let outcome = wait_for_launcher_exit_with(
+            &self.processes,
+            timeout,
+            |pid| crate::windows_integration::process_birth_id(pid),
+            std::time::Instant::now,
+            |pid| {
+                let _ = crate::windows_integration::terminate_process(pid);
+            },
+            |duration| std::thread::sleep(duration),
+        );
+        if !outcome.forced_process_ids.is_empty() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "watcher.launcher_force_terminated",
+                serde_json::json!({
+                    "process_ids": outcome.forced_process_ids,
+                    "timeout_ms": timeout.as_millis() as u64,
+                    "still_running": outcome.still_running
+                }),
             );
-            if remaining.is_empty() {
-                return Ok(());
-            }
-            anyhow::ensure!(
-                std::time::Instant::now() < deadline,
-                "Previous launcher has not exited; no process was forcibly terminated"
-            );
-            std::thread::sleep(Duration::from_millis(RESTART_STOP_WAIT_INTERVAL_MS));
         }
+        outcome
+    }
+}
+
+/// 「等待旧启动器退出」的结果。
+///
+/// 旧实现超时后直接抛错，既不结束任何进程也不启动新实例，用户侧表现为
+/// 「重启失败后没有任何可用实例，还要手工结束进程」（issue #2403）。
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LauncherExitOutcome {
+    /// 超时后被强制结束的启动器进程；旧启动器自行退出时为空。
+    pub forced_process_ids: Vec<u32>,
+    /// 强制结束后是否仍有残留启动器未退出。
+    pub still_running: bool,
+}
+
+#[cfg(any(windows, test))]
+impl LauncherExitOutcome {
+    /// 旧启动器是否已确认全部退出（可以安全启动新实例）。
+    pub fn is_clean(&self) -> bool {
+        !self.still_running
+    }
+}
+
+/// 等旧启动器退出的轮询间隔：起步 [`RESTART_STOP_WAIT_INTERVAL_MS`]，
+/// 逐次翻倍到上限 [`LAUNCHER_WAIT_BACKOFF_MAX_MS`]。
+#[cfg(any(windows, test))]
+fn launcher_wait_interval_ms(attempt: u32) -> u64 {
+    RESTART_STOP_WAIT_INTERVAL_MS
+        .saturating_mul(1u64 << attempt.min(8))
+        .min(LAUNCHER_WAIT_BACKOFF_MAX_MS)
+}
+
+/// 等待旧启动器退出；超时则强制结束残留实例。
+///
+/// 所有副作用（读进程身份、结束进程、取时间、休眠）都通过参数注入，
+/// 便于在非 Windows 平台上用替代实现做单元测试。
+#[cfg(any(windows, test))]
+fn wait_for_launcher_exit_with(
+    captured: &[(u32, u64)],
+    timeout: Duration,
+    mut birth_id: impl FnMut(u32) -> Option<u64>,
+    mut now: impl FnMut() -> std::time::Instant,
+    mut terminate: impl FnMut(u32),
+    mut sleep: impl FnMut(Duration),
+) -> LauncherExitOutcome {
+    let start = now();
+    let mut attempt: u32 = 0;
+
+    // 阶段一：先给旧启动器自己退出的机会。带退避轮询，避免 10 秒里打满 CPU。
+    loop {
+        if launcher_incarnations_still_running(captured, &mut birth_id).is_empty() {
+            return LauncherExitOutcome {
+                forced_process_ids: Vec::new(),
+                still_running: false,
+            };
+        }
+        let waited = now().saturating_duration_since(start);
+        if waited >= timeout {
+            break;
+        }
+        let remaining_ms = timeout.saturating_sub(waited).as_millis().max(1) as u64;
+        sleep(Duration::from_millis(
+            launcher_wait_interval_ms(attempt).min(remaining_ms),
+        ));
+        attempt += 1;
+    }
+
+    // 阶段二：超时未退出，强制结束残留启动器。只结束「进程身份仍与快照一致」的
+    // 实例——pid 可能已被系统回收给别的进程，身份复核是避免误杀的关键。
+    let remaining = launcher_incarnations_still_running(captured, &mut birth_id);
+    if remaining.is_empty() {
+        // 恰好在超时边界上退出了，属于自行退出。
+        return LauncherExitOutcome {
+            forced_process_ids: Vec::new(),
+            still_running: false,
+        };
+    }
+    let mut forced_process_ids = Vec::new();
+    for process_id in remaining {
+        terminate(process_id);
+        forced_process_ids.push(process_id);
+    }
+
+    // 阶段三：确认强制结束是否生效，仍有残留就如实上报，不再假装成功。
+    let grace_start = now();
+    loop {
+        if launcher_incarnations_still_running(captured, &mut birth_id).is_empty() {
+            return LauncherExitOutcome {
+                forced_process_ids,
+                still_running: false,
+            };
+        }
+        if now().saturating_duration_since(grace_start)
+            >= Duration::from_millis(LAUNCHER_FORCE_KILL_GRACE_MS)
+        {
+            return LauncherExitOutcome {
+                forced_process_ids,
+                still_running: true,
+            };
+        }
+        sleep(Duration::from_millis(RESTART_STOP_WAIT_INTERVAL_MS));
     }
 }
 
@@ -602,7 +839,13 @@ fn launcher_incarnations_still_running(
 
 #[cfg(test)]
 mod launcher_exit_tests {
-    use super::launcher_incarnations_still_running;
+    use super::{
+        LAUNCHER_FORCE_KILL_GRACE_MS, LAUNCHER_WAIT_BACKOFF_MAX_MS, RESTART_STOP_WAIT_INTERVAL_MS,
+        launcher_incarnations_still_running, launcher_wait_interval_ms,
+        wait_for_launcher_exit_with,
+    };
+    use std::cell::{Cell, RefCell};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn only_the_captured_launcher_incarnation_is_waited_for() {
@@ -613,6 +856,150 @@ mod launcher_exit_tests {
             _ => None,
         });
         assert_eq!(remaining, [10]);
+    }
+
+    #[test]
+    fn launcher_wait_backoff_grows_then_plateaus() {
+        assert_eq!(launcher_wait_interval_ms(0), RESTART_STOP_WAIT_INTERVAL_MS);
+        assert_eq!(
+            launcher_wait_interval_ms(1),
+            RESTART_STOP_WAIT_INTERVAL_MS * 2
+        );
+        assert_eq!(
+            launcher_wait_interval_ms(2),
+            RESTART_STOP_WAIT_INTERVAL_MS * 4
+        );
+        // 退避必须封顶，否则长等待会睡过头。
+        assert_eq!(launcher_wait_interval_ms(30), LAUNCHER_WAIT_BACKOFF_MAX_MS);
+    }
+
+    /// 旧启动器在超时前自行退出：不该强制结束任何进程。
+    #[test]
+    fn launcher_exiting_on_its_own_is_never_force_killed() {
+        let clock = Cell::new(Instant::now());
+        let terminated = RefCell::new(Vec::new());
+        let captured = [(10, 100)];
+        // 第一次查询已判定退出。
+        let alive = Cell::new(false);
+
+        let outcome = wait_for_launcher_exit_with(
+            &captured,
+            Duration::from_secs(10),
+            |_| alive.get().then_some(100),
+            || clock.get(),
+            |pid| terminated.borrow_mut().push(pid),
+            |duration| clock.set(clock.get() + duration),
+        );
+
+        assert_eq!(outcome.forced_process_ids, Vec::<u32>::new());
+        assert!(outcome.is_clean());
+        assert!(terminated.borrow().is_empty());
+    }
+
+    /// issue #2403：超时后必须强制结束残留启动器，并如实报告结果。
+    #[test]
+    fn stuck_launcher_is_force_killed_after_timeout() {
+        let clock = Cell::new(Instant::now());
+        let terminated = RefCell::new(Vec::new());
+        let captured = [(10, 100), (20, 200)];
+        // 两个实例在超时前都不肯退出，被强制结束后才消失。
+        let killed = RefCell::new(Vec::new());
+
+        let outcome = wait_for_launcher_exit_with(
+            &captured,
+            Duration::from_millis(500),
+            |pid| match pid {
+                10 if !killed.borrow().contains(&10) => Some(100),
+                20 if !killed.borrow().contains(&20) => Some(200),
+                _ => None,
+            },
+            || clock.get(),
+            |pid| {
+                terminated.borrow_mut().push(pid);
+                killed.borrow_mut().push(pid);
+            },
+            |duration| clock.set(clock.get() + duration),
+        );
+
+        // 两个残留实例都被强制结束，且等待期间带退避而不是忙等。
+        assert_eq!(terminated.borrow().as_slice(), &[10, 20]);
+        assert_eq!(outcome.forced_process_ids, vec![10, 20]);
+        assert!(outcome.is_clean());
+    }
+
+    /// 强制结束也失败时，必须如实上报 still_running，不能假装成功。
+    #[test]
+    fn force_kill_that_does_not_take_effect_reports_still_running() {
+        let clock = Cell::new(Instant::now());
+        let captured = [(10, 100)];
+        let kill_attempts = Cell::new(0u32);
+
+        let outcome = wait_for_launcher_exit_with(
+            &captured,
+            Duration::from_millis(500),
+            |_| Some(100),
+            || clock.get(),
+            |_| kill_attempts.set(kill_attempts.get() + 1),
+            |duration| clock.set(clock.get() + duration),
+        );
+
+        assert_eq!(kill_attempts.get(), 1);
+        assert_eq!(outcome.forced_process_ids, vec![10]);
+        assert!(outcome.still_running);
+        assert!(!outcome.is_clean());
+    }
+
+    /// pid 已被系统回收给别的进程时，身份复核必须拦住误杀。
+    #[test]
+    fn recycled_pid_is_not_force_killed() {
+        let clock = Cell::new(Instant::now());
+        let terminated = RefCell::new(Vec::new());
+        let captured = [(10, 100)];
+
+        let outcome = wait_for_launcher_exit_with(
+            &captured,
+            Duration::from_millis(500),
+            // 记录的 10 号实例已经不在，当前 10 号是别人。
+            |_| Some(999),
+            || clock.get(),
+            |pid| terminated.borrow_mut().push(pid),
+            |duration| clock.set(clock.get() + duration),
+        );
+
+        assert!(terminated.borrow().is_empty());
+        assert_eq!(outcome.forced_process_ids, Vec::<u32>::new());
+        assert!(outcome.is_clean());
+    }
+
+    /// 强制结束后的确认窗口有上限，不会无限等待。
+    #[test]
+    fn force_kill_confirmation_window_is_bounded() {
+        let start = Instant::now();
+        let clock = Cell::new(start);
+        let captured = [(10, 100)];
+
+        wait_for_launcher_exit_with(
+            &captured,
+            Duration::from_millis(500),
+            |_| Some(100),
+            || clock.get(),
+            |_| {},
+            |duration| clock.set(clock.get() + duration),
+        );
+
+        // 500ms 等待 + 2s 确认窗口，加上退避的整段开销；有上限即可，不能是无限循环。
+        let elapsed = clock.get().saturating_duration_since(start);
+        assert!(
+            elapsed >= Duration::from_millis(500),
+            "至少应等满传入的超时时间，实际 {elapsed:?}"
+        );
+        assert!(
+            elapsed
+                < Duration::from_millis(500)
+                    + Duration::from_millis(LAUNCHER_FORCE_KILL_GRACE_MS)
+                    + Duration::from_secs(1),
+            "确认窗口必须封顶，实际 {elapsed:?}"
+        );
     }
 }
 
@@ -801,13 +1188,21 @@ fn macos_codex_process_ids_for_debug_port<'a>(
 
 #[cfg(target_os = "macos")]
 fn macos_codex_process_ids<'a>(process_lines: impl IntoIterator<Item = &'a str>) -> Vec<u32> {
+    macos_codex_process_ids_with(process_lines, read_macos_bundle_identifier)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_codex_process_ids_with<'a>(
+    process_lines: impl IntoIterator<Item = &'a str>,
+    bundle_identifier: impl Fn(&Path) -> Option<String>,
+) -> Vec<u32> {
     let mut ids = process_lines
         .into_iter()
         .filter_map(|line| {
             let trimmed = line.trim_start();
             let (pid, args) = trimmed.split_once(char::is_whitespace)?;
             let process_id = pid.parse::<u32>().ok()?;
-            is_macos_codex_desktop_main(args).then_some(process_id)
+            is_macos_codex_desktop_main_with(args, &bundle_identifier).then_some(process_id)
         })
         .collect::<Vec<_>>();
     ids.sort_unstable();
@@ -817,6 +1212,50 @@ fn macos_codex_process_ids<'a>(process_lines: impl IntoIterator<Item = &'a str>)
 
 #[cfg(target_os = "macos")]
 fn is_macos_codex_desktop_main(args: &str) -> bool {
+    is_macos_codex_desktop_main_with(args, read_macos_bundle_identifier)
+}
+
+/// 读 `.app` 内 `Contents/Info.plist` 的 `CFBundleIdentifier`。
+///
+/// `app_paths` 里同名函数是私有的，跨模块用不了；这里保留一份等价的局部实现。
+/// 只解析文本 plist：macOS 上 OpenAI 官方 App 都是 XML plist，若遇到二进制 plist
+/// （以 `bplist00` 开头）会读不到标识符，此时退回到可执行名判据，不会更宽松。
+#[cfg(target_os = "macos")]
+fn read_macos_bundle_identifier(app_dir: &Path) -> Option<String> {
+    let plist = std::fs::read_to_string(app_dir.join("Contents").join("Info.plist")).ok()?;
+    plist_string_value(&plist, "CFBundleIdentifier")
+}
+
+/// 从 plist 文本里抠出某个 key 对应的首个 `<string>` 值。
+#[cfg(any(target_os = "macos", test))]
+fn plist_string_value(plist: &str, key: &str) -> Option<String> {
+    let (_, after_key) = plist.split_once(&format!("<key>{key}</key>"))?;
+    let (_, after_open) = after_key.split_once("<string>")?;
+    let (value, _) = after_open.split_once("</string>")?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// ChatGPT 桌面版的正式 bundle id；`Codex Dev` 等衍生构建使用其点分子标识符。
+#[cfg(any(target_os = "macos", test))]
+const MACOS_CODEX_BUNDLE_IDENTIFIER: &str = "com.openai.codex";
+
+/// bundle id 是否指向 Codex 桌面应用。用点分子标识符判定，避免把
+/// `com.openai.chat`（ChatGPT Classic）、`com.openai.chatgpt` 这类同名可执行
+/// 文件的产品误判成 Codex（issue #2222）。
+#[cfg(any(target_os = "macos", test))]
+fn is_macos_codex_bundle_identifier(identifier: &str) -> bool {
+    identifier == MACOS_CODEX_BUNDLE_IDENTIFIER
+        || identifier
+            .strip_prefix(MACOS_CODEX_BUNDLE_IDENTIFIER)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn is_macos_codex_desktop_main_with(
+    args: &str,
+    bundle_identifier: impl Fn(&Path) -> Option<String>,
+) -> bool {
     let args = args.trim_start();
     if !args.starts_with('/') || args.contains("/Helpers/") {
         return false;
@@ -824,9 +1263,18 @@ fn is_macos_codex_desktop_main(args: &str) -> bool {
 
     let executable_end = args.find(" -").unwrap_or(args.len());
     let executable = args[..executable_end].trim_end();
-    let Some((_, executable_name)) = executable.rsplit_once(".app/Contents/MacOS/") else {
+    let Some((app_dir, executable_name)) = executable.rsplit_once(".app/Contents/MacOS/") else {
         return false;
     };
+    let app_dir = format!("{app_dir}.app");
+
+    // 一级判据：`.app` 的 bundle id。读得到就以此为准——`ChatGPT.app`（Codex 桌面版）
+    // 与 `ChatGPT Classic.app` 的主可执行文件都叫 `ChatGPT`，只有 bundle id 能区分。
+    if let Some(identifier) = bundle_identifier(Path::new(&app_dir)) {
+        return is_macos_codex_bundle_identifier(&identifier);
+    }
+
+    // 二级判据：读不到 bundle id 时才退回可执行名。
     matches!(
         executable_name,
         "Codex" | "Codex Dev" | "ChatGPT" | "ChatGPT Dev"

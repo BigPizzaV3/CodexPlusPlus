@@ -897,6 +897,21 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Ok(snapshot) => snapshot,
         Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
     };
+    #[cfg(windows)]
+    let forced_launcher_process_ids = std::cell::Cell::new(Vec::new());
+    // 停止阶段要先等 Codex 进程退出，再等原生浏览器恢复，最后等旧启动器退出，合计
+    // 可能接近 20 秒且全程阻塞。先落一条「正在停止」状态，让「最近启动」在等待期间
+    // 就有反馈，而不是整整 20 秒界面毫无动静（issue #2403）。
+    // 该状态带的是当前时间戳，早于后面返回给前端的 launch_started_at_ms，
+    // 因此等待完成度判定时会被视作 stale，不会误报成最终结果。
+    let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
+        &request,
+        "stopping",
+        "正在停止旧实例（Codex 进程 / 原生浏览器 / 旧启动器），最多约 20 秒…",
+        current_timestamp_ms(),
+        "restart_stopping",
+        10,
+    ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
         || {
             codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
@@ -907,7 +922,23 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
         || {
             #[cfg(windows)]
-            launchers.wait_for_exit(std::time::Duration::from_secs(10))?;
+            {
+                // 超时不再直接失败：先带进程身份校验强制结束残留启动器，否则用户会
+                // 落到「重启失败、没有任何可用实例、还要手工结束进程」的境地。
+                let outcome = launchers.wait_for_exit_or_force(std::time::Duration::from_secs(10));
+                if outcome.still_running {
+                    anyhow::bail!(
+                        "旧启动器强制结束后仍未退出（进程：{}）",
+                        outcome
+                            .forced_process_ids
+                            .iter()
+                            .map(u32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                forced_launcher_process_ids.set(outcome.forced_process_ids);
+            }
             #[cfg(not(windows))]
             codex_plus_core::watcher::stop_launcher_processes_and_wait();
             Ok(())
@@ -963,18 +994,31 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
+    // 本次重启是否强制结束了残留启动器，用于给用户一个明确交代。
+    #[cfg(windows)]
+    let forced_launcher_process_count = forced_launcher_process_ids.get().len();
+    #[cfg(not(windows))]
+    let forced_launcher_process_count = 0usize;
+    let restart_message = if forced_launcher_process_count > 0 {
+        format!(
+            "Codex 已请求重启；旧启动器超时未退出，已强制结束 {forced_launcher_process_count} 个残留实例。"
+        )
+    } else {
+        "Codex 已请求重启，启动任务正在后台运行。".to_string()
+    };
     match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
         spawn_after_provider_guard_release(provider_guard, request, spawn_silent_launcher)
     }) {
         Ok(()) => CommandResult {
             status: "accepted".to_string(),
-            message: "Codex 已请求重启，启动任务正在后台运行。".to_string(),
+            message: restart_message,
             payload: json!({
                 "debugPort": request.debug_port,
                 "helperPort": request.helper_port,
                 "syncActiveRelay": request.sync_active_relay,
                 "launchStartedAtMs": launch_started_at_ms,
-                "nativeBrowserRestoreFailed": native_browser_restore_failed
+                "nativeBrowserRestoreFailed": native_browser_restore_failed,
+                "forcedStoppedLauncherCount": forced_launcher_process_count
             }),
         },
         Err(error) => {
@@ -1331,6 +1375,25 @@ fn requested_launch_status(
         codex_app: (!request.app_path.trim().is_empty())
             .then(|| request.app_path.trim().to_string()),
         aumid: None,
+        phase: None,
+        progress: None,
+    }
+}
+
+/// 停止阶段的状态：带 `phase`/`progress`，让界面在阻塞的十几秒里有明确中间态
+/// （issue #2403：此前只有 `starting`，看不出是在处理还是卡死）。
+fn requested_launch_status_with_phase(
+    request: &LaunchRequest,
+    status: &str,
+    message: &str,
+    started_at_ms: u64,
+    phase: &str,
+    progress: u8,
+) -> LaunchStatus {
+    LaunchStatus {
+        phase: Some(phase.to_string()),
+        progress: Some(progress.min(100)),
+        ..requested_launch_status(request, status, message, started_at_ms)
     }
 }
 
@@ -6814,6 +6877,50 @@ mod tests {
         let status = requested_launch_status(&request, "starting", "starting", 1);
 
         assert_eq!(status.codex_app, None);
+    }
+
+    /// issue #2403：停止阶段要给出可判断的中间态（phase + progress），
+    /// 否则十几秒的阻塞等待在界面上和「卡死」无法区分。
+    #[test]
+    fn stopping_status_carries_phase_and_progress() {
+        let request = launch_request(false);
+
+        let status = requested_launch_status_with_phase(
+            &request,
+            "stopping",
+            "正在停止旧实例",
+            12345,
+            "restart_stopping",
+            10,
+        );
+
+        assert_eq!(status.status, "stopping");
+        assert_eq!(status.phase.as_deref(), Some("restart_stopping"));
+        assert_eq!(status.progress, Some(10));
+        // 中间态仍要带上请求标识，供「最近启动」判断是否属于本次重启。
+        assert_eq!(status.started_at_ms, 12345);
+        assert_eq!(status.debug_port, Some(request.debug_port));
+        assert_eq!(status.helper_port, Some(request.helper_port));
+    }
+
+    /// 进度百分比必须收敛到 0~100，越界值不能写进状态文件。
+    #[test]
+    fn stopping_status_clamps_progress() {
+        let request = launch_request(false);
+
+        let status =
+            requested_launch_status_with_phase(&request, "stopping", "msg", 1, "phase", 250);
+
+        assert_eq!(status.progress, Some(100));
+    }
+
+    /// 普通启动状态不带阶段信息，保持既有行为（进度字段为 None）。
+    #[test]
+    fn plain_launch_status_has_no_phase() {
+        let status = requested_launch_status(&launch_request(false), "starting", "starting", 1);
+
+        assert_eq!(status.phase, None);
+        assert_eq!(status.progress, None);
     }
 
     /// issue #618：live config.toml 有语法错误时必须被判成「可降级」，而不是让
