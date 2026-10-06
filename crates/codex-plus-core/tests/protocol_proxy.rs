@@ -3446,7 +3446,10 @@ async fn upstream_request_returns_when_provider_accepts_but_never_sends_headers(
     .await;
 
     assert!(result.is_err());
-    assert!(started.elapsed() < Duration::from_secs(1));
+    // 断言意图：客户端在 header 超时（100ms）后放弃等待，而不是傻等上游那 2 秒。
+    // 上限取 1.5s：既与「傻等 2 秒」有明确区分，又给满负载下的调度抖动留出余量。
+    // 原先写 1s，跑全量测试（几十个 target 并发）时会间歇性越界。
+    assert!(started.elapsed() < Duration::from_millis(1500));
     server.abort();
 }
 
