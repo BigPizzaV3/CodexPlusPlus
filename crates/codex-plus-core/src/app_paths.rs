@@ -944,6 +944,19 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     packaged_app_user_model_id_when_registered(app_dir, app_dir_is_registered_package)
 }
 
+/// 只做推导：从目录名与 manifest 得出 AUMID，**不校验**包是否已在系统注册。
+///
+/// 生产路径请用 [`packaged_app_user_model_id`]，它会先确认包确实已注册。目录名长得
+/// 像 MSIX 包不等于该包已注册（用户把 Store 包目录整体搬走后路径形状依旧成立），拿
+/// 未注册包的 AUMID 去激活会报 0x80073CF1（issue #2140）。
+///
+/// 之所以公开：注册校验依赖真实的 Store 注册表状态（测试机上无处构造，且非 Windows
+/// 平台恒真），而推导规则本身——目录名到包身份、manifest 到 Application Id、缺
+/// manifest 时回落历史默认值——与平台无关，值得独立验证。
+pub fn derive_packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
+    packaged_app_user_model_id_when_registered(app_dir, |_| true)
+}
+
 /// `packaged_app_user_model_id` 的核心，注册判定以闭包注入，便于测试。
 ///
 /// 目录名像 MSIX 包（`OpenAI.Codex_<版本>_x64__<publisher>`）不等于该包已注册：

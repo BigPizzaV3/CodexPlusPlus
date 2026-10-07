@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_bundled_codex_cli, find_latest_codex_app_dir,
     find_latest_codex_app_dir_from_roots, find_linux_codex_app, find_macos_codex_app,
-    normalize_codex_app_path, packaged_app_user_model_id, resolve_codex_app_dir_with_saved,
+    derive_packaged_app_user_model_id, normalize_codex_app_path, resolve_codex_app_dir_with_saved,
     user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
@@ -77,7 +77,7 @@ fn app_paths_find_latest_windows_package_accepts_chatgpt_desktop_migration() {
         Some("2026.514.421.0")
     );
     assert_eq!(
-        packaged_app_user_model_id(&latest).as_deref(),
+        derive_packaged_app_user_model_id(&latest).as_deref(),
         Some("OpenAI.ChatGPT-Desktop_abc!App")
     );
 }
@@ -100,7 +100,7 @@ fn app_paths_find_latest_windows_package_detects_beta_package() {
     );
     assert_eq!(codex_app_version(&latest).as_deref(), Some("26.527.7698.0"));
     assert_eq!(
-        packaged_app_user_model_id(&latest).as_deref(),
+        derive_packaged_app_user_model_id(&latest).as_deref(),
         Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")
     );
 }
@@ -423,7 +423,7 @@ fn app_paths_normalizes_chatgpt_desktop_executable_and_builds_it() {
     );
     assert_eq!(build_codex_executable(&app), app.join("ChatGPT.exe"));
     assert_eq!(
-        packaged_app_user_model_id(&app).as_deref(),
+        derive_packaged_app_user_model_id(&app).as_deref(),
         Some("OpenAI.Codex_abc!App")
     );
 }
@@ -813,12 +813,12 @@ fn launcher_constructs_windows_packaged_activation_without_real_app() {
         r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
     );
 
+    // 这里验证的是「目录名 → AUMID」这条推导规则；包是否已在系统注册属于另一层
+    // （packaged_app_user_model_id，见 app_paths.rs 的单元测试），测试机上无从构造。
+    let aumid = derive_packaged_app_user_model_id(&app_dir).unwrap();
+    assert_eq!(aumid, "OpenAI.Codex_2p2nqsd0c76g0!App");
     assert_eq!(
-        packaged_app_user_model_id(&app_dir).unwrap(),
-        "OpenAI.Codex_2p2nqsd0c76g0!App"
-    );
-    assert_eq!(
-        build_packaged_activation(&app_dir, 9229, &[]).unwrap(),
+        build_packaged_activation(&aumid, 9229, &[]),
         CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
             arguments: "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229"
@@ -829,7 +829,7 @@ fn launcher_constructs_windows_packaged_activation_without_real_app() {
 }
 
 #[test]
-fn packaged_app_user_model_id_reads_application_id_from_manifest() {
+fn derive_packaged_app_user_model_id_reads_application_id_from_manifest() {
     // 新版 ChatGPT Desktop 可能调整 manifest 中的 Application Id（见 issue #2148）。
     // 这段校验曾被 #2202 的 799ef0c9 静默回退掉，导致 #2308/#2310 的「该进程没有
     // 程序包标识符」；恢复实现时一并恢复测试，避免再次无声丢失。
@@ -852,13 +852,13 @@ fn packaged_app_user_model_id_reads_application_id_from_manifest() {
     .unwrap();
 
     assert_eq!(
-        packaged_app_user_model_id(&app_dir).as_deref(),
+        derive_packaged_app_user_model_id(&app_dir).as_deref(),
         Some("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPTDesktop")
     );
 }
 
 #[test]
-fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
+fn derive_packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
     // manifest 缺失/不可读时保持旧行为（仍使用历史默认值 "App"）。
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp
@@ -868,7 +868,7 @@ fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
     std::fs::create_dir_all(&app_dir).unwrap();
 
     assert_eq!(
-        packaged_app_user_model_id(&app_dir).as_deref(),
+        derive_packaged_app_user_model_id(&app_dir).as_deref(),
         Some("OpenAI.Codex_2p2nqsd0c76g0!App")
     );
 }
@@ -879,9 +879,10 @@ fn launcher_packaged_activation_appends_extra_codex_arguments() {
         r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
     );
     let extra_args = vec!["--force_high_performance_gpu".to_string()];
+    let aumid = derive_packaged_app_user_model_id(&app_dir).unwrap();
 
     assert_eq!(
-        build_packaged_activation(&app_dir, 9229, &extra_args).unwrap(),
+        build_packaged_activation(&aumid, 9229, &extra_args),
         CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
             arguments:
@@ -898,8 +899,10 @@ fn launcher_packaged_activation_adds_native_menu_inspector_argument() {
         r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
     );
 
+    let aumid = derive_packaged_app_user_model_id(&app_dir).unwrap();
+
     assert_eq!(
-        build_packaged_activation_with_native_menu_inspector(&app_dir, 9229, 9329, &[]).unwrap(),
+        build_packaged_activation_with_native_menu_inspector(&aumid, 9229, 9329, &[]),
         CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
             arguments:

@@ -1036,16 +1036,27 @@ impl LaunchHooks for DefaultLaunchHooks {
             native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
         let launch_extra_args = codex_extra_args_for_launch(settings, extra_args);
         if cfg!(windows) {
-            let activation = if let Some(inspector_port) = native_menu_inspector_port {
-                build_packaged_activation_with_native_menu_inspector(
-                    app_dir,
-                    debug_port,
-                    inspector_port,
-                    &launch_extra_args,
-                )
-            } else {
-                build_packaged_activation(app_dir, debug_port, &launch_extra_args)
-            };
+            // AUMID 解析留在调用点：它要查系统里的 Store 注册表（#2140），是有副作用
+            // 的一步；下面的构造函数只做纯拼接。解析不出来（目录名像包、但系统里没
+            // 这个包）就不再走打包激活，继续往下按路径启动——与既有回退路径一致。
+            let activation = crate::app_paths::packaged_app_user_model_id(app_dir).map(
+                |app_user_model_id| {
+                    if let Some(inspector_port) = native_menu_inspector_port {
+                        build_packaged_activation_with_native_menu_inspector(
+                            &app_user_model_id,
+                            debug_port,
+                            inspector_port,
+                            &launch_extra_args,
+                        )
+                    } else {
+                        build_packaged_activation(
+                            &app_user_model_id,
+                            debug_port,
+                            &launch_extra_args,
+                        )
+                    }
+                },
+            );
             if let Some(activation) = activation {
                 let CodexLaunch::PackagedActivation {
                     app_user_model_id,
@@ -2817,33 +2828,38 @@ pub fn build_codex_command_with_native_menu_inspector(
     command
 }
 
+/// 用已解析好的 AUMID 拼出打包激活命令。
+///
+/// AUMID 的解析（含「包是否已注册」这一查询，#2140）留在调用点，这里只做纯拼接。
+/// 早先本函数直接吃 `app_dir` 并自行解析，导致它在 Windows 上依赖 Store 注册表状态、
+/// 无法被测试驱动——测试机上的临时目录永远不算已注册，断言只能拿到 None。
 pub fn build_packaged_activation(
-    app_dir: &Path,
+    app_user_model_id: &str,
     debug_port: u16,
     extra_args: &[String],
-) -> Option<CodexLaunch> {
-    Some(CodexLaunch::PackagedActivation {
-        app_user_model_id: crate::app_paths::packaged_app_user_model_id(app_dir)?,
+) -> CodexLaunch {
+    CodexLaunch::PackagedActivation {
+        app_user_model_id: app_user_model_id.to_string(),
         arguments: command_line_arguments(&build_codex_arguments(debug_port, extra_args)),
         process_id: None,
-    })
+    }
 }
 
 pub fn build_packaged_activation_with_native_menu_inspector(
-    app_dir: &Path,
+    app_user_model_id: &str,
     debug_port: u16,
     inspector_port: u16,
     extra_args: &[String],
-) -> Option<CodexLaunch> {
-    Some(CodexLaunch::PackagedActivation {
-        app_user_model_id: crate::app_paths::packaged_app_user_model_id(app_dir)?,
+) -> CodexLaunch {
+    CodexLaunch::PackagedActivation {
+        app_user_model_id: app_user_model_id.to_string(),
         arguments: command_line_arguments(&build_codex_arguments_with_native_menu_inspector(
             debug_port,
             inspector_port,
             extra_args,
         )),
         process_id: None,
-    })
+    }
 }
 
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
