@@ -36,6 +36,11 @@ sleep() {
 rm() { :; }
 rmdir() { :; }
 osascript() { cat >/dev/null; }
+# sign_dmg / notarize_dmg 定义在脚本前半段，不在下面截取运行的片段里，
+# 所以这里必须提供存根。它们只在 SIGNING_IDENTITY 非空时才真正做事，
+# 本 fixture 不设置该变量，签名与公证的完整流程由 package-dmg.sh 自身负责。
+sign_dmg() { printf 'sign %s\\n' "$1" >> trace.log; }
+notarize_dmg() { printf 'notarize %s\\n' "$1" >> trace.log; }
 hdiutil() {
   printf '%s\\n' "$*" >> trace.log
   case "$1" in
