@@ -201,8 +201,9 @@ jobs:
           done
 
       - name: Verify DMG notarization
-        # 只能用 env. 判断，secrets 不能出现在 if: 里。
-        if: env.MACOS_SIGNING_IDENTITY != ''
+        # 不加 if 条件：Build macOS DMG 已在凭据缺失时直接失败，
+        # 能走到这里就必然签名并公证过。此前用 if: env.MACOS_SIGNING_IDENTITY
+        # 判断，但该变量只存在于上一步的 env 里，这一步读不到，会永远跳过。
         run: |
           set -euo pipefail
           for dmg in dist/macos/*.dmg; do
