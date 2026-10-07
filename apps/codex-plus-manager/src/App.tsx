@@ -5075,7 +5075,8 @@ function DreamSkinScreen({
   onDraftChange: (value: DreamSkinThemeDraft | null) => void;
   actions: Actions;
 }) {
-  const [themeView, setThemeView] = useState<"market" | "community" | "local">("community");
+  const [themeView, setThemeView] = useState<"market" | "community" | "local">("local");
+  const [localQuery, setLocalQuery] = useState("");
   const companionInputRef = useRef<HTMLInputElement>(null);
   const [companionError, setCompanionError] = useState("");
   const masterEnabled = form.enhancementsEnabled;
@@ -5153,25 +5154,41 @@ function DreamSkinScreen({
     reader.onerror = () => setCompanionError(t("读取图片失败，请重新选择"));
     reader.readAsDataURL(file);
   };
-  const stateLabel = dreamSkinStateLabel(status?.state ?? "not_running");
+  const currentItem = library?.themes.find((item) => pendingRestart
+    ? item.key === pendingRestart.currentThemeKey
+    : item.active);
+  const currentThemeName = pendingRestart?.currentThemeName || currentItem?.name || t("未记录");
+  const currentThemeLabel = status?.liveApplied
+    ? t("当前运行")
+    : pendingRestart ? t("此前配置") : t("当前配置");
+  const stateLabel = !masterEnabled
+    ? t("增强总开关已关闭")
+    : !form.codexAppDreamSkinEnabled
+      ? t("皮肤未启用")
+      : form.codexAppDreamSkinPaused || status?.paused
+        ? t("已恢复原始外观")
+        : status ? dreamSkinStateLabel(status.state) : t("等待状态检查");
+  const stateTone = !masterEnabled || !form.codexAppDreamSkinEnabled || form.codexAppDreamSkinPaused || status?.paused
+    ? "disabled"
+    : status?.state === "pass" ? "pass" : status?.state === "fail" ? "fail" : status ? "warning" : "unchecked";
+  const localThemes = (library?.themes ?? []).filter((item) =>
+    !localQuery.trim() || item.name.toLocaleLowerCase().includes(localQuery.trim().toLocaleLowerCase()),
+  );
   const runtimeChecks = status?.checks ?? [];
   const verificationChecks = verification?.checks ?? [];
 
   return (
-    <>
-      <Panel className="dream-skin-panel dream-skin-attribution-panel">
-        <CardContent className="dream-skin-attribution-content">
-          <p className="dream-skin-attribution-line">
-            {t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}
-          </p>
-        </CardContent>
-      </Panel>
-
-      <Panel className="dream-skin-panel">
-        <CardHead title={t("运行状态")} detail={t("配置保存在 Codex++，实时操作通过本机回环 CDP 执行")} />
-        <CardContent>
-          <div className="dream-skin-runtime-grid">
-            <label className="switch-row compact">
+    <div className="dream-skin-page">
+      <Panel className="dream-skin-panel dream-skin-overview">
+        <CardContent className="dream-skin-overview-content">
+          <div className="dream-skin-overview-heading">
+            <div className="dream-skin-current-copy">
+              <small>{currentThemeLabel}</small>
+              <strong title={currentThemeName}>{currentThemeName}</strong>
+              <span className={`dream-skin-status-pill is-${stateTone}`} role="status">{stateLabel}</span>
+            </div>
+            <div className="dream-skin-overview-controls">
+            <label className="switch-row compact dream-skin-enable-switch">
               <input
                 checked={form.codexAppDreamSkinEnabled}
                 disabled={!masterEnabled}
@@ -5184,45 +5201,46 @@ function DreamSkinScreen({
               />
               <span>
                 <strong>{t("启用 Codex 皮肤")}</strong>
-                <small>{t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}</small>
               </span>
               <ToggleVisual />
             </label>
-            <div className={`dream-skin-runtime-state is-${status?.state ?? "not_running"}`}>
-              {dreamSkinCheckIcon(status?.state === "pass" ? "pass" : status?.state === "fail" ? "fail" : "warning")}
-              <span>
-                <small>{t("当前状态")}</small>
-                <strong>{stateLabel}</strong>
-              </span>
-              <Badge status={status?.liveApplied ? "ok" : status?.paused ? "disabled" : "not_checked"} />
+              <Button aria-label={t("刷新状态")} onClick={() => void actions.refreshDreamSkinStatus()} size="icon" title={t("刷新状态")} type="button" variant="ghost">
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <div className="dream-skin-selected-summary">
+            <img alt={t("Dream Skin 图片预览")} src={previewUrl} />
+            <div className="dream-skin-selected-copy">
+              <small>{t("正在编辑")}</small>
+              <strong title={theme.name}>{theme.name || t("未命名主题")}</strong>
+              <span className={dirty ? "is-dirty" : ""}>{dirty ? t("有未保存修改") : savedThemeSelected ? t("已保存主题") : draft?.builtin ? t("内置主题") : t("当前未保存主题")}</span>
+            </div>
+            <div className="dream-skin-selection-actions">
+              <Button disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()} type="button" variant="secondary">
+                <Save className="h-4 w-4" />
+                {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
+              </Button>
+              <Button disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
+                <Play className="h-4 w-4" />
+                {pendingRestart ? t("更新待应用") : t("应用所选主题")}
+              </Button>
+              <Button onClick={() => void actions.restoreDreamSkin()} type="button" variant="outline">
+                <RotateCcw className="h-4 w-4" />
+                {t("恢复 Codex 外观")}
+              </Button>
             </div>
           </div>
           {!masterEnabled ? (
-            <div className="hint-line">
-              <Info className="h-4 w-4" />
-              <span>{t("请先在 Codex增强 页面开启总开关。")}</span>
-            </div>
+            <div className="hint-line"><Info className="h-4 w-4" /><span>{t("请先在 Codex增强 页面开启总开关。")}</span></div>
           ) : null}
-          <Toolbar>
-            <Button disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")}>
-              <Play className="h-4 w-4" />
-              {t("应用皮肤")}
-            </Button>
-            <Button variant="outline" onClick={() => void actions.restoreDreamSkin()}>
-              <RotateCcw className="h-4 w-4" />
-              {t("恢复 Codex 外观")}
-            </Button>
-            <Button size="icon" title={t("刷新状态")} variant="outline" onClick={() => void actions.refreshDreamSkinStatus()}>
-              <RefreshCw className="h-4 w-4" />
-            </Button>
-          </Toolbar>
           {pendingRestart ? (
             <div className="dream-skin-pending-state" role="status">
               <Rocket className="h-5 w-5" aria-hidden="true" />
               <div>
                 <strong>{t("待应用主题")}：{pendingRestart.pendingThemeName}</strong>
                 <small>
-                  {t("当前运行")}：{pendingRestart.currentThemeName}。{t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}
+                  {currentThemeLabel}：{pendingRestart.currentThemeName}。{t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}
                 </small>
               </div>
               <Button disabled={launchPending} onClick={() => void actions.restart()}>
@@ -5233,44 +5251,56 @@ function DreamSkinScreen({
           ) : null}
         </CardContent>
       </Panel>
-
-      <Panel className="dream-skin-panel">
-        <CardHead title={t("图片与主题")} detail={t("自定义图片会被导入 Codex++ 托管目录；主题字段与目标项目 theme.json 对齐")} />
+      <Panel className="dream-skin-panel dream-skin-browser">
         <CardContent>
-          <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
-            <button
-              aria-selected={themeView === "community"}
-              className={themeView === "community" ? "is-active" : ""}
-              onClick={() => setThemeView("community")}
-              role="tab"
-              type="button"
-            >
-              <Github className="h-4 w-4" />
-              {t("DreamSkin 社区")}
-              <span>{community?.items.length ?? 0}</span>
-            </button>
-            <button
-              aria-selected={themeView === "market"}
-              className={themeView === "market" ? "is-active" : ""}
-              onClick={() => setThemeView("market")}
-              role="tab"
-              type="button"
-            >
-              <Store className="h-4 w-4" />
-              {t("主题市场")}
-              <span>{market?.themes.length ?? 0}</span>
-            </button>
-            <button
-              aria-selected={themeView === "local"}
-              className={themeView === "local" ? "is-active" : ""}
-              onClick={() => setThemeView("local")}
-              role="tab"
-              type="button"
-            >
-              <Palette className="h-4 w-4" />
-              {t("我的主题")}
-              <span>{library?.themes.length ?? 0}</span>
-            </button>
+          <div className="dream-skin-browser-toolbar">
+            <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
+              <button
+                aria-selected={themeView === "local"}
+                className={themeView === "local" ? "is-active" : ""}
+                onClick={() => setThemeView("local")}
+                role="tab"
+                type="button"
+              >
+                <Palette className="h-4 w-4" />
+                {t("我的主题")}
+                <span>{library?.themes.length ?? 0}</span>
+              </button>
+              <button
+                aria-selected={themeView === "community"}
+                className={themeView === "community" ? "is-active" : ""}
+                onClick={() => setThemeView("community")}
+                role="tab"
+                type="button"
+              >
+                <Github className="h-4 w-4" />
+                {t("DreamSkin 社区")}
+                <span>{community?.items.length ?? 0}</span>
+              </button>
+              <button
+                aria-selected={themeView === "market"}
+                className={themeView === "market" ? "is-active" : ""}
+                onClick={() => setThemeView("market")}
+                role="tab"
+                type="button"
+              >
+                <Store className="h-4 w-4" />
+                {t("主题市场")}
+                <span>{market?.themes.length ?? 0}</span>
+              </button>
+            </div>
+            {themeView === "local" ? (
+              <Toolbar>
+                <Button variant="outline" onClick={() => void actions.importDreamSkinThemePackage()}>
+                  <PackageOpen className="h-4 w-4" />
+                  {t("导入主题包")}
+                </Button>
+                <Button variant="secondary" onClick={() => void actions.createDreamSkinTheme()}>
+                  <ImagePlus className="h-4 w-4" />
+                  {t("从图片创建")}
+                </Button>
+              </Toolbar>
+            ) : null}
           </div>
 
           {themeView === "community" ? (
@@ -5336,23 +5366,13 @@ function DreamSkinScreen({
                     : t("选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。")}
                 </small>
               </div>
-              <Toolbar>
-                <Button variant="outline" onClick={() => void actions.importDreamSkinThemePackage()}>
-                  <PackageOpen className="h-4 w-4" />
-                  {t("导入主题包")}
-                </Button>
-                <Button
-                  disabled={!masterEnabled || !draft}
-                  onClick={() => void actions.activateDreamSkinTheme()}
-                  title={t("保存主题；需要重启时不会打断当前操作")}
-                >
-                  <Play className="h-4 w-4" />
-                  {pendingRestart ? t("更新待应用") : t("应用主题")}
-                </Button>
-              </Toolbar>
+              <div className="dream-skin-local-search">
+                <Search aria-hidden="true" className="h-4 w-4" />
+                <Input aria-label={t("搜索我的主题")} onChange={(event) => setLocalQuery(event.currentTarget.value)} placeholder={t("搜索主题名称")} type="search" value={localQuery} />
+              </div>
             </div>
             <div className="dream-skin-theme-list">
-              {(library?.themes ?? []).map((item) => {
+              {localThemes.map((item) => {
                 const cardPreview = item.previewPath
                   ? convertFileSrc(item.previewPath)
                   : isWindowsPlatform
@@ -5369,6 +5389,7 @@ function DreamSkinScreen({
                     key={item.key}
                   >
                     <button
+                      aria-pressed={item.key === selectedTheme}
                       className="dream-skin-theme-select"
                       onClick={() => actions.selectDreamSkinTheme(item)}
                       type="button"
@@ -5377,7 +5398,7 @@ function DreamSkinScreen({
                         <img alt={item.name} loading="lazy" src={cardPreview} />
                         {currentRunning || pendingApplication ? (
                           <span className="dream-skin-theme-badges">
-                            {currentRunning ? <b>{t("当前运行")}</b> : null}
+                            {currentRunning ? <b>{currentThemeLabel}</b> : null}
                             {pendingApplication ? <b className="is-pending">{t("待应用")}</b> : null}
                           </span>
                         ) : null}
@@ -5396,7 +5417,7 @@ function DreamSkinScreen({
                     </button>
                     {item.kind === "stored" ? (
                       <details className="dream-skin-theme-menu">
-                        <summary title={t("主题操作")}><MoreHorizontal className="h-4 w-4" /></summary>
+                        <summary aria-label={tf("主题操作：{0}", [item.name])} title={t("主题操作")}><MoreHorizontal className="h-4 w-4" /></summary>
                         <div>
                           <button onClick={() => void actions.renameDreamSkinTheme(item)} type="button">
                             <Edit3 className="h-4 w-4" />
@@ -5414,6 +5435,13 @@ function DreamSkinScreen({
               })}
             </div>
             {!library ? <p className="empty">{t("正在加载主题库…")}</p> : null}
+            {library && !localThemes.length ? (
+              <div className="dream-skin-local-empty">
+                <Search aria-hidden="true" className="h-5 w-5" />
+                <strong>{t("没有匹配的主题")}</strong>
+                <Button onClick={() => setLocalQuery("")} type="button" variant="outline">{t("清除搜索")}</Button>
+              </div>
+            ) : null}
           </section>
 
           <details className="dream-skin-customizer">
@@ -5444,96 +5472,6 @@ function DreamSkinScreen({
                 </span>
               </div>
 
-              <div className="dream-skin-companion-controls">
-                <div className="dream-skin-companion-heading">
-                  <div>
-                    <strong>{t("输入框旁照片")}</strong>
-                    <small>{t("为主题选择一张显示在 Codex 输入框旁的自定义照片")}</small>
-                  </div>
-                  {companionDataUrl ? (
-                    <img alt={t("输入框旁照片预览")} src={companionDataUrl} />
-                  ) : null}
-                </div>
-                <input
-                  accept="image/png,image/jpeg,image/webp,image/gif"
-                  className="sr-only"
-                  onChange={chooseCompanion}
-                  ref={companionInputRef}
-                  type="file"
-                />
-                <Toolbar>
-                  <Button onClick={() => companionInputRef.current?.click()} type="button" variant="secondary">
-                    <Camera className="h-4 w-4" />
-                    {companionDataUrl ? t("更换照片") : t("选择照片")}
-                  </Button>
-                  <Button disabled={!companionDataUrl} onClick={clearCompanion} type="button" variant="outline">
-                    <Trash2 className="h-4 w-4" />
-                    {t("清除照片")}
-                  </Button>
-                </Toolbar>
-                {companionError ? <small className="dream-skin-companion-error">{companionError}</small> : null}
-                <div className="dream-skin-companion-fields">
-                  <label className="switch-row compact">
-                    <input
-                      checked={companionEnabled}
-                      disabled={!companionDataUrl}
-                      onChange={(event) => updateCompanion({ enabled: event.currentTarget.checked })}
-                      type="checkbox"
-                    />
-                    <span>
-                      <strong>{t("显示在输入框旁")}</strong>
-                      <small>{t("应用主题后显示在输入框的左侧或右侧")}</small>
-                    </span>
-                    <ToggleVisual />
-                  </label>
-                  <Field label={t("照片宽度") }>
-                    <Input
-                      disabled={!companionDataUrl}
-                      inputMode="numeric"
-                      max={160}
-                      min={48}
-                      type="number"
-                      value={companion?.width ?? 96}
-                      onChange={(event) => updateCompanion({ width: Math.max(48, Math.min(160, Number(event.currentTarget.value) || 96)) })}
-                    />
-                  </Field>
-                  <Field label={t("显示位置") }>
-                    <AppSelect
-                      disabled={!companionDataUrl}
-                      value={companion?.side ?? "right"}
-                      onChange={(value) => updateCompanion({ side: value })}
-                      options={[
-                        { value: "auto", label: t("自动") },
-                        { value: "left", label: t("左侧") },
-                        { value: "right", label: t("右侧") },
-                      ]}
-                    />
-                  </Field>
-                  <Field label={t("水平偏移") }>
-                    <Input
-                      disabled={!companionDataUrl}
-                      inputMode="numeric"
-                      max={48}
-                      min={-48}
-                      type="number"
-                      value={companion?.offsetX ?? 0}
-                      onChange={(event) => updateCompanion({ offsetX: Math.max(-48, Math.min(48, Number(event.currentTarget.value) || 0)) })}
-                    />
-                  </Field>
-                  <Field label={t("垂直偏移") }>
-                    <Input
-                      disabled={!companionDataUrl}
-                      inputMode="numeric"
-                      max={160}
-                      min={-160}
-                      type="number"
-                      value={companion?.offsetY ?? 4}
-                      onChange={(event) => updateCompanion({ offsetY: Math.max(-160, Math.min(160, Number(event.currentTarget.value) || 0)) })}
-                    />
-                  </Field>
-                </div>
-              </div>
-
               <div className="dream-skin-editor-layout">
                 <div className="dream-skin-media-editor">
                   <div
@@ -5546,13 +5484,15 @@ function DreamSkinScreen({
                       <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("自定义托管图片") : t("目标项目默认图片")}</small>
                     </span>
                   </div>
-                  <Field label={t("托管图片路径")}>
-                    <Input
-                      readOnly
-                      placeholder={t("使用目标项目默认图片")}
-                      value={draft?.imagePath ?? ""}
-                    />
-                  </Field>
+                  <RelayFold className="relay-config-section dream-skin-image-info" title={t("图片信息")}>
+                    <Field label={t("托管图片路径")}>
+                      <Input
+                        readOnly
+                        placeholder={t("使用目标项目默认图片")}
+                        value={draft?.imagePath ?? ""}
+                      />
+                    </Field>
+                  </RelayFold>
                   <Toolbar>
                     <Button variant="secondary" onClick={() => void actions.chooseDreamSkinImagePath()}>
                       <Camera className="h-4 w-4" />
@@ -5569,72 +5509,177 @@ function DreamSkinScreen({
                   </Toolbar>
                 </div>
 
-                <div className="dream-skin-theme-fields">
-                  <div className="dream-skin-text-grid">
-                    <Field label={t("主题 ID")}><Input readOnly={draft?.builtin || savedThemeSelected} value={theme.id} onChange={(event) => updateThemeText("id", event.currentTarget.value)} /></Field>
-                    <Field label={t("主题名称")}><Input value={theme.name} onChange={(event) => updateThemeText("name", event.currentTarget.value)} /></Field>
-                    <Field label={t("品牌副标题")}><Input value={theme.brandSubtitle} onChange={(event) => updateThemeText("brandSubtitle", event.currentTarget.value)} /></Field>
-                    <Field label={t("主题标语")}><Input value={theme.tagline} onChange={(event) => updateThemeText("tagline", event.currentTarget.value)} /></Field>
-                    <Field label={t("项目前缀")}><Input value={theme.projectPrefix} onChange={(event) => updateThemeText("projectPrefix", event.currentTarget.value)} /></Field>
-                    <Field label={t("项目按钮文字")}><Input value={theme.projectLabel} onChange={(event) => updateThemeText("projectLabel", event.currentTarget.value)} /></Field>
-                    <Field label={t("状态文字")}><Input value={theme.statusText} onChange={(event) => updateThemeText("statusText", event.currentTarget.value)} /></Field>
-                    <Field label={t("引用文字")}><Input value={theme.quote} onChange={(event) => updateThemeText("quote", event.currentTarget.value)} /></Field>
-                  </div>
-                  {isWindowsPlatform ? (
-                    <div className="dream-skin-windows-theme-controls">
-                      <Field label={t("外观模式")}>
-                        <div aria-label={t("外观模式")} className="segmented dream-skin-appearance-options" role="group">
-                          {([
-                            ["auto", t("自动")],
-                            ["light", t("亮色")],
-                            ["dark", t("暗色")],
-                          ] as const).map(([value, label]) => (
-                            <button
-                              aria-pressed={themeAppearance === value}
-                              className={themeAppearance === value ? "active" : ""}
-                              key={value}
-                              onClick={() => updateTheme({ ...theme, appearance: value })}
-                              type="button"
+                <div className="dream-skin-edit-sections">
+                  <details className="dream-skin-edit-section">
+                    <summary><ChevronDown aria-hidden="true" className="dream-skin-edit-chevron h-4 w-4" /><strong>{t("输入框旁照片")}</strong></summary>
+                    <div className="dream-skin-edit-section-body">
+                      <div className="dream-skin-companion-controls">
+                        <div className="dream-skin-companion-heading">
+                          <div>
+                            <small>{t("为主题选择一张显示在 Codex 输入框旁的自定义照片")}</small>
+                          </div>
+                          {companionDataUrl ? (
+                            <img alt={t("输入框旁照片预览")} src={companionDataUrl} />
+                          ) : null}
+                        </div>
+                        <input
+                          accept="image/png,image/jpeg,image/webp,image/gif"
+                          className="sr-only"
+                          onChange={chooseCompanion}
+                          ref={companionInputRef}
+                          type="file"
+                        />
+                        <Toolbar>
+                          <Button onClick={() => companionInputRef.current?.click()} type="button" variant="secondary">
+                            <Camera className="h-4 w-4" />
+                            {companionDataUrl ? t("更换照片") : t("选择照片")}
+                          </Button>
+                          <Button disabled={!companionDataUrl} onClick={clearCompanion} type="button" variant="outline">
+                            <Trash2 className="h-4 w-4" />
+                            {t("清除照片")}
+                          </Button>
+                        </Toolbar>
+                        {companionError ? <small className="dream-skin-companion-error">{companionError}</small> : null}
+                        <div className="dream-skin-companion-fields">
+                          <label className="switch-row compact">
+                            <input
+                              checked={companionEnabled}
+                              disabled={!companionDataUrl}
+                              onChange={(event) => updateCompanion({ enabled: event.currentTarget.checked })}
+                              type="checkbox"
+                            />
+                            <span>
+                              <strong>{t("显示在输入框旁")}</strong>
+                              <small>{t("应用主题后显示在输入框的左侧或右侧")}</small>
+                            </span>
+                            <ToggleVisual />
+                          </label>
+                          <Field label={t("照片宽度") }>
+                            <Input
+                              disabled={!companionDataUrl}
+                              inputMode="numeric"
+                              max={160}
+                              min={48}
+                              type="number"
+                              value={companion?.width ?? 96}
+                              onChange={(event) => updateCompanion({ width: Math.max(48, Math.min(160, Number(event.currentTarget.value) || 96)) })}
+                            />
+                          </Field>
+                          <Field label={t("显示位置") }>
+                            <AppSelect
+                              disabled={!companionDataUrl}
+                              value={companion?.side ?? "right"}
+                              onChange={(value) => updateCompanion({ side: value })}
+                              options={[
+                                { value: "auto", label: t("自动") },
+                                { value: "left", label: t("左侧") },
+                                { value: "right", label: t("右侧") },
+                              ]}
+                            />
+                          </Field>
+                          <Field label={t("水平偏移") }>
+                            <Input
+                              disabled={!companionDataUrl}
+                              inputMode="numeric"
+                              max={48}
+                              min={-48}
+                              type="number"
+                              value={companion?.offsetX ?? 0}
+                              onChange={(event) => updateCompanion({ offsetX: Math.max(-48, Math.min(48, Number(event.currentTarget.value) || 0)) })}
+                            />
+                          </Field>
+                          <Field label={t("垂直偏移") }>
+                            <Input
+                              disabled={!companionDataUrl}
+                              inputMode="numeric"
+                              max={160}
+                              min={-160}
+                              type="number"
+                              value={companion?.offsetY ?? 4}
+                              onChange={(event) => updateCompanion({ offsetY: Math.max(-160, Math.min(160, Number(event.currentTarget.value) || 0)) })}
+                            />
+                          </Field>
+                        </div>
+                      </div>
+
+                    </div>
+                  </details>
+                  <details className="dream-skin-edit-section">
+                    <summary><ChevronDown aria-hidden="true" className="dream-skin-edit-chevron h-4 w-4" /><strong>{t("界面文字")}</strong></summary>
+                    <div className="dream-skin-edit-section-body">
+                      <div className="dream-skin-text-grid">
+                        <Field label={t("主题 ID")}><Input readOnly={draft?.builtin || savedThemeSelected} value={theme.id} onChange={(event) => updateThemeText("id", event.currentTarget.value)} /></Field>
+                        <Field label={t("主题名称")}><Input value={theme.name} onChange={(event) => updateThemeText("name", event.currentTarget.value)} /></Field>
+                        <Field label={t("品牌副标题")}><Input value={theme.brandSubtitle} onChange={(event) => updateThemeText("brandSubtitle", event.currentTarget.value)} /></Field>
+                        <Field label={t("主题标语")}><Input value={theme.tagline} onChange={(event) => updateThemeText("tagline", event.currentTarget.value)} /></Field>
+                        <Field label={t("项目前缀")}><Input value={theme.projectPrefix} onChange={(event) => updateThemeText("projectPrefix", event.currentTarget.value)} /></Field>
+                        <Field label={t("项目按钮文字")}><Input value={theme.projectLabel} onChange={(event) => updateThemeText("projectLabel", event.currentTarget.value)} /></Field>
+                        <Field label={t("状态文字")}><Input value={theme.statusText} onChange={(event) => updateThemeText("statusText", event.currentTarget.value)} /></Field>
+                        <Field label={t("引用文字")}><Input value={theme.quote} onChange={(event) => updateThemeText("quote", event.currentTarget.value)} /></Field>
+                      </div>
+                    </div>
+                  </details>
+                  <details className="dream-skin-edit-section">
+                    <summary><ChevronDown aria-hidden="true" className="dream-skin-edit-chevron h-4 w-4" /><strong>{t("主题配色")}</strong></summary>
+                    <div className="dream-skin-edit-section-body">
+                      {isWindowsPlatform ? (
+                        <div className="dream-skin-windows-theme-controls">
+                          <Field label={t("外观模式")}>
+                            <div aria-label={t("外观模式")} className="segmented dream-skin-appearance-options" role="group">
+                              {([
+                                ["auto", t("自动")],
+                                ["light", t("亮色")],
+                                ["dark", t("暗色")],
+                              ] as const).map(([value, label]) => (
+                                <button
+                                  aria-pressed={themeAppearance === value}
+                                  className={themeAppearance === value ? "active" : ""}
+                                  key={value}
+                                  onClick={() => updateTheme({ ...theme, appearance: value })}
+                                  type="button"
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </Field>
+                          <div className="dream-skin-windows-accent">
+                            <DreamSkinColorField
+                              label={t("强调色")}
+                              value={windowsAccent}
+                              onChange={updateWindowsAccent}
+                            />
+                            <Button
+                              disabled={!windowsAccent.trim()}
+                              onClick={() => updateWindowsAccent("")}
+                              size="sm"
+                              variant="outline"
                             >
-                              {label}
-                            </button>
+                              <RotateCcw className="h-4 w-4" />
+                              {t("跟随图片配色")}
+                            </Button>
+                          </div>
+                          <small className="dream-skin-windows-theme-note">
+                            {t("亮暗模式直接控制 Codex 外观；强调色留空时自动从主题图片提取。")}
+                          </small>
+                        </div>
+                      ) : (
+                        <div className="dream-skin-colors">
+                          {dreamSkinColorFields().map(([key, label]) => (
+                            <DreamSkinColorField
+                              key={key}
+                              label={label}
+                              value={String(themeColors[key])}
+                              onChange={(value) => updateThemeColor(key, value)}
+                            />
                           ))}
                         </div>
-                      </Field>
-                      <div className="dream-skin-windows-accent">
-                        <DreamSkinColorField
-                          label={t("强调色")}
-                          value={windowsAccent}
-                          onChange={updateWindowsAccent}
-                        />
-                        <Button
-                          disabled={!windowsAccent.trim()}
-                          onClick={() => updateWindowsAccent("")}
-                          size="sm"
-                          variant="outline"
-                        >
-                          <RotateCcw className="h-4 w-4" />
-                          {t("跟随图片配色")}
-                        </Button>
-                      </div>
-                      <small className="dream-skin-windows-theme-note">
-                        {t("亮暗模式直接控制 Codex 外观；强调色留空时自动从主题图片提取。")}
-                      </small>
+                      )}
                     </div>
-                  ) : (
-                    <div className="dream-skin-colors">
-                      {dreamSkinColorFields().map(([key, label]) => (
-                        <DreamSkinColorField
-                          key={key}
-                          label={label}
-                          value={String(themeColors[key])}
-                          onChange={(value) => updateThemeColor(key, value)}
-                        />
-                      ))}
-                    </div>
-                  )}
+                  </details>
                 </div>
               </div>
+              <div className="dream-skin-editor-footer">
               <Toolbar>
                 <Button disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
                   <Save className="h-4 w-4" />
@@ -5645,16 +5690,15 @@ function DreamSkinScreen({
                   {isWindowsPlatform ? t("恢复 Codex 默认配色") : t("恢复 Dream Skin 默认主题")}
                 </Button>
               </Toolbar>
+              </div>
             </div>
           </details>
             </>
           )}
         </CardContent>
       </Panel>
-
-      <Panel className="dream-skin-panel">
-        <CardHead title={t("诊断与验证")} detail={t("检查官方应用身份、CDP renderer、目标样式和页面布局")} />
-        <CardContent>
+      <RelayFold className="dream-skin-panel dream-skin-diagnostics-fold" title={t("诊断与验证")}>
+        <p className="relay-fold-description">{t("配置保存在 Codex++，实时操作通过本机回环 CDP 执行")}。{t("检查官方应用身份、CDP renderer、目标样式和页面布局")}</p>
           <div className="dream-skin-diagnostics-grid">
             <DreamSkinCheckList title={t("运行诊断")} checks={runtimeChecks} emptyText={t("刷新状态后显示运行诊断。")}/>
             <DreamSkinCheckList title={t("最近实机验证")} checks={verificationChecks} emptyText={t("运行实机验证后显示页面检查结果。")}/>
@@ -5679,9 +5723,15 @@ function DreamSkinScreen({
               {t("保存截图")}
             </Button>
           </Toolbar>
-        </CardContent>
-      </Panel>
-    </>
+      </RelayFold>
+      <details className="dream-skin-about">
+        <summary><ChevronDown aria-hidden="true" className="dream-skin-about-chevron h-4 w-4" /><strong>{t("来源与授权说明")}</strong></summary>
+        <div>
+          <p>{t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}</p>
+          <p>{t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}</p>
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -8086,23 +8136,16 @@ function RelayProfileEditor({
                 />
               </Field>
               <Field className="relay-field-protocol" label={t("上游协议")}>
-                <div className="protocol-options">
-                  <button
-                    className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
-                    onClick={() => updateDraft({ protocol: "responses" })}
-                    type="button"
-                  >
-                    Responses API
-                  </button>
-                  <button
-                    className={`protocol-option ${profile.protocol === "chatCompletions" ? "active" : ""}`}
-                    onClick={() => updateDraft({ protocol: "chatCompletions" })}
-                    type="button"
-                  >
-                    Chat Completions
-                  </button>
-                </div>
-                </Field>
+                <AppSelect
+                  ariaLabel={t("上游协议")}
+                  value={profile.protocol}
+                  onChange={(protocol) => updateDraft({ protocol })}
+                  options={[
+                    { value: "responses", label: "Responses API" },
+                    { value: "chatCompletions", label: "Chat Completions" },
+                  ]}
+                />
+              </Field>
             </div>
           </section>
         ) : null}

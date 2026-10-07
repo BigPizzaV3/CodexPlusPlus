@@ -5,6 +5,25 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "此前配置": "Previous configuration",
+  "未记录": "Not recorded",
+  "当前配置": "Current configuration",
+  "正在编辑": "Editing",
+  "皮肤未启用": "Skin is off",
+  "增强总开关已关闭": "Enhancements are off",
+  "已恢复原始外观": "Original appearance restored",
+  "等待状态检查": "Waiting for a status check",
+  "未命名主题": "Untitled theme",
+  "已保存主题": "Saved theme",
+  "应用所选主题": "Apply selected theme",
+  "搜索我的主题": "Search my themes",
+  "搜索主题名称": "Search theme names",
+  "没有匹配的主题": "No matching themes",
+  "清除搜索": "Clear search",
+  "界面文字": "Interface text",
+  "主题配色": "Theme colors",
+  "图片信息": "Image information",
+  "来源与授权说明": "Source and license",
   "取消选择": "Clear selection",
   "日志（单独选择）": "Logs (select separately)",
   "更新下载缓存": "Update download cache",
@@ -158,6 +177,8 @@ export const EN_PLAIN: Record<string, string> = {
   "打开登录链接": "Open login link",
   "复制链接": "Copy link",
   "连接设置": "Connection settings",
+  "请求设置": "Request settings",
+  "需要检查": "Check settings",
   "每个微信联系人会映射到独立的 Codex 会话。": "Each WeChat contact maps to a separate Codex session.",
   "iLink API 地址": "iLink API URL",
   "登录凭据": "Login credential",
@@ -217,19 +238,13 @@ export const EN_PLAIN: Record<string, string> = {
   "实机验证": "Live verification",
   "项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权":
     "Source: Fei-Away/Codex-Dream-Skin · Fei-Away · MIT License · Confirm third-party image rights before use",
-  "运行状态": "Runtime status",
   "配置保存在 Codex++，实时操作通过本机回环 CDP 执行": "Configuration stays in Codex++; live operations use the local loopback CDP connection",
   "应用会保存当前图片与主题配置；恢复原始外观不会删除主题。":
     "Applying saves the current image and theme; restoring the original appearance does not delete the theme.",
-  "当前状态": "Current status",
   "保存并应用主题；需要重启时只会标记为待应用": "Save and apply the theme; when a restart is required it will only be marked as pending",
-  "应用皮肤": "Apply skin",
   "恢复 Codex 外观": "Restore Codex appearance",
   "Codex 原始外观": "Original Codex appearance",
   "刷新状态": "Refresh status",
-  "图片与主题": "Image and theme",
-  "自定义图片会被导入 Codex++ 托管目录；主题字段与目标项目 theme.json 对齐":
-    "Custom images are imported into Codex++ managed storage; theme fields match the source theme.json.",
   "我的主题": "My themes",
   "选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。":
     "Selecting a card only loads a draft. Complete switches are saved as a pending theme.",
@@ -238,9 +253,7 @@ export const EN_PLAIN: Record<string, string> = {
   "从图片创建": "Create from image",
   "保存为新主题": "Save as new theme",
   "保存主题": "Save theme",
-  "应用主题": "Apply theme",
   "更新待应用": "Update pending theme",
-  "保存主题；需要重启时不会打断当前操作": "Save the theme without interrupting your work when a restart is required",
   "主题已保存并设为待应用，不会自动重启 Codex。": "The theme was saved as pending. Codex will not restart automatically.",
   "待应用主题": "Pending theme",
   "待应用": "Pending",
@@ -1238,6 +1251,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "主题操作：{0}": "Theme actions: {0}",
   "{0} 的目录明细（{1}）": "{0} directory details ({1})",
   "选择 {0} 的全部可清理项目": "Select all cleanable items for {0}",
   "可清理 {0}": "Cleanable: {0}",
