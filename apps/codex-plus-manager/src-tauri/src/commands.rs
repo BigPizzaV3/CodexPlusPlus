@@ -22,6 +22,60 @@ use tauri::Emitter;
 
 use crate::install::{self, InstallActionResult, InstallOptions};
 
+// 扫描快照仅驻留后端内存，不接受前端指定磁盘路径，不开放给扩展路由。
+static AGENT_CACHE_PLAN: OnceLock<Mutex<Option<codex_plus_core::agent_cache::CachePlan>>> =
+    OnceLock::new();
+
+#[tauri::command]
+pub async fn scan_agent_cache() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Value> {
+        let mut slot = AGENT_CACHE_PLAN
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map_err(|_| anyhow::anyhow!("缓存扫描状态不可用"))?;
+        *slot = None;
+        let plan = codex_plus_core::agent_cache::scan_default()?;
+        let report = serde_json::to_value(&plan.report)?;
+        *slot = Some(plan);
+        Ok(json!({ "report": report }))
+    })
+    .await;
+    match result {
+        Ok(Ok(payload)) => ok("缓存扫描完成。", payload),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("缓存扫描失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn clean_agent_cache(
+    scan_id: String,
+    group_ids: Vec<String>,
+    confirmed: bool,
+) -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Value> {
+        anyhow::ensure!(confirmed, "尚未确认清理。");
+        let mut slot = AGENT_CACHE_PLAN
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map_err(|_| anyhow::anyhow!("缓存扫描状态不可用"))?;
+        let plan = slot
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("请先扫描缓存。"))?;
+        plan.validate_selection(&scan_id, &group_ids, SystemTime::now())?;
+        // 持锁消费快照，阻止并行扫描/清理和重复执行。
+        let plan = slot.take().unwrap();
+        let result = plan.clean(&scan_id, &group_ids, confirmed)?;
+        Ok(json!({ "result": result }))
+    })
+    .await;
+    match result {
+        Ok(Ok(payload)) => ok("缓存清理完成。", payload),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("缓存清理失败：{error}"), json!({})),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CommandResult<T>
 where

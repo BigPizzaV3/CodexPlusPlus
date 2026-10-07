@@ -5,6 +5,25 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "AI Agent 缓存清理": "AI Agent cache cleanup",
+  "临时文件（仅统计）": "Temporary files (statistics only)",
+  "会话、凭据、配置、插件和虚拟机资源不在清理范围。临时文件仅统计；最近 24 小时修改的文件、链接及变化的文件会跳过。": "Sessions, credentials, configuration, plugins and VM resources are excluded. Temporary files are counted only. Files modified within 24 hours, links and changed files are skipped.",
+  "取消选择": "Clear selection",
+  "大小按文件逻辑长度统计，实际释放空间可能不同。缓存可能在应用重启后重新生成。": "Sizes reflect logical file lengths; actual space reclaimed may differ. Caches may be regenerated when apps restart.",
+  "应用缓存": "Application cache",
+  "扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。": "Scan known cache directories for Codex, Claude and Codex++, then choose what to clean.",
+  "扫描提示（部分目录可能未统计）": "Scan warnings (some directories may be excluded)",
+  "扫描缓存": "Scan caches",
+  "日志（单独选择）": "Logs (select separately)",
+  "更新下载缓存": "Update download cache",
+  "未发现可识别的缓存目录。": "No recognized cache directories found.",
+  "查看清理失败的文件": "View files that could not be cleaned",
+  "正在扫描缓存…": "Scanning caches…",
+  "正在确认或清理缓存…": "Confirming or cleaning caches…",
+  "清理所选缓存": "Clean selected caches",
+  "点击扫描查看占用。扫描结果有效期为 10 分钟。": "Scan to see cache sizes. Scan results expire after 10 minutes.",
+  "确认清理 AI Agent 缓存": "Confirm AI Agent cache cleanup",
+  "选择缓存（不含日志）": "Select caches (exclude logs)",
   "读取会话索引修复报告失败": "Failed to read the session index repair report",
   "最后检查：": "Last checked: ",
   "旧版报告未记录时间": "Timestamp unavailable in this older report",
@@ -1262,6 +1281,10 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "占用 {0} · 可清理 {1} / {2} 个文件 · 跳过 {3} 个": "Size {0} · Eligible {1} / {2} files · Skipped {3}",
+  "将永久删除以下目录中扫描到的 {0} 个缓存文件（逻辑大小 {1}）：\n\n{2}\n\n请先退出相关 AI 应用及 CLI。只处理超过 24 小时未修改的文件。日志也会被删除（若已选择）。此操作不可撤销。是否继续？": "Permanently delete {0} scanned cache files (logical size {1}) from these directories:\n\n{2}\n\nQuit the relevant AI apps and CLIs first. Only files last modified over 24 hours ago are eligible. Selected logs will also be deleted. This cannot be undone. Continue?",
+  "已删除 {0} 个文件（逻辑大小 {1}），跳过 {2} 个，失败 {3} 个。请重新扫描查看剩余占用。": "Deleted {0} files (logical size {1}), skipped {2}, failed {3}. Scan again to see remaining usage.",
+  "已扫描 {0}，可清理 {1}；已选择 {2} 个文件 / {3}。": "Scanned {0}, eligible {1}; selected {2} files / {3}.",
   // 模型元数据来源徽标（metadataSourceTags 下发，经 tf() 渲染，不能放 EN_PLAIN）
   "匹配：{0}": "Matched: {0}",
   "回退：{0}": "Fallback: {0}",
@@ -1387,6 +1410,17 @@ export const EN_TEMPLATE: Record<string, string> = {
 // at the display layer (showNotice wraps message with t()). Exact-match first,
 // then pattern-based for messages that embed dynamic values.
 export const EN_BACKEND: Record<string, string> = {
+  "扫描已失效，请重新扫描。": "The scan is no longer valid. Scan again.",
+  "扫描已过期，请重新扫描。": "The scan has expired. Scan again.",
+  "请选择缓存项目。": "Select cache items first.",
+  "选择包含重复项目。": "The selection contains duplicate items.",
+  "选择包含不可清理项目。": "The selection contains items that cannot be cleaned.",
+  "尚未确认清理。": "Cleanup has not been confirmed.",
+  "请先扫描缓存。": "Scan caches first.",
+  "缓存扫描状态不可用": "Cache scan state is unavailable.",
+  "无法检查应用进程，已取消清理": "Cannot check running apps. Cleanup was cancelled.",
+  "无法读取进程名称，已取消清理": "Cannot read process names. Cleanup was cancelled.",
+  "已达到扫描上限，统计结果不完整。": "The scan limit was reached. Results are incomplete.",
   "Grok 配置已加载。": "Grok configuration loaded.",
   "Grok 配置已保存。": "Grok configuration saved.",
   "主题市场已刷新。": "Theme marketplace refreshed.",
@@ -1476,6 +1510,14 @@ export const EN_BACKEND: Record<string, string> = {
 // Pattern-based backend translations: [regex, replacement template].
 // Checked when EN_BACKEND exact match fails — covers messages with dynamic values.
 export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
+  [/^请先退出 (.+) 应用及其 CLI，再重新扫描清理。$/, "Quit $1 and its CLI, then scan again to clean caches."],
+  [/^缓存扫描失败：(.+)$/, "Cache scan failed: $1"],
+  [/^缓存清理失败：(.+)$/, "Cache cleanup failed: $1"],
+  [/^已跳过不安全的目录：(.+)$/, "Skipped an unsafe directory: $1"],
+  [/^已跳过受保护的目录：(.+)$/, "Skipped a protected directory: $1"],
+  [/^目录层级过深，已跳过：(.+)$/, "Skipped a directory exceeding the depth limit: $1"],
+  [/^目录读取失败：(.+)$/, "Could not read directory: $1"],
+  [/^读取失败：(.+)$/, "Could not read: $1"],
   [/^读取 Grok 配置失败：(.+)$/, "Failed to read Grok configuration: $1"],
   [/^保存 Grok 配置失败：(.+)$/, "Failed to save Grok configuration: $1"],
   [/^主题市场加载失败：(.+)$/, "Failed to load theme marketplace: $1"],

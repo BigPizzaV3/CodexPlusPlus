@@ -84,6 +84,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
+import { AgentCachePanel } from "./agent-cache";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import {
   builtinEntryToImportDocument,
@@ -997,7 +998,7 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   grok: Blocks,
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -1025,6 +1026,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink, tool: "codex" },
   { id: "userScripts", label: t("拓展"), icon: FileCode2, tool: "codex" },
   { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
+  // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
+  { id: "agentCache", label: t("AI Agent 缓存清理"), icon: Trash2 },
   { id: "maintenance", label: t("安装维护"), icon: Wrench, tool: "codex" },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
@@ -1042,7 +1045,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("系统"),
-    routes: ["recommendations", "maintenance", "about", "settings"],
+    routes: ["recommendations", "agentCache", "maintenance", "about", "settings"],
     placement: "bottom",
   },
 ];
@@ -3774,6 +3777,7 @@ export function App() {
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
+          {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
@@ -11205,6 +11209,7 @@ function routeSubtitle(route: Route) {
     zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
     userScripts: t("内置和用户自定义拓展清单"),
     recommendations: t("普通推荐内容"),
+    agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),

@@ -169,6 +169,8 @@ pub fn run() {
             commands::disable_watcher,
             commands::read_latest_logs,
             commands::clear_logs,
+            commands::scan_agent_cache,
+            commands::clean_agent_cache,
             commands::copy_diagnostics,
             commands::reset_settings,
             commands::reset_image_overlay_settings,
