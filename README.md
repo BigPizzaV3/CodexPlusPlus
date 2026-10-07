@@ -151,8 +151,8 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 | 模型与上下文 | 每模型上下文窗口、自动压缩阈值、`model_catalog_json`、模型元数据导入（models.json）、通用配置，以及按供应商选择 MCP、Skill 和 Plugin |
 | 会话管理 | 扫描本地会话、批量删除、Markdown 导出、Token 用量历史、Provider metadata 同步与备份 |
 | 微信连接 | 个人微信扫码连接本机 Codex 会话，每个微信联系人映射到独立会话，可配置允许的微信用户 |
-| Codex 增强 | 插件市场与模型白名单、会话操作、粘贴修复、中文界面、快速启动、会话宽度与滚动恢复、服务层级控制、Goals、Stepwise、皮肤管理、图片覆盖层 |
-| 开发工作流 | 项目移动、Upstream worktree、线程 ID、Zed Remote 项目识别与打开 |
+| Codex 增强 | 插件市场与模型白名单、会话操作、粘贴修复、语音输入、会话宽度与滚动恢复、服务层级控制、Goals、下一步建议、皮肤管理、图片覆盖层 |
+| 开发工作流 | 项目移动、线程 ID |
 | 脚本与维护 | 用户脚本安装与启停、应用检测、快捷方式、Watcher、环境冲突、日志诊断、健康检查和 Release 更新 |
 
 所有界面增强都可以单独关闭。关闭“Codex 增强”总开关后，Codex++ 仍可作为供应商和启动管理工具使用。
@@ -178,11 +178,12 @@ Codex++ 将官方登录、混入 API 和纯 API 分开保存和切换：
 
 - 会话删除、批量删除、Markdown 导出和项目移动。
 - 插件市场解锁、插件自动展开和模型白名单处理。
-- 富文本粘贴转纯文本、强制中文、启动加速和原生菜单本地化。
+- 富文本粘贴转纯文本和启动加速。
+- API Key 语音输入：在「Codex增强」配置独立语音服务，录音后转写并插入或发送文字。
 - 会话宽度、滚动位置恢复、线程 ID、服务层级切换和 Goals。
-- Stepwise 下一步建议，可单独配置 API、模型、建议数量与超时。
+- 下一步建议：在「Codex增强」统一配置开关、API、模型、建议数量与超时。
 - 皮肤管理：Dream Skin 社区主题的搜索、预览、安装和换图。
-- Upstream worktree、Zed Remote、自定义图片覆盖层和用户脚本。
+- 自定义图片覆盖层和用户脚本。
 
 依赖注入脚本的设置通常需要保存后重新启动 Codex++ 才会生效。
 
@@ -215,16 +216,6 @@ Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程
 ### 混入 API Key 模式是“官方优先、额度不足时 API 补偿”吗
 
 不是。官方登录 + API（混入）模式下，模型请求**始终走你配置的兼容 API**，官方账号只保留登录状态和插件入口，不会先消耗官方额度再回落到 API。需要“一个供应商失败时切到另一个”的行为时，使用聚合供应商：它支持故障转移、按会话轮转、按请求轮转和权重轮转。两种模式的认证保存位置不同，配置前先在供应商详情里用模型测试确认目标 API 可用。
-
-### Upstream worktree 和 Codex 原生创建有什么区别
-
-Codex++ 的 Upstream worktree 功能等价于先更新远端分支，再执行：
-
-```bash
-git worktree add -b <new-branch> <worktree-path> upstream/<base-branch>
-```
-
-这样新 worktree 从最新的远端跟踪分支开始，而不是从当前会话所在的本地 HEAD 开始。如果 Codex++ 无法安全识别当前 Codex 版本的原生 worktree 创建表单，请从 Codex++ 菜单中手动填写仓库路径、分支名、worktree 路径、remote 和 base branch。
 
 ### macOS Intel 能用吗
 

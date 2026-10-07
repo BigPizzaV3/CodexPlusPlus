@@ -1,3 +1,4 @@
+  void restoreCodexPlusManagedLocale();
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);

@@ -92,6 +92,90 @@ function installRendererStyle(renderer: string) {
 }
 
 describe("renderer injection header compatibility", () => {
+  it("does not supplement native plugin lists from retired snapshots and still refreshes after installation", async () => {
+    const [navigation, plugin] = await Promise.all([
+      readFile(new URL("../../../assets/inject/renderer-inject/50-navigation.js", import.meta.url), "utf8"),
+      readFile(new URL("../../../assets/inject/renderer-inject/60-plugin-marketplace.js", import.meta.url), "utf8"),
+    ]);
+    const displayStart = navigation.indexOf("  function displayNameForPluginMarketplaceName(");
+    const displayEnd = navigation.indexOf("  function restorePluginMarketplaceName(", displayStart);
+    const responseStart = plugin.indexOf("  function patchPluginMarketplaceResult(");
+    const responseEnd = plugin.indexOf("  if (window.__CODEX_PLUS_TEST_PLUGIN_MARKETPLACE__)", responseStart);
+    const refreshStart = plugin.indexOf("  function clearPluginMarketplaceQueryCache(");
+    const refreshEnd = plugin.indexOf("  function installPluginMarketplaceBridgePatch(", refreshStart);
+    assert.ok(displayStart >= 0 && displayEnd > displayStart && responseStart >= 0 && responseEnd > responseStart
+      && refreshStart >= 0 && refreshEnd > refreshStart);
+    const invalidations: unknown[] = [];
+    const window = {
+      __CODEX_PLUS_PLUGIN_MARKETPLACES__: [
+        { name: "native", plugins: [{ name: "cached-supplement" }] },
+        { name: "cached-marketplace", plugins: [{ name: "cached-plugin" }] },
+      ],
+      __REACT_QUERY_CLIENT__: { invalidateQueries: (filter: unknown) => invalidations.push(filter) },
+    };
+    const api = new Function("window", "sendCodexPlusDiagnostic", "appServerModelRequestMethod",
+      navigation.slice(displayStart, displayEnd) + plugin.slice(responseStart, responseEnd)
+        + plugin.slice(refreshStart, refreshEnd) + "\nreturn { patchResponseData: patchPluginMarketplaceResponseData };",
+    )(window, () => {}, (method: string) => method) as { patchResponseData: (data: unknown) => boolean };
+    const plugins = [{ name: "native-plugin" }];
+    const native = { marketplaces: [{ name: "native", displayName: "Native", plugins }] };
+    assert.equal(api.patchResponseData({ type: "mcp-response", message: { method: "list-plugins", result: native } }), true);
+    assert.equal(native.marketplaces.length, 1);
+    assert.equal(native.marketplaces[0].plugins, plugins);
+    assert.deepEqual(plugins.map(plugin => plugin.name), ["native-plugin"]);
+    const failed: { type: string; message: { error?: unknown; result?: { marketplaces: unknown[] } } } = {
+      type: "mcp-response",
+      message: { error: { message: "ChatGPT authentication required for remote plugin catalog; API key auth is not supported" } },
+    };
+    assert.equal(api.patchResponseData(failed), true);
+    assert.deepEqual(failed.message.result?.marketplaces, [], "authentication fallback must not recover cached catalogs");
+    api.patchResponseData({ type: "mcp-response", message: { method: "install-plugin", result: { installed: true } } });
+    assert.deepEqual(invalidations, [{ queryKey: ["plugins"] }]);
+    assert.doesNotMatch(navigation + plugin, /__CODEX_PLUS_PLUGIN_MARKETPLACES__|mergeLocalPluginMarketplaces|plugin_marketplace_local_merged/);
+    assert.match(navigation, /codexPluginFilterSourceCache = new WeakMap/);
+  });
+
+  it("uses the same plugin enhancement settings regardless of a legacy launch mode", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const settingsStart = renderer.indexOf("  function defaultCodexPlusSettings()");
+    const settingsEnd = renderer.indexOf("  // Dream skin runtime", settingsStart);
+    const enabledStart = renderer.indexOf("  function codexPluginMarketplacePatchEnabled()");
+    const enabledEnd = renderer.indexOf("  let cachedSessionRows", enabledStart);
+    assert.ok(settingsStart >= 0 && settingsEnd > settingsStart && enabledStart >= 0 && enabledEnd > enabledStart);
+    const runtime = new Function(
+      "window", "localStorage", "codexPlusBackendSettings", "codexPlusBackendSettingsLoaded",
+      "conversationViewDefaultWidth", "codexPlusSettingsKey",
+      renderer.slice(settingsStart, settingsEnd) + renderer.slice(enabledStart, enabledEnd)
+        + "\nreturn { settings: codexPlusSettings(), patchEnabled: codexPluginMarketplacePatchEnabled() };",
+    );
+    for (const launchMode of [undefined, "relay", "patch"]) {
+      for (const enhancementsEnabled of [false, true]) {
+        for (const codexAppPluginMarketplaceUnlock of [false, true]) {
+          const settings = { launchMode, enhancementsEnabled, codexAppPluginMarketplaceUnlock };
+          const result = runtime({}, { getItem: () => "{}" }, settings, true, 900, "fixture");
+          const expected = enhancementsEnabled && codexAppPluginMarketplaceUnlock;
+          assert.equal(result.settings.pluginMarketplaceUnlock, expected);
+          assert.equal(result.patchEnabled, expected);
+          assert.equal(runtime({}, { getItem: () => "{}" }, settings, false, 900, "fixture").patchEnabled, false);
+        }
+      }
+    }
+    assert.doesNotMatch(renderer, /codexPlusBackendSettings\.launchMode|data-relay-unneeded|兼容增强|完整增强/);
+    assert.doesNotMatch(renderer, /codexMenuLocalizationScopeSelector\(\)/);
+    assert.match(renderer, /data-codex-backend-setting="enhancementsEnabled"/);
+    assert.match(renderer, /data-codex-plus-setting="pluginMarketplaceUnlock"/);
+  });
+
+  it("shows the next-step suggestion feature with its Chinese name", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const generation = await readFile(new URL("../../../assets/inject/floating-panel/stepwise/generation.js", import.meta.url), "utf8");
+    assert.match(renderer, /悬浮球 · 下一步建议/);
+    assert.doesNotMatch(renderer, /悬浮球 · Stepwise/);
+    assert.match(generation, /window\.prompt\("复制下一步建议提示词", prompt\)/);
+    assert.doesNotMatch(generation, /Copy Stepwise prompt/);
+    assert.match(renderer, /stepwise: "codexAppStepwiseEnabled"/);
+  });
+
   it("纯 API 会话使用当前真实 provider，不强行改成 custom", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
@@ -531,7 +615,7 @@ interface MarketplacePatchHarness {
 
 function marketplacePatchRuntime(renderer: string, patchSucceeds: boolean): MarketplacePatchHarness {
   const start = renderer.indexOf("  const pluginMarketplaceRequestPatchMaxMisses = ");
-  const end = renderer.indexOf("\n  function pluginPatchDisabledInRelayMode(", start);
+  const end = renderer.indexOf("\n  function codexPluginMarketplacePatchEnabled(", start);
   assert.ok(start >= 0 && end > start, "marketplace patch block not found in renderer-inject.js");
   const source = renderer.slice(start, end);
 
@@ -543,7 +627,7 @@ function marketplacePatchRuntime(renderer: string, patchSucceeds: boolean): Mark
   const factory = new Function(
     "window",
     "codexPluginMarketplaceUnlockVersion",
-    "pluginPatchDisabledInRelayMode",
+    "codexPluginMarketplacePatchEnabled",
     "codexPlusSettings",
     "loadAppServerRequestCandidates",
     "patchPluginMarketplaceRequestClient",
@@ -555,7 +639,7 @@ function marketplacePatchRuntime(renderer: string, patchSucceeds: boolean): Mark
   const install = factory(
     fakeWindow,
     1,
-    () => false,
+    () => true,
     () => ({ pluginMarketplaceUnlock: true }),
     // 每轮 sweep 在真实实现里会 fetch 全部 app asset，这里只计数并挂起，
     // 好让测试能在「上一轮尚未结束」的时刻再次调用 install。
@@ -958,8 +1042,29 @@ describe("relay pureApi provider resolution", () => {
   });
 });
 
+it("opens Stepwise configuration in the manager enhancement page", async () => {
+  const source = await readFile(new URL("../../../assets/inject/floating-panel/core/views.js", import.meta.url), "utf8");
+  const begin = source.indexOf("  async function openManager()");
+  assert.ok(begin >= 0);
+  const state = { runtimeGeneration: 3, settingsStatus: "" };
+  const requests: Array<{ route: string; payload: unknown }> = [];
+  let renders = 0;
+  const openManager = new Function("isCurrentRuntime", "state", "renderFloat", "bridgeCall",
+    source.slice(begin) + "\nreturn openManager;",
+  )(
+    (generation?: number) => generation === undefined || generation === state.runtimeGeneration,
+    state,
+    () => { renders += 1; },
+    async (route: string, payload: unknown) => { requests.push({ route, payload }); return { status: "ok" }; },
+  );
+  await openManager();
+  assert.deepEqual(requests, [{ route: "/manager/open-transient", payload: { page: "enhance", section: "stepwise" } }]);
+  assert.equal(state.settingsStatus, "已打开 Codex++");
+  assert.equal(renders, 2);
+});
+
 describe("Stepwise generation mode contracts", () => {
-  it("exposes automatic and manual generation in manager settings", async () => {
+  it("exposes automatic and manual generation in manager enhancements", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const renderer = await readFile(
       new URL("../../../assets/inject/renderer-inject.js", import.meta.url),

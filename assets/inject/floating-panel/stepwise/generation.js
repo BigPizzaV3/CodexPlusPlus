@@ -341,7 +341,7 @@
     });
     if (!target) {
       pushDiagnostic("fill:no-main-composer", { candidateCount: candidates.length });
-      window.prompt("Copy Stepwise prompt", prompt);
+      window.prompt("复制下一步建议提示词", prompt);
       return false;
     }
 
@@ -363,7 +363,7 @@
       return true;
     }
 
-    window.prompt("Copy Stepwise prompt", prompt);
+    window.prompt("复制下一步建议提示词", prompt);
     return false;
   }
 

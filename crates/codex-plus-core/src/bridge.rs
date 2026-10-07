@@ -12,12 +12,15 @@ use base64::Engine;
 use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 pub const BRIDGE_BINDING_NAME: &str = "codexSessionDeleteV2";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+// 25MiB 音频的 base64 与 JSON 封装约 33.4MiB；限制单 frame 和完整 message 的内存上限。
+const CDP_MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
 /// 陈旧会话的 generation 轮询间隔。旧会话只会在"socket 再收到消息"时走到循环顶部的
 /// generation 检查；bridge 失效场景下旧 socket 不会再有任何消息，没有这个轮询，
 /// 被顶替的会话会带着 Runtime.enable 订阅和脚本注册无限期滞留。
@@ -321,7 +324,6 @@ fn spawn_app_server_client_capture(websocket_url: &str, generation: BridgeGenera
     });
 }
 
-
 async fn run_app_server_client_capture(
     websocket_url: &str,
     generation: BridgeGeneration,
@@ -348,7 +350,9 @@ async fn run_app_server_client_capture(
             else {
                 continue;
             };
-            let Some(text) = response.pointer("/result/result/value").and_then(Value::as_str)
+            let Some(text) = response
+                .pointer("/result/result/value")
+                .and_then(Value::as_str)
             else {
                 continue;
             };
@@ -359,12 +363,10 @@ async fn run_app_server_client_capture(
             }
         }
     };
-    let Some((url_regex, line_number, column_number)) = tokio::time::timeout(
-        APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT,
-        location_wait,
-    )
-    .await
-    .unwrap_or(None)
+    let Some((url_regex, line_number, column_number)) =
+        tokio::time::timeout(APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT, location_wait)
+            .await
+            .unwrap_or(None)
     else {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "bridge.app_server_client_capture_skipped",
@@ -631,6 +633,12 @@ pub fn reject_bridge_expression(request_id: &str, message: &str) -> anyhow::Resu
     ))
 }
 
+fn cdp_websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(CDP_MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(CDP_MAX_MESSAGE_BYTES))
+}
+
 async fn connect_cdp_websocket(
     websocket_url: &str,
 ) -> anyhow::Result<
@@ -641,15 +649,18 @@ async fn connect_cdp_websocket(
         .port()
         .ok_or_else(|| anyhow::anyhow!("CDP WebSocket URL must include an explicit port"))?;
     crate::cdp::validate_cdp_websocket_url(websocket_url, port)?;
-    let (socket, _) = tokio::time::timeout(CDP_CONNECT_TIMEOUT, connect_async(websocket_url))
-        .await
-        .with_context(|| {
-            format!(
-                "timed out connecting CDP websocket after {}s",
-                CDP_CONNECT_TIMEOUT.as_secs()
-            )
-        })?
-        .context("failed to connect CDP websocket")?;
+    let (socket, _) = tokio::time::timeout(
+        CDP_CONNECT_TIMEOUT,
+        connect_async_with_config(websocket_url, Some(cdp_websocket_config()), false),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "timed out connecting CDP websocket after {}s",
+            CDP_CONNECT_TIMEOUT.as_secs()
+        )
+    })?
+    .context("failed to connect CDP websocket")?;
 
     Ok(socket)
 }
@@ -1073,4 +1084,59 @@ fn extract_string_field(input: &str, field: &str) -> Option<String> {
 
 fn next_message_id() -> u64 {
     NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+#[cfg(test)]
+mod websocket_size_tests {
+    use super::*;
+
+    #[test]
+    fn cdp_websocket_limits_fit_maximum_dictation_payload_and_remain_bounded() {
+        let config = cdp_websocket_config();
+        let base64_bytes = crate::dictation::MAX_AUDIO_BODY_BYTES.div_ceil(3) * 4;
+        assert_eq!(config.max_message_size, Some(40 * 1024 * 1024));
+        assert_eq!(config.max_frame_size, Some(40 * 1024 * 1024));
+        assert!(base64_bytes + 64 * 1024 < config.max_frame_size.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cdp_websocket_receives_maximum_dictation_base64_in_one_frame() {
+        // 仅连接本地模拟服务器，不操作真实 app 或页面。
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let base64_bytes = crate::dictation::MAX_AUDIO_BODY_BYTES.div_ceil(3) * 4;
+        let payload = json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "payload": json!({
+                    "id": "dictation-smoke",
+                    "path": "/dictation/transcribe",
+                    "payload": {"audioBase64": "A".repeat(base64_bytes)}
+                }).to_string()
+            }
+        })
+        .to_string();
+        let payload_bytes = payload.len();
+        assert!(payload_bytes > 16 * 1024 * 1024);
+        assert!(payload_bytes < CDP_MAX_MESSAGE_BYTES);
+        let sender = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(Message::Text(payload.into())).await.unwrap();
+        });
+        let mut socket =
+            connect_cdp_websocket(&format!("ws://{address}/devtools/page/dictation-smoke"))
+                .await
+                .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(15), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(received.is_text());
+        assert_eq!(received.len(), payload_bytes);
+        sender.await.unwrap();
+    }
 }

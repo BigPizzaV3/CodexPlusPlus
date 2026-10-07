@@ -245,12 +245,6 @@ pub trait LaunchHooks: Send + Sync {
     ) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        _settings: &BackendSettings,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
     async fn launch_codex(
         &self,
@@ -442,8 +436,8 @@ where
             }
             Err(error) => error,
         };
-        let retryable = error_is_address_in_use(&error)
-            || (retry_forbidden && error_is_bind_forbidden(&error));
+        let retryable =
+            error_is_address_in_use(&error) || (retry_forbidden && error_is_bind_forbidden(&error));
         if !retryable || waited_ms >= timeout_ms {
             return Err(error);
         }
@@ -473,8 +467,8 @@ pub fn helper_bind_retry_interval_ms() -> u64 {
 /// 这次启动如果必须占用写进 `config.toml` 的协议代理端口，返回那个端口。
 /// 不需要协议代理时返回 `None`，调用方不应去等一个用不到的端口。
 pub fn required_fixed_helper_port(settings: &BackendSettings) -> Option<u16> {
-    let enabled = relay_protocol_proxy_enabled(settings)
-        || remote_control_provider_proxy_enabled(settings);
+    let enabled =
+        relay_protocol_proxy_enabled(settings) || remote_control_provider_proxy_enabled(settings);
     enabled.then(crate::protocol_proxy::protocol_proxy_port)
 }
 
@@ -559,14 +553,6 @@ where
                 && !settings.codex_app_dream_skin_paused,
             &settings.codex_app_dream_skin_theme_config,
         )?;
-        if let Err(error) = hooks.ensure_plugin_marketplace_config(&settings).await {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "launcher.plugin_marketplace_config_failed_nonfatal",
-                serde_json::json!({
-                    "message": error.to_string()
-                }),
-            );
-        }
         // 这一步在 #2244 的采样里是嫌疑最大的同步全表扫描，单独标记起止，
         // 从 latest-status 就能看出冷启动时间是否耗在这里。
         timeline.mark("sanitize_historical_model_suffixes", 40);
@@ -731,29 +717,6 @@ fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
 fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
     let profile = settings.active_relay_profile();
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
-}
-
-fn select_native_menu_inspector_port(debug_port: u16) -> u16 {
-    let requested = debug_port.saturating_add(100);
-    crate::ports::select_platform_loopback_port(requested)
-}
-
-fn start_native_menu_localizer(inspector_port: u16) {
-    if inspector_port == 0 {
-        return;
-    }
-    tokio::spawn(async move {
-        if let Err(error) = crate::native_menu::install_native_menu_localizer(inspector_port).await
-        {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "native_menu.localization_failed",
-                serde_json::json!({
-                    "inspector_port": inspector_port,
-                    "message": error.to_string()
-                }),
-            );
-        }
-    });
 }
 
 #[cfg(windows)]
@@ -933,60 +896,6 @@ impl LaunchHooks for DefaultLaunchHooks {
         Ok(())
     }
 
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        settings: &BackendSettings,
-    ) -> anyhow::Result<()> {
-        let home = crate::relay_config::default_codex_home_dir();
-        crate::plugin_marketplace::cleanup_managed_reserved_marketplace_configs(&home)?;
-        if !settings.codex_app_plugin_marketplace_unlock {
-            return Ok(());
-        }
-        match crate::plugin_marketplace::ensure_openai_curated_marketplace_config(&home) {
-            Ok(configured) => {
-                if configured {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.openai_curated_marketplace_configured",
-                        serde_json::json!({
-                            "home": home,
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.openai_curated_marketplace_config_failed",
-                    serde_json::json!({
-                        "home": home,
-                        "message": error.to_string(),
-                    }),
-                );
-            }
-        }
-        match crate::plugin_marketplace::ensure_role_specific_plugins_marketplace_config(&home) {
-            Ok(configured) => {
-                if configured {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.role_specific_plugins_marketplace_configured",
-                        serde_json::json!({
-                            "home": home,
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.role_specific_plugins_marketplace_config_failed",
-                    serde_json::json!({
-                        "home": home,
-                        "message": error.to_string(),
-                    }),
-                );
-            }
-        }
-        Ok(())
-    }
-
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         let bind_host = helper_bind_host();
         let listener = tokio::net::TcpListener::bind((bind_host.as_str(), helper_port))
@@ -1028,35 +937,18 @@ impl LaunchHooks for DefaultLaunchHooks {
         &self,
         app_dir: &Path,
         debug_port: u16,
-        settings: &BackendSettings,
+        _settings: &BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
-        let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
-        let native_menu_inspector_port =
-            native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
-        let launch_extra_args = codex_extra_args_for_launch(settings, extra_args);
+        let launch_extra_args = normalize_codex_extra_args(extra_args);
         if cfg!(windows) {
             // AUMID 解析留在调用点：它要查系统里的 Store 注册表（#2140），是有副作用
             // 的一步；下面的构造函数只做纯拼接。解析不出来（目录名像包、但系统里没
             // 这个包）就不再走打包激活，继续往下按路径启动——与既有回退路径一致。
-            let activation = crate::app_paths::packaged_app_user_model_id(app_dir).map(
-                |app_user_model_id| {
-                    if let Some(inspector_port) = native_menu_inspector_port {
-                        build_packaged_activation_with_native_menu_inspector(
-                            &app_user_model_id,
-                            debug_port,
-                            inspector_port,
-                            &launch_extra_args,
-                        )
-                    } else {
-                        build_packaged_activation(
-                            &app_user_model_id,
-                            debug_port,
-                            &launch_extra_args,
-                        )
-                    }
-                },
-            );
+            let activation =
+                crate::app_paths::packaged_app_user_model_id(app_dir).map(|app_user_model_id| {
+                    build_packaged_activation(&app_user_model_id, debug_port, &launch_extra_args)
+                });
             if let Some(activation) = activation {
                 let CodexLaunch::PackagedActivation {
                     app_user_model_id,
@@ -1069,9 +961,6 @@ impl LaunchHooks for DefaultLaunchHooks {
                 match activate_packaged_app(app_user_model_id, arguments).await {
                     Ok(process_id) => {
                         apply_codexplusplus_window_icon_after_launch(process_id);
-                        if let Some(inspector_port) = native_menu_inspector_port {
-                            start_native_menu_localizer(inspector_port);
-                        }
                         return Ok(match activation {
                             CodexLaunch::PackagedActivation {
                                 app_user_model_id,
@@ -1132,16 +1021,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                     MacosCleanupPolicy::QuitIfNotPreviouslyRunning
                 }
             };
-            let command = if let Some(inspector_port) = native_menu_inspector_port {
-                build_macos_open_command_with_native_menu_inspector(
-                    app_dir,
-                    debug_port,
-                    inspector_port,
-                    &launch_extra_args,
-                )
-            } else {
-                build_macos_open_command(app_dir, debug_port, &launch_extra_args)
-            };
+            let command = build_macos_open_command(app_dir, debug_port, &launch_extra_args);
             let executable = command
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
@@ -1152,9 +1032,6 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .spawn()
                 .context("failed to launch macOS Codex app")?;
             *self.child.lock().await = Some(child);
-            if let Some(inspector_port) = native_menu_inspector_port {
-                start_native_menu_localizer(inspector_port);
-            }
             return Ok(CodexLaunch::Process {
                 command,
                 wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
@@ -1162,16 +1039,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             });
         }
 
-        let command = if let Some(inspector_port) = native_menu_inspector_port {
-            build_codex_command_with_native_menu_inspector(
-                app_dir,
-                debug_port,
-                inspector_port,
-                &launch_extra_args,
-            )
-        } else {
-            build_codex_command(app_dir, debug_port, &launch_extra_args)
-        };
+        let command = build_codex_command(app_dir, debug_port, &launch_extra_args);
         let executable = command
             .first()
             .ok_or_else(|| anyhow::anyhow!("Codex command is empty"))?;
@@ -1186,9 +1054,6 @@ impl LaunchHooks for DefaultLaunchHooks {
             .spawn()
             .with_context(|| format!("failed to launch Codex executable {executable}"))?;
         *self.child.lock().await = Some(child);
-        if let Some(inspector_port) = native_menu_inspector_port {
-            start_native_menu_localizer(inspector_port);
-        }
         Ok(CodexLaunch::Process {
             command,
             wait_strategy: ProcessWaitStrategy::TrackedChild,
@@ -1388,6 +1253,17 @@ async fn handle_helper_connection(
         }),
     );
 
+    if matches!(path, "/dictation/transcribe" | "/dictation/status") {
+        return handle_dictation_connection(
+            &mut stream,
+            method,
+            path,
+            &request_headers,
+            &request.body,
+            request_content_type.as_deref().unwrap_or_default(),
+        )
+        .await;
+    }
     if crate::protocol_proxy::is_audio_transcriptions_proxy_path(path) && method == "POST" {
         return handle_audio_transcriptions_proxy_connection(
             &mut stream,
@@ -2044,6 +1920,199 @@ async fn handle_protocol_proxy_connection(
     stream.shutdown().await?;
     Ok(())
 }
+async fn handle_dictation_connection(
+    stream: &mut tokio::net::TcpStream,
+    method: &str,
+    path: &str,
+    headers: &str,
+    body: &[u8],
+    content_type: &str,
+) -> anyhow::Result<()> {
+    let (status, response) = if method == "OPTIONS" {
+        ("204 No Content".to_string(), Vec::new())
+    } else if path == "/dictation/status" && method == "GET" {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        (
+            "200 OK".to_string(),
+            serde_json::to_vec(&crate::dictation::public_status(
+                &crate::dictation::effective_settings(&settings),
+            ))?,
+        )
+    } else if path == "/dictation/transcribe" && method == "POST" {
+        let token = header_value_from_headers(headers, crate::dictation::TOKEN_HEADER);
+        let result = if !crate::dictation::valid_helper_token(token.as_deref()) {
+            Err(crate::dictation::DictationError {
+                status: 403,
+                message: "语音请求未授权，请从 Codex++ 重新发起".to_string(),
+            })
+        } else {
+            let settings = SettingsStore::default().load().unwrap_or_default();
+            let effective = crate::dictation::effective_settings(&settings);
+            match transcribe_until_disconnect(stream, &effective, body, content_type).await {
+                Some(result) => result,
+                None => return Ok(()),
+            }
+        };
+        match result {
+            Ok(value) => ("200 OK".to_string(), serde_json::to_vec(&value)?),
+            Err(error) => {
+                let reason = match error.status {
+                    400 => "Bad Request",
+                    403 => "Forbidden",
+                    413 => "Payload Too Large",
+                    504 => "Gateway Timeout",
+                    _ => "Bad Gateway",
+                };
+                (
+                    format!("{} {reason}", error.status),
+                    serde_json::to_vec(
+                        &serde_json::json!({ "status": "failed", "message": error.message }),
+                    )?,
+                )
+            }
+        }
+    } else {
+        (
+            "405 Method Not Allowed".to_string(),
+            serde_json::to_vec(
+                &serde_json::json!({ "status": "failed", "message": "语音接口不支持此请求方法" }),
+            )?,
+        )
+    };
+    let response_headers = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Codex-Plus-Dictation-Token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        response.len()
+    );
+    stream.write_all(response_headers.as_bytes()).await?;
+    stream.write_all(&response).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn transcribe_until_disconnect(
+    stream: &mut tokio::net::TcpStream,
+    settings: &crate::settings::DictationSettings,
+    body: &[u8],
+    content_type: &str,
+) -> Option<Result<Value, crate::dictation::DictationError>> {
+    // 浏览器取消请求、关闭连接时释放 reqwest future，停止上游上传或等待。
+    tokio::select! {
+        result = crate::dictation::transcribe(settings, body, content_type) => Some(result),
+        _ = async {
+            let mut buffer = [0u8; 64];
+            loop {
+                match stream.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {},
+                }
+            }
+        } => None,
+    }
+}
+
+#[cfg(test)]
+mod dictation_http_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dictation_helper_rejects_requests_without_capability() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, remote) = listener.accept().await.unwrap();
+            handle_helper_connection(stream, Some(remote))
+                .await
+                .unwrap();
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(format!("POST /dictation/transcribe HTTP/1.1\r\nHost: {addr}\r\nContent-Type: multipart/form-data; boundary=test\r\nContent-Length: 0\r\n\r\n").as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+        assert!(!response.contains(crate::dictation::helper_token()));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dictation_helper_preflight_allows_capability_header() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, remote) = listener.accept().await.unwrap();
+            handle_helper_connection(stream, Some(remote))
+                .await
+                .unwrap();
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(
+                format!("OPTIONS /dictation/transcribe HTTP/1.1\r\nHost: {addr}\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 204 No Content"));
+        assert!(response.contains(crate::dictation::TOKEN_HEADER));
+        assert!(!response.contains(crate::dictation::helper_token()));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dictation_disconnect_stops_waiting_for_upstream() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)))
+            .mount(&upstream)
+            .await;
+        let settings = crate::settings::DictationSettings {
+            enabled: true,
+            base_url: format!("{}/v1", upstream.uri()),
+            ..Default::default()
+        };
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let task = tokio::spawn(async move {
+            transcribe_until_disconnect(&mut stream, &settings,
+                b"--test\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.webm\"\r\n\r\naudio\r\n--test--\r\n",
+                "multipart/form-data; boundary=test").await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if !upstream.received_requests().await.unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(client);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
 async fn handle_audio_transcriptions_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &[u8],
@@ -2754,49 +2823,7 @@ pub fn build_codex_arguments_for_settings(
     debug_port: u16,
     settings: &BackendSettings,
 ) -> Vec<String> {
-    build_codex_arguments(
-        debug_port,
-        &codex_extra_args_for_launch(settings, &settings.codex_extra_args),
-    )
-}
-
-fn codex_extra_args_for_launch(settings: &BackendSettings, extra_args: &[String]) -> Vec<String> {
-    let mut args = Vec::new();
-    if settings.codex_app_fast_startup && !has_host_resolver_rules(extra_args) {
-        args.push(statsig_fast_fail_host_resolver_rule());
-    }
-    args.extend(normalize_codex_extra_args(extra_args));
-    args
-}
-
-fn has_host_resolver_rules(args: &[String]) -> bool {
-    args.iter()
-        .any(|arg| arg.trim().starts_with("--host-resolver-rules"))
-}
-
-fn statsig_fast_fail_host_resolver_rule() -> String {
-    [
-        "--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1",
-        "MAP featureassets.org 127.0.0.1",
-        "MAP prodregistryv2.org 127.0.0.1",
-        "MAP api.statsigcdn.com 127.0.0.1",
-        "MAP statsigapi.net 127.0.0.1",
-        "MAP cloudflare-dns.com 127.0.0.1",
-    ]
-    .join(",")
-}
-
-pub fn build_codex_arguments_with_native_menu_inspector(
-    debug_port: u16,
-    inspector_port: u16,
-    extra_args: &[String],
-) -> Vec<String> {
-    let mut args = build_codex_arguments(debug_port, &[]);
-    if inspector_port != 0 {
-        args.push(format!("--inspect=127.0.0.1:{inspector_port}"));
-    }
-    args.extend(normalize_codex_extra_args(extra_args));
-    args
+    build_codex_arguments(debug_port, &settings.codex_extra_args)
 }
 
 pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String]) -> Vec<String> {
@@ -2806,25 +2833,6 @@ pub fn build_codex_command(app_dir: &Path, debug_port: u16, extra_args: &[String
             .to_string(),
     ];
     command.extend(build_codex_arguments(debug_port, extra_args));
-    command
-}
-
-pub fn build_codex_command_with_native_menu_inspector(
-    app_dir: &Path,
-    debug_port: u16,
-    inspector_port: u16,
-    extra_args: &[String],
-) -> Vec<String> {
-    let mut command = vec![
-        crate::app_paths::build_codex_executable(app_dir)
-            .to_string_lossy()
-            .to_string(),
-    ];
-    command.extend(build_codex_arguments_with_native_menu_inspector(
-        debug_port,
-        inspector_port,
-        extra_args,
-    ));
     command
 }
 
@@ -2841,23 +2849,6 @@ pub fn build_packaged_activation(
     CodexLaunch::PackagedActivation {
         app_user_model_id: app_user_model_id.to_string(),
         arguments: command_line_arguments(&build_codex_arguments(debug_port, extra_args)),
-        process_id: None,
-    }
-}
-
-pub fn build_packaged_activation_with_native_menu_inspector(
-    app_user_model_id: &str,
-    debug_port: u16,
-    inspector_port: u16,
-    extra_args: &[String],
-) -> CodexLaunch {
-    CodexLaunch::PackagedActivation {
-        app_user_model_id: app_user_model_id.to_string(),
-        arguments: command_line_arguments(&build_codex_arguments_with_native_menu_inspector(
-            debug_port,
-            inspector_port,
-            extra_args,
-        )),
         process_id: None,
     }
 }
@@ -3312,27 +3303,6 @@ pub fn build_macos_open_command(
         "--args".to_string(),
     ];
     command.extend(build_codex_arguments(debug_port, extra_args));
-    command
-}
-
-pub fn build_macos_open_command_with_native_menu_inspector(
-    app_dir: &Path,
-    debug_port: u16,
-    inspector_port: u16,
-    extra_args: &[String],
-) -> Vec<String> {
-    let mut command = vec![
-        "open".to_string(),
-        "-W".to_string(),
-        "-a".to_string(),
-        app_dir.to_string_lossy().to_string(),
-        "--args".to_string(),
-    ];
-    command.extend(build_codex_arguments_with_native_menu_inspector(
-        debug_port,
-        inspector_port,
-        extra_args,
-    ));
     command
 }
 
@@ -3824,8 +3794,7 @@ mod tests {
     #[test]
     fn reinject_backoff_resets_only_after_sustained_health() {
         let now = std::time::Instant::now();
-        let reset_after =
-            std::time::Duration::from_secs(BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS);
+        let reset_after = std::time::Duration::from_secs(BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS);
         let mut backoff = BridgeReinjectBackoff::default();
 
         backoff.record_attempt(now);
@@ -3873,7 +3842,10 @@ mod tests {
 
     #[test]
     fn fixed_helper_port_is_required_only_when_protocol_proxy_is_used() {
-        assert_eq!(required_fixed_helper_port(&BackendSettings::default()), None);
+        assert_eq!(
+            required_fixed_helper_port(&BackendSettings::default()),
+            None
+        );
 
         let official_mix = BackendSettings {
             active_relay_id: "official-mix".to_string(),

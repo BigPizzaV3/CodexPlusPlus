@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
@@ -426,8 +426,7 @@ impl SkillsManager {
         }
         // 更新场景不能"先删旧的、再把新的顶上去"：`rename` 会因为跨设备、权限或
         // 杀软占用而失败，那时旧 skill 已经被删掉、新目录还在 staging，用户**没有
-        // 任何恢复路径**。改成先把旧目录挪到备份名再顶新的，失败时挪回来——与
-        // `plugin_marketplace::replace_directory` 用的是同一套做法。
+        // 任何恢复路径**。改成先把旧目录挪到备份名再顶新的，失败时挪回来。
         let previous = destination.with_file_name(format!("{}.previous-codex-plus", skill.id));
         if previous.exists() {
             let _ = std::fs::remove_dir_all(&previous);
@@ -810,6 +809,24 @@ fn read_skill_manifest(manifest: &Path, fallback_id: &str) -> (String, String) {
     }
 }
 
+fn zip_entry_relative_path(name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    let mut components = path.components();
+    match components.next()? {
+        Component::Normal(_) => {}
+        _ => return None,
+    }
+    let mut relative = PathBuf::new();
+    for component in components {
+        match component {
+            Component::Normal(value) => relative.push(value),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!relative.as_os_str().is_empty()).then_some(relative)
+}
+
 /// 从仓库 zip 里只解出 `repo_path` 这一棵子树。
 ///
 /// GitHub 的 zip 统一带一层 `repo-ref/` 前缀，`zip_entry_relative_path` 会剥掉它
@@ -836,7 +853,7 @@ pub fn extract_skill_subtree(
         if file.is_symlink() {
             anyhow::bail!("skill 中不允许包含符号链接：{}", file.name());
         }
-        let Some(relative) = crate::plugin_marketplace::zip_entry_relative_path(file.name()) else {
+        let Some(relative) = zip_entry_relative_path(file.name()) else {
             continue;
         };
         // zip 内部的分隔符恒为 '/'，但上面拿回来的是 PathBuf，在 Windows 上
@@ -1241,6 +1258,22 @@ mod tests {
         );
 
         assert_ne!(before[0].content_hash, after[0].content_hash);
+    }
+
+    #[test]
+    fn zip_entry_relative_path_strips_archive_root_and_rejects_escape() {
+        assert_eq!(
+            zip_entry_relative_path("skills-main/skills/alpha/SKILL.md"),
+            Some(PathBuf::from("skills").join("alpha").join("SKILL.md"))
+        );
+        for path in [
+            "skills-main/../evil.txt",
+            "../evil.txt",
+            "/tmp/evil.txt",
+            "skills-main/",
+        ] {
+            assert_eq!(zip_entry_relative_path(path), None);
+        }
     }
 
     #[test]

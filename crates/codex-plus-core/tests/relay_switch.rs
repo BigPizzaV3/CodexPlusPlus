@@ -1,7 +1,7 @@
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    LaunchMode, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
+    RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
 };
 
 #[test]
@@ -202,7 +202,12 @@ base_url = "https://edited-a.example/v1"
     assert_eq!(previous.context_window, "1000000");
     assert_eq!(previous.auto_compact_limit, "900000");
     assert_eq!(stored.active_relay_id, "b");
-    assert_eq!(stored.launch_mode, LaunchMode::Patch);
+    assert!(
+        serde_json::to_value(&stored)
+            .unwrap()
+            .get("launchMode")
+            .is_none()
+    );
     let live: toml::Value = std::fs::read_to_string(home.join("config.toml"))
         .unwrap()
         .parse()
@@ -469,7 +474,8 @@ fn switch_to_aggregate_restores_from_profile_snapshot_when_live_auth_is_corrupt(
     std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY": "sk-broken""#).unwrap();
 
     let snapshot = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"snapshot-token"}}"#;
-    switch_api_to_aggregate_with(&home, &temp, aggregate_profile_with_auth("agg", snapshot)).unwrap();
+    switch_api_to_aggregate_with(&home, &temp, aggregate_profile_with_auth("agg", snapshot))
+        .unwrap();
 
     let auth: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap())
@@ -495,7 +501,8 @@ fn switch_to_aggregate_ignores_corrupt_profile_snapshot_when_live_is_valid() {
     std::fs::create_dir(&home).unwrap();
     std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-old-api"}"#).unwrap();
 
-    switch_api_to_aggregate_with(&home, &temp, aggregate_profile_with_auth("agg", "{oops")).unwrap();
+    switch_api_to_aggregate_with(&home, &temp, aggregate_profile_with_auth("agg", "{oops"))
+        .unwrap();
 
     let live: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap())
@@ -545,12 +552,9 @@ fn switch_to_aggregate_rejects_when_live_and_profile_auth_both_corrupt() {
     let corrupt_live = r#"{"OPENAI_API_KEY": "sk-broken""#;
     std::fs::write(home.join("auth.json"), corrupt_live).unwrap();
 
-    let error = switch_api_to_aggregate_with(
-        &home,
-        &temp,
-        aggregate_profile_with_auth("agg", "{oops"),
-    )
-    .unwrap_err();
+    let error =
+        switch_api_to_aggregate_with(&home, &temp, aggregate_profile_with_auth("agg", "{oops"))
+            .unwrap_err();
 
     assert!(
         format!("{error:#}").contains("auth.json"),
@@ -715,7 +719,10 @@ fn switch_to_aggregate_keeps_api_key_usable() {
     switch_api_to_aggregate(&home, &temp).unwrap();
 
     let auth = std::fs::read_to_string(home.join("auth.json")).unwrap();
-    assert!(!auth.trim().is_empty(), "auth.json 不能写成空文件：{auth:?}");
+    assert!(
+        !auth.trim().is_empty(),
+        "auth.json 不能写成空文件：{auth:?}"
+    );
     let value: serde_json::Value = serde_json::from_str(&auth).unwrap();
     assert_eq!(
         value.get("OPENAI_API_KEY").and_then(|item| item.as_str()),
@@ -857,7 +864,9 @@ base_url = "https://a.example/v1"
     }
 
     let final_config = std::fs::read_to_string(home.join("config.toml")).unwrap();
-    let final_settings_len = std::fs::read(temp.path().join("settings.json")).unwrap().len();
+    let final_settings_len = std::fs::read(temp.path().join("settings.json"))
+        .unwrap()
+        .len();
     assert!(
         !final_config.contains(r"\nmodel_provider"),
         "污染的 model 值残留于 live config:\n{final_config}"
