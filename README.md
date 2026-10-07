@@ -79,6 +79,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
+      <a href="https://runapi.host/register?aff=AWJq">
+        <img src="docs/images/sponsor-runapi.png" alt="RunAPI" width="150">
+      </a>
+    </td>
+    <td><a href="https://runapi.host/register?aff=AWJq"><strong>RunAPI</strong></a><br>RunAPI 是高效稳定的 API 聚合平台，一个 API Key 即可访问 OpenAI、Claude、Gemini、DeepSeek、Grok 等 150+ 主流模型，低至 1 折，兼容 Claude Code、OpenClaw 等工具。</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://xc.y1yun.net/">
         <img src="docs/images/sponsor-yiyun-tech.jpg" alt="屹芸科技" height="80">
       </a>
