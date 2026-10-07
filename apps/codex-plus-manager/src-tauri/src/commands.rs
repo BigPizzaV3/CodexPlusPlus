@@ -995,8 +995,10 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         );
     }
     // 本次重启是否强制结束了残留启动器，用于给用户一个明确交代。
+    // 取用 take() 而非 get()：Cell::get 要求 T: Copy，而 Vec<u32> 不是 Copy。
+    // 这里本来也只需要消费一次，take 顺带把 Cell 清空。
     #[cfg(windows)]
-    let forced_launcher_process_count = forced_launcher_process_ids.get().len();
+    let forced_launcher_process_count = forced_launcher_process_ids.take().len();
     #[cfg(not(windows))]
     let forced_launcher_process_count = 0usize;
     let restart_message = if forced_launcher_process_count > 0 {
