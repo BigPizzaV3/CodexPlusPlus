@@ -3,18 +3,36 @@ name: Release assets
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已发布的版本标签，例如 v1.6.0"
+        required: true
+        type: string
+      platform:
+        description: "需要重新构建的平台"
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 permissions:
   contents: write
 
 jobs:
   windows-installer:
+    if: github.event_name == 'release' || inputs.platform != 'macos'
     runs-on: windows-latest
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -25,7 +43,29 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install NSIS
-        run: choco install nsis -y
+        shell: pwsh
+        run: |
+          $makensis = $null
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install nsis -y --no-progress
+            # Chocolatey 可能在下载失败后返回成功，必须实际验证编译器。
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+              "$env:ProgramFiles\NSIS\makensis.exe"
+            )
+            $makensis = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+            if (-not $makensis) {
+              $command = Get-Command makensis.exe -ErrorAction SilentlyContinue
+              if ($command) { $makensis = $command.Source }
+            }
+            if ($makensis) {
+              & $makensis /VERSION
+              if ($LASTEXITCODE -eq 0) { break }
+            }
+            $makensis = $null
+            if ($attempt -lt 3) { Start-Sleep -Seconds (10 * $attempt) }
+          }
+          if (-not $makensis) { throw "NSIS 安装失败或编译器不可用，停止发布构建。" }
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
@@ -48,31 +88,45 @@ jobs:
       - name: Build Windows zip asset
         shell: pwsh
         run: |
-          $version = "${{ github.event.release.tag_name }}".TrimStart("v", "V")
+          $version = ($env:RELEASE_TAG).TrimStart("v", "V")
           New-Item -ItemType Directory -Force dist/windows | Out-Null
           Compress-Archive -Path dist/windows/app/* -DestinationPath "dist/windows/CodexPlusPlus-$version-windows-x64.zip" -Force
 
       - name: Build Windows installer
         shell: pwsh
         run: |
-          $version = "${{ github.event.release.tag_name }}".TrimStart("v", "V")
-          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          if (-not (Test-Path $makensis)) {
-            $makensis = "makensis"
+          $version = ($env:RELEASE_TAG).TrimStart("v", "V")
+          # NSIS 的 64 位安装目录与 Chocolatey PATH 更新均需要兼容。
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          )
+          $makensis = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $makensis) {
+            $command = Get-Command makensis.exe -ErrorAction SilentlyContinue
+            if ($command) { $makensis = $command.Source }
+          }
+          if (-not $makensis) {
+            throw "NSIS 编译器未找到，检查 Chocolatey 安装结果。"
           }
           Push-Location scripts/installer/windows
-          & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
-          Pop-Location
+          try {
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
+            if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Upload Windows installer
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             dist/windows/*.exe
             dist/windows/*.zip
 
   macos-dmg:
+    if: github.event_name == 'release' || inputs.platform != 'windows'
     # 单个通用包（universal）同时支持 Intel 与 Apple Silicon，
     # 用户不必再自己判断架构，Release 也只多一个而不是两个产物。
     name: macOS DMG (universal)
@@ -81,7 +135,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Import Developer ID certificate
         env:
@@ -167,7 +221,7 @@ jobs:
             echo "error: MACOS_SIGNING_IDENTITY 未配置，拒绝产出未签名的发布包" >&2
             exit 1
           fi
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           VERSION="${VERSION#V}"
           # 构建脚本自己编两个架构、lipo 合并、再调 package-dmg.sh 打包。
           bash scripts/installer/macos/build-universal.sh "$VERSION"
@@ -205,12 +259,14 @@ jobs:
       - name: Upload macOS DMG
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             dist/macos/*.dmg
 
   latest-json:
     name: Upload static latest.json
+    # 单平台补跑时另一个 job 会跳过；成功或跳过才允许更新元数据。
+    if: always() && (needs.windows-installer.result == 'success' || needs.windows-installer.result == 'skipped') && (needs.macos-dmg.result == 'success' || needs.macos-dmg.result == 'skipped')
     runs-on: ubuntu-latest
     needs:
       - windows-installer
@@ -220,7 +276,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         shell: bash
         run: |
           set -euo pipefail
@@ -231,6 +287,16 @@ jobs:
           const repo = process.env.REPO;
           const tag = release.tagName || process.env.TAG;
           const version = tag.replace(/^v/i, "");
+          const required = [
+            "CodexPlusPlus-" + version + "-windows-x64-setup.exe",
+            "CodexPlusPlus-" + version + "-windows-x64.zip",
+            "CodexPlusPlus-" + version + "-macos-universal.dmg"
+          ];
+          for (const name of required) {
+            if (!(release.assets || []).some((asset) => asset.name === name && asset.size > 0)) {
+              throw new Error("发布附件缺失或为空：" + name);
+            }
+          }
           const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
           const assets = (release.assets || [])
             .map((asset) => asset.name)
@@ -249,7 +315,7 @@ jobs:
       - name: Upload latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           REPO: ${{ github.repository }}
         shell: bash
         run: gh release upload "$TAG" latest.json --clobber --repo "$REPO"
