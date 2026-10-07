@@ -476,18 +476,29 @@
        * 页面 overlay 的 left 由 positionCodexPlusPage 按图标栏右边界算好写进来。
        *
        * 关键：写进来的必须是**布局坐标**（视觉值 / zoom），因为 overlay 自己在缩放
-       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left)
-       * 把右边贴到视口右边缘；两个量都除过 zoom，缩放后才正好补齐。
+       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left - right)
+       * 把右边贴到原生内容区的右边缘；三个量都除过 zoom，缩放后才正好补齐。
        * 注意：本段在 JS 模板字符串里，注释里不能出现反引号，否则会提前闭合。
+       *
+       * 右/下各留一圈槽（原生是 4px）并给四角加圆角，对齐官方面板的观感：
+       * 官方页面面板 [_PageSurface_] 的 rect 与我们这块 overlay 完全相同（都是
+       * [52, 44, 1663, 940]），四角 12px；它外面套了一个 padding: 0 4px 4px 0 的槽，
+       * 右、下能看到底色。我们原先 right/bottom 贴 0 且无圆角，于是方角并且比官方
+       * 多占 4px，用户反馈「少一个圆角」就是这个。
+       * 圆角值由 positionCodexPlusPage 量官方面板写入，四个角一起用，不做左右区分。
+       * overflow: hidden 让圆角真正裁到内容；内容都在 .codex-plus-modal-content 内，
+       * 没有依赖溢出显示的全屏浮层，切掉是安全的。
        */
       .${codexPlusPageClass} {
         position: fixed;
         top: var(--codex-plus-page-top, 0px);
-        right: 0;
-        bottom: 0;
+        right: var(--codex-plus-page-right, 0px);
+        bottom: var(--codex-plus-page-bottom, 0px);
         left: var(--codex-plus-page-left, 0px);
-        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px));
-        height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px));
+        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px) - var(--codex-plus-page-right, 0px));
+        height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px) - var(--codex-plus-page-bottom, 0px));
+        border-radius: var(--codex-plus-page-radius, 0px);
+        overflow: hidden;
         z-index: 2147483644;
         display: block;
         background: var(--codex-plus-bg-primary, #fff);

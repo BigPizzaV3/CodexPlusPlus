@@ -1323,18 +1323,29 @@
        * 页面 overlay 的 left 由 positionCodexPlusPage 按图标栏右边界算好写进来。
        *
        * 关键：写进来的必须是**布局坐标**（视觉值 / zoom），因为 overlay 自己在缩放
-       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left)
-       * 把右边贴到视口右边缘；两个量都除过 zoom，缩放后才正好补齐。
+       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left - right)
+       * 把右边贴到原生内容区的右边缘；三个量都除过 zoom，缩放后才正好补齐。
        * 注意：本段在 JS 模板字符串里，注释里不能出现反引号，否则会提前闭合。
+       *
+       * 右/下各留一圈槽（原生是 4px）并给四角加圆角，对齐官方面板的观感：
+       * 官方页面面板 [_PageSurface_] 的 rect 与我们这块 overlay 完全相同（都是
+       * [52, 44, 1663, 940]），四角 12px；它外面套了一个 padding: 0 4px 4px 0 的槽，
+       * 右、下能看到底色。我们原先 right/bottom 贴 0 且无圆角，于是方角并且比官方
+       * 多占 4px，用户反馈「少一个圆角」就是这个。
+       * 圆角值由 positionCodexPlusPage 量官方面板写入，四个角一起用，不做左右区分。
+       * overflow: hidden 让圆角真正裁到内容；内容都在 .codex-plus-modal-content 内，
+       * 没有依赖溢出显示的全屏浮层，切掉是安全的。
        */
       .${codexPlusPageClass} {
         position: fixed;
         top: var(--codex-plus-page-top, 0px);
-        right: 0;
-        bottom: 0;
+        right: var(--codex-plus-page-right, 0px);
+        bottom: var(--codex-plus-page-bottom, 0px);
         left: var(--codex-plus-page-left, 0px);
-        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px));
-        height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px));
+        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px) - var(--codex-plus-page-right, 0px));
+        height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px) - var(--codex-plus-page-bottom, 0px));
+        border-radius: var(--codex-plus-page-radius, 0px);
+        overflow: hidden;
         z-index: 2147483644;
         display: block;
         background: var(--codex-plus-bg-primary, #fff);
@@ -5594,6 +5605,40 @@
     const layoutTop = zoom === 1 ? top : top / zoom;
     overlay.style.setProperty("--codex-plus-page-top", `${layoutTop}px`);
     overlay.style.top = `${layoutTop}px`;
+    // 右侧与下方官方各留了一圈槽：整行的 [data-app-shell-workspace-row] 比视口小
+    // （真机 1715x984 / 视口 1719x988，即右、下各 4px），官方内容面板正好收在行的右下角。
+    // 我们原先 right/bottom 都贴 0，于是比官方多占这 4px。这里量取而不是硬编码 4。
+    const row = document.querySelector("[data-app-shell-workspace-row]");
+    const rowRect = row?.getBoundingClientRect?.();
+    const rightGutter = rowRect && rowRect.width > 0 ? Math.max(0, window.innerWidth - rowRect.right) : 0;
+    const bottomGutter = rowRect && rowRect.height > 0 ? Math.max(0, window.innerHeight - rowRect.bottom) : 0;
+    const layoutRight = zoom === 1 ? rightGutter : rightGutter / zoom;
+    const layoutBottom = zoom === 1 ? bottomGutter : bottomGutter / zoom;
+    overlay.style.setProperty("--codex-plus-page-right", `${layoutRight}px`);
+    overlay.style.setProperty("--codex-plus-page-bottom", `${layoutBottom}px`);
+    overlay.style.right = `${layoutRight}px`;
+    overlay.style.bottom = `${layoutBottom}px`;
+    // 圆角同样量取官方面板自身的值，不写死 12px。
+    // 这里量的是 _PageSurface_：官方那个与我们 overlay 同格子的页面面板（rect 都是
+    // [52, 44, 1663, 940]），它四角同为 12px，左侧那一角也真实可见——真机像素扫描确认
+    // 官方左边缘从 y=44 的 x=62 收到 y=54 的 x=52，是一条完整的弧。
+    // 别改用 main[data-app-shell-main-surface] 的 --app-shell-main-surface-clip-start-radius：
+    // 那个元素左边缘在 362（缩在侧边栏后面），左侧还用 inset 负内缩把圆角裁掉，start 恒为 0，
+    // 会让人误判左侧不该圆——第一版就是这么写错的，用户反馈「少一个圆角」正是缺了左边两个角。
+    // 类名是 CSS Modules 的哈希名，但 _PageSurface_ 这个片段稳定，且不会命中 _PageSurfaceLayout_
+    //（其后紧跟 L 而非 _）。量到的是视觉值，同样折算成布局坐标。读不到就保持 0，不做猜测。
+    const pageSurface = document.querySelector('[class*="_PageSurface_"]');
+    const pageSurfaceStyle = pageSurface ? getComputedStyle(pageSurface) : null;
+    const mainSurfaceStyle = (() => {
+      const main = document.querySelector("main[data-app-shell-main-surface]");
+      return main ? getComputedStyle(main) : null;
+    })();
+    const radius =
+      parseFloat(pageSurfaceStyle?.borderTopLeftRadius || "") ||
+      parseFloat(mainSurfaceStyle?.getPropertyValue("--app-shell-main-surface-clip-end-radius") || "") ||
+      0;
+    const layoutRadius = zoom === 1 ? radius : radius / zoom;
+    overlay.style.setProperty("--codex-plus-page-radius", `${layoutRadius}px`);
   }
 
   function codexPlusHostUsesLightTheme() {
