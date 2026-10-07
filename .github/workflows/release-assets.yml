@@ -73,18 +73,10 @@ jobs:
             dist/windows/*.zip
 
   macos-dmg:
-    name: macOS DMG (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-          - arch: arm64
-            runner: macos-14
-            target: aarch64-apple-darwin
+    # 单个通用包（universal）同时支持 Intel 与 Apple Silicon，
+    # 用户不必再自己判断架构，Release 也只多一个而不是两个产物。
+    name: macOS DMG (universal)
+    runs-on: macos-14
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -153,7 +145,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          # 通用包需要两个架构的 std，构建脚本会各编一遍再 lipo 合并。
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
@@ -163,10 +156,7 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
-      - name: Build binaries
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build macOS DMG
+      - name: Build universal macOS DMG
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           MACOS_NOTARY_PROFILE: codexplusplus-notary
@@ -179,7 +169,8 @@ jobs:
           fi
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION#V}"
-          BINARY_DIR="$PWD/target/${{ matrix.target }}/release" bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
+          # 构建脚本自己编两个架构、lipo 合并、再调 package-dmg.sh 打包。
+          bash scripts/installer/macos/build-universal.sh "$VERSION"
 
       - name: Verify macOS bundle structure
         run: |

@@ -91,18 +91,10 @@ jobs:
           if-no-files-found: error
 
   macos-dmg:
-    name: macOS DMG (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-          - arch: arm64
-            runner: macos-14
-            target: aarch64-apple-darwin
+    # PR 构建也出通用包，跟发版产物保持一致，避免只在发版时才暴露问题。
+    # 没有签名密钥，所以这里走 ad-hoc（脚本的默认行为）。
+    name: macOS DMG (universal)
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -115,7 +107,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
@@ -128,10 +120,7 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
-      - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build macOS DMG
+      - name: Build universal macOS DMG
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION#V}"
@@ -139,7 +128,8 @@ jobs:
           if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then
             VERSION="0.0.0-${GITHUB_RUN_NUMBER}"
           fi
-          BINARY_DIR="$PWD/target/${{ matrix.target }}/release" bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
+          # 未设置 MACOS_SIGNING_IDENTITY，脚本自动退回 ad-hoc 签名。
+          bash scripts/installer/macos/build-universal.sh "$VERSION"
 
       - name: Verify macOS bundle structure
         run: |
@@ -158,6 +148,6 @@ jobs:
       - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
-          name: codex-plus-plus-macos-${{ matrix.arch }}-dmg
+          name: codex-plus-plus-macos-universal-dmg
           path: dist/macos/*.dmg
           if-no-files-found: error
