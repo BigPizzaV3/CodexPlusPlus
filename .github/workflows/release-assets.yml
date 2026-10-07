@@ -85,11 +85,70 @@ jobs:
           - arch: arm64
             runner: macos-14
             target: aarch64-apple-darwin
+    env:
+      # secrets 不能直接出现在 if: 里（会解析失败或静默变成空串），
+      # 必须先提到 env 层，下面各步才能用 env. 判断。
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      MACOS_NOTARY_PROFILE: codexplusplus-notary
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # 用临时钥匙串，不碰 runner 自带的，job 结束随机器销毁。
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+
+          # 少了这一步，codesign 会弹 GUI 授权框然后挂住直到超时。
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # 必须把新钥匙串加进搜索列表，否则 codesign 找不到身份。
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Install Developer ID intermediate certificate
+        run: |
+          set -euo pipefail
+          # runner 的系统钥匙串里没有 Developer ID G2 中间证书，
+          # 缺了它身份会报 CSSMERR_TP_NOT_TRUSTED、find-identity 一条都列不出来。
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            -k "$RUNNER_TEMP/signing.keychain-db" -T /usr/bin/codesign
+
+          security find-identity -v -p codesigning
+
+      - name: Store notarization credentials
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+
+          xcrun notarytool store-credentials "codexplusplus-notary" \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID"
+
+          rm -f "$KEY_PATH"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -113,20 +172,12 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build macOS DMG
+        # MACOS_SIGNING_IDENTITY / MACOS_NOTARY_PROFILE 由 job 级 env 提供。
+        # 设了它们脚本才走正式签名 + 公证；缺失时自动退回 ad-hoc，构建不会失败。
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION#V}"
           BINARY_DIR="$PWD/target/${{ matrix.target }}/release" bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
-
-      - name: Build macOS zip asset
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          VERSION="${VERSION#V}"
-          mkdir -p dist/macos/app-${{ matrix.arch }}
-          cp "target/${{ matrix.target }}/release/codex-plus-plus" "dist/macos/app-${{ matrix.arch }}/"
-          cp "target/${{ matrix.target }}/release/codex-plus-plus-manager" "dist/macos/app-${{ matrix.arch }}/"
-          (cd dist/macos && zip -r "CodexPlusPlus-${VERSION}-macos-${{ matrix.arch }}.zip" "app-${{ matrix.arch }}")
 
       - name: Verify macOS bundle structure
         run: |
@@ -139,7 +190,22 @@ jobs:
             test -x "$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
             plutil -lint "$app/Contents/Info.plist" >/dev/null
             codesign -dv "$app" >/dev/null 2>&1
+            # 真签名时额外校验签名有效性与 Gatekeeper 判定，防止"签了但无效"混过去。
+            if [ -n "${MACOS_SIGNING_IDENTITY:-}" ]; then
+              codesign --verify --deep --strict "$app"
+              spctl --assess --type execute "$app"
+            fi
             echo "verified: $app"
+          done
+
+      - name: Verify DMG notarization
+        # 只能用 env. 判断，secrets 不能出现在 if: 里。
+        if: env.MACOS_SIGNING_IDENTITY != ''
+        run: |
+          set -euo pipefail
+          for dmg in dist/macos/*.dmg; do
+            xcrun stapler validate "$dmg"
+            echo "notarized: $dmg"
           done
 
       - name: Upload macOS DMG
@@ -148,7 +214,6 @@ jobs:
           tag_name: ${{ github.event.release.tag_name }}
           files: |
             dist/macos/*.dmg
-            dist/macos/*.zip
 
   latest-json:
     name: Upload static latest.json

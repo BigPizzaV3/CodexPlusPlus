@@ -119,8 +119,6 @@ const translations = {
   "“Codex++”用于日常静默启动并加载配置；“Codex++ 管理工具”用于管理供应商、增强、脚本、更新和诊断。": "Codex++ launches silently for everyday use and loads your configuration. Codex++ Manager configures providers, enhancements, scripts, updates, and diagnostics.",
   "不使用第三方 API 可以吗？": "Can I use it without a third-party API?",
   "可以。选择官方登录模式即可只使用 ChatGPT / Codex 官方账号，Codex++ 也能仅作为启动和增强管理工具。": "Yes. Select official sign-in to use only your ChatGPT / Codex account. Codex++ can also serve solely as a launcher and enhancement manager.",
-  "macOS 提示应用已损坏怎么办？": "What if macOS says the app is damaged?",
-  "当前社区构建使用 ad-hoc 签名。请按项目 README 中的 macOS 安装说明处理 Gatekeeper 提示，并只从本项目 Release 下载。": "Community builds currently use ad-hoc signing. Follow the macOS installation instructions in the README for Gatekeeper prompts, and download only from this project's releases.",
   "把 Codex 调整成适合你的工具": "Shape Codex into the tool you need",
   "开源、可配置、可退出。先从管理工具开始。": "Open source, configurable, and reversible. Start with the manager.",
   "反馈问题": "Report an issue",

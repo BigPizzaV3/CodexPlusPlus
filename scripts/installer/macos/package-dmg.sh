@@ -126,12 +126,73 @@ $url_types
 PLIST
 }
 
+# 签名身份。设了 MACOS_SIGNING_IDENTITY 就走 Developer ID 正式签名，
+# 没设则退回 ad-hoc——贡献者本地和 PR 构建没有证书，不能因此构建失败。
+SIGNING_IDENTITY="${MACOS_SIGNING_IDENTITY:-}"
+# 公证凭据 profile（notarytool store-credentials 存的那个名字）。
+# 设为空则跳过公证，只签名。
+NOTARY_PROFILE="${MACOS_NOTARY_PROFILE:-}"
+ENTITLEMENTS="$ROOT/scripts/installer/macos/entitlements.plist"
+
+# 签名参数必须用数组装：身份串里含空格
+# （"Developer ID Application: Xxx (TEAMID)"），用字符串拼接会在空格处断词。
+SIGN_ARGS=()
+if [ -n "$SIGNING_IDENTITY" ]; then
+  # hardened runtime 与安全时间戳是公证的前置条件，ad-hoc 下无意义。
+  SIGN_ARGS=(--options runtime --timestamp --sign "$SIGNING_IDENTITY")
+else
+  SIGN_ARGS=(--sign -)
+fi
+
 sign_app() {
   local app_dir="$1"
   local executable
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_dir/Contents/Info.plist")"
-  codesign --force --sign - "$app_dir/Contents/MacOS/$executable"
-  codesign --force --sign - "$app_dir"
+  # 二进制先签、bundle 后签：签 bundle 时会把二进制纳入密封清单，
+  # 顺序反了会报 "code object is not signed at all"。
+  # 注意：macOS 自带 bash 3.2，set -u 下展开空数组会报 unbound variable，
+  # 所以空数组必须用 "${arr[@]+"${arr[@]}"}" 这种形式，不能直接 "${arr[@]}"。
+  local extra=()
+  if [ -n "$SIGNING_IDENTITY" ] && [ -f "$ENTITLEMENTS" ]; then
+    extra=(--entitlements "$ENTITLEMENTS")
+  fi
+  codesign --force "${SIGN_ARGS[@]}" ${extra[@]+"${extra[@]}"} "$app_dir/Contents/MacOS/$executable"
+  codesign --force "${SIGN_ARGS[@]}" "$app_dir"
+}
+
+sign_dmg() {
+  local dmg="$1"
+  if [ -z "$SIGNING_IDENTITY" ]; then
+    return 0
+  fi
+  codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$dmg"
+}
+
+notarize_dmg() {
+  local dmg="$1"
+  if [ -z "$SIGNING_IDENTITY" ] || [ -z "$NOTARY_PROFILE" ]; then
+    echo "note: 跳过公证（未同时提供 MACOS_SIGNING_IDENTITY 与 MACOS_NOTARY_PROFILE）" >&2
+    return 0
+  fi
+
+  echo "==> 提交公证，等待 Apple 扫描结果…" >&2
+  # --wait 会阻塞到 Apple 返回结果；失败时只给 submission id，日志要另外取。
+  # 输出必须先收进变量再 grep：直接管道给 grep -q 时，grep 一命中就退出，
+  # 上游 tee 收到 SIGPIPE，在 set -o pipefail 下会把整条管道判为失败。
+  local output
+  output="$(xcrun notarytool submit "$dmg" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1)" || true
+  printf '%s\n' "$output" >&2
+  if ! printf '%s\n' "$output" | grep -q "status: Accepted"; then
+    echo "error: 公证未通过。" >&2
+    echo "       用 'xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE' 看详情，" >&2
+    echo "       最常见原因是签名漏了 --options runtime。" >&2
+    return 1
+  fi
+
+  # 装订票据后，用户离线也能通过 Gatekeeper 校验。
+  xcrun stapler staple "$dmg" >/dev/null
+  xcrun stapler validate "$dmg" >/dev/null
+  echo "==> 公证通过，票据已装订" >&2
 }
 
 verify_app() {
@@ -148,10 +209,19 @@ verify_app() {
     echo "error: missing PkgInfo in $app_dir" >&2
     return 1
   fi
-  codesign -dv "$app_dir" >/dev/null 2>&1 || {
-    echo "error: codesign verification failed for $app_dir" >&2
-    return 1
-  }
+  # 正式签名时用 --verify --deep --strict 真正校验签名有效性（含资源密封、
+  # 信任链、时间戳）；仅 codesign -dv 只能证明"有签名"，证明不了"签名有效"。
+  if [ -n "$SIGNING_IDENTITY" ]; then
+    codesign --verify --deep --strict --verbose=2 "$app_dir" || {
+      echo "error: codesign --verify failed for $app_dir" >&2
+      return 1
+    }
+  else
+    codesign -dv "$app_dir" >/dev/null 2>&1 || {
+      echo "error: codesign verification failed for $app_dir" >&2
+      return 1
+    }
+  fi
 }
 
 prepare_icon
@@ -347,5 +417,10 @@ if [ ! -s "$DMG" ]; then
   find "$DIST" -maxdepth 2 -type f -print >&2 || true
   exit 1
 fi
+
+# 顺序不能变：先签 app（已在上面完成）→ 打 DMG → 签 DMG → 公证 DMG → 装订票据。
+# DMG 本身也要签名，Apple 才知道这个容器是谁做的。
+sign_dmg "$DMG"
+notarize_dmg "$DMG"
 
 echo "$DMG"

@@ -218,21 +218,6 @@ git worktree add -b <new-branch> <worktree-path> upstream/<base-branch>
 
 这样新 worktree 从最新的远端跟踪分支开始，而不是从当前会话所在的本地 HEAD 开始。如果 Codex++ 无法安全识别当前 Codex 版本的原生 worktree 创建表单，请从 Codex++ 菜单中手动填写仓库路径、分支名、worktree 路径、remote 和 base branch。
 
-### macOS 提示无法打开或已损坏
-
-当前安装包未签名/未公证时，macOS Gatekeeper 可能拦截，出现“已损坏，无法打开”的提示：
-
-![macOS 提示 Codex++ 管理工具已损坏](docs/images/macos-damaged-warning.png)
-
-如果遇到该提示，可以在终端执行下面两条命令，解除苹果系统的安全隔离限制：
-
-```bash
-sudo xattr -rd com.apple.quarantine /Applications/Codex++\ 管理工具.app
-sudo xattr -rd com.apple.quarantine /Applications/Codex++.app
-```
-
-执行后重新打开 `Codex++` 或 `Codex++ 管理工具` 即可。
-
 ### macOS Intel 能用吗
 
 可以。Release 会分别提供 `macos-x64.dmg` 和 `macos-arm64.dmg`。Intel Mac 下载 x64 包，Apple Silicon 下载 arm64 包。
