@@ -18,6 +18,30 @@ use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
 };
 
+/// 把路径安全地写进 config.toml 的种子文本里。
+///
+/// 不能直接塞进 basic string（双引号）：Windows 路径里的反斜杠在那里是转义引导符，
+/// `C:\Users\...` 会被解析成 `\U`（8 位 Unicode 转义）而让**整份** config.toml 失效，
+/// 测试于是在 Windows 上炸、在 macOS 上（路径无反斜杠）永远不炸。
+/// 改用 literal string（单引号）：不做任何转义处理，而 Windows 路径不可能含单引号。
+fn toml_path_literal(path: &std::path::Path) -> String {
+    format!("'{}'", path.display())
+}
+
+/// 解析 config.toml 后取出 model_catalog_json 指针。
+///
+/// 断言指针一律走这里，不要用 `config.contains(...)` 比对文本：生产用
+/// `toml_edit::value()` 写回，Windows 上会把反斜杠转义成 `\\`，文本形态随平台而变，
+/// 比对文本必然在某一端失灵。
+fn model_catalog_pointer(contents: &str) -> Option<String> {
+    contents
+        .parse::<toml_edit::DocumentMut>()
+        .ok()?
+        .get("model_catalog_json")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// 回归（issue #2147）：通用配置里混进「只有 `enabled_tools`、没有 `command`/`url`」
 /// 的残缺 MCP 条目时，合并后必须把它丢掉——codex 对缺传输方式的条目不是跳过，
 /// 而是拒载**整份** config.toml（`invalid transport`），用户表现是「编辑通用配置后
@@ -2571,7 +2595,7 @@ fn apply_relay_profile_preserves_user_model_catalog_json() {
         relay_mode: RelayMode::PureApi,
         config_contents: format!(
             r#"model = "qwen3-coder"
-model_catalog_json = "{}"
+model_catalog_json = {}
 model_provider = "custom"
 
 [model_providers.custom]
@@ -2581,7 +2605,7 @@ requires_openai_auth = true
 base_url = "https://relay.example/v1"
 experimental_bearer_token = "sk-new"
 "#,
-            external_catalog.display()
+            toml_path_literal(&external_catalog)
         ),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_insert_mode: Default::default(),
@@ -2592,11 +2616,9 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(
-        config.contains(&format!(
-            r#"model_catalog_json = "{}""#,
-            external_catalog.display()
-        )),
+    assert_eq!(
+        model_catalog_pointer(&config).as_deref(),
+        Some(external_catalog.to_string_lossy().as_ref()),
         "存在的外部 catalog 必须原样保留：{config}"
     );
     assert!(
@@ -2621,7 +2643,7 @@ fn apply_relay_profile_drops_model_catalog_json_pointing_at_missing_file() {
         relay_mode: RelayMode::PureApi,
         config_contents: format!(
             r#"model = "deepseek-v4-pro"
-model_catalog_json = "{}"
+model_catalog_json = {}
 model_provider = "custom"
 
 [model_providers.custom]
@@ -2631,7 +2653,7 @@ requires_openai_auth = true
 base_url = "https://relay.example/v1"
 experimental_bearer_token = "sk-new"
 "#,
-            missing.display()
+            toml_path_literal(&missing)
         ),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_list: "deepseek-v4-pro[1M]".to_string(),
@@ -2641,13 +2663,14 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(
-        !config.contains(&missing.display().to_string()),
+    assert_ne!(
+        model_catalog_pointer(&config).as_deref(),
+        Some(missing.to_string_lossy().as_ref()),
         "坏 catalog 指针不得落盘：{config}"
     );
     // 降级而非拒载：本 profile 的托管 catalog 照常生成，每模型窗口仍然生效。
     assert_eq!(
-        config.parse::<toml_edit::DocumentMut>().unwrap()["model_catalog_json"].as_str(),
+        model_catalog_pointer(&config).as_deref(),
         Some("model-catalogs/relay-a.json")
     );
     assert!(
@@ -2708,8 +2731,8 @@ fn apply_relay_profile_preserves_live_external_model_catalog() {
     std::fs::write(
         temp.path().join("config.toml"),
         format!(
-            "model = \"gpt-5.5\"\nmodel_catalog_json = \"{}\"\n",
-            external_catalog.display()
+            "model = \"gpt-5.5\"\nmodel_catalog_json = {}\n",
+            toml_path_literal(&external_catalog)
         ),
     )
     .unwrap();
@@ -2736,10 +2759,10 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(&format!(
-        r#"model_catalog_json = "{}""#,
-        external_catalog.display()
-    )));
+    assert_eq!(
+        model_catalog_pointer(&config).as_deref(),
+        Some(external_catalog.to_string_lossy().as_ref())
+    );
     assert!(!config.contains("model-catalogs/relay-a.json"));
     assert!(!temp.path().join("model-catalogs").exists());
 }
@@ -5817,7 +5840,7 @@ fn apply_relay_profile_degrades_external_catalog_with_model_override() {
         relay_mode: RelayMode::PureApi,
         config_contents: format!(
             r#"model = "deepseek-v4-pro"
-model_catalog_json = "{}"
+model_catalog_json = {}
 model_provider = "custom"
 
 [model_providers.custom]
@@ -5827,7 +5850,7 @@ requires_openai_auth = true
 base_url = "https://relay.example/v1"
 experimental_bearer_token = "sk-new"
 "#,
-            user_catalog.display()
+            toml_path_literal(&user_catalog)
         ),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-new"}"#.to_string(),
         model_insert_mode: Default::default(),
@@ -5840,11 +5863,9 @@ experimental_bearer_token = "sk-new"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     // 用户手写的外部指针必须原样保留，不被本 profile 的托管 catalog 覆盖。
-    assert!(
-        config.contains(&format!(
-            r#"model_catalog_json = "{}""#,
-            user_catalog.display()
-        )),
+    assert_eq!(
+        model_catalog_pointer(&config).as_deref(),
+        Some(user_catalog.to_string_lossy().as_ref()),
         "外部 catalog 指针应保留：{config}"
     );
     // 降级路径不得顺手改写用户的外部 catalog 文件。
