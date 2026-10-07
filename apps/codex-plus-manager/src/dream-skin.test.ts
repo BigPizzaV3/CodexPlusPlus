@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
 
 import {
   defaultDreamSkinTheme,
@@ -215,7 +216,7 @@ describe("dream skin theme helpers", () => {
       "项目按钮文字",
       "状态文字",
       "引用文字",
-      "应用皮肤",
+      "应用所选主题",
       "恢复 Codex 外观",
       "实机验证",
       "保存截图",
@@ -279,23 +280,44 @@ describe("dream skin theme helpers", () => {
     assert.match(css, /@media \(max-width:\s*760px\)[\s\S]*\.dream-skin-theme-list\s*\{[^}]*grid-template-columns:\s*1fr/s);
   });
 
-  it("keeps advanced theme editing collapsed outside the theme switcher", async () => {
+  it("keeps advanced editing collapsed with one explicit theme activation action", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const customizerStart = app.indexOf('<details className="dream-skin-customizer">');
-    const customizerEnd = app.indexOf("</details>", customizerStart);
-    const libraryStart = app.indexOf('<section className="dream-skin-theme-library">');
-    const libraryEnd = app.indexOf("</section>", libraryStart);
+    const source = ts.createSourceFile("App.tsx", app, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const screen = source.statements.find((node): node is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "DreamSkinScreen",
+    );
+    assert.ok(screen);
 
-    assert.ok(customizerStart >= 0);
-    assert.ok(customizerEnd > customizerStart);
-    assert.ok(libraryStart >= 0);
-    assert.ok(libraryEnd > libraryStart);
+    // 用 JSX 结构定位完整区域，避免新增嵌套 details 后截在第一个结束标签。
+    const elements = new Map<string, ts.JsxElement>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isJsxElement(node)) {
+        const className = node.openingElement.attributes.properties.find((attribute) =>
+          ts.isJsxAttribute(attribute) && attribute.name.getText(source) === "className",
+        );
+        if (className && ts.isJsxAttribute(className) && className.initializer && ts.isStringLiteral(className.initializer)) {
+          for (const name of className.initializer.text.split(/\s+/)) elements.set(name, node);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(screen);
+    const customizerNode = elements.get("dream-skin-customizer");
+    const libraryNode = elements.get("dream-skin-theme-library");
+    const overviewNode = elements.get("dream-skin-overview");
+    assert.ok(customizerNode);
+    assert.ok(libraryNode);
+    assert.ok(overviewNode);
+    const customizer = customizerNode.getText(source);
+    const library = libraryNode.getText(source);
+    const overview = overviewNode.getText(source);
 
-    const customizer = app.slice(customizerStart, customizerEnd);
-    const library = app.slice(libraryStart, libraryEnd);
-
-    assert.doesNotMatch(app.slice(customizerStart, customizerStart + 80), /\sopen(?:=|\s|>)/);
-    assert.match(library, /应用主题/);
+    assert.doesNotMatch(customizerNode.openingElement.getText(source), /\sopen(?:=|\s|>)/);
+    assert.match(overview, /应用所选主题/);
+    assert.match(overview, /actions\.activateDreamSkinTheme\(\)/);
+    assert.equal((screen.getText(source).match(/actions\.activateDreamSkinTheme\(\)/g) ?? []).length, 1);
+    assert.match(library, /actions\.selectDreamSkinTheme\(item\)/);
+    assert.doesNotMatch(library, /actions\.activateDreamSkinTheme\(\)/);
     assert.doesNotMatch(library, /t\("(?:从图片创建|保存主题|恢复 Dream Skin 默认主题)"\)/);
     assert.match(customizer, /t\("从图片创建"\)/);
     assert.match(customizer, /t\("保存主题"\)/);
