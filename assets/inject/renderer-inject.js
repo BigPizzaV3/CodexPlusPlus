@@ -1329,12 +1329,12 @@
        */
       .${codexPlusPageClass} {
         position: fixed;
-        top: 0;
+        top: var(--codex-plus-page-top, 0px);
         right: 0;
         bottom: 0;
-        left: 0;
+        left: var(--codex-plus-page-left, 0px);
         width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px));
-        height: calc(100vh / var(--codex-plus-zoom, 1));
+        height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px));
         z-index: 2147483644;
         display: block;
         background: var(--codex-plus-bg-primary, #fff);
@@ -5585,7 +5585,15 @@
     const layoutLeft = zoom === 1 ? left : left / zoom;
     overlay.style.setProperty("--codex-plus-page-left", `${layoutLeft}px`);
     overlay.style.left = `${layoutLeft}px`;
-    overlay.style.top = "0px";
+    // 官方顶部有一条 header（返回/前进/隐藏侧边栏），图标栏与侧边栏都从它的下沿开始。
+    // 我们的 overlay 若从 y=0 铺满就会把整条 header 盖住——用户反馈「比官方少了一条顶部栏」
+    // 就是这个原因。这里同样量图标栏的顶边（而非硬编码高度），让 overlay 从 header 下沿开始。
+    const top = railRect && railRect.height > 0
+      ? Math.max(0, railRect.top)
+      : (rect && rect.height > 0 ? Math.max(0, rect.top) : 0);
+    const layoutTop = zoom === 1 ? top : top / zoom;
+    overlay.style.setProperty("--codex-plus-page-top", `${layoutTop}px`);
+    overlay.style.top = `${layoutTop}px`;
   }
 
   function codexPlusHostUsesLightTheme() {
