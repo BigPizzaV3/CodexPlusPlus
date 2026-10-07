@@ -233,13 +233,13 @@ pub async fn generate(
     if base_url.is_empty() || model.is_empty() {
         return Ok(failed_result(
             &configured_protocol,
-            "Stepwise Base URL or Model is not configured",
+            "下一步建议未配置 Base URL 或模型",
         ));
     }
     if api_key.is_empty() {
         return Ok(failed_result(
             &configured_protocol,
-            "Stepwise API Key is not configured",
+            "下一步建议未配置 API Key",
         ));
     }
 
@@ -257,10 +257,7 @@ pub async fn generate(
                 Err(error) => {
                     return Ok(failed_result(
                         protocol.as_str(),
-                        format!(
-                            "failed to build Stepwise {} request: {error}",
-                            protocol.as_str()
-                        ),
+                        format!("构建下一步建议 {} 请求失败：{error}", protocol.as_str()),
                     ));
                 }
             };
@@ -276,10 +273,7 @@ pub async fn generate(
             Err(error) => {
                 return Ok(failed_result(
                     protocol.as_str(),
-                    format!(
-                        "failed to request Stepwise {} API: {error}",
-                        protocol.as_str()
-                    ),
+                    format!("请求下一步建议 {} API 失败：{error}", protocol.as_str()),
                 ));
             }
         };
@@ -306,7 +300,7 @@ pub async fn generate(
             return Ok(failed_result(
                 protocol.as_str(),
                 format!(
-                    "Stepwise upstream {}: {}",
+                    "下一步建议上游 {}：{}",
                     status.as_u16(),
                     redact_secret(&text, &api_key)
                 ),
@@ -328,7 +322,7 @@ pub async fn generate(
                 }
                 return Ok(failed_result(
                     protocol.as_str(),
-                    format!("failed to parse Stepwise API response: {error}"),
+                    format!("解析下一步建议 API 响应失败：{error}"),
                 ));
             }
         };
@@ -356,7 +350,7 @@ pub async fn generate(
     };
     Ok(failed_result(
         &configured_protocol,
-        format!("Stepwise could not find a supported upstream protocol{details}"),
+        format!("下一步建议未找到支持的上游协议{details}"),
     ))
 }
 
@@ -425,8 +419,7 @@ fn build_upstream_request(
         StepwiseProtocol::AnthropicMessages => {
             headers.insert(
                 HeaderName::from_static("x-api-key"),
-                HeaderValue::from_str(api_key)
-                    .context("failed to build Stepwise API key header")?,
+                HeaderValue::from_str(api_key).context("构建下一步建议 API Key 请求头失败")?,
             );
             headers.insert(
                 HeaderName::from_static("anthropic-version"),
@@ -465,7 +458,7 @@ fn insert_bearer_header(headers: &mut HeaderMap, api_key: &str) -> anyhow::Resul
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {api_key}"))
-            .context("failed to build Stepwise authorization header")?,
+            .context("构建下一步建议认证请求头失败")?,
     );
     Ok(())
 }
@@ -492,9 +485,9 @@ fn redact_secret(value: &str, secret: &str) -> String {
 pub async fn test_connection(settings: &BackendSettings) -> anyhow::Result<Value> {
     generate(
         StepwiseRequest {
-            last_user_message: "测试 Stepwise 配置。".to_string(),
-            last_assistant_message: "Stepwise 应返回 0 到 6 条可直接发送的后续建议。".to_string(),
-            thread_title: "Codex++ Stepwise test".to_string(),
+            last_user_message: "测试下一步建议配置。".to_string(),
+            last_assistant_message: "下一步建议应返回 0 到 6 条可直接发送的后续建议。".to_string(),
+            thread_title: "Codex++ 下一步建议测试".to_string(),
             page_url: String::new(),
         },
         settings,
@@ -510,7 +503,7 @@ pub fn build_messages(request: &StepwiseRequest, settings: &BackendSettings) -> 
         limit.saturating_mul(60) / 100,
     );
     let system_content = [
-        "You generate concise Codex Stepwise actions.",
+        "You generate concise Codex next-step suggestions.",
         "Return strict JSON only, no markdown.",
         "Schema: {\"items\":[{\"label\":\"short action name in Simplified Chinese\",\"summary\":\"one concise preview sentence in Simplified Chinese\",\"prompt\":\"complete directly sendable user message in Simplified Chinese\"}]}",
         &format!(
@@ -762,6 +755,22 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const TEST_API_KEY: &str = "sk-stepwise-test";
+
+    #[tokio::test]
+    async fn missing_configuration_uses_next_step_suggestion_name() {
+        let settings = BackendSettings {
+            codex_app_stepwise_enabled: true,
+            codex_app_stepwise_base_url: String::new(),
+            codex_app_stepwise_api_key: "fake-label-test-key".to_string(),
+            ..BackendSettings::default()
+        };
+        let result = generate(StepwiseRequest::default(), &settings)
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["error"], "下一步建议未配置 Base URL 或模型");
+        assert!(!result["error"].as_str().unwrap().contains("Stepwise"));
+    }
 
     fn test_request() -> StepwiseRequest {
         StepwiseRequest {

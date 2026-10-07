@@ -9,15 +9,6 @@ use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item};
 
 use crate::tools::{ToolConfig, ToolId};
-use crate::zed_remote::ZedOpenStrategy;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LaunchMode {
-    #[default]
-    Patch,
-    Relay,
-}
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -440,8 +431,48 @@ impl Default for DreamSkinThemeConfig {
     }
 }
 
+/// 独立的听写服务配置；不复用编码供应商的密钥。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DictationSettings {
+    pub enabled: bool,
+    pub base_url: String,
+    pub api_key: String,
+    pub api_key_env: String,
+    pub model: String,
+    pub language: String,
+    pub timeout_seconds: u64,
+}
+
+impl Default for DictationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: "https://api.groq.com/openai/v1".to_string(),
+            api_key: String::new(),
+            api_key_env: String::new(),
+            model: "whisper-large-v3-turbo".to_string(),
+            language: String::new(),
+            timeout_seconds: 120,
+        }
+    }
+}
+
+impl DictationSettings {
+    pub fn normalize(&mut self) {
+        self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        self.api_key = self.api_key.trim().to_string();
+        self.api_key_env = self.api_key_env.trim().to_string();
+        self.model = self.model.trim().to_string();
+        self.language = self.language.trim().to_string();
+        self.timeout_seconds = self.timeout_seconds.clamp(1, 600);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
+    #[serde(default)]
+    pub dictation: DictationSettings,
     #[serde(rename = "codexAppPath", default)]
     pub codex_app_path: String,
     #[serde(rename = "codexExtraArgs", default)]
@@ -470,30 +501,14 @@ pub struct BackendSettings {
     pub codex_app_markdown_export: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
-    #[serde(rename = "codexAppForceChineseLocale", default = "default_true")]
-    pub codex_app_force_chinese_locale: bool,
-    #[serde(rename = "codexAppFastStartup", default)]
-    pub codex_app_fast_startup: bool,
     #[serde(rename = "codexAppThreadIdBadge", default)]
     pub codex_app_thread_id_badge: bool,
     #[serde(rename = "codexAppConversationView", default)]
     pub codex_app_conversation_view: bool,
     #[serde(rename = "codexAppThreadScrollRestore", default = "default_true")]
     pub codex_app_thread_scroll_restore: bool,
-    #[serde(rename = "codexAppZedRemoteOpen", default = "default_true")]
-    pub codex_app_zed_remote_open: bool,
-    #[serde(rename = "zedRemoteOpenStrategy", default)]
-    pub zed_remote_open_strategy: ZedOpenStrategy,
-    #[serde(rename = "zedRemoteProjectRegistryEnabled", default = "default_true")]
-    pub zed_remote_project_registry_enabled: bool,
-    #[serde(rename = "zedRemoteSyncToZedSettings", default)]
-    pub zed_remote_sync_to_zed_settings: bool,
-    #[serde(rename = "codexAppUpstreamWorktreeCreate", default = "default_true")]
-    pub codex_app_upstream_worktree_create: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
     pub codex_app_native_menu_placement: bool,
-    #[serde(rename = "codexAppNativeMenuLocalization", default = "default_true")]
-    pub codex_app_native_menu_localization: bool,
     #[serde(rename = "codexAppNativeBrowserRequireIdentification", default)]
     pub codex_app_native_browser_require_identification: bool,
     #[serde(rename = "codexAppServiceTierControls", default)]
@@ -612,8 +627,6 @@ pub struct BackendSettings {
     pub weixin_connect_sandbox: String,
     #[serde(rename = "weixinConnectCodexPath", default)]
     pub weixin_connect_codex_path: String,
-    #[serde(rename = "launchMode", default)]
-    pub launch_mode: LaunchMode,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
     pub relay_base_url: String,
     #[serde(rename = "relayApiKey", default)]
@@ -644,6 +657,7 @@ pub struct BackendSettings {
 impl Default for BackendSettings {
     fn default() -> Self {
         Self {
+            dictation: DictationSettings::default(),
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
@@ -658,18 +672,10 @@ impl Default for BackendSettings {
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
-            codex_app_force_chinese_locale: true,
-            codex_app_fast_startup: false,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
-            codex_app_zed_remote_open: true,
-            zed_remote_open_strategy: ZedOpenStrategy::AddToFocusedWorkspace,
-            zed_remote_project_registry_enabled: true,
-            zed_remote_sync_to_zed_settings: false,
-            codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
-            codex_app_native_menu_localization: true,
             codex_app_native_browser_require_identification: false,
             codex_app_service_tier_controls: false,
             codex_app_pet_real_mouse_look: false,
@@ -706,7 +712,6 @@ impl Default for BackendSettings {
             weixin_connect_model: String::new(),
             weixin_connect_sandbox: default_weixin_connect_sandbox(),
             weixin_connect_codex_path: String::new(),
-            launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
             relay_profiles: default_relay_profiles(),
@@ -1332,6 +1337,20 @@ impl SettingsStore {
             .and_then(Value::as_array)
             .map(|items| items.len())
             .unwrap_or(0);
+        // 已移除的增强项不再接受更新；顺便清理旧版本留下的开关。
+        for key in [
+            "launchMode",
+            "codexAppFastStartup",
+            "codexAppForceChineseLocale",
+            "codexAppZedRemoteOpen",
+            "zedRemoteOpenStrategy",
+            "zedRemoteProjectRegistryEnabled",
+            "zedRemoteSyncToZedSettings",
+            "codexAppUpstreamWorktreeCreate",
+            "codexAppNativeMenuLocalization",
+        ] {
+            raw.remove(key);
+        }
         merge_known_setting_fields(&mut raw, &payload);
         let settings = normalize_settings_config_sections(
             serde_json::from_value(Value::Object(raw.clone())).unwrap_or_default(),
@@ -1395,6 +1414,26 @@ impl SettingsStore {
 }
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
+    if let Some(patch) = source.get("dictation").and_then(Value::as_object) {
+        let mut dictation = target
+            .get("dictation")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        merge_bool_setting(&mut dictation, patch, "enabled");
+        for key in ["baseUrl", "apiKey", "apiKeyEnv", "model", "language"] {
+            if let Some(value) = patch.get(key).and_then(Value::as_str) {
+                dictation.insert(key.to_string(), Value::String(value.trim().to_string()));
+            }
+        }
+        if let Some(value) = patch.get("timeoutSeconds").and_then(Value::as_u64) {
+            dictation.insert(
+                "timeoutSeconds".to_string(),
+                Value::from(value.clamp(1, 600)),
+            );
+        }
+        target.insert("dictation".to_string(), Value::Object(dictation));
+    }
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
@@ -1436,22 +1475,10 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppPasteFix");
-    merge_bool_setting(target, source, "codexAppForceChineseLocale");
-    merge_bool_setting(target, source, "codexAppFastStartup");
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
-    merge_bool_setting(target, source, "codexAppZedRemoteOpen");
-    if let Some(value) = source.get("zedRemoteOpenStrategy") {
-        if serde_json::from_value::<ZedOpenStrategy>(value.clone()).is_ok() {
-            target.insert("zedRemoteOpenStrategy".to_string(), value.clone());
-        }
-    }
-    merge_bool_setting(target, source, "zedRemoteProjectRegistryEnabled");
-    merge_bool_setting(target, source, "zedRemoteSyncToZedSettings");
-    merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
-    merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
     merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
@@ -1621,11 +1648,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     ] {
         if let Some(value) = source.get(key).and_then(Value::as_str) {
             target.insert(key.to_string(), Value::String(value.trim().to_string()));
-        }
-    }
-    if let Some(value) = source.get("launchMode").and_then(Value::as_str) {
-        if matches!(value, "patch" | "relay") {
-            target.insert("launchMode".to_string(), Value::String(value.to_string()));
         }
     }
     if let Some(value) = source.get("relayBaseUrl").and_then(Value::as_str) {
@@ -1847,6 +1869,7 @@ fn settings_to_object(settings: &BackendSettings) -> Map<String, Value> {
 }
 
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
+    settings.dictation.normalize();
     settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     let (common, extracted_context) =
         split_context_config_sections(&settings.relay_common_config_contents);
@@ -2122,18 +2145,9 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(!settings.codex_app_thread_id_badge);
-        assert!(settings.codex_app_force_chinese_locale);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
-        assert_eq!(
-            settings.zed_remote_open_strategy,
-            ZedOpenStrategy::AddToFocusedWorkspace
-        );
-        assert!(settings.zed_remote_project_registry_enabled);
-        assert!(!settings.zed_remote_sync_to_zed_settings);
-        assert!(settings.codex_app_native_menu_localization);
-        assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
@@ -2799,7 +2813,9 @@ experimental_bearer_token = "sk-existing""#
         std::fs::write(&path, "{bad json").unwrap();
         let store = SettingsStore::new(path.clone());
 
-        let error = store.load().expect_err("坏 JSON 必须报错，而不是退回默认值");
+        let error = store
+            .load()
+            .expect_err("坏 JSON 必须报错，而不是退回默认值");
         assert!(
             error.to_string().contains("解析失败"),
             "错误信息应指出解析失败，实际是: {error}"
@@ -3113,7 +3129,6 @@ experimental_bearer_token = "sk-existing""#
             "codexAppSessionDelete": false,
             "codexAppConversationView": true,
             "codexAppThreadIdBadge": true,
-            "codexAppNativeMenuLocalization": false,
             "codexAppServiceTierControls": true,
             "codexAppPetRealMouseLook": true,
             "codexGoalsEnabled": true,
@@ -3130,7 +3145,6 @@ experimental_bearer_token = "sk-existing""#
         assert!(!updated.codex_app_session_delete);
         assert!(updated.codex_app_conversation_view);
         assert!(updated.codex_app_thread_id_badge);
-        assert!(!updated.codex_app_native_menu_localization);
         assert!(updated.codex_app_service_tier_controls);
         assert!(updated.codex_app_pet_real_mouse_look);
         assert!(updated.codex_goals_enabled);
@@ -3335,17 +3349,61 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
-    fn settings_store_update_persists_launch_mode() {
+    fn legacy_launch_mode_is_ignored_without_changing_provider_modes() {
+        for value in [
+            json!("relay"),
+            json!("patch"),
+            json!("obsolete"),
+            json!(true),
+        ] {
+            let mut old = serde_json::to_value(BackendSettings::default()).unwrap();
+            old["launchMode"] = value;
+            old["relayProfiles"][0]["relayMode"] = json!("pureApi");
+            let loaded: BackendSettings = serde_json::from_value(old).unwrap();
+            assert!(loaded.enhancements_enabled);
+            assert_eq!(loaded.relay_profiles[0].relay_mode, RelayMode::PureApi);
+            assert!(
+                serde_json::to_value(loaded)
+                    .unwrap()
+                    .get("launchMode")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn settings_update_cleans_legacy_launch_mode_and_preserves_provider_and_voice_configuration() {
         let dir = temp_dir();
-        let store = SettingsStore::new(dir.join("settings.json"));
-
-        let updated = store.update(json!({"launchMode": "relay"})).unwrap();
-        let saved: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
-                .unwrap();
-
-        assert_eq!(updated.launch_mode, LaunchMode::Relay);
-        assert_eq!(saved["launchMode"], json!("relay"));
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let mut old = serde_json::to_value(BackendSettings::default()).unwrap();
+        old["launchMode"] = json!("relay");
+        old["relayProfiles"][0]["relayMode"] = json!("pureApi");
+        old["dictation"]["enabled"] = json!(true);
+        old["dictation"]["apiKey"] = json!("fake-asr-private-key");
+        old["preservedUnknownSetting"] = json!("keep");
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.relay_profiles[0].relay_mode, RelayMode::PureApi);
+        assert!(
+            serde_json::to_value(&loaded)
+                .unwrap()
+                .get("launchMode")
+                .is_none()
+        );
+        let updated = store
+            .update(json!({"launchMode": "relay", "enhancementsEnabled": false}))
+            .unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("launchMode").is_none());
+        assert_eq!(saved["preservedUnknownSetting"], "keep");
+        assert_eq!(updated.relay_profiles[0].relay_mode, RelayMode::PureApi);
+        assert!(updated.dictation.enabled);
+        assert_eq!(updated.dictation.api_key, "fake-asr-private-key");
+        assert!(!updated.enhancements_enabled);
+        store.save(&updated).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("launchMode").is_none());
     }
 
     #[test]

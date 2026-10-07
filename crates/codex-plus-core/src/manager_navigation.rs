@@ -19,7 +19,7 @@ pub fn save_pending_manager_navigation_from_payload(
     }
     let navigation: ManagerNavigationIntent =
         serde_json::from_value(payload.clone()).context("管理工具导航参数无效")?;
-    validate_navigation(&navigation)?;
+    let navigation = normalize_navigation(navigation)?;
     save_pending_manager_navigation(&navigation)?;
     Ok(Some(navigation))
 }
@@ -54,8 +54,8 @@ pub fn save_pending_manager_navigation_at(
     path: &Path,
     navigation: &ManagerNavigationIntent,
 ) -> anyhow::Result<()> {
-    validate_navigation(navigation)?;
-    let contents = format!("{}\n", serde_json::to_string_pretty(navigation)?);
+    let navigation = normalize_navigation(navigation.clone())?;
+    let contents = format!("{}\n", serde_json::to_string_pretty(&navigation)?);
     crate::settings::atomic_write(path, contents.as_bytes())
         .with_context(|| format!("保存管理工具导航失败：{}", path.to_string_lossy()))
 }
@@ -72,7 +72,7 @@ pub fn consume_pending_manager_navigation_at(
         }
     };
     let navigation = serde_json::from_str(&contents).context("管理工具导航内容无效")?;
-    validate_navigation(&navigation)?;
+    let navigation = normalize_navigation(navigation)?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(Some(navigation)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Some(navigation)),
@@ -105,7 +105,7 @@ fn remove_pending_manager_navigation_if_matches_at(
     };
     let pending: ManagerNavigationIntent =
         serde_json::from_str(&contents).context("管理工具导航内容无效")?;
-    if pending != *navigation {
+    if normalize_navigation(pending)? != normalize_navigation(navigation.clone())? {
         return Ok(false);
     }
     match std::fs::remove_file(path) {
@@ -117,9 +117,19 @@ fn remove_pending_manager_navigation_if_matches_at(
     }
 }
 
-fn validate_navigation(navigation: &ManagerNavigationIntent) -> anyhow::Result<()> {
+fn normalize_navigation(
+    mut navigation: ManagerNavigationIntent,
+) -> anyhow::Result<ManagerNavigationIntent> {
+    if navigation.page == "settings"
+        && matches!(
+            navigation.section.as_deref(),
+            Some("stepwise" | "dictation")
+        )
+    {
+        navigation.page = "enhance".to_string();
+    }
     match (navigation.page.as_str(), navigation.section.as_deref()) {
-        ("settings", None | Some("stepwise")) => Ok(()),
+        ("settings", None) | ("enhance", None | Some("stepwise" | "dictation")) => Ok(navigation),
         _ => anyhow::bail!(
             "不支持的管理工具导航：{}/{}",
             navigation.page,
@@ -137,7 +147,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pending-manager-navigation.json");
         let navigation = ManagerNavigationIntent {
-            page: "settings".to_string(),
+            page: "enhance".to_string(),
             section: Some("stepwise".to_string()),
         };
 
@@ -155,7 +165,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pending-manager-navigation.json");
         let failed_navigation = ManagerNavigationIntent {
-            page: "settings".to_string(),
+            page: "enhance".to_string(),
             section: Some("stepwise".to_string()),
         };
         let replacement_navigation = ManagerNavigationIntent {
@@ -208,6 +218,53 @@ mod tests {
         ] {
             let error = save_pending_manager_navigation_from_payload(&payload).unwrap_err();
             assert!(error.to_string().contains("必须是对象"));
+        }
+    }
+    #[test]
+    fn legacy_enhancement_navigation_is_normalized_on_save_and_consume() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending-manager-navigation.json");
+        for section in ["stepwise", "dictation"] {
+            let legacy = ManagerNavigationIntent {
+                page: "settings".to_string(),
+                section: Some(section.to_string()),
+            };
+            let expected = ManagerNavigationIntent {
+                page: "enhance".to_string(),
+                section: Some(section.to_string()),
+            };
+            save_pending_manager_navigation_at(&path, &legacy).unwrap();
+            let saved: ManagerNavigationIntent =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(saved, expected);
+            assert!(remove_pending_manager_navigation_if_matches_at(&path, &legacy).unwrap());
+            std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+            assert_eq!(
+                consume_pending_manager_navigation_at(&path).unwrap(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn supports_enhance_dictation_and_plain_settings_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pending-manager-navigation.json");
+        for navigation in [
+            ManagerNavigationIntent {
+                page: "enhance".to_string(),
+                section: Some("dictation".to_string()),
+            },
+            ManagerNavigationIntent {
+                page: "settings".to_string(),
+                section: None,
+            },
+        ] {
+            save_pending_manager_navigation_at(&path, &navigation).unwrap();
+            assert_eq!(
+                consume_pending_manager_navigation_at(&path).unwrap(),
+                Some(navigation)
+            );
         }
     }
 }

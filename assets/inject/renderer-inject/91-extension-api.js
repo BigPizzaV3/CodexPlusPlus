@@ -35,7 +35,7 @@
    * 路由白名单。未在此声明的路由即使后端支持也不允许拓展调用。
    *
    * 刻意做成白名单而不是黑名单：新增路由时默认不可用，需要显式决定是否开放，
-   * 避免内部路由（例如 `/settings/set`、`/zed-remote/*`）被顺手暴露出去。
+   * 避免内部路由（例如 `/settings/set`、`/manager/open-transient`）被顺手暴露出去。
    */
   const codexPlusExtensionRoutes = new Set([
     "/diagnostics/log",

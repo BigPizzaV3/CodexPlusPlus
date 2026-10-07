@@ -220,10 +220,12 @@ fn codex_session_db_path_prefers_new_sqlite_directory_threads_db() {
 }
 
 #[test]
-fn apply_relay_config_preserves_cached_remote_plugin_marketplace() {
+fn apply_relay_config_does_not_register_or_modify_retired_plugin_cache() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     write_remote_plugin_marketplace_snapshot(home);
+    let snapshot_path = home.join(".tmp/plugins-remote/.agents/plugins/marketplace.json");
+    let snapshot_before = std::fs::read(&snapshot_path).unwrap();
 
     apply_relay_files_to_home(
         home,
@@ -235,11 +237,13 @@ model_provider = "chatgpt"
     .unwrap();
 
     let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
-    // 注册用的是非保留名：openai-* 会被 codex 静默忽略（#1974 / #1968）
-    assert!(config.contains("[marketplaces.codex-plus-curated]"));
-    assert!(!config.contains("[marketplaces.openai-curated-remote]"));
-    assert!(config.contains(r#"source_type = "local""#));
-    assert!(config.contains(".tmp\\plugins-remote") || config.contains(".tmp/plugins-remote"));
+    assert!(!config.contains("[marketplaces."));
+    assert!(!config.contains("plugins-remote"));
+    assert_eq!(std::fs::read(&snapshot_path).unwrap(), snapshot_before);
+    assert!(
+        home.join(".tmp/plugins-remote/plugins/product-design/.codex-plugin/plugin.json")
+            .is_file()
+    );
 }
 
 #[test]

@@ -2,9 +2,9 @@ use base64::Engine;
 use codex_plus_core::assets;
 use codex_plus_core::bridge::{self, BRIDGE_BINDING_NAME};
 use codex_plus_core::cdp::{
-    CdpTarget, is_avatar_overlay_page_target, is_primary_codex_page_target,
-    is_quick_chat_page_target, list_targets, pick_injectable_codex_page_target, pick_page_target,
-    validate_cdp_websocket_url,
+    is_avatar_overlay_page_target, is_primary_codex_page_target, is_quick_chat_page_target,
+    list_targets, pick_injectable_codex_page_target, pick_page_target, validate_cdp_websocket_url,
+    CdpTarget,
 };
 use codex_plus_core::settings::BackendSettings;
 
@@ -15,11 +15,11 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{oneshot, Notify};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -95,16 +95,12 @@ fn injection_script_retries_sidebar_nav_after_startup() {
     assert!(script.contains("attempts > 20"));
 }
 
-/// 内置插件包的注册名从 openai-curated-remote 换成了 codex-plus-curated
-/// （前者是 codex 保留名，注册后会被静默忽略）。显示名映射要跟着认新名，
-/// 否则插件市场里会显示原始名而不是友好名。
+/// 原生返回的既有旧配置继续使用友好显示名，不重新注入或注册插件市场。
 #[test]
-fn injection_script_maps_the_renamed_bundled_marketplace_display_name() {
+fn injection_script_preserves_legacy_native_marketplace_display_names() {
     let script = assets::injection_script(57321);
 
-    assert!(
-        script.contains(r#"name === "codex-plus-curated" || name === "openai-curated-remote""#)
-    );
+    assert!(script.contains(r#"name === "codex-plus-curated" || name === "openai-curated-remote""#));
     assert!(script.contains("OpenAI插件5(Codex++)"));
 }
 
@@ -591,22 +587,26 @@ fn official_login_usage_alert_setting_controls_renderer_injection() {
         }
     };
 
-    assert!(
-        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, true, false))
-            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;")
-    );
-    assert!(
-        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, false, true))
-            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;")
-    );
-    assert!(
-        assets::injection_script_with_settings(57321, &settings(RelayMode::Official, false, false))
-            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;")
-    );
-    assert!(
-        assets::injection_script_with_settings(57321, &settings(RelayMode::PureApi, true, false))
-            .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;")
-    );
+    assert!(assets::injection_script_with_settings(
+        57321,
+        &settings(RelayMode::Official, true, false)
+    )
+    .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;"));
+    assert!(assets::injection_script_with_settings(
+        57321,
+        &settings(RelayMode::Official, false, true)
+    )
+    .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = true;"));
+    assert!(assets::injection_script_with_settings(
+        57321,
+        &settings(RelayMode::Official, false, false)
+    )
+    .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;"));
+    assert!(assets::injection_script_with_settings(
+        57321,
+        &settings(RelayMode::PureApi, true, false)
+    )
+    .contains("window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;"));
 }
 
 #[test]
@@ -1083,9 +1083,7 @@ fn injection_script_fetches_ads_without_bridge() {
     assert!(script.contains("cacheBustCodexPlusAdUrl"));
     assert!(script.contains("Date.now()"));
     assert!(script.contains("BigPizzaV3/Ad-List"));
-    assert!(
-        !script.contains("codexPlusAds = normalizeCodexPlusAds(await postJson(\"/ads\", {}));")
-    );
+    assert!(!script.contains("codexPlusAds = normalizeCodexPlusAds(await postJson(\"/ads\", {}));"));
 }
 
 #[test]
@@ -1165,10 +1163,13 @@ runCase(2, 99, 1, {{ timers: 1, clears: 1, checks: 1 }});
 }
 
 #[test]
-fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
+fn injection_script_uses_one_enhancement_behavior() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("兼容增强模式下无需开启"));
+    assert!(!script.contains("兼容增强"));
+    assert!(!script.contains("完整增强"));
+    assert!(!script.contains("data-relay-unneeded"));
+    assert!(!script.contains("codexPlusBackendSettings.launchMode"));
 }
 
 #[test]
@@ -1225,10 +1226,8 @@ fn stepwise_keeps_settings_sync_alive_when_features_are_disabled() {
     assert!(script.contains("function scheduleSettingsSync("));
     assert!(script.contains("await reloadSettings();"));
     assert!(script.contains("scheduleSettingsSync();"));
-    assert!(
-        script
-            .contains("if (state.settingsSyncTimer) window.clearTimeout(state.settingsSyncTimer);")
-    );
+    assert!(script
+        .contains("if (state.settingsSyncTimer) window.clearTimeout(state.settingsSyncTimer);"));
     assert!(!script.contains("function stopRuntime() {\n    if (state.settingsSyncTimer)"));
 }
 
@@ -1324,11 +1323,8 @@ fn stepwise_manual_mode_waits_for_refresh_while_auto_mode_reuses_successful_cach
         "if (generationMode === \"manual\" && !manualResultVisible && !manualRequestPending) {"
     ));
     assert!(script.contains("} else if (manualRequestPending) {"));
-    assert!(
-        script.contains(
-            "if (normalizedMode === \"manual\" && options.userInitiated !== true) return;"
-        )
-    );
+    assert!(script
+        .contains("if (normalizedMode === \"manual\" && options.userInitiated !== true) return;"));
     assert!(script.contains("state.bridgeStatus = \"manual-ready\";"));
     assert!(script.contains("title: \"当前为手动模式\","));
     assert!(script.contains("state: \"manual\","));
@@ -1345,19 +1341,14 @@ fn stepwise_generation_mode_is_shared_through_backend_settings() {
 
     assert!(script.contains("bridgeCall(\"/settings/set\", {"));
     assert!(script.contains("codexAppStepwiseGenerationMode: nextMode"));
-    assert!(
-        script
-            .contains("Object.prototype.hasOwnProperty.call(normalizedPatch, \"generationMode\")")
-    );
+    assert!(script
+        .contains("Object.prototype.hasOwnProperty.call(normalizedPatch, \"generationMode\")"));
     assert!(script.contains("settingsSyncEpoch += 1;"));
     assert!(
         script.contains("pendingSettingsPatch = { ...pendingSettingsPatch, ...normalizedPatch };")
     );
-    assert!(
-        script.contains(
-            "if (!Object.prototype.hasOwnProperty.call(nextSettings, \"generationMode\"))"
-        )
-    );
+    assert!(script
+        .contains("if (!Object.prototype.hasOwnProperty.call(nextSettings, \"generationMode\"))"));
     assert!(script.contains("nextSettings.generationMode = stepwiseGenerationMode();"));
 }
 
@@ -1387,11 +1378,8 @@ fn stepwise_releases_only_the_stale_request_that_still_owns_pending_state() {
     assert!(script.contains("state.bridgePendingRequestId = 0;"));
     assert!(script.contains("if (state.bridgeStatus === \"pending\") {"));
     assert!(script.contains("state.bridgeStatus = \"idle\";"));
-    assert!(
-        !script.contains(
-            "if (!requestCurrent()) return;\n        if (state.bridgePendingHash === key)"
-        )
-    );
+    assert!(!script
+        .contains("if (!requestCurrent()) return;\n        if (state.bridgePendingHash === key)"));
 }
 
 #[test]
@@ -1399,9 +1387,7 @@ fn stepwise_rejects_generation_results_after_the_answer_identity_changes() {
     let script = assets::stepwise_script();
 
     assert!(script.contains("bridgeActiveKey: \"\","));
-    assert!(
-        script.contains("const requestAssistantMessageId = requestContext.assistantMessageId;")
-    );
+    assert!(script.contains("const requestAssistantMessageId = requestContext.assistantMessageId;"));
     assert!(script.contains("&& contextMatches(requestContext)"));
     assert!(
         script.contains("&& state.activeContext.assistantMessageId === requestAssistantMessageId")
@@ -1457,11 +1443,8 @@ fn stepwise_records_only_real_bridge_generation_requests() {
     assert_eq!(script.matches("bridge:generate-request").count(), 1);
     assert!(script.contains("function requestBridgeStepwise(key, userText, assistantText, requestMode = stepwiseGenerationMode(), options = {})"));
     assert!(script.contains("if (!stepwiseEnabled() || !key || state.bridgePendingHash === key || state.bridgeCache.has(key)) return;"));
-    assert!(
-        script.contains(
-            "if (normalizedMode === \"manual\" && options.userInitiated !== true) return;"
-        )
-    );
+    assert!(script
+        .contains("if (normalizedMode === \"manual\" && options.userInitiated !== true) return;"));
     assert!(script.contains("pushDiagnostic(\"bridge:generate-request\""));
 }
 
@@ -1470,7 +1453,7 @@ fn stepwise_opens_manager_as_transient_window() {
     let script = assets::stepwise_script();
 
     assert!(script.contains("bridgeCall(\"/manager/open-transient\", {"));
-    assert!(script.contains("page: \"settings\""));
+    assert!(script.contains("page: \"enhance\""));
     assert!(script.contains("section: \"stepwise\""));
 }
 
@@ -2171,11 +2154,8 @@ fn stepwise_keeps_context_stable_during_passive_scrolling() {
     assert!(script.contains("latestTurnAnchor: null,"));
     assert!(script.contains("function latestConversationTurnByKey(turns)"));
     assert!(script.contains("function nextLatestTurnAnchor(previous, turns, sessionId)"));
-    assert!(
-        script.contains(
-            "const sameSession = Boolean(sessionId) && previous?.sessionId === sessionId;"
-        )
-    );
+    assert!(script
+        .contains("const sameSession = Boolean(sessionId) && previous?.sessionId === sessionId;"));
     assert!(script.contains(
         "if (sameSession && compareConversationTurnKeys(mounted.turnKey, previous.turnKey) < 0) return previous;"
     ));
@@ -2373,10 +2353,8 @@ fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("const codexPlusBackendMappedSettings = new Set"));
-    assert!(
-        script
-            .contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded")
-    );
+    assert!(script
+        .contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded"));
     assert!(script.contains("button.dataset.pending = String(waitsForBackend)"));
     assert!(script.contains(
         "button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""
@@ -2396,13 +2374,16 @@ fn injection_script_ignores_stale_backend_settings_responses() {
 }
 
 #[test]
-fn injection_script_skips_plugin_patch_work_in_relay_mode() {
+fn injection_script_controls_plugin_patch_with_enhancement_settings() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
-    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
-    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
-    assert!(script.contains("clearPluginPatchArtifacts()"));
+    assert!(script.contains("function codexPluginMarketplacePatchEnabled()"));
+    assert!(script.contains(
+        "return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock"
+    ));
+    assert!(script.contains("if (!codexPluginMarketplacePatchEnabled()) return"));
+    assert!(!script.contains("pluginPatchDisabledInRelayMode"));
+    assert!(!script.contains("codexMenuLocalizationScopeSelector()"));
 }
 
 #[test]
@@ -2457,27 +2438,9 @@ fn injection_script_keeps_plugin_marketplace_unlock_separate_from_entry_unlock()
 
     assert!(script.contains("pluginMarketplaceUnlock: true"));
     assert!(script.contains("pluginMarketplaceUnlock: \"codexAppPluginMarketplaceUnlock\""));
-    assert!(script.contains("if (!codexPlusSettings().pluginMarketplaceUnlock) return"));
+    assert!(script.contains("if (!codexPluginMarketplacePatchEnabled()) return"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
-}
-
-#[test]
-fn injection_script_localizes_codex_menu_commands() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("const codexMenuLocalizationMap = new Map"));
-    assert!(script.contains("[\"Toggle Sidebar\", \"切换侧边栏\"]"));
-    assert!(script.contains("[\"Toggle Bottom Panel\", \"切换底部面板\"]"));
-    assert!(script.contains("[\"Toggle Pinned Summary\", \"切换置顶摘要\"]"));
-    assert!(script.contains("[\"Open Terminal\", \"打开终端\"]"));
-    assert!(script.contains("[\"Open Browser Tab\", \"打开浏览器标签页\"]"));
-    assert!(script.contains("[\"Focus Browser Address Bar\", \"聚焦浏览器地址栏\"]"));
-    assert!(script.contains("[\"Reload Browser Page\", \"重新加载浏览器页面\"]"));
-    assert!(script.contains("[\"Toggle Side Panel\", \"切换侧边面板\"]"));
-    assert!(script.contains("[\"Actual Size\", \"实际大小\"]"));
-    assert!(script.contains("function localizeCodexMenus"));
-    assert!(script.contains("localizeCodexMenus();"));
 }
 
 #[test]
@@ -2554,12 +2517,11 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("codexPluginBroadCatalogKindsFromVersion = \"26.803.0\""));
     assert!(script.contains("broadCatalogPreserved: true"));
     assert!(script.contains("patchPluginMarketplaceResult"));
-    assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
-    assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
-    assert!(script.contains("plugin_marketplace_local_merged"));
+    assert!(!script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
+    assert!(!script.contains("mergeLocalPluginMarketplaces"));
+    assert!(!script.contains("plugin_marketplace_local_merged"));
     assert!(script.contains("plugin_marketplace_remote_auth_fallback"));
-    assert!(script.contains("cloned.marketplaceName = marketplaceName"));
-    assert!(script.contains("cloned.marketplacePath = marketplaceName"));
+    assert!(!script.contains("normalizeLocalPluginMarketplacePlugin"));
     assert!(script.contains("restorePluginMarketplaceName"));
     assert!(script.contains(
         "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
@@ -2571,8 +2533,7 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     );
     assert!(script.contains("restored === \"openai-api-curated\""));
     assert!(script.contains("restored === \"openai-curated-remote\""));
-    // 内置包的注册名已从 openai-curated-remote 换成 codex-plus-curated（前者是
-    // codex 保留名会被静默忽略），显示名映射同时认新旧两个名字。
+    // 既有原生配置的显示名兼容同时认新旧名称，不再注入或注册本地插件包。
     assert!(script.contains(
         "if (name === \"codex-plus-curated\" || name === \"openai-curated-remote\") return \"OpenAI插件5(Codex++)\""
     ));
@@ -2650,11 +2611,8 @@ fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
         json!(["local", "vertical"])
     );
     assert_eq!(cases["generalAfterFallbackCwds"], json!(["C:/workspace"]));
-    assert_eq!(
-        cases["localFallbackMarketplaceNames"],
-        json!(["fixture-local"])
-    );
-    assert_eq!(cases["localFallbackPluginNames"], json!(["alpha"]));
+    assert_eq!(cases["localFallbackMarketplaceNames"], json!([]));
+    assert_eq!(cases["localFallbackPluginNames"], json!([]));
     assert_eq!(cases["chatGptKinds"], json!(["created-by-me-remote"]));
     assert_eq!(cases["unrelatedErrorMatched"], false);
 }
@@ -2701,6 +2659,7 @@ globalThis.navigator = {{ userAgent: "node-test", sendBeacon: () => false }};
 globalThis.performance = {{ getEntriesByType: () => [] }};
 globalThis.fetch = async () => ({{ ok: true, json: async () => ({{}}) }});
 require(scriptPath);
+// 旧页面留下的快照不应在新版列表或 API auth fallback 中恢复自动补齐。
 window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = [{{
   name: "fixture-local",
   displayName: "Fixture Local",
@@ -2948,8 +2907,8 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
         .split_once("function showToast(message, options = {})")
         .expect("undo toast should exist")
         .1
-        .split_once("function upstreamWorktreeField")
-        .expect("undo toast should end before worktree helpers")
+        .split_once("function shareBase64Url")
+        .expect("undo toast should end before sharing helpers")
         .0;
 
     assert!(refresh.contains("loadOptionalCodexAppModule(\"app-server-manager-signals-\")"));
@@ -3356,10 +3315,8 @@ fn injection_script_exposes_fast_service_tier_control() {
 fn injection_script_keeps_remote_provider_patch_installed_for_openai_identity() {
     let script = assets::injection_script(57321);
 
-    assert!(
-        script
-            .contains("codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled()")
-    );
+    assert!(script
+        .contains("codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled()"));
     assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()) return;"));
 }
 
@@ -3494,11 +3451,9 @@ fn injection_script_applies_fast_service_tier_contract() {
         cases["projectlessStartConversation"]["projectlessOutputDirectory"],
         "C:/projectless/outputs"
     );
-    assert!(
-        cases["projectlessStartConversation"]
-            .get("projectAssignment")
-            .is_none()
-    );
+    assert!(cases["projectlessStartConversation"]
+        .get("projectAssignment")
+        .is_none());
     assert_eq!(cases["fetchStartConversation"]["serviceTier"], "priority");
     assert_eq!(
         cases["fetchSendCliRequest"]["params"]["serviceTier"],
@@ -4465,94 +4420,6 @@ fn injection_script_restores_thread_scroll_positions() {
 }
 
 #[test]
-fn injection_script_installs_upstream_branch_dropdown_adapter() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("installUpstreamBranchDropdownAdapter"));
-    assert!(!script.contains("installUpstreamPendingWorktreeDispatcherPatch"));
-    assert!(script.contains("data-codex-upstream-branch-option"));
-    assert!(script.contains("codexUpstreamBranchSelection"));
-    assert!(script.contains("/upstream-worktree/defaults"));
-    assert!(script.contains("/upstream-worktree/prepare"));
-    assert!(script.contains("injectUpstreamBranchOptions"));
-    assert!(script.contains("Upstream"));
-    assert!(script.contains("data-base-branch"));
-    assert!(script.contains("data-project-id"));
-    assert!(script.contains("MutationObserver"));
-    assert!(script.contains("upstreamWorktreePayloadFromSelection"));
-    assert!(script.contains("readUpstreamBranchSelection"));
-    assert!(script.contains("writeUpstreamBranchSelection(null)"));
-    assert!(script.contains("currentProjectRepoPathFromSelectedProjectButton"));
-    assert!(script.contains("currentProjectContextFromStartButton"));
-    assert!(script.contains("Start new chat in"));
-    assert!(script.contains("codexUpstreamProjectContext"));
-    assert!(script.contains("rememberStartNewChatProjectContext"));
-    assert!(script.contains("currentProjectContextForBranchMenu"));
-    assert!(script.contains("remoteProjectContextFromGlobalState"));
-    assert!(script.contains("upstreamBranchDefaultsInflight = new Map()"));
-    assert!(script.contains("upstreamRemoteBranchDefaultsCacheTtlMs"));
-    assert!(script.contains("upstreamBranchDefaultsInflight.delete(cacheKey)"));
-    assert!(script.contains("projectId:"));
-    assert!(script.contains("data-codex-upstream-branch-selection-label"));
-    assert!(script.contains("syncUpstreamBranchTriggerLabel"));
-    assert!(script.contains("syncUpstreamBranchMenuSelection"));
-    assert!(!script.contains("applyUpstreamPendingWorktreeOverride"));
-    assert!(!script.contains("pending-worktree-create"));
-    assert!(script.contains("qualifiedSourceRef"));
-    assert!(script.contains("refs/remotes/${remote}/${baseBranch}"));
-    assert!(!script.contains("startingState: { ...request.startingState, branchName: sourceRef }"));
-    assert!(script.contains("data-codex-upstream-branch-check"));
-    assert!(script.contains("data-codex-upstream-branch-icon"));
-    assert!(script.contains("branchIconSvg"));
-    assert!(script.contains("checkmarkSvg"));
-    assert!(script.contains("aria-checked"));
-    assert!(script.contains("check.removeAttribute(\"hidden\")"));
-    assert!(script.contains("check.setAttribute(\"hidden\", \"\")"));
-    assert!(script.contains("handleNativeBranchSelection"));
-    assert!(script.contains("clearUpstreamBranchTriggerLabel"));
-    assert!(!script.contains(r#"text.includes("/")"#));
-    assert!(script.contains("newWorktreeModeActive"));
-    assert!(script.contains("effectiveElementRect"));
-    assert!(script.contains("removeUpstreamBranchOptions"));
-    assert!(script.contains("cleanupInvalidUpstreamBranchOptions"));
-    assert!(script.contains("branchMenuInNewWorktreeMode"));
-    assert!(script.contains("branchMenuTriggerIsBranchControl"));
-    assert!(script.contains("actual-upstream-refs-v17"));
-    assert!(script.contains("create and checkout new branch"));
-    assert!(script.contains("if (/^start in"));
-    assert!(script.contains("if (!branchMenuInNewWorktreeMode(trigger))"));
-    assert!(script.contains("window.__codexUpstreamBranchDropdownObserver?.disconnect?.()"));
-    assert!(script.contains("record.addedNodes"));
-    assert!(script.contains("addedNodeContainsBranchMenu"));
-    assert!(!script.contains("new MutationObserver(schedule).observe"));
-    assert!(script.contains(r#".composer-footer button, .composer-footer [role="button"]"#));
-    assert!(!script.contains("return [...document.querySelectorAll('button')]"));
-}
-
-#[test]
-fn injection_script_prevents_switching_to_branches_used_by_other_worktrees() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("data-codex-branch-worktree-path"));
-    assert!(script.contains("annotateBranchMenuWorktreeUsage"));
-    assert!(script.contains("branchWorktreePathFromMenuItem"));
-    assert!(script.contains("该分支已在另一个 worktree 使用"));
-    assert!(script.contains("event.stopImmediatePropagation?.()"));
-}
-
-#[test]
-fn injection_script_rebuilds_upstream_options_for_each_project_branch_menu() {
-    let script = assets::injection_script(57321);
-
-    assert!(!script.contains("currentProjectRepoPathForBranchMenu"));
-    assert!(!script.contains("repoPathFromProjectLabel"));
-    assert!(script.contains("projectContextFromProjectLabel"));
-    assert!(script.contains("upstreamBranchOptionsMatchRefs"));
-    assert!(script.contains("upstreamBranchDefaultsCache = new Map()"));
-    assert!(script.contains("actual-upstream-refs-v17"));
-}
-
-#[test]
 fn manager_ui_exposes_pure_api_relay_mode_button() {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -4761,11 +4628,9 @@ fn pick_page_target_rejects_non_pages_and_pages_without_websocket() {
 
     let error = pick_page_target(&targets).expect_err("no injectable page should be selected");
 
-    assert!(
-        error
-            .to_string()
-            .contains("No injectable page target found")
-    );
+    assert!(error
+        .to_string()
+        .contains("No injectable page target found"));
 }
 
 #[test]
@@ -4790,11 +4655,9 @@ fn pick_injectable_codex_page_target_rejects_non_codex_pages() {
     let error = pick_injectable_codex_page_target(&targets)
         .expect_err("non-Codex page must not be selected for injection");
 
-    assert!(
-        error
-            .to_string()
-            .contains("No injectable Codex page target found")
-    );
+    assert!(error
+        .to_string()
+        .contains("No injectable Codex page target found"));
 }
 
 #[test]
@@ -4860,11 +4723,9 @@ fn pick_injectable_codex_page_target_rejects_embedded_browser_only_page() {
     let error = pick_injectable_codex_page_target(&targets)
         .expect_err("embedded browser content must not be selected for injection");
 
-    assert!(
-        error
-            .to_string()
-            .contains("No injectable Codex page target found")
-    );
+    assert!(error
+        .to_string()
+        .contains("No injectable Codex page target found"));
 }
 
 #[test]
@@ -5068,11 +4929,9 @@ fn quick_chat_only_target_is_not_injectable_as_codex_main_page() {
     let error = pick_injectable_codex_page_target(&targets)
         .expect_err("Quick Chat helper renderer must not be selected for injection");
 
-    assert!(
-        error
-            .to_string()
-            .contains("No injectable Codex page target found")
-    );
+    assert!(error
+        .to_string()
+        .contains("No injectable Codex page target found"));
 }
 
 #[test]
@@ -5082,11 +4941,9 @@ fn pick_injectable_codex_page_target_requires_websocket() {
     let error = pick_injectable_codex_page_target(&targets)
         .expect_err("Codex page without websocket must not be selected for injection");
 
-    assert!(
-        error
-            .to_string()
-            .contains("No injectable Codex page target found")
-    );
+    assert!(error
+        .to_string()
+        .contains("No injectable Codex page target found"));
 }
 
 #[tokio::test]
@@ -5162,12 +5019,10 @@ async fn install_bridge_routes_binding_while_waiting_for_command_response() {
 
         let response = recv_json(&mut socket).await;
         assert_eq!(response["method"], "Runtime.evaluate");
-        assert!(
-            response["params"]["expression"]
-                .as_str()
-                .expect("expression should be string")
-                .contains("__codexSessionDeleteResolve")
-        );
+        assert!(response["params"]["expression"]
+            .as_str()
+            .expect("expression should be string")
+            .contains("__codexSessionDeleteResolve"));
         send_json(&mut socket, json!({ "id": response["id"], "result": {} })).await;
         close_socket(&mut socket).await;
     })
@@ -5304,12 +5159,10 @@ async fn install_bridge_returns_after_installing_and_keeps_message_pump_alive() 
         .await;
 
         let resolve = recv_json(&mut socket).await;
-        assert!(
-            resolve["params"]["expression"]
-                .as_str()
-                .expect("expression should be string")
-                .contains("after-return")
-        );
+        assert!(resolve["params"]["expression"]
+            .as_str()
+            .expect("expression should be string")
+            .contains("after-return"));
         send_json(&mut socket, json!({ "id": resolve["id"], "result": {} })).await;
         close_socket(&mut socket).await;
     })
@@ -5423,33 +5276,25 @@ async fn install_bridge_rejects_bad_payload_with_id_and_continues_after_unparsea
         .await;
 
         let reject = recv_json(&mut socket).await;
-        assert!(
-            reject["params"]["expression"]
-                .as_str()
-                .expect("expression should be string")
-                .contains("__codexSessionDeleteReject")
-        );
-        assert!(
-            reject["params"]["expression"]
-                .as_str()
-                .expect("expression should be string")
-                .contains("bad-1")
-        );
+        assert!(reject["params"]["expression"]
+            .as_str()
+            .expect("expression should be string")
+            .contains("__codexSessionDeleteReject"));
+        assert!(reject["params"]["expression"]
+            .as_str()
+            .expect("expression should be string")
+            .contains("bad-1"));
         send_json(&mut socket, json!({ "id": reject["id"], "result": {} })).await;
 
         let resolve = recv_json(&mut socket).await;
-        assert!(
-            resolve["params"]["expression"]
-                .as_str()
-                .expect("expression should be string")
-                .contains("__codexSessionDeleteResolve")
-        );
-        assert!(
-            resolve["params"]["expression"]
-                .as_str()
-                .expect("expression should be string")
-                .contains("ok-1")
-        );
+        assert!(resolve["params"]["expression"]
+            .as_str()
+            .expect("expression should be string")
+            .contains("__codexSessionDeleteResolve"));
+        assert!(resolve["params"]["expression"]
+            .as_str()
+            .expect("expression should be string")
+            .contains("ok-1"));
         send_json(&mut socket, json!({ "id": resolve["id"], "result": {} })).await;
         close_socket(&mut socket).await;
     })
@@ -5778,11 +5623,12 @@ async fn superseded_bridge_session_closes_socket_without_incoming_messages() {
             }),
         )
         .await;
-        let fresh_resolved = tokio::time::timeout(Duration::from_secs(2), recv_text_message(&mut fresh))
-            .await
-            .is_ok_and(|message| {
-                message.is_some_and(|text| text.contains("__codexSessionDeleteResolve"))
-            });
+        let fresh_resolved =
+            tokio::time::timeout(Duration::from_secs(2), recv_text_message(&mut fresh))
+                .await
+                .is_ok_and(|message| {
+                    message.is_some_and(|text| text.contains("__codexSessionDeleteResolve"))
+                });
         let _ = fresh_alive_tx.send(fresh_resolved);
     });
 
@@ -5887,8 +5733,8 @@ async fn spawn_two_session_cdp_server() -> (String, oneshot::Receiver<bool>, one
     (websocket_url(address), stale_rx, fresh_rx)
 }
 
-async fn spawn_failed_reinstall_cdp_server()
--> (String, oneshot::Receiver<bool>, oneshot::Receiver<()>) {
+async fn spawn_failed_reinstall_cdp_server(
+) -> (String, oneshot::Receiver<bool>, oneshot::Receiver<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("test listener should bind");
@@ -6066,15 +5912,37 @@ fn parse_app_server_client_capture_location_reads_renderer_report() {
         "lineNumber": 1796_u64,
         "columnNumber": 87512_u64,
     });
-    let (url_regex, line, column) =
-        bridge::parse_app_server_client_capture_location(&serde_json::Value::String(
-            report.to_string(),
-        ))
-        .expect("renderer report should parse");
+    let (url_regex, line, column) = bridge::parse_app_server_client_capture_location(
+        &serde_json::Value::String(report.to_string()),
+    )
+    .expect("renderer report should parse");
     assert_eq!(url_regex, "app://-/assets/app-initial-abc123.js");
     assert_eq!(line, 1796);
     assert_eq!(column, 87512);
     assert!(bridge::parse_app_server_client_capture_location(&json!("null")).is_none());
     assert!(bridge::parse_app_server_client_capture_location(&json!("{}")).is_none());
     assert!(bridge::parse_app_server_client_capture_location(&json!("")).is_none());
+}
+
+#[test]
+fn injection_script_has_no_retired_remote_worktree_entrypoints() {
+    let script = assets::injection_script(57321);
+    for removed in [
+        "installUpstreamBranchDropdownAdapter",
+        "annotateBranchMenuWorktreeUsage",
+        "data-codex-branch-worktree-path",
+        "/upstream-worktree/",
+        "/zed-remote/",
+    ] {
+        assert!(!script.contains(removed), "retired entrypoint: {removed}");
+    }
+}
+
+#[test]
+fn injection_script_preserves_native_menu_placement_without_language_rewrites() {
+    let script = assets::injection_script(57321);
+    assert!(script.contains("nativeMenuPlacement"));
+    assert!(!script.contains("codexMenuLocalizationMap"));
+    assert!(!script.contains("function localizeCodexMenus"));
+    assert!(!script.contains("localizeCodexMenus();"));
 }

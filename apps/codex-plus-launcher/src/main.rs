@@ -675,12 +675,6 @@ impl LaunchHooks for LauncherHooks {
             .await
     }
 
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        settings: &codex_plus_core::settings::BackendSettings,
-    ) -> anyhow::Result<()> {
-        self.core.ensure_plugin_marketplace_config(settings).await
-    }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.core.start_helper(helper_port).await
@@ -1118,60 +1112,6 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     async fn ads(&self) -> anyhow::Result<Value> {
         codex_plus_core::ads::fetch_ad_list().await
     }
-
-    async fn zed_remote_status(&self) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::zed_remote_status())
-    }
-
-    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::resolve_ssh_target_response(
-            &payload,
-        ))
-    }
-
-    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::fallback_open_request_response(
-            &payload,
-        ))
-    }
-
-    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
-    }
-
-    async fn list_zed_remote_projects(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::list_zed_remote_projects_response(&payload))
-    }
-
-    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::remember_zed_remote_project_response(&payload))
-    }
-
-    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::forget_zed_remote_project_response(&payload))
-    }
-
-    async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::status_response())
-    }
-
-    async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::defaults_response(
-            &payload,
-        ))
-    }
-
-    async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::prepare_response(
-            &payload,
-        ))
-    }
-
-    async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::create_response(
-            &payload,
-        ))
-    }
 }
 
 async fn inject_with_context(
@@ -1567,7 +1507,7 @@ mod tests {
     }
 
     #[test]
-    fn launcher_hooks_forward_runtime_watchdog_and_marketplace_methods() {
+    fn launcher_hooks_forward_runtime_watchdog_and_protocol_proxy_methods() {
         let source = include_str!("main.rs");
         let compact_source = source.split_whitespace().collect::<String>();
 
@@ -1575,8 +1515,6 @@ mod tests {
         assert!(source.contains("self.watchdog_bridge_context()?"));
         assert!(source.contains("set_bridge_reinjector(reinjector)"));
         assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
-        assert!(source.contains("async fn ensure_plugin_marketplace_config"));
-        assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
         assert!(source.contains("async fn ensure_active_protocol_proxy_config"));
         assert!(
             compact_source

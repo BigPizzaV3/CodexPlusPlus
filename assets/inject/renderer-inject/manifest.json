@@ -66,6 +66,11 @@
       "lines": 0
     },
     {
+      "name": "93-dictation.js",
+      "description": "独立 ASR 听写入口、录音、取消重试与原生输入框回填",
+      "lines": 0
+    },
+    {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
       "lines": 1240

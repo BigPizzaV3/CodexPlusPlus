@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const source = fs.readFileSync(require.resolve("./renderer-inject.js"), "utf8");
 const begin = source.indexOf('  const officialUsageWindowMarker =');
-const end = source.indexOf('  let zedRemoteStatusPromise', begin);
+const end = source.indexOf('  function sessionCopyMenuRow', begin);
 assert.ok(begin >= 0 && end > begin);
 const profile = source.slice(source.indexOf('  function codexRemoteSessionActiveProfile()'), source.indexOf('  function codexRemoteSessionProviderPatchEnabled()'));
 const install = `(function(){let codexPlusBackendSettings={};let codexPlusBackendSettingsLoaded=false;const sendCodexPlusDiagnostic=()=>{};${profile}\n${source.slice(begin, end)}})()`;

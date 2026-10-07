@@ -12,6 +12,7 @@ pub mod codex_local_storage;
 pub mod codex_sqlite;
 pub mod connect;
 pub mod diagnostic_log;
+pub mod dictation;
 pub mod dream_skin;
 pub mod dream_skin_community;
 pub mod dream_skin_library;
@@ -30,9 +31,7 @@ pub mod model_suffix;
 pub mod models;
 pub mod native_browser;
 pub mod native_browser_connection;
-pub mod native_menu;
 pub mod paths;
-pub mod plugin_marketplace;
 pub mod ports;
 pub mod protocol_proxy;
 pub mod provider_import;
@@ -54,7 +53,6 @@ pub mod stepwise;
 pub mod sub2api;
 pub mod tools;
 pub mod update;
-pub mod upstream_worktree;
 pub mod user_scripts;
 pub mod version;
 pub mod vision;
@@ -63,7 +61,6 @@ pub mod watcher;
 // 是一个只含少数无平台依赖项（如 current_process_is_elevated 的桩实现）的空模块。
 // 门控在模块级会导致 `if cfg!(windows)` 这类运行时分支在非 Windows 平台找不到符号。
 mod windows_integration;
-pub mod zed_remote;
 
 #[cfg(windows)]
 pub fn windows_create_no_window() -> u32 {
