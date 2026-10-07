@@ -85,11 +85,6 @@ jobs:
           - arch: arm64
             runner: macos-14
             target: aarch64-apple-darwin
-    env:
-      # secrets 不能直接出现在 if: 里（会解析失败或静默变成空串），
-      # 必须先提到 env 层，下面各步才能用 env. 判断。
-      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-      MACOS_NOTARY_PROFILE: codexplusplus-notary
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -172,9 +167,16 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build macOS DMG
-        # MACOS_SIGNING_IDENTITY / MACOS_NOTARY_PROFILE 由 job 级 env 提供。
-        # 设了它们脚本才走正式签名 + 公证；缺失时自动退回 ad-hoc，构建不会失败。
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_PROFILE: codexplusplus-notary
         run: |
+          # 发版流水线必须真的签名，凭据缺失就直接失败，不要静默退回 ad-hoc
+          # 然后发一个用户打不开的包出去。
+          if [ -z "${MACOS_SIGNING_IDENTITY:-}" ]; then
+            echo "error: MACOS_SIGNING_IDENTITY 未配置，拒绝产出未签名的发布包" >&2
+            exit 1
+          fi
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION#V}"
           BINARY_DIR="$PWD/target/${{ matrix.target }}/release" bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
