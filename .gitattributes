@@ -7,6 +7,12 @@
 *.sh text eol=lf
 .github/workflows/*.yml text eol=lf
 
+# Rust sources are read back by source-contract tests via include_str! and compared
+# line-by-line. Git for Windows defaults to core.autocrlf=true, so without this a
+# Windows checkout turns every "\n" in those assertions into "\r\n" and the tests fail
+# on the Windows runner only (macOS/Linux check out LF either way).
+*.rs text eol=lf
+
 # First-party scripts are embedded with include_str! and inspected by source-contract tests.
 assets/inject/*.js text eol=lf
 assets/inject/**/*.js text eol=lf
