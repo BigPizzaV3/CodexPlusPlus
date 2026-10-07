@@ -3665,9 +3665,6 @@ export function App() {
                 {t("重启 Codex++")}
               </Button>
             ) : null}
-            <Button onClick={() => void actions.refreshCurrent()} size="icon" title={t("刷新当前页面")} variant="outline">
-              <RefreshCw className="h-4 w-4" />
-            </Button>
           </div>
         </header>
         <section className="screen" key={route}>
