@@ -81,7 +81,11 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
             .contains("<string>Codex++ 管理工具</string>")
     );
     assert!(manager.info_plist.contains("<string>dreamskin</string>"));
-    assert!(manager.info_plist.contains("<string>codexplusplus</string>"));
+    assert!(
+        manager
+            .info_plist
+            .contains("<string>codexplusplus</string>")
+    );
     assert!(!silent.info_plist.contains("<string>dreamskin</string>"));
     assert_eq!(
         silent.binary_target_name.as_deref(),
@@ -122,14 +126,46 @@ fn windows_installer_writes_the_same_uninstall_key_as_the_runtime() {
         "卸载段必须删除正式键"
     );
     assert!(
-        nsi.contains(r#"DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++""#),
+        nsi.contains(
+            r#"DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++""#
+        ),
         "卸载段必须保留 legacy 键清理：存量用户靠它收尸"
     );
     // 不得再往 legacy 键写卸载项，否则两条并存的问题会复发。
     assert!(
-        !nsi.contains(r#"WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++""#),
+        !nsi.contains(
+            r#"WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++""#
+        ),
         "不得再向 legacy 卸载键写入"
     );
+}
+
+#[test]
+fn windows_installer_only_creates_desktop_shortcuts_on_first_install() {
+    let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi")
+        .expect("read Windows NSIS installer script");
+    // 与运行时共用正式/legacy 登记；不能在写本轮登记之后才判断首次安装。
+    for key in ["CodexPlusPlus", "Codex++"] {
+        let read = format!(
+            r#"ReadRegStr $ExistingInstall HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\{key}" "InstallLocation""#
+        );
+        assert!(
+            nsi.find(&read).expect("read previous install registration")
+                < nsi.find("CreateShortcut").unwrap()
+        );
+    }
+    // 缺图标只在首次安装时补建。守住两个跳转方向，避免再次把已删除图标加回来。
+    for (name, label) in [
+        ("Codex++", "desktop_silent_done"),
+        ("Codex++ 管理工具", "desktop_manager_done"),
+    ] {
+        let branch = format!(
+            "StrCmp $ExistingInstall \"\" 0 {label}\n  IfFileExists \"$DESKTOP\\{name}.lnk\" {label} 0\n  CreateShortcut \"$DESKTOP\\{name}.lnk\""
+        );
+        assert!(nsi.contains(&branch));
+    }
+    assert!(nsi.contains(r#"CreateShortcut "$SMPROGRAMS\Codex++\Codex++.lnk""#));
+    assert!(nsi.contains(r#"CreateShortcut "$SMPROGRAMS\Codex++\Codex++ 管理工具.lnk""#));
 }
 
 #[test]
@@ -270,5 +306,233 @@ fn windows_default_install_root_uses_known_folder_before_userprofile_desktop() {
         assert_eq!(strategy, "macos-applications");
     } else {
         assert_eq!(strategy, "user-dirs-desktop");
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_repair {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn native_options(root: &Path) -> InstallOptions {
+        InstallOptions {
+            install_root: Some(root.to_path_buf()),
+            launcher_path: Some(root.join("Codex++.app/Contents/MacOS/CodexPlusPlus")),
+            manager_path: Some(
+                root.join("Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"),
+            ),
+            remove_owned_data: false,
+        }
+    }
+
+    fn write_binary(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = vec![0_u8; 2048];
+        bytes[..4].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe]);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn write_native_app(root: &Path, manager: bool) -> Vec<PathBuf> {
+        let (app, executable) = if manager {
+            ("Codex++ 管理工具.app", "CodexPlusPlusManager")
+        } else {
+            ("Codex++.app", "CodexPlusPlus")
+        };
+        let contents = root.join(app).join("Contents");
+        let binary = contents.join("MacOS").join(executable);
+        write_binary(&binary);
+        std::fs::create_dir_all(contents.join("_CodeSignature")).unwrap();
+        std::fs::create_dir_all(contents.join("Resources")).unwrap();
+        let plist = contents.join("Info.plist");
+        std::fs::write(
+            &plist,
+            format!(
+                "<plist><dict><key>CFBundleExecutable</key><string>{executable}</string><key>CFBundleIconFile</key><string>native.icns</string><key>LSUIElement</key><false/></dict></plist>"
+            ),
+        )
+        .unwrap();
+        let signature = contents.join("_CodeSignature/CodeResources");
+        std::fs::write(&signature, b"sealed resource sentinel").unwrap();
+        let icon = contents.join("Resources/native.icns");
+        std::fs::write(&icon, b"native icon sentinel").unwrap();
+        vec![plist, binary, signature, icon]
+    }
+
+    fn snapshot(paths: &[PathBuf]) -> Vec<Vec<u8>> {
+        paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn repair_preserves_native_bundles_and_their_sealed_files() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = [
+            write_native_app(root.path(), false),
+            write_native_app(root.path(), true),
+        ]
+        .concat();
+        let before = snapshot(&paths);
+        let options = native_options(root.path());
+
+        for _ in 0..2 {
+            codex_plus_core::install::macos::install_app_bundles(&options).unwrap();
+            assert_eq!(snapshot(&paths), before);
+        }
+        assert!(
+            !root
+                .path()
+                .join("Codex++.app/Contents/MacOS/codex-plus-plus")
+                .exists()
+        );
+        assert!(
+            !root
+                .path()
+                .join("Codex++ 管理工具.app/Contents/MacOS/codex-plus-plus-manager")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn repair_preserves_native_bundles_referenced_through_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let aliases = tempfile::tempdir().unwrap();
+        let paths = [
+            write_native_app(root.path(), false),
+            write_native_app(root.path(), true),
+        ]
+        .concat();
+        let before = snapshot(&paths);
+        let alias = aliases.path().join("apps");
+        std::os::unix::fs::symlink(root.path(), &alias).unwrap();
+        let mut options = native_options(&alias);
+        options.install_root = Some(root.path().to_path_buf());
+
+        codex_plus_core::install::macos::install_app_bundles(&options).unwrap();
+
+        assert_eq!(snapshot(&paths), before);
+    }
+
+    #[test]
+    fn repair_preserves_native_bundles_referenced_through_hard_links() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = [
+            write_native_app(root.path(), false),
+            write_native_app(root.path(), true),
+        ]
+        .concat();
+        let before = snapshot(&paths);
+        let mut options = native_options(root.path());
+        let launcher_alias = root.path().join("launcher-alias");
+        std::fs::hard_link(options.launcher_path.as_ref().unwrap(), &launcher_alias).unwrap();
+        options.launcher_path = Some(launcher_alias);
+
+        codex_plus_core::install::macos::install_app_bundles(&options).unwrap();
+
+        assert_eq!(snapshot(&paths), before);
+    }
+
+    #[test]
+    fn missing_companion_does_not_modify_the_installed_app() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = write_native_app(root.path(), false);
+        let before = snapshot(&paths);
+
+        assert!(
+            codex_plus_core::install::macos::install_app_bundles(&native_options(root.path()))
+                .is_err()
+        );
+
+        assert_eq!(snapshot(&paths), before);
+        assert!(!root.path().join("Codex++ 管理工具.app").exists());
+    }
+
+    #[test]
+    fn missing_companion_does_not_create_a_partial_new_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let launcher = root.path().join("bin/codex-plus-plus");
+        write_binary(&launcher);
+        let options = InstallOptions {
+            install_root: Some(root.path().join("apps")),
+            launcher_path: Some(launcher),
+            manager_path: Some(root.path().join("bin/missing-manager")),
+            remove_owned_data: false,
+        };
+
+        assert!(codex_plus_core::install::macos::install_app_bundles(&options).is_err());
+
+        assert!(!root.path().join("apps").exists());
+    }
+
+    #[test]
+    fn rebuilding_a_signed_bundle_from_another_source_fails_without_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = [
+            write_native_app(root.path(), false),
+            write_native_app(root.path(), true),
+        ]
+        .concat();
+        let before = snapshot(&paths);
+        let launcher = root.path().join("bin/codex-plus-plus");
+        write_binary(&launcher);
+        let mut options = native_options(root.path());
+        options.launcher_path = Some(launcher);
+
+        let error = codex_plus_core::install::macos::install_app_bundles(&options).unwrap_err();
+
+        assert!(error.to_string().contains("请重新安装"));
+        assert_eq!(snapshot(&paths), before);
+    }
+
+    #[test]
+    fn bare_binary_installation_and_unsigned_wrapper_repair_still_work() {
+        let root = tempfile::tempdir().unwrap();
+        let launcher = root.path().join("bin/codex-plus-plus");
+        let manager = root.path().join("bin/codex-plus-plus-manager");
+        write_binary(&launcher);
+        write_binary(&manager);
+        let options = InstallOptions {
+            install_root: Some(root.path().join("apps")),
+            launcher_path: Some(launcher.clone()),
+            manager_path: Some(manager.clone()),
+            remove_owned_data: false,
+        };
+        codex_plus_core::install::macos::install_app_bundles(&options).unwrap();
+        let installed = native_options(options.install_root.as_ref().unwrap());
+        codex_plus_core::install::macos::install_app_bundles(&installed).unwrap();
+
+        assert_eq!(
+            std::fs::read(
+                installed
+                    .launcher_path
+                    .as_ref()
+                    .unwrap()
+                    .with_file_name("codex-plus-plus")
+            )
+            .unwrap(),
+            std::fs::read(launcher).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(
+                installed
+                    .manager_path
+                    .as_ref()
+                    .unwrap()
+                    .with_file_name("codex-plus-plus-manager")
+            )
+            .unwrap(),
+            std::fs::read(manager).unwrap()
+        );
+        assert!(
+            std::fs::read_to_string(installed.launcher_path.unwrap())
+                .unwrap()
+                .contains("exec \"$DIR/codex-plus-plus\"")
+        );
+        assert!(
+            std::fs::read_to_string(installed.manager_path.unwrap())
+                .unwrap()
+                .contains("exec \"$DIR/codex-plus-plus-manager\"")
+        );
     }
 }

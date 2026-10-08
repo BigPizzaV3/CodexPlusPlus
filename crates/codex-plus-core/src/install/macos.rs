@@ -1,12 +1,12 @@
 #[cfg(target_os = "macos")]
 use std::fs;
 #[cfg(target_os = "macos")]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use super::{
-    install_root_or_default, option_or_current_exe, InstallOptions, MacosAppBundle, MANAGER_BINARY,
-    MANAGER_NAME, SILENT_BINARY, SILENT_NAME,
+    InstallOptions, MANAGER_BINARY, MANAGER_NAME, MacosAppBundle, SILENT_BINARY, SILENT_NAME,
+    install_root_or_default, option_or_current_exe,
 };
 
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
@@ -78,8 +78,20 @@ fn is_bundle_macos_target(target: &Path) -> bool {
 
 #[cfg(target_os = "macos")]
 pub fn install_app_bundles(options: &InstallOptions) -> anyhow::Result<()> {
-    write_bundle(&build_app_bundle(options, false))?;
-    write_bundle(&build_app_bundle(options, true))?;
+    let bundles = [
+        build_app_bundle(options, false),
+        build_app_bundle(options, true),
+    ];
+    // 两个入口都先检查，避免缺少另一份二进制时已经改动了第一个 app。
+    let preserve = [
+        preserve_installed_bundle(&bundles[0])?,
+        preserve_installed_bundle(&bundles[1])?,
+    ];
+    for (bundle, preserve) in bundles.iter().zip(preserve) {
+        if !preserve {
+            write_bundle(bundle)?;
+        }
+    }
     Ok(())
 }
 
@@ -106,6 +118,45 @@ pub fn uninstall_app_bundles(_options: &InstallOptions) -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+fn preserve_installed_bundle(bundle: &MacosAppBundle) -> anyhow::Result<bool> {
+    let source = bundle
+        .binary_source
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("macOS bundle is missing its binary source"))?;
+    validate_binary_source(source)?;
+    let contents = bundle.app_path.join("Contents");
+    let executable = contents
+        .join("MacOS")
+        .join(executable_name_from_plist(&bundle.info_plist));
+    // DMG 的入口本身就是 Mach-O。不能把正在运行的入口覆成脚本，也不能
+    // 重写已签名 app 的 plist/资源（issue #2410）。路径别名也要按同一文件处理。
+    if paths_refer_to_same_file(source, &executable) {
+        if !contents.join("Info.plist").is_file() {
+            anyhow::bail!(
+                "macOS app 缺少 Info.plist，请重新安装：{}",
+                bundle.app_path.display()
+            );
+        }
+        return Ok(true);
+    }
+    if contents.join("_CodeSignature").exists() {
+        anyhow::bail!(
+            "无法安全重建已签名 macOS app，请重新安装：{}",
+            bundle.app_path.display()
+        );
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    match (fs::metadata(left), fs::metadata(right)) {
+        (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     let contents = bundle.app_path.join("Contents");
     let macos = contents.join("MacOS");
@@ -116,7 +167,7 @@ fn write_bundle(bundle: &MacosAppBundle) -> anyhow::Result<()> {
     if let (Some(source), Some(target_name)) = (&bundle.binary_source, &bundle.binary_target_name) {
         validate_binary_source(source)?;
         let target = macos.join(target_name);
-        if source != &target {
+        if !paths_refer_to_same_file(source, &target) {
             fs::copy(source, &target)?;
         }
         validate_binary_source(&target)?;
