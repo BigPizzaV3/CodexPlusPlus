@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
+use base64::Engine as _;
 use serde_json::{Map, Value, json};
 
 use crate::relay_rotation::{RotationContext, RotationEvent};
@@ -349,7 +350,7 @@ pub fn responses_to_chat_completions_with_options(
     }
 
     if let Some(input) = body.get("input") {
-        append_responses_input(input, &mut messages);
+        append_responses_input(input, &mut messages)?;
     }
     // 必须在 enforce_tool_call_pairing 之前：配对一旦被错误摘除就无法恢复。
     relocate_interleaved_non_tool_messages(&mut messages);
@@ -3278,7 +3279,9 @@ fn normalize_responses_item_id(item: &mut Value) {
     item["id"] = json!(format!("{prefix}{suffix}"));
 }
 
-fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
+fn append_responses_input(input: &Value, messages: &mut Vec<Value>) -> anyhow::Result<()> {
+    // encrypted_content 片段可能携带无法在 Chat 协议里表达的 opaque 内容，报错向上传播（fail loud）。
+    // 错误最终在 launcher 层变成带可读 message 的失败响应，不会静默发空任务。
     match input {
         Value::String(text) => messages.push(json!({ "role": "user", "content": text })),
         Value::Array(items) => {
@@ -3292,7 +3295,7 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
                     &mut seen_tool_call_ids,
-                );
+                )?;
             }
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
             flush_reasoning(messages, &mut pending_reasoning);
@@ -3307,12 +3310,13 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
                 &mut pending_tool_calls,
                 &mut pending_reasoning,
                 &mut seen_tool_call_ids,
-            );
+            )?;
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
             flush_reasoning(messages, &mut pending_reasoning);
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn append_responses_item(
@@ -3321,12 +3325,12 @@ fn append_responses_item(
     pending_tool_calls: &mut Vec<Value>,
     pending_reasoning: &mut Vec<String>,
     seen_tool_call_ids: &mut BTreeSet<String>,
-) {
+) -> anyhow::Result<()> {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") => {
             let name = responses_history_function_name(item);
             if name.is_empty() {
-                return;
+                return Ok(());
             }
             let call_id = item
                 .get("call_id")
@@ -3334,7 +3338,7 @@ fn append_responses_item(
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if call_id.is_empty() {
-                return;
+                return Ok(());
             }
             seen_tool_call_ids.insert(call_id.to_string());
             pending_tool_calls.push(json!({
@@ -3356,7 +3360,7 @@ fn append_responses_item(
         Some("function_call_output") => {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
             if call_id.is_empty() {
-                return;
+                return Ok(());
             }
             if !seen_tool_call_ids.contains(call_id) {
                 flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
@@ -3365,7 +3369,7 @@ fn append_responses_item(
                     call_id,
                     item.get("output").unwrap_or(&Value::Null),
                 ));
-                return;
+                return Ok(());
             }
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
             messages.push(json!({
@@ -3387,7 +3391,7 @@ fn append_responses_item(
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if call_id.is_empty() {
-                return;
+                return Ok(());
             }
             seen_tool_call_ids.insert(call_id.to_string());
             pending_tool_calls.push(json!({
@@ -3408,7 +3412,7 @@ fn append_responses_item(
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if call_id.is_empty() {
-                return;
+                return Ok(());
             }
             seen_tool_call_ids.insert(call_id.to_string());
             pending_tool_calls.push(json!({
@@ -3425,14 +3429,14 @@ fn append_responses_item(
         Some("tool_search_output") => {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
             if call_id.is_empty() {
-                return;
+                return Ok(());
             }
             let output = item.get("tools").unwrap_or(&Value::Null);
             if !seen_tool_call_ids.contains(call_id) {
                 flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
                 flush_reasoning(messages, pending_reasoning);
                 messages.push(orphan_tool_output_message(call_id, output));
-                return;
+                return Ok(());
             }
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
             messages.push(json!({
@@ -3444,7 +3448,7 @@ fn append_responses_item(
         Some("custom_tool_call_output") => {
             let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
             if call_id.is_empty() {
-                return;
+                return Ok(());
             }
             if !seen_tool_call_ids.contains(call_id) {
                 flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
@@ -3453,7 +3457,7 @@ fn append_responses_item(
                     call_id,
                     item.get("output").unwrap_or(&Value::Null),
                 ));
-                return;
+                return Ok(());
             }
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
             messages.push(json!({
@@ -3471,7 +3475,7 @@ fn append_responses_item(
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if call_id.is_empty() {
-                    return;
+                    return Ok(());
                 }
                 seen_tool_call_ids.insert(call_id.to_string());
                 pending_tool_calls.push(json!({
@@ -3494,13 +3498,13 @@ fn append_responses_item(
                 .and_then(Value::as_str)
                 .unwrap_or("");
             if call_id.is_empty() {
-                return;
+                return Ok(());
             }
             let output = content.get("content").unwrap_or(content);
             if !seen_tool_call_ids.contains(call_id) {
                 flush_reasoning(messages, pending_reasoning);
                 messages.push(orphan_tool_output_message(call_id, output));
-                return;
+                return Ok(());
             }
             messages.push(json!({
                 "role": "tool",
@@ -3532,11 +3536,11 @@ fn append_responses_item(
             if let Some(content) = item.get("content") {
                 let role = responses_role_to_chat_role(item.get("role").and_then(Value::as_str));
                 if content.is_null() && role != "assistant" {
-                    return;
+                    return Ok(());
                 }
                 let mut message = json!({
                     "role": role,
-                    "content": responses_content_to_chat_content(role, content)
+                    "content": responses_content_to_chat_content(role, content)?
                 });
                 if role == "assistant" {
                     if !pending_reasoning.is_empty() && pending_tool_calls.is_empty() {
@@ -3551,6 +3555,7 @@ fn append_responses_item(
             }
         }
     }
+    Ok(())
 }
 
 fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
@@ -4111,13 +4116,13 @@ fn image_part_to_chat(part: &Value) -> Option<Value> {
     Some(json!({ "type": "image_url", "image_url": image_url }))
 }
 
-fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
+fn responses_content_to_chat_content(_role: &str, content: &Value) -> anyhow::Result<Value> {
     if content.is_null() || content.is_string() {
-        return content.clone();
+        return Ok(content.clone());
     }
 
     let Some(parts) = content.as_array() else {
-        return content.clone();
+        return Ok(content.clone());
     };
     let mut chat_parts = Vec::new();
     let mut has_non_text_part = false;
@@ -4144,21 +4149,93 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
                     has_non_text_part = true;
                 }
             }
+            "encrypted_content" => {
+                // codex 客户端（multi_agent v2）把 agent 间消息（NEW_TASK/MESSAGE）的
+                // payload 放进 encrypted_content 片段投递，真实流量里片段值是明文
+                // （实证依据见 encrypted_content_value_is_opaque 注释），解包成文本
+                // 转发；这里若吞掉，接收方模型只会看到空消息。
+                // 值被判定为 opaque 时不假装能转换：返回明确的不支持错误（fail loud），
+                // 与 compaction 路径「一律按失败返回」的既有惯例一致，绝不静默删除。
+                let value = part
+                    .get("encrypted_content")
+                    .or_else(|| part.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !value.is_empty() {
+                    if encrypted_content_value_is_opaque(value) {
+                        anyhow::bail!(
+                            "encrypted_content 片段是无法在当前 Chat 转换中表达的不透明（opaque）内容，\
+                             已中止本次转换，而不是静默删除或当作文本转发"
+                        );
+                    }
+                    chat_parts.push(json!({ "type": "text", "text": value }));
+                }
+            }
             _ => {}
         }
     }
 
     if !has_non_text_part {
-        return Value::String(
+        return Ok(Value::String(
             chat_parts
                 .iter()
                 .filter_map(|part| part.get("text").and_then(Value::as_str))
                 .collect::<Vec<_>>()
                 .join("\n"),
-        );
+        ));
     }
 
-    Value::Array(chat_parts)
+    Ok(Value::Array(chat_parts))
+}
+
+/// 判定 encrypted_content 片段的值是否为无法在 Chat 协议中表达的 opaque 密文。
+///
+/// 实证依据：Codex Desktop（cli_version 0.162.0-alpha.2 / multi_agent_version v2）
+/// 的 120 个真实 rollout 会话里，agent_message 的 encrypted_content 片段共 216 处，
+/// 216/216 都是可打印明文（含中文、常规空格换行），0 处是纯 base64 高熵形态：
+/// 当前客户端在这条路径上的构造事实就是明文字符串，名义协议里的「加密」未在
+/// 该字段启用。但守卫不依赖这一点，只把最典型的密文形态判为 opaque，
+/// 两条路径都不静默丢内容——
+/// 1. 含 \t \n \r 之外的控制字符：明文文本不会携带，判为二进制；
+/// 2. 无空白的纯 base64 字母表（去填充后 ≥32 字符）且可解码，解出字节的
+///    可打印 ASCII 占比明显偏低（<60%）：分块加密输出的编码形态。
+///    明文句子 base64 后通常带空格，不命中前半段；单 token 明文解码回来仍是
+///    ASCII 文本，可打印占比高，不命中后半段。
+/// 两个条件都不满足即按明文透传。
+fn encrypted_content_value_is_opaque(value: &str) -> bool {
+    if value
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+    {
+        return true;
+    }
+    let body = value.trim_end_matches('=');
+    if body.len() < 32
+        || !body
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_' | b'='))
+    {
+        return false;
+    }
+    // base64url 与标准字母表在字符集层面无法区分，解码前统一成标准表并补齐填充。
+    let canonical = body.replace(['-', '_'], "+/");
+    let padded = format!("{canonical}{}", "=".repeat((4 - canonical.len() % 4) % 4));
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&padded) else {
+        // 长度不满足编码约束（解码失败）就不是合法的密文编码，按明文处理；
+        // 真实密文的编码必然满足长度约束。
+        // （len % 4 == 1 的输入也在这里被排除。）
+        return false;
+    };
+    if decoded.is_empty() {
+        return false;
+    }
+    // 明文（ASCII 文本再 base64）解码回来仍是高可打印文本；密文解码字节接近
+    // 均匀分布，可打印 ASCII 占比仅约 37%。阈值取 60%。
+    let printable = decoded
+        .iter()
+        .filter(|b| matches!(**b, 0x20..0x7f | b'\t' | b'\n' | b'\r'))
+        .count();
+    printable * 5 < decoded.len() * 3
 }
 
 fn responses_history_function_name(item: &Value) -> String {

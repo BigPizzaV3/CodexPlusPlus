@@ -93,6 +93,88 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
 }
 
 #[test]
+fn encrypted_content_part_in_agent_message_is_forwarded_in_order() {
+    // 真实形态（Codex Desktop multi_agent v2 rollout 采样）：agent_message 项的
+    // content 数组里 input_text 头 + 明文 encrypted_content 片段，必须按原文顺序
+    // 透传，否则接收方模型只看到空消息头。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "agent_message", "id": "amsg_real_shape",
+              "author": "/root/orchestrator", "recipient": "/root/worker",
+              "content": [
+                  { "type": "input_text",
+                    "text": "Message Type: NEW_TASK Task name: /root/worker Payload:" },
+                  { "type": "encrypted_content",
+                    "encrypted_content": "收到任务：请核对改动并把结论整理成三段发回。" }
+              ] }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let forwarded = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("收到任务"))
+        })
+        .expect("agent_message 内的明文 encrypted_content 片段应透传为文本");
+    assert_eq!(forwarded["role"], "user");
+    let content = forwarded["content"].as_str().unwrap();
+    let header_pos = content.find("Payload:").expect("头部文本应保留");
+    let payload_pos = content.find("收到任务").unwrap();
+    assert!(
+        payload_pos > header_pos,
+        "片段顺序必须保持 header 在前、payload 在后"
+    );
+}
+
+#[test]
+fn opaque_encrypted_content_part_fails_loud() {
+    // opaque（base64 高熵）形态的 encrypted_content 片段无法在 Chat 协议里表达，
+    // 必须返回明确的不支持错误（fail loud），而不是静默删除后继续发空任务。
+    // 这串是随机字节 base64 后的典型密文编码形态。
+    let opaque = "mMn9x0Kc2QvZ7LtR4bYwJpE1sH6dGfUgA0TiOeNkVXqBcD9ylZsKmWrT3uPh";
+    let err = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "agent_message", "id": "amsg_opaque",
+              "content": [{ "type": "encrypted_content", "encrypted_content": opaque }] }
+        ]
+    }))
+    .expect_err("opaque 片段应触发明确错误，不得静默透传或静默丢弃");
+    let message = err.to_string();
+    assert!(
+        message.contains("encrypted_content") && message.contains("opaque"),
+        "错误信息必须可诊断，点明 encrypted_content 无法在当前 Chat 转换中表达：{message}"
+    );
+}
+
+#[test]
+fn standalone_encrypted_content_item_is_no_longer_expanded() {
+    // 维护者异议成立：顶层独立 encrypted_content 项在真实流量里 0 命中，
+    // 把它改写成 user 消息可能丢失角色与结构。该展开分支已删除，
+    // 此形态回到上游默认行为：不再被展开成 user 消息。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "current task" }] },
+            { "type": "encrypted_content", "encrypted_content": "AGENT_PAYLOAD_SENTINEL" }
+        ]
+    }))
+    .unwrap();
+
+    let serialized = converted["messages"].to_string();
+    assert!(
+        !serialized.contains("AGENT_PAYLOAD_SENTINEL"),
+        "独立 encrypted_content 项不应再被展开成 user 消息：{serialized}"
+    );
+}
+
+#[test]
 fn compaction_stream_emits_one_done_item_before_completed() {
     let mut converter = CompactionSseConverter::new("custom-model");
     converter.push_summary_text("Preserve this summary.");
