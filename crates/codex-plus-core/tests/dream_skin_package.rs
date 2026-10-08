@@ -3,7 +3,9 @@ use std::io::{Cursor, Write};
 use codex_plus_core::dream_skin_library::{
     load_stored_dream_skin_theme, prepare_dream_skin_activation, save_validated_dream_skin_package,
 };
-use codex_plus_core::dream_skin_package::{compile_safe_css, validate_and_read_package};
+use codex_plus_core::dream_skin_package::{
+    DREAM_SKIN_PACKAGE_CLIENT_VERSION, compile_safe_css, validate_and_read_package,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -20,6 +22,16 @@ fn package_bytes_with_prefix(
     css: &[u8],
     image_hash: Option<String>,
     prefix: &str,
+) -> Vec<u8> {
+    package_bytes_with_min_client_version(platform, css, image_hash, prefix, "0.0.0")
+}
+
+fn package_bytes_with_min_client_version(
+    platform: &str,
+    css: &[u8],
+    image_hash: Option<String>,
+    prefix: &str,
+    min_client_version: &str,
 ) -> Vec<u8> {
     let theme = serde_json::to_vec(&json!({
         "schemaVersion": 1,
@@ -41,7 +53,7 @@ fn package_bytes_with_prefix(
         "themeId": "community.theme",
         "version": "1.2.3",
         "skinApiVersion": 1,
-        "minClientVersion": "0.0.0",
+        "minClientVersion": min_client_version,
         "platforms": [platform],
         "capabilities": ["background", "tokens", "safe-css"],
         "publisher": { "id": "tester", "displayName": "Tester" },
@@ -75,6 +87,29 @@ fn package_bytes_with_prefix(
         writer.finish().unwrap();
     }
     archive.into_inner()
+}
+
+#[test]
+fn package_compatibility_uses_dream_skin_version_instead_of_product_version() {
+    let css = br#"[data-ds-part="root"] { color: #ffffff; }"#;
+    let supported = package_bytes_with_min_client_version(
+        "macos",
+        css,
+        None,
+        "",
+        DREAM_SKIN_PACKAGE_CLIENT_VERSION,
+    );
+    assert!(validate_and_read_package(&supported, "macos").is_ok());
+
+    for minimum in ["1.5.18", "26.805.11740"] {
+        let bytes = package_bytes_with_min_client_version("macos", css, None, "", minimum);
+        let error = validate_and_read_package(&bytes, "macos")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(minimum));
+        assert!(error.contains(DREAM_SKIN_PACKAGE_CLIENT_VERSION));
+        assert!(error.contains("Dream Skin 引擎版本"));
+    }
 }
 
 #[test]
