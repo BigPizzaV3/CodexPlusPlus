@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" fill="none">
+  <title>Codex++ — 让 Codex 更顺手</title>
+  <desc>深色背景与蓝紫色点缀，展示供应商、工作流和个性化三个方向。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10141F"/><stop offset="1" stop-color="#191A36"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="760" y1="70" x2="1050" y2="270" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7BA7FF"/><stop offset="1" stop-color="#9C86FF"/>
+    </linearGradient>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#A3AFF3" fill-opacity=".12"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="320" rx="20" fill="url(#bg)"/>
+  <rect x="680" width="520" height="320" rx="20" fill="url(#dots)"/>
+  <path d="M700 320L1020 0M810 320L1130 0" stroke="#8A93D0" stroke-opacity=".09"/>
+  <rect x="56" y="48" width="4" height="20" rx="2" fill="#829BFF"/>
+  <text x="73" y="63" fill="#ADB6D3" font-family="system-ui, -apple-system, sans-serif" font-size="13" letter-spacing="3">YOUR CODEX, UPGRADED.</text>
+  <text x="54" y="146" fill="#F4F6FF" font-family="system-ui, -apple-system, sans-serif" font-size="66" font-weight="750" letter-spacing="-3">Codex<tspan fill="#9CAFFF">++</tspan></text>
+  <text x="56" y="206" fill="#E8EBF7" font-family="system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="34" font-weight="600">让 Codex 更顺手。</text>
+  <text x="56" y="260" fill="#9DA7C3" font-family="system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16">供应商与模型 · 工作流增强 · 拓展与个性化</text>
+  <rect x="748" y="61" width="378" height="198" rx="16" fill="#101521" stroke="#3A4260"/>
+  <path d="M748 99H1126" stroke="#313950"/>
+  <circle cx="770" cy="80" r="4" fill="#FF7187"/><circle cx="786" cy="80" r="4" fill="#E6B66C"/><circle cx="802" cy="80" r="4" fill="#66C8A0"/>
+  <text x="825" y="84" fill="#8691AD" font-family="system-ui, sans-serif" font-size="11">Codex++ Workspace</text>
+  <rect x="766" y="117" width="64" height="123" rx="8" fill="#1A2031"/>
+  <rect x="778" y="130" width="40" height="5" rx="2.5" fill="#667398"/>
+  <rect x="773" y="149" width="50" height="23" rx="5" fill="#6575DB" fill-opacity=".3"/>
+  <rect x="779" y="158" width="33" height="4" rx="2" fill="#A7B6FF"/>
+  <rect x="779" y="183" width="30" height="4" rx="2" fill="#4D5774"/>
+  <rect x="779" y="207" width="35" height="4" rx="2" fill="#4D5774"/>
+  <rect x="846" y="117" width="262" height="35" rx="8" fill="#20273C"/>
+  <rect x="859" y="132" width="112" height="5" rx="2.5" fill="#8795BC"/>
+  <rect x="846" y="165" width="123" height="75" rx="8" fill="#1A2031"/>
+  <rect x="983" y="165" width="125" height="75" rx="8" fill="#1A2031"/>
+  <path d="M1017 202H1074M1045.5 174V230" stroke="url(#accent)" stroke-width="5" stroke-linecap="round"/>
+  <rect x="859" y="181" width="60" height="5" rx="2.5" fill="#8795BC"/>
+  <rect x="859" y="196" width="83" height="4" rx="2" fill="#47516E"/>
+  <rect x="859" y="217" width="32" height="10" rx="5" fill="#8396F7"/>
+  <circle cx="885" cy="222" r="3.5" fill="#F5F6FF"/>
+</svg>
