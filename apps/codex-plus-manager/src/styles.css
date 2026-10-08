@@ -3656,6 +3656,16 @@ details.relay-fold[open] > .relay-fold-body {
   line-height: 1.5;
 }
 
+/* 推荐列表与概览推荐位共用：简介三行后显示省略号，原文保留在悬停提示。 */
+.recommendation-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
 .ad-tags {
   display: flex;
   flex-wrap: wrap;

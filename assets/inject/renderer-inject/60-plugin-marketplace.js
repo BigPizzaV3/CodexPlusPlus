@@ -162,6 +162,9 @@
     const originalSendRequest = client.__codexPluginMarketplaceOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPluginMarketplaceOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPluginMarketplacePatchedSendRequest(method, params, options) {
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest(method, params, nextOptions), client.hostId);
+      if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       const restoredRequestParams = restorePluginMarketplaceRequestParams(params, requestMethod);
       const requestProfile = pluginMarketplaceRequestProfile(restoredRequestParams);
@@ -388,8 +391,10 @@
   }
 
   function installPluginMarketplaceBridgePatch() {
+    ensureCodexPlusPluginNativeTransportReinjection();
     if (window.__codexPluginMarketplaceBridgePatch === codexPluginMarketplaceUnlockVersion) return;
     if (!codexPluginMarketplacePatchEnabled()) return;
+    installCodexPlusPluginNativeTransportListener();
     installPluginMarketplaceWindowEventPatchOnly();
     const bridge = window.electronBridge;
     if (!bridge || typeof bridge.sendMessageFromView !== "function") {
@@ -399,6 +404,7 @@
     if (!bridge.__codexPluginMarketplaceOriginalSendMessageFromView) {
       bridge.__codexPluginMarketplaceOriginalSendMessageFromView = bridge.sendMessageFromView.bind(bridge);
       bridge.sendMessageFromView = function codexPluginMarketplacePatchedSendMessageFromView(message) {
+        if (codexPlusPluginNativeInterceptOutgoing(message)) return Promise.resolve();
         let nextMessage = message;
         try {
           nextMessage = patchPluginMarketplaceRequestMessage(message);
@@ -425,6 +431,11 @@
       window.dispatchEvent = function patchedCodexPluginMarketplaceDispatchEvent(event) {
         try {
           const detail = event?.detail;
+          if (event?.type === "codex-message-from-view" && event.__codexForwardedViaBridge
+              && codexPlusPluginNativeSuppressForwarded(detail)) return true;
+          if (event?.type === "codex-message-from-view" && !event.__codexForwardedViaBridge
+              && codexPlusPluginNativeInterceptOutgoing(detail)) return true;
+          if (event?.type === "message" && codexPlusPluginNativeInterceptIncoming(event.data)) return true;
           if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request") {
             const patched = patchPluginMarketplaceRequestMessage(detail);
             if (patched !== detail) {
@@ -1650,4 +1661,3 @@
     const result = await codexStateCall("get-global-state", { params: { key } });
     return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : result;
   }
-

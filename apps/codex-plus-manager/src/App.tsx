@@ -83,6 +83,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
+import { PluginMarketScreen } from "./PluginMarketScreen";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import {
@@ -936,7 +937,7 @@ const TOOL_ICONS: Record<string, string> = {
   grok: new URL("./assets/agents/grok.svg", import.meta.url).href,
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -961,6 +962,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "enhance", label: t("Codex增强"), icon: Hammer, tool: "codex" },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette, tool: "codex" },
   { id: "userScripts", label: t("拓展"), icon: FileCode2, tool: "codex" },
+  { id: "pluginMarket", label: t("CodeX 插件市场"), icon: Store, tool: "codex" },
   { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
   { id: "agentCache", label: t("AI Agent 缓存清理"), icon: Trash2 },
@@ -977,7 +979,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("扩展"),
-    routes: ["weixin", "enhance", "dreamSkin", "userScripts"],
+    routes: ["weixin", "enhance", "dreamSkin", "userScripts", "pluginMarket"],
   },
   {
     label: t("系统"),
@@ -2094,8 +2096,10 @@ export function App() {
       if (!navigation) return false;
       const destination = managerNavigationDestination(navigation);
       await refreshSettings(true);
-      if (destination.route === "enhance") {
+      if (destination.route === "enhance" || destination.route === "pluginMarket") {
         setActiveTool("codex");
+      }
+      if (destination.route === "enhance") {
         setEnhancementTab(destination.section ?? "general");
       }
       setPendingEnhancementSection(destination.section);
@@ -3539,6 +3543,7 @@ export function App() {
             />
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
+          {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "maintenance" ? (
@@ -4264,7 +4269,7 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
               <div aria-live={paused ? "polite" : "off"} className="sponsor-carousel-copy" key={ad.id || ad.title}>
                 <span className="eyebrow">{t("推荐内容")}</span>
                 <h2>{formatAdTitle(ad.title)}</h2>
-                <p>{ad.description}</p>
+                <p className="recommendation-description" title={ad.description}>{ad.description}</p>
               </div>
             </div>
             <div className="jojocode-overview-side">
@@ -10961,7 +10966,7 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
           {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
           <div className="ad-content">
             <strong>{formatAdTitle(ad.title)}</strong>
-            <p>{ad.description}</p>
+            <p className="recommendation-description" title={ad.description}>{ad.description}</p>
           </div>
           {ad.highlights?.length ? (
             <div className="ad-tags">
@@ -11030,6 +11035,7 @@ function routeSubtitle(route: Route) {
     enhance: t("管理常用功能、语音输入与下一步建议。"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
     userScripts: t("内置和用户自定义拓展清单"),
+    pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("普通推荐内容"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),

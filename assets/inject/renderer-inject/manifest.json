@@ -41,6 +41,16 @@
       "lines": 1619
     },
     {
+      "name": "61-plugin-market-ui.js",
+      "description": "独立 CodeX 插件市场、索引检索与按需单包安装",
+      "lines": 0
+    },
+    {
+      "name": "62-plugin-market-adapter.js",
+      "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
+      "lines": 0
+    },
+    {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
       "lines": 933

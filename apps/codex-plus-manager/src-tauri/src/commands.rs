@@ -3816,6 +3816,46 @@ pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
 }
 
 #[tauri::command]
+pub async fn refresh_plugin_market(source: String, refresh: bool) -> Value {
+    match codex_plus_core::plugin_market::list_plugins(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        refresh,
+    )
+    .await
+    {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string(), "plugins": []}),
+    }
+}
+
+#[tauri::command]
+pub async fn install_plugin_market_item(source: String, id: String) -> Value {
+    match codex_plus_core::plugin_market::install_plugin(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        &id,
+    )
+    .await
+    {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string()}),
+    }
+}
+
+#[tauri::command]
+pub fn plugin_market_install_status(source: String, id: String) -> Value {
+    match codex_plus_core::plugin_market::install_status(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        &id,
+    ) {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string(), "busy": false}),
+    }
+}
+
+#[tauri::command]
 pub async fn refresh_user_script_inventory() -> CommandResult<SettingsPayload> {
     let debug_port = StatusStore::default()
         .load_latest()

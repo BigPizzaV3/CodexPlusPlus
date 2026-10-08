@@ -82,7 +82,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "28";
+  const codexDeleteStyleVersion = "29";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -93,6 +93,9 @@
   const codexPlusRailNavId = "codex-plus-rail-nav";
   const codexPlusRailExtensionsId = "codex-plus-rail-extensions";
   const codexPlusRailSponsorId = "codex-plus-rail-sponsor";
+  const codexPlusRailPluginMarketId = "codex-plus-rail-plugin-market";
+  const codexPlusSidebarPluginMarketId = "codex-plus-sidebar-plugin-market";
+  const codexPlusPluginMarketTab = "plugin-market";
   const codexPlusRailSelector = "nav[data-app-navigation-rail]";
   const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
   const codexPlusExtensionsTab = "extensions";
@@ -120,11 +123,11 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "9";
-  const codexAppServerModelRequestPatchVersion = "10";
+  const codexAppServerModelRequestPatchVersion = "11";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
-  const codexPluginMarketplaceUnlockVersion = "16";
+  const codexPluginMarketplaceUnlockVersion = "17";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -784,6 +787,36 @@
         background: var(--codex-plus-bg-selected);
         color: var(--codex-plus-text);
       }
+      .codex-plus-plugin-sidebar { position: relative; flex: 0 0 auto; }
+      .codex-plus-plugin-sidebar .codex-plus-sidebar-nav-icon { width: 20px; height: 20px; flex: 0 0 20px; display: inline-flex; align-items: center; justify-content: center; }
+      .codex-plus-plugin-sidebar .codex-plus-sidebar-nav-icon svg { width: 19px; height: 19px; }
+      .codex-plus-plugin-sidebar-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+      .codex-plus-plugin-sidebar button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
+      .codex-plus-plugin-market-panel { max-width: 1140px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+      .codex-plus-plugin-intro { margin: 0 0 18px; color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 1.6; }
+      .codex-plus-plugin-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
+      .codex-plus-plugin-sources { display: flex; gap: 4px; flex: 1 1 auto; }
+      .codex-plus-plugin-sources button { border: 1px solid var(--codex-plus-border); border-radius: 7px; padding: 7px 12px; color: var(--codex-plus-text-secondary); background: transparent; cursor: pointer; }
+      .codex-plus-plugin-sources button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
+      .codex-plus-plugin-search { flex: 1 1 240px; min-width: 120px; border: 1px solid var(--codex-plus-border); border-radius: 8px; background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text); padding: 9px 12px; font-size: 14px; }
+      .codex-plus-plugin-filter { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-plugin-status { font-size: 12px; color: var(--codex-plus-text-secondary); white-space: pre-wrap; margin-bottom: 14px; }
+      .codex-plus-plugin-results { display: flex; flex-direction: column; gap: 10px; }
+      .codex-plus-plugin-card { display: flex; align-items: flex-start; gap: 18px; padding: 16px; border: 1px solid var(--codex-plus-border); border-radius: 10px; background: var(--codex-plus-bg-secondary); }
+      .codex-plus-plugin-card-info { flex: 1 1 auto; min-width: 0; }
+      .codex-plus-plugin-name { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+      .codex-plus-plugin-id, .codex-plus-plugin-meta { color: var(--codex-plus-text-tertiary); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
+      .codex-plus-plugin-description { color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 1.55; margin: 7px 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+      .codex-plus-plugin-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+      .codex-plus-plugin-tags span { border-radius: 5px; padding: 2px 6px; background: var(--codex-plus-bg-selected); color: var(--codex-plus-text-secondary); font-size: 10px; overflow-wrap: anywhere; }
+      .codex-plus-plugin-install { flex: 0 0 auto; white-space: nowrap; }
+      .codex-plus-plugin-market-page button:disabled { opacity: .55; cursor: default; }
+      .codex-plus-plugin-job-message { font-size: 12px; color: var(--codex-plus-text-secondary); margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .codex-plus-plugin-job-message[data-status="failed"] { color: var(--codex-plus-danger); }
+      .codex-plus-plugin-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; font-size: 12px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-plugin-pagination > span { margin-right: auto; }
+      .codex-plus-plugin-empty { padding: 40px 16px; text-align: center; color: var(--codex-plus-text-secondary); }
+      @media (max-width: 600px) { .codex-plus-plugin-card { flex-direction: column; gap: 10px; } .codex-plus-plugin-install { align-self: flex-end; } }
       /*
        * 新版导航图标栏里的 Codex++ / 拓展 / 推荐内容入口：原生按钮只放图标，
        * 这里对齐它的尺寸。
@@ -5021,6 +5054,7 @@
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
     if (tab === codexPlusExtensionsTab) return "extensions";
     if (tab === codexPlusSponsorTab) return "sponsor";
+    if (tab === codexPlusPluginMarketTab) return "plugin-market";
     return "home";
   }
 
@@ -5032,10 +5066,17 @@
       button.dataset.active = String(on);
       button.setAttribute("aria-current", on ? "page" : "false");
     }
+    const pluginButton = document.getElementById(codexPlusSidebarPluginMarketId)?.querySelector("button");
+    if (pluginButton) {
+      const on = Boolean(active) && entry === "plugin-market";
+      pluginButton.dataset.active = String(on);
+      pluginButton.setAttribute("aria-current", on ? "page" : "false");
+    }
     [
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
       [codexPlusRailSponsorId, "sponsor"],
+      [codexPlusRailPluginMarketId, "plugin-market"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -5693,7 +5734,7 @@
       navigation.dataset.codexPlusSidebarNavigationListener = "true";
       navigation.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
+        if (target?.closest(`#${codexPlusSidebarNavId}, #${codexPlusSidebarPluginMarketId}`)) return;
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
@@ -5729,16 +5770,18 @@
     }
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
+    installCodexPlusPluginMarketSidebarNavigation(parent, wrapper, insertionButton);
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
-    setCodexPlusSidebarNavActive(active);
+    setCodexPlusSidebarNavActive(active, codexPlusActiveEntry() || "home");
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
   }
 
   function detachCodexPlusSidebarNavigation() {
     document.getElementById(codexPlusSidebarNavId)?.remove();
+    document.getElementById(codexPlusSidebarPluginMarketId)?.remove();
   }
 
   /**
@@ -5828,7 +5871,7 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailPluginMarketId}`)) return;
         // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
         // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
         if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
@@ -5848,6 +5891,7 @@
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
+      { id: codexPlusRailPluginMarketId, label: "CodeX 插件市场", iconMarkup: codexPlusPluginMarketIconMarkup(), withStatus: false, onActivate: openCodexPlusNativePluginMarket },
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
@@ -5862,6 +5906,7 @@
         wrapper?.remove();
         wrapper = createCodexPlusRailButton({ ...spec, template });
         if (!wrapper) return;
+        if (spec.id === codexPlusRailPluginMarketId) markCodexPlusExtensionNode(wrapper, "builtin-plugin-market");
       }
       // 顺序：Codex++ 在前，「拓展」在后；紧跟在 primary 区锚点后面。
       if (cursor?.nextSibling) {
@@ -6228,6 +6273,9 @@
     const originalSendRequest = client.__codexPluginMarketplaceOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPluginMarketplaceOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPluginMarketplacePatchedSendRequest(method, params, options) {
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest(method, params, nextOptions), client.hostId);
+      if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       const restoredRequestParams = restorePluginMarketplaceRequestParams(params, requestMethod);
       const requestProfile = pluginMarketplaceRequestProfile(restoredRequestParams);
@@ -6454,8 +6502,10 @@
   }
 
   function installPluginMarketplaceBridgePatch() {
+    ensureCodexPlusPluginNativeTransportReinjection();
     if (window.__codexPluginMarketplaceBridgePatch === codexPluginMarketplaceUnlockVersion) return;
     if (!codexPluginMarketplacePatchEnabled()) return;
+    installCodexPlusPluginNativeTransportListener();
     installPluginMarketplaceWindowEventPatchOnly();
     const bridge = window.electronBridge;
     if (!bridge || typeof bridge.sendMessageFromView !== "function") {
@@ -6465,6 +6515,7 @@
     if (!bridge.__codexPluginMarketplaceOriginalSendMessageFromView) {
       bridge.__codexPluginMarketplaceOriginalSendMessageFromView = bridge.sendMessageFromView.bind(bridge);
       bridge.sendMessageFromView = function codexPluginMarketplacePatchedSendMessageFromView(message) {
+        if (codexPlusPluginNativeInterceptOutgoing(message)) return Promise.resolve();
         let nextMessage = message;
         try {
           nextMessage = patchPluginMarketplaceRequestMessage(message);
@@ -6491,6 +6542,11 @@
       window.dispatchEvent = function patchedCodexPluginMarketplaceDispatchEvent(event) {
         try {
           const detail = event?.detail;
+          if (event?.type === "codex-message-from-view" && event.__codexForwardedViaBridge
+              && codexPlusPluginNativeSuppressForwarded(detail)) return true;
+          if (event?.type === "codex-message-from-view" && !event.__codexForwardedViaBridge
+              && codexPlusPluginNativeInterceptOutgoing(detail)) return true;
+          if (event?.type === "message" && codexPlusPluginNativeInterceptIncoming(event.data)) return true;
           if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request") {
             const patched = patchPluginMarketplaceRequestMessage(detail);
             if (patched !== detail) {
@@ -7716,7 +7772,724 @@
     const result = await codexStateCall("get-global-state", { params: { key } });
     return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : result;
   }
+  /**
+   * 独立插件市场只加载索引；安装由 launcher 下载所选插件并写入本地安装目录。
+   * 不调用 Codex 的 plugin/install，避免在浏览目录时触发服务连接或 OAuth。
+   * 状态存数据，页面每次打开重建；请求结果通过来源/序号校验后才刷新当前页面。
+   */
+  const codexPlusPluginMarketState = window.__codexPlusPluginMarketState || {
+    source: "public", query: "", installedOnly: false, page: 1,
+    catalogs: {}, jobs: {},
+  };
+  window.__codexPlusPluginMarketState = codexPlusPluginMarketState;
+  Object.values(codexPlusPluginMarketState.jobs).forEach((job) => {
+    clearTimeout(job.timer);
+    job.timer = null;
+  });
+  const codexPlusPluginMarketPageSize = 50;
 
+  function codexPlusPluginMarketIconMarkup() {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9h18l-2-5H5L3 9Z"/><path d="M3 9v3a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0V9M5 15v5h14v-5M10 20v-5h4v5"/></svg>';
+  }
+
+  function installCodexPlusPluginMarketSidebarNavigation(parent, anchor, template) {
+    let wrapper = document.getElementById(codexPlusSidebarPluginMarketId);
+    if (!wrapper || wrapper.parentElement !== parent) {
+      wrapper?.remove();
+      wrapper = document.createElement("div");
+      wrapper.id = codexPlusSidebarPluginMarketId;
+      wrapper.className = "codex-plus-plugin-sidebar";
+      markCodexPlusExtensionNode(wrapper, "builtin-plugin-market");
+      const button = template ? template.cloneNode(true) : document.createElement("button");
+      if (!(button instanceof HTMLElement)) return;
+      button.type = "button";
+      if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
+      ["id", "disabled", "aria-disabled", "aria-current", "data-state", "data-sidebar-destination", "data-selected", "data-suppress-active-style"].forEach((name) => button.removeAttribute(name));
+      button.setAttribute("aria-label", "CodeX 插件市场");
+      button.setAttribute("title", "CodeX 插件市场");
+      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true">${codexPlusPluginMarketIconMarkup()}</span><span class="codex-plus-plugin-sidebar-label">CodeX 插件市场</span>`;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openCodexPlusNativePluginMarket();
+      }, true);
+      wrapper.appendChild(button);
+    }
+    if (anchor.nextSibling !== wrapper) parent.insertBefore(wrapper, anchor.nextSibling);
+  }
+
+  function codexPlusPluginMarketCatalog(source = codexPlusPluginMarketState.source) {
+    if (!codexPlusPluginMarketState.catalogs[source]) {
+      codexPlusPluginMarketState.catalogs[source] = {
+        plugins: [], loaded: false, loading: false, message: "", revision: 0, cached: false,
+      };
+    }
+    return codexPlusPluginMarketState.catalogs[source];
+  }
+
+  function codexPlusPluginMarketPanel() {
+    return document.querySelector('[data-codex-plugin-market-panel="true"]');
+  }
+
+  function codexPlusPluginMarketFilteredPlugins() {
+    const state = codexPlusPluginMarketState;
+    const query = state.query.trim().toLocaleLowerCase();
+    return codexPlusPluginMarketCatalog().plugins.filter((plugin) => {
+      if (state.installedOnly && !plugin.installed) return false;
+      if (!query) return true;
+      const text = [plugin.displayName, plugin.name, plugin.description, ...(Array.isArray(plugin.tags) ? plugin.tags : [])].join(" ").toLocaleLowerCase();
+      return text.includes(query);
+    });
+  }
+
+  function codexPlusPluginMarketBytes(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function codexPlusPluginMarketStage(stage) {
+    return ({ queued: "等待下载", downloading: "下载中", extracting: "解压中", installing: "安装中", validating: "校验中", complete: "安装完成" })[stage] || "正在安装";
+  }
+
+  function codexPlusPluginMarketCard(plugin, source) {
+    const job = codexPlusPluginMarketState.jobs[`${source}:${plugin.id}`];
+    const busy = job?.busy === true;
+    const installed = plugin.installed === true;
+    const label = busy ? `${codexPlusPluginMarketStage(job.stage)}…` : plugin.updateAvailable ? "更新" : installed ? "已安装" : "下载安装";
+    const meta = [plugin.version ? `v${plugin.version}` : "", plugin.author || "", codexPlusPluginMarketBytes(plugin.bytes), Number(plugin.skills) > 0 ? `${plugin.skills} 个技能` : ""].filter(Boolean).join(" · ");
+    const tags = (Array.isArray(plugin.tags) ? plugin.tags : []).slice(0, 4);
+    return `<article class="codex-plus-plugin-card" role="listitem">
+      <div class="codex-plus-plugin-card-info">
+        <div class="codex-plus-plugin-name">${escapeHtml(plugin.displayName || plugin.name || plugin.id)}</div>
+        <div class="codex-plus-plugin-id">${escapeHtml(plugin.name || plugin.id)}</div>
+        <div class="codex-plus-plugin-description">${escapeHtml(plugin.description || "暂无介绍")}</div>
+        <div class="codex-plus-plugin-meta">${escapeHtml(meta)}</div>
+        <div class="codex-plus-plugin-tags">${tags.map((tag) => `<span>${escapeHtml(String(tag))}</span>`).join("")}${plugin.requiresAuth ? "<span>需要服务授权</span>" : ""}${plugin.license ? `<span>${escapeHtml(plugin.license)}</span>` : ""}</div>
+        ${job?.message ? `<div class="codex-plus-plugin-job-message" data-status="${job.failed ? "failed" : "ok"}">${escapeHtml(job.message)}</div>` : ""}
+      </div>
+      <button type="button" class="codex-plus-button codex-plus-plugin-install" data-codex-plugin-install="${escapeHtml(plugin.id)}" aria-label="${escapeHtml(`${label} ${plugin.displayName || plugin.name || plugin.id}`)}" ${busy || (installed && !plugin.updateAvailable) ? "disabled" : ""}>${label}</button>
+    </article>`;
+  }
+
+  function renderCodexPlusPluginMarket() {
+    const panel = codexPlusPluginMarketPanel();
+    if (!panel) return;
+    const state = codexPlusPluginMarketState;
+    const catalog = codexPlusPluginMarketCatalog();
+    const filtered = codexPlusPluginMarketFilteredPlugins();
+    const pages = Math.max(1, Math.ceil(filtered.length / codexPlusPluginMarketPageSize));
+    state.page = Math.max(1, Math.min(pages, state.page));
+    panel.querySelectorAll("[data-codex-plugin-source]").forEach((button) => {
+      const active = button.dataset.codexPluginSource === state.source;
+      button.dataset.active = String(active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    const refresh = panel.querySelector("[data-codex-plugin-refresh]");
+    if (refresh) refresh.disabled = catalog.loading;
+    const sourceNote = panel.querySelector("[data-codex-plugin-source-note]");
+    if (sourceNote) {
+      sourceNote.hidden = state.source !== "full";
+      sourceNote.textContent = "完整市场需要 GitHub 私有仓库访问权限。请使用有权限的账号执行 gh auth login 后刷新目录。";
+    }
+    const status = panel.querySelector("[data-codex-plugin-market-status]");
+    if (status) status.textContent = catalog.loading ? "正在加载插件目录…" : catalog.message || `${catalog.plugins.length.toLocaleString()} 个插件${catalog.cached ? " · 使用缓存目录" : ""}`;
+    const results = panel.querySelector("[data-codex-plugin-results]");
+    if (results) results.innerHTML = filtered.length
+      ? filtered.slice((state.page - 1) * codexPlusPluginMarketPageSize, state.page * codexPlusPluginMarketPageSize).map((plugin) => codexPlusPluginMarketCard(plugin, state.source)).join("")
+      : `<div class="codex-plus-plugin-empty">${catalog.loading ? "正在加载…" : !catalog.loaded ? "目录尚未加载，请刷新重试。" : catalog.plugins.length ? "没有找到符合条件的插件。" : "此来源暂无可显示的插件。"}</div>`;
+    const count = panel.querySelector("[data-codex-plugin-result-count]");
+    if (count) count.textContent = `${filtered.length.toLocaleString()} 个结果 · 第 ${state.page} / ${pages} 页`;
+    const previous = panel.querySelector('[data-codex-plugin-page="previous"]');
+    const next = panel.querySelector('[data-codex-plugin-page="next"]');
+    if (previous) previous.disabled = state.page <= 1;
+    if (next) next.disabled = state.page >= pages;
+  }
+
+  async function loadCodexPlusPluginMarket(source, refresh = false) {
+    const catalog = codexPlusPluginMarketCatalog(source);
+    if (catalog.loading || (catalog.loaded && !refresh)) {
+      renderCodexPlusPluginMarket();
+      return;
+    }
+    const revision = ++catalog.revision;
+    catalog.loading = true;
+    catalog.message = "";
+    renderCodexPlusPluginMarket();
+    let result;
+    try {
+      result = await postJson("/plugin-market/list", { source, refresh });
+    } catch (error) {
+      result = { status: "failed", message: error?.message || "插件目录加载失败" };
+    }
+    if (catalog.revision !== revision) return;
+    catalog.loading = false;
+    if (Array.isArray(result?.plugins)) {
+      catalog.plugins = result.plugins.filter((plugin) => plugin && typeof plugin.id === "string");
+      catalog.loaded = true;
+      catalog.cached = result.cached === true;
+      catalog.message = result.message || "";
+    } else {
+      catalog.message = result?.message || "插件目录加载失败，请刷新重试。";
+    }
+    // 切换来源后，旧请求只更新自己的数据；当前页面始终按当前来源重绘。
+    if (codexPlusPluginMarketState.source === source) renderCodexPlusPluginMarket();
+  }
+
+  function updateCodexPlusPluginMarketInstalled(source, plugin) {
+    if (!plugin || typeof plugin.id !== "string") return;
+    const catalog = codexPlusPluginMarketCatalog(source);
+    // 安装以 source + id 隔离，另一来源即使同 id 也不能被标为已安装。
+    // 丢弃此前发出的本来源清单请求，避免旧 installed 状态覆盖新结果。
+    catalog.revision += 1;
+    catalog.loading = false;
+    catalog.plugins = catalog.plugins.map((item) => {
+      if (item.id !== plugin.id) return item;
+      const installedVersion = plugin.installedVersion || plugin.version || item.version;
+      return { ...item, installed: true, installedVersion, updateAvailable: Boolean(item.version && installedVersion && item.version !== installedVersion) };
+    });
+  }
+
+  function scheduleCodexPlusPluginMarketInstallPoll(source, id, delay = 1200) {
+    const job = codexPlusPluginMarketState.jobs[`${source}:${id}`];
+    if (!job?.busy || job.polling || job.timer || !codexPlusPluginMarketPanel()) return;
+    job.timer = setTimeout(() => {
+      job.timer = null;
+      void pollCodexPlusPluginMarketInstall(source, id);
+    }, delay);
+  }
+
+  async function pollCodexPlusPluginMarketInstall(source, id) {
+    const job = codexPlusPluginMarketState.jobs[`${source}:${id}`];
+    if (!job?.busy || job.polling) return;
+    job.polling = true;
+    let result;
+    try {
+      result = await postJson("/plugin-market/install-status", { source, id });
+    } catch (error) {
+      result = { timeout: true, message: error?.message || "正在等待安装状态" };
+    }
+    job.polling = false;
+    if (result?.busy === true) {
+      job.stage = result.stage || job.stage;
+      job.message = result.message || "";
+    } else if (result?.busy === false) {
+      const completed = result.status === "ok" && result.stage === "complete"
+        && (result.plugin || (typeof result.installedVersion === "string" && result.installedVersion.length > 0));
+      job.busy = false;
+      job.failed = !completed;
+      job.message = result.message || (job.failed ? "安装未完成，请重试。" : "安装完成，重启 Codex 后加载插件。");
+      if (completed) updateCodexPlusPluginMarketInstalled(source, result.plugin || { id, installedVersion: result.installedVersion });
+    } else {
+      // 桥接超时不能重新发起安装；持续查询原任务，防止并发写同一插件。
+      job.message = result?.message || "正在等待安装状态，可稍后重新打开此页查看。";
+    }
+    renderCodexPlusPluginMarket();
+    scheduleCodexPlusPluginMarketInstallPoll(source, id, result?.timeout ? 4000 : 1200);
+  }
+
+  async function installCodexPlusPluginMarketPlugin(source, id) {
+    const key = `${source}:${id}`;
+    if (codexPlusPluginMarketState.jobs[key]?.busy) return;
+    const plugin = codexPlusPluginMarketCatalog(source).plugins.find((item) => item.id === id);
+    if (!plugin || (plugin.installed && !plugin.updateAvailable)) return;
+    const job = { busy: true, stage: "downloading", message: "正在下载所选插件…", failed: false, timer: null, polling: false };
+    codexPlusPluginMarketState.jobs[key] = job;
+    renderCodexPlusPluginMarket();
+    let result;
+    try {
+      result = await postJson("/plugin-market/install", { source, id });
+    } catch (error) {
+      result = { timeout: true, message: error?.message || "正在等待安装结果" };
+    }
+    if (result?.status === "ok" && result?.plugin && result?.busy !== true) {
+      job.busy = false;
+      job.message = result.message || "安装完成，重启 Codex 后加载插件。";
+      updateCodexPlusPluginMarketInstalled(source, result.plugin);
+    } else if (result?.status === "failed" && !result?.timeout && result?.busy !== true && !/超时|timeout/i.test(result.message || "")) {
+      job.busy = false;
+      job.failed = true;
+      job.message = result.message || "安装失败";
+    } else {
+      job.stage = result?.stage || job.stage;
+      job.message = result?.message || "正在等待下载完成…";
+      scheduleCodexPlusPluginMarketInstallPoll(source, id);
+    }
+    renderCodexPlusPluginMarket();
+  }
+
+  function openCodexPlusPluginMarket() {
+    closeCodexPlusPage();
+    document.querySelectorAll('.codex-plus-modal-overlay, [data-codex-plus-dialog="true"]').forEach((node) => node.remove());
+    const overlay = document.createElement("div");
+    overlay.className = `${codexPlusPageClass} codex-plus-plugin-market-page`;
+    overlay.dataset.codexPlusPage = "true";
+    markCodexPlusExtensionNode(overlay, "builtin-plugin-market");
+    applyCodexPlusTheme(overlay);
+    applyCodexPlusZoom(overlay);
+    const state = codexPlusPluginMarketState;
+    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="CodeX 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
+      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">CodeX 插件市场</div></div>
+      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-plugin-market-panel" data-codex-plugin-market-panel="true">
+        <p class="codex-plus-plugin-intro">检索插件目录，选中后下载并安装。目录浏览仅获取索引，插件文件按需下载。</p>
+        <div class="codex-plus-plugin-toolbar">
+          <div class="codex-plus-plugin-sources" role="group" aria-label="插件来源"><button type="button" data-codex-plugin-source="public" aria-pressed="false">公开市场</button><button type="button" data-codex-plugin-source="full" aria-pressed="false">完整市场</button></div>
+          <button type="button" class="codex-plus-button" data-codex-plugin-refresh="true">刷新目录</button>
+        </div>
+        <div class="codex-plus-plugin-status" data-codex-plugin-source-note="true" hidden></div>
+        <div class="codex-plus-plugin-toolbar"><input type="search" class="codex-plus-plugin-search" data-codex-plugin-query="true" aria-label="搜索插件" placeholder="搜索插件名称、简介或标签" value="${escapeHtml(state.query)}"><label class="codex-plus-plugin-filter"><input type="checkbox" data-codex-plugin-installed="true" ${state.installedOnly ? "checked" : ""}>仅已安装</label></div>
+        <div class="codex-plus-plugin-status" data-codex-plugin-market-status="true" role="status" aria-live="polite"></div>
+        <div class="codex-plus-plugin-results" data-codex-plugin-results="true" role="list" aria-label="插件结果"></div>
+        <div class="codex-plus-plugin-pagination"><span data-codex-plugin-result-count="true"></span><button type="button" class="codex-plus-button" data-codex-plugin-page="previous">上一页</button><button type="button" class="codex-plus-button" data-codex-plugin-page="next">下一页</button></div>
+      </div></div></div>`;
+    overlay.addEventListener("input", (event) => {
+      if (!event.target?.matches?.("[data-codex-plugin-query]")) return;
+      state.query = event.target.value;
+      state.page = 1;
+      renderCodexPlusPluginMarket();
+    });
+    overlay.addEventListener("change", (event) => {
+      if (!event.target?.matches?.("[data-codex-plugin-installed]")) return;
+      state.installedOnly = event.target.checked;
+      state.page = 1;
+      renderCodexPlusPluginMarket();
+    });
+    overlay.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const source = target?.closest("[data-codex-plugin-source]");
+      if (source) {
+        state.source = source.dataset.codexPluginSource === "full" ? "full" : "public";
+        state.page = 1;
+        void loadCodexPlusPluginMarket(state.source);
+        return;
+      }
+      if (target?.closest("[data-codex-plugin-refresh]")) {
+        void loadCodexPlusPluginMarket(state.source, true);
+        return;
+      }
+      const install = target?.closest("[data-codex-plugin-install]");
+      if (install && !install.disabled) {
+        void installCodexPlusPluginMarketPlugin(state.source, install.dataset.codexPluginInstall);
+        return;
+      }
+      const page = target?.closest("[data-codex-plugin-page]");
+      if (page && !page.disabled) {
+        state.page += page.dataset.codexPluginPage === "next" ? 1 : -1;
+        renderCodexPlusPluginMarket();
+        overlay.querySelector(".codex-plus-modal-body")?.scrollTo?.({ top: 0 });
+      }
+    });
+    document.body.appendChild(overlay);
+    positionCodexPlusPage(overlay);
+    document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {
+      node.removeAttribute("data-codex-plus-ext-rail-active");
+      const button = node.querySelector("button") || node;
+      button.dataset.active = "false";
+      button.removeAttribute("data-selected");
+      button.removeAttribute("aria-current");
+    });
+    setCodexPlusSidebarNavActive(true, "plugin-market");
+    // 拓展页面可能留下捕获旧 overlay 的 resize 回调，重开后必须改为查询当前 DOM。
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
+    window.addEventListener("resize", window.__codexPlusPageResizeHandler);
+    renderCodexPlusPluginMarket();
+    void loadCodexPlusPluginMarket(state.source);
+    Object.entries(state.jobs).forEach(([key, job]) => {
+      if (!job.busy) return;
+      const colon = key.indexOf(":");
+      scheduleCodexPlusPluginMarketInstallPoll(key.slice(0, colon), key.slice(colon + 1));
+    });
+  }
+  /**
+   * 复用原生插件页面：仅接管带独立索引标记的详情与安装，其他插件仍走原接口。
+   * 当前验证的传输有 client.sendRequest、fetch envelope 和 mcp-request envelope。
+   * 安装请求只发一次；桥接超时后查询后台任务，不能回落到原生 plugin/install。
+   */
+  const codexPlusPluginNativeVersion = "1";
+  const codexPlusPluginNativeState = window.__codexPlusPluginNativeState || {
+    bypass: Symbol("codex-plus-plugin-native-bypass"), requests: new Map(), synthetic: new WeakSet(),
+    ids: new Map(), catalogs: new Map(), installJobs: new Map(),
+  };
+  window.__codexPlusPluginNativeState = codexPlusPluginNativeState;
+  const codexPlusPluginNativeBypass = codexPlusPluginNativeState.bypass;
+  const codexPlusPluginNativeRequests = codexPlusPluginNativeState.requests;
+  const codexPlusPluginNativeSyntheticMessages = codexPlusPluginNativeState.synthetic;
+  const codexPlusPluginNativeIds = codexPlusPluginNativeState.ids;
+  const codexPlusPluginNativeCatalogs = codexPlusPluginNativeState.catalogs;
+  const codexPlusPluginNativeInstallJobs = codexPlusPluginNativeState.installJobs;
+
+  function codexPlusPluginNativeOperation(method, params, hostId) {
+    const wrapped = String(method || "") === "send-cli-request-for-host";
+    const requestParams = wrapped ? params?.params || {} : params || {};
+    const hosts = [hostId, params?.hostId, wrapped ? requestParams?.hostId : null].filter((value) => value != null);
+    return {
+      method: appServerModelRequestMethod(String(method || ""), params),
+      params: requestParams,
+      hostId: hosts.find((value) => value !== "local") ?? hosts[0],
+    };
+  }
+
+  function codexPlusPluginNativeSource(params) {
+    const path = String(params?.marketplacePath || "").replace(/\\/g, "/");
+    const pathMatch = /(?:^|\/)codex-plus-plugin-market\/virtual-(public|full)\/\.agents\/plugins\/marketplace\.json$/.exec(path);
+    if (pathMatch) return pathMatch[1];
+    const name = String(params?.remoteMarketplaceName || params?.localMarketplaceName || "");
+    const nameMatch = /^codex-plus-index-(public|full)$/.exec(name);
+    return nameMatch ? nameMatch[1] : "";
+  }
+
+  function codexPlusPluginNativeLocal(operation) {
+    return operation.hostId == null || operation.hostId === "local";
+  }
+
+  function codexPlusPluginNativeListAllowed(operation) {
+    if (!codexPlusPluginNativeLocal(operation)) return false;
+    if (operation.method === "installed-plugins") return true;
+    if (operation.method !== "list-plugins") return false;
+    const kinds = operation.params?.marketplaceKinds;
+    return !Array.isArray(kinds) || kinds.length === 0 || kinds.includes("local");
+  }
+
+  function codexPlusPluginNativeRemember(result) {
+    const marketplaces = result?.marketplaces;
+    if (!Array.isArray(marketplaces)) return;
+    marketplaces.forEach((market) => {
+      const source = codexPlusPluginNativeSource({ marketplacePath: market.path, localMarketplaceName: market.name });
+      if (!source || !Array.isArray(market.plugins)) return;
+      market.plugins.forEach((plugin) => {
+        if (typeof plugin?.name === "string" && typeof plugin?.codexPlusIndexId === "string") {
+          codexPlusPluginNativeIds.set(`${source}:${plugin.name}`, plugin.codexPlusIndexId);
+        }
+      });
+    });
+  }
+
+  async function codexPlusPluginNativeBackend(method, params, source) {
+    let result;
+    try {
+      result = await postJson("/plugin-market/native", { method, params: params || {}, ...(source ? { source } : {}) });
+    } catch (error) {
+      // 传输中断不能证明后台未接到请求；安装提交后的异常要查询原任务。
+      const failure = error instanceof Error ? error : new Error(String(error));
+      failure.outcomeUnknown = true;
+      failure.timeout = /timeout|timed out|超时|deadline/i.test(failure.message);
+      throw failure;
+    }
+    if (!result || typeof result !== "object" || result.status === "failed") {
+      const error = new Error(result?.message || "CodeX 插件市场请求失败");
+      error.timeout = result?.timeout === true || /timeout|timed out|超时/i.test(error.message);
+      throw error;
+    }
+    return result;
+  }
+
+  async function codexPlusPluginNativeCatalog(operation) {
+    const key = operation.method;
+    const now = Date.now();
+    const cached = codexPlusPluginNativeCatalogs.get(key);
+    const ttl = key === "installed-plugins" ? 1000 : 60_000;
+    if (cached?.promise) return JSON.parse(JSON.stringify(await cached.promise));
+    if (cached?.value && !operation.params?.forceRefetch && now - cached.at < ttl) {
+      return JSON.parse(JSON.stringify(cached.value));
+    }
+    const entry = { at: now, value: null, promise: null };
+    const promise = codexPlusPluginNativeBackend(operation.method, operation.params).then((result) => {
+      if (!Array.isArray(result.marketplaces)) throw new Error("CodeX 插件市场列表格式错误");
+      codexPlusPluginNativeRemember(result);
+      entry.value = result;
+      entry.at = Date.now();
+      return result;
+    }).finally(() => { entry.promise = null; });
+    entry.promise = promise;
+    codexPlusPluginNativeCatalogs.set(key, entry);
+    return JSON.parse(JSON.stringify(await promise));
+  }
+
+  function codexPlusPluginNativeMerge(original, extra, method) {
+    const base = original && typeof original === "object" ? original : {};
+    const managedIds = new Set((extra?.marketplaces || []).flatMap((market) =>
+      codexPlusPluginNativeSource({ marketplacePath: market.path, localMarketplaceName: market.name })
+        ? (market.plugins || []).map((plugin) => plugin.id) : []));
+    const markets = Array.isArray(base.marketplaces) ? base.marketplaces.map((market) => {
+      if (!/^codex-plus-plugin-market-[a-f0-9]{12}$/.test(market.name || "") || !Array.isArray(market.plugins)) return market;
+      // 已安装目录也会从原生本地市场返回；只消除我们自己 namespace 内同 id 的重复。
+      return { ...market, plugins: market.plugins.filter((plugin) => !managedIds.has(plugin.id)) };
+    }) : [];
+    for (const market of extra?.marketplaces || []) {
+      const existing = markets.find((item) => item.name === market.name && item.path === market.path);
+      if (!existing) {
+        markets.push(market);
+      } else {
+        const ids = new Set((existing.plugins || []).map((plugin) => plugin.id));
+        existing.plugins = [...(existing.plugins || []), ...(market.plugins || []).filter((plugin) => !ids.has(plugin.id))];
+      }
+    }
+    const result = {
+      ...base, marketplaces: markets,
+      marketplaceLoadErrors: [...(Array.isArray(base.marketplaceLoadErrors) ? base.marketplaceLoadErrors : []), ...(extra?.marketplaceLoadErrors || [])],
+      __codexPlusIndexMerged: true,
+    };
+    if (method === "list-plugins") result.featuredPluginIds = [...new Set([...(base.featuredPluginIds || []), ...(extra?.featuredPluginIds || [])])];
+    codexPlusPluginNativeRemember(result);
+    return result;
+  }
+
+  async function codexPlusPluginNativeExtend(operation, original) {
+    if (original?.__codexPlusIndexMerged) return original;
+    try {
+      return codexPlusPluginNativeMerge(original, await codexPlusPluginNativeCatalog(operation), operation.method);
+    } catch (error) {
+      // 自定义市场暂时离线时保留原生列表，不能把系统插件清空。
+      const fallbackPath = codexPlusIsWindowsPlatform ? "C:\\codex-plus-plugin-market" : "/codex-plus-plugin-market";
+      return codexPlusPluginNativeMerge(original, { marketplaceLoadErrors: [{ marketplacePath: fallbackPath, message: error?.message || "CodeX 插件市场暂时不可用" }] }, operation.method);
+    }
+  }
+
+  function codexPlusPluginNativeInvalidate() {
+    codexPlusPluginNativeCatalogs.clear();
+    clearPluginMarketplaceQueryCache();
+    showToast("插件已安装，新开聊天或重启 Codex 后加载。");
+  }
+
+  async function codexPlusPluginNativeManaged(operation, source) {
+    if (!codexPlusPluginNativeLocal(operation)) throw new Error("CodeX 插件市场目前仅支持本机安装，请切换到本机。");
+    if (operation.method === "read-plugin") {
+      const result = await codexPlusPluginNativeBackend(operation.method, operation.params, source);
+      const summary = result?.plugin?.summary;
+      if (typeof summary?.codexPlusIndexId === "string") codexPlusPluginNativeIds.set(`${source}:${operation.params.pluginName}`, summary.codexPlusIndexId);
+      return result;
+    }
+    const key = `${source}:${operation.params.pluginName || ""}`;
+    if (codexPlusPluginNativeInstallJobs.has(key)) return await codexPlusPluginNativeInstallJobs.get(key);
+    const promise = (async () => {
+      let id = codexPlusPluginNativeIds.get(key);
+      if (!id) {
+        // 未浏览列表也可能直接进入详情，先获取真实索引 id；这一步不会下载插件文件。
+        const detail = await codexPlusPluginNativeBackend("read-plugin", operation.params, source);
+        id = detail?.plugin?.summary?.codexPlusIndexId;
+        if (typeof id !== "string" || !id) throw new Error("插件索引缺少安装标识，请刷新目录后重试。");
+        codexPlusPluginNativeIds.set(key, id);
+      }
+      try {
+        const result = await codexPlusPluginNativeBackend("install-plugin", operation.params, source);
+        if (result?.authPolicy && Array.isArray(result.appsNeedingAuth)) {
+          codexPlusPluginNativeInvalidate();
+          return result;
+        }
+        throw new Error("正在等待插件安装结果");
+      } catch (error) {
+        if (!error?.timeout && !error?.outcomeUnknown && !/正在等待/.test(error?.message || "")) throw error;
+      }
+      // 安装已经提交，后续只能读取同一后台任务，绝不能再次提交或发给原生接口。
+      const deadline = Date.now() + 10 * 60_000;
+      let communicationFailures = 0;
+      const outcomeUnknown = () => new Error("暂时无法确认安装结果，请刷新已安装目录查看；后台任务可能仍在运行。");
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        let status;
+        try { status = await postJson("/plugin-market/install-status", { source, id }); } catch {
+          if (++communicationFailures >= 5) throw outcomeUnknown();
+          continue;
+        }
+        if (status?.busy === true) { communicationFailures = 0; continue; }
+        if (status?.busy === false && status.stage === "complete" && status.nativeResult?.authPolicy && Array.isArray(status.nativeResult.appsNeedingAuth)) {
+          codexPlusPluginNativeInvalidate();
+          return status.nativeResult;
+        }
+        if (status?.busy === false) throw new Error(status.message || "插件安装未完成，请重试。");
+        if (++communicationFailures >= 5) throw outcomeUnknown();
+      }
+      throw outcomeUnknown();
+    })().finally(() => { codexPlusPluginNativeInstallJobs.delete(key); });
+    codexPlusPluginNativeInstallJobs.set(key, promise);
+    return await promise;
+  }
+
+  /** 返回 null 表示原接口继续执行；返回 Promise 表示已由本层接管。 */
+  function codexPlusPluginNativeInterceptClient(method, params, options, original, hostId) {
+    if (!codexPluginMarketplacePatchEnabled() || options?.[codexPlusPluginNativeBypass]) return null;
+    const operation = codexPlusPluginNativeOperation(method, params, hostId);
+    const source = codexPlusPluginNativeSource(operation.params);
+    if (source && ["read-plugin", "install-plugin"].includes(operation.method)) return codexPlusPluginNativeManaged(operation, source);
+    if (!codexPlusPluginNativeListAllowed(operation)) return null;
+    return (async () => {
+      let result;
+      try {
+        result = await original({ ...(options || {}), [codexPlusPluginNativeBypass]: true });
+      } catch (error) {
+        if (!pluginMarketplaceRemoteAuthError(error)) throw error;
+        result = { marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] };
+      }
+      return await codexPlusPluginNativeExtend(operation, result);
+    })();
+  }
+
+  function codexPlusPluginNativeEnvelope(message) {
+    if (!message || typeof message !== "object") return null;
+    if (message.type === "mcp-request" && message.request?.id != null) {
+      return {
+        transport: "mcp", id: message.request.id,
+        key: `mcp:${message.hostId || "local"}:${message.request.id}`,
+        operation: codexPlusPluginNativeOperation(message.request.method, message.request.params, message.hostId),
+        request: message,
+      };
+    }
+    if (message.type === "fetch" && message.requestId != null && typeof message.url === "string") {
+      let params = message.body || {};
+      if (typeof params === "string") {
+        try { params = JSON.parse(params); } catch { return null; }
+      }
+      return {
+        transport: "fetch", id: message.requestId, key: `fetch:${message.requestId}`,
+        operation: codexPlusPluginNativeOperation(message.url, params, message.hostId), request: message,
+      };
+    }
+    return null;
+  }
+
+  function codexPlusPluginNativeDeliver(data) {
+    codexPlusPluginNativeSyntheticMessages.add(data);
+    window.dispatchEvent(new MessageEvent("message", { data, source: window, origin: window.location.origin }));
+  }
+
+  function codexPlusPluginNativeReply(envelope, result, error) {
+    if (envelope.transport === "fetch") {
+      codexPlusPluginNativeDeliver({ type: "fetch-response", requestId: envelope.id, responseType: error ? "error" : "success", status: error ? 500 : 200,
+        headers: { "content-type": "application/json" }, ...(error ? { error: error.message || String(error) } : { bodyJsonString: JSON.stringify(result) }) });
+    } else {
+      codexPlusPluginNativeDeliver({ type: "mcp-response", hostId: envelope.request.hostId || "local", message: { id: envelope.id,
+        ...(error ? { error: { code: -32000, message: error.message || String(error) } } : { result }) } });
+    }
+  }
+
+  function codexPlusPluginNativeInterceptOutgoing(message) {
+    if (!codexPluginMarketplacePatchEnabled()) return false;
+    const envelope = codexPlusPluginNativeEnvelope(message);
+    if (!envelope) return false;
+    const source = codexPlusPluginNativeSource(envelope.operation.params);
+    if (source && ["read-plugin", "install-plugin"].includes(envelope.operation.method)) {
+      void codexPlusPluginNativeManaged(envelope.operation, source).then(
+        (result) => codexPlusPluginNativeReply(envelope, result),
+        (error) => codexPlusPluginNativeReply(envelope, null, error));
+      return true;
+    }
+    if (codexPlusPluginNativeListAllowed(envelope.operation)) {
+      codexPlusPluginNativeRequests.set(envelope.key, envelope);
+      // 只跟踪当前原生请求；超时不自发重发任何请求。
+      setTimeout(() => codexPlusPluginNativeRequests.delete(envelope.key), 90_000);
+    }
+    return false;
+  }
+
+  function codexPlusPluginNativeSuppressForwarded(message) {
+    if (!codexPluginMarketplacePatchEnabled()) return false;
+    const envelope = codexPlusPluginNativeEnvelope(message);
+    return Boolean(envelope && codexPlusPluginNativeSource(envelope.operation.params)
+      && ["read-plugin", "install-plugin"].includes(envelope.operation.method));
+  }
+
+  function codexPlusPluginNativeInterceptIncoming(data) {
+    if (!data || codexPlusPluginNativeSyntheticMessages.has(data)) return false;
+    const fetchResponse = data.type === "fetch-response";
+    const mcpResponse = data.type === "mcp-response";
+    if (!fetchResponse && !mcpResponse) return false;
+    const key = fetchResponse ? `fetch:${data.requestId}` : `mcp:${data.hostId || "local"}:${data.message?.id}`;
+    const envelope = codexPlusPluginNativeRequests.get(key);
+    if (!envelope) return false;
+    codexPlusPluginNativeRequests.delete(key);
+    void (async () => {
+      let payload;
+      let nativeError;
+      let wrapped = false;
+      if (fetchResponse) {
+        if (data.responseType === "error" || Number(data.status) >= 400) nativeError = data.error || data.bodyJsonString || "原生插件接口请求失败";
+        try { payload = "body" in data ? data.body : JSON.parse(data.bodyJsonString || "{}"); } catch {
+          codexPlusPluginNativeDeliver(data);
+          return;
+        }
+        if (payload?.error) nativeError = payload.error;
+        wrapped = payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "id");
+      } else {
+        payload = data.message?.result;
+        nativeError = data.message?.error;
+      }
+      if (nativeError && !pluginMarketplaceRemoteAuthError(nativeError)) {
+        codexPlusPluginNativeDeliver(data);
+        return;
+      }
+      const original = nativeError ? {} : wrapped ? payload.result : payload;
+      const merged = await codexPlusPluginNativeExtend(envelope.operation, original);
+      if (fetchResponse) {
+        const response = wrapped ? { ...payload, result: merged } : merged;
+        if (wrapped) delete response.error;
+        const next = { ...data, responseType: "success", status: 200, bodyJsonString: JSON.stringify(response) };
+        delete next.body;
+        delete next.error;
+        codexPlusPluginNativeDeliver(next);
+      } else {
+        const message = { ...data.message, result: merged };
+        delete message.error;
+        codexPlusPluginNativeDeliver({ ...data, message });
+      }
+    })().catch((error) => codexPlusPluginNativeReply(envelope, null, error));
+    return true;
+  }
+
+  function installCodexPlusPluginNativeTransportListener() {
+    if (window.__codexPlusPluginNativeResponseListener) window.removeEventListener("message", window.__codexPlusPluginNativeResponseListener, true);
+    window.__codexPlusPluginNativeResponseListener = (event) => {
+      if (event.source != null && event.source !== window) return;
+      if (codexPlusPluginNativeInterceptIncoming(event.data)) event.stopImmediatePropagation();
+    };
+    window.addEventListener("message", window.__codexPlusPluginNativeResponseListener, true);
+  }
+
+  function ensureCodexPlusPluginNativeTransportReinjection() {
+    if (!codexPluginMarketplacePatchEnabled()) return;
+    const bridge = window.electronBridge;
+    if (bridge?.__codexPluginMarketplaceOriginalSendMessageFromView
+        && bridge.__codexPluginMarketplaceBridgePatch !== codexPluginMarketplaceUnlockVersion
+        && bridge.sendMessageFromView?.__codexPlusPluginNativeTransport !== codexPlusPluginNativeVersion) {
+      const original = bridge.sendMessageFromView.bind(bridge);
+      const patched = (message) => codexPlusPluginNativeInterceptOutgoing(message) ? Promise.resolve() : original(message);
+      patched.__codexPlusPluginNativeTransport = codexPlusPluginNativeVersion;
+      bridge.sendMessageFromView = patched;
+    }
+    if (window.__codexPluginMarketplaceOriginalDispatchEvent
+        && window.__codexPluginMarketplaceWindowEventPatch !== codexPluginMarketplaceUnlockVersion
+        && window.dispatchEvent?.__codexPlusPluginNativeTransport !== codexPlusPluginNativeVersion) {
+      const original = window.dispatchEvent.bind(window);
+      const patched = (event) => {
+        if (event?.type === "codex-message-from-view") {
+          if (event.__codexForwardedViaBridge && codexPlusPluginNativeSuppressForwarded(event.detail)) return true;
+          if (!event.__codexForwardedViaBridge && codexPlusPluginNativeInterceptOutgoing(event.detail)) return true;
+        }
+        if (event?.type === "message" && codexPlusPluginNativeInterceptIncoming(event.data)) return true;
+        return original(event);
+      };
+      patched.__codexPlusPluginNativeTransport = codexPlusPluginNativeVersion;
+      window.dispatchEvent = patched;
+    }
+  }
+
+  function openCodexPlusNativePluginMarket() {
+    closeCodexPlusPage();
+    clearPluginMarketplaceQueryCache();
+    const destinations = Array.from(document.querySelectorAll('[data-sidebar-destination], aside.app-shell-left-panel nav button'));
+    const native = destinations.find((button) => {
+      if (button.closest('[data-codex-plus-ext], [data-codex-plus-rail]')) return false;
+      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
+      return button.getAttribute("data-sidebar-destination") === "plugins" || /^(插件|Plugins)$/i.test(label);
+    });
+    if (native) {
+      native.click();
+      return;
+    }
+    // 没有可验证的原生入口时打开管理工具，不猜测内部路由或跳转外部浏览器。
+    void postJson("/manager/open", { page: "pluginMarket" });
+  }
   async function setCodexGlobalState(key, value) {
     return await codexStateCall("set-global-state", { params: { key, value } });
   }
@@ -8190,12 +8963,14 @@
   }
 
   function appServerModelRequestMethod(method, params) {
-    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
+    if (method === "send-cli-request-for-host" && params?.method) return appServerModelRequestMethod(String(params.method), params.params);
     if (method === "vscode://codex/list-plugins") return "list-plugins";
     if (method === "vscode://codex/plugin/install") return "install-plugin";
     if (method === "vscode://codex/plugin/uninstall") return "uninstall-plugin";
     if (method === "plugin/list") return "list-plugins";
     if (method === "plugin/install") return "install-plugin";
+    if (method === "plugin/read") return "read-plugin";
+    if (method === "plugin/installed") return "installed-plugins";
     if (method === "plugin/uninstall") return "uninstall-plugin";
     return String(method || "");
   }
@@ -8289,6 +9064,9 @@
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest(method, params, nextOptions), client.hostId);
+      if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
@@ -8456,6 +9234,7 @@
     function installCodexAppServerClientPrototypePatch() {
     if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
     const wanted = codexPlusModelUnlockEnabled()
+      || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
       || codexPlusSettings().serviceTierControls;
     if (!wanted) return false;
@@ -8482,6 +9261,9 @@
     proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
     proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const client = this;
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest.call(client, method, params, nextOptions), client.hostId);
+      if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
@@ -8638,6 +9420,7 @@
 
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
+        || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
         || codexPlusSettings().serviceTierControls) {
       installAppServerModelRequestPatch();

@@ -93,6 +93,54 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn script_market_install(&self, _payload: Value) -> anyhow::Result<Value> {
         anyhow::bail!("script market is unavailable")
     }
+    /// 独立插件市场只读取索引，安装时才获取目标插件。
+    async fn plugin_market_list(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::list_plugins(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("public"),
+            payload
+                .get("refresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        )
+        .await
+    }
+    async fn plugin_market_install(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::install_plugin(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("public"),
+            payload.get("id").and_then(Value::as_str).unwrap_or_default(),
+        )
+        .await
+    }
+    async fn plugin_market_install_status(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::install_status(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("public"),
+            payload.get("id").and_then(Value::as_str).unwrap_or_default(),
+        )
+    }
+    /// 注入层适配原生插件页面的列表、详情与安装协议。
+    async fn plugin_market_native(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::native_request(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            payload.get("params").cloned().unwrap_or_else(|| json!({})),
+        )
+        .await
+    }
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self, payload: Value) -> anyhow::Result<Value>;
     async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
@@ -216,6 +264,10 @@ pub async fn handle_bridge_request(
         "/share/create" => ctx.runtime.create_share(payload.clone()).await,
         "/script-market/list" => ctx.runtime.script_market_list().await,
         "/script-market/install" => ctx.runtime.script_market_install(payload.clone()).await,
+        "/plugin-market/list" => ctx.runtime.plugin_market_list(payload.clone()).await,
+        "/plugin-market/install" => ctx.runtime.plugin_market_install(payload.clone()).await,
+        "/plugin-market/install-status" => ctx.runtime.plugin_market_install_status(payload.clone()).await,
+        "/plugin-market/native" => ctx.runtime.plugin_market_native(payload.clone()).await,
         "/stepwise/settings" => stepwise_settings_value(ctx.settings.get_settings().await),
         "/stepwise/generate" => {
             stepwise_generate_value(ctx.settings.get_settings().await, payload.clone()).await

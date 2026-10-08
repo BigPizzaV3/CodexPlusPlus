@@ -33,6 +33,8 @@ pub mod native_browser;
 pub mod native_browser_connection;
 pub mod paths;
 pub mod ports;
+// 独立插件市场按需下载安装，不调用原生授权安装流程。
+pub mod plugin_market;
 pub mod protocol_proxy;
 pub mod provider_import;
 pub mod proxy;

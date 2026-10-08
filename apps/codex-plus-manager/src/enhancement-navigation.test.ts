@@ -20,3 +20,8 @@ test("enhancement links preserve the requested section", () => {
 test("ordinary manager settings links still open settings", () => {
   assert.deepEqual(managerNavigationDestination({ page: "settings" }), { route: "settings", section: null });
 });
+
+test("plugin market navigation opens its own page without an enhancement section", () => {
+  assert.deepEqual(managerNavigationDestination({ page: "pluginMarket" }), { route: "pluginMarket", section: null });
+  assert.deepEqual(managerNavigationDestination({ page: "pluginMarket", section: "dictation" }), { route: "pluginMarket", section: null });
+});

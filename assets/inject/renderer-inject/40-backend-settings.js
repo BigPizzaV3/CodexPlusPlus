@@ -790,6 +790,7 @@
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
     if (tab === codexPlusExtensionsTab) return "extensions";
     if (tab === codexPlusSponsorTab) return "sponsor";
+    if (tab === codexPlusPluginMarketTab) return "plugin-market";
     return "home";
   }
 
@@ -801,10 +802,17 @@
       button.dataset.active = String(on);
       button.setAttribute("aria-current", on ? "page" : "false");
     }
+    const pluginButton = document.getElementById(codexPlusSidebarPluginMarketId)?.querySelector("button");
+    if (pluginButton) {
+      const on = Boolean(active) && entry === "plugin-market";
+      pluginButton.dataset.active = String(on);
+      pluginButton.setAttribute("aria-current", on ? "page" : "false");
+    }
     [
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
       [codexPlusRailSponsorId, "sponsor"],
+      [codexPlusRailPluginMarketId, "plugin-market"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -1462,7 +1470,7 @@
       navigation.dataset.codexPlusSidebarNavigationListener = "true";
       navigation.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
+        if (target?.closest(`#${codexPlusSidebarNavId}, #${codexPlusSidebarPluginMarketId}`)) return;
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
@@ -1498,16 +1506,18 @@
     }
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
+    installCodexPlusPluginMarketSidebarNavigation(parent, wrapper, insertionButton);
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
-    setCodexPlusSidebarNavActive(active);
+    setCodexPlusSidebarNavActive(active, codexPlusActiveEntry() || "home");
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
   }
 
   function detachCodexPlusSidebarNavigation() {
     document.getElementById(codexPlusSidebarNavId)?.remove();
+    document.getElementById(codexPlusSidebarPluginMarketId)?.remove();
   }
 
   /**
@@ -1597,7 +1607,7 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailPluginMarketId}`)) return;
         // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
         // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
         if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
@@ -1617,6 +1627,7 @@
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
+      { id: codexPlusRailPluginMarketId, label: "CodeX 插件市场", iconMarkup: codexPlusPluginMarketIconMarkup(), withStatus: false, onActivate: openCodexPlusNativePluginMarket },
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
@@ -1631,6 +1642,7 @@
         wrapper?.remove();
         wrapper = createCodexPlusRailButton({ ...spec, template });
         if (!wrapper) return;
+        if (spec.id === codexPlusRailPluginMarketId) markCodexPlusExtensionNode(wrapper, "builtin-plugin-market");
       }
       // 顺序：Codex++ 在前，「拓展」在后；紧跟在 primary 区锚点后面。
       if (cursor?.nextSibling) {
