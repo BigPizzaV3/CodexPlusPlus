@@ -2052,6 +2052,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 }))
             }),
         );
+        let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
         let eligible = wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
@@ -2064,7 +2065,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             )?;
             if eligible {
                 key = Some(crate::responses_exec_transport::cache_key(
-                    &relay.id, &builder.build()?, &upstream_body,
+                    &relay.id, &builder.build()?, &upstream_body, &user_agent,
                 ));
             }
             if key.as_ref().is_some_and(crate::responses_exec_transport::cached)
@@ -2142,7 +2143,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                                 original_user_agent, beta_features, session_headers, official_credential.as_ref(),
                             )?;
                             key = Some(crate::responses_exec_transport::cache_key(
-                                &relay.id, &builder.build()?, &request_json,
+                                &relay.id, &builder.build()?, &request_json, &user_agent,
                             ));
                         }
                         send_responses_upstream_request(
@@ -2203,12 +2204,21 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 
         if eligible && !exec_adapted && !exec_negotiation_used && status_code == 400 {
             let retry = async {
+                let first_retry_after = upstream
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .map(std::time::Duration::from_secs);
                 let (inspected, rejected) =
                     crate::responses_exec_transport::inspect_rejection(upstream, &upstream_body).await?;
                 upstream = inspected;
                 if rejected
                     && let Ok(adapted) = crate::responses_exec::adapt_request(upstream_body.clone())
                 {
+                    if let Some(delay) = first_retry_after {
+                        tokio::time::sleep(delay).await;
+                    }
                     exec_negotiation_used = true;
                     exec_adapted = true;
                     let _ = crate::diagnostic_log::append_diagnostic_log(

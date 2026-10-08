@@ -21,7 +21,12 @@ fn cache() -> &'static Mutex<VecDeque<(CacheKey, Instant)>> {
     CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-pub(crate) fn cache_key(relay_id: &str, request: &reqwest::Request, body: &Value) -> CacheKey {
+pub(crate) fn cache_key(
+    relay_id: &str,
+    request: &reqwest::Request,
+    body: &Value,
+    user_agent: &str,
+) -> CacheKey {
     let mut hash = Sha256::new();
     let mut field = |bytes: &[u8]| {
         hash.update((bytes.len() as u64).to_be_bytes());
@@ -40,6 +45,7 @@ pub(crate) fn cache_key(relay_id: &str, request: &reqwest::Request, body: &Value
             .unwrap_or_default()
             .as_bytes(),
     );
+    field(user_agent.as_bytes());
     let mut headers = request.headers().iter().collect::<Vec<_>>();
     headers.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
     for (name, value) in headers {
@@ -203,20 +209,47 @@ mod tests {
             .header("x-tenant", "one")
             .build()
             .unwrap();
-        let key = cache_key("relay", &first, &body);
+        let key = cache_key("relay", &first, &body, "ua");
         let second = client
             .post("http://localhost/v1/responses")
             .header("authorization", "Bearer first")
             .header("x-tenant", "two")
             .build()
             .unwrap();
-        assert_ne!(key, cache_key("relay", &second, &body));
-        assert_ne!(key, cache_key("other-relay", &first, &body));
+        assert_ne!(key, cache_key("relay", &second, &body, "ua"));
+        assert_ne!(key, cache_key("other-relay", &first, &body, "ua"));
         let mut changed = body.clone();
         changed["model"] = serde_json::json!("two");
-        assert_ne!(key, cache_key("relay", &first, &changed));
+        assert_ne!(key, cache_key("relay", &first, &changed, "ua"));
         changed["tools"] = serde_json::json!([]);
-        assert_ne!(key, cache_key("relay", &first, &changed));
+        assert_ne!(key, cache_key("relay", &first, &changed, "ua"));
+    }
+
+    #[test]
+    fn identity_includes_client_default_user_agent() {
+        let body = serde_json::json!({"model":"one","tools":[{"type":"custom","name":"exec"}]});
+        let first_client = reqwest::Client::builder()
+            .user_agent("ua-one")
+            .build()
+            .unwrap();
+        let second_client = reqwest::Client::builder()
+            .user_agent("ua-two")
+            .build()
+            .unwrap();
+        let first = first_client
+            .post("http://localhost/v1/responses")
+            .header("authorization", "Bearer same")
+            .build()
+            .unwrap();
+        let second = second_client
+            .post("http://localhost/v1/responses")
+            .header("authorization", "Bearer same")
+            .build()
+            .unwrap();
+        assert_ne!(
+            cache_key("relay", &first, &body, "ua-one"),
+            cache_key("relay", &second, &body, "ua-two")
+        );
     }
 
     #[test]
