@@ -309,6 +309,13 @@ pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
     let Some(items) = response.get_mut("output").and_then(Value::as_array_mut) else {
         return Ok(response);
     };
+    ensure!(
+        !items.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("custom_tool_call")
+                && item.get("name").and_then(Value::as_str) == Some(EXEC_TOOL_NAME)
+        }),
+        "adapted response contains unvalidated native exec input"
+    );
     let matching_call_ids = items
         .iter()
         .filter(|item| {
@@ -835,5 +842,17 @@ mod tests {
         native["input"][0]["metadata"] = json!({"item_id": "vendor-opaque"});
         let adapted = adapt_request(native).unwrap();
         assert_eq!(adapted["input"][0]["metadata"]["item_id"], "vendor-opaque");
+    }
+
+    #[test]
+    fn adapted_response_rejects_raw_custom_exec_even_without_function_calls() {
+        let response = json!({
+            "status": "completed",
+            "output": [{
+                "type": "custom_tool_call", "name": "exec",
+                "id": "ctc_1", "call_id": "call_1", "input": "unvalidated code"
+            }]
+        });
+        assert!(adapt_response(response).is_err());
     }
 }
