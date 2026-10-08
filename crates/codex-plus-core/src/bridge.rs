@@ -276,6 +276,191 @@ pub async fn add_script_to_new_documents(
         .await
 }
 
+/// 独立模式复用增强模式的 Query 发布逻辑；CDP 只响应设置请求，不轮询页面。
+const NATIVE_QUOTA_SETTINGS_BINDING: &str = "codexPlusNativeQuotaSettings";
+
+fn native_quota_settings() -> Value {
+    // 只传额度策略必需字段，不能把 Key、configContents 或 authContents 放进页面。
+    let Ok(settings) = crate::settings::SettingsStore::default().load() else {
+        return Value::Null;
+    };
+    let profile = settings.active_relay_profile();
+    json!({
+        "relayProfilesEnabled": settings.relay_profiles_enabled,
+        "activeRelayId": profile.id,
+        "relayProfiles": [{
+            "id": profile.id,
+            "relayMode": profile.relay_mode,
+            "officialMixApiKey": profile.official_mix_api_key,
+        }],
+    })
+}
+
+fn native_quota_bootstrap_script() -> String {
+    format!(
+        "{}\n{}",
+        crate::assets::api_quota_gate_script(),
+        r#"
+(() => {
+  if (window.__codexPlusNativeQuotaBootstrap) {
+    window.__codexPlusNativeQuotaBootstrap.request();
+    return;
+  }
+  let sequence = 0;
+  let timer = null;
+  const state = {
+    request() {
+      const seq = ++sequence;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (seq === sequence) window.__codexPlusApiQuotaGate.installNative(null);
+      }, 5000);
+      try {
+        window.codexPlusNativeQuotaSettings(JSON.stringify({ sequence: seq }));
+      } catch {
+        clearTimeout(timer);
+        window.__codexPlusApiQuotaGate.installNative(null);
+      }
+    },
+    accept(seq, settings) {
+      if (seq !== sequence) return;
+      clearTimeout(timer);
+      window.__codexPlusApiQuotaGate.installNative(settings);
+    },
+  };
+  window.__codexPlusNativeQuotaBootstrap = state;
+  window.addEventListener("focus", () => state.request());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") state.request();
+  });
+  document.addEventListener("DOMContentLoaded", () => state.request(), { once: true });
+  state.request();
+})();
+"#,
+    )
+}
+
+pub async fn supervise_isolated_api_quota_gate(debug_port: u16) {
+    let mut retry_delay = std::time::Duration::from_millis(500);
+    loop {
+        match install_isolated_api_quota_gate_session(debug_port).await {
+            Ok(()) => {
+                retry_delay = std::time::Duration::from_millis(500);
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.native_quota_gate_retry",
+                    json!({ "debug_port": debug_port, "error": error.to_string() }),
+                );
+            }
+        }
+        tokio::time::sleep(retry_delay).await;
+        if retry_delay < std::time::Duration::from_secs(5) {
+            retry_delay = retry_delay.saturating_mul(2);
+        }
+    }
+}
+
+async fn install_isolated_api_quota_gate_session(debug_port: u16) -> anyhow::Result<()> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    install_isolated_api_quota_gate_target_url(websocket_url).await
+}
+
+pub async fn install_isolated_api_quota_gate(websocket_url: &str) -> anyhow::Result<()> {
+    install_isolated_api_quota_gate_target_url(websocket_url).await
+}
+
+async fn install_isolated_api_quota_gate_target_url(websocket_url: &str) -> anyhow::Result<()> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    session
+        .send_command(next_message_id(), "Runtime.enable", json!({}))
+        .await?;
+    session
+        .send_command(
+            next_message_id(),
+            "Runtime.addBinding",
+            json!({ "name": NATIVE_QUOTA_SETTINGS_BINDING }),
+        )
+        .await?;
+    let script = native_quota_bootstrap_script();
+    let registration = session
+        .send_command(
+            next_message_id(),
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": script }),
+        )
+        .await?;
+    let identifier = registration.pointer("/result/identifier")
+        .and_then(Value::as_str)
+        .context("native quota new-document script was not registered")?
+        .to_string();
+    let initialized = session
+        .send_command(
+            next_message_id(),
+            "Runtime.evaluate",
+            runtime_evaluate_params(&script),
+        )
+        .await
+        .and_then(ensure_runtime_evaluate_succeeded);
+    if let Err(error) = initialized {
+        session.remove_registered_scripts(&[identifier]).await;
+        session.close().await;
+        return Err(error);
+    }
+
+    // binding 和新文档脚本归属于此会话，不能初始化后立即断开。
+    // 会话结束或断开时清理注册脚本并关闭。
+    let result = serve_native_quota_settings(&mut session).await;
+    session.remove_registered_scripts(&[identifier]).await;
+    session.close().await;
+    result
+}
+
+async fn serve_native_quota_settings<S>(session: &mut CdpSession<S>) -> anyhow::Result<()>
+where
+    S: SinkExt<Message>
+        + StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin
+        + Send,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    loop {
+        // send_command 等待响应时收到的 binding 事件也必须处理。
+        while let Some(event) = session.binding_calls.pop_front() {
+            if event.pointer("/params/name").and_then(Value::as_str)
+                != Some(NATIVE_QUOTA_SETTINGS_BINDING)
+            {
+                continue;
+            }
+            let Some(context_id) = event.pointer("/params/executionContextId")
+                .and_then(Value::as_u64) else { continue };
+            let Some(payload) = event.pointer("/params/payload")
+                .and_then(Value::as_str) else { continue };
+            let Ok(payload) = serde_json::from_str::<Value>(payload) else { continue };
+            let Some(sequence) = payload.get("sequence").and_then(Value::as_u64) else { continue };
+            let expression = format!(
+                "window.__codexPlusNativeQuotaBootstrap?.accept({}, {})",
+                sequence, native_quota_settings(),
+            );
+            let mut params = runtime_evaluate_params(&expression);
+            params["contextId"] = json!(context_id);
+            // 导航可能销毁发起请求的上下文；其下一份文档会重新请求。
+            let _ = session
+                .send_command(next_message_id(), "Runtime.evaluate", params)
+                .await;
+        }
+        if session.next_message().await?.is_none() {
+            return Ok(());
+        }
+    }
+}
+
 /// issue #2177：AppServerRequestClient 在 Codex 26.908+ 被藏进模块闭包且不再导出，
 /// 渲染层扫描无法触达，直接改写 dispatcher 又会撞上不可写的 RPC stub。
 /// 分两段接管：渲染层用纯文本定位算出 sendRequest 的断点坐标并放到
