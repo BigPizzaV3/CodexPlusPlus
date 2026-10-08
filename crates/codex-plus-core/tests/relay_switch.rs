@@ -177,7 +177,7 @@ base_url = "https://edited-a.example/v1"
     let original = BackendSettings {
         active_relay_id: "a".to_string(),
         relay_profiles: vec![
-            pure_profile("a", "https://a.example/v1", "sk-a"),
+            pure_profile("a", "https://edited-a.example/v1", "sk-a"),
             pure_profile("b", "https://b.example/v1", "sk-b"),
         ],
         ..BackendSettings::default()

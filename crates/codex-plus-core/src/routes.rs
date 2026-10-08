@@ -223,7 +223,13 @@ pub async fn handle_bridge_request(
         "/stepwise/test" => {
             stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
         }
-        "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
+        "/delete" => {
+            let session = session_from_payload(&payload);
+            match session.require_local_delete() {
+                Ok(()) => result_value(ctx.data.delete(session).await),
+                Err(error) => Err(error),
+            }
+        }
         "/undo" => {
             let undo_token = payload
                 .get("undo_token")
@@ -942,6 +948,23 @@ fn failed_from_error(payload: &Value, error: anyhow::Error) -> Value {
 }
 
 fn session_from_payload(payload: &Value) -> SessionRef {
+    let parse_host = |value: &Value| {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .map(ToString::to_string)
+    };
+    // 双名称不一致同样属于未知来源，不能通过优先读取某个字段放宽归属。
+    let host_id = match (payload.get("host_id"), payload.get("hostId")) {
+        (Some(left), Some(right)) => {
+            let left = parse_host(left);
+            let right = parse_host(right);
+            if left == right { left } else { None }
+        }
+        (Some(value), None) | (None, Some(value)) => parse_host(value),
+        _ => None,
+    };
     SessionRef {
         session_id: payload
             .get("session_id")
@@ -953,6 +976,7 @@ fn session_from_payload(payload: &Value) -> SessionRef {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        host_id,
     }
 }
 

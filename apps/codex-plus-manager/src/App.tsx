@@ -249,6 +249,7 @@ type BackendSettings = {
   codexExtraArgs: string[];
   dictation: DictationSettings;
   providerSyncEnabled: boolean;
+  ccsDbPath: string;
   providerSyncSavedProviders: string[];
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
@@ -628,7 +629,14 @@ type CcsProviderImport = {
 
 type CcsProvidersResult = CommandResult<{
   dbPath: string;
+  configuredDbPath: string;
+  fallbackReason?: string | null;
   providers: CcsProviderImport[];
+}>;
+
+type SkillInventoryResult = CommandResult<{
+  skills: Array<{ id: string; name: string; description: string; enabled: boolean; bundled: boolean }>;
+  codexSkillsDir: string;
 }>;
 
 type ProviderImportRequest = {
@@ -987,6 +995,7 @@ const defaultSettings: BackendSettings = {
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
   providerSyncEnabled: false,
+  ccsDbPath: "",
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
@@ -4458,6 +4467,35 @@ function RelayScreen({
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
+  const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
+  const [ccsPathSaving, setCcsPathSaving] = useState(false);
+  useEffect(() => setCcsDbPathDraft(normalized.ccsDbPath), [normalized.ccsDbPath]);
+  const saveCcsDbPath = async (path = ccsDbPathDraft) => {
+    setCcsPathSaving(true);
+    try {
+      const saved = await actions.saveSettingsValue({ ...normalized, ccsDbPath: path.trim() }, true);
+      if (saved) await actions.refreshCcsProviders();
+    } finally {
+      setCcsPathSaving(false);
+    }
+  };
+  const selectCcsDatabase = async () => {
+    try {
+      const selected = await open({
+        title: t("选择 cc-switch 数据库"),
+        multiple: false,
+        directory: false,
+        filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
+      });
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (path) {
+        setCcsDbPathDraft(path);
+        await saveCcsDbPath(path);
+      }
+    } catch (error) {
+      await actions.showMessage(t("cc-switch 导入"), stringifyError(error), "failed");
+    }
+  };
   const detailProfile = newProfileDraft || (detailProfileId
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
@@ -4607,8 +4645,16 @@ function RelayScreen({
               </Button>
               {thirdPartyImportOpen ? (
                 <div className="third-party-import-menu">
+                  <label>
+                    {t("cc-switch 数据库路径")}
+                    <Input value={ccsDbPathDraft} onChange={(event) => setCcsDbPathDraft(event.currentTarget.value)} placeholder={t("留空使用默认路径")} />
+                  </label>
+                  <button disabled={ccsPathSaving} onClick={() => void selectCcsDatabase()} type="button">{t("选择数据库")}</button>
+                  <button disabled={ccsPathSaving} onClick={() => void saveCcsDbPath()} type="button">{t("保存路径并刷新")}</button>
+                  {ccsProviders && isSuccessStatus(ccsProviders.status) ? <span className="text-xs break-all">{t("实际来源")}：{ccsProviders.dbPath}</span> : null}
+                  {ccsProviders?.fallbackReason ? <span className="text-xs break-all">{ccsProviders.fallbackReason}</span> : null}
                   <button
-                    disabled={!ccsProviders?.providers.length}
+                    disabled={ccsPathSaving || ccsDbPathDraft.trim() !== normalized.ccsDbPath || !ccsProviders?.providers.length}
                     onClick={() => {
                       setThirdPartyImportOpen(false);
                       void actions.importCcsProviders();
@@ -9359,6 +9405,16 @@ function RelayContextManager({
   const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
   const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [skillInventory, setSkillInventory] = useState<SkillInventoryResult | null>(null);
+  const refreshSkillInventory = async () => {
+    try {
+      setSkillInventory(await invoke<SkillInventoryResult>("list_installed_skills"));
+    } catch (error) {
+      setSkillInventory({ status: "failed", message: stringifyError(error), skills: [], codexSkillsDir: "" });
+      await actions.showMessage("Skills", stringifyError(error), "failed");
+    }
+  };
+  useEffect(() => { void refreshSkillInventory(); }, []);
   const visibleEntries = contextEntriesByKind(entries, activeKind);
   const label = contextKindLabel(activeKind);
 
@@ -9421,10 +9477,12 @@ function RelayContextManager({
               {t("导入 JSON")}
             </Button>
           ) : null}
-          <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
+          {activeKind === "skill" ? (
+            <Button onClick={() => void refreshSkillInventory()} size="sm" variant="secondary"><RefreshCw className="h-4 w-4" />{t("刷新列表")}</Button>
+          ) : <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
             <Plus className="h-4 w-4" />
             {t("新增")}{label}
-          </Button>
+          </Button>}
         </div>
       </div>
       <div className="segmented">
@@ -9436,15 +9494,24 @@ function RelayContextManager({
             type="button"
           >
             <span>{option.label}</span>
-            <small>{contextEntriesByKind(entries, option.kind).length}</small>
+            <small>{option.kind === "skill" ? (skillInventory ? (isSuccessStatus(skillInventory.status) ? skillInventory.skills.length : "?") : "…") : contextEntriesByKind(entries, option.kind).length}</small>
           </button>
         ))}
       </div>
       <div className="relay-context-summary">
-        {t("当前共有")} {visibleEntries.length} {t("个")}{label}{t("；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。")}
+        {activeKind === "skill" ? <>{t("本地与内置 Skills 由 Codex 从目录发现。")}{skillInventory ? <span className="break-all"> {skillInventory.codexSkillsDir}</span> : null}</> : <>{t("当前共有")} {visibleEntries.length} {t("个")}{label}{t("；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。")}</>}
       </div>
       <div className="relay-context-list">
-        {visibleEntries.length ? (
+        {activeKind === "skill" ? (
+          !skillInventory ? <div className="empty">{t("正在读取 Skills…")}</div>
+          : !isSuccessStatus(skillInventory.status) ? <div className="empty">{skillInventory.message}</div>
+          : skillInventory.skills.length ? skillInventory.skills.map((skill) => (
+            <div className="relay-context-row" key={`local-skill-${skill.id}`}>
+              <div><strong className="context-title">{skill.name || skill.id}</strong><div className="text-xs">{skill.description}</div></div>
+              <span>{skill.bundled ? t("内置") : t("本地")}{!skill.enabled ? ` · ${t("已停用")}` : ""}</span>
+            </div>
+          )) : <div className="empty">{t("Skills 目录中暂无技能。")}</div>
+        ) : visibleEntries.length ? (
           visibleEntries.map((entry) => (
             <div className="relay-context-row" key={`${entry.kind}-${entry.id}`}>
               <strong className="context-title">{entry.title || entry.id}</strong>
@@ -11616,6 +11683,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    ccsDbPath: (settings.ccsDbPath || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
@@ -11750,7 +11818,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     officialMixApiKey,
     hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
     testModel: profile.testModel || "",
-    configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
+    configContents: profile.configContents || "",
     authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
     useCommonConfig: profile.useCommonConfig !== false,
     contextSelection: profile.contextSelectionInitialized

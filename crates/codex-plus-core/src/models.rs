@@ -2,6 +2,9 @@
 pub struct SessionRef {
     pub session_id: String,
     pub title: String,
+    /// None 表示来源未知，绝不能据此回退到本地删除。
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "hostId")]
+    pub host_id: Option<String>,
 }
 
 impl SessionRef {
@@ -17,7 +20,18 @@ impl SessionRef {
         Ok(SessionRef {
             session_id,
             title: title.into(),
+            host_id: None,
         })
+    }
+
+    pub fn require_local_delete(&self) -> anyhow::Result<()> {
+        match self.host_id.as_deref() {
+            Some("local") => Ok(()),
+            Some(_) => {
+                anyhow::bail!("该会话不属于本机，尚无已验证的远端删除接口；未删除任何本地数据")
+            }
+            None => anyhow::bail!("无法确定会话主机归属，未删除；请使用 Codex 原生会话管理"),
+        }
     }
 }
 
@@ -77,7 +91,35 @@ mod tests {
             SessionRef {
                 session_id: "session-123".to_string(),
                 title: "My Session".to_string(),
+                host_id: None,
             }
+        );
+    }
+
+    #[test]
+    fn session_ref_host_scope_is_explicit_and_unknown_cannot_delete_locally() {
+        let legacy: SessionRef =
+            serde_json::from_value(json!({"session_id":"same-id","title":"legacy"})).unwrap();
+        assert!(legacy.require_local_delete().is_err());
+        let remote: SessionRef = serde_json::from_value(
+            json!({"session_id":"same-id","title":"remote","hostId":"ssh:fixture"}),
+        )
+        .unwrap();
+        assert!(remote.require_local_delete().is_err());
+        let local: SessionRef = serde_json::from_value(
+            json!({"session_id":"same-id","title":"local","host_id":"local"}),
+        )
+        .unwrap();
+        assert!(local.require_local_delete().is_ok());
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("host_id")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::to_value(&remote).unwrap()["host_id"],
+            "ssh:fixture"
         );
     }
 

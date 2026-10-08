@@ -321,6 +321,11 @@ impl SkillsManager {
         entries.into_values().collect()
     }
 
+    /// 本地目录 inventory 不混入仅出现在远端/缓存清单中的未安装条目，也不写 TOML。
+    pub fn local_inventory(&self) -> Vec<SkillEntry> {
+        self.merge_entries(&[])
+    }
+
     /// 扫描 `$CODEX_HOME/skills` 下带 `SKILL.md` 的目录，收拢前面几轮没覆盖到的条目。
     ///
     /// 软链（本工具安装的）与 `.system` 已在别的分支处理过，这里只兜底「本地自建」，
@@ -1581,6 +1586,26 @@ mod tests {
         let imagegen: Vec<_> = entries.iter().filter(|entry| entry.id == "imagegen").collect();
         assert_eq!(imagegen.len(), 1, "自带 skill 不应被本地扫描重复收录");
         assert!(imagegen[0].bundled);
+    }
+
+    #[test]
+    fn local_inventory_lists_custom_and_bundled_skills_without_writing_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let custom = manager.linked_dir().join("custom-skill");
+        let bundled = manager.linked_dir().join(BUNDLED_SKILLS_DIR).join("builtin-skill");
+        for path in [&custom, &bundled] {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join(SKILL_MANIFEST_FILE), "---\nname: test\ndescription: local\n---\n").unwrap();
+        }
+        let config = manager.codex_home.join("config.toml");
+        std::fs::write(&config, "[skills]\nbundled = true\n").unwrap();
+        let before = std::fs::read(&config).unwrap();
+        let entries = manager.local_inventory();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| entry.id == "custom-skill" && entry.enabled));
+        assert!(entries.iter().any(|entry| entry.id == "builtin-skill" && entry.bundled));
+        assert_eq!(std::fs::read(config).unwrap(), before);
     }
 
     /// #1989：四个仓库全部「文件树返回错误状态」，看不出是限流、网络还是仓库没了。

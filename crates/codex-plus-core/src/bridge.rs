@@ -387,7 +387,10 @@ async fn run_app_server_client_capture(
     let settings = crate::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    if !settings.codex_app_service_tier_controls && !settings.codex_app_model_whitelist_unlock {
+    if !settings.codex_app_service_tier_controls
+        && !settings.codex_app_model_whitelist_unlock
+        && !settings.codex_app_session_delete
+    {
         return Ok(());
     }
     let socket = connect_cdp_websocket(websocket_url).await?;

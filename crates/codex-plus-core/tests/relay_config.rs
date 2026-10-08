@@ -3082,7 +3082,7 @@ model_provider = "custom"
 name = "vendor_alpha"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "https://old.example/v1"
+base_url = "https://new.example/v1"
 
 [profiles.default]
 model_provider = "vendor_alpha"
@@ -3845,6 +3845,7 @@ experimental_bearer_token = "sk-old"
     .unwrap();
     let mut profile = RelayProfile {
         relay_mode: RelayMode::PureApi,
+        base_url: "https://relay.example/v1".to_string(),
         auth_contents: r#"{"OPENAI_API_KEY":"sk-old"}"#.to_string(),
         ..RelayProfile::default()
     };
@@ -3928,7 +3929,7 @@ model = "gpt-5.4"
 }
 
 #[test]
-fn backfill_current_profile_preserves_external_live_provider_id_edit_before_switch() {
+fn explicit_backfill_preserves_manual_provider_id_and_its_live_credentials() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(
         temp.path().join("config.toml"),
@@ -3967,7 +3968,10 @@ requires_openai_auth = true
     };
     let mut common = String::new();
 
-    backfill_relay_profile_from_home_with_common(temp.path(), &mut current, &mut common).unwrap();
+    codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common_and_policy(
+        temp.path(), &mut current, &mut common,
+        codex_plus_core::relay_config::RelayBackfillPolicy::AdoptLiveIdentity,
+    ).unwrap();
 
     assert!(
         current
@@ -3982,7 +3986,7 @@ requires_openai_auth = true
     assert!(current.config_contents.contains(r#"name = "Manual Edit""#));
     assert!(!current.config_contents.contains("old_snapshot"));
     let auth: serde_json::Value = serde_json::from_str(&current.auth_contents).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-old");
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-live");
 }
 
 #[test]

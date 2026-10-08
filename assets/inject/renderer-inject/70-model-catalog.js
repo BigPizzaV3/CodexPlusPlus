@@ -26,6 +26,12 @@
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
+  const codexPlusModelListRequestHosts = new Map();
+  // 跨重注入保留原生数据快照；WeakMap 仅持有模型集合，不缓存 DOM。
+  const codexPlusModelCollectionSnapshots = window.__codexPlusModelCollectionSnapshots
+    || (window.__codexPlusModelCollectionSnapshots = new WeakMap());
+  const codexPlusModelDefaultSnapshots = window.__codexPlusModelDefaultSnapshots
+    || (window.__codexPlusModelDefaultSnapshots = new WeakMap());
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
     window.__codexPlusServiceTierTest = {
@@ -70,6 +76,12 @@
         codexModelCatalogPromise = null;
       },
       loadModelCatalog: (force = false) => loadCodexModelCatalog(force),
+      patchModelContainer: (value, hostId = "local") => patchModelContainer(value, hostId),
+      patchModelArray: (models, allowEmpty = false, hostId = "local") => patchModelArray(models, allowEmpty, hostId),
+      patchStatsigModelDynamicConfig: (config, hostId = "local") => patchStatsigModelDynamicConfig(config, hostId),
+      patchModelJsonResponse,
+      patchMcpModelResponseData,
+      recordModelListRequest,
       setBackendSettings: (settings = {}) => {
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
         codexPlusBackendSettingsLoaded = true;
@@ -228,25 +240,138 @@
     return Array.isArray(value) && value.every((item) => typeof item === "string");
   }
 
-  function patchModelNameArray(models) {
+  function patchModelNameArray(models, hostId) {
     if (!stringArrayLooksPatchable(models)) return false;
+    const allowed = codexPureApiAllowedModelSet(hostId);
+    let changed = prepareModelCollection(models, allowed);
     const customModels = codexPlusModelNames();
-    if (!customModels.length) return false;
-    let changed = false;
+    if (!customModels.length) return changed;
+    if (allowed) {
+      const retained = models.filter((name) => allowed.has(name));
+      if (retained.length !== models.length) {
+        models.splice(0, models.length, ...retained);
+        changed = true;
+      }
+    }
     customModels.forEach((modelName) => {
       if (!models.includes(modelName)) {
         models.push(modelName);
         changed = true;
       }
     });
+    finishModelCollection(models);
     return changed;
   }
 
-  function patchModelArray(models, allowEmpty = false) {
-    if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
-    const customModels = codexPlusModelNames();
-    if (!customModels.length) return false;
+  function modelFilterPolicy(allowed) {
+    return allowed ? `${codexRemoteSessionActiveProfile()?.id || ""}:${codexModelCatalog.model || ""}:${JSON.stringify([...allowed].sort())}` : "";
+  }
+
+  function sameModelCollection(left, right) {
+    return !!right && left.length === right.length && left.every((item, index) => item === right[index]);
+  }
+
+  function prepareModelCollection(collection, allowed) {
+    const policy = modelFilterPolicy(allowed);
+    const previous = codexPlusModelCollectionSnapshots.get(collection);
+    let current = [...collection];
     let changed = false;
+    if (previous && previous.policy !== policy && sameModelCollection(current, previous.patched)) {
+      if (!sameModelCollection(current, previous.original)) {
+        if (Array.isArray(collection)) collection.splice(0, collection.length, ...previous.original);
+        else { collection.clear(); previous.original.forEach((item) => collection.add(item)); }
+        current = [...collection];
+        changed = true;
+      }
+    }
+    if (!allowed) codexPlusModelCollectionSnapshots.delete(collection);
+    else if (!previous || previous.policy !== policy || !sameModelCollection(current, previous.patched)) {
+      codexPlusModelCollectionSnapshots.set(collection, { policy, original: current, patched: null });
+    }
+    return changed;
+  }
+
+  function finishModelCollection(collection) {
+    const snapshot = codexPlusModelCollectionSnapshots.get(collection);
+    if (snapshot) snapshot.patched = [...collection];
+  }
+
+  function patchModelDefaults(value, allowed) {
+    const policy = modelFilterPolicy(allowed);
+    const previous = codexPlusModelDefaultSnapshots.get(value);
+    let changed = false;
+    if (previous && previous.policy !== policy) {
+      for (const [key, state] of Object.entries(previous.fields)) {
+        if (value[key] === state.patched && value[key] !== state.original) {
+          value[key] = state.original;
+          changed = true;
+        }
+      }
+      codexPlusModelDefaultSnapshots.delete(value);
+    }
+    if (!allowed) return changed;
+    const snapshot = codexPlusModelDefaultSnapshots.get(value) || { policy, fields: {} };
+    const fallback = [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
+      .find((name) => typeof name === "string" && allowed.has(name));
+    for (const key of ["defaultModel", "default_model"]) {
+      const original = value[key];
+      const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
+      if (!name || allowed.has(name)) continue;
+      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
+      if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
+        snapshot.fields[key] = { original, patched };
+      }
+      value[key] = patched;
+      changed = true;
+    }
+    codexPlusModelDefaultSnapshots.set(value, snapshot);
+    return changed;
+  }
+
+  // 只收窄当前纯 API 供应商的有效目录；名单里的 GPT 也是可用模型，不能按前缀删。
+  // 目录失败/未配置/仍属于上一个供应商时继续保留原生列表。
+  function modelResponseHostId(...values) {
+    let local = false;
+    for (const value of values) {
+      let candidates;
+      try { candidates = typeof value === "string" ? [value] : [value?.hostId, value?.host_id]; }
+      catch { return ""; }
+      for (const candidate of candidates) {
+        if (typeof candidate !== "string" || !candidate.trim()) continue;
+        const host = candidate.trim();
+        if (host !== "local") return host;
+        local = true;
+      }
+    }
+    return local ? "local" : "";
+  }
+
+  function codexPureApiAllowedModelSet(hostId) {
+    if (hostId !== "local") return null;
+    const profile = codexRemoteSessionActiveProfile();
+    if (!codexPlusModelUnlockEnabled() || !codexPlusBackendSettingsLoaded
+        || profile?.relayMode !== "pureApi" || codexModelCatalog.status !== "ok") return null;
+    const profileId = String(profile.id || "").trim();
+    const belongsToProfile = profileId && (codexModelCatalog.model_provider === profileId
+      || (Array.isArray(codexModelCatalog.sources)
+        && codexModelCatalog.sources.some((source) => source?.id === `relay-profile:${profileId}`)));
+    const names = codexPlusModelNames();
+    return belongsToProfile && names.length ? new Set(names) : null;
+  }
+
+  function patchModelArray(models, allowEmpty = false, hostId) {
+    if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
+    const allowed = codexPureApiAllowedModelSet(hostId);
+    let changed = prepareModelCollection(models, allowed);
+    const customModels = codexPlusModelNames();
+    if (!customModels.length) return changed;
+    if (allowed) {
+      const retained = models.filter((item) => allowed.has(item.model));
+      if (retained.length !== models.length) {
+        models.splice(0, models.length, ...retained);
+        changed = true;
+      }
+    }
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
       if (customModels.includes(item.model)) {
@@ -263,53 +388,56 @@
         changed = true;
       }
     });
+    finishModelCollection(models);
     return changed;
   }
 
-  function patchModelContainer(value) {
+  function patchModelContainer(value, hostId) {
     if (!value || typeof value !== "object") return false;
+    hostId = modelResponseHostId(hostId, value, value.message, value.result);
     let changed = false;
-    if (patchModelArray(value.models, "defaultModel" in value || "availableModels" in value)) changed = true;
-    if (patchModelNameArray(value.models)) changed = true;
-    if (patchModelArray(value.data)) changed = true;
-    if (patchModelArray(value.result)) changed = true;
-    if (patchModelArray(value.pages?.[0]?.data)) changed = true;
-    if (patchModelArray(value.result?.data)) changed = true;
-    if (patchModelArray(value.result?.models)) changed = true;
-    if (patchModelArray(value.message?.result?.data)) changed = true;
-    if (patchModelArray(value.message?.result?.models)) changed = true;
+    if (patchModelArray(value.models, "defaultModel" in value || "availableModels" in value, hostId)) changed = true;
+    if (patchModelNameArray(value.models, hostId)) changed = true;
+    if (patchModelArray(value.data, false, hostId)) changed = true;
+    if (patchModelArray(value.result, false, hostId)) changed = true;
+    if (patchModelArray(value.pages?.[0]?.data, false, hostId)) changed = true;
+    if (patchModelArray(value.result?.data, false, hostId)) changed = true;
+    if (patchModelArray(value.result?.models, false, hostId)) changed = true;
+    if (patchModelArray(value.message?.result?.data, false, hostId)) changed = true;
+    if (patchModelArray(value.message?.result?.models, false, hostId)) changed = true;
     const names = codexPlusModelNames();
+    const allowed = codexPureApiAllowedModelSet(hostId);
     if (value.availableModels instanceof Set) {
+      if (prepareModelCollection(value.availableModels, allowed)) changed = true;
+      if (allowed) for (const name of value.availableModels) {
+        if (!allowed.has(name)) { value.availableModels.delete(name); changed = true; }
+      }
       names.forEach((name) => {
         if (!value.availableModels.has(name)) {
           value.availableModels.add(name);
           changed = true;
         }
       });
+      finishModelCollection(value.availableModels);
     }
     if (value.available_models instanceof Set) {
+      if (prepareModelCollection(value.available_models, allowed)) changed = true;
+      if (allowed) for (const name of value.available_models) {
+        if (!allowed.has(name)) { value.available_models.delete(name); changed = true; }
+      }
       names.forEach((name) => {
         if (!value.available_models.has(name)) {
           value.available_models.add(name);
           changed = true;
         }
       });
+      finishModelCollection(value.available_models);
     }
     if (Array.isArray(value.availableModels)) {
-      names.forEach((name) => {
-        if (!value.availableModels.includes(name)) {
-          value.availableModels.push(name);
-          changed = true;
-        }
-      });
+      if (patchModelNameArray(value.availableModels, hostId)) changed = true;
     }
     if (Array.isArray(value.available_models)) {
-      names.forEach((name) => {
-        if (!value.available_models.includes(name)) {
-          value.available_models.push(name);
-          changed = true;
-        }
-      });
+      if (patchModelNameArray(value.available_models, hostId)) changed = true;
     }
     if (Array.isArray(value.hiddenModels)) {
       const before = value.hiddenModels.length;
@@ -321,6 +449,7 @@
       value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
       if (value.hidden_models.length !== before) changed = true;
     }
+    if (patchModelDefaults(value, allowed)) changed = true;
     return changed;
   }
 
@@ -354,7 +483,7 @@
     if (!codexPlusModelNames().length) await loadCodexModelCatalog();
     if (!modelJsonResponseLooksPatchable(payload)) return payload;
     try {
-      patchModelContainer(payload);
+      patchModelContainer(payload, modelResponseHostId(payload, payload.result, payload.message));
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -363,8 +492,8 @@
   }
 
   function installModelJsonResponsePatch() {
-    if (window.__codexPlusModelJsonResponsePatchInstalled === "1") return;
-    window.__codexPlusModelJsonResponsePatchInstalled = "1";
+    if (window.__codexPlusModelJsonResponsePatchInstalled === "3") return;
+    window.__codexPlusModelJsonResponsePatchInstalled = "3";
     window.__codexPlusModelJsonResponseOriginals = window.__codexPlusModelJsonResponseOriginals || {};
     const originals = window.__codexPlusModelJsonResponseOriginals;
     originals.responseJson = originals.responseJson || Response.prototype.json;
@@ -375,20 +504,19 @@
     };
   }
 
-  function patchStatsigModelDynamicConfig(config) {
-    const names = codexPlusModelNames();
+  function patchStatsigModelDynamicConfig(config, hostId) {
     const value = config?.value;
-    if (!names.length || !value || typeof value !== "object") return config;
+    if (!value || typeof value !== "object") return config;
     const availableModels = Array.isArray(value.available_models) ? [...value.available_models] : [];
-    let changed = false;
-    names.forEach((name) => {
-      if (!availableModels.includes(name)) {
-        availableModels.push(name);
-        changed = true;
-      }
-    });
-    if (!changed) return config;
+    const collectionSnapshot = codexPlusModelCollectionSnapshots.get(value.available_models);
+    if (collectionSnapshot) codexPlusModelCollectionSnapshots.set(availableModels, { ...collectionSnapshot });
     const nextValue = { ...value, available_models: availableModels };
+    const defaultSnapshot = codexPlusModelDefaultSnapshots.get(value);
+    if (defaultSnapshot) codexPlusModelDefaultSnapshots.set(nextValue, { ...defaultSnapshot, fields: { ...defaultSnapshot.fields } });
+    hostId = modelResponseHostId(hostId, value);
+    const listChanged = patchModelNameArray(availableModels, hostId);
+    const defaultsChanged = patchModelDefaults(nextValue, codexPureApiAllowedModelSet(hostId));
+    if (!listChanged && !defaultsChanged) return config;
     try {
       config.value = nextValue;
     } catch {
@@ -408,13 +536,13 @@
   function patchStatsigModelWhitelist() {
     statsigClients().forEach((client) => {
       if (typeof client.getDynamicConfig !== "function") return;
-      if (!client.__codexPlusModelWhitelistPatched) {
+      if (client.__codexPlusModelWhitelistPatched !== "3") {
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
           return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
         };
-        client.__codexPlusModelWhitelistPatched = true;
+        client.__codexPlusModelWhitelistPatched = "3";
       }
       try {
         patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
@@ -424,8 +552,8 @@
   }
 
   function patchAppServerModelMessages() {
-    if (window.__codexPlusModelMessagePatchInstalled) return;
-    window.__codexPlusModelMessagePatchInstalled = true;
+    if (window.__codexPlusModelMessagePatchInstalled === "3") return;
+    window.__codexPlusModelMessagePatchInstalled = "3";
     window.addEventListener("codex-message-from-view", (event) => {
       try {
         const detail = event?.detail;
@@ -434,11 +562,7 @@
           request.params = { ...(request.params || {}), includeHidden: true };
           if (request.id != null) {
             const requestId = String(request.id);
-            codexPlusModelListRequestIds.add(requestId);
-            if (codexPlusModelListRequestIds.size > 64) {
-              codexPlusModelListRequestIds.delete(codexPlusModelListRequestIds.values().next().value);
-            }
-            window.setTimeout(() => codexPlusModelListRequestIds.delete(requestId), 30_000);
+            recordModelListRequest(requestId, modelResponseHostId(detail, request, request.params));
           }
         }
       } catch (error) {
@@ -457,16 +581,34 @@
     }, true);
   }
 
+  function recordModelListRequest(requestId, hostId) {
+    if (codexPlusModelListRequestIds.has(requestId)
+        && codexPlusModelListRequestHosts.get(requestId) !== hostId) hostId = "";
+    codexPlusModelListRequestIds.add(requestId);
+    codexPlusModelListRequestHosts.set(requestId, hostId);
+    if (codexPlusModelListRequestIds.size > 64) {
+      const oldest = codexPlusModelListRequestIds.values().next().value;
+      codexPlusModelListRequestIds.delete(oldest);
+      codexPlusModelListRequestHosts.delete(oldest);
+    }
+    window.setTimeout(() => {
+      codexPlusModelListRequestIds.delete(requestId);
+      codexPlusModelListRequestHosts.delete(requestId);
+    }, 30_000);
+  }
+
   function patchMcpModelResponseData(data) {
     if (!codexPlusModelUnlockEnabled()) return false;
     if (data?.type !== "mcp-response") return false;
     const message = data.message || data.response;
     const requestId = message?.id != null ? String(message.id) : "";
     if (codexPlusModelListRequestIds.size === 0 || !codexPlusModelListRequestIds.has(requestId)) return false;
+    const hostId = modelResponseHostId(data, message, codexPlusModelListRequestHosts.get(requestId));
     codexPlusModelListRequestIds.delete(requestId);
+    codexPlusModelListRequestHosts.delete(requestId);
     let changed = false;
-    if (patchModelArray(message?.result?.data, true)) changed = true;
-    if (patchModelArray(message?.result?.models, true)) changed = true;
+    if (patchModelArray(message?.result?.data, true, hostId)) changed = true;
+    if (patchModelArray(message?.result?.models, true, hostId)) changed = true;
     return changed;
   }
 
@@ -481,12 +623,13 @@
     return String(method || "");
   }
 
-  function patchAppServerModelResult(method, result) {
-    if (method !== "list-models-for-host") return result;
+  function patchAppServerModelResult(method, result, hostId) {
+    if (!["list-models-for-host", "model/list"].includes(method)) return result;
+    hostId = modelResponseHostId(hostId, result);
     try {
-      if (Array.isArray(result)) patchModelArray(result, true);
-      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
-      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
+      if (Array.isArray(result)) patchModelArray(result, true, hostId);
+      if (Array.isArray(result?.data)) patchModelArray(result.data, true, hostId);
+      if (Array.isArray(result?.models)) patchModelArray(result.models, true, hostId);
       sendCodexPlusDiagnostic("model_app_server_result_patched", {
         method,
         modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
@@ -549,6 +692,7 @@
 
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
+    registerNativeHostClient(client);
     try {
       if (!Object.isExtensible(client)) return false;
       for (const key of [
@@ -602,9 +746,9 @@
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
       }
-      if (!codexPlusModelUnlockEnabled() || requestMethod !== "list-models-for-host") return result;
+      if (!codexPlusModelUnlockEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result);
+      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
     };
     if (typeof client.prewarmThreadStart === "function"
         && !client.__codexPlusServiceTierOriginalPrewarmThreadStart) {
@@ -738,7 +882,8 @@
     if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
     const wanted = codexPlusModelUnlockEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-      || codexPlusSettings().serviceTierControls;
+      || codexPlusSettings().serviceTierControls
+      || codexPlusSettings().sessionDelete;
     if (!wanted) return false;
     const klass = window.__codexPlusAppServerClientClass;
     if (!klass || typeof klass !== "function" || !klass.prototype) return false;
@@ -763,6 +908,7 @@
     proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
     proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const client = this;
+      registerNativeHostClient(client);
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
@@ -795,9 +941,9 @@
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
       }
-      if (!codexPlusModelUnlockEnabled() || requestMethod !== "list-models-for-host") return result;
+      if (!codexPlusModelUnlockEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result);
+      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
     };
     if (typeof proto.prewarmThreadStart === "function"
         && !proto.__codexPlusServiceTierOriginalPrewarmThreadStart) {
@@ -920,7 +1066,8 @@
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-        || codexPlusSettings().serviceTierControls) {
+        || codexPlusSettings().serviceTierControls
+        || codexPlusSettings().sessionDelete) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
     }
