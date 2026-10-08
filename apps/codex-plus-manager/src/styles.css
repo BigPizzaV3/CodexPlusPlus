@@ -555,6 +555,41 @@ body {
   gap: 10px;
 }
 
+.sponsor-carousel-copy {
+  animation: sponsor-carousel-in 220ms ease-out;
+}
+
+.sponsor-carousel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.sponsor-carousel-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sponsor-carousel-count {
+  min-width: 42px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+@keyframes sponsor-carousel-in {
+  from { opacity: 0.55; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sponsor-carousel-copy { animation: none; }
+}
+
 .jojocode-model-tags {
   display: flex;
   flex-wrap: wrap;

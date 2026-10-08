@@ -441,6 +441,9 @@ export const EN_PLAIN: Record<string, string> = {
   "尚未接入配置切换。": "Config switching is not wired up yet.",
   "该工具由它自己的页签管理": "This tool is managed on its own tab",
   "打开推荐内容": "Open recommendation",
+  "上一条": "Previous recommendation",
+  "下一条": "Next recommendation",
+  "赞助商轮播": "Sponsor carousel",
   "Codex 供应商设置": "Codex provider settings",
   "只作用于 Codex 供应商的配置": "Applies only to Codex providers",
   "「测试供应商」按钮用这个模型发起一次真实请求，用于判断 Key 与端点是否可用。":

@@ -39,16 +39,27 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
         .collect::<Vec<_>>();
     fill_known_remote_logos(&mut ads);
     // `topAd` 是独立的置顶赞助位，**不参与** `ads` 列表的排序与过期过滤语义。
-    // 它比普通推荐贵，由商务单独指定，所以不能混在推荐池里按数组顺序取。
-    let top_ad = payload
+    // 同时兼容单条对象和多条数组，数组用于管理工具的横幅轮播。
+    let raw_top_ads = payload
         .get("top_ad")
-        .or_else(|| payload.get("topAd"))
-        .filter(|value| is_usable_ad(value))
-        .cloned();
-    match top_ad {
-        Some(top_ad) => json!({ "version": version, "ads": ads, "topAd": top_ad }),
-        None => json!({ "version": version, "ads": ads }),
+        .or_else(|| payload.get("topAd"));
+    let mut top_ads = match raw_top_ads {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter(|ad| is_usable_ad(ad))
+            .cloned()
+            .collect::<Vec<_>>(),
+        Some(value) if is_usable_ad(value) => vec![value.clone()],
+        _ => Vec::new(),
+    };
+    fill_known_remote_logos(&mut top_ads);
+
+    let mut normalized = json!({ "version": version, "ads": ads });
+    if !top_ads.is_empty() {
+        normalized["topAd"] = top_ads[0].clone();
+        normalized["topAds"] = json!(top_ads);
     }
+    normalized
 }
 
 /// 一条广告是否可用（类型、标题、描述、URL 齐全）。
@@ -205,6 +216,23 @@ mod tests {
             "topAd": sponsored("premium"),
         }));
         assert_eq!(camel["topAd"]["id"], json!("premium"));
+    }
+
+    #[test]
+    fn top_ad_accepts_multiple_usable_ads_for_rotation() {
+        let normalized = normalize_ad_payload(json!({
+            "version": 1,
+            "ads": [],
+            "top_ad": [
+                sponsored("premium-a"),
+                { "type": "sponsor", "title": "残缺", "description": "描述" },
+                sponsored("premium-b"),
+            ],
+        }));
+
+        assert_eq!(normalized["topAd"]["id"], json!("premium-a"));
+        assert_eq!(normalized["topAds"].as_array().unwrap().len(), 2);
+        assert_eq!(normalized["topAds"][1]["id"], json!("premium-b"));
     }
 
     #[test]

@@ -828,8 +828,10 @@ type AdItem = {
 type AdsResult = CommandResult<{
   version: number;
   ads: AdItem[];
-  /// 置顶赞助位。单独售卖，不参与 ads 的排序与数量上限。
+  /// 兼容旧数据和旧管理端消费者的首条置顶赞助位。
   topAd?: AdItem;
+  /// 独立置顶赞助位列表，供概览横幅轮播。
+  topAds?: AdItem[];
 }>;
 
 type ScriptMarketItem = {
@@ -4211,50 +4213,91 @@ function WeixinConnectScreen({
 /// 数据来自广告源里的 sponsor 条目。
 /// 概览页置顶赞助位。
 ///
-/// 这个位置**不来自推荐池** —— `topAd` 是单独售卖的贵价位置，由广告源里的
-/// `top_ad` 字段单独指定，不参与 `ads` 数组的排序，也不会被推荐列表的
-/// 数量上限影响。没有 `topAd` 时不显示置顶赞助位。
+/// 这个位置**不来自推荐池** —— 广告源里的 `top_ad` 可配置单个对象或数组，
+/// 多条时自动轮播。没有有效条目时不显示置顶赞助位。
 function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const topAd = ads?.topAd;
-  const featured: AdItem[] = topAd && !isExpiredAd(topAd) ? [topAd] : [];
+  const sourceAds = ads?.topAds?.length ? ads.topAds : ads?.topAd ? [ads.topAd] : [];
+  const featured = sourceAds.filter((ad) => !isExpiredAd(ad));
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const paused = hovered || focusWithin;
+
+  useEffect(() => {
+    if (featured.length < 2 || paused) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        setActiveIndex((index) => (index + 1) % featured.length);
+      }
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [featured.length, paused]);
+
+  if (featured.length === 0) return null;
+  const activePosition = activeIndex % featured.length;
+  const ad = featured[activePosition];
+  const move = (offset: number) => {
+    setActiveIndex((index) => (index + offset + featured.length) % featured.length);
+  };
 
   return (
-    <div className="sponsor-board">
-      {featured.map((ad) => (
-        <Panel className="jojocode-overview" key={ad.id || ad.title}>
-          <CardContent>
-            <div className="jojocode-overview-layout">
-              <div className="jojocode-overview-main">
-                {ad.image ? (
-                  <img alt="" className="sponsor-logo" src={ad.image} />
-                ) : (
-                  <div className="jojocode-overview-mark">
-                    <Network className="h-5 w-5" />
-                  </div>
-                )}
-                <div>
-                  <span className="eyebrow">{t("推荐内容")}</span>
-                  <h2>{formatAdTitle(ad.title)}</h2>
-                  <p>{ad.description}</p>
+    <div
+      className="sponsor-board"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusWithin(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocusWithin(false);
+      }}
+    >
+      <Panel className="jojocode-overview">
+        <CardContent>
+          <div className="jojocode-overview-layout">
+            <div className="jojocode-overview-main">
+              {ad.image ? (
+                <img alt="" className="sponsor-logo" src={ad.image} />
+              ) : (
+                <div className="jojocode-overview-mark">
+                  <Network className="h-5 w-5" />
                 </div>
+              )}
+              <div aria-live={paused ? "polite" : "off"} className="sponsor-carousel-copy" key={ad.id || ad.title}>
+                <span className="eyebrow">{t("推荐内容")}</span>
+                <h2>{formatAdTitle(ad.title)}</h2>
+                <p>{ad.description}</p>
               </div>
-              <div className="jojocode-overview-side">
-                {ad.highlights?.length ? (
-                  <div className="jojocode-model-tags">
-                    {ad.highlights.map((item) => (
-                      <span key={item}>{item}</span>
-                    ))}
-                  </div>
-                ) : null}
+            </div>
+            <div className="jojocode-overview-side">
+              {ad.highlights?.length ? (
+                <div className="jojocode-model-tags">
+                  {ad.highlights.map((item) => (
+                    <span key={item}>{item}</span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="sponsor-carousel-actions">
                 <Button onClick={() => void actions.openExternalUrl(ad.url)}>
                   <ExternalLink className="h-4 w-4" />
                   {t("打开推荐内容")}
                 </Button>
+                {featured.length > 1 ? (
+                  <div aria-label={t("赞助商轮播")} className="sponsor-carousel-controls" role="group">
+                    <Button aria-label={t("上一条")} onClick={() => move(-1)} size="icon" variant="outline">
+                      <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                    <span aria-live={paused ? "polite" : "off"} className="sponsor-carousel-count">
+                      {activePosition + 1} / {featured.length}
+                    </span>
+                    <Button aria-label={t("下一条")} onClick={() => move(1)} size="icon" variant="outline">
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
-          </CardContent>
-        </Panel>
-      ))}
+          </div>
+        </CardContent>
+      </Panel>
     </div>
   );
 }
@@ -6609,16 +6652,15 @@ function SessionsScreen({
 
 /// 推荐内容页：列出广告源里的全部推荐（含 sponsor 与 normal）。
 ///
-/// 概览页那个置顶位是单独的贵价位置（`topAd` 字段），不从这里取，
-/// 所以两处不会重复展示同一条。
+/// 概览页置顶位独立配置；展示多条时也从推荐池去重，避免重复出现。
 function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
   const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
   // 置顶位排在最前，并把推荐池里指向同一家的那条去掉 —— 广告源里同一条赞助商
   // 常常同时出现在 top_ad 和 ads 里（两个 id、同一个落地页），只比 id 去不掉。
-  const topAd = ads?.topAd && !isExpiredAd(ads.topAd) ? ads.topAd : null;
-  const topIdentity = topAd ? adIdentity(topAd) : "";
-  const pool = topAd ? items.filter((ad) => adIdentity(ad) !== topIdentity) : items;
-  const ordered = topAd ? [topAd, ...pool] : pool;
+  const topAds = (ads?.topAds?.length ? ads.topAds : ads?.topAd ? [ads.topAd] : []).filter((ad) => !isExpiredAd(ad));
+  const topIdentities = new Set(topAds.map(adIdentity));
+  const pool = items.filter((ad) => !topIdentities.has(adIdentity(ad)));
+  const ordered = [...topAds, ...pool];
   const sponsors = ordered.filter((ad) => ad.type === "sponsor");
   const normal = ordered.filter((ad) => ad.type === "normal");
   return (
