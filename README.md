@@ -94,38 +94,6 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
-      <a href="https://xc.y1yun.net/">
-        <img src="docs/images/sponsor-yiyun-tech.jpg" alt="屹芸科技" height="80">
-      </a>
-    </td>
-    <td><a href="https://xc.y1yun.net/"><strong>屹芸科技</strong></a><br>屹芸科技旗下拥有九五云商发卡网、屹芸付支付系统等面向 AI 聚合赛道的收付产品，支持微信、支付宝、银联、云闪付等通道，提供低费率、D1/D0 结算、7×24 小时技术支持和企微客户专属服务群。平台通道费率稳定、结算准时，并提供高强度网站防护，帮助商户稳定开展线上销售。</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html">
-        <img src="docs/images/sponsor-volcengine.png" alt="火山引擎" height="80">
-      </a>
-    </td>
-    <td><a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html"><strong>火山引擎</strong></a><br>感谢火山引擎赞助本项目！方舟 Agent Plan 模型订阅套餐集成了 Doubao-Seed、Doubao-Seedance、Doubao-Seedream 等字节跳动自研 SOTA 级模型，覆盖文本、代码、图像、视频等多模态任务。最新支持 MiniMax-M3、DeepSeek-V4 系列、GLM-5.2、Doubao-Seed-2.0 系列、Kimi-K2.7 等模型，工具不限。超全模态模型与 Harness 升级一步到位，深度支持 Agent 框架与 AI 编程工具。一次订阅，可以为不同任务切换合适的 AI 引擎。方舟 Agent Plan 限时 2.5 折订阅，<a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html">点击链接抢购</a>，名额有限，先到先得。<a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&amp;utm_content=CodexPlusPlus&amp;utm_medium=devrel_tool_web&amp;utm_source=OWO&amp;utm_term=CodexPlusPlus">For developers outside Mainland China, please click here</a>。</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8">
-        <img src="docs/images/sponsor-baikewei-ai.jpg" alt="百可为AI" height="80">
-      </a>
-    </td>
-    <td><a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8"><strong>百可为AI</strong></a><br>百可为AI 是面向开发者、团队和 AI 工具用户的一站式大模型 API 服务平台，支持 Claude、OpenAI、Gemini、Codex 等主流模型能力接入。平台提供稳定中转、灵活计费、用量统计、余额管理和多场景 API 调用能力，适合 Claude Code、Codex、AI 生图、自动化脚本和各类智能应用长期使用。新用户注册可领取免费额度，开发者可快速接入、即开即用，让 AI 能力更稳定、更高效、更省心。</td>
-  </tr>
-  <tr>
-    <td align="center">
-      <a href="https://go.apimart.ai/gh-codexplusplus">
-        <img src="docs/images/sponsor-apimart.png" alt="API Mart" width="170">
-      </a>
-    </td>
-    <td><a href="https://go.apimart.ai/gh-codexplusplus"><strong>API Mart</strong></a><br>感谢 API Mart 赞助了本项目！API Mart 是专注 AI 图片和视频生成的低价 API 平台，GPT-Image-2 低至每张 0.006 美元，1 美元可生成 160 多张图片。图片、视频使用一套异步 API，提交任务获取 ID 后可通过轮询或回调取得结果；支持数万张批量任务，切换模型无需改代码。按量付费、无月费，通过<a href="https://go.apimart.ai/gh-codexplusplus">此链接注册</a>即可使用。</td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://api.fenno.ai/s/ZZM7">
         <img src="docs/images/sponsor-fenno-ai.png" alt="FennoAI" width="170">
       </a>
