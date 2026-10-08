@@ -15,7 +15,7 @@ const conversationFunctions = `${conversationSource.slice(conversationOriginalsS
 const storageKey = "codexPlus.customLayout.v1";
 type Rect = { left: number; top: number; width: number; height: number };
 type Listener = (event: Record<string, unknown>) => void;
-type RecordPosition = { x: number; y: number; width?: number; height?: number; snapX?: string | null; snapY?: string | null };
+type RecordPosition = { x: number; y: number; width?: number; height?: number; snapX?: string | null; snapY?: string | null; grouped?: boolean };
 type Geometry = {
   normalizeLayout(value: unknown): { version: number; panels: Record<string, RecordPosition> };
   clampRect(rect: Rect, bounds: Rect, minWidth?: number, minHeight?: number): Rect;
@@ -56,7 +56,7 @@ function styleDeclaration() {
   }) as unknown as CSSStyleDeclaration;
 }
 
-function fixture(enabled = false, initialStorage?: string, backendLoaded = true) {
+function fixture(enabled = false, initialStorage?: string, backendLoaded = true, options: { splitShells?: boolean; zoom?: number } = {}) {
   const documentListeners = new Map<string, Set<Listener>>();
   const windowListeners = new Map<string, Set<Listener>>();
   const frames = new Map<number, (time: number) => void>();
@@ -179,11 +179,29 @@ function fixture(enabled = false, initialStorage?: string, backendLoaded = true)
     }
     querySelector(selector: string) { return this.querySelectorAll(selector)[0] || null; }
     getBoundingClientRect() {
-      const pixel = (value: string, fallback: number) => /px$/.test(value) ? parseFloat(value) : fallback;
+      let zoom = 1;
+      for (let element: FakeElement | null = this; element; element = element.parentElement) {
+        const raw = element.style.zoom;
+        const value = Number.parseFloat(raw);
+        if (Number.isFinite(value) && value > 0) zoom *= raw.endsWith("%") ? value / 100 : value;
+      }
+      const pixel = (value: string, fallback: number) => /px$/.test(value) ? parseFloat(value) * zoom : fallback;
       const rect = { ...this.nativeRect };
-      rect.width = pixel(this.style.width, rect.width); rect.height = pixel(this.style.height, rect.height);
+      rect.width = pixel(this.style.width, pixel(this.style.flexBasis, rect.width)); rect.height = pixel(this.style.height, rect.height);
       if (this.style.position === "fixed") {
         rect.left = pixel(this.style.left, rect.left); rect.top = pixel(this.style.top, rect.top);
+      } else if (this.parentElement) {
+        const parent = this.parentElement;
+        const current = parent.getBoundingClientRect();
+        rect.left += current.left - parent.nativeRect.left;
+        rect.top += current.top - parent.nativeRect.top;
+        // 模拟原生 flex 的尾边填充：rail 保持宽度，sidebar 内容跟随外壳剩余宽度。
+        if (!this.style.width && !/px$/.test(this.style.flexBasis) && Math.abs(this.nativeRect.left + this.nativeRect.width - parent.nativeRect.left - parent.nativeRect.width) < .001) {
+          rect.width += current.width - parent.nativeRect.width;
+        }
+        if (!this.style.height && Math.abs(this.nativeRect.top + this.nativeRect.height - parent.nativeRect.top - parent.nativeRect.height) < .001) {
+          rect.height += current.height - parent.nativeRect.height;
+        }
       }
       rect.width = Math.min(rect.width, pixel(this.style.maxWidth, Infinity));
       rect.height = Math.min(rect.height, pixel(this.style.maxHeight, Infinity));
@@ -204,17 +222,35 @@ function fixture(enabled = false, initialStorage?: string, backendLoaded = true)
   }
   const documentElement = new FakeElement("html", { left: 0, top: 0, width: 1200, height: 800 });
   const body = documentElement.appendChild(new FakeElement("body", documentElement.nativeRect));
-  const leftPanel = body.appendChild(new FakeElement("aside", { left: 0, top: 48, width: 270, height: 752 }));
-  leftPanel.className = "app-shell-left-panel";
-  const rail = leftPanel.appendChild(new FakeElement("nav", { left: 0, top: 48, width: 54, height: 752 }));
+  const appRoot = body.appendChild(new FakeElement("main", body.nativeRect));
+  appRoot.style.backgroundColor = "rgb(24, 24, 24)";
+  if (options.zoom) appRoot.style.zoom = String(options.zoom);
+  const nativeSidebarSurface = appRoot.appendChild(new FakeElement("aside", {
+    left: options.splitShells ? 54 : 0, top: 48, width: options.splitShells ? 216 : 270, height: 752,
+  }));
+  nativeSidebarSurface.className = "app-shell-left-panel";
+  nativeSidebarSurface.style.backgroundColor = "rgb(32, 32, 32)";
+  nativeSidebarSurface.style.borderRightWidth = "1px";
+  nativeSidebarSurface.style.borderRightStyle = "solid";
+  nativeSidebarSurface.style.overflow = "hidden";
+  const nativeRailSurface = options.splitShells
+    ? appRoot.appendChild(new FakeElement("aside", { left: 0, top: 48, width: 54, height: 752 }))
+    : nativeSidebarSurface;
+  if (options.splitShells) {
+    nativeRailSurface.className = "app-shell-navigation-rail";
+    nativeRailSurface.style.backgroundColor = "rgb(40, 40, 40)";
+    nativeRailSurface.style.borderRightWidth = "1px";
+    nativeRailSurface.style.borderRightStyle = "solid";
+  }
+  const rail = nativeRailSurface.appendChild(new FakeElement("nav", { left: 0, top: 48, width: 54, height: 752 }));
   rail.setAttribute("data-app-navigation-rail", "");
-  const sidebarShell = leftPanel.appendChild(new FakeElement("div", { left: 54, top: 48, width: 216, height: 752 }));
+  const sidebarShell = nativeSidebarSurface.appendChild(new FakeElement("div", { left: 54, top: 48, width: 216, height: 752 }));
   sidebarShell.id = "app-shell-sidebar";
   const sidebar = sidebarShell.appendChild(new FakeElement("div", sidebarShell.nativeRect));
   sidebar.className = "sidebar-navigation";
-  const summary = body.appendChild(new FakeElement("aside", { left: 980, top: 65, width: 210, height: 260 }));
+  const summary = appRoot.appendChild(new FakeElement("aside", { left: 980, top: 65, width: 210, height: 260 }));
   summary.setAttribute("data-summary-panel-variant", "floating");
-  const composer = body.appendChild(new FakeElement("div", { left: 340, top: 650, width: 620, height: 128 }));
+  const composer = appRoot.appendChild(new FakeElement("div", { left: 340, top: 650, width: 620, height: 128 }));
   composer.setAttribute("data-codex-composer-root", "");
   const editor = composer.appendChild(new FakeElement("textarea"));
   const native = { rail, sidebar, summary, composer };
@@ -262,7 +298,11 @@ function fixture(enabled = false, initialStorage?: string, backendLoaded = true)
     visibleElement: (element: FakeElement) => element.isConnected && element.getBoundingClientRect().width > 0 && element.getBoundingClientRect().height > 0,
     conversationViewFindComposerEl: () => composer.isConnected ? composer : null,
     getComputedStyle: (element: FakeElement) => ({
-      position: element.style.position || "static", display: "block", visibility: "visible", transform: "none", zoom: "1", overflow: "visible",
+      position: element.style.position || "static", display: "block", visibility: "visible", transform: "none", zoom: element.style.zoom || "1",
+      overflow: element.style.overflow || "visible", overflowX: element.style.overflowX || element.style.overflow || "visible", overflowY: element.style.overflowY || element.style.overflow || "visible",
+      backgroundColor: element.style.backgroundColor || "rgba(0, 0, 0, 0)", backgroundImage: "none",
+      borderLeftWidth: element.style.borderLeftWidth || "0px", borderRightWidth: element.style.borderRightWidth || "0px",
+      borderTopWidth: element.style.borderTopWidth || "0px", borderBottomWidth: element.style.borderBottomWidth || "0px",
       getPropertyValue: (key: string) => element.style.getPropertyValue(key),
     }),
     requestAnimationFrame: (callback: (time: number) => void) => { frames.set(++nextId, callback); return nextId; },
@@ -298,7 +338,7 @@ function fixture(enabled = false, initialStorage?: string, backendLoaded = true)
     }
   };
   const reduced = (value: boolean) => { media.matches = value; for (const listener of mediaListeners) listener({ matches: value }); };
-  return { geometry: window.__CODEX_PLUS_TEST_CUSTOM_LAYOUT__, native, body, document, window, settings, backend, conversationState, stored, writes, created, documentListeners, windowListeners, observers, frames, timers, runtime, dispatch, frame, flush, reduced, mediaListeners, load, install: () => window.testInstall!() };
+  return { geometry: window.__CODEX_PLUS_TEST_CUSTOM_LAYOUT__, native, nativeSidebarSurface, nativeRailSurface, sidebarShell, appRoot, body, document, window, settings, backend, conversationState, stored, writes, created, documentListeners, windowListeners, observers, frames, timers, runtime, dispatch, frame, flush, reduced, mediaListeners, load, install: () => window.testInstall!() };
 }
 
 const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -404,6 +444,232 @@ function dragComposer(f: Fixture, target: { left: number; top: number }, commit 
   f.dispatch(commit ? "pointerup" : "pointercancel", grip);
   f.flush();
 }
+
+function dragSidebar(f: Fixture, target: { left: number; top: number }, commit = true) {
+  const grip = moveGrip(f, "侧边栏");
+  const origin = f.nativeRailSurface.getBoundingClientRect();
+  f.dispatch("pointerdown", grip, { clientX: 100, clientY: 100 });
+  f.dispatch("pointermove", grip, { clientX: 100 + target.left - origin.left, clientY: 100 + target.top - origin.top, altKey: true });
+  f.dispatch(commit ? "pointerup" : "pointercancel", grip);
+  f.flush();
+}
+
+function sidebarNodes(f: Fixture) {
+  return [...new Set([f.nativeSidebarSurface, f.nativeRailSurface, f.sidebarShell, f.native.rail, f.native.sidebar])];
+}
+
+for (const splitShells of [false, true]) {
+  const variant = splitShells ? "split painted shells" : "a common painted aside";
+  test(`sidebar dragging moves the rail, content and background together for ${variant}`, () => {
+    const f = fixture(true, undefined, true, { splitShells });
+    f.reduced(true); f.runtime().setEditing(true); f.flush();
+    const nodes = sidebarNodes(f);
+    const parents = nodes.map((node) => node.parentElement);
+    const before = nodes.map((node) => node.getBoundingClientRect());
+    const grips = f.document.querySelectorAll(".codex-plus-custom-layout-grip");
+    assert.equal(grips.filter((grip) => grip.getAttribute("aria-label")?.startsWith("拖动侧边栏")).length, 1);
+    assert.equal(grips.filter((grip) => grip.getAttribute("aria-label")?.startsWith("拖动图标栏")).length, 0);
+    dragSidebar(f, { left: 400, top: 20 });
+    const after = nodes.map((node) => node.getBoundingClientRect());
+    const delta = { x: after[0].left - before[0].left, y: after[0].top - before[0].top };
+    for (let index = 0; index < nodes.length; index++) {
+      assert.ok(Math.abs(after[index].left - before[index].left - delta.x) < .01, "all painted shells and their contents share one horizontal movement");
+      assert.ok(Math.abs(after[index].top - before[index].top - delta.y) < .01, "all painted shells and their contents share one vertical movement");
+      assert.equal(nodes[index].parentElement, parents[index], "React's parent relationships remain intact");
+    }
+    assert.equal(f.nativeRailSurface.getBoundingClientRect().left, 400);
+    assert.equal(f.nativeRailSurface.getBoundingClientRect().top, 20);
+    assert.equal(f.nativeSidebarSurface.style.position, "fixed");
+    assert.equal(f.nativeRailSurface.style.position, "fixed");
+    assert.equal(f.nativeSidebarSurface.style.backgroundColor, "rgb(32, 32, 32)");
+    assert.equal(f.nativeSidebarSurface.style.borderRightWidth, "1px");
+    assert.equal(f.native.rail.style.position, "", "the rail content stays in its painted shell");
+    assert.equal(f.native.sidebar.style.position, "", "the chat content stays in its painted shell");
+    assert.equal(f.sidebarShell.style.position, "", "no empty original shell is left behind a separately floated child");
+    assert.equal(f.appRoot.style.position, "", "the application root is not mistaken for the shared sidebar surface");
+    const saved = JSON.parse(f.stored.get(storageKey)!);
+    assert.equal(saved.panels.sidebar.grouped, true);
+    assert.equal(saved.panels.sidebar.width, 270);
+    assert.equal(saved.panels.rail, undefined, "rail and sidebar participate as one solver and persistence entry");
+  });
+
+  test(`cancel, reset and disable restore every sidebar part for ${variant}`, () => {
+    const f = fixture(false, undefined, true, { splitShells });
+    const nodes = sidebarNodes(f);
+    const beforeStyles = nodes.map((node) => node.style.cssText);
+    const beforeRects = nodes.map((node) => node.getBoundingClientRect());
+    f.settings.customLayout = true; f.install(); f.reduced(true); f.runtime().setEditing(true); f.flush();
+    dragSidebar(f, { left: 400, top: 20 }, false);
+    assert.deepEqual(nodes.map((node) => node.getBoundingClientRect()), beforeRects);
+    assert.deepEqual(nodes.map((node) => node.style.cssText), beforeStyles);
+    assert.equal(f.writes.length, 0);
+    dragSidebar(f, { left: 400, top: 20 });
+    f.runtime().reset(); f.flush();
+    assert.deepEqual(nodes.map((node) => node.getBoundingClientRect()), beforeRects);
+    assert.deepEqual(nodes.map((node) => node.style.cssText), beforeStyles);
+    assert.deepEqual(JSON.parse(f.stored.get(storageKey)!), { version: 1, panels: {} });
+    dragSidebar(f, { left: 400, top: 20 });
+    f.nativeSidebarSurface.style.backgroundColor = "rgb(45, 45, 45)";
+    f.settings.customLayout = false; f.install();
+    assert.deepEqual(nodes.map((node) => node.getBoundingClientRect()), beforeRects);
+    assert.equal(f.nativeSidebarSurface.style.backgroundColor, "rgb(45, 45, 45)", "unrelated native paint updates survive cleanup");
+    for (const node of nodes) assert.equal(node.style.position, "");
+    assert.equal(f.nativeSidebarSurface.style.borderRightWidth, "1px");
+    assert.equal(f.nativeSidebarSurface.style.overflow, "hidden");
+    assert.equal(f.frames.size, 0); assert.equal(f.timers.size, 0);
+  });
+}
+
+test("sidebar drag coordinates remain viewport-relative when the application is zoomed", () => {
+  for (const splitShells of [false, true]) {
+    const f = fixture(true, undefined, true, { splitShells, zoom: 1.5 });
+    f.reduced(true); f.runtime().setEditing(true); f.flush();
+    dragSidebar(f, { left: 400, top: 20 });
+    const rail = f.nativeRailSurface.getBoundingClientRect();
+    const sidebar = f.native.sidebar.getBoundingClientRect();
+    assert.ok(Math.abs(rail.left - 400) < .01);
+    assert.ok(Math.abs(rail.top - 20) < .01);
+    assert.ok(Math.abs(sidebar.left - rail.left - 54) < .01);
+    assert.ok(Math.abs(parseFloat(f.nativeRailSurface.style.left) - 400 / 1.5) < .01, "CSS offsets compensate for ancestor zoom");
+    assert.equal(JSON.parse(f.stored.get(storageKey)!).panels.sidebar.width, 270, "saved geometry remains in viewport pixels");
+  }
+});
+
+test("consecutive common-shell resizing keeps the rail fixed-width and restores native child sizing", () => {
+  for (const finish of ["reset", "disable"]) {
+    const f = fixture(false);
+    f.sidebarShell.style.setProperty("flex-basis", "216px", "important");
+    f.sidebarShell.style.flexGrow = "0"; f.sidebarShell.style.flexShrink = "0";
+    f.native.rail.style.flexBasis = "54px";
+    const nodes = sidebarNodes(f);
+    const originalStyles = nodes.map((node) => node.style.cssText);
+    const parents = nodes.map((node) => node.parentElement);
+    f.settings.customLayout = true; f.install(); f.reduced(true); f.runtime().setEditing(true); f.flush();
+    dragSidebar(f, { left: 400, top: 20 });
+    for (const expectedWidth of [246, 234]) {
+      const resize = f.document.querySelectorAll(".codex-plus-custom-layout-grip")
+        .find((grip) => grip.getAttribute("aria-label") === "调整侧边栏尺寸");
+      assert.ok(resize);
+      f.dispatch("keydown", resize, { key: "ArrowLeft", shiftKey: true });
+      f.flush(); f.runtime().refresh();
+      const surface = f.nativeSidebarSurface.getBoundingClientRect();
+      const rail = f.native.rail.getBoundingClientRect();
+      const chat = f.sidebarShell.getBoundingClientRect();
+      assert.equal(surface.width, expectedWidth);
+      assert.equal(f.nativeSidebarSurface.style.position, "fixed");
+      assert.equal(f.native.rail.style.position, ""); assert.equal(f.sidebarShell.style.position, "");
+      assert.equal(rail.width, 54);
+      assert.equal(chat.width, expectedWidth - 54);
+      assert.ok(Math.abs(chat.left - rail.right) < .01, "rail and chat remain adjacent after every resize");
+      assert.ok(Math.abs(chat.right - surface.right) < .01, "child content does not overflow the painted parent");
+      assert.equal(f.native.sidebar.getBoundingClientRect().width, expectedWidth - 54);
+      assert.equal(f.window.testLayout!().panels.sidebar.grouped, true);
+      assert.equal(f.document.querySelectorAll(".codex-plus-custom-layout-grip").filter((grip) => grip.getAttribute("aria-label")?.startsWith("拖动侧边栏")).length, 1);
+      assert.deepEqual(nodes.map((node) => node.parentElement), parents);
+    }
+    if (finish === "reset") { f.runtime().reset(); f.flush(); }
+    else { f.settings.customLayout = false; f.install(); }
+    assert.deepEqual(nodes.map((node) => node.style.cssText), originalStyles, `${finish} restores each original width and flex property`);
+    assert.equal(f.sidebarShell.style.getPropertyPriority("flex-basis"), "important");
+    assert.equal(f.nativeSidebarSurface.getBoundingClientRect().width, 270);
+    assert.equal(f.sidebarShell.getBoundingClientRect().width, 216);
+    assert.equal(f.native.rail.getBoundingClientRect().width, 54);
+  }
+});
+
+test("replacing a common-shell sidebar child preserves the grouped owner during its temporary width mismatch", () => {
+  const f = fixture(true);
+  f.reduced(true); f.runtime().setEditing(true); f.flush();
+  dragSidebar(f, { left: 400, top: 20 });
+  const resize = f.document.querySelectorAll(".codex-plus-custom-layout-grip")
+    .find((grip) => grip.getAttribute("aria-label") === "调整侧边栏尺寸");
+  assert.ok(resize);
+  for (let count = 0; count < 2; count++) { f.dispatch("keydown", resize, { key: "ArrowLeft", shiftKey: true }); f.flush(); }
+  const saved = f.stored.get(storageKey);
+  const previous = f.sidebarShell;
+  previous.remove();
+  const shell = f.document.createElement("div");
+  shell.id = "app-shell-sidebar"; shell.nativeRect = { ...previous.nativeRect };
+  shell.style.flexBasis = "216px";
+  const sidebar = f.document.createElement("div");
+  sidebar.className = "sidebar-navigation"; sidebar.nativeRect = { ...f.native.sidebar.nativeRect };
+  shell.append(sidebar); f.nativeSidebarSurface.append(shell);
+  assert.equal(shell.getBoundingClientRect().width, 216, "the rebuilt native child temporarily exceeds its resized parent");
+  f.runtime().refresh(); f.flush();
+  assert.equal(f.nativeSidebarSurface.style.position, "fixed");
+  assert.equal(f.nativeSidebarSurface.getBoundingClientRect().width, 234);
+  assert.equal(shell.style.position, ""); assert.equal(sidebar.style.position, "");
+  assert.equal(shell.getBoundingClientRect().width, 180);
+  assert.equal(f.native.rail.getBoundingClientRect().width, 54);
+  assert.ok(Math.abs(shell.getBoundingClientRect().left - f.native.rail.getBoundingClientRect().right) < .01);
+  assert.equal(shell.parentElement, f.nativeSidebarSurface);
+  assert.equal(sidebar.parentElement, shell);
+  assert.equal(previous.style.width, "", "the stale child is released when React replaces it");
+  assert.equal(f.stored.get(storageKey), saved);
+  assert.equal(f.document.querySelectorAll(".codex-plus-custom-layout-grip").filter((grip) => grip.getAttribute("aria-label")?.startsWith("拖动侧边栏")).length, 1);
+  f.runtime().reset(); f.flush();
+  assert.equal(shell.style.width, "");
+  assert.equal(shell.style.flexBasis, "216px");
+  assert.equal(shell.getBoundingClientRect().width, 216);
+});
+
+test("legacy sidebar and rail records migrate once into the grouped sidebar without losing the preferred chat position", () => {
+  const f = fixture();
+  const runtimeBounds = { left: 8, top: 8, width: 1184, height: 784 };
+  const sidebarRecord = f.geometry.rectToRecord({ left: 454, top: 20, width: 216, height: 752 }, runtimeBounds);
+  const railRecord = f.geometry.rectToRecord({ left: 80, top: 20, width: 54, height: 752 }, runtimeBounds);
+  const legacy = JSON.stringify({ version: 1, panels: { sidebar: sidebarRecord, rail: railRecord } });
+  const migrated = fixture(true, legacy);
+  migrated.flush();
+  const record = migrated.window.testLayout!().panels.sidebar;
+  assert.equal(record.grouped, true);
+  assert.equal(record.width, 270);
+  assert.equal(migrated.window.testLayout!().panels.rail, undefined);
+  assert.ok(Math.abs(migrated.native.sidebar.getBoundingClientRect().left - 454) < .01, "legacy sidebar coordinates take precedence over a conflicting rail record");
+  const migratedWidth = record.width;
+  for (let count = 0; count < 3; count++) migrated.runtime().refresh();
+  assert.equal(migrated.window.testLayout!().panels.sidebar.width, migratedWidth, "refresh must not repeatedly add the rail width");
+  const grouped = JSON.stringify(migrated.window.testLayout!());
+  const reopened = fixture(true, grouped);
+  assert.equal(reopened.window.testLayout!().panels.sidebar.width, 270);
+  assert.ok(Math.abs(reopened.native.sidebar.getBoundingClientRect().left - 454) < .01);
+  const railOnly = fixture(true, JSON.stringify({ version: 1, panels: { rail: { ...railRecord, x: .5 } } }));
+  const railOnlyRecord = railOnly.window.testLayout!().panels.sidebar;
+  assert.equal(railOnlyRecord.grouped, true);
+  assert.equal(railOnlyRecord.width, 270);
+  assert.equal(railOnly.window.testLayout!().panels.rail, undefined);
+  assert.equal(railOnly.nativeSidebarSurface.style.position, "fixed");
+});
+
+test("a rebuilt sidebar painted parent receives the grouped layout while its stale React subtree is released", () => {
+  const f = fixture(true);
+  f.reduced(true); f.runtime().setEditing(true); f.flush();
+  dragSidebar(f, { left: 400, top: 20 });
+  const saved = f.stored.get(storageKey);
+  const previous = f.nativeSidebarSurface;
+  const previousRect = previous.getBoundingClientRect();
+  previous.remove(); f.runtime().refresh();
+  assert.equal(previous.style.position, "");
+  const replacement = f.document.createElement("aside");
+  replacement.nativeRect = { ...previous.nativeRect };
+  replacement.className = "app-shell-left-panel";
+  replacement.style.backgroundColor = "rgb(32, 32, 32)";
+  const rail = f.document.createElement("nav");
+  rail.nativeRect = { ...f.native.rail.nativeRect }; rail.setAttribute("data-app-navigation-rail", "");
+  const shell = f.document.createElement("div");
+  shell.nativeRect = { ...f.sidebarShell.nativeRect }; shell.id = "app-shell-sidebar";
+  const sidebar = f.document.createElement("div");
+  sidebar.nativeRect = { ...f.native.sidebar.nativeRect }; sidebar.className = "sidebar-navigation";
+  replacement.append(rail, shell); shell.append(sidebar); f.appRoot.append(replacement);
+  f.runtime().refresh(); f.flush();
+  assert.equal(replacement.style.position, "fixed");
+  assert.ok(Math.abs(replacement.getBoundingClientRect().left - previousRect.left) < .01);
+  assert.ok(Math.abs(replacement.getBoundingClientRect().top - previousRect.top) < .01);
+  assert.equal(rail.parentElement, replacement);
+  assert.equal(sidebar.parentElement, shell);
+  assert.equal(rail.style.position, ""); assert.equal(sidebar.style.position, "");
+  assert.equal(f.stored.get(storageKey), saved, "React parent replacement does not rewrite the saved layout");
+});
 
 test("dragging saves once on completion, restores next launch, and stays inside a resized window", () => {
   const f = fixture(true);
@@ -583,8 +849,10 @@ test("custom layout releases the composer centering snapshot before taking owner
 
 function collisionFixture(reducedMotion = false) {
   const f = fixture(false);
+  f.nativeSidebarSurface.nativeRect = { left: 8, top: 8, width: 292, height: 400 };
   f.native.rail.nativeRect = { left: 8, top: 8, width: 54, height: 400 };
   f.native.sidebar.nativeRect = { left: 80, top: 8, width: 220, height: 400 };
+  f.sidebarShell.nativeRect = { ...f.native.sidebar.nativeRect };
   f.native.summary.nativeRect = { left: 620, top: 180, width: 260, height: 200 };
   f.native.composer.nativeRect = { left: 330, top: 600, width: 320, height: 120 };
   f.reduced(reducedMotion);
@@ -637,6 +905,8 @@ test("the active panel follows the pointer immediately while displaced panels sp
   const saved = JSON.parse(f.stored.get(storageKey)!);
   assert.ok(saved.panels.composer && saved.panels.summary);
   const reopened = fixture(false, f.stored.get(storageKey));
+  reopened.nativeSidebarSurface.nativeRect = { ...f.nativeSidebarSurface.nativeRect };
+  reopened.sidebarShell.nativeRect = { ...f.sidebarShell.nativeRect };
   for (const id of Object.keys(f.native) as Array<keyof typeof f.native>) reopened.native[id].nativeRect = { ...f.native[id].nativeRect };
   reopened.settings.customLayout = true; reopened.install(); reopened.flush();
   assertNoOverlap(reopened);

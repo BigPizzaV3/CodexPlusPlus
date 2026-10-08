@@ -205,61 +205,6 @@ body {
   padding: 14px 10px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px 16px;
-  border-bottom: 1px solid hsl(var(--sidebar-border));
-}
-
-.brand-copy {
-  min-width: 0;
-}
-
-.brand-title-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 6px;
-  background: hsl(var(--brand-accent));
-  color: hsl(var(--primary-foreground));
-  font-weight: 700;
-}
-
-.brand-title {
-  color: hsl(var(--foreground));
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.update-dot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid hsl(var(--brand-accent) / 0.42);
-  border-radius: 999px;
-  background: hsl(var(--brand-accent) / 0.16);
-  color: hsl(var(--brand-accent));
-  cursor: pointer;
-  padding: 0;
-}
-
-.update-dot:hover {
-  background: hsl(var(--brand-accent) / 0.26);
-  transform: translateY(-1px);
-}
-
 .nav {
   display: grid;
   gap: 4px;
@@ -5586,26 +5531,14 @@ select {
 /* ── 外壳 ───────────────────────────────────────────────────── */
 
 .shell {
-  --window-header-height: 40px;
   grid-template-columns: 64px 232px minmax(0, 1fr);
-  grid-template-rows: var(--window-header-height) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   background: hsl(var(--shell-bg));
 }
 
 /* 通用页面直接占满应用栏右侧，不保留 Agent 导航列。 */
 .shell.global-workspace {
   grid-template-columns: 64px minmax(0, 1fr);
-}
-
-/* 应用标题属于整个窗口，横跨 Agent 栏、页面导航和工作区。 */
-.window-header {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  border-bottom: 1px solid hsl(var(--sidebar-border));
-  background: hsl(var(--sidebar-bg));
-  padding: 6px 14px;
 }
 
 /* ── 侧边栏 ─────────────────────────────────────────────────── */
@@ -5616,57 +5549,6 @@ select {
   border-right: 1px solid hsl(var(--sidebar-border));
   background: hsl(var(--sidebar-bg));
   padding: 14px 12px 12px;
-}
-
-.brand {
-  align-items: center;
-  gap: 9px;
-  min-height: 0;
-  border-bottom: 0;
-  padding: 0;
-}
-
-/* 品牌标记：渐变方块 + C++ 字形 */
-.brand::before {
-  content: "C++";
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(140deg, hsl(var(--brand-accent)), hsl(var(--brand-accent-2)));
-  box-shadow:
-    0 4px 14px hsl(var(--brand-accent) / 0.34),
-    inset 0 1px 0 hsl(0 0% 100% / 0.22);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.brand-title-row {
-  gap: 7px;
-}
-
-.brand-title {
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
-  line-height: 1.2;
-}
-
-.update-dot {
-  width: 20px;
-  height: 20px;
-  border: 0;
-  background: hsl(var(--brand-accent) / 0.16);
-  color: hsl(var(--brand-accent));
-}
-
-.update-dot:hover {
-  background: hsl(var(--brand-accent) / 0.28);
-  transform: none;
 }
 
 .nav {
@@ -5928,8 +5810,15 @@ select {
   opacity: 1;
 }
 
-.dark .tool-chip-icon-grok {
-  filter: brightness(0) invert(1);
+/* 品牌标志统一用单色蒙版，随按钮的主题、选中和悬停颜色变化。 */
+.tool-chip-brand-icon {
+  background-color: currentColor;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
 }
 
 /* ── Grok 供应商页 ──────────────────────────────────────────── */
@@ -6155,7 +6044,7 @@ select {
 }
 
 .fill {
-  min-height: calc(100vh - 132px - var(--window-header-height));
+  min-height: calc(100vh - 132px);
 }
 
 .hero-content {

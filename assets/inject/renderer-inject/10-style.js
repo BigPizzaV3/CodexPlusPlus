@@ -1325,6 +1325,553 @@
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
       .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
+      /* Codex++ 设置主页：对齐原生设置页，保持其它页面与弹窗的布局独立。 */
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] {
+        background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body {
+        box-sizing: border-box;
+        padding: 72px 32px 64px;
+      }
+      .codex-plus-settings {
+        width: 100%;
+        max-width: 740px;
+        min-width: 0;
+        margin: 0 auto;
+        container: codex-plus-settings / inline-size;
+      }
+      .codex-plus-settings > .codex-plus-modal-header {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0;
+        margin: 0 0 48px;
+        gap: 16px;
+      }
+      .codex-plus-settings .codex-plus-modal-title {
+        min-width: 0;
+        font-size: 28px;
+        font-weight: 600;
+        line-height: 36px;
+        letter-spacing: -.02em;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-settings-section { margin: 0 0 48px; }
+      .codex-plus-settings-section:last-child { margin-bottom: 0; }
+      .codex-plus-settings-section-title {
+        margin: 0 0 16px;
+        color: var(--codex-plus-text);
+        font-size: 14px;
+        font-weight: 550;
+        line-height: 20px;
+      }
+      .codex-plus-settings-card,
+      .codex-plus-settings > [data-codex-plus-ext-menu] {
+        box-sizing: border-box;
+        min-width: 0;
+        padding: 0 16px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 16px;
+        background: var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary));
+      }
+      .codex-plus-settings > [data-codex-plus-ext-menu] { margin-top: 48px; }
+      .codex-plus-settings .codex-plus-row {
+        box-sizing: border-box;
+        min-height: 60px;
+        align-items: center;
+        gap: 24px;
+        padding: 10px 0;
+        font-size: 14px;
+        line-height: 20px;
+      }
+      .codex-plus-settings .codex-plus-row[hidden] { display: none; }
+      .codex-plus-settings .codex-plus-row > :first-child {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-settings .codex-plus-row > :not(:first-child) { max-width: 48%; }
+      .codex-plus-settings .codex-plus-row-title { font-weight: 500; line-height: 20px; }
+      .codex-plus-settings .codex-plus-row-description,
+      .codex-plus-settings .codex-plus-about {
+        margin-top: 2px;
+        color: var(--codex-plus-text-secondary);
+        font-size: 13px;
+        line-height: 18px;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-settings .codex-plus-toggle {
+        flex: 0 0 32px;
+        width: 32px;
+        height: 20px;
+        min-height: 20px;
+        box-sizing: border-box;
+        padding: 2px;
+        background: var(--codex-plus-switch-off, #3a3a3a);
+        cursor: pointer;
+      }
+      .codex-plus-settings .codex-plus-toggle span {
+        width: 16px;
+        height: 16px;
+        background: var(--codex-plus-switch-thumb, #fff);
+      }
+      .codex-plus-settings .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
+      .codex-plus-settings .codex-plus-toggle[data-enabled="true"] span { transform: translateX(12px); }
+      .codex-plus-settings .codex-plus-toggle[data-pending="true"],
+      .codex-plus-settings .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
+      .codex-plus-settings .codex-plus-width-control {
+        flex: 0 1 auto;
+        min-width: 0;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .codex-plus-settings .codex-plus-service-tier-control {
+        flex: 0 1 300px;
+        min-width: 0;
+      }
+      .codex-plus-settings .codex-plus-service-tier-status { overflow-wrap: anywhere; }
+      .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
+      .codex-plus-settings .codex-plus-action-button,
+      .codex-plus-settings .codex-plus-issue-button,
+      .codex-plus-settings .codex-plus-service-tier-button,
+      .codex-plus-settings .codex-plus-width-input,
+      .codex-plus-settings .codex-plus-typing-effect-select {
+        box-sizing: border-box;
+        min-height: 32px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 8px;
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text);
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 18px;
+      }
+      .codex-plus-settings .codex-plus-width-input,
+      .codex-plus-settings .codex-plus-typing-effect-select { height: 32px; }
+      .codex-plus-settings .codex-plus-width-input { width: 72px; min-width: 48px; }
+      .codex-plus-settings .codex-plus-typing-effect-select { min-width: 0; }
+      .codex-plus-settings .codex-plus-typing-effect-select[hidden] { display: none; }
+      .codex-plus-settings .codex-plus-dropdown-trigger {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        align-self: center;
+        justify-content: space-between;
+        gap: 8px;
+        height: 28px;
+        min-width: 112px;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 8px;
+        padding: 3px 10px;
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .codex-plus-settings .codex-plus-dropdown-trigger > svg {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+        color: var(--codex-plus-text-secondary);
+      }
+      .codex-plus-settings .codex-plus-dropdown-trigger:hover:not(:disabled),
+      .codex-plus-settings .codex-plus-dropdown-trigger[aria-expanded="true"] { background: var(--codex-plus-bg-hover); }
+      .codex-plus-settings .codex-plus-dropdown-trigger:disabled { cursor: not-allowed; opacity: .55; }
+      /* 菜单挂在 overlay 上，避免设置卡片或滚动容器裁切。 */
+      .codex-plus-dropdown-menu {
+        position: absolute;
+        z-index: 2;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        width: 220px;
+        max-width: calc(100% - 16px);
+        box-sizing: border-box;
+        padding: 6px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 14px;
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        font-family: inherit;
+        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
+      }
+      .codex-plus-dropdown-menu[hidden] { display: none; }
+      .codex-plus-dropdown-option {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        width: 100%;
+        min-height: 28px;
+        box-sizing: border-box;
+        border: 0;
+        border-radius: 8px;
+        padding: 4px 12px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 14px;
+        line-height: 20px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .codex-plus-dropdown-option > svg {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+        visibility: hidden;
+      }
+      .codex-plus-dropdown-option[aria-selected="true"] > svg { visibility: visible; }
+      .codex-plus-dropdown-option:hover,
+      .codex-plus-dropdown-option:focus-visible {
+        background: var(--codex-plus-bg-hover);
+        outline: none;
+      }
+      .codex-plus-settings .codex-plus-action-button,
+      .codex-plus-settings .codex-plus-issue-button { white-space: normal; overflow-wrap: anywhere; }
+      .codex-plus-settings .codex-plus-action-button:hover,
+      .codex-plus-settings .codex-plus-action-button:focus-visible,
+      .codex-plus-settings .codex-plus-issue-button:hover,
+      .codex-plus-settings .codex-plus-issue-button:focus-visible,
+      .codex-plus-settings .codex-plus-service-tier-button:hover,
+      .codex-plus-settings .codex-plus-service-tier-button:focus-visible {
+        border-color: var(--codex-plus-border);
+        background: var(--codex-plus-bg-hover);
+        color: var(--codex-plus-text);
+      }
+      .codex-plus-settings .codex-plus-service-tier-button[data-active="true"] {
+        border-color: var(--codex-plus-switch-on, #3485ff);
+        background: color-mix(in srgb, var(--codex-plus-switch-on, #3485ff) 16%, var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary)));
+        color: var(--codex-plus-text);
+      }
+      .codex-plus-settings button:focus-visible,
+      .codex-plus-settings input:focus-visible,
+      .codex-plus-settings select:focus-visible {
+        outline: 2px solid var(--codex-plus-switch-on, #3485ff);
+        outline-offset: 3px;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] { container: codex-plus-settings-page / inline-size; }
+      @container codex-plus-settings-page (max-width: 800px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 48px 24px; }
+      }
+      @container codex-plus-settings-page (max-width: 480px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 32px 16px; }
+      }
+      @container codex-plus-settings (max-width: 560px) {
+        .codex-plus-settings .codex-plus-row { gap: 16px; }
+        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] { flex-wrap: wrap; }
+        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > :first-child { flex-basis: 100%; }
+        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > .codex-plus-service-tier-control { flex-basis: 100%; max-width: 100%; }
+      }
+      /* 拓展与推荐内容使用原生插件页面的导航、标题和轻量列表布局。 */
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) {
+        background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
+        container: codex-plus-discovery-page / inline-size;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) > .codex-plus-modal-header { display: none; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body {
+        box-sizing: border-box;
+        padding: 32px 32px 56px;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav {
+        box-sizing: border-box;
+        width: 312px;
+        flex-basis: 312px;
+        background: var(--codex-plus-nav-bg, var(--codex-plus-bg-secondary));
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-header { padding: 16px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-title { font-size: 18px; line-height: 24px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-body { padding: 0 12px 20px; }
+      .codex-plus-extensions-nav-entry {
+        min-height: 36px;
+        gap: 10px;
+        box-sizing: border-box;
+        padding: 8px 12px;
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 20px;
+      }
+      .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-icon,
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon {
+        flex: 0 0 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        padding: 0;
+        background: transparent;
+      }
+      .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-icon svg,
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon svg,
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon-img { width: 20px; height: 20px; }
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon-img { display: block; object-fit: contain; }
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-item-name { font-weight: 400; }
+      .codex-plus-extensions-nav-entry + .codex-plus-page-nav-group { margin-top: 24px; }
+      .codex-plus-extensions-nav-entry:hover .codex-plus-extensions-item-name { text-decoration: none; }
+      .codex-plus-discovery {
+        width: 100%;
+        max-width: 900px;
+        min-width: 0;
+        margin: 0 auto;
+        padding: 0;
+        container: codex-plus-discovery / inline-size;
+      }
+      .codex-plus-discovery-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .codex-plus-discovery-header > :first-child { flex: 1 1 auto; min-width: 0; }
+      .codex-plus-discovery-title {
+        margin: 0;
+        color: var(--codex-plus-text);
+        font-size: 26px;
+        font-weight: 600;
+        line-height: 34px;
+        letter-spacing: -.02em;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-discovery-description {
+        margin: 12px 0 0;
+        color: var(--codex-plus-text-secondary);
+        font-size: 14px;
+        line-height: 20px;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-discovery-toolbar { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; }
+      .codex-plus-discovery-search {
+        display: flex;
+        flex: 0 1 240px;
+        align-items: center;
+        gap: 8px;
+        width: 240px;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+      }
+      .codex-plus-discovery-search > svg { flex: 0 0 16px; width: 16px; height: 16px; }
+      .codex-plus-discovery-search input {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        padding: 0;
+        outline: none;
+        background: transparent;
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        line-height: 18px;
+      }
+      .codex-plus-discovery-search input::placeholder { color: var(--codex-plus-text-tertiary); }
+      .codex-plus-discovery-search:focus-within {
+        outline: 2px solid var(--codex-plus-switch-on, #3485ff);
+        outline-offset: 2px;
+      }
+      .codex-plus-discovery-icon-button {
+        display: inline-flex;
+        flex: 0 0 32px;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        box-sizing: border-box;
+        border: 0;
+        border-radius: 8px;
+        padding: 0;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+        cursor: pointer;
+      }
+      .codex-plus-discovery-icon-button svg { width: 16px; height: 16px; }
+      .codex-plus-discovery-icon-button:hover { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
+      .codex-plus-discovery-icon-button:disabled { opacity: .55; cursor: not-allowed; }
+      .codex-plus-extensions-filter { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+      .codex-plus-extensions-filter button {
+        border: 0;
+        border-radius: 999px;
+        padding: 8px 16px;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+        font: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .codex-plus-extensions-filter button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
+      .codex-plus-extensions-filter button:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-discovery-section-title {
+        margin: 32px 0 16px;
+        color: var(--codex-plus-text);
+        font-size: 16px;
+        font-weight: 550;
+        line-height: 24px;
+      }
+      .codex-plus-extensions-grid,
+      .codex-plus-discovery .codex-plus-ad-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 32px; }
+      .codex-plus-extensions-grid > .codex-plus-extensions-detail-empty,
+      .codex-plus-discovery .codex-plus-ad-empty { grid-column: 1 / -1; }
+      .codex-plus-extension-card {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        min-width: 0;
+        min-height: 56px;
+        box-sizing: border-box;
+        border: 0;
+        padding: 8px 0;
+        background: transparent;
+      }
+      .codex-plus-extension-card-select {
+        display: flex;
+        flex: 1 1 auto;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        border: 0;
+        border-radius: 8px;
+        padding: 0;
+        background: transparent;
+        color: var(--codex-plus-text);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .codex-plus-extension-card-icon {
+        display: inline-flex;
+        flex: 0 0 36px;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 10px;
+        color: var(--codex-plus-text-secondary);
+      }
+      .codex-plus-extension-card-icon svg { width: 24px; height: 24px; }
+      .codex-plus-extension-card-icon img { width: 32px; height: 32px; object-fit: contain; border-radius: 8px; }
+      .codex-plus-extension-card-copy { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+      .codex-plus-extension-card-title {
+        overflow: hidden;
+        color: var(--codex-plus-text);
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 20px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .codex-plus-extension-card-description {
+        display: block;
+        overflow: hidden;
+        color: var(--codex-plus-text-secondary);
+        font-size: 13px;
+        line-height: 18px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .codex-plus-extension-card-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+      .codex-plus-discovery .codex-plus-extensions-detail { max-width: 900px; margin: 0 auto; padding: 0 0 24px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-head { align-items: center; border-bottom: 0; gap: 20px; padding-bottom: 20px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-title { font-size: 26px; line-height: 34px; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-extensions-detail-icon img { width: 40px; height: 40px; object-fit: contain; border-radius: 8px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-description { font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-wrap: wrap; }
+      .codex-plus-discovery .codex-plus-extensions-detail-button { min-height: 32px; box-sizing: border-box; }
+      .codex-plus-discovery .codex-plus-extensions-detail-primary {
+        border-color: var(--codex-plus-text);
+        background: var(--codex-plus-text);
+        color: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary));
+      }
+      .codex-plus-discovery .codex-plus-extensions-detail-primary:hover {
+        background: color-mix(in srgb, var(--codex-plus-text) 90%, transparent);
+        color: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary));
+      }
+      .codex-plus-discovery .codex-plus-extensions-detail-link a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); }
+      .codex-plus-discovery .codex-plus-toggle { flex: 0 0 32px; width: 32px; height: 20px; min-height: 20px; box-sizing: border-box; padding: 2px; background: var(--codex-plus-switch-off, #3a3a3a); cursor: pointer; }
+      .codex-plus-discovery .codex-plus-toggle span { width: 16px; height: 16px; background: var(--codex-plus-switch-thumb, #fff); }
+      .codex-plus-discovery .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
+      .codex-plus-discovery .codex-plus-toggle[data-enabled="true"] span { transform: translateX(12px); }
+      .codex-plus-discovery .codex-plus-toggle[data-pending="true"],
+      .codex-plus-discovery .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
+      .codex-plus-extensions-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 24px;
+        border: 0;
+        border-radius: 8px;
+        padding: 4px 0;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+        font: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .codex-plus-extensions-back svg { width: 16px; height: 16px; }
+      .codex-plus-extensions-back:hover { color: var(--codex-plus-text); }
+      .codex-plus-discovery button:focus-visible,
+      .codex-plus-discovery a:focus-visible,
+      .codex-plus-extensions-nav-entry:focus-visible { outline: 2px solid var(--codex-plus-switch-on, #3485ff); outline-offset: 3px; }
+      .codex-plus-discovery .codex-plus-ad-card {
+        flex-direction: row;
+        align-items: center;
+        gap: 16px;
+        min-height: 72px;
+        min-width: 0;
+        box-sizing: border-box;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 0;
+        background: transparent;
+      }
+      .codex-plus-discovery .codex-plus-ad-card:hover,
+      .codex-plus-discovery .codex-plus-ad-card:focus-visible { background: transparent; }
+      .codex-plus-discovery .codex-plus-ad-main { flex: 1 1 auto; align-items: center; gap: 12px; }
+      .codex-plus-discovery .codex-plus-ad-icon { flex: 0 0 36px; border: 1px solid var(--codex-plus-border); border-radius: 10px; background: transparent; box-sizing: border-box; }
+      .codex-plus-discovery .codex-plus-ad-text { gap: 4px; }
+      .codex-plus-discovery .codex-plus-ad-title { font-size: 14px; font-weight: 500; line-height: 20px; }
+      .codex-plus-discovery .codex-plus-ad-description { font-size: 13px; line-height: 18px; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-ad-promo { border-radius: 0; padding: 0; background: transparent; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; white-space: normal; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-ad-arrow { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin: 0; color: var(--codex-plus-text-secondary); }
+      .codex-plus-discovery .codex-plus-ad-arrow svg { width: 16px; height: 16px; }
+      @container codex-plus-discovery-page (max-width: 900px) {
+        .codex-plus-discovery-header { flex-wrap: wrap; gap: 20px; }
+        .codex-plus-discovery-toolbar { flex-basis: 100%; }
+        .codex-plus-discovery .codex-plus-extensions-detail-head { flex-wrap: wrap; }
+        .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-basis: 100%; }
+      }
+      @container codex-plus-discovery (max-width: 600px) {
+        .codex-plus-extensions-grid,
+        .codex-plus-discovery .codex-plus-ad-list { grid-template-columns: minmax(0, 1fr); }
+      }
+      @container codex-plus-discovery-page (max-width: 700px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav { width: 180px; flex-basis: 180px; }
+        .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 20px 40px; }
+      }
+      @container codex-plus-discovery-page (max-width: 480px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav { width: 56px; flex-basis: 56px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-header { display: none; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-body { padding: 12px 8px; }
+        .codex-plus-extensions-nav-entry { justify-content: center; padding: 8px; }
+        .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-text,
+        .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-name,
+        .codex-plus-extensions-nav-entry .codex-plus-extensions-item-name,
+        .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-state,
+        .codex-plus-extensions-nav-entry .codex-plus-extensions-item-state { display: none; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-group-head,
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-empty { display: none; }
+        .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
+      }
     `;
     document.documentElement.appendChild(style);
   }

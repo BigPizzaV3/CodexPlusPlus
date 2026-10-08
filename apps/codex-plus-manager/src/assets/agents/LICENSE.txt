@@ -1,5 +1,6 @@
-Codex / Grok brand icons from Lobe Icons
+ChatGPT (OpenAI) / Codex / Grok brand icons from Lobe Icons
 Source: https://github.com/lobehub/lobe-icons
+ChatGPT (OpenAI): https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/openai.svg
 Codex: https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/codex-color.svg
 Grok: https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-svg/icons/grok.svg
 Retrieved: 2026-10-08

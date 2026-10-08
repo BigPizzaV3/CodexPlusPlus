@@ -25,7 +25,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Camera,
-  CircleArrowUp,
   Copy,
   Download,
   Edit3,
@@ -933,7 +932,7 @@ type ToolId = string;
 
 /** 品牌图标随应用打包，来源和许可见 assets/agents/LICENSE.txt。 */
 const TOOL_ICONS: Record<string, string> = {
-  codex: new URL("./assets/agents/codex.svg", import.meta.url).href,
+  codex: new URL("./assets/agents/chatgpt.svg", import.meta.url).href,
   grok: new URL("./assets/agents/grok.svg", import.meta.url).href,
 };
 
@@ -3353,33 +3352,10 @@ export function App() {
     }),
     [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
-  const hasUpdate = update?.updateAvailable === true;
   const isGlobalPage = globalNavigationRoutes.includes(route);
 
   return (
     <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
-      <header className="window-header">
-        <div className="brand">
-          <div className="brand-copy">
-            <div className="brand-title-row">
-              <div className="brand-title">Codex++</div>
-              {hasUpdate ? (
-                <button
-                  className="update-dot"
-                  onClick={() => {
-                    setRoute("about");
-                    void checkUpdate(false);
-                  }}
-                  title={tf("发现新版本 {0}", [update?.latestVersion ?? ""])}
-                  type="button"
-                >
-                  <CircleArrowUp className="h-4 w-4" aria-hidden="true" />
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </header>
       <ApplicationRail
         tools={toolEntries}
         activeTool={activeTool}
@@ -10799,7 +10775,11 @@ function ToolSwitcher({
             type="button"
           >
             {icon ? (
-              <img alt="" aria-hidden="true" className={`tool-chip-icon tool-chip-icon-${tool.id}`} draggable={false} src={icon} />
+              <span
+                aria-hidden="true"
+                className={`tool-chip-icon tool-chip-brand-icon tool-chip-icon-${tool.id}`}
+                style={{ maskImage: `url("${icon}")`, WebkitMaskImage: `url("${icon}")` }}
+              />
             ) : (
               <Blocks aria-hidden="true" className="tool-chip-icon" />
             )}

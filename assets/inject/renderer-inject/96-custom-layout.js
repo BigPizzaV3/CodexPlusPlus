@@ -6,7 +6,7 @@
   const codexPlusCustomLayoutOwner = "custom-layout";
   const codexPlusCustomLayoutPanels = {
     rail: { label: "图标栏", minWidth: 44, resizableHeight: true },
-    sidebar: { label: "聊天栏", minWidth: 180, resizableHeight: true },
+    sidebar: { label: "侧边栏", minWidth: 180, resizableHeight: true },
     summary: { label: "详情卡", minWidth: 220, resizableHeight: false },
     composer: { label: "输入框", minWidth: 280, resizableHeight: false },
   };
@@ -31,6 +31,7 @@
         snapX: ["left", "right"].includes(record.snapX) ? record.snapX : null,
         snapY: ["top", "bottom"].includes(record.snapY) ? record.snapY : null,
       };
+      if (id === "sidebar" && record.grouped === true) next.grouped = true;
       for (const dimension of ["width", "height"]) {
         if (typeof record[dimension] === "number" && Number.isFinite(record[dimension]) && record[dimension] > 0) {
           next[dimension] = codexPlusCustomLayoutClamp(record[dimension], 1, 10000);
@@ -186,6 +187,74 @@
     return style.display !== "none" && style.visibility !== "hidden";
   }
 
+  function codexPlusCustomLayoutUnionRect(rects) {
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    return {
+      left, top,
+      width: Math.max(...rects.map((rect) => rect.left + rect.width)) - left,
+      height: Math.max(...rects.map((rect) => rect.top + rect.height)) - top,
+    };
+  }
+
+  function codexPlusCustomLayoutElements(entry) {
+    return entry.elements || [entry.element];
+  }
+
+  function codexPlusCustomLayoutStyledElements(entry) {
+    const elements = codexPlusCustomLayoutElements(entry);
+    return entry.grouped && elements.length === 1
+      ? [...new Set([...elements, entry.railElement, entry.sidebarElement].filter(Boolean))]
+      : elements;
+  }
+
+  function codexPlusCustomLayoutEntryRect(entry) {
+    return codexPlusCustomLayoutUnionRect(codexPlusCustomLayoutElements(entry).map((element) => element.getBoundingClientRect()));
+  }
+
+  function codexPlusCustomLayoutEntryConnected(entry) {
+    return codexPlusCustomLayoutElements(entry).every((element) => element.isConnected);
+  }
+
+  function codexPlusCustomLayoutMinWidth(entry) {
+    return codexPlusCustomLayoutPanels[entry.id].minWidth + (entry.grouped ? entry.railWidth : 0);
+  }
+
+  function codexPlusCustomLayoutRestoreEntry(entry) {
+    for (const element of codexPlusCustomLayoutStyledElements(entry)) {
+      codexPlusCustomLayoutRestoreStyle(codexPlusCustomLayoutState.styled, element);
+    }
+  }
+
+  /** 只选导航自己的外壳，不能把包含主内容或输入框的祖先一起拖走。 */
+  function codexPlusCustomLayoutNavigationShellSafe(element, rect, protectedElements = [], ownedShell = false) {
+    if (!element || element === document.body || element === document.documentElement || !codexPlusCustomLayoutVisible(element)) return false;
+    if (element.matches?.('main, [data-app-shell-main-surface]')
+      || element.querySelector?.('main, [data-app-shell-main-surface], [data-codex-composer-root], [data-summary-panel-variant]')
+      || protectedElements.some((node) => node && (element === node || element.contains?.(node)))) return false;
+    // 已接管的共同壳不会因一次 flex 尺寸重算就被误拆成两个 fixed 面板。
+    if (ownedShell) return true;
+    const measured = element.getBoundingClientRect();
+    // 允许边框和内边距，拒绝覆盖整张工作区的背景容器。
+    return measured.width <= rect.width + 24 && measured.height <= rect.height + 24
+      && measured.left >= rect.left - 12 && measured.top >= rect.top - 12
+      && measured.left <= rect.left + 12 && measured.top <= rect.top + 12
+      && measured.left + measured.width <= rect.left + rect.width + 12
+      && measured.top + measured.height <= rect.top + rect.height + 12
+      && measured.left + measured.width >= rect.left + rect.width - 12
+      && measured.top + measured.height >= rect.top + rect.height - 12;
+  }
+
+  function codexPlusCustomLayoutNavigationPart(element, protectedElements) {
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    let shell = element;
+    for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+      if (codexPlusCustomLayoutNavigationShellSafe(node, rect, protectedElements)) shell = node;
+    }
+    return shell;
+  }
+
   function codexPlusCustomLayoutFindTargets() {
     const firstVisible = (selector) => Array.from(document.querySelectorAll(selector)).find(codexPlusCustomLayoutVisible) || null;
     const rail = firstVisible("nav[data-app-navigation-rail]");
@@ -197,7 +266,34 @@
     let composer = null;
     try { composer = conversationViewFindComposerEl(); } catch {}
     if (!codexPlusCustomLayoutVisible(composer)) composer = null;
-    return { rail, sidebar, summary, composer };
+    const protectedElements = [summary, composer];
+    const railPart = codexPlusCustomLayoutNavigationPart(rail, [...protectedElements, sidebar]);
+    const sidebarPart = codexPlusCustomLayoutNavigationPart(sidebar, [...protectedElements, rail]);
+    if (rail && sidebar) {
+      const union = codexPlusCustomLayoutUnionRect([railPart.getBoundingClientRect(), sidebarPart.getBoundingClientRect()]);
+      const current = codexPlusCustomLayoutState.entries.get("sidebar");
+      let shell = current?.grouped && current.elements.length === 1 && codexPlusCustomLayoutState.styled.has(current.element)
+        && current.element.contains?.(rail) && current.element.contains?.(sidebar)
+        && codexPlusCustomLayoutNavigationShellSafe(current.element, union, protectedElements, true) ? current.element : null;
+      if (!shell) {
+        for (let node = rail.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+          if (node.contains?.(sidebar) && codexPlusCustomLayoutNavigationShellSafe(node, union, protectedElements)) shell = node;
+        }
+      }
+      return {
+        rail: null,
+        sidebar: {
+          element: shell || sidebarPart,
+          elements: shell ? [shell] : [railPart, sidebarPart],
+          grouped: true,
+          railElement: railPart, sidebarElement: sidebarPart,
+          railRect: railPart.getBoundingClientRect(),
+          sidebarRect: sidebarPart.getBoundingClientRect(),
+        },
+        summary, composer,
+      };
+    }
+    return { rail: railPart, sidebar: sidebarPart, summary, composer };
   }
 
   function codexPlusCustomLayoutBounds() {
@@ -345,6 +441,7 @@
     label.textContent = "拖动让位 · 弹簧回弹 · Alt 暂停吸附";
     toolbar.appendChild(label);
     for (const [id, definition] of Object.entries(codexPlusCustomLayoutPanels)) {
+      if (id === "rail" && state.entries.get("sidebar")?.grouped) continue;
       const button = codexPlusCustomLayoutUiNode("button");
       button.type = "button";
       const entry = state.entries.get(id);
@@ -378,15 +475,97 @@
 
   function codexPlusCustomLayoutPreferredRect(entry, bounds) {
     const record = codexPlusCustomLayoutState.layout.panels[entry.id];
-    const measured = entry.element.getBoundingClientRect();
+    const measured = codexPlusCustomLayoutEntryRect(entry);
     const native = { left: measured.left, top: measured.top, width: measured.width, height: measured.height };
     if (!record) return native;
     // 输入框/详情卡的内容决定高度，持久数据只约束其宽度。
     const preferred = { ...record };
     if (!codexPlusCustomLayoutPanels[entry.id].resizableHeight) delete preferred.height;
     return clampRect(recordToRect(preferred, native, bounds), bounds,
-      codexPlusCustomLayoutPanels[entry.id].minWidth,
+      codexPlusCustomLayoutMinWidth(entry),
       codexPlusCustomLayoutPanels[entry.id].resizableHeight ? 80 : 24);
+  }
+
+  function codexPlusCustomLayoutCreateEntry(id, target) {
+    const element = target.element || target;
+    const elements = Array.isArray(target.elements) ? target.elements : [element];
+    const partRects = elements.map((part) => part.getBoundingClientRect());
+    return {
+      id, element, elements, grouped: target.grouped === true,
+      railWidth: target.grouped ? target.railRect.width : 0,
+      railElement: target.railElement, sidebarElement: target.sidebarElement,
+      railRect: target.railRect, sidebarRect: target.sidebarRect,
+      nativeGroupRect: codexPlusCustomLayoutUnionRect(partRects), partRects,
+      handle: null, outline: null, move: null, justAdded: true,
+    };
+  }
+
+  /** v1 的聊天栏/图标栏位置升级为整组位置；正式交互保存时再写回。 */
+  function codexPlusCustomLayoutMigrateNavigation(entry, bounds) {
+    if (!entry?.grouped) return;
+    const panels = codexPlusCustomLayoutState.layout.panels;
+    const sidebarRecord = panels.sidebar;
+    const railRecord = panels.rail;
+    if (sidebarRecord?.grouped !== true && (sidebarRecord || railRecord)) {
+      const native = entry.nativeGroupRect;
+      const part = sidebarRecord ? entry.sidebarRect : entry.railRect;
+      const previous = recordToRect(sidebarRecord || railRecord, part, bounds);
+      const rect = {
+        left: previous.left - (part.left - native.left),
+        top: previous.top - (part.top - native.top),
+        width: previous.width + native.width - part.width,
+        height: previous.height + native.height - part.height,
+      };
+      panels.sidebar = { ...rectToRecord(rect, bounds, sidebarRecord || railRecord), grouped: true };
+    }
+    // 新版只有一个求解单位，旧图标栏记录不能继续与侧边栏竞争位置。
+    delete panels.rail;
+  }
+
+  function codexPlusCustomLayoutNavigationPartRect(entry, rect, part) {
+    const native = entry.nativeGroupRect;
+    const railStart = entry.railRect.left - native.left;
+    const railEnd = railStart + entry.railWidth;
+    const horizontalScale = Math.max(0, (rect.width - entry.railWidth) / Math.max(1, native.width - entry.railWidth));
+    // 调整组宽时保留图标栏宽度，剩余空间交给聊天栏；两块仍是同一个碰撞单位。
+    const x = (value) => value <= railStart ? value * horizontalScale
+      : value < railEnd ? railStart * horizontalScale + value - railStart
+      : railStart * horizontalScale + entry.railWidth + (value - railEnd) * horizontalScale;
+    const left = x(part.left - native.left);
+    const right = x(part.left + part.width - native.left);
+    const verticalScale = rect.height / Math.max(1, native.height);
+    return {
+      left: rect.left + left, top: rect.top + (part.top - native.top) * verticalScale,
+      width: Math.max(1, right - left), height: Math.max(1, part.height * verticalScale),
+    };
+  }
+
+  function codexPlusCustomLayoutPartRect(entry, rect, index) {
+    return entry.elements.length === 1 ? rect : codexPlusCustomLayoutNavigationPartRect(entry, rect, entry.partRects[index]);
+  }
+
+  function codexPlusCustomLayoutApplyNavigationWidths(entry, rect) {
+    if (!entry.grouped || entry.elements.length !== 1) return;
+    for (const [element, native] of [[entry.railElement, entry.railRect], [entry.sidebarElement, entry.sidebarRect]]) {
+      if (!element?.isConnected || element === entry.element) continue;
+      const part = codexPlusCustomLayoutNavigationPartRect(entry, rect, native);
+      const width = `${(part.width / codexPlusCustomLayoutScale(element)).toFixed(3)}px`;
+      // 只约束共同壳里的正常流子面板，不设置 position，不更换滚动/裁剪规则。
+      codexPlusCustomLayoutWriteStyle(codexPlusCustomLayoutState.styled, element, {
+        width, "min-width": "0", "max-width": width, "flex-basis": width,
+        "flex-grow": "0", "flex-shrink": "0", "box-sizing": "border-box",
+      });
+    }
+  }
+
+  function codexPlusCustomLayoutRefreshNavigationParts(entry, target) {
+    if (!entry.grouped || entry.elements.length !== 1) return;
+    const next = [target.railElement, target.sidebarElement];
+    for (const element of [entry.railElement, entry.sidebarElement]) {
+      if (element && !next.includes(element)) codexPlusCustomLayoutRestoreStyle(codexPlusCustomLayoutState.styled, element);
+    }
+    entry.railElement = target.railElement;
+    entry.sidebarElement = target.sidebarElement;
   }
 
   function codexPlusCustomLayoutApplyEntry(entry, bounds) {
@@ -395,7 +574,7 @@
     const motion = state.motions.get(entry.id);
     const projection = state.projectedRects?.[entry.id];
     if (!record && !motion && !projection) {
-      codexPlusCustomLayoutRestoreStyle(state.styled, entry.element);
+      codexPlusCustomLayoutRestoreEntry(entry);
       return;
     }
     if (entry.id === "composer" && !state.styled.has(entry.element)
@@ -406,20 +585,27 @@
       conversationViewState.elements.delete(entry.element);
     }
     const rect = motion?.current || projection || codexPlusCustomLayoutPreferredRect(entry, bounds);
-    const scale = codexPlusCustomLayoutScale(entry.element);
-    const px = (value) => `${(value / scale).toFixed(3)}px`;
-    const values = {
-      position: "fixed", left: px(rect.left), top: px(rect.top), right: "auto", bottom: "auto",
-      width: px(rect.width), "min-width": "0", "max-width": px(bounds.width),
-      "max-height": px(bounds.height), "box-sizing": "border-box", margin: "0",
-      transform: "none", translate: "none", rotate: "none", scale: "none", "z-index": "120",
-    };
-    if (codexPlusCustomLayoutPanels[entry.id].resizableHeight) {
-      values.height = px(rect.height);
-      values["overflow-y"] = "auto";
-      values["overflow-x"] = "hidden";
+    for (const [index, element] of entry.elements.entries()) {
+      const part = codexPlusCustomLayoutPartRect(entry, rect, index);
+      const scale = codexPlusCustomLayoutScale(element);
+      const px = (value) => `${(value / scale).toFixed(3)}px`;
+      const values = {
+        position: "fixed", left: px(part.left), top: px(part.top), right: "auto", bottom: "auto",
+        width: px(part.width), "min-width": "0", "max-width": px(bounds.width),
+        "max-height": px(bounds.height), "box-sizing": "border-box", margin: "0",
+        transform: "none", translate: "none", rotate: "none", scale: "none", "z-index": "120",
+      };
+      if (codexPlusCustomLayoutPanels[entry.id].resizableHeight) {
+        values.height = px(part.height);
+        // 整壳保持宿主自己的滚动分工，不能再给 rail/chat 外面套一层滚动条。
+        if (!entry.grouped) {
+          values["overflow-y"] = "auto";
+          values["overflow-x"] = "hidden";
+        }
+      }
+      codexPlusCustomLayoutWriteStyle(state.styled, element, values);
     }
-    codexPlusCustomLayoutWriteStyle(state.styled, entry.element, values);
+    codexPlusCustomLayoutApplyNavigationWidths(entry, rect);
   }
 
   function codexPlusCustomLayoutInstallHandle(entry) {
@@ -455,7 +641,7 @@
   function codexPlusCustomLayoutPositionHandle(entry) {
     if (!entry.handle || !entry.outline) return;
     const bounds = codexPlusCustomLayoutBounds();
-    const rect = entry.element.getBoundingClientRect();
+    const rect = codexPlusCustomLayoutEntryRect(entry);
     const scale = codexPlusCustomLayoutScale(codexPlusCustomLayoutState.root);
     const left = codexPlusCustomLayoutClamp(rect.left, bounds.left, bounds.left + bounds.width - 24);
     const top = codexPlusCustomLayoutClamp(rect.top, bounds.top, bounds.top + bounds.height - 24);
@@ -469,12 +655,13 @@
 
   function codexPlusCustomLayoutOtherRects(id) {
     return [...codexPlusCustomLayoutState.entries.values()]
-      .filter((entry) => entry.id !== id && codexPlusCustomLayoutVisible(entry.element))
-      .map((entry) => entry.element.getBoundingClientRect());
+      .filter((entry) => entry.id !== id && codexPlusCustomLayoutElements(entry).every(codexPlusCustomLayoutVisible))
+      .map(codexPlusCustomLayoutEntryRect);
   }
 
   function codexPlusCustomLayoutRecordFor(id, rect, snaps = {}) {
     const record = rectToRecord(rect, codexPlusCustomLayoutBounds(), snaps);
+    if (id === "sidebar" && codexPlusCustomLayoutState.entries.get(id)?.grouped) record.grouped = true;
     if (!codexPlusCustomLayoutPanels[id].resizableHeight) delete record.height;
     return record;
   }
@@ -494,11 +681,11 @@
   function codexPlusCustomLayoutCaptureRects() {
     const state = codexPlusCustomLayoutState;
     return Object.fromEntries([...state.entries.values()].map((entry) => {
-      const measured = state.motions.get(entry.id)?.target || state.projectedRects?.[entry.id] || entry.element.getBoundingClientRect();
+      const measured = state.motions.get(entry.id)?.target || state.projectedRects?.[entry.id] || codexPlusCustomLayoutEntryRect(entry);
       const definition = codexPlusCustomLayoutPanels[entry.id];
       return [entry.id, {
         left: measured.left, top: measured.top, width: measured.width, height: measured.height,
-        minWidth: definition.minWidth, minHeight: definition.resizableHeight ? 80 : measured.height,
+        minWidth: codexPlusCustomLayoutMinWidth(entry), minHeight: definition.resizableHeight ? 80 : measured.height,
         canResizeHeight: definition.resizableHeight,
       }];
     }));
@@ -534,7 +721,7 @@
     // 碰撞求解只写目标；中间帧独立推进弹簧，不能拿中间帧反过来求解。
     for (const [id, motion] of state.motions) {
       const entry = state.entries.get(id);
-      if (!entry?.element.isConnected) { finished.push(id); continue; }
+      if (!entry || !codexPlusCustomLayoutEntryConnected(entry)) { finished.push(id); continue; }
       let settled = true;
       const restoring = !state.layout.panels[id] && !state.projectedRects?.[id];
       const area = restoring
@@ -573,11 +760,11 @@
     const reducedMotion = codexPlusCustomLayoutReducedMotion();
     for (const [id, target] of Object.entries(rects)) {
       const entry = state.entries.get(id);
-      if (!entry?.element.isConnected) continue;
+      if (!entry || !codexPlusCustomLayoutEntryConnected(entry)) continue;
       if (id === immediateId || reducedMotion || entry.justAdded) { state.motions.delete(id); continue; }
       const old = state.motions.get(id);
       if (old && codexPlusCustomLayoutRectEqual(old.target, target)) continue;
-      const measured = old?.current || entry.element.getBoundingClientRect();
+      const measured = old?.current || codexPlusCustomLayoutEntryRect(entry);
       const current = { left: measured.left, top: measured.top, width: measured.width, height: measured.height };
       const velocity = old?.velocity || { left: 0, top: 0, width: 0, height: 0 };
       if (releaseVelocity?.id === id) {
@@ -619,7 +806,7 @@
     event.stopPropagation();
     codexPlusCustomLayoutFinishDrag(true);
     codexPlusCustomLayoutStopMotion(true);
-    const origin = entry.element.getBoundingClientRect();
+    const origin = codexPlusCustomLayoutEntryRect(entry);
     const handle = event.currentTarget;
     const drag = {
       id, resize, handle, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
@@ -642,7 +829,7 @@
       const candidate = resize
         ? { ...drag.origin, width: drag.origin.width + dx, height: drag.origin.height + (codexPlusCustomLayoutPanels[id].resizableHeight ? dy : 0) }
         : { ...drag.origin, left: drag.origin.left + dx, top: drag.origin.top + dy };
-      const clamped = clampRect(candidate, area, codexPlusCustomLayoutPanels[id].minWidth,
+      const clamped = clampRect(candidate, area, codexPlusCustomLayoutMinWidth(entry),
         codexPlusCustomLayoutPanels[id].resizableHeight ? 80 : 24);
       // 吸附候选与碰撞输入使用起始快照；动画中的实际坐标不会改变下一帧解算。
       const stableSnap = resize || move.altKey ? { rect: clamped }
@@ -713,7 +900,7 @@
       ? { left: native.left, top: native.top, width: native.width + dx, height: native.height + (codexPlusCustomLayoutPanels[id].resizableHeight ? dy : 0) }
       : { left: native.left + dx, top: native.top + dy, width: native.width, height: native.height };
     const bounds = codexPlusCustomLayoutBounds();
-    const clamped = clampRect(candidate, bounds, codexPlusCustomLayoutPanels[id].minWidth,
+    const clamped = clampRect(candidate, bounds, codexPlusCustomLayoutMinWidth(entry),
       codexPlusCustomLayoutPanels[id].resizableHeight ? 80 : 24);
     const snapped = resize || event.altKey ? { rect: clamped } : snapRect(clamped, bounds, codexPlusCustomLayoutOtherRects(id));
     const solution = codexPlusLayoutSolve(baseline, id, snapped.rect, bounds, native);
@@ -726,8 +913,8 @@
     const state = codexPlusCustomLayoutState;
     if (state.drag?.id === entry.id) codexPlusCustomLayoutFinishDrag(false);
     state.motions.delete(entry.id);
-    state.resizeObserver?.unobserve?.(entry.element);
-    codexPlusCustomLayoutRestoreStyle(state.styled, entry.element);
+    for (const element of codexPlusCustomLayoutElements(entry)) state.resizeObserver?.unobserve?.(element);
+    codexPlusCustomLayoutRestoreEntry(entry);
     entry.handle?.remove();
     entry.outline?.remove();
     state.entries.delete(entry.id);
@@ -798,7 +985,7 @@
     // 原生侧栏常晚于注入数秒出现；只保留有界启动重试。
     state.retryTimer = setInterval(() => {
       codexPlusCustomLayoutSchedule();
-      if (++attempts >= 20 || state.entries.size === 4) {
+      if (++attempts >= 20 || state.entries.size === (state.entries.get("sidebar")?.grouped ? 3 : 4)) {
         clearInterval(state.retryTimer);
         state.retryTimer = 0;
       }
@@ -810,18 +997,23 @@
     if (!state.enabled) return;
     const targets = codexPlusCustomLayoutFindTargets();
     for (const entry of [...state.entries.values()]) {
-      if (targets[entry.id] !== entry.element) codexPlusCustomLayoutDropEntry(entry);
+      const target = targets[entry.id];
+      const elements = target ? Array.isArray(target.elements) ? target.elements : [target] : [];
+      if (elements.length !== entry.elements.length || elements.some((element, index) => element !== entry.elements[index])
+        || (target?.grouped === true) !== entry.grouped) codexPlusCustomLayoutDropEntry(entry);
+      else codexPlusCustomLayoutRefreshNavigationParts(entry, target);
     }
-    for (const [id, element] of Object.entries(targets)) {
-      if (!element || state.entries.has(id)) continue;
-      const entry = { id, element, handle: null, outline: null, move: null, justAdded: true };
+    for (const [id, target] of Object.entries(targets)) {
+      if (!target || state.entries.has(id)) continue;
+      const entry = codexPlusCustomLayoutCreateEntry(id, target);
       state.entries.set(id, entry);
-      state.resizeObserver?.observe(element);
+      for (const element of entry.elements) state.resizeObserver?.observe(element);
     }
     const bounds = codexPlusCustomLayoutBounds();
+    codexPlusCustomLayoutMigrateNavigation(state.entries.get("sidebar"), bounds);
     codexPlusCustomLayoutProject(bounds);
     const floated = [...state.entries.values()].filter((entry) => !!state.layout.panels[entry.id] || state.motions.has(entry.id) || state.projectedRects?.[entry.id]);
-    codexPlusCustomLayoutReleaseAncestors(floated.map((entry) => entry.element));
+    codexPlusCustomLayoutReleaseAncestors(floated.flatMap(codexPlusCustomLayoutElements));
     for (const entry of state.entries.values()) {
       codexPlusCustomLayoutApplyEntry(entry, bounds);
       entry.justAdded = false;
@@ -847,10 +1039,10 @@
     const desired = {};
     for (const entry of state.entries.values()) {
       // 没有用户位置的面板先读回原生几何，不能把上次让位投影当首选位置。
-      if (!state.layout.panels[entry.id]) codexPlusCustomLayoutRestoreStyle(state.styled, entry.element);
+      if (!state.layout.panels[entry.id]) codexPlusCustomLayoutRestoreEntry(entry);
       const rect = codexPlusCustomLayoutPreferredRect(entry, bounds);
       const definition = codexPlusCustomLayoutPanels[entry.id];
-      desired[entry.id] = { ...rect, minWidth: definition.minWidth,
+      desired[entry.id] = { ...rect, minWidth: codexPlusCustomLayoutMinWidth(entry),
         minHeight: definition.resizableHeight ? 80 : rect.height, canResizeHeight: definition.resizableHeight };
     }
     const signature = JSON.stringify([bounds, desired]);
@@ -941,7 +1133,7 @@
     const state = codexPlusCustomLayoutState;
     if (!state.enabled || !element) return false;
     return [...state.entries.values()].some((entry) => (!!state.layout.panels[entry.id] || state.motions.has(entry.id) || !!state.projectedRects?.[entry.id])
-      && (entry.element === element || entry.element.contains?.(element)));
+      && codexPlusCustomLayoutElements(entry).some((part) => part === element || part.contains?.(element)));
   }
 
   function installCodexPlusCustomLayout() {

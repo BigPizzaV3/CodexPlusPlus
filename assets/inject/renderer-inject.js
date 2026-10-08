@@ -82,7 +82,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "29";
+  const codexDeleteStyleVersion = "32";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1742,6 +1742,553 @@
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
       .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
+      /* Codex++ 设置主页：对齐原生设置页，保持其它页面与弹窗的布局独立。 */
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] {
+        background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body {
+        box-sizing: border-box;
+        padding: 72px 32px 64px;
+      }
+      .codex-plus-settings {
+        width: 100%;
+        max-width: 740px;
+        min-width: 0;
+        margin: 0 auto;
+        container: codex-plus-settings / inline-size;
+      }
+      .codex-plus-settings > .codex-plus-modal-header {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0;
+        margin: 0 0 48px;
+        gap: 16px;
+      }
+      .codex-plus-settings .codex-plus-modal-title {
+        min-width: 0;
+        font-size: 28px;
+        font-weight: 600;
+        line-height: 36px;
+        letter-spacing: -.02em;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-settings-section { margin: 0 0 48px; }
+      .codex-plus-settings-section:last-child { margin-bottom: 0; }
+      .codex-plus-settings-section-title {
+        margin: 0 0 16px;
+        color: var(--codex-plus-text);
+        font-size: 14px;
+        font-weight: 550;
+        line-height: 20px;
+      }
+      .codex-plus-settings-card,
+      .codex-plus-settings > [data-codex-plus-ext-menu] {
+        box-sizing: border-box;
+        min-width: 0;
+        padding: 0 16px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 16px;
+        background: var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary));
+      }
+      .codex-plus-settings > [data-codex-plus-ext-menu] { margin-top: 48px; }
+      .codex-plus-settings .codex-plus-row {
+        box-sizing: border-box;
+        min-height: 60px;
+        align-items: center;
+        gap: 24px;
+        padding: 10px 0;
+        font-size: 14px;
+        line-height: 20px;
+      }
+      .codex-plus-settings .codex-plus-row[hidden] { display: none; }
+      .codex-plus-settings .codex-plus-row > :first-child {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-settings .codex-plus-row > :not(:first-child) { max-width: 48%; }
+      .codex-plus-settings .codex-plus-row-title { font-weight: 500; line-height: 20px; }
+      .codex-plus-settings .codex-plus-row-description,
+      .codex-plus-settings .codex-plus-about {
+        margin-top: 2px;
+        color: var(--codex-plus-text-secondary);
+        font-size: 13px;
+        line-height: 18px;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-settings .codex-plus-toggle {
+        flex: 0 0 32px;
+        width: 32px;
+        height: 20px;
+        min-height: 20px;
+        box-sizing: border-box;
+        padding: 2px;
+        background: var(--codex-plus-switch-off, #3a3a3a);
+        cursor: pointer;
+      }
+      .codex-plus-settings .codex-plus-toggle span {
+        width: 16px;
+        height: 16px;
+        background: var(--codex-plus-switch-thumb, #fff);
+      }
+      .codex-plus-settings .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
+      .codex-plus-settings .codex-plus-toggle[data-enabled="true"] span { transform: translateX(12px); }
+      .codex-plus-settings .codex-plus-toggle[data-pending="true"],
+      .codex-plus-settings .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
+      .codex-plus-settings .codex-plus-width-control {
+        flex: 0 1 auto;
+        min-width: 0;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .codex-plus-settings .codex-plus-service-tier-control {
+        flex: 0 1 300px;
+        min-width: 0;
+      }
+      .codex-plus-settings .codex-plus-service-tier-status { overflow-wrap: anywhere; }
+      .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
+      .codex-plus-settings .codex-plus-action-button,
+      .codex-plus-settings .codex-plus-issue-button,
+      .codex-plus-settings .codex-plus-service-tier-button,
+      .codex-plus-settings .codex-plus-width-input,
+      .codex-plus-settings .codex-plus-typing-effect-select {
+        box-sizing: border-box;
+        min-height: 32px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 8px;
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text);
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 18px;
+      }
+      .codex-plus-settings .codex-plus-width-input,
+      .codex-plus-settings .codex-plus-typing-effect-select { height: 32px; }
+      .codex-plus-settings .codex-plus-width-input { width: 72px; min-width: 48px; }
+      .codex-plus-settings .codex-plus-typing-effect-select { min-width: 0; }
+      .codex-plus-settings .codex-plus-typing-effect-select[hidden] { display: none; }
+      .codex-plus-settings .codex-plus-dropdown-trigger {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        align-self: center;
+        justify-content: space-between;
+        gap: 8px;
+        height: 28px;
+        min-width: 112px;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 8px;
+        padding: 3px 10px;
+        background: var(--codex-plus-bg-secondary);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .codex-plus-settings .codex-plus-dropdown-trigger > svg {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+        color: var(--codex-plus-text-secondary);
+      }
+      .codex-plus-settings .codex-plus-dropdown-trigger:hover:not(:disabled),
+      .codex-plus-settings .codex-plus-dropdown-trigger[aria-expanded="true"] { background: var(--codex-plus-bg-hover); }
+      .codex-plus-settings .codex-plus-dropdown-trigger:disabled { cursor: not-allowed; opacity: .55; }
+      /* 菜单挂在 overlay 上，避免设置卡片或滚动容器裁切。 */
+      .codex-plus-dropdown-menu {
+        position: absolute;
+        z-index: 2;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        width: 220px;
+        max-width: calc(100% - 16px);
+        box-sizing: border-box;
+        padding: 6px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 14px;
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        font-family: inherit;
+        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
+      }
+      .codex-plus-dropdown-menu[hidden] { display: none; }
+      .codex-plus-dropdown-option {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        width: 100%;
+        min-height: 28px;
+        box-sizing: border-box;
+        border: 0;
+        border-radius: 8px;
+        padding: 4px 12px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 14px;
+        line-height: 20px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .codex-plus-dropdown-option > svg {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+        visibility: hidden;
+      }
+      .codex-plus-dropdown-option[aria-selected="true"] > svg { visibility: visible; }
+      .codex-plus-dropdown-option:hover,
+      .codex-plus-dropdown-option:focus-visible {
+        background: var(--codex-plus-bg-hover);
+        outline: none;
+      }
+      .codex-plus-settings .codex-plus-action-button,
+      .codex-plus-settings .codex-plus-issue-button { white-space: normal; overflow-wrap: anywhere; }
+      .codex-plus-settings .codex-plus-action-button:hover,
+      .codex-plus-settings .codex-plus-action-button:focus-visible,
+      .codex-plus-settings .codex-plus-issue-button:hover,
+      .codex-plus-settings .codex-plus-issue-button:focus-visible,
+      .codex-plus-settings .codex-plus-service-tier-button:hover,
+      .codex-plus-settings .codex-plus-service-tier-button:focus-visible {
+        border-color: var(--codex-plus-border);
+        background: var(--codex-plus-bg-hover);
+        color: var(--codex-plus-text);
+      }
+      .codex-plus-settings .codex-plus-service-tier-button[data-active="true"] {
+        border-color: var(--codex-plus-switch-on, #3485ff);
+        background: color-mix(in srgb, var(--codex-plus-switch-on, #3485ff) 16%, var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary)));
+        color: var(--codex-plus-text);
+      }
+      .codex-plus-settings button:focus-visible,
+      .codex-plus-settings input:focus-visible,
+      .codex-plus-settings select:focus-visible {
+        outline: 2px solid var(--codex-plus-switch-on, #3485ff);
+        outline-offset: 3px;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] { container: codex-plus-settings-page / inline-size; }
+      @container codex-plus-settings-page (max-width: 800px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 48px 24px; }
+      }
+      @container codex-plus-settings-page (max-width: 480px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 32px 16px; }
+      }
+      @container codex-plus-settings (max-width: 560px) {
+        .codex-plus-settings .codex-plus-row { gap: 16px; }
+        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] { flex-wrap: wrap; }
+        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > :first-child { flex-basis: 100%; }
+        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > .codex-plus-service-tier-control { flex-basis: 100%; max-width: 100%; }
+      }
+      /* 拓展与推荐内容使用原生插件页面的导航、标题和轻量列表布局。 */
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) {
+        background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
+        container: codex-plus-discovery-page / inline-size;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) > .codex-plus-modal-header { display: none; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body {
+        box-sizing: border-box;
+        padding: 32px 32px 56px;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav {
+        box-sizing: border-box;
+        width: 312px;
+        flex-basis: 312px;
+        background: var(--codex-plus-nav-bg, var(--codex-plus-bg-secondary));
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-header { padding: 16px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-title { font-size: 18px; line-height: 24px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-body { padding: 0 12px 20px; }
+      .codex-plus-extensions-nav-entry {
+        min-height: 36px;
+        gap: 10px;
+        box-sizing: border-box;
+        padding: 8px 12px;
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 20px;
+      }
+      .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-icon,
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon {
+        flex: 0 0 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        padding: 0;
+        background: transparent;
+      }
+      .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-icon svg,
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon svg,
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon-img { width: 20px; height: 20px; }
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-icon-img { display: block; object-fit: contain; }
+      .codex-plus-extensions-nav-entry .codex-plus-extensions-item-name { font-weight: 400; }
+      .codex-plus-extensions-nav-entry + .codex-plus-page-nav-group { margin-top: 24px; }
+      .codex-plus-extensions-nav-entry:hover .codex-plus-extensions-item-name { text-decoration: none; }
+      .codex-plus-discovery {
+        width: 100%;
+        max-width: 900px;
+        min-width: 0;
+        margin: 0 auto;
+        padding: 0;
+        container: codex-plus-discovery / inline-size;
+      }
+      .codex-plus-discovery-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .codex-plus-discovery-header > :first-child { flex: 1 1 auto; min-width: 0; }
+      .codex-plus-discovery-title {
+        margin: 0;
+        color: var(--codex-plus-text);
+        font-size: 26px;
+        font-weight: 600;
+        line-height: 34px;
+        letter-spacing: -.02em;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-discovery-description {
+        margin: 12px 0 0;
+        color: var(--codex-plus-text-secondary);
+        font-size: 14px;
+        line-height: 20px;
+        overflow-wrap: anywhere;
+      }
+      .codex-plus-discovery-toolbar { display: flex; flex: 0 1 auto; align-items: center; gap: 8px; min-width: 0; }
+      .codex-plus-discovery-search {
+        display: flex;
+        flex: 0 1 240px;
+        align-items: center;
+        gap: 8px;
+        width: 240px;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+      }
+      .codex-plus-discovery-search > svg { flex: 0 0 16px; width: 16px; height: 16px; }
+      .codex-plus-discovery-search input {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        padding: 0;
+        outline: none;
+        background: transparent;
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        line-height: 18px;
+      }
+      .codex-plus-discovery-search input::placeholder { color: var(--codex-plus-text-tertiary); }
+      .codex-plus-discovery-search:focus-within {
+        outline: 2px solid var(--codex-plus-switch-on, #3485ff);
+        outline-offset: 2px;
+      }
+      .codex-plus-discovery-icon-button {
+        display: inline-flex;
+        flex: 0 0 32px;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        box-sizing: border-box;
+        border: 0;
+        border-radius: 8px;
+        padding: 0;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+        cursor: pointer;
+      }
+      .codex-plus-discovery-icon-button svg { width: 16px; height: 16px; }
+      .codex-plus-discovery-icon-button:hover { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
+      .codex-plus-discovery-icon-button:disabled { opacity: .55; cursor: not-allowed; }
+      .codex-plus-extensions-filter { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+      .codex-plus-extensions-filter button {
+        border: 0;
+        border-radius: 999px;
+        padding: 8px 16px;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+        font: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .codex-plus-extensions-filter button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
+      .codex-plus-extensions-filter button:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-discovery-section-title {
+        margin: 32px 0 16px;
+        color: var(--codex-plus-text);
+        font-size: 16px;
+        font-weight: 550;
+        line-height: 24px;
+      }
+      .codex-plus-extensions-grid,
+      .codex-plus-discovery .codex-plus-ad-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 32px; }
+      .codex-plus-extensions-grid > .codex-plus-extensions-detail-empty,
+      .codex-plus-discovery .codex-plus-ad-empty { grid-column: 1 / -1; }
+      .codex-plus-extension-card {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        min-width: 0;
+        min-height: 56px;
+        box-sizing: border-box;
+        border: 0;
+        padding: 8px 0;
+        background: transparent;
+      }
+      .codex-plus-extension-card-select {
+        display: flex;
+        flex: 1 1 auto;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        border: 0;
+        border-radius: 8px;
+        padding: 0;
+        background: transparent;
+        color: var(--codex-plus-text);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .codex-plus-extension-card-icon {
+        display: inline-flex;
+        flex: 0 0 36px;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        box-sizing: border-box;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 10px;
+        color: var(--codex-plus-text-secondary);
+      }
+      .codex-plus-extension-card-icon svg { width: 24px; height: 24px; }
+      .codex-plus-extension-card-icon img { width: 32px; height: 32px; object-fit: contain; border-radius: 8px; }
+      .codex-plus-extension-card-copy { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+      .codex-plus-extension-card-title {
+        overflow: hidden;
+        color: var(--codex-plus-text);
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 20px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .codex-plus-extension-card-description {
+        display: block;
+        overflow: hidden;
+        color: var(--codex-plus-text-secondary);
+        font-size: 13px;
+        line-height: 18px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .codex-plus-extension-card-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+      .codex-plus-discovery .codex-plus-extensions-detail { max-width: 900px; margin: 0 auto; padding: 0 0 24px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-head { align-items: center; border-bottom: 0; gap: 20px; padding-bottom: 20px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-title { font-size: 26px; line-height: 34px; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-extensions-detail-icon img { width: 40px; height: 40px; object-fit: contain; border-radius: 8px; }
+      .codex-plus-discovery .codex-plus-extensions-detail-description { font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-wrap: wrap; }
+      .codex-plus-discovery .codex-plus-extensions-detail-button { min-height: 32px; box-sizing: border-box; }
+      .codex-plus-discovery .codex-plus-extensions-detail-primary {
+        border-color: var(--codex-plus-text);
+        background: var(--codex-plus-text);
+        color: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary));
+      }
+      .codex-plus-discovery .codex-plus-extensions-detail-primary:hover {
+        background: color-mix(in srgb, var(--codex-plus-text) 90%, transparent);
+        color: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary));
+      }
+      .codex-plus-discovery .codex-plus-extensions-detail-link a { color: var(--color-text-link, var(--color-token-text-link, var(--codex-plus-switch-on, #3485ff))); }
+      .codex-plus-discovery .codex-plus-toggle { flex: 0 0 32px; width: 32px; height: 20px; min-height: 20px; box-sizing: border-box; padding: 2px; background: var(--codex-plus-switch-off, #3a3a3a); cursor: pointer; }
+      .codex-plus-discovery .codex-plus-toggle span { width: 16px; height: 16px; background: var(--codex-plus-switch-thumb, #fff); }
+      .codex-plus-discovery .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
+      .codex-plus-discovery .codex-plus-toggle[data-enabled="true"] span { transform: translateX(12px); }
+      .codex-plus-discovery .codex-plus-toggle[data-pending="true"],
+      .codex-plus-discovery .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
+      .codex-plus-extensions-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 24px;
+        border: 0;
+        border-radius: 8px;
+        padding: 4px 0;
+        background: transparent;
+        color: var(--codex-plus-text-secondary);
+        font: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .codex-plus-extensions-back svg { width: 16px; height: 16px; }
+      .codex-plus-extensions-back:hover { color: var(--codex-plus-text); }
+      .codex-plus-discovery button:focus-visible,
+      .codex-plus-discovery a:focus-visible,
+      .codex-plus-extensions-nav-entry:focus-visible { outline: 2px solid var(--codex-plus-switch-on, #3485ff); outline-offset: 3px; }
+      .codex-plus-discovery .codex-plus-ad-card {
+        flex-direction: row;
+        align-items: center;
+        gap: 16px;
+        min-height: 72px;
+        min-width: 0;
+        box-sizing: border-box;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 0;
+        background: transparent;
+      }
+      .codex-plus-discovery .codex-plus-ad-card:hover,
+      .codex-plus-discovery .codex-plus-ad-card:focus-visible { background: transparent; }
+      .codex-plus-discovery .codex-plus-ad-main { flex: 1 1 auto; align-items: center; gap: 12px; }
+      .codex-plus-discovery .codex-plus-ad-icon { flex: 0 0 36px; border: 1px solid var(--codex-plus-border); border-radius: 10px; background: transparent; box-sizing: border-box; }
+      .codex-plus-discovery .codex-plus-ad-text { gap: 4px; }
+      .codex-plus-discovery .codex-plus-ad-title { font-size: 14px; font-weight: 500; line-height: 20px; }
+      .codex-plus-discovery .codex-plus-ad-description { font-size: 13px; line-height: 18px; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-ad-promo { border-radius: 0; padding: 0; background: transparent; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; white-space: normal; overflow-wrap: anywhere; }
+      .codex-plus-discovery .codex-plus-ad-arrow { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin: 0; color: var(--codex-plus-text-secondary); }
+      .codex-plus-discovery .codex-plus-ad-arrow svg { width: 16px; height: 16px; }
+      @container codex-plus-discovery-page (max-width: 900px) {
+        .codex-plus-discovery-header { flex-wrap: wrap; gap: 20px; }
+        .codex-plus-discovery-toolbar { flex-basis: 100%; }
+        .codex-plus-discovery .codex-plus-extensions-detail-head { flex-wrap: wrap; }
+        .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-basis: 100%; }
+      }
+      @container codex-plus-discovery (max-width: 600px) {
+        .codex-plus-extensions-grid,
+        .codex-plus-discovery .codex-plus-ad-list { grid-template-columns: minmax(0, 1fr); }
+      }
+      @container codex-plus-discovery-page (max-width: 700px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav { width: 180px; flex-basis: 180px; }
+        .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 20px 40px; }
+      }
+      @container codex-plus-discovery-page (max-width: 480px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav { width: 56px; flex-basis: 56px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-header { display: none; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-body { padding: 12px 8px; }
+        .codex-plus-extensions-nav-entry { justify-content: center; padding: 8px; }
+        .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-text,
+        .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-name,
+        .codex-plus-extensions-nav-entry .codex-plus-extensions-item-name,
+        .codex-plus-extensions-nav-entry .codex-plus-page-nav-item-state,
+        .codex-plus-extensions-nav-entry .codex-plus-extensions-item-state { display: none; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-group-head,
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-empty { display: none; }
+        .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
+      }
     `;
     document.documentElement.appendChild(style);
   }
@@ -2656,6 +3203,7 @@
       const key = button.getAttribute("data-codex-plus-setting");
       const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
       button.dataset.enabled = String(!!settings[key]);
+      button.setAttribute("aria-checked", button.dataset.enabled);
       button.dataset.pending = String(waitsForBackend);
       button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
@@ -2667,6 +3215,7 @@
     document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
       select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
       select.disabled = !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false;
+      if (typeof syncCodexPlusTypingEffectDropdown === "function") syncCodexPlusTypingEffectDropdown(select);
     });
   }
 
@@ -4326,6 +4875,7 @@
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
+      button.setAttribute("aria-checked", button.dataset.enabled);
     });
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
@@ -4342,6 +4892,7 @@
   let codexPlusScriptMarket = { scripts: [], loaded: false, loading: false, message: "" };
   // 「拓展」页左面板的搜索关键词，纯前端过滤。
   let codexPlusExtensionsQuery = "";
+  let codexPlusExtensionsFilter = "market";
   // 当前选中的拓展（左面板点开后右侧显示详情）。空 = 还没选。
   let codexPlusExtensionsSelected = null;
   // 默认扩展图标：VSCode codicon 的 `extensions` 字形（\eae6），
@@ -4470,132 +5021,102 @@
     return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
   }
 
-  /**
-   * 「拓展」页面左面板：搜索框 + 已安装/市场两个分组。
-   *
-   * 点击复用已有的事件委托：已安装走向 `data-codex-user-script-key` 的开关，
-   * 市场项走 `data-codex-market-install`。搜索是纯前端过滤，不发请求。
-   */
-  function renderCodexPlusExtensionsNav() {
-    const { installed, market } = codexPlusExtensionsEntries();
-    const shownInstalled = filterCodexPlusExtensionsEntries(installed);
-    const shownMarket = filterCodexPlusExtensionsEntries(market);
-    const loading = codexPlusScriptMarket.loading && !codexPlusScriptMarket.loaded;
-    const searching = !!codexPlusExtensionsQuery.trim();
+  // 使用已安装 Lucide Search / RotateCw / Plus / ArrowLeft 的 ISC 图标路径。
+  const codexPlusDiscoveryIcons = {
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+    refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg>',
+    back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7M19 12H5"/></svg>',
+  };
 
-    const itemHtml = (entry) => {
-      const selected = codexPlusExtensionsSelected?.kind === entry.kind
-        && codexPlusExtensionsSelected?.key === entry.key;
+  /** 原生风格侧栏：浏览入口和已安装拓展的单行名称。 */
+  function renderCodexPlusExtensionsNav() {
+    const { installed } = codexPlusExtensionsEntries();
+    const shown = filterCodexPlusExtensionsEntries(installed);
+    const rows = shown.map((entry) => {
+      const selected = codexPlusExtensionsSelected?.kind === "installed" && codexPlusExtensionsSelected.key === entry.key;
       const marketItem = codexPlusExtensionMarketItem(entry);
-      // 条目形态对齐 VSCode 扩展列表：大图标 + 名称行 + 简介行 + 底部作者/操作行。
-      // 图标优先用市场清单的 icon，没有就用默认字形（见 extensionIconMarkup）。
-      const icon = `
-        <span class="codex-plus-extensions-icon" aria-hidden="true">
-          ${extensionIconMarkup(marketItem?.icon)}
-        </span>
-      `;
-      // 选中项高亮；点击整行选中并在右侧显示详情，不再直接切换开关。
-      const base = `class="codex-plus-page-nav-item" data-active="${String(selected)}"`;
-      if (entry.kind === "market") {
-        const blurb = entry.item?.description || entry.meta || "";
-        return `
-          <button type="button" ${base} data-codex-extensions-select="market:${escapeHtml(entry.key)}" title="${escapeHtml(entry.name)}">
-            <span class="codex-plus-extensions-item-body">
-              <span class="codex-plus-extensions-item-header">
-                ${icon}
-                <span class="codex-plus-extensions-item-name">${escapeHtml(entry.name)}</span>
-                ${entry.installed ? `<span class="codex-plus-extensions-icon-badge" data-badge="installed" title="已安装">✓</span>` : ""}
-              </span>
-              ${blurb ? `<span class="codex-plus-extensions-item-description">${escapeHtml(blurb)}</span>` : ""}
-              <span class="codex-plus-extensions-item-footer">
-                <span class="codex-plus-extensions-item-publisher">${escapeHtml(entry.meta || "")}</span>
-                <span class="codex-plus-extensions-item-actions">
-                  <span class="codex-plus-extensions-item-button" data-codex-market-install="${escapeHtml(entry.key)}">安装</span>
-                </span>
-              </span>
-            </span>
-          </button>
-        `;
-      }
-      const blurb = marketItem?.description || "";
       return `
-        <button type="button" ${base} data-codex-extensions-select="installed:${escapeHtml(entry.key)}" title="${escapeHtml(entry.name)}">
-          <span class="codex-plus-extensions-item-body">
-            <span class="codex-plus-extensions-item-header">
-              ${icon}
-              <span class="codex-plus-extensions-item-name">${escapeHtml(entry.name)}</span>
-              <span class="codex-plus-extensions-item-state" data-state="${entry.enabled ? "on" : "off"}" title="${entry.enabled ? "已启用" : "已禁用"}"></span>
-            </span>
-            ${blurb ? `<span class="codex-plus-extensions-item-description">${escapeHtml(blurb)}</span>` : ""}
-            <span class="codex-plus-extensions-item-footer">
-              <span class="codex-plus-extensions-item-publisher">${escapeHtml(entry.meta || "")}</span>
-              <span class="codex-plus-extensions-item-actions"></span>
-            </span>
-          </span>
+        <button type="button" class="codex-plus-page-nav-item codex-plus-extensions-nav-entry" data-codex-extensions-select="installed:${escapeHtml(entry.key)}" data-active="${String(selected)}" title="${escapeHtml(entry.name)}" aria-label="${escapeHtml(entry.name)}">
+          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon)}</span>
+          <span class="codex-plus-page-nav-item-text"><span class="codex-plus-page-nav-item-name">${escapeHtml(entry.name)}</span></span>
+          <span class="codex-plus-page-nav-item-state" data-state="${entry.enabled ? "on" : "off"}" title="${entry.enabled ? "已启用" : "已禁用"}"></span>
         </button>
       `;
-    };
-
-    const group = (title, entries, emptyText, count, headAction = "") => {
-      // 只在「搜索无匹配」时省略分组；否则空分组要留着显示占位文案，
-      // 不然「正在读取拓展…」和加载失败提示都会被一起藏掉，面板全空。
-      if (!entries.length && searching) return "";
-      const body = entries.length
-        ? entries.map(itemHtml).join("")
-        : `<div class="codex-plus-page-nav-empty">${escapeHtml(emptyText)}</div>`;
-      return `
-        <div class="codex-plus-page-nav-group">
-          <div class="codex-plus-page-nav-group-head">
-            <span>${escapeHtml(title)}</span>
-            <span class="codex-plus-page-nav-group-tail">
-              ${count ? `<span class="codex-plus-page-nav-group-count">${count}</span>` : ""}
-              ${headAction}
-            </span>
-          </div>
-          ${body}
-        </div>
-      `;
-    };
-
-    const marketEmpty = loading
-      ? "正在读取拓展…"
-      : (codexPlusScriptMarket.message || "市场里没有可安装的拓展。");
-    const anyShown = shownInstalled.length || shownMarket.length;
-    const hint = searching && !anyShown
-      ? `<div class="codex-plus-page-nav-empty">没有匹配「${escapeHtml(codexPlusExtensionsQuery)}」的拓展。</div>`
-      : "";
-
+    }).join("");
+    const empty = codexPlusExtensionsQuery.trim() ? "没有匹配的已安装拓展。" : codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…";
     return `
-      <div class="codex-plus-page-search">
-        <input type="search" class="codex-plus-page-search-input" data-codex-extensions-search="true"
-          placeholder="搜索拓展" value="${escapeHtml(codexPlusExtensionsQuery)}" spellcheck="false" />
+      <button type="button" class="codex-plus-page-nav-item codex-plus-extensions-nav-entry" data-codex-extensions-browse="market" data-active="${String(!codexPlusExtensionsSelected && codexPlusExtensionsFilter === "market")}" title="浏览拓展" aria-label="浏览拓展">
+        <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconSvg()}</span>
+        <span class="codex-plus-page-nav-item-text"><span class="codex-plus-page-nav-item-name">浏览拓展</span></span>
+      </button>
+      <div class="codex-plus-page-nav-group">
+        <div class="codex-plus-page-nav-group-head"><span>已安装</span><span class="codex-plus-page-nav-group-count">${installed.length}</span></div>
+        ${rows || `<div class="codex-plus-page-nav-empty">${escapeHtml(empty)}</div>`}
       </div>
-      ${hint}
-      ${group("已安装", shownInstalled, codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…", installed.length)}
-      ${group("市场", shownMarket, marketEmpty, market.length,
-        `<button type="button" class="codex-plus-page-nav-group-action" data-codex-market-refresh="true" title="刷新拓展">刷新</button>`)}
     `;
   }
 
-  /** 左面板内容变了就整块重绘（搜索、安装完成、脚本状态变化都会走到这）。 */
+  /** 主区使用原生插件列表的图标、简介和独立操作列，避免嵌套按钮。 */
+  function renderCodexPlusExtensionsOverview() {
+    const { installed, market } = codexPlusExtensionsEntries();
+    const isInstalled = codexPlusExtensionsFilter === "installed";
+    const entries = filterCodexPlusExtensionsEntries(isInstalled ? installed : market);
+    const cards = entries.map((entry) => {
+      const item = codexPlusExtensionMarketItem(entry);
+      const description = item?.description || entry.script?.description || entry.meta || "";
+      const select = `${entry.kind}:${escapeHtml(entry.key)}`;
+      const action = entry.kind === "market"
+        ? `<button type="button" class="codex-plus-discovery-icon-button" data-codex-market-install="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="安装 ${escapeHtml(entry.name)}">${codexPlusDiscoveryIcons.plus}</button>`
+        : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`;
+      return `
+        <article class="codex-plus-extension-card">
+          <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
+            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(item?.icon)}</span>
+            <span class="codex-plus-extension-card-copy">
+              <span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>
+              <span class="codex-plus-extension-card-description">${escapeHtml(description)}</span>
+            </span>
+          </button>
+          <div class="codex-plus-extension-card-actions">${action}</div>
+        </article>
+      `;
+    }).join("");
+    const empty = codexPlusExtensionsQuery.trim() ? `没有匹配「${codexPlusExtensionsQuery}」的拓展。`
+      : isInstalled ? (codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…")
+      : codexPlusScriptMarket.loading && !codexPlusScriptMarket.loaded ? "正在读取拓展…"
+      : codexPlusScriptMarket.message || "市场里没有可安装的拓展。";
+    return `
+      <div class="codex-plus-extensions-filter" role="group" aria-label="拓展来源">
+        <button type="button" data-codex-extensions-browse="market" data-active="${String(!isInstalled)}" aria-pressed="${String(!isInstalled)}">市场</button>
+        <button type="button" data-codex-extensions-browse="installed" data-active="${String(isInstalled)}" aria-pressed="${String(isInstalled)}">已安装</button>
+      </div>
+      <h2 class="codex-plus-discovery-section-title">${isInstalled ? "已安装拓展" : "市场拓展"}</h2>
+      <div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true">
+        ${cards || `<div class="codex-plus-extensions-detail-empty" role="status">${escapeHtml(empty)}</div>`}
+      </div>
+    `;
+  }
+
+  /** 只刷新侧栏和结果区；搜索输入框保持原 DOM 与光标位置。 */
   function refreshCodexPlusExtensionsView() {
     if (codexPlusActiveEntry() !== "extensions") return;
+    if (codexPlusExtensionsSelected && !codexPlusExtensionsSelectionDetail()) codexPlusExtensionsSelected = null;
+    const active = document.activeElement;
+    const focused = active?.getAttribute?.("data-codex-user-script-key");
+    const focusedBrowse = active?.getAttribute?.("data-codex-extensions-browse");
+    const focusedNav = !!active?.closest?.("[data-codex-plus-page-nav-body]");
     const body = document.querySelector("[data-codex-plus-page-nav-body]");
-    if (body) {
-      const query = document.querySelector("[data-codex-extensions-search]")?.value;
-      if (typeof query === "string") codexPlusExtensionsQuery = query;
-      body.innerHTML = renderCodexPlusExtensionsNav();
-      // 重绘会丢焦点，搜索时要把光标放回去，否则每敲一个字就断。
-      if (codexPlusExtensionsQuery) {
-        const input = body.querySelector("[data-codex-extensions-search]");
-        if (input) {
-          input.focus();
-          input.setSelectionRange(input.value.length, input.value.length);
-        }
-      }
-    }
+    if (body) body.innerHTML = renderCodexPlusExtensionsNav();
     const detail = document.querySelector("[data-codex-plus-extensions-detail]");
     if (detail) detail.innerHTML = renderCodexPlusExtensionsDetail();
+    if (focused) {
+      Array.from(detail?.querySelectorAll("[data-codex-user-script-key]") || [])
+        .find((button) => button.getAttribute("data-codex-user-script-key") === focused)?.focus({ preventScroll: true });
+    } else if (focusedBrowse) {
+      Array.from((focusedNav ? body : detail)?.querySelectorAll("[data-codex-extensions-browse]") || [])
+        .find((button) => button.getAttribute("data-codex-extensions-browse") === focusedBrowse)?.focus({ preventScroll: true });
+    }
   }
 
   /**
@@ -4614,6 +5135,7 @@
     const marketItem = marketId
       ? (codexPlusScriptMarket.scripts || []).find((item) => item.id === marketId) || null
       : null;
+    if ((sel.kind === "installed" && !local) || (sel.kind === "market" && !marketItem)) return null;
     return { sel, local, marketItem };
   }
 
@@ -4649,17 +5171,18 @@
     if (svg) img.replaceWith(svg);
   }
 
-  /** 右上角详情：图标 + 名称 + 介绍 + 操作。形态对齐 VSCode 的扩展详情页。 */
+  /** 原生风格详情：居中展示图标、名称、介绍与管理操作。 */
   function renderCodexPlusExtensionsDetail() {
     const detail = codexPlusExtensionsSelectionDetail();
     if (!detail) {
-      return `<div class="codex-plus-extensions-detail-empty">从左侧选择一个拓展查看详情。</div>`;
+      codexPlusExtensionsSelected = null;
+      return renderCodexPlusExtensionsOverview();
     }
     const { sel, local, marketItem } = detail;
     const name = marketItem?.name || local?.name || sel.key;
     const version = marketItem?.version || local?.version || "";
     const author = marketItem?.author || "";
-    const description = marketItem?.description || "";
+    const description = marketItem?.description || local?.description || "";
     const tags = marketItem?.tags || [];
     const requirements = marketItem?.requirements || [];
     const limitations = marketItem?.limitations || [];
@@ -4667,7 +5190,7 @@
     const isInstalled = sel.kind === "installed";
     const updateAvailable = isInstalled && marketItem && version && local?.version && local.version !== version;
 
-    // 头部：图标 + 名称 + 发布者/版本行，操作按钮靠右。对齐 VSCode 扩展编辑器的头部。
+    // 详情沿用列表的内容宽度，管理操作保持独立。
     const publisherLine = [
       author ? escapeHtml(author) : "",
       version ? `v${escapeHtml(version)}` : "",
@@ -4677,7 +5200,7 @@
     const actions = [];
     if (isInstalled) {
       actions.push(`
-        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}"><span></span></button>
+        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}" role="switch" aria-checked="${String(!!local?.enabled)}" aria-label="启用 ${escapeHtml(name)}"><span></span></button>
       `);
       // 内置脚本在只读目录里，删不掉；只给用户目录的脚本提供卸载。
       if (local?.source === "user") {
@@ -4687,12 +5210,13 @@
       actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-market-install="${escapeHtml(marketItem.id)}">安装</button>`);
     }
 
-    // VSCode 的详情正文是「标题 + 正文」的滚动区，这里用同样的分区结构。
+    // 使用要求与限制保留为独立正文分区。
     const list = (title, items) => items.length
       ? `<div class="codex-plus-extensions-detail-section"><div class="codex-plus-extensions-detail-section-title">${escapeHtml(title)}</div><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
       : "";
 
     return `
+      <button type="button" class="codex-plus-extensions-back" data-codex-extensions-browse="${codexPlusExtensionsFilter}" aria-label="返回拓展列表">${codexPlusDiscoveryIcons.back}<span>返回拓展列表</span></button>
       <div class="codex-plus-extensions-detail-head">
         <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon)}</div>
         <div class="codex-plus-extensions-detail-heading">
@@ -4764,6 +5288,11 @@
     content.appendChild(layout);
     layout.appendChild(main);
     main.appendChild(body);
+    if (tab === "home") {
+      // 设置标题和卡片共用居中栏，并随内容滚动，保持原生设置页的阅读节奏。
+      const header = content.querySelector(".codex-plus-modal-header");
+      if (header) body.querySelector(".codex-plus-settings")?.prepend(header);
+    }
   }
 
   /** 页面标题：每个 rail 入口一个名字，和图标栏上的标签保持一致。 */
@@ -4786,7 +5315,7 @@
    * 脚本清单变化后同步左面板。
    *
    * 原来这里还要往「用户脚本」区块的开关与目录文本里写值，那个区块已经删掉，
-   * 脚本列表现在只存在于拓展页左面板，所以只剩刷新这一件事。
+   * 侧栏显示已安装清单，主区列表与详情由 refreshCodexPlusExtensionsView 同步。
    */
   function renderUserScripts() {
     // 左面板也要跟着刷新，否则脚本的启停/状态变化不会反映到列表上。
@@ -4856,6 +5385,10 @@
     } else {
       await loadUserScripts();
     }
+    if (codexPlusExtensionsSelected?.kind === "market" && codexPlusExtensionsSelected.key === id) {
+      const installed = (codexPlusUserScripts.scripts || []).find((script) => script.market_id === id);
+      if (installed) codexPlusExtensionsSelected = { kind: "installed", key: installed.key };
+    }
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
   }
 
@@ -4867,13 +5400,14 @@
    */
   function codexPlusExtensionsEntries() {
     const local = codexPlusUserScripts.scripts || [];
+    const marketById = new Map((codexPlusScriptMarket.scripts || []).map((item) => [item.id, item]));
     const localByMarketId = new Map(
       local.filter((script) => script.market_id).map((script) => [script.market_id, script]),
     );
     const installed = local.map((script) => ({
       kind: "installed",
       key: script.key,
-      name: script.name || script.key,
+      name: marketById.get(script.market_id)?.name || script.name || script.key,
       meta: `${script.source === "builtin" ? "内置" : script.market_id ? "市场" : "用户"} · ${userScriptStatusLabel(script.status)}`,
       enabled: !!script.enabled,
       script,
@@ -4909,7 +5443,7 @@
     if (!query) return entries;
     return entries.filter((entry) => {
       const marketItem = codexPlusExtensionMarketItem(entry);
-      return [entry.name, entry.meta, marketItem?.description, ...(marketItem?.tags || [])]
+      return [entry.name, entry.key, entry.script?.name, entry.meta, marketItem?.description, ...(marketItem?.tags || [])]
         .filter(Boolean)
         .some((text) => String(text).toLowerCase().includes(query));
     });
@@ -4927,7 +5461,7 @@
 
   function normalizeCodexPlusAds(payload) {
     if (!payload || !Array.isArray(payload.ads)) return [];
-    // 只留赞助商推荐。上游清单里的 normal 条目在前端没有归属（页面不再有分组），
+    // 只留赞助商推荐。上游清单里的 normal 条目不属于合作伙伴分组，
     // 放进来只会让「有数据但渲染不出东西」的状态变得难以判断。
     return payload.ads.filter((ad) => {
       return ad && ad.type === "sponsor" && ad.title && ad.description && ad.url && !isCodexPlusAdExpired(ad);
@@ -4969,10 +5503,10 @@
             <span class="codex-plus-ad-text">
               <span class="codex-plus-ad-title">${escapeHtml(name)}</span>
               <span class="codex-plus-ad-description">${escapeHtml(ad.description)}</span>
+              ${promo ? `<span class="codex-plus-ad-promo">${escapeHtml(promo)}</span>` : ""}
             </span>
             <span class="codex-plus-ad-arrow" aria-hidden="true">${codexPlusAdArrowIcon}</span>
           </span>
-          ${promo ? `<span class="codex-plus-ad-promo">${escapeHtml(promo)}</span>` : ""}
         </a>
       `;
     }).join("");
@@ -4981,7 +5515,7 @@
   function renderCodexPlusAds() {
     if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">推荐内容加载中…</div>`;
     if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
-    // 只有赞助商推荐这一个分组，所以不再套一层分组标题，直接铺卡片。
+    // 合作伙伴用同一套原生列表节奏展示，文案与外链沿用后端数据。
     return `<div class="codex-plus-ad-list">${renderCodexPlusAdGroup()}</div>`;
   }
 
@@ -5030,6 +5564,7 @@
   }
 
   function selectCodexPlusTab(tab) {
+    closeCodexPlusTypingEffectDropdown();
     // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
     // 不统一就会两边都对不上、所有 panel 全被隐藏。
     const normalized = codexPlusModalTab(tab);
@@ -5264,6 +5799,35 @@
         ["--color-token-dropdown-background", "--color-surface-elevated-secondary", "--color-token-bg-elevated-secondary"],
         light ? "#ffffff" : "#2f2f2f",
       ),
+      // 设置页使用独立 surface，正文背景令牌在部分版本中比原生设置页更深。
+      "--codex-plus-settings-page-bg": read(
+        ["--color-background-surface", "--app-color-background-surface"],
+        light ? "#ffffff" : "#181818",
+      ),
+      "--codex-plus-nav-bg": read(
+        ["--color-token-sidebar-background", "--color-background-sidebar"],
+        light ? "#f7f7f7" : "#1e1e1e",
+      ),
+      "--codex-plus-nav-selected-bg": read(
+        ["--color-token-interactive-bg-secondary-selected", "--color-background-primary-soft-active"],
+        light ? "#e9e9e9" : "#2f2f2f",
+      ),
+      "--codex-plus-settings-card-bg": read(
+        ["--color-background-surface-secondary", "--color-background-surface-raised"],
+        light ? "#f7f7f7" : "#232323",
+      ),
+      "--codex-plus-switch-on": read(
+        ["--color-background-accent-solid", "--color-token-bg-accent"],
+        "#3485ff",
+      ),
+      "--codex-plus-switch-off": read(
+        ["--color-background-switch-off", "--color-background-secondary-solid"],
+        light ? "#dedede" : "#3a3a3a",
+      ),
+      "--codex-plus-switch-thumb": read(
+        ["--color-background-switch-thumb"],
+        "#ffffff",
+      ),
       "--codex-plus-bg-hover": read(
         ["--color-token-interactive-bg-secondary-hover", "--color-background-primary-soft-hover", "--token-list-hover-background"],
         light ? "rgba(0,0,0,.06)" : "rgba(255,255,255,.08)",
@@ -5321,9 +5885,83 @@
     return "home";
   }
 
+  let codexPlusTypingEffectDropdownCleanup = null;
+
+  /** 保留 select 的值与 change 契约，只替换原生系统菜单的呈现。 */
+  function syncCodexPlusTypingEffectDropdown(select) {
+    const overlay = select.closest(".codex-plus-modal-overlay, .codex-plus-page-overlay");
+    const trigger = overlay?.querySelector("[data-codex-plus-typing-effect-trigger]");
+    if (!trigger) return;
+    trigger.disabled = select.disabled;
+    const label = trigger.querySelector("[data-codex-plus-dropdown-label]");
+    if (label) label.textContent = select.selectedOptions[0]?.textContent || "关闭";
+    overlay.querySelectorAll("[data-codex-plus-typing-effect-option]").forEach((option) => {
+      const selected = option.dataset.codexPlusTypingEffectOption === select.value;
+      option.setAttribute("aria-selected", String(selected));
+      option.tabIndex = selected ? 0 : -1;
+    });
+    if (select.disabled) closeCodexPlusTypingEffectDropdown();
+  }
+
+  function closeCodexPlusTypingEffectDropdown(restoreFocus = false) {
+    const menu = document.querySelector("[data-codex-plus-typing-effect-menu]");
+    const trigger = menu?.parentElement?.querySelector("[data-codex-plus-typing-effect-trigger]");
+    if (menu) menu.hidden = true;
+    trigger?.setAttribute("aria-expanded", "false");
+    codexPlusTypingEffectDropdownCleanup?.();
+    codexPlusTypingEffectDropdownCleanup = null;
+    if (restoreFocus && trigger?.isConnected && !trigger.disabled) trigger.focus();
+  }
+
+  function openCodexPlusTypingEffectDropdown(overlay, last = false) {
+    const select = overlay.querySelector("[data-codex-plus-typing-effect]");
+    const trigger = overlay.querySelector("[data-codex-plus-typing-effect-trigger]");
+    const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");
+    if (!select || select.disabled || !trigger || !menu) return;
+    closeCodexPlusTypingEffectDropdown();
+    syncCodexPlusTypingEffectDropdown(select);
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    // 菜单直接挂 overlay，避开滚动内容的裁剪；坐标换算与页面缩放保持同源。
+    const frame = overlay.getBoundingClientRect();
+    const anchor = trigger.getBoundingClientRect();
+    const zoom = codexPlusWindowZoom();
+    const width = frame.width / zoom;
+    const height = frame.height / zoom;
+    menu.style.maxHeight = `${Math.max(0, height - 16)}px`;
+    const left = (anchor.right - frame.left) / zoom - menu.offsetWidth;
+    const below = (anchor.bottom - frame.top) / zoom + 4;
+    const above = (anchor.top - frame.top) / zoom - menu.offsetHeight - 4;
+    const top = below + menu.offsetHeight > height - 8 && above >= 8 ? above : below;
+    menu.style.left = `${Math.max(8, Math.min(left, width - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(top, height - menu.offsetHeight - 8))}px`;
+    const options = Array.from(menu.querySelectorAll("[role=option]"));
+    const focused = last ? options[options.length - 1] : options.find((option) => option.getAttribute("aria-selected") === "true") || options[0];
+    focused?.focus({ preventScroll: true });
+    const controller = new AbortController();
+    const close = () => closeCodexPlusTypingEffectDropdown();
+    document.addEventListener("pointerdown", (event) => {
+      if (!menu.contains(event.target) && !trigger.contains(event.target)) close();
+    }, { capture: true, signal: controller.signal });
+    overlay.addEventListener("scroll", (event) => {
+      if (!menu.contains(event.target)) close();
+    }, { capture: true, signal: controller.signal });
+    window.addEventListener("resize", close, { signal: controller.signal });
+    window.addEventListener("blur", close, { signal: controller.signal });
+    const observer = new MutationObserver(() => {
+      if (!overlay.isConnected) close();
+    });
+    observer.observe(document.body, { childList: true });
+    codexPlusTypingEffectDropdownCleanup = () => {
+      controller.abort();
+      observer.disconnect();
+    };
+  }
+
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
+    closeCodexPlusTypingEffectDropdown();
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
@@ -5333,6 +5971,7 @@
     // 跟随 Codex 的界面缩放。必须在写 innerHTML 之前设好，否则内部那些
     // calc(100% / var(--codex-plus-zoom-inverse)) 会先按 1 算一遍再被 zoom 放大。
     applyCodexPlusZoom(overlay);
+    // 下拉箭头与勾选图标使用已安装的 Lucide ChevronDown / Check（ISC）路径。
     overlay.innerHTML = `
       <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
         <div class="codex-plus-modal-header">
@@ -5340,143 +5979,196 @@
           ${pageMode ? "" : `<button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>`}
         </div>
         <div class="codex-plus-modal-body">
-          <div class="codex-plus-panel" data-codex-plus-panel="home">
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态。</div></div>
-              <div class="codex-plus-backend-status">
-                <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
-              </div>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Codex增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、插件相关和菜单位置增强。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">扩展插件市场请求，尽量显示完整插件列表。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
-            </div>
-            ${codexPlusIsWindowsPlatform ? `<div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">桌宠跟随真实鼠标</div><div class="codex-plus-row-description">仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
-            </div>` : ""}
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">悬浮球 · 下一步建议</div><div class="codex-plus-row-description">生成下一步建议。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">悬浮球 · 回答大纲</div><div class="codex-plus-row-description">整理回答结构。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
-            </div>
-            <div class="codex-plus-row" data-codex-service-tier-controls="true">
-              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
-              <div class="codex-plus-service-tier-control">
-                <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
-                <div class="codex-plus-service-tier-actions">
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
+          <div class="codex-plus-panel codex-plus-settings" data-codex-plus-panel="home">
+            <section class="codex-plus-settings-section" aria-label="常规">
+              <h2 class="codex-plus-settings-section-title">常规</h2>
+              <div class="codex-plus-settings-card">
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态。</div></div>
+                  <div class="codex-plus-backend-status">
+                    <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
+                  </div>
                 </div>
-                <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
-                  <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">Codex增强</div><div class="codex-plus-row-description">关闭后停用删除、导出、插件相关和菜单位置增强。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-backend-setting="enhancementsEnabled"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">插件市场解锁</div><div class="codex-plus-row-description">扩展插件市场请求，尽量显示完整插件列表。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
                 </div>
               </div>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">打字特效（彩虹 P）</div><div class="codex-plus-row-description">在输入框的光标附近显示彩虹粒子、烟花或星光。系统减少动态效果时暂停。</div></div>
-              <select class="codex-plus-typing-effect-select" data-codex-plus-typing-effect="true" aria-label="打字特效（彩虹 P）">
-                <option value="off">关闭</option>
-                <option value="rainbow">彩虹粒子</option>
-                <option value="fireworks">烟花</option>
-                <option value="stars">星光</option>
-              </select>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
-              <div class="codex-plus-width-control">
-                <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
-                <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
+            </section>
+            <section class="codex-plus-settings-section" aria-label="模型与服务">
+              <h2 class="codex-plus-settings-section-title">模型与服务</h2>
+              <div class="codex-plus-settings-card">
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
+                </div>
+                <div class="codex-plus-row" data-codex-service-tier-controls="true">
+                  <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+                  <div class="codex-plus-service-tier-control">
+                    <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
+                    <div class="codex-plus-service-tier-actions">
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
+                    </div>
+                    <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
+                      <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">自定义布局</div><div class="codex-plus-row-description">拖动图标栏、聊天栏、任务信息卡或输入框时，其他面板会弹性让位；支持磁吸和下次打开恢复。</div></div>
-              <div class="codex-plus-width-control">
-                <button type="button" class="codex-plus-action-button" data-codex-plus-layout-edit="true">编辑布局</button>
-                <button type="button" class="codex-plus-toggle" data-codex-plus-setting="customLayout"><span></span></button>
+            </section>
+            <section class="codex-plus-settings-section" aria-label="对话与输入">
+              <h2 class="codex-plus-settings-section-title">对话与输入</h2>
+              <div class="codex-plus-settings-card">
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">悬浮球 · 下一步建议</div><div class="codex-plus-row-description">生成下一步建议。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">悬浮球 · 回答大纲</div><div class="codex-plus-row-description">整理回答结构。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">Markdown 导出</div><div class="codex-plus-row-description">在会话列表显示导出按钮，按本地 rollout 导出带时间戳的 Markdown。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
+                </div>
               </div>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">配置增强功能、模型和语音服务。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户拓展报错。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">加入 Telegram 获取更新消息和交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">打开 Telegram</button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
-              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
-            </div>
+            </section>
+            <section class="codex-plus-settings-section" aria-label="外观与布局">
+              <h2 class="codex-plus-settings-section-title">外观与布局</h2>
+              <div class="codex-plus-settings-card">
+                ${codexPlusIsWindowsPlatform ? `<div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">桌宠跟随真实鼠标</div><div class="codex-plus-row-description">仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
+                </div>` : ""}
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">打字特效（彩虹 P）</div><div class="codex-plus-row-description">在输入框的光标附近显示彩虹粒子、烟花或星光。系统减少动态效果时暂停。</div></div>
+                  <select class="codex-plus-typing-effect-select" data-codex-plus-typing-effect="true" aria-label="打字特效（彩虹 P）" hidden aria-hidden="true" tabindex="-1">
+                    <option value="off">关闭</option>
+                    <option value="rainbow">彩虹粒子</option>
+                    <option value="fireworks">烟花</option>
+                    <option value="stars">星光</option>
+                  </select>
+                  <button type="button" class="codex-plus-dropdown-trigger" data-codex-plus-typing-effect-trigger="true" aria-label="打字特效（彩虹 P）" aria-haspopup="listbox" aria-expanded="false" aria-controls="codex-plus-typing-effect-menu">
+                    <span data-codex-plus-dropdown-label="true">关闭</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                  </button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">对话居中宽度</div><div class="codex-plus-row-description">开启后把主对话和输入框限制到固定最大宽度，适合大屏阅读。</div></div>
+                  <div class="codex-plus-width-control">
+                    <input class="codex-plus-width-input" data-codex-plus-conversation-view-width="true" min="${conversationViewMinWidth}" max="${conversationViewMaxAllowedWidth}" step="10" type="number" value="${conversationViewWidth()}">
+                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="conversationView"><span></span></button>
+                  </div>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">自定义布局</div><div class="codex-plus-row-description">侧边图标与会话栏作为整体移动；拖动侧边栏、任务信息卡或输入框时，其他面板会弹性让位；支持磁吸和下次打开恢复。</div></div>
+                  <div class="codex-plus-width-control">
+                    <button type="button" class="codex-plus-action-button" data-codex-plus-layout-edit="true">编辑布局</button>
+                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="customLayout"><span></span></button>
+                  </div>
+                </div>
+              </div>
+            </section>
+            <section class="codex-plus-settings-section" aria-label="工具与关于">
+              <h2 class="codex-plus-settings-section-title">工具与关于</h2>
+              <div class="codex-plus-settings-card">
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">配置增强功能、模型和语音服务。</div></div>
+                  <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户拓展报错。</div></div>
+                  <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
+                  <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">加入 Telegram 获取更新消息和交流使用体验。</div></div>
+                  <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">打开 Telegram</button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
+                  <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
+                </div>
+              </div>
+            </section>
             ${renderCodexPlusExtensionMenuRows()}
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
-            <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${pageMode ? renderCodexPlusExtensionsDetail() : ""}</div>
+            <div class="codex-plus-discovery codex-plus-extensions-page">
+              <div class="codex-plus-discovery-header">
+                <div><h1 class="codex-plus-discovery-title">拓展</h1><p class="codex-plus-discovery-description">为 Codex 添加更多增强功能。</p></div>
+                <div class="codex-plus-discovery-toolbar">
+                  <label class="codex-plus-discovery-search">${codexPlusDiscoveryIcons.search}<input type="search" data-codex-extensions-search="true" aria-label="搜索拓展" placeholder="搜索拓展" value="${escapeHtml(codexPlusExtensionsQuery)}" spellcheck="false" /></label>
+                  <button type="button" class="codex-plus-discovery-icon-button" data-codex-market-refresh="true" title="刷新拓展" aria-label="刷新拓展">${codexPlusDiscoveryIcons.refresh}</button>
+                </div>
+              </div>
+              <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${renderCodexPlusExtensionsDetail()}</div>
+            </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">以下推荐来自支持 Codex++ 继续维护的合作方。</div>
-            <div class="codex-plus-ad-remote">
-              ${renderCodexPlusAds()}
+            <div class="codex-plus-discovery codex-plus-sponsor-page">
+              <div class="codex-plus-discovery-header">
+                <div><h1 class="codex-plus-discovery-title">推荐内容</h1><p class="codex-plus-discovery-description codex-plus-sponsor-text">以下推荐来自支持 Codex++ 继续维护的合作方。</p></div>
+              </div>
+              <h2 class="codex-plus-discovery-section-title">合作伙伴</h2>
+              <div class="codex-plus-ad-remote">${renderCodexPlusAds()}</div>
             </div>
           </div>
         </div>
       </div>
+      <div id="codex-plus-typing-effect-menu" class="codex-plus-dropdown-menu" data-codex-plus-typing-effect-menu="true" role="listbox" aria-label="打字特效（彩虹 P）" hidden>
+        ${[["off", "关闭"], ["rainbow", "彩虹粒子"], ["fireworks", "烟花"], ["stars", "星光"]].map(([value, label]) => `
+          <button type="button" class="codex-plus-dropdown-option" data-codex-plus-typing-effect-option="${value}" role="option" aria-selected="false" tabindex="-1">
+            <span>${label}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          </button>
+        `).join("")}
+      </div>
     `;
+    overlay.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting], .codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
+      button.setAttribute("role", "switch");
+      button.setAttribute("aria-checked", "false");
+      button.setAttribute("aria-label", button.closest(".codex-plus-row")?.querySelector(".codex-plus-row-title")?.textContent || "设置");
+    });
     const closeButton = overlay.querySelector(".codex-plus-modal-close");
     closeButton?.addEventListener("click", (event) => {
       event.preventDefault();
@@ -5489,16 +6181,8 @@
       const searchInput = target?.closest("[data-codex-extensions-search]");
       if (searchInput) {
         codexPlusExtensionsQuery = searchInput.value;
-        // 只重绘列表，不重建输入框本身，否则每敲一个字就丢焦点。
-        const body = document.querySelector("[data-codex-plus-page-nav-body]");
-        if (body) {
-          body.innerHTML = renderCodexPlusExtensionsNav();
-          const next = body.querySelector("[data-codex-extensions-search]");
-          if (next) {
-            next.focus();
-            next.setSelectionRange(next.value.length, next.value.length);
-          }
-        }
+        codexPlusExtensionsSelected = null;
+        refreshCodexPlusExtensionsView();
         return;
       }
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
@@ -5525,6 +6209,33 @@
       // 拓展注册的菜单项。放在最前面是因为它的判定完全基于自己的 data 属性，
       // 与下面那些内置分支不会重叠；万一将来重叠，也应当由拓展优先拿到。
       if (handleCodexPlusExtensionMenuClick(target)) return;
+      const typingEffectTrigger = target?.closest("[data-codex-plus-typing-effect-trigger]");
+      if (typingEffectTrigger) {
+        const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");
+        if (menu?.hidden) openCodexPlusTypingEffectDropdown(overlay);
+        else closeCodexPlusTypingEffectDropdown();
+        return;
+      }
+      const typingEffectOption = target?.closest("[data-codex-plus-typing-effect-option]");
+      if (typingEffectOption) {
+        const select = overlay.querySelector("[data-codex-plus-typing-effect]");
+        if (select && !select.disabled) {
+          const value = typingEffectOption.dataset.codexPlusTypingEffectOption;
+          if (select.value !== value) {
+            select.value = value;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
+        closeCodexPlusTypingEffectDropdown(true);
+        return;
+      }
+      const extensionsBrowse = target?.closest("[data-codex-extensions-browse]");
+      if (extensionsBrowse) {
+        codexPlusExtensionsFilter = extensionsBrowse.dataset.codexExtensionsBrowse === "installed" ? "installed" : "market";
+        codexPlusExtensionsSelected = null;
+        refreshCodexPlusExtensionsView();
+        return;
+      }
       // 左面板的分组导航（仅拓展页有左面板）。
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {
@@ -5630,6 +6341,7 @@
         const [kind, ...rest] = extensionsSelect.getAttribute("data-codex-extensions-select").split(":");
         codexPlusExtensionsSelected = { kind, key: rest.join(":") };
         refreshCodexPlusExtensionsView();
+        overlay.querySelector(".codex-plus-extensions-back")?.focus({ preventScroll: true });
         return;
       }
       const toggle = target?.closest("[data-codex-plus-setting]");
@@ -5644,6 +6356,32 @@
         const key = backendToggle.getAttribute("data-codex-backend-setting");
         setBackendSetting(key, !codexPlusBackendSettings[key]);
         return;
+      }
+    }, true);
+    overlay.addEventListener("keydown", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (target?.closest("[data-codex-plus-typing-effect-trigger]") && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        openCodexPlusTypingEffectDropdown(overlay, event.key === "ArrowUp");
+        return;
+      }
+      const menu = target?.closest("[data-codex-plus-typing-effect-menu]");
+      if (!menu || menu.hidden) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCodexPlusTypingEffectDropdown(true);
+      } else if (event.key === "Tab") {
+        // 回到触发器后让浏览器处理 Tab，焦点会自然进入下一项而不会停在隐藏菜单里。
+        closeCodexPlusTypingEffectDropdown(true);
+      } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const options = Array.from(menu.querySelectorAll("[role=option]"));
+        const current = options.indexOf(document.activeElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+          : (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+        options.forEach((option, index) => { option.tabIndex = index === next ? 0 : -1; });
+        options[next]?.focus({ preventScroll: true });
       }
     }, true);
     // 图标加载失败的回退：error 不冒泡，只能捕获阶段委托。
@@ -5676,6 +6414,7 @@
 
   /** 「拓展」页面：从弹窗里拆出来的用户脚本，形态对齐 VSCode 的扩展面板。 */
   function openCodexPlusExtensions() {
+    codexPlusExtensionsSelected = null;
     openCodexPlusModal({ page: true, tab: codexPlusExtensionsTab });
   }
 
@@ -5685,6 +6424,7 @@
   }
 
   function closeCodexPlusPage() {
+    closeCodexPlusTypingEffectDropdown();
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
   }
@@ -5837,6 +6577,7 @@
     button.removeAttribute("data-selected");
     button.removeAttribute("aria-current");
     button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
     button.textContent = "";
     // 原生 rail 按钮是纯图标，没有文字标签，所以只放图标 + 状态点。
     button.innerHTML = `<span class="codex-plus-rail-icon" aria-hidden="true">${iconMarkup}</span>`
@@ -5921,6 +6662,7 @@
 
     const status = document.getElementById(codexPlusRailNavId)?.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
+    if (codexPlusActiveEntry() === "plugin-market") setCodexPlusSidebarNavActive(true, "plugin-market");
     return true;
   }
 
@@ -13749,7 +14491,7 @@
   const codexPlusCustomLayoutOwner = "custom-layout";
   const codexPlusCustomLayoutPanels = {
     rail: { label: "图标栏", minWidth: 44, resizableHeight: true },
-    sidebar: { label: "聊天栏", minWidth: 180, resizableHeight: true },
+    sidebar: { label: "侧边栏", minWidth: 180, resizableHeight: true },
     summary: { label: "详情卡", minWidth: 220, resizableHeight: false },
     composer: { label: "输入框", minWidth: 280, resizableHeight: false },
   };
@@ -13774,6 +14516,7 @@
         snapX: ["left", "right"].includes(record.snapX) ? record.snapX : null,
         snapY: ["top", "bottom"].includes(record.snapY) ? record.snapY : null,
       };
+      if (id === "sidebar" && record.grouped === true) next.grouped = true;
       for (const dimension of ["width", "height"]) {
         if (typeof record[dimension] === "number" && Number.isFinite(record[dimension]) && record[dimension] > 0) {
           next[dimension] = codexPlusCustomLayoutClamp(record[dimension], 1, 10000);
@@ -13929,6 +14672,74 @@
     return style.display !== "none" && style.visibility !== "hidden";
   }
 
+  function codexPlusCustomLayoutUnionRect(rects) {
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    return {
+      left, top,
+      width: Math.max(...rects.map((rect) => rect.left + rect.width)) - left,
+      height: Math.max(...rects.map((rect) => rect.top + rect.height)) - top,
+    };
+  }
+
+  function codexPlusCustomLayoutElements(entry) {
+    return entry.elements || [entry.element];
+  }
+
+  function codexPlusCustomLayoutStyledElements(entry) {
+    const elements = codexPlusCustomLayoutElements(entry);
+    return entry.grouped && elements.length === 1
+      ? [...new Set([...elements, entry.railElement, entry.sidebarElement].filter(Boolean))]
+      : elements;
+  }
+
+  function codexPlusCustomLayoutEntryRect(entry) {
+    return codexPlusCustomLayoutUnionRect(codexPlusCustomLayoutElements(entry).map((element) => element.getBoundingClientRect()));
+  }
+
+  function codexPlusCustomLayoutEntryConnected(entry) {
+    return codexPlusCustomLayoutElements(entry).every((element) => element.isConnected);
+  }
+
+  function codexPlusCustomLayoutMinWidth(entry) {
+    return codexPlusCustomLayoutPanels[entry.id].minWidth + (entry.grouped ? entry.railWidth : 0);
+  }
+
+  function codexPlusCustomLayoutRestoreEntry(entry) {
+    for (const element of codexPlusCustomLayoutStyledElements(entry)) {
+      codexPlusCustomLayoutRestoreStyle(codexPlusCustomLayoutState.styled, element);
+    }
+  }
+
+  /** 只选导航自己的外壳，不能把包含主内容或输入框的祖先一起拖走。 */
+  function codexPlusCustomLayoutNavigationShellSafe(element, rect, protectedElements = [], ownedShell = false) {
+    if (!element || element === document.body || element === document.documentElement || !codexPlusCustomLayoutVisible(element)) return false;
+    if (element.matches?.('main, [data-app-shell-main-surface]')
+      || element.querySelector?.('main, [data-app-shell-main-surface], [data-codex-composer-root], [data-summary-panel-variant]')
+      || protectedElements.some((node) => node && (element === node || element.contains?.(node)))) return false;
+    // 已接管的共同壳不会因一次 flex 尺寸重算就被误拆成两个 fixed 面板。
+    if (ownedShell) return true;
+    const measured = element.getBoundingClientRect();
+    // 允许边框和内边距，拒绝覆盖整张工作区的背景容器。
+    return measured.width <= rect.width + 24 && measured.height <= rect.height + 24
+      && measured.left >= rect.left - 12 && measured.top >= rect.top - 12
+      && measured.left <= rect.left + 12 && measured.top <= rect.top + 12
+      && measured.left + measured.width <= rect.left + rect.width + 12
+      && measured.top + measured.height <= rect.top + rect.height + 12
+      && measured.left + measured.width >= rect.left + rect.width - 12
+      && measured.top + measured.height >= rect.top + rect.height - 12;
+  }
+
+  function codexPlusCustomLayoutNavigationPart(element, protectedElements) {
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    let shell = element;
+    for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+      if (codexPlusCustomLayoutNavigationShellSafe(node, rect, protectedElements)) shell = node;
+    }
+    return shell;
+  }
+
   function codexPlusCustomLayoutFindTargets() {
     const firstVisible = (selector) => Array.from(document.querySelectorAll(selector)).find(codexPlusCustomLayoutVisible) || null;
     const rail = firstVisible("nav[data-app-navigation-rail]");
@@ -13940,7 +14751,34 @@
     let composer = null;
     try { composer = conversationViewFindComposerEl(); } catch {}
     if (!codexPlusCustomLayoutVisible(composer)) composer = null;
-    return { rail, sidebar, summary, composer };
+    const protectedElements = [summary, composer];
+    const railPart = codexPlusCustomLayoutNavigationPart(rail, [...protectedElements, sidebar]);
+    const sidebarPart = codexPlusCustomLayoutNavigationPart(sidebar, [...protectedElements, rail]);
+    if (rail && sidebar) {
+      const union = codexPlusCustomLayoutUnionRect([railPart.getBoundingClientRect(), sidebarPart.getBoundingClientRect()]);
+      const current = codexPlusCustomLayoutState.entries.get("sidebar");
+      let shell = current?.grouped && current.elements.length === 1 && codexPlusCustomLayoutState.styled.has(current.element)
+        && current.element.contains?.(rail) && current.element.contains?.(sidebar)
+        && codexPlusCustomLayoutNavigationShellSafe(current.element, union, protectedElements, true) ? current.element : null;
+      if (!shell) {
+        for (let node = rail.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+          if (node.contains?.(sidebar) && codexPlusCustomLayoutNavigationShellSafe(node, union, protectedElements)) shell = node;
+        }
+      }
+      return {
+        rail: null,
+        sidebar: {
+          element: shell || sidebarPart,
+          elements: shell ? [shell] : [railPart, sidebarPart],
+          grouped: true,
+          railElement: railPart, sidebarElement: sidebarPart,
+          railRect: railPart.getBoundingClientRect(),
+          sidebarRect: sidebarPart.getBoundingClientRect(),
+        },
+        summary, composer,
+      };
+    }
+    return { rail: railPart, sidebar: sidebarPart, summary, composer };
   }
 
   function codexPlusCustomLayoutBounds() {
@@ -14088,6 +14926,7 @@
     label.textContent = "拖动让位 · 弹簧回弹 · Alt 暂停吸附";
     toolbar.appendChild(label);
     for (const [id, definition] of Object.entries(codexPlusCustomLayoutPanels)) {
+      if (id === "rail" && state.entries.get("sidebar")?.grouped) continue;
       const button = codexPlusCustomLayoutUiNode("button");
       button.type = "button";
       const entry = state.entries.get(id);
@@ -14121,15 +14960,97 @@
 
   function codexPlusCustomLayoutPreferredRect(entry, bounds) {
     const record = codexPlusCustomLayoutState.layout.panels[entry.id];
-    const measured = entry.element.getBoundingClientRect();
+    const measured = codexPlusCustomLayoutEntryRect(entry);
     const native = { left: measured.left, top: measured.top, width: measured.width, height: measured.height };
     if (!record) return native;
     // 输入框/详情卡的内容决定高度，持久数据只约束其宽度。
     const preferred = { ...record };
     if (!codexPlusCustomLayoutPanels[entry.id].resizableHeight) delete preferred.height;
     return clampRect(recordToRect(preferred, native, bounds), bounds,
-      codexPlusCustomLayoutPanels[entry.id].minWidth,
+      codexPlusCustomLayoutMinWidth(entry),
       codexPlusCustomLayoutPanels[entry.id].resizableHeight ? 80 : 24);
+  }
+
+  function codexPlusCustomLayoutCreateEntry(id, target) {
+    const element = target.element || target;
+    const elements = Array.isArray(target.elements) ? target.elements : [element];
+    const partRects = elements.map((part) => part.getBoundingClientRect());
+    return {
+      id, element, elements, grouped: target.grouped === true,
+      railWidth: target.grouped ? target.railRect.width : 0,
+      railElement: target.railElement, sidebarElement: target.sidebarElement,
+      railRect: target.railRect, sidebarRect: target.sidebarRect,
+      nativeGroupRect: codexPlusCustomLayoutUnionRect(partRects), partRects,
+      handle: null, outline: null, move: null, justAdded: true,
+    };
+  }
+
+  /** v1 的聊天栏/图标栏位置升级为整组位置；正式交互保存时再写回。 */
+  function codexPlusCustomLayoutMigrateNavigation(entry, bounds) {
+    if (!entry?.grouped) return;
+    const panels = codexPlusCustomLayoutState.layout.panels;
+    const sidebarRecord = panels.sidebar;
+    const railRecord = panels.rail;
+    if (sidebarRecord?.grouped !== true && (sidebarRecord || railRecord)) {
+      const native = entry.nativeGroupRect;
+      const part = sidebarRecord ? entry.sidebarRect : entry.railRect;
+      const previous = recordToRect(sidebarRecord || railRecord, part, bounds);
+      const rect = {
+        left: previous.left - (part.left - native.left),
+        top: previous.top - (part.top - native.top),
+        width: previous.width + native.width - part.width,
+        height: previous.height + native.height - part.height,
+      };
+      panels.sidebar = { ...rectToRecord(rect, bounds, sidebarRecord || railRecord), grouped: true };
+    }
+    // 新版只有一个求解单位，旧图标栏记录不能继续与侧边栏竞争位置。
+    delete panels.rail;
+  }
+
+  function codexPlusCustomLayoutNavigationPartRect(entry, rect, part) {
+    const native = entry.nativeGroupRect;
+    const railStart = entry.railRect.left - native.left;
+    const railEnd = railStart + entry.railWidth;
+    const horizontalScale = Math.max(0, (rect.width - entry.railWidth) / Math.max(1, native.width - entry.railWidth));
+    // 调整组宽时保留图标栏宽度，剩余空间交给聊天栏；两块仍是同一个碰撞单位。
+    const x = (value) => value <= railStart ? value * horizontalScale
+      : value < railEnd ? railStart * horizontalScale + value - railStart
+      : railStart * horizontalScale + entry.railWidth + (value - railEnd) * horizontalScale;
+    const left = x(part.left - native.left);
+    const right = x(part.left + part.width - native.left);
+    const verticalScale = rect.height / Math.max(1, native.height);
+    return {
+      left: rect.left + left, top: rect.top + (part.top - native.top) * verticalScale,
+      width: Math.max(1, right - left), height: Math.max(1, part.height * verticalScale),
+    };
+  }
+
+  function codexPlusCustomLayoutPartRect(entry, rect, index) {
+    return entry.elements.length === 1 ? rect : codexPlusCustomLayoutNavigationPartRect(entry, rect, entry.partRects[index]);
+  }
+
+  function codexPlusCustomLayoutApplyNavigationWidths(entry, rect) {
+    if (!entry.grouped || entry.elements.length !== 1) return;
+    for (const [element, native] of [[entry.railElement, entry.railRect], [entry.sidebarElement, entry.sidebarRect]]) {
+      if (!element?.isConnected || element === entry.element) continue;
+      const part = codexPlusCustomLayoutNavigationPartRect(entry, rect, native);
+      const width = `${(part.width / codexPlusCustomLayoutScale(element)).toFixed(3)}px`;
+      // 只约束共同壳里的正常流子面板，不设置 position，不更换滚动/裁剪规则。
+      codexPlusCustomLayoutWriteStyle(codexPlusCustomLayoutState.styled, element, {
+        width, "min-width": "0", "max-width": width, "flex-basis": width,
+        "flex-grow": "0", "flex-shrink": "0", "box-sizing": "border-box",
+      });
+    }
+  }
+
+  function codexPlusCustomLayoutRefreshNavigationParts(entry, target) {
+    if (!entry.grouped || entry.elements.length !== 1) return;
+    const next = [target.railElement, target.sidebarElement];
+    for (const element of [entry.railElement, entry.sidebarElement]) {
+      if (element && !next.includes(element)) codexPlusCustomLayoutRestoreStyle(codexPlusCustomLayoutState.styled, element);
+    }
+    entry.railElement = target.railElement;
+    entry.sidebarElement = target.sidebarElement;
   }
 
   function codexPlusCustomLayoutApplyEntry(entry, bounds) {
@@ -14138,7 +15059,7 @@
     const motion = state.motions.get(entry.id);
     const projection = state.projectedRects?.[entry.id];
     if (!record && !motion && !projection) {
-      codexPlusCustomLayoutRestoreStyle(state.styled, entry.element);
+      codexPlusCustomLayoutRestoreEntry(entry);
       return;
     }
     if (entry.id === "composer" && !state.styled.has(entry.element)
@@ -14149,20 +15070,27 @@
       conversationViewState.elements.delete(entry.element);
     }
     const rect = motion?.current || projection || codexPlusCustomLayoutPreferredRect(entry, bounds);
-    const scale = codexPlusCustomLayoutScale(entry.element);
-    const px = (value) => `${(value / scale).toFixed(3)}px`;
-    const values = {
-      position: "fixed", left: px(rect.left), top: px(rect.top), right: "auto", bottom: "auto",
-      width: px(rect.width), "min-width": "0", "max-width": px(bounds.width),
-      "max-height": px(bounds.height), "box-sizing": "border-box", margin: "0",
-      transform: "none", translate: "none", rotate: "none", scale: "none", "z-index": "120",
-    };
-    if (codexPlusCustomLayoutPanels[entry.id].resizableHeight) {
-      values.height = px(rect.height);
-      values["overflow-y"] = "auto";
-      values["overflow-x"] = "hidden";
+    for (const [index, element] of entry.elements.entries()) {
+      const part = codexPlusCustomLayoutPartRect(entry, rect, index);
+      const scale = codexPlusCustomLayoutScale(element);
+      const px = (value) => `${(value / scale).toFixed(3)}px`;
+      const values = {
+        position: "fixed", left: px(part.left), top: px(part.top), right: "auto", bottom: "auto",
+        width: px(part.width), "min-width": "0", "max-width": px(bounds.width),
+        "max-height": px(bounds.height), "box-sizing": "border-box", margin: "0",
+        transform: "none", translate: "none", rotate: "none", scale: "none", "z-index": "120",
+      };
+      if (codexPlusCustomLayoutPanels[entry.id].resizableHeight) {
+        values.height = px(part.height);
+        // 整壳保持宿主自己的滚动分工，不能再给 rail/chat 外面套一层滚动条。
+        if (!entry.grouped) {
+          values["overflow-y"] = "auto";
+          values["overflow-x"] = "hidden";
+        }
+      }
+      codexPlusCustomLayoutWriteStyle(state.styled, element, values);
     }
-    codexPlusCustomLayoutWriteStyle(state.styled, entry.element, values);
+    codexPlusCustomLayoutApplyNavigationWidths(entry, rect);
   }
 
   function codexPlusCustomLayoutInstallHandle(entry) {
@@ -14198,7 +15126,7 @@
   function codexPlusCustomLayoutPositionHandle(entry) {
     if (!entry.handle || !entry.outline) return;
     const bounds = codexPlusCustomLayoutBounds();
-    const rect = entry.element.getBoundingClientRect();
+    const rect = codexPlusCustomLayoutEntryRect(entry);
     const scale = codexPlusCustomLayoutScale(codexPlusCustomLayoutState.root);
     const left = codexPlusCustomLayoutClamp(rect.left, bounds.left, bounds.left + bounds.width - 24);
     const top = codexPlusCustomLayoutClamp(rect.top, bounds.top, bounds.top + bounds.height - 24);
@@ -14212,12 +15140,13 @@
 
   function codexPlusCustomLayoutOtherRects(id) {
     return [...codexPlusCustomLayoutState.entries.values()]
-      .filter((entry) => entry.id !== id && codexPlusCustomLayoutVisible(entry.element))
-      .map((entry) => entry.element.getBoundingClientRect());
+      .filter((entry) => entry.id !== id && codexPlusCustomLayoutElements(entry).every(codexPlusCustomLayoutVisible))
+      .map(codexPlusCustomLayoutEntryRect);
   }
 
   function codexPlusCustomLayoutRecordFor(id, rect, snaps = {}) {
     const record = rectToRecord(rect, codexPlusCustomLayoutBounds(), snaps);
+    if (id === "sidebar" && codexPlusCustomLayoutState.entries.get(id)?.grouped) record.grouped = true;
     if (!codexPlusCustomLayoutPanels[id].resizableHeight) delete record.height;
     return record;
   }
@@ -14237,11 +15166,11 @@
   function codexPlusCustomLayoutCaptureRects() {
     const state = codexPlusCustomLayoutState;
     return Object.fromEntries([...state.entries.values()].map((entry) => {
-      const measured = state.motions.get(entry.id)?.target || state.projectedRects?.[entry.id] || entry.element.getBoundingClientRect();
+      const measured = state.motions.get(entry.id)?.target || state.projectedRects?.[entry.id] || codexPlusCustomLayoutEntryRect(entry);
       const definition = codexPlusCustomLayoutPanels[entry.id];
       return [entry.id, {
         left: measured.left, top: measured.top, width: measured.width, height: measured.height,
-        minWidth: definition.minWidth, minHeight: definition.resizableHeight ? 80 : measured.height,
+        minWidth: codexPlusCustomLayoutMinWidth(entry), minHeight: definition.resizableHeight ? 80 : measured.height,
         canResizeHeight: definition.resizableHeight,
       }];
     }));
@@ -14277,7 +15206,7 @@
     // 碰撞求解只写目标；中间帧独立推进弹簧，不能拿中间帧反过来求解。
     for (const [id, motion] of state.motions) {
       const entry = state.entries.get(id);
-      if (!entry?.element.isConnected) { finished.push(id); continue; }
+      if (!entry || !codexPlusCustomLayoutEntryConnected(entry)) { finished.push(id); continue; }
       let settled = true;
       const restoring = !state.layout.panels[id] && !state.projectedRects?.[id];
       const area = restoring
@@ -14316,11 +15245,11 @@
     const reducedMotion = codexPlusCustomLayoutReducedMotion();
     for (const [id, target] of Object.entries(rects)) {
       const entry = state.entries.get(id);
-      if (!entry?.element.isConnected) continue;
+      if (!entry || !codexPlusCustomLayoutEntryConnected(entry)) continue;
       if (id === immediateId || reducedMotion || entry.justAdded) { state.motions.delete(id); continue; }
       const old = state.motions.get(id);
       if (old && codexPlusCustomLayoutRectEqual(old.target, target)) continue;
-      const measured = old?.current || entry.element.getBoundingClientRect();
+      const measured = old?.current || codexPlusCustomLayoutEntryRect(entry);
       const current = { left: measured.left, top: measured.top, width: measured.width, height: measured.height };
       const velocity = old?.velocity || { left: 0, top: 0, width: 0, height: 0 };
       if (releaseVelocity?.id === id) {
@@ -14362,7 +15291,7 @@
     event.stopPropagation();
     codexPlusCustomLayoutFinishDrag(true);
     codexPlusCustomLayoutStopMotion(true);
-    const origin = entry.element.getBoundingClientRect();
+    const origin = codexPlusCustomLayoutEntryRect(entry);
     const handle = event.currentTarget;
     const drag = {
       id, resize, handle, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
@@ -14385,7 +15314,7 @@
       const candidate = resize
         ? { ...drag.origin, width: drag.origin.width + dx, height: drag.origin.height + (codexPlusCustomLayoutPanels[id].resizableHeight ? dy : 0) }
         : { ...drag.origin, left: drag.origin.left + dx, top: drag.origin.top + dy };
-      const clamped = clampRect(candidate, area, codexPlusCustomLayoutPanels[id].minWidth,
+      const clamped = clampRect(candidate, area, codexPlusCustomLayoutMinWidth(entry),
         codexPlusCustomLayoutPanels[id].resizableHeight ? 80 : 24);
       // 吸附候选与碰撞输入使用起始快照；动画中的实际坐标不会改变下一帧解算。
       const stableSnap = resize || move.altKey ? { rect: clamped }
@@ -14456,7 +15385,7 @@
       ? { left: native.left, top: native.top, width: native.width + dx, height: native.height + (codexPlusCustomLayoutPanels[id].resizableHeight ? dy : 0) }
       : { left: native.left + dx, top: native.top + dy, width: native.width, height: native.height };
     const bounds = codexPlusCustomLayoutBounds();
-    const clamped = clampRect(candidate, bounds, codexPlusCustomLayoutPanels[id].minWidth,
+    const clamped = clampRect(candidate, bounds, codexPlusCustomLayoutMinWidth(entry),
       codexPlusCustomLayoutPanels[id].resizableHeight ? 80 : 24);
     const snapped = resize || event.altKey ? { rect: clamped } : snapRect(clamped, bounds, codexPlusCustomLayoutOtherRects(id));
     const solution = codexPlusLayoutSolve(baseline, id, snapped.rect, bounds, native);
@@ -14469,8 +15398,8 @@
     const state = codexPlusCustomLayoutState;
     if (state.drag?.id === entry.id) codexPlusCustomLayoutFinishDrag(false);
     state.motions.delete(entry.id);
-    state.resizeObserver?.unobserve?.(entry.element);
-    codexPlusCustomLayoutRestoreStyle(state.styled, entry.element);
+    for (const element of codexPlusCustomLayoutElements(entry)) state.resizeObserver?.unobserve?.(element);
+    codexPlusCustomLayoutRestoreEntry(entry);
     entry.handle?.remove();
     entry.outline?.remove();
     state.entries.delete(entry.id);
@@ -14541,7 +15470,7 @@
     // 原生侧栏常晚于注入数秒出现；只保留有界启动重试。
     state.retryTimer = setInterval(() => {
       codexPlusCustomLayoutSchedule();
-      if (++attempts >= 20 || state.entries.size === 4) {
+      if (++attempts >= 20 || state.entries.size === (state.entries.get("sidebar")?.grouped ? 3 : 4)) {
         clearInterval(state.retryTimer);
         state.retryTimer = 0;
       }
@@ -14553,18 +15482,23 @@
     if (!state.enabled) return;
     const targets = codexPlusCustomLayoutFindTargets();
     for (const entry of [...state.entries.values()]) {
-      if (targets[entry.id] !== entry.element) codexPlusCustomLayoutDropEntry(entry);
+      const target = targets[entry.id];
+      const elements = target ? Array.isArray(target.elements) ? target.elements : [target] : [];
+      if (elements.length !== entry.elements.length || elements.some((element, index) => element !== entry.elements[index])
+        || (target?.grouped === true) !== entry.grouped) codexPlusCustomLayoutDropEntry(entry);
+      else codexPlusCustomLayoutRefreshNavigationParts(entry, target);
     }
-    for (const [id, element] of Object.entries(targets)) {
-      if (!element || state.entries.has(id)) continue;
-      const entry = { id, element, handle: null, outline: null, move: null, justAdded: true };
+    for (const [id, target] of Object.entries(targets)) {
+      if (!target || state.entries.has(id)) continue;
+      const entry = codexPlusCustomLayoutCreateEntry(id, target);
       state.entries.set(id, entry);
-      state.resizeObserver?.observe(element);
+      for (const element of entry.elements) state.resizeObserver?.observe(element);
     }
     const bounds = codexPlusCustomLayoutBounds();
+    codexPlusCustomLayoutMigrateNavigation(state.entries.get("sidebar"), bounds);
     codexPlusCustomLayoutProject(bounds);
     const floated = [...state.entries.values()].filter((entry) => !!state.layout.panels[entry.id] || state.motions.has(entry.id) || state.projectedRects?.[entry.id]);
-    codexPlusCustomLayoutReleaseAncestors(floated.map((entry) => entry.element));
+    codexPlusCustomLayoutReleaseAncestors(floated.flatMap(codexPlusCustomLayoutElements));
     for (const entry of state.entries.values()) {
       codexPlusCustomLayoutApplyEntry(entry, bounds);
       entry.justAdded = false;
@@ -14590,10 +15524,10 @@
     const desired = {};
     for (const entry of state.entries.values()) {
       // 没有用户位置的面板先读回原生几何，不能把上次让位投影当首选位置。
-      if (!state.layout.panels[entry.id]) codexPlusCustomLayoutRestoreStyle(state.styled, entry.element);
+      if (!state.layout.panels[entry.id]) codexPlusCustomLayoutRestoreEntry(entry);
       const rect = codexPlusCustomLayoutPreferredRect(entry, bounds);
       const definition = codexPlusCustomLayoutPanels[entry.id];
-      desired[entry.id] = { ...rect, minWidth: definition.minWidth,
+      desired[entry.id] = { ...rect, minWidth: codexPlusCustomLayoutMinWidth(entry),
         minHeight: definition.resizableHeight ? 80 : rect.height, canResizeHeight: definition.resizableHeight };
     }
     const signature = JSON.stringify([bounds, desired]);
@@ -14684,7 +15618,7 @@
     const state = codexPlusCustomLayoutState;
     if (!state.enabled || !element) return false;
     return [...state.entries.values()].some((entry) => (!!state.layout.panels[entry.id] || state.motions.has(entry.id) || !!state.projectedRects?.[entry.id])
-      && (entry.element === element || entry.element.contains?.(element)));
+      && codexPlusCustomLayoutElements(entry).some((part) => part === element || part.contains?.(element)));
   }
 
   function installCodexPlusCustomLayout() {
