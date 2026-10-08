@@ -693,6 +693,8 @@ fn remote_image_urls_are_untouched_for_glm() {
         .as_str()
         .expect("image part survives");
     assert_eq!(url, "https://example.com/a.png");
+}
+
 fn remote_compaction_settings(base_url: &str, protocol: RelayProtocol) -> BackendSettings {
     BackendSettings {
         active_relay_id: "compact".to_string(),
@@ -1093,6 +1095,76 @@ async fn responses_compaction_v2_json_native_item_becomes_full_sse() {
         assert_eq!(event["sequence_number"], index);
     }
     assert_eq!(events[2]["item"]["encrypted_content"], "OPAQUE_JSON");
+}
+
+#[tokio::test]
+async fn responses_compaction_v2_sse_rejects_empty_encrypted_content() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = if index == 0 {
+                listener.accept().await.unwrap()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .expect("fallback request should arrive")
+                    .unwrap()
+            };
+            requests.push(
+                String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string(),
+            );
+            if index == 0 {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"event: response.output_item.done
+
+data: {"type":"response.output_item.done","item":{"id":"cmp_empty","type":"compaction","encrypted_content":""}}
+
+event: response.completed
+
+data: {"type":"response.completed","response":{"id":"resp_empty","status":"completed"}}"#,
+                )
+                .await;
+            } else {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"COMPAT_SUMMARY"}]}]}"#,
+                )
+                .await;
+            }
+        }
+        requests
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "model",
+            "stream": true,
+            "input": [{ "type": "compaction_trigger" }]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[1].contains("compaction_trigger"));
+    assert!(result.compaction);
+    assert!(!result.native_compaction_passthrough);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("COMPAT_SUMMARY")
+    );
 }
 
 #[tokio::test]
@@ -2103,9 +2175,7 @@ fn responses_request_relocates_developer_notice_between_tool_outputs() {
         );
         // 相邻前一条不能是 developer 通知（说明夹心已被搬走）。
         if position > 0 {
-            let previous = messages[position - 1]["content"]
-                .as_str()
-                .unwrap_or("");
+            let previous = messages[position - 1]["content"].as_str().unwrap_or("");
             assert!(
                 !previous.contains("image_resize_notice"),
                 "夹心通知仍插在 tool 结果之间"
@@ -2261,8 +2331,14 @@ fn responses_request_flattens_top_level_one_of_in_tool_parameters() {
 
     let properties = parameters["properties"].as_object().unwrap();
     assert!(properties.contains_key("mode"), "分支共有的字段应并入");
-    assert!(properties.contains_key("targetThreadId"), "分支独有字段应并入");
-    assert!(properties.contains_key("note"), "第二个分支的独有字段应并入");
+    assert!(
+        properties.contains_key("targetThreadId"),
+        "分支独有字段应并入"
+    );
+    assert!(
+        properties.contains_key("note"),
+        "第二个分支的独有字段应并入"
+    );
 
     // required 取交集：只有 mode 是所有分支都要求的。
     let required: Vec<&str> = parameters["required"]
@@ -3368,8 +3444,7 @@ fn gemini_thought_signature_is_carried_back_across_turns() {
         .and_then(|calls| calls.first())
         .expect("tool call replayed into chat history");
     assert_eq!(
-        tool_call["extra_content"]["google"]["thought_signature"],
-        "SIG-ABC",
+        tool_call["extra_content"]["google"]["thought_signature"], "SIG-ABC",
         "签名字段必须原样回到下一轮请求"
     );
 }
@@ -3396,7 +3471,10 @@ fn tool_call_without_extra_content_replays_without_the_field() {
     }))
     .unwrap();
 
-    let call_id = converted["output"][0]["call_id"].as_str().unwrap().to_string();
+    let call_id = converted["output"][0]["call_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let replayed = responses_to_chat_completions(json!({
         "model": "gpt-5.4",
         "input": [

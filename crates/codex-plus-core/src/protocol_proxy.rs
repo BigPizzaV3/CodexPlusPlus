@@ -129,6 +129,7 @@ const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_COOLDOWN_RETRIES: usize = 3;
+const MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES: usize = 32 * 1024 * 1024;
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -1157,15 +1158,39 @@ fn output_compaction_count(output: Option<&Value>) -> Option<usize> {
     let compactions = items
         .iter()
         .filter(|item| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE));
-    if compactions.clone().any(|item| {
-        !item
-            .get("encrypted_content")
-            .and_then(Value::as_str)
-            .is_some_and(|content| !content.is_empty())
-    }) {
+    if compactions
+        .clone()
+        .any(|item| usable_compaction_content(item).is_none())
+    {
         return Some(0);
     }
     Some(compactions.count())
+}
+
+async fn read_limited_upstream_body(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if let Some(content_length) = response.content_length()
+        && content_length > limit as u64
+    {
+        anyhow::bail!("上游响应体超过 {limit} 字节限制");
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > limit {
+            anyhow::bail!("上游响应体超过 {limit} 字节限制");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn usable_compaction_content(item: &Value) -> Option<&str> {
+    item.get("encrypted_content")?
+        .as_str()
+        .filter(|content| !content.is_empty())
 }
 
 fn json_compaction_count(value: &Value) -> Option<usize> {
@@ -1213,7 +1238,9 @@ fn upstream_compaction_item_count(body: &[u8], content_type: &str) -> Option<usi
                         .and_then(Value::as_str)
                         == Some(COMPACTION_OUTPUT_TYPE) =>
                 {
-                    json.get("item")?.get("encrypted_content")?.as_str()?;
+                    if usable_compaction_content(json.get("item")?).is_none() {
+                        return Some(0);
+                    }
                     count += 1;
                 }
                 Some("response.completed") => {
@@ -1320,10 +1347,7 @@ fn render_native_compaction_as_sse(body: &[u8]) -> Option<Vec<u8>> {
     let output = response.get("output")?.as_array()?;
     let mut compaction_items = output.iter().filter(|item| {
         item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE)
-            && item
-                .get("encrypted_content")
-                .and_then(Value::as_str)
-                .is_some()
+            && usable_compaction_content(item).is_some()
     });
     let item = compaction_items.next()?.clone();
     if compaction_items.next().is_some() {
@@ -1959,7 +1983,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     )
                     .await;
                 }
-                let probed = match upstream.bytes().await {
+                let probed = match read_limited_upstream_body(
+                    &mut upstream,
+                    MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES,
+                )
+                .await
+                {
                     Ok(body) => body.to_vec(),
                     Err(error) => {
                         drop(channel_permit);
@@ -7540,5 +7569,26 @@ mod channel_cooldown_retry_tests {
         assert!(should_retry_after_cooldown(2));
         assert!(!should_retry_after_cooldown(3));
         assert!(!should_retry_after_cooldown(usize::MAX));
+    }
+}
+
+#[cfg(test)]
+mod compaction_probe_body_limit_tests {
+    use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[tokio::test]
+    async fn oversized_content_length_is_rejected_before_body_read() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x"))
+            .mount(&server)
+            .await;
+
+        let mut response = reqwest::get(server.uri()).await.unwrap();
+        let error = read_limited_upstream_body(&mut response, 0)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("上游响应体超过"));
     }
 }
