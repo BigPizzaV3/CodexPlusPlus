@@ -800,6 +800,117 @@ fn switch_to_aggregate_rejects_corrupt_auth_json() {
     assert_eq!(live, corrupt, "损坏的 auth.json 不能被静默覆盖");
 }
 
+/// 回归（issue #1497 / #783 / #975，cc-switch 共存）：cc-switch 接管 ~/.codex 后，
+/// live config.toml 是它写入的另一套供应商——provider id 与 Codex++ 托管位同名
+/// （双方默认模板都是 "custom"），但 base_url、API Key、模型、catalog 指针全变了。
+/// 此时用户回 Codex++ 切换供应商，切换前的 backfill 不能把这套外部供应商内容
+/// 固化进上一个 Codex++ 供应商，否则用户切回该供应商时上游、密钥、模型全部
+/// 错乱，表现为"切不回模型"。
+#[test]
+fn switch_does_not_backfill_foreign_provider_written_by_cc_switch() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir_all(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let profiles = vec![
+        pure_profile("a", "https://a.example/v1", "sk-a"),
+        pure_profile("b", "https://b.example/v1", "sk-b"),
+    ];
+    store
+        .save(&BackendSettings {
+            active_relay_id: "a".to_string(),
+            relay_profiles: profiles.clone(),
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    // 1) Codex++ 先把供应商 a 写进 live
+    switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "a".to_string(),
+            relay_profiles: profiles.clone(),
+            ..BackendSettings::default()
+        },
+        "",
+    )
+    .unwrap();
+
+    // 2) cc-switch 接管 live：同 provider id "custom"，另一套供应商身份
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "gpt-5.6-sol"
+model_provider = "custom"
+model_catalog_json = "cc-switch-model-catalog.json"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://ccswitch.example/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-ccswitch"}"#,
+    )
+    .unwrap();
+
+    // 3) 用户回 Codex++ 切到供应商 b
+    switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "b".to_string(),
+            relay_profiles: profiles.clone(),
+            ..BackendSettings::default()
+        },
+        "a",
+    )
+    .unwrap();
+
+    // 4) 供应商 a 不得被 cc-switch 的内容污染
+    let stored = store.load().unwrap();
+    let a = stored
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "a")
+        .unwrap();
+    assert!(
+        a.config_contents.contains("https://a.example/v1"),
+        "供应商 a 丢失了自己的 base_url：{}",
+        a.config_contents
+    );
+    assert!(
+        !a.config_contents.contains("ccswitch.example"),
+        "供应商 a 被写入 cc-switch 的 base_url：{}",
+        a.config_contents
+    );
+    assert!(
+        !a.config_contents.contains("cc-switch-model-catalog.json"),
+        "供应商 a 被写入 cc-switch 的 catalog 指针：{}",
+        a.config_contents
+    );
+    assert!(
+        a.auth_contents.contains("sk-a"),
+        "供应商 a 的 API Key 不应被 cc-switch 覆盖：{}",
+        a.auth_contents
+    );
+
+    // 5) live 应当是供应商 b 的完整投影，且不带 cc-switch 的 catalog 指针
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(
+        live.contains("https://b.example/v1"),
+        "live 应该是供应商 b 的：{live}"
+    );
+    assert!(
+        !live.contains("cc-switch-model-catalog.json"),
+        "cc-switch 的 catalog 指针应被接管：{live}"
+    );
+}
+
 fn pure_profile(id: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),

@@ -1131,6 +1131,21 @@ pub fn backfill_relay_profile_from_home_with_common(
     let template_auth = profile.auth_contents.clone();
     let template_api_key = relay_profile_api_key(profile);
     let template_base_url = relay_profile_base_url(profile);
+    let live_auth = read_optional_text(&home.join("auth.json"))?;
+    if live_config_is_foreign_provider(
+        &live_config,
+        &live_auth,
+        &template_config,
+        &template_base_url,
+        &template_api_key,
+    ) {
+        // cc-switch 等外部管理器已把 live 换成另一套供应商。整段回填会把外部
+        // 供应商的 base_url / 模型 / catalog 指针固化进本 profile（issue #1497
+        // #783），用户切回该供应商时上游与模型全部错乱，表现为"切不回模型"。
+        // 保持模板原样，交给本次切换直接覆盖 live；手工编辑场景不受影响
+        // （见 live_config_is_foreign_provider 的判定条件）。
+        return Ok(());
+    }
     profile.config_contents = if profile.use_common_config {
         strip_common_config_from_config(&live_config, common_config_contents)?
     } else {
@@ -1157,7 +1172,6 @@ pub fn backfill_relay_profile_from_home_with_common(
         profile.config_contents =
             move_model_providers_before_profiles(&ensure_trailing_newline(doc.to_string()));
     }
-    let live_auth = read_optional_text(&home.join("auth.json"))?;
     restore_profile_credentials_after_backfill(
         profile,
         &template_auth,
@@ -1177,6 +1191,57 @@ pub fn backfill_relay_profile_from_home_with_common(
         }
     }
     Ok(())
+}
+
+/// live config.toml 是否已被 cc-switch 等外部管理器写成**另一个供应商**的投影。
+///
+/// 判定条件（三条同时满足才视为外部接管，尽量不误伤手工编辑）：
+/// 1. live 与本 profile 模板的活跃 provider id 相同——外部工具占用了同一个
+///    provider 位。cc-switch 的默认模板与 Codex++ 的托管位同名（都是
+///    `model_provider = "custom"`），这是双方冲突的根源（issue #1497）；
+/// 2. 双方都带非空 base_url 且不相等——Codex++ 自己的 apply / 切回永远写
+///    模板里的 base_url（协议代理改写有专门的还原分支），不会产生这种差异；
+/// 3. live auth.json 的 OPENAI_API_KEY 与模板 API Key 都非空且不相等——
+///    base_url 与密钥两个身份锚点同时漂移，只可能是另一套供应商写进来的；
+///    协议代理/聚合模式写 live 时复用 profile 自己的 Key，因此不会误伤。
+///
+/// 只改 base_url、只换 Key 或换了 provider id（手工编辑的 `manual_a` 形态）
+/// 不满足全部条件，仍走原有回填，行为不变。
+fn live_config_is_foreign_provider(
+    live_config: &str,
+    live_auth: &str,
+    template_config: &str,
+    template_base_url: &str,
+    template_api_key: &str,
+) -> bool {
+    let (Ok(live_doc), Ok(template_doc)) = (
+        parse_toml_document(live_config),
+        parse_toml_document(template_config),
+    ) else {
+        return false;
+    };
+    let (Some(live_provider_id), Some(template_provider_id)) = (
+        active_provider_id(&live_doc),
+        active_provider_id(&template_doc),
+    ) else {
+        return false;
+    };
+    if live_provider_id != template_provider_id {
+        return false;
+    }
+    let Some(live_base_url) = provider_string_from_config(live_config, "base_url") else {
+        return false;
+    };
+    if template_base_url.trim().is_empty() || live_base_url.trim() == template_base_url.trim() {
+        return false;
+    }
+    let (Some(live_api_key), true) = (
+        codex_auth_api_key(live_auth),
+        !template_api_key.trim().is_empty(),
+    ) else {
+        return false;
+    };
+    live_api_key.trim() != template_api_key.trim()
 }
 
 pub fn extract_common_config_from_config(config_text: &str) -> anyhow::Result<String> {
