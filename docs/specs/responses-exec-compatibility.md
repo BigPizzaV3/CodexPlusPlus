@@ -16,12 +16,14 @@ model's ability to write correct Code Mode programs.
 
 - The request already passes through the Codex++ local protocol proxy.
 - The first version supports full-history replay requests, not server-managed
-  state using `previous_response_id` or `conversation`.
+  state using `previous_response_id`, `conversation`, or `conversation_id`.
 - The client remains responsible for approvals and tool execution. The adapter
   translates protocol data only and never executes code.
 - A model name or `/models` listing is not capability evidence.
 - Existing direct Responses transport and the official DeepSeek configuration
   workaround remain unchanged. Those paths are not covered by this adapter.
+  In particular, an ordinary authenticated Responses relay without a proxy
+  routing requirement can remain direct and still report the original rejection.
 
 ## Behavioral Contract
 
@@ -29,8 +31,9 @@ model's ability to write correct Code Mode programs.
    Existing proxy normalization and configured image handling still apply.
 2. Negotiate only on a structured HTTP 400 validation response explicitly
    rejecting custom `exec`, before any response has been delivered to the client.
-   Require the `invalid_request_error` type and an exact rejected tool name in a
-   recognized message/code fixture. A supplied tool index must identify that
+   Require the `invalid_request_error` type and the exact observed message
+   `Unsupported custom tool: 'exec'. Only 'apply_patch' is supported.`
+   A supplied tool index must identify that
    declaration; generic "unsupported tools" text is insufficient.
    Generic errors, authentication failures, throttling, timeouts, and HTTP 200
    stream errors do not trigger negotiation. Error inspection must preserve
@@ -48,6 +51,8 @@ model's ability to write correct Code Mode programs.
 4. Convert only matching historical custom `exec` calls and their outputs.
    Preserve `call_id`, ordering, and consistent item-ID references. Leave the
    canonical client history and unrelated reasoning or compaction data intact.
+   Historical call and output `id` fields are optional: translate them when
+   present, preserve their absence, and correlate results through `call_id`.
    Match results through the original call identity, not output type alone.
    Orphan results, duplicate call IDs, item-ID collisions, and unresolved
    references disable adaptation rather than risking a misassociated result.
@@ -62,6 +67,11 @@ model's ability to write correct Code Mode programs.
    calls to 64; exceeding a bound fails the adapted response explicitly.
    Retained item metadata and identity strings share that budget; identity
    registries are additionally limited to 1,024 entries.
+   Argument completion does not imply item completion: wait for
+   `output_item.done` or a successful terminal snapshot before emitting the
+   matching done event, and preserve final item metadata. Validate stable,
+   nonnegative integer output indices across every exec completion surface.
+   Reject call-ID collisions across function and custom tools.
    On parsing failure, truncation, or an unsuccessful terminal event, suppress
    unvalidated executable input, emit at most one client `response.failed`
    terminal event, and close the stream without retry.
@@ -78,7 +88,9 @@ model's ability to write correct Code Mode programs.
    Do not log either credential values or their digests. Bound the cache
    to 256 entries with a 30-minute TTL. Never store or log plaintext credentials.
    An adapted HTTP success proves acceptance, not correct tool execution.
-8. Stateful and compaction requests bypass both negotiation and cached adaptation. Preserve
+8. Stateful and compaction requests bypass both negotiation and cached adaptation.
+   This includes ordinary follow-up requests containing any `compaction` history
+   item, not only compact endpoints or `compaction_trigger` requests. Preserve
    their existing request and error behavior; do not attempt to rewrite upstream
    server history.
 9. The physical retry participates in channel queueing and rate accounting
@@ -89,7 +101,9 @@ model's ability to write correct Code Mode programs.
    Client cancellation is neutral, creates no cache evidence, and releases the
    permit. Cooldown remains based on configured HTTP statuses, not synthetic
    parser errors. Native paths retain their existing accounting behavior.
-   Other candidate attempts retain ordinary failover accounting.
+   Other candidate attempts retain ordinary failover accounting. Cache-identity
+   request-build errors must follow that same failover path; requests without an
+   eligible custom exec declaration do not require compatibility cache keys.
 10. Do not replay a request after output delivery. Diagnostics describe protocol
     adaptation without logging request bodies, generated programs, or secrets.
 
@@ -105,6 +119,7 @@ Run from the repository root:
 
 ```powershell
 cargo test --offline --locked -p codex-plus-core --test protocol_proxy
+cargo test --offline --locked -p codex-plus-core --test responses_exec_compatibility
 cargo test --offline --locked -p codex-plus-core --test responses_catalog_identity --test relay_config
 cargo test --offline --locked -p codex-plus-core
 cargo check --offline --locked -p codex-plus-core
@@ -121,8 +136,11 @@ git diff --check
 - `crates/codex-plus-core/src/protocol_proxy.rs`: request negotiation before
   failure accounting, routing-aware context, and whole-body response handling.
 - `crates/codex-plus-core/src/launcher.rs`: actual served JSON and SSE paths.
-- `crates/codex-plus-core/tests/protocol_proxy.rs`: local upstream integration
-  tests; internal unit tests cover strict parsing and event assembly.
+- `crates/codex-plus-core/tests/responses_exec_compatibility.rs`: local upstream
+  negotiation, history replay, model-switching, and bypass integration tests.
+- `crates/codex-plus-core/tests/protocol_proxy.rs`: existing proxy regressions
+  and request-build failover tests; internal unit tests cover strict parsing
+  and event assembly.
 - This document: acceptance contract and scope exclusions.
 
 ## Code Style
@@ -150,15 +168,17 @@ Use existing Rust tests, tempfile, and local mock HTTP servers. Begin with a
 failing reproducer and confirm it fails for the rejected-tool behavior.
 
 - Native GPT requests and responses remain unchanged; test GPT to adapted model
-  to GPT switching with the same supplier.
+  to GPT switching with the same supplier and the same canonical tool history.
 - Explicit rejection produces exactly one adapted retry. Generic 400, 401,
   429, timeout, and stream errors do not.
 - Verify final-model identity after model routes and aggregation overrides;
   unrelated models, endpoints, credentials, and tool declarations stay isolated.
 - Cover two tool-call rounds, historical results, call IDs, and item references,
-  including orphan results, collisions, and named/unsupported tool choices.
+  including omitted item IDs, orphan results, cross-tool call-ID collisions,
+  and named/unsupported tool choices.
 - Cover JSON and SSE, fragmented UTF-8, escapes, interleaved calls, empty input,
-  malformed arguments, duplicate completion signals, and truncated streams.
+  malformed arguments, duplicate completion signals, final item metadata,
+  conflicting output indices, and truncated streams.
 - Verify retained custom `apply_patch`, unrelated tools, opaque reasoning,
   compaction bypass, and pass-through stateful requests.
 - Verify effective custom authentication/tenant-header cache isolation,
@@ -190,6 +210,7 @@ execute code in the proxy, accept malformed arguments, or probe paid models.
 ## Scope Limits
 
 The first version deliberately retains limited coverage and bounded state.
-Direct transport, server-managed
-conversation state, and compaction remain unchanged. No live supplier validation
-is required or claimed by this specification.
+Direct transport, server-managed conversation state, and compaction remain
+unchanged, including regular follow-ups carrying compacted history. This is not
+a fix for every native tool or every Responses relay. No live supplier
+validation is required or claimed by this specification.
