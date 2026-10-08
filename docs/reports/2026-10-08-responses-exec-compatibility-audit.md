@@ -28,8 +28,10 @@ Disabling Code Mode globally would affect compatible models on the same supplier
 Inferring capability from model names or a supplier-wide flag has the same
 granularity problem. The proposed alternative keeps native behavior by default,
 then negotiates only the explicitly rejected tool for the actual upstream model.
+This implementation addresses that observed custom `exec` rejection, not every
+native-tool validation error.
 
-See [the proposed behavioral contract](../specs/responses-exec-compatibility.md).
+See [the implemented behavioral contract](../specs/responses-exec-compatibility.md).
 
 ## Source Findings
 
@@ -63,7 +65,7 @@ Native tool declaration:
 }
 ```
 
-Only after the explicit validation rejection, the proposed retry uses the flat
+Only after the explicit validation rejection, the retry uses the flat
 Responses function shape, not the nested Chat Completions function shape:
 
 ```json
@@ -82,12 +84,12 @@ Responses function shape, not the nested Chat Completions function shape:
 ```
 
 A matching complete upstream `function_call` with arguments
-`{"input":"text(\"compatibility\")"}` is proposed to become a client
+`{"input":"text(\"compatibility\")"}` becomes a client
 `custom_tool_call` containing the raw string `text("compatibility")`.
 `call_id` remains unchanged; item IDs and references must be mapped consistently.
 The proxy does not execute that string.
 
-Historical matching calls and results must be translated on each adapted
+Historical matching calls and results are translated on each adapted
 request. The client history remains canonical, so switching back to a native
 model does not inherit the compatibility wrapper.
 
@@ -153,7 +155,7 @@ No real-provider validation has been performed.
 
 ## Runtime Verification
 
-New coverage comprises 15 strict translation/parser tests, 14 SSE tests,
+The initial implementation introduced 15 strict translation/parser tests, 14 SSE tests,
 5 transport/cache tests, 6 local-upstream integration tests, and one actual
 helper JSON/SSE test: 41 tests in total. The helper fixture enables channel
 queueing and bounds completion time to detect a self-lock during negotiation.
@@ -176,6 +178,56 @@ worktree changes.
 
 Mocks verify protocol behavior, not model intelligence or supplier conformance.
 The adapter is not installed into the user's running application by this PR.
+
+## Follow-up Corrections
+
+Additional review corrected four runtime defects:
+
+- Historical calls and tool results can omit item `id`. Preserve that absence
+  while translating types and correlating results by `call_id`; requiring an
+  output item ID prevented a normal second Code Mode round from negotiating.
+- Adapted JSON output must reject duplicate call IDs across both function and
+  custom tools, not just function calls.
+- SSE argument completion is not item completion. Emit done only after the
+  completed item or successful terminal snapshot, preserve final metadata, and
+  require stable nonnegative integer output indices.
+- Cache-key request-build failures must participate in normal aggregation
+  failover. Construct the key inside the send error boundary and only for
+  eligible exec requests; unrelated native requests must not gain a new early
+  return path.
+
+Regression coverage includes omitted historical IDs, shared JSON call IDs,
+arguments-done preceding completed metadata, output-index conflicts at each
+completion surface, and failover after an invalid endpoint with and without
+exec. The two-round model-switch fixture now switches back using the same
+canonical history, rather than a fresh request. A separate read-only review of
+these corrections found no blocking issue; it did not perform live-provider
+validation.
+
+Scope wording now explicitly excludes ordinary direct Responses relays without
+a proxy routing requirement, as well as regular follow-up requests carrying
+compaction history. These paths still report the original upstream rejection;
+the PR does not silently reroute them or disable Code Mode globally.
+
+Current coverage is 17 strict translation/parser tests, 16 SSE tests, 5
+transport/cache tests, 6 local-upstream compatibility tests, one actual helper
+JSON/SSE test, and one request-build failover regression: **46 tests**.
+The complete default core suite passed with **1,475 passed, 0 failed,
+7 pre-existing opt-in tests ignored**. `cargo check --offline --locked -j 1 -p
+codex-plus-core`, scoped formatting, and `git diff --check` passed.
+Inverting the optional-history-ID guard made its focused regression
+fail with `tool item lacks id`; the original guard was restored and all 38
+adapter unit tests passed again.
+
+The initial default parallel run and one focused suite run also encountered
+HTTP 502 in the existing `aggregate_proxy_fails_over_to_next_member_in_same_request`
+fixture, followed by shared-lock poisoning. Isolation and the serial suite
+passed; after adding response-body diagnostics, both the default proxy suite
+and complete default core suite passed. That diagnostic change does not prove
+the intermittent failure is fixed. The fixture writes only 500 and 200, and
+the proxy forwards the received status; external proxy/interception or fixture
+timing remains an unconfirmed hypothesis. No production HTTP proxy policy was
+changed, and this residual test instability is not hidden by disabling tests.
 
 ## Residual Risks and Rollback
 
