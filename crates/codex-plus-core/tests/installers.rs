@@ -144,6 +144,14 @@ fn windows_installer_writes_the_same_uninstall_key_as_the_runtime() {
 fn windows_installer_only_creates_desktop_shortcuts_on_first_install() {
     let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi")
         .expect("read Windows NSIS installer script");
+    // Windows checkout 默认可转成 CRLF；两种换行都必须验证相同跳转策略。
+    let lf = nsi.replace("\r\n", "\n");
+    assert_first_install_shortcut_policy(&lf);
+    assert_first_install_shortcut_policy(&lf.replace('\n', "\r\n"));
+}
+
+fn assert_first_install_shortcut_policy(nsi: &str) {
+    let nsi = nsi.replace("\r\n", "\n");
     // 与运行时共用正式/legacy 登记；不能在写本轮登记之后才判断首次安装。
     for key in ["CodexPlusPlus", "Codex++"] {
         let read = format!(
