@@ -276,9 +276,8 @@ fn adapt_request_history(request: &mut Value) -> Result<()> {
                     input.len() <= MAX_EXEC_ARGUMENT_BYTES,
                     "exec input too large"
                 );
-                let id = translated_item_id(item, FUNCTION_CALL_PREFIX)?;
+                translate_history_item_id(item, FUNCTION_CALL_PREFIX)?;
                 item["type"] = json!("function_call");
-                item["id"] = json!(id);
                 item["name"] = json!(EXEC_TOOL_NAME);
                 item["arguments"] = json!(serde_json::to_string(&json!({"input": input}))?);
                 item.as_object_mut()
@@ -289,9 +288,8 @@ fn adapt_request_history(request: &mut Value) -> Result<()> {
                 let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
                 ensure!(all_calls.contains(call_id), "orphan custom tool output");
                 if exec_calls.contains(call_id) {
-                    let id = translated_item_id(item, FUNCTION_OUTPUT_PREFIX)?;
+                    translate_history_item_id(item, FUNCTION_OUTPUT_PREFIX)?;
                     item["type"] = json!("function_call_output");
-                    item["id"] = json!(id);
                 }
             }
             _ => {}
@@ -344,42 +342,38 @@ pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
         matching_call_ids.iter().collect::<BTreeSet<_>>().len() == matching_call_ids.len(),
         "duplicate exec call_id"
     );
-    let all_call_ids = items
-        .iter()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
-        .filter_map(|item| {
-            item.get("call_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect::<BTreeSet<_>>();
-    let mut function_call_ids = BTreeSet::new();
-    for item in items
-        .iter()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
-    {
-        if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-            ensure!(
-                function_call_ids.insert(call_id),
-                "duplicate function call_id"
-            );
-        }
+    let mut all_call_ids = BTreeSet::new();
+    for item in items.iter().filter(|item| {
+        matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call") | Some("custom_tool_call")
+        )
+    }) {
+        let call_id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow!("tool call lacks call_id"))?;
+        ensure!(
+            all_call_ids.insert(call_id.to_owned()),
+            "duplicate tool call_id"
+        );
     }
     let mut output_call_ids = BTreeSet::new();
     validate_item_ids(items)?;
     for item in items.iter() {
-        if item.get("type").and_then(Value::as_str) == Some("function_call_output") {
+        if matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call_output") | Some("custom_tool_call_output")
+        ) {
             let call_id = item
                 .get("call_id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("function_call_output lacks call_id"))?;
-            ensure!(
-                all_call_ids.contains(call_id),
-                "orphan function_call_output"
-            );
+                .ok_or_else(|| anyhow!("tool output lacks call_id"))?;
+            ensure!(all_call_ids.contains(call_id), "orphan tool output");
             ensure!(
                 output_call_ids.insert(call_id.to_owned()),
-                "duplicate function output call_id"
+                "duplicate tool output call_id"
             );
         }
     }
@@ -548,6 +542,13 @@ fn translated_item_id(item: &Value, target_prefix: &str) -> Result<String> {
     .unwrap_or(id);
     ensure!(!suffix.is_empty(), "tool item id has no stable suffix");
     Ok(format!("{target_prefix}{suffix}"))
+}
+
+fn translate_history_item_id(item: &mut Value, target_prefix: &str) -> Result<()> {
+    if item.get("id").is_some() {
+        item["id"] = json!(translated_item_id(item, target_prefix)?);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -852,6 +853,52 @@ mod tests {
                 "type": "custom_tool_call", "name": "exec",
                 "id": "ctc_1", "call_id": "call_1", "input": "unvalidated code"
             }]
+        });
+        assert!(adapt_response(response).is_err());
+    }
+
+    #[test]
+    fn history_preserves_optional_call_and_output_ids() {
+        for omit_call_id in [false, true] {
+            let mut native = request();
+            native["input"][2].as_object_mut().unwrap().remove("id");
+            if omit_call_id {
+                native["input"][1].as_object_mut().unwrap().remove("id");
+            }
+            let adapted = adapt_request(native).unwrap();
+            assert_eq!(adapted["input"][1]["type"], "function_call");
+            assert_eq!(adapted["input"][2]["type"], "function_call_output");
+            assert!(adapted["input"][2].get("id").is_none());
+            assert_eq!(adapted["input"][2]["call_id"], "old");
+            assert_eq!(adapted["input"][2]["output"], "ok");
+            assert_eq!(adapted["input"][1].get("id").is_none(), omit_call_id);
+        }
+    }
+
+    #[test]
+    fn response_rejects_call_ids_shared_by_function_and_custom_tools() {
+        for call_id in ["exec", "patch"] {
+            let response = json!({
+                "status": "completed",
+                "output": [
+                    {"type": "function_call", "id": "fc_exec", "call_id": "exec",
+                     "name": "exec", "arguments": "{\"input\":\"text('ok')\"}"},
+                    {"type": "custom_tool_call", "id": "ctc_patch", "call_id": "patch",
+                     "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch"},
+                    {"type": "function_call", "id": "fc_lookup", "call_id": call_id,
+                     "name": "lookup", "arguments": "{}"}
+                ]
+            });
+            assert!(adapt_response(response).is_err(), "{call_id}");
+        }
+        let response = json!({
+            "status": "completed",
+            "output": [
+                {"type": "function_call", "id": "fc_exec", "call_id": "same",
+                 "name": "exec", "arguments": "{\"input\":\"text('ok')\"}"},
+                {"type": "custom_tool_call", "id": "ctc_patch", "call_id": "same",
+                 "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch"}
+            ]
         });
         assert!(adapt_response(response).is_err());
     }

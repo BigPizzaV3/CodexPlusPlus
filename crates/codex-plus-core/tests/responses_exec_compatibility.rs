@@ -354,7 +354,7 @@ async fn two_round_history_and_gpt_model_switch_keep_compatibility_isolated() {
     second["input"].as_array_mut().unwrap().extend([
         first_json["output"][0].clone(),
         first_json["output"][1].clone(),
-        json!({"type": "custom_tool_call_output", "id": "ctco_round_0",
+        json!({"type": "custom_tool_call_output",
                "call_id": "call_round_0", "output": "lookup result"}),
         patch_call.clone(),
         patch_output.clone(),
@@ -368,7 +368,14 @@ async fn two_round_history_and_gpt_model_switch_keep_compatibility_isolated() {
         second, canonical,
         "canonical custom history remains untouched"
     );
-    let (_, final_native_json) = client_response(&native).await;
+    let mut final_native = second.clone();
+    final_native["model"] = json!("gpt-5.6-sol");
+    final_native["input"].as_array_mut().unwrap().extend([
+        second_json["output"][1].clone(),
+        json!({"type": "custom_tool_call_output",
+               "call_id": "call_round_1", "output": "second result"}),
+    ]);
+    let (_, final_native_json) = client_response(&final_native).await;
     assert_eq!(final_native_json, custom_response("call_native"));
 
     let received = server.received_requests().await.unwrap();
@@ -394,9 +401,10 @@ async fn two_round_history_and_gpt_model_switch_keep_compatibility_isolated() {
     assert_eq!(history[3]["type"], "function_call_output");
     assert_eq!(history[3]["call_id"], "call_round_0");
     assert_eq!(history[3]["output"], "lookup result");
+    assert!(history[3].get("id").is_none());
     assert_eq!(history[4], patch_call);
     assert_eq!(history[5], patch_output);
-    assert_eq!(received[4].body_json::<Value>().unwrap(), native);
+    assert_eq!(received[4].body_json::<Value>().unwrap(), final_native);
 }
 
 #[tokio::test]
