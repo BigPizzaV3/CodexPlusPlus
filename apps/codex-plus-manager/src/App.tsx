@@ -22,7 +22,6 @@ import {
   ArrowRight,
   Bell,
   Blocks,
-  Bot,
   CheckCircle2,
   ChevronDown,
   Camera,
@@ -312,7 +311,7 @@ type BackendSettings = {
   relayTestModel: string;
   /** 按工具分区的配置镜像，键为工具 id（codex / grok / …）。 */
   tools?: Record<string, ToolShard>;
-  /** 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
+  /** 侧栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
   activeTool?: string;
 };
 
@@ -926,13 +925,13 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-/** 顶栏工具切换条的工具标识。后端 `list_tools` 返回同名字符串。 */
+/** 左侧 Agent 切换栏的工具标识。后端 `list_tools` 返回同名字符串。 */
 type ToolId = string;
 
-/** 各工具在顶栏切换条上的图标；未登记的工具用通用图标兜底。 */
-const TOOL_ICONS: Record<string, LucideIcon> = {
-  codex: Bot,
-  grok: Blocks,
+/** 品牌图标随应用打包，来源和许可见 assets/agents/LICENSE.txt。 */
+const TOOL_ICONS: Record<string, string> = {
+  codex: new URL("./assets/agents/codex.svg", import.meta.url).href,
+  grok: new URL("./assets/agents/grok.svg", import.meta.url).href,
 };
 
 type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
@@ -980,10 +979,13 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("系统"),
-    routes: ["recommendations", "agentCache", "maintenance", "about", "settings"],
+    routes: ["maintenance"],
     placement: "bottom",
   },
 ];
+
+/** 应用级入口放在最左栏；概览仍随当前 Agent 显示各自的状态。 */
+const globalNavigationRoutes: Route[] = ["recommendations", "agentCache", "about", "settings"];
 
 const defaultSettings: BackendSettings = {
   codexAppPath: "",
@@ -1156,7 +1158,7 @@ export function App() {
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
-  // 顶栏工具切换条的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
+  // 左侧 Agent 切换栏的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
   const [toolEntries, setToolEntries] = useState<ToolEntry[]>([]);
   const [activeTool, setActiveTool] = useState<ToolId>("codex");
@@ -1210,10 +1212,14 @@ export function App() {
     return result;
   };
 
-  /// 切换顶栏聚焦的工具。纯 UI 状态：写回 settings.json 的 `activeTool`，
+  /// 切换侧栏聚焦的工具。纯 UI 状态：写回 settings.json 的 `activeTool`，
   /// 不触发任何供应商配置写入 —— 切工具 ≠ 切供应商。
   const switchTool = async (toolId: ToolId) => {
-    if (toolId === activeTool) return;
+    if (toolId === activeTool) {
+      // 通用页面占据整个右侧，点击当前 Agent 也要能回到它的工作区。
+      if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      return;
+    }
     const target = toolEntries.find((tool) => tool.id === toolId);
     if (target && !target.switchable) {
       showNotice(t("该工具暂不可切换"), tf("{0} 的供应商配置还没接入，切过去只会显示空列表。", [target.name]), "failed");
@@ -1231,8 +1237,10 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
+      // 先保存 Agent 选择，再离开通用页；失败时保留原页面与布局。
+      if (globalNavigationRoutes.includes(route)) await navigate("overview");
     } else {
-      // 写盘失败就回滚 UI，别让顶栏显示一个没保存的状态。
+      // 写盘失败就回滚 UI，别让侧栏显示一个没保存的状态。
       setActiveTool(activeTool);
       void refreshSettings(true);
     }
@@ -1259,7 +1267,7 @@ export function App() {
       setSettings(result);
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
-      // 顶栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
+      // 侧栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
       setActiveTool(normalized.activeTool || "codex");
       setLaunchForm((current) => ({
         ...current,
@@ -3340,10 +3348,11 @@ export function App() {
     [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const hasUpdate = update?.updateAvailable === true;
+  const isGlobalPage = globalNavigationRoutes.includes(route);
 
   return (
-    <div className={`shell ${theme}`}>
-      <aside className="sidebar">
+    <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
+      <header className="window-header">
         <div className="brand">
           <div className="brand-copy">
             <div className="brand-title-row">
@@ -3362,52 +3371,59 @@ export function App() {
                 </button>
               ) : null}
             </div>
-            <div className="brand-subtitle">{t("管理控制台")}</div>
           </div>
         </div>
-        <ToolSwitcher
-          tools={toolEntries}
-          activeTool={activeTool}
-          onSelect={(toolId) => void switchTool(toolId)}
-        />
-        <nav className="nav" aria-label={t("主导航")}>
-          {navigationSections.map((section) => {
-            // 按当前工具过滤：只留下属于这个工具、或与工具无关的页面。
-            const visibleRoutes = section.routes.filter((routeId) => {
-              const item = routes.find((candidate) => candidate.id === routeId);
-              if (!item) return false;
-              return !item.tool || item.tool === activeTool;
-            });
-            // 整节都被过滤掉时不渲染标题，免得 Grok 下出现一个空的分组标签。
-            if (visibleRoutes.length === 0) return null;
-            return (
-            <div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
-              <div className="nav-section-label">{section.label}</div>
-              {visibleRoutes.map((routeId) => {
+      </header>
+      <ApplicationRail
+        tools={toolEntries}
+        activeTool={activeTool}
+        route={route}
+        theme={theme}
+        onSelect={(toolId) => void switchTool(toolId)}
+        onNavigate={(next) => void navigate(next)}
+        onToggleTheme={actions.toggleTheme}
+      />
+      {!isGlobalPage ? (
+        <aside className="sidebar">
+          <nav className="nav" aria-label={t("主导航")}>
+            {navigationSections.map((section) => {
+              // 按当前工具过滤：只留下属于这个工具、或与工具无关的页面。
+              const visibleRoutes = section.routes.filter((routeId) => {
                 const item = routes.find((candidate) => candidate.id === routeId);
-                if (!item) return null;
-                const Icon = item.icon;
-                return (
-                  <button
-                    className={`nav-item ${route === item.id ? "active" : ""}`}
-                    key={item.id}
-                    onClick={() => void navigate(item.id)}
-                    title={item.label}
-                    type="button"
-                  >
-                    <span className="nav-icon">
-                      <Icon className="h-4 w-4" aria-hidden="true" />
-                    </span>
-                    <span className="nav-label">{item.label}</span>
-                    {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
-                  </button>
-                );
-              })}
-            </div>
-            );
-          })}
-        </nav>
-      </aside>
+                if (!item) return false;
+                return !item.tool || item.tool === activeTool;
+              });
+              // 整节都被过滤掉时不渲染标题，免得 Grok 下出现一个空的分组标签。
+              if (visibleRoutes.length === 0) return null;
+              return (
+              <div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
+                <div className="nav-section-label">{section.label}</div>
+                {visibleRoutes.map((routeId) => {
+                  const item = routes.find((candidate) => candidate.id === routeId);
+                  if (!item) return null;
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      className={`nav-item ${route === item.id ? "active" : ""}`}
+                      key={item.id}
+                      onClick={() => void navigate(item.id)}
+                      title={item.label}
+                      type="button"
+                    >
+                      <span className="nav-icon">
+                        <Icon className="h-4 w-4" aria-hidden="true" />
+                      </span>
+                      <span className="nav-label">{item.label}</span>
+                      {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+              );
+            })}
+          </nav>
+        </aside>
+      ) : null}
       <main className="workspace">
         <header className="topbar" key={`topbar-${route}`}>
           <div>
@@ -3415,23 +3431,7 @@ export function App() {
             <p>{routeSubtitle(route)}</p>
           </div>
           <div className="topbar-actions">
-            <Button
-              onClick={() => toggleLanguage()}
-              size="icon"
-              title={getLanguage() === "en" ? t("切换到中文") : t("切换到英文")}
-              variant="outline"
-            >
-              <Languages className="h-4 w-4" />
-            </Button>
-            <Button
-              onClick={actions.toggleTheme}
-              size="icon"
-              title={theme === "dark" ? t("切换到浅色") : t("切换到深色")}
-              variant="outline"
-            >
-              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </Button>
-            {activeTool === "codex" ? (
+            {activeTool === "codex" && !isGlobalPage ? (
               <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
                 <Rocket className="h-4 w-4" />
                 {t("重启 Codex++")}
@@ -10639,8 +10639,83 @@ function GrokScreen({
   );
 }
 
+/** 应用栏：上方切换 Agent，下方访问通用页面与界面设置。 */
+function ApplicationRail({
+  tools,
+  activeTool,
+  route,
+  theme,
+  onSelect,
+  onNavigate,
+  onToggleTheme,
+}: {
+  tools: ToolEntry[];
+  activeTool: ToolId;
+  route: Route;
+  theme: Theme;
+  onSelect: (toolId: ToolId) => void;
+  onNavigate: (route: Route) => void;
+  onToggleTheme: () => void;
+}) {
+  const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
+  const themeLabel = theme === "dark" ? t("切换到浅色") : t("切换到深色");
+  return (
+    <aside className="app-rail">
+      <ToolSwitcher
+        tools={tools}
+        activeTool={activeTool}
+        showSelection={!globalNavigationRoutes.includes(route)}
+        onSelect={onSelect}
+      />
+      <div className="rail-bottom">
+        <nav className="rail-navigation" aria-label={t("系统")}>
+          {globalNavigationRoutes.map((routeId) => {
+            const item = routes.find((candidate) => candidate.id === routeId);
+            if (!item) return null;
+            const Icon = item.icon;
+            const selected = route === item.id;
+            return (
+              <button
+                aria-current={selected ? "page" : undefined}
+                aria-label={item.label}
+                className={`tool-chip rail-nav-item ${selected ? "active" : ""}`}
+                key={item.id}
+                onClick={() => onNavigate(item.id)}
+                title={item.label}
+                type="button"
+              >
+                <Icon aria-hidden="true" className="rail-nav-icon" />
+              </button>
+            );
+          })}
+        </nav>
+        <div className="rail-preferences">
+          <button
+            aria-label={languageLabel}
+            className="tool-chip rail-nav-item"
+            onClick={() => toggleLanguage()}
+            title={languageLabel}
+            type="button"
+          >
+            <Languages aria-hidden="true" className="rail-nav-icon" />
+          </button>
+          <button
+            aria-label={themeLabel}
+            className="tool-chip rail-nav-item"
+            onClick={onToggleTheme}
+            title={themeLabel}
+            type="button"
+          >
+            {theme === "dark" ? <Sun aria-hidden="true" className="rail-nav-icon" /> : <Moon aria-hidden="true" className="rail-nav-icon" />}
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 /**
- * 顶栏的工具切换条：一排工具图标，点击切换当前聚焦的工具。
+ * 应用栏上方的 Agent 图标组：点击切换当前聚焦的工具。
  *
  * 这里的「工具」指 Codex / Grok / 后续接入的 CLI，每个工具在自己的供应商
  * 分区里，互相不串配置。未接入写盘能力的工具仍然展示（让用户知道后面会支持），
@@ -10649,39 +10724,42 @@ function GrokScreen({
 function ToolSwitcher({
   tools,
   activeTool,
+  showSelection = true,
   onSelect,
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  showSelection?: boolean;
   onSelect: (toolId: ToolId) => void;
 }) {
-  if (tools.length === 0) return null;
   return (
-    <div className="tool-switcher" role="tablist" aria-label={t("工具切换")}>
+    <nav className="tool-switcher" aria-label={t("工具切换")}>
       {tools.map((tool) => {
-        const Icon = TOOL_ICONS[tool.id] ?? CircleArrowUp;
-        const selected = tool.id === activeTool;
+        const icon = TOOL_ICONS[tool.id];
+        const selected = showSelection && tool.id === activeTool;
         const title = tool.switchable
           ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
           : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
         return (
           <button
-            aria-selected={selected}
+            aria-label={tool.switchable ? tool.name : `${tool.name} · ${t("待接入")}`}
+            aria-pressed={selected}
             className={`tool-chip ${selected ? "active" : ""}`}
             disabled={!tool.switchable}
             key={tool.id}
             onClick={() => onSelect(tool.id)}
-            role="tab"
             title={title}
             type="button"
           >
-            <Icon aria-hidden="true" className="tool-chip-icon" />
-            <span className="tool-chip-name">{tool.name}</span>
-            {!tool.switchable ? <span className="tool-chip-note">{t("待接入")}</span> : null}
+            {icon ? (
+              <img alt="" aria-hidden="true" className={`tool-chip-icon tool-chip-icon-${tool.id}`} draggable={false} src={icon} />
+            ) : (
+              <Blocks aria-hidden="true" className="tool-chip-icon" />
+            )}
           </button>
         );
       })}
-    </div>
+    </nav>
   );
 }
 
