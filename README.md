@@ -208,6 +208,8 @@ Codex++ 配合官方桌面应用使用，首次启动前请确认本机已安装
 
 Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」开启，包含原版角色、模块化泡泡编辑器、音效与波形裁剪、角色/图库/音频资源管理、四边吸附及提醒。查看 Codex 会话与全机用量、订阅快照、配置单价后的本机费用估算，或通过供应商模板接入余额与额度。默认关闭，使用说明与统计口径见 [Codex 用量挂件](docs/whale-widget.md)，功能核对见 [完整功能验收](docs/whale-parity.md)。
 
+**鲸鱼功能来源与鸣谢：**原始功能、完整界面引擎、鲸鱼角色及内置音效/动图来自 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，本项目将其适配为 Codex++ 内置功能；Codex 桌面版技术路线另参考 [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public)。原始代码与素材声明见随项目保留的 [LICENSE](assets/inject/upstream/whale-widget/LICENSE) 和 [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md)，素材不重新声明为本项目原创。
+
 ### 2. 打开管理工具，完成配置
 
 安装后有两个入口：
