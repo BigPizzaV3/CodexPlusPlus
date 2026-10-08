@@ -20,6 +20,7 @@ base64 = "0.22"
 directories = "6"
 fs2 = "0.4"
 futures-util = "0.3"
+http = "1"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "rustls-tls-native-roots", "system-proxy"], default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

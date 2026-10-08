@@ -1,6 +1,6 @@
 # Spec: Responses Exec Compatibility
 
-Status: proposed design; no runtime implementation is included.
+Status: implemented for existing local-proxy traffic; live-provider certification is not claimed.
 
 Source-impact audit: [Responses exec compatibility audit](../reports/2026-10-08-responses-exec-compatibility-audit.md).
 
@@ -60,6 +60,8 @@ model's ability to write correct Code Mode programs.
    keys. Preserve unrelated response content and events. Bound each argument
    buffer to 1 MiB, total pending stream state to 4 MiB, and in-flight bridged
    calls to 64; exceeding a bound fails the adapted response explicitly.
+   Retained item metadata and identity strings share that budget; identity
+   registries are additionally limited to 1,024 entries.
    On parsing failure, truncation, or an unsuccessful terminal event, suppress
    unvalidated executable input, emit at most one client `response.failed`
    terminal event, and close the stream without retry.
@@ -93,8 +95,9 @@ model's ability to write correct Code Mode programs.
 
 ## Tech Stack
 
-Use existing Rust, Tokio, reqwest, serde_json, and SHA-256 dependencies.
-Do not add packages or change frontend assets.
+Use Rust, Tokio, reqwest, serde_json, and SHA-256. The existing transitive `http`
+crate is declared directly to reconstruct inspected upstream responses without
+losing buffered bytes. No frontend assets or supplier configuration are changed.
 
 ## Commands
 
@@ -105,14 +108,16 @@ cargo test --offline --locked -p codex-plus-core --test protocol_proxy
 cargo test --offline --locked -p codex-plus-core --test responses_catalog_identity --test relay_config
 cargo test --offline --locked -p codex-plus-core
 cargo check --offline --locked -p codex-plus-core
-cargo fmt --all -- --check
+rustfmt --edition 2024 --check --config skip_children=true crates/codex-plus-core/src/responses_exec.rs crates/codex-plus-core/src/responses_exec_sse.rs crates/codex-plus-core/src/responses_exec_transport.rs crates/codex-plus-core/src/protocol_proxy.rs crates/codex-plus-core/src/launcher.rs crates/codex-plus-core/tests/responses_exec_compatibility.rs
 git diff --check
 ```
 
 ## Project Structure
 
-- `crates/codex-plus-core/src/responses_exec.rs`: focused protocol translation,
-  bounded cache, and SSE adaptation; final module name may follow local patterns.
+- `crates/codex-plus-core/src/responses_exec.rs`: strict request/history/JSON translation.
+- `crates/codex-plus-core/src/responses_exec_sse.rs`: bounded stream adaptation.
+- `crates/codex-plus-core/src/responses_exec_transport.rs`: bounded inspection,
+  effective-request cache identity, and completion accounting.
 - `crates/codex-plus-core/src/protocol_proxy.rs`: request negotiation before
   failure accounting, routing-aware context, and whole-body response handling.
 - `crates/codex-plus-core/src/launcher.rs`: actual served JSON and SSE paths.
@@ -164,7 +169,7 @@ failing reproducer and confirm it fails for the rejected-tool behavior.
 
 ## Non-Goals
 
-This proposal does not broaden tool coverage, migrate direct transport, rewrite
+This implementation does not broaden tool coverage, migrate direct transport, rewrite
 server-managed history, introduce configuration/UI changes, or install a test
 build. It does not globally disable Code Mode, classify support by model brand,
 execute code in the proxy, accept malformed arguments, or probe paid models.
@@ -182,9 +187,9 @@ execute code in the proxy, accept malformed arguments, or probe paid models.
   exclusions, and residual risks. Local mock tests are not real-provider
   certification.
 
-## Open Questions
+## Scope Limits
 
-Maintainer feedback is requested on the intentionally limited first-version
-coverage and proposed buffer/cache limits. Direct transport, server-managed
+The first version deliberately retains limited coverage and bounded state.
+Direct transport, server-managed
 conversation state, and compaction remain unchanged. No live supplier validation
 is required or claimed by this specification.

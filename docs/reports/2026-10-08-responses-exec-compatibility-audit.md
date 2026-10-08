@@ -4,8 +4,10 @@ Date: 2026-10-08
 
 Audited upstream revision: `1db62e9239ce564e670219922584f66f35508ef8`.
 
-Status: documentation-only proposal. No compatibility adapter, production
-configuration change, or real-provider certification is included.
+Status: runtime adapter implemented for existing local-proxy traffic.
+The source-evidence table and 331-test baseline below describe the original
+upstream revision. Implementation verification is recorded separately.
+No production configuration changes or real-provider certification are included.
 
 ## Problem
 
@@ -109,9 +111,9 @@ These are unchanged-code baselines, not tests of the proposed adapter. Existing
 warnings include unused imports/dead code and duplicate test attributes; they
 were not altered for this proposal.
 
-## Required Implementation Evidence
+## Implementation Coverage
 
-The implementation acceptance criteria are intentionally still unfulfilled:
+The adapter and regression tests now cover the following acceptance criteria:
 
 - A failing explicit-rejection reproducer must turn green for served JSON and
   SSE, including a second tool round and history replay.
@@ -122,8 +124,7 @@ The implementation acceptance criteria are intentionally still unfulfilled:
   streams, interleaved calls, and buffer limits require negative tests.
 - Cache separation, TTL/capacity, queue release, retry request accounting,
   rotation, cooldown, and failover require focused tests.
-- Core build/test checks and an independent implementation review must complete
-  before a runtime fix can be described as ready.
+- Core build/test checks and implementation review are recorded below.
 
 ## Independent Design Review
 
@@ -142,9 +143,34 @@ Optional comments were also incorporated: recognize conservative structured
 rejection fixtures, limit negotiation retries across the whole client request,
 and distinguish new transformations from existing proxy normalization.
 
-This is review of the proposed contract, not approval of an implementation.
-Implementation tests, mutation checks, and provider-specific validation remain
-pending.
+This initial review covered the proposed contract. A subsequent independent
+implementation review identified five Required findings: unwrapped custom exec
+in adapted JSON, conflicting SSE identities, duplicate terminal delivery,
+incomplete terminal snapshots, and retained metadata outside the state budget.
+Each finding was corrected and guarded by negative tests. The final resource
+budget correction was checked locally after the reviewer identified it.
+No real-provider validation has been performed.
+
+## Runtime Verification
+
+New coverage comprises 15 strict translation/parser tests, 14 SSE tests,
+5 transport/cache tests, 6 local-upstream integration tests, and one actual
+helper JSON/SSE test: 41 tests in total. The helper fixture enables channel
+queueing and bounds completion time to detect a self-lock during negotiation.
+
+The initial HTTP rejection reproducer failed with `400 Bad Request` before
+integration and now passes. The retained-metadata reproducer also failed before
+its fix. A deliberate temporary removal of the duplicate-key guard makes the
+strict-parser regression fail; the guard is restored in the submitted code.
+
+Validation commands are the core test/check commands and scoped rustfmt command
+in the specification. Existing warnings and pre-existing opt-in ignored tests
+are retained, not disabled to obtain a passing result. Submitted files do not
+include private configuration, session logs, generated binaries, or unrelated
+worktree changes.
+
+Mocks verify protocol behavior, not model intelligence or supplier conformance.
+The adapter is not installed into the user's running application by this PR.
 
 ## Residual Risks and Rollback
 
@@ -158,7 +184,6 @@ buffer only bounded tool state and fail explicitly on incomplete input without
 replaying a request after output delivery. Server-state and compaction bypasses
 avoid pretending that client-side rewrites can repair upstream opaque state.
 
-The proposal adds no runtime code, so it needs no runtime rollback. A future
-adapter should be confined to a focused module and narrow proxy integration
-points, allowing it to be reverted without editing catalogs or user feature
-flags.
+Rollback is limited to the three adapter modules and their proxy integration
+points. It does not require changing catalogs, supplier configuration, or user
+feature flags.

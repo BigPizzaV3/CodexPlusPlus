@@ -12,6 +12,7 @@ async-trait = "0.1"
 base64.workspace = true
 directories.workspace = true
 futures-util = "0.3"
+http.workspace = true
 fs2.workspace = true
 reqwest.workspace = true
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
