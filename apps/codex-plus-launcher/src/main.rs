@@ -825,6 +825,15 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("thread usage history task failed: {error}"))
     }
 
+    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
+        let adapter = self.storage_adapter();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_usage::session_summary(&adapter, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale session task failed: {error}"))
+    }
+
     async fn find_archived_thread_by_title(
         &self,
         title: String,

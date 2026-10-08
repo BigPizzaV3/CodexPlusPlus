@@ -125,6 +125,8 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 
 所有界面增强都可以单独关闭。关闭“Codex 增强”总开关后，Codex++ 仍可作为供应商和启动管理工具使用。
 
+Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」开启，支持拖动、缩放、上传角色图片、查看当前会话 token、任务状态与订阅额度，并可接入当前 API 供应商的余额与预算提醒。默认关闭，使用说明和统计口径见 [Codex 用量挂件](docs/whale-widget.md)。
+
 ## 供应商模式
 
 Codex++ 将官方登录、混入 API 和纯 API 分开保存和切换：

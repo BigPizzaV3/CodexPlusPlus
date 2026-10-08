@@ -85,6 +85,7 @@ import { AgentCachePanel } from "./agent-cache";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
+import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceProtocol, type WhaleBalanceSettings } from "./whale-settings";
 import {
   applyDictationPreset,
   defaultDictationSettings,
@@ -243,7 +244,7 @@ type LaunchCommandResult = CommandResult<{
   nativeBrowserRestoreFailed?: boolean;
 }>;
 
-type BackendSettings = {
+type BackendSettings = WhaleBalanceSettings & {
   codexAppPath: string;
   codexExtraArgs: string[];
   dictation: DictationSettings;
@@ -991,6 +992,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
 const globalNavigationRoutes: Route[] = ["recommendations", "agentCache", "about", "settings"];
 
 const defaultSettings: BackendSettings = {
+  ...defaultWhaleBalanceSettings(),
   codexAppPath: "",
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
@@ -2311,6 +2313,11 @@ export function App() {
 
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
+    const whaleIssue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(next));
+    if (whaleIssue) {
+      showNotice(t("Codex 用量挂件"), whaleIssue, "failed");
+      return;
+    }
     const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(next.dictation));
     if (dictationIssue) {
       showNotice(t("语音输入"), dictationIssue, "failed");
@@ -2326,6 +2333,11 @@ export function App() {
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
+    const whaleIssue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalized));
+    if (whaleIssue) {
+      showNotice(t("Codex 用量挂件"), whaleIssue, "failed");
+      return null;
+    }
     const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
     if (dictationIssue) {
       showNotice(t("语音输入"), dictationIssue, "failed");
@@ -4718,6 +4730,61 @@ function envConflictSourceLabel(source: string): string {
   return source || t("环境变量");
 }
 
+function whaleBalanceValidationMessage(issue: WhaleBalanceIssue | null): string | null {
+  if (issue === "path") return t("请填写供应商同域下的余额接口路径，不包含网址、查询参数或片段。");
+  if (issue === "field") return t("请填写余额字段路径，例如 data.balance 或 data.accounts[0].balance。");
+  if (issue === "currency") return t("币种请使用三位代码，例如 USD 或 CNY。");
+  if (issue === "scale") return t("金额倍率必须是大于 0 且不超过 1e12 的有限数值。");
+  return null;
+}
+
+function WhaleBalanceSettingsFields({ form, onFormChange }: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+}) {
+  if (!form.codexAppWhaleWidgetEnabled) return null;
+  const update = (patch: Partial<WhaleBalanceSettings>) => onFormChange({ ...form, ...patch });
+  const issue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalizeWhaleBalanceSettings(form)));
+  const disabled = !form.enhancementsEnabled;
+  return (
+    <details className="settings-block">
+      <summary>{t("API 余额（可选）")}</summary>
+      <p className="field-hint">{t("跟随 Codex++ 当前供应商查询余额；Codex 订阅额度和本地 token 无需配置此项。")}</p>
+      <Field label={t("余额查询方式")}>
+        <AppSelect<WhaleBalanceProtocol>
+          value={form.codexAppWhaleBalanceProtocol}
+          disabled={disabled}
+          onChange={(value) => update({ codexAppWhaleBalanceProtocol: value })}
+          options={[
+            { value: "auto", label: t("自动识别已支持的接口") },
+            { value: "off", label: t("仅显示 Codex 用量") },
+            { value: "custom", label: t("自定义供应商余额接口") },
+          ]}
+        />
+      </Field>
+      {form.codexAppWhaleBalanceProtocol === "custom" ? <>
+        <p className="field-hint">{t("按供应商文档填写 GET 接口和返回字段，复用当前供应商的 API Key。币种和倍率应与供应商账单一致。")}</p>
+        <Field label={t("余额接口路径")}>
+          <Input disabled={disabled} value={form.codexAppWhaleBalancePath} placeholder="/api/balance" onChange={(event) => update({ codexAppWhaleBalancePath: event.currentTarget.value })} />
+        </Field>
+        <Field label={t("余额字段路径")}>
+          <Input disabled={disabled} value={form.codexAppWhaleBalanceField} placeholder="data.balance" onChange={(event) => update({ codexAppWhaleBalanceField: event.currentTarget.value })} />
+        </Field>
+        <div className="form-row">
+          <Field label={t("余额币种")}>
+            <Input disabled={disabled} maxLength={3} value={form.codexAppWhaleBalanceCurrency} placeholder="USD" onChange={(event) => update({ codexAppWhaleBalanceCurrency: event.currentTarget.value.toUpperCase() })} />
+          </Field>
+          <Field label={t("金额倍率")}>
+            <Input disabled={disabled} type="number" step="any" min={0} value={Number.isFinite(form.codexAppWhaleBalanceScale) ? form.codexAppWhaleBalanceScale : ""} onChange={(event) => update({ codexAppWhaleBalanceScale: event.currentTarget.valueAsNumber })} />
+          </Field>
+        </div>
+        <p className="field-hint">{t("显示金额 = 接口数值 × 倍率；例如接口返回分时，倍率填 0.01。")}</p>
+        {issue ? <p className="field-hint" role="alert">{issue}</p> : null}
+      </> : null}
+    </details>
+  );
+}
+
 function DictationSettingsPanel({ form, onFormChange }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
@@ -5082,9 +5149,17 @@ function EnhanceScreen({
                 <FeatureToggle title={t("自定义布局")} detail={t("在 Codex++ 页面点击“编辑布局”，拖动面板时其他区域会弹性让位；支持磁吸和下次打开恢复。")} checked={form.codexAppCustomLayoutEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppCustomLayoutEnabled", value)} />
                 <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
               </FeatureGroup>
-              {isWindowsPlatform ? <FeatureGroup title={t("桌宠")} detail={t("调整桌宠与鼠标的互动。")}>
-                <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} />
-              </FeatureGroup> : null}
+              <FeatureGroup title={t("挂件与桌宠")} detail={t("在 Codex 中查看用量，设置自己的角色和互动方式。")}>
+                <FeatureToggle
+                  title={t("Codex 用量挂件")}
+                  detail={t("显示当前会话 token、任务状态和订阅额度。点击角色旁的菜单，可上传角色图片、调整大小和提醒。")}
+                  checked={form.codexAppWhaleWidgetEnabled}
+                  disabled={!masterEnabled}
+                  onChange={(value) => setEnhanceFlag("codexAppWhaleWidgetEnabled", value)}
+                />
+                <WhaleBalanceSettingsFields form={form} onFormChange={onFormChange} />
+                {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
+              </FeatureGroup>
             </div>
             <div className="hint-line enhance-footer-hint">
               <Info className="h-4 w-4" />
@@ -11750,6 +11825,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    ...normalizeWhaleBalanceSettings(settings),
     dictation: normalizeDictationSettings(settings.dictation),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
     codexAppCustomLayoutEnabled: settings.codexAppCustomLayoutEnabled === true,

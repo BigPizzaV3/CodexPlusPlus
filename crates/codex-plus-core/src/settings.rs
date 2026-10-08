@@ -469,7 +469,7 @@ impl DictationSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     #[serde(default)]
     pub dictation: DictationSettings,
@@ -523,6 +523,27 @@ pub struct BackendSettings {
     pub codex_app_service_tier_controls: bool,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
     pub codex_app_pet_real_mouse_look: bool,
+    #[serde(rename = "codexAppWhaleWidgetEnabled", default)]
+    pub codex_app_whale_widget_enabled: bool,
+    #[serde(
+        rename = "codexAppWhaleBalanceProtocol",
+        default = "default_whale_balance_protocol"
+    )]
+    pub codex_app_whale_balance_protocol: String,
+    #[serde(rename = "codexAppWhaleBalancePath", default)]
+    pub codex_app_whale_balance_path: String,
+    #[serde(rename = "codexAppWhaleBalanceField", default)]
+    pub codex_app_whale_balance_field: String,
+    #[serde(
+        rename = "codexAppWhaleBalanceCurrency",
+        default = "default_whale_balance_currency"
+    )]
+    pub codex_app_whale_balance_currency: String,
+    #[serde(
+        rename = "codexAppWhaleBalanceScale",
+        default = "default_whale_balance_scale"
+    )]
+    pub codex_app_whale_balance_scale: f64,
     #[serde(rename = "codexAppStepwiseEnabled", default)]
     pub codex_app_stepwise_enabled: bool,
     #[serde(
@@ -689,6 +710,12 @@ impl Default for BackendSettings {
             codex_app_native_browser_require_identification: false,
             codex_app_service_tier_controls: false,
             codex_app_pet_real_mouse_look: false,
+            codex_app_whale_widget_enabled: false,
+            codex_app_whale_balance_protocol: default_whale_balance_protocol(),
+            codex_app_whale_balance_path: String::new(),
+            codex_app_whale_balance_field: String::new(),
+            codex_app_whale_balance_currency: default_whale_balance_currency(),
+            codex_app_whale_balance_scale: default_whale_balance_scale(),
             codex_app_stepwise_enabled: false,
             codex_app_stepwise_generation_mode: default_stepwise_generation_mode(),
             codex_app_answer_outline_enabled: false,
@@ -1109,6 +1136,18 @@ pub fn default_true() -> bool {
     true
 }
 
+fn default_whale_balance_protocol() -> String {
+    "auto".to_string()
+}
+
+fn default_whale_balance_currency() -> String {
+    "USD".to_string()
+}
+
+fn default_whale_balance_scale() -> f64 {
+    1.0
+}
+
 pub fn default_relay_base_url() -> String {
     String::new()
 }
@@ -1523,6 +1562,31 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
+    merge_bool_setting(target, source, "codexAppWhaleWidgetEnabled");
+    if let Some(value @ ("auto" | "custom" | "off")) =
+        source.get("codexAppWhaleBalanceProtocol").and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppWhaleBalanceProtocol".to_string(),
+            Value::String(value.to_string()),
+        );
+    }
+    for key in [
+        "codexAppWhaleBalancePath",
+        "codexAppWhaleBalanceField",
+        "codexAppWhaleBalanceCurrency",
+    ] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+        }
+    }
+    if let Some(value) = source
+        .get("codexAppWhaleBalanceScale")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        target.insert("codexAppWhaleBalanceScale".to_string(), Value::from(value));
+    }
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
     if let Some(value) = source
         .get("codexAppStepwiseGenerationMode")
@@ -1911,6 +1975,24 @@ fn settings_to_object(settings: &BackendSettings) -> Map<String, Value> {
 
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
     settings.dictation.normalize();
+    settings.codex_app_whale_balance_protocol =
+        match settings.codex_app_whale_balance_protocol.trim() {
+            "custom" => "custom",
+            "off" => "off",
+            _ => "auto",
+        }
+        .to_string();
+    settings.codex_app_whale_balance_path = settings.codex_app_whale_balance_path.trim().to_string();
+    settings.codex_app_whale_balance_field = settings.codex_app_whale_balance_field.trim().to_string();
+    settings.codex_app_whale_balance_currency = settings
+        .codex_app_whale_balance_currency
+        .trim()
+        .to_ascii_uppercase();
+    if !settings.codex_app_whale_balance_scale.is_finite()
+        || settings.codex_app_whale_balance_scale <= 0.0
+    {
+        settings.codex_app_whale_balance_scale = default_whale_balance_scale();
+    }
     settings.codex_app_typing_effect = normalize_typing_effect(&settings.codex_app_typing_effect);
     settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     let (common, extracted_context) =

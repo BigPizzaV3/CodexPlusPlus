@@ -59,6 +59,7 @@ pub mod user_scripts;
 pub mod version;
 pub mod vision;
 pub mod watcher;
+pub mod whale;
 // 不加 `#[cfg(windows)]`：模块内部各项已各自标注平台门控，在非 Windows 平台上
 // 是一个只含少数无平台依赖项（如 current_process_is_elevated 的桩实现）的空模块。
 // 门控在模块级会导致 `if cfg!(windows)` 这类运行时分支在非 Windows 平台找不到符号。

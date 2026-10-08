@@ -488,6 +488,72 @@ impl SQLiteStorageAdapter {
         })
     }
 
+    /// 小鲸鱼只接受会话 UUID；路径来自只读数据库或受限会话目录，不接受前端路径。
+    pub(crate) fn whale_rollout_path(&self, thread_id: &str) -> Option<PathBuf> {
+        crate::whale_usage::normalize_session_id(thread_id)?;
+        let home = self
+            .codex_home
+            .as_deref()
+            .or_else(|| self.db_path.parent())?;
+        let roots: Vec<PathBuf> = ["sessions", "archived_sessions"]
+            .iter()
+            .filter_map(|name| fs::canonicalize(home.join(name)).ok())
+            .collect();
+        let allowed = |path: &Path| -> Option<PathBuf> {
+            let path = fs::canonicalize(path).ok()?;
+            (path.is_file()
+                && path.extension().is_some_and(|ext| ext == "jsonl")
+                && roots.iter().any(|root| path.starts_with(root)))
+            .then_some(path)
+        };
+        for db_path in &self.allowed_db_paths {
+            let Ok(db) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+                continue;
+            };
+            let _ = db.busy_timeout(std::time::Duration::from_millis(50));
+            let path = db.query_row(
+                "SELECT rollout_path FROM threads WHERE id = ?1",
+                [thread_id],
+                |row| row.get::<_, Option<String>>(0),
+            );
+            if let Ok(Some(path)) = path {
+                if let Some(path) = allowed(Path::new(&path)) {
+                    return Some(path);
+                }
+                if let Some(alternative) = wsl_path_alternative(&path) {
+                    if let Some(path) = allowed(Path::new(&alternative)) {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        // API 模式可能没有 threads 行。只遍历标准目录，限制深度及条目数，不跟随符号链接。
+        let suffix = format!("-{thread_id}.jsonl");
+        let mut pending: Vec<_> = roots.into_iter().rev().map(|root| (root, 0)).collect();
+        let mut budget = 8192usize;
+        while let Some((dir, depth)) = pending.pop() {
+            let Ok(entries) = fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries {
+                if budget == 0 {
+                    return None;
+                }
+                budget -= 1;
+                let Ok(entry) = entry else { continue };
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_dir() && depth < 3 {
+                    pending.push((entry.path(), depth + 1));
+                } else if kind.is_file()
+                    && entry.file_name().to_string_lossy().ends_with(&suffix)
+                {
+                    return fs::canonicalize(entry.path()).ok();
+                }
+            }
+        }
+        None
+    }
+
     fn delete_generic_session(
         &self,
         db: &mut Connection,

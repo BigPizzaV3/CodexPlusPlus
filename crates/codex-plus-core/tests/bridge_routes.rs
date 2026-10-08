@@ -34,6 +34,8 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/manager/open", json!({})),
         ("/manager/open-transient", json!({})),
         ("/backend/status", json!({})),
+        ("/whale/balance", json!({})),
+        ("/whale/session", json!({"session_id": "s1"})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         (
@@ -80,6 +82,41 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn whale_routes_require_both_enhancements_and_widget_switch() {
+    for (enhancements, widget) in [(false, true), (true, false), (false, false)] {
+        let settings = BackendSettings {
+            enhancements_enabled: enhancements,
+            codex_app_whale_widget_enabled: widget,
+            ..BackendSettings::default()
+        };
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(settings)),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData),
+        );
+        for route in ["/whale/balance", "/whale/session"] {
+            let result = handle_bridge_request(ctx.clone(), route, json!({"session_id":"s1"})).await;
+            assert_eq!(result["status"], "disabled", "{route}");
+        }
+    }
+    let settings = BackendSettings {
+        codex_app_whale_widget_enabled: true,
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData),
+    );
+    let result = handle_bridge_request(ctx.clone(), "/whale/session", json!({"session_id":"s1"})).await;
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["sessionId"], "s1");
+    let result = handle_bridge_request(ctx, "/whale/balance", json!({})).await;
+    assert_eq!(result["status"], "unsupported");
+    assert!(result["balances"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1065,6 +1102,7 @@ impl BridgeSettingsService for FakeSettings {
             "codexAppNativeMenuPlacement",
             "codexAppServiceTierControls",
             "codexAppPetRealMouseLook",
+            "codexAppWhaleWidgetEnabled",
         ] {
             if let Some(value) = payload.get(key).and_then(Value::as_bool) {
                 raw.insert(key.to_string(), json!(value));
@@ -1189,6 +1227,10 @@ impl Default for FakeData {
 
 #[async_trait]
 impl BridgeDataService for FakeData {
+    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "sessionId": session.session_id}))
+    }
+
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         Ok(DeleteResult {
             status: DeleteStatus::LocalDeleted,

@@ -6,6 +6,7 @@
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
+    if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     if (loaded && typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
     return loaded;
   }
@@ -32,6 +33,7 @@
       if (loaded) {
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
+        if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
         if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
@@ -66,6 +68,7 @@
     });
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
+    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
     renderCodexPlusMenu();
     scan();
@@ -1276,6 +1279,10 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">Codex 用量挂件</div><div class="codex-plus-row-description">显示当前 Codex 会话用量、任务状态与可用的供应商余额。可拖动、上传角色图片和设置提醒；默认静音。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="whaleWidget"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">自定义布局</div><div class="codex-plus-row-description">侧边图标与会话栏作为整体移动；拖动侧边栏、任务信息卡或输入框时，其他面板会弹性让位；支持磁吸和下次打开恢复。</div></div>

@@ -1877,7 +1877,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, customLayout: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, customLayout: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1888,6 +1888,7 @@
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     customLayout: "codexAppCustomLayoutEnabled",
+    whaleWidget: "codexAppWhaleWidgetEnabled",
     threadScrollRestore: "codexAppThreadScrollRestore",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
@@ -1926,6 +1927,7 @@
         threadIdBadge: false,
         conversationView: false,
         customLayout: false,
+        whaleWidget: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
         nativeMenuPlacement: false,

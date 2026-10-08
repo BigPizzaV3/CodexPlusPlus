@@ -101,6 +101,11 @@
       "lines": 0
     },
     {
+      "name": "97-whale-widget.js",
+      "description": "内置小鲸鱼：余额与用量、角色上传、拖动与提醒",
+      "lines": 0
+    },
+    {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
       "lines": 120

@@ -5,6 +5,8 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
+const WHALE_DEFAULT_IMAGE: &[u8] =
+    include_bytes!("../../../assets/inject/upstream/whale-widget/DSniang1.png");
 #[cfg(windows)]
 const DREAM_TARGET_CSS: &str =
     include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
@@ -463,7 +465,9 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
         format!(
-            "{}\n{}",
+            "window.__CODEX_PLUS_WHALE_IMAGE__ = {};\n{}\n{}",
+            serde_json::to_string(&image_data_uri("image/png", WHALE_DEFAULT_IMAGE))
+                .expect("whale image should serialize"),
             include_str!("../../../assets/inject/composer-readiness.js"),
             renderer_script()
         ),
@@ -576,6 +580,18 @@ mod tests {
     fn injection_does_not_project_retired_plugin_cache() {
         let script = injection_script_with_settings(57321, &BackendSettings::default());
         assert!(!script.contains("window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ ="));
+    }
+
+    #[test]
+    fn whale_character_is_embedded_for_offline_and_live_enable() {
+        let script = injection_script(57321);
+        let prefix = "window.__CODEX_PLUS_WHALE_IMAGE__ = ";
+        let value = script.split_once(prefix).unwrap().1.lines().next().unwrap();
+        let uri: String = serde_json::from_str(value.trim_end_matches(';')).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(uri.strip_prefix("data:image/png;base64,").unwrap()).unwrap();
+        assert_eq!(bytes, WHALE_DEFAULT_IMAGE);
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     }
 
     #[test]

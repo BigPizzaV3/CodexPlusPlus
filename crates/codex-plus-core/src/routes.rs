@@ -67,6 +67,10 @@ pub trait BridgeSettingsService: Send + Sync {
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         Ok(String::new())
     }
+
+    fn whale_ledger_path(&self) -> PathBuf {
+        crate::paths::default_settings_path().with_file_name("whale-balance.sqlite3")
+    }
 }
 
 #[async_trait]
@@ -160,6 +164,9 @@ pub trait BridgeDataService: Send + Sync {
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
+    async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
+    }
     async fn find_archived_thread_by_title(
         &self,
         title: String,
@@ -294,6 +301,20 @@ pub async fn handle_bridge_request(
                 .thread_usage_history(session_from_payload(&payload))
                 .await
         }
+        // 仅内置挂件使用，不加入第三方拓展路由白名单。
+        "/whale/balance" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                Ok(crate::whale::balance(&settings, ctx.settings.whale_ledger_path()).await)
+            }
+            Err(_) => Ok(crate::whale::unavailable("无法读取挂件设置")),
+        },
+        "/whale/session" => match ctx.settings.get_settings().await {
+            Ok(settings) if crate::whale::enabled(&settings) => {
+                ctx.data.whale_session(session_from_payload(&payload)).await
+            }
+            Ok(_) => Ok(json!({"status": "disabled"})),
+            Err(_) => Ok(json!({"status": "unavailable", "message": "无法读取挂件设置"})),
+        },
         "/archived-thread" => {
             let title = payload
                 .get("title")
