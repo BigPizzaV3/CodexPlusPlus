@@ -511,6 +511,8 @@ pub struct BackendSettings {
     pub codex_app_thread_id_badge: bool,
     #[serde(rename = "codexAppConversationView", default)]
     pub codex_app_conversation_view: bool,
+    #[serde(rename = "codexAppCustomLayoutEnabled", default)]
+    pub codex_app_custom_layout_enabled: bool,
     #[serde(rename = "codexAppThreadScrollRestore", default = "default_true")]
     pub codex_app_thread_scroll_restore: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
@@ -681,6 +683,7 @@ impl Default for BackendSettings {
             codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
+            codex_app_custom_layout_enabled: false,
             codex_app_thread_scroll_restore: true,
             codex_app_native_menu_placement: true,
             codex_app_native_browser_require_identification: false,
@@ -1514,6 +1517,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
+    merge_bool_setting(target, source, "codexAppCustomLayoutEnabled");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");

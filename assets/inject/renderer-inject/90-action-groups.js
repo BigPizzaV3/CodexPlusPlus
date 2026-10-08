@@ -900,7 +900,7 @@
     const targets = [
       conversationViewState.contentEl,
       conversationViewState.composerEl,
-    ].filter((el) => el?.isConnected);
+    ].filter((el) => el?.isConnected && !(typeof codexPlusCustomLayoutOwnsElement === "function" && codexPlusCustomLayoutOwnsElement(el)));
     if (!targets.length) {
       conversationViewReportMissingTargets();
       return;
@@ -989,4 +989,3 @@
   }
 
   window.__codexPlusConversationViewCleanup = cleanupConversationView;
-

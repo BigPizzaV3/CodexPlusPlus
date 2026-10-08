@@ -81,6 +81,16 @@
       "lines": 1240
     },
     {
+      "name": "96-layout-physics.js",
+      "description": "自定义布局几何：碰撞让位、有界布局搜索与阻尼弹簧",
+      "lines": 0
+    },
+    {
+      "name": "96-custom-layout.js",
+      "description": "自定义布局：原生区域拖动、边缘磁吸、缩放与位置恢复",
+      "lines": 0
+    },
+    {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
       "lines": 120

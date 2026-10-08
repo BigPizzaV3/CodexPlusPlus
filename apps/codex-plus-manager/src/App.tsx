@@ -262,6 +262,7 @@ type BackendSettings = {
   codexAppTypingEffect: TypingEffect;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
+  codexAppCustomLayoutEnabled: boolean;
   codexAppThreadScrollRestore: boolean;
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
@@ -1002,6 +1003,7 @@ const defaultSettings: BackendSettings = {
   codexAppTypingEffect: "off",
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
+  codexAppCustomLayoutEnabled: false,
   codexAppThreadScrollRestore: true,
   codexAppNativeMenuPlacement: true,
   codexAppNativeBrowserRequireIdentification: false,
@@ -5053,6 +5055,7 @@ function EnhanceScreen({
                 </div>
                 <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
                 <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
+                <FeatureToggle title={t("自定义布局")} detail={t("在 Codex++ 页面点击“编辑布局”，拖动面板时其他区域会弹性让位；支持磁吸和下次打开恢复。")} checked={form.codexAppCustomLayoutEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppCustomLayoutEnabled", value)} />
                 <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
               </FeatureGroup>
               {isWindowsPlatform ? <FeatureGroup title={t("桌宠")} detail={t("调整桌宠与鼠标的互动。")}>
@@ -11643,6 +11646,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...settings,
     dictation: normalizeDictationSettings(settings.dictation),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
+    codexAppCustomLayoutEnabled: settings.codexAppCustomLayoutEnabled === true,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),

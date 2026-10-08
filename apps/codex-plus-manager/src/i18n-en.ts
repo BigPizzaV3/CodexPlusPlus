@@ -660,6 +660,8 @@ export const EN_PLAIN: Record<string, string> = {
   "官方登录": "Official login",
   "官方登录模式": "Official login mode",
   "对话居中宽度": "Centered conversation width",
+  "自定义布局": "Custom layout",
+  "在 Codex++ 页面点击“编辑布局”，拖动面板时其他区域会弹性让位；支持磁吸和下次打开恢复。": "Click Edit layout on the Codex++ page. Dragging a panel pushes nearby panels aside with spring motion. Positions snap to edges and are restored next time.",
   "导入 Codex++ 供应商": "Import Codex++ provider",
   "尚未刷新": "Not refreshed yet",
   "尚未加载推荐内容": "Recommendations not loaded yet",

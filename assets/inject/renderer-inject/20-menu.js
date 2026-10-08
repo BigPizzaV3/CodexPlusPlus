@@ -8,6 +8,9 @@
       button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
     refreshConversationViewControls();
+    document.querySelectorAll("[data-codex-plus-layout-edit]").forEach((button) => {
+      button.disabled = !codexPlusBackendSettingsLoaded || settings.customLayout !== true;
+    });
     refreshCodexServiceTierControls();
     document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
       select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
@@ -550,4 +553,3 @@
   function codexServiceTierEffectiveMode(value) {
     return isFastServiceTierValue(value) ? "fast" : "standard";
   }
-

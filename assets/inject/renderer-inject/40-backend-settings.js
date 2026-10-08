@@ -6,6 +6,7 @@
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
+    if (loaded && typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
     return loaded;
   }
 
@@ -31,6 +32,7 @@
       if (loaded) {
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
+        if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -63,6 +65,7 @@
     });
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
+    if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
     renderCodexPlusMenu();
     scan();
   }
@@ -1155,6 +1158,13 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">自定义布局</div><div class="codex-plus-row-description">拖动图标栏、聊天栏、任务信息卡或输入框时，其他面板会弹性让位；支持磁吸和下次打开恢复。</div></div>
+              <div class="codex-plus-width-control">
+                <button type="button" class="codex-plus-action-button" data-codex-plus-layout-edit="true">编辑布局</button>
+                <button type="button" class="codex-plus-toggle" data-codex-plus-setting="customLayout"><span></span></button>
+              </div>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">历史会话修复</div><div class="codex-plus-row-description">切换官方登录、混合 API 或纯 API 后，让旧对话重新显示在当前模式下。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
@@ -1255,6 +1265,15 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      const layoutEdit = target?.closest("[data-codex-plus-layout-edit]");
+      if (layoutEdit) {
+        if (layoutEdit.disabled || codexPlusSettings().customLayout !== true) return;
+        installCodexPlusCustomLayout();
+        closeCodexPlusPage();
+        document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
+        window.__codexPlusCustomLayoutRuntime?.setEditing(true);
         return;
       }
       // 推荐卡片用 window.open 而非原生 <a target="_blank">：Codex 是 Electron
