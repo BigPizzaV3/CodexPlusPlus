@@ -1995,6 +1995,31 @@ async fn handle_protocol_proxy_connection(
             stream.shutdown().await?;
             return Ok(());
         }
+        if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses
+            && upstream.exec_adapted
+        {
+            let mut converter = crate::responses_exec_sse::ExecSseAdapter::new();
+            let mut bytes_stream = upstream.take_response()?.bytes_stream();
+            while let Some(chunk) = bytes_stream.next().await {
+                let converted = match chunk {
+                    Ok(bytes) => match converter.push_bytes(&bytes) {
+                        Ok(converted) => converted,
+                        Err(_) => converter.fail(),
+                    },
+                    Err(_) => converter.fail(),
+                };
+                stream.write_all(&converted).await?;
+                if converter.is_complete() && !converter.succeeded() {
+                    break;
+                }
+            }
+            stream.write_all(&converter.finish()?).await?;
+            if let Some(outcome) = upstream.exec_outcome.as_mut() {
+                outcome.finish(converter.succeeded());
+            }
+            stream.shutdown().await?;
+            return Ok(());
+        }
         let failure = forward_protocol_proxy_stream(
             stream,
             upstream.take_response()?,
@@ -2028,7 +2053,15 @@ async fn handle_protocol_proxy_connection(
         stream.shutdown().await?;
         return Ok(());
     }
-    let upstream_body = upstream.read_body().await?;
+    let upstream_body = match upstream.read_body().await {
+        Ok(body) => body,
+        Err(error) => {
+            if let Some(outcome) = upstream.exec_outcome.as_mut() {
+                outcome.finish(false);
+            }
+            return Err(error);
+        }
+    };
     if upstream.compaction {
         // v2 远程压缩非流式路径：同样重组为单个 compaction 输出项。
         let body = crate::protocol_proxy::wrap_non_stream_response_as_compaction(
@@ -2051,6 +2084,17 @@ async fn handle_protocol_proxy_connection(
         return Ok(());
     }
     if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
+        let body = if upstream.exec_adapted {
+            let (body, valid) = crate::responses_exec_transport::adapted_json(&upstream_body);
+            write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
+            if let Some(outcome) = upstream.exec_outcome.as_mut() {
+                outcome.finish(valid);
+            }
+            stream.shutdown().await?;
+            return Ok(());
+        } else {
+            upstream_body
+        };
         write_http_response(
             stream,
             "200 OK",
@@ -2059,7 +2103,7 @@ async fn handle_protocol_proxy_connection(
             } else {
                 &upstream.content_type
             },
-            &upstream_body,
+            &body,
         )
         .await?;
         log_helper_response(
@@ -4913,6 +4957,98 @@ mod tests {
         client.read_to_end(&mut response).await.unwrap();
         helper.await.unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn helper_serves_adapted_exec_json_and_sse_without_exposing_the_wrapper() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let server = MockServer::start().await;
+        let settings = BackendSettings {
+            active_relay_id: "served-exec".to_string(),
+            relay_profiles: vec![crate::settings::RelayProfile {
+                id: "served-exec".to_string(),
+                base_url: format!("{}/v1", server.uri()),
+                protocol: crate::settings::RelayProtocol::Responses,
+                relay_mode: crate::settings::RelayMode::PureApi,
+                api_key: "fixture-only".to_string(),
+                channel_queue_enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        crate::settings::SettingsStore::new(path.clone())
+            .save(&settings)
+            .unwrap();
+        let previous = crate::paths::set_settings_path_for_tests(Some(path));
+        let program = "text(\"served exec\");";
+        let arguments = serde_json::json!({"input":program}).to_string();
+        let item = serde_json::json!({
+            "type":"function_call", "id":"fc_served", "call_id":"call_served",
+            "name":"exec", "arguments":arguments, "status":"completed"
+        });
+        let response = serde_json::json!({
+            "object":"response", "status":"completed", "output":[item]
+        });
+        Mock::given(method("POST"))
+            .respond_with(move |incoming: &wiremock::Request| {
+                let body: serde_json::Value = incoming.body_json().unwrap();
+                if body["tools"][0]["type"] == "custom" {
+                    return ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "error":{"type":"invalid_request_error",
+                                 "message":crate::responses_exec::EXEC_REJECTION_MESSAGE,
+                                 "param":"tools[0]"}
+                    }));
+                }
+                if body["stream"] == true {
+                    let event =
+                        serde_json::json!({"type":"response.completed","response":response});
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(format!(
+                            "event: response.completed\ndata: {event}\n\ndata: [DONE]\n\n"
+                        ))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(&response)
+                }
+            })
+            .mount(&server)
+            .await;
+        for is_stream in [false, true] {
+            let body = serde_json::json!({
+                "model": if is_stream {"stream-model"} else {"json-model"},
+                "stream":is_stream, "store":false, "input":"fixture",
+                "tools":[{"type":"custom","name":"exec","format":{"type":"text"}}]
+            })
+            .to_string();
+            let request = format!(
+                "POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let bytes = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                send_raw_helper_request(request.as_bytes()),
+            )
+            .await
+            .unwrap();
+            let headers_end = find_header_end(&bytes).unwrap();
+            let body = String::from_utf8(bytes[headers_end + 4..].to_vec()).unwrap();
+            assert!(body.contains("custom_tool_call"), "{body}");
+            assert!(!body.contains("function_call"), "{body}");
+            assert!(!body.contains("\"arguments\""), "{body}");
+            if is_stream {
+                assert!(body.contains("response.custom_tool_call_input.delta"));
+                assert!(body.contains("data: [DONE]"));
+            } else {
+                let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(value["output"][0]["input"], program);
+            }
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 4);
+        crate::paths::set_settings_path_for_tests(previous);
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ use crate::responses_exec::{adapt_response, decode_exec_input};
 const MAX_CALL_ARGUMENTS: usize = 1024 * 1024;
 const MAX_PENDING_ARGUMENTS: usize = 4 * 1024 * 1024;
 const MAX_CALLS: usize = 64;
+const MAX_ITEM_IDENTITIES: usize = 1024;
 
 #[derive(Debug, Clone)]
 struct ExecCall {
@@ -48,6 +49,7 @@ pub(crate) struct ExecSseAdapter {
     non_exec_item_calls: HashMap<String, String>,
     seen_custom_ids: HashSet<String>,
     pending_argument_bytes: usize,
+    retained_metadata_bytes: usize,
     next_sequence: u64,
     terminal_success: bool,
     done_marker_seen: bool,
@@ -74,6 +76,7 @@ impl ExecSseAdapter {
             non_exec_item_calls: HashMap::new(),
             seen_custom_ids: HashSet::new(),
             pending_argument_bytes: 0,
+            retained_metadata_bytes: 0,
             next_sequence: 0,
             terminal_success: false,
             done_marker_seen: false,
@@ -95,6 +98,7 @@ impl ExecSseAdapter {
             .len()
             .saturating_add(bytes.len())
             .saturating_add(self.pending_argument_bytes)
+            .saturating_add(self.retained_metadata_bytes)
             > MAX_PENDING_ARGUMENTS
         {
             return Err(self.reject("Responses SSE pending frame exceeds 4 MiB"));
@@ -298,19 +302,44 @@ impl ExecSseAdapter {
             if item_type == "custom_tool_call" && name == "exec" {
                 return Err(self.reject("unexpected native custom exec in adapted stream"));
             }
-            if !item_id.is_empty() && (item_type != "function_call" || !name.is_empty()) {
+            let track_item = !item_id.is_empty()
+                && (item_type != "function_call" || !name.is_empty())
+                && !self.non_exec_items.contains(item_id);
+            let call_id = item.get("call_id").and_then(Value::as_str);
+            if track_item {
                 if self.item_to_call.contains_key(item_id) || self.seen_custom_ids.contains(item_id)
                 {
                     return Err(self.reject("exec and unrelated item id collision"));
                 }
-                self.non_exec_items.insert(item_id.to_string());
+                if self.non_exec_items.len() + self.item_to_call.len() >= MAX_ITEM_IDENTITIES {
+                    return Err(self.reject("too many Responses item identities"));
+                }
             }
-            if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-                if self.calls.contains_key(call_id)
-                    || !self.non_exec_calls.insert(call_id.to_string())
-                {
+            if let Some(call_id) = call_id {
+                if self.calls.contains_key(call_id) || self.non_exec_calls.contains(call_id) {
                     return Err(self.reject("duplicate tool call_id"));
                 }
+                if self.non_exec_calls.len() + self.calls.len() >= MAX_ITEM_IDENTITIES {
+                    return Err(self.reject("too many Responses call identities"));
+                }
+            }
+            let metadata_bytes = if track_item { item_id.len() + 64 } else { 0 }
+                + call_id.map_or(0, |call_id| {
+                    call_id.len()
+                        + 64
+                        + if item_id.is_empty() {
+                            0
+                        } else {
+                            item_id.len() + call_id.len() + 96
+                        }
+                });
+            self.check_state_budget(metadata_bytes)?;
+            self.retained_metadata_bytes += metadata_bytes;
+            if track_item {
+                self.non_exec_items.insert(item_id.to_string());
+            }
+            if let Some(call_id) = call_id {
+                self.non_exec_calls.insert(call_id.to_string());
                 if !item_id.is_empty() {
                     self.non_exec_item_calls
                         .insert(item_id.to_string(), call_id.to_string());
@@ -419,12 +448,7 @@ impl ExecSseAdapter {
             )?;
         } else {
             self.ensure_call_item(&call_id, &item_id)?;
-            let call = self.calls.get_mut(&call_id).expect("exec call exists");
-            call.item = item.clone();
-            call.item
-                .as_object_mut()
-                .expect("exec item is an object")
-                .remove("arguments");
+            self.replace_call_item(&call_id, item.clone())?;
         }
         let candidate = item
             .get("arguments")
@@ -556,27 +580,34 @@ impl ExecSseAdapter {
         if self.non_exec_items.contains(&item_id) || self.non_exec_items.contains(&custom_item_id) {
             return Err(self.reject("exec and unrelated item id collision"));
         }
-        if !self.seen_custom_ids.insert(custom_item_id.clone()) {
+        if self.seen_custom_ids.contains(&custom_item_id) {
             return Err(self.reject("custom exec item id collision"));
         }
-        self.item_to_call.insert(item_id.clone(), call_id.clone());
+        if self.non_exec_items.len() + self.item_to_call.len() >= MAX_ITEM_IDENTITIES {
+            return Err(self.reject("too many Responses item identities"));
+        }
         let initial_arguments = item
             .get("arguments")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        if initial_arguments.len() > MAX_CALL_ARGUMENTS
-            || self
-                .pending_argument_bytes
-                .saturating_add(initial_arguments.len())
-                > MAX_PENDING_ARGUMENTS
-        {
+        if initial_arguments.len() > MAX_CALL_ARGUMENTS {
             return Err(self.reject("initial exec arguments exceed buffer limit"));
         }
-        self.pending_argument_bytes += initial_arguments.len();
         item.as_object_mut()
             .expect("exec item is an object")
             .remove("arguments");
+        // Account for every retained copy, including identity maps and opaque metadata.
+        let metadata_bytes = retained_value_bytes(&item)
+            + output_index.map_or(0, retained_value_bytes)
+            + 2 * (call_id.len() + item_id.len() + custom_item_id.len())
+            + std::mem::size_of::<ExecCall>()
+            + 256;
+        self.check_state_budget(metadata_bytes + initial_arguments.capacity())?;
+        self.retained_metadata_bytes += metadata_bytes;
+        self.pending_argument_bytes += initial_arguments.capacity();
+        self.seen_custom_ids.insert(custom_item_id.clone());
+        self.item_to_call.insert(item_id.clone(), call_id.clone());
         self.calls.insert(
             call_id.clone(),
             ExecCall {
@@ -591,6 +622,38 @@ impl ExecSseAdapter {
                 added,
             },
         );
+        Ok(())
+    }
+
+    fn check_state_budget(&mut self, additional: usize) -> Result<()> {
+        if self
+            .frame_buffer
+            .len()
+            .saturating_add(self.pending_argument_bytes)
+            .saturating_add(self.retained_metadata_bytes)
+            .saturating_add(additional)
+            > MAX_PENDING_ARGUMENTS
+        {
+            return Err(self.reject("pending Responses state exceeds 4 MiB"));
+        }
+        Ok(())
+    }
+
+    fn replace_call_item(&mut self, call_id: &str, mut item: Value) -> Result<()> {
+        item.as_object_mut()
+            .expect("exec item is an object")
+            .remove("arguments");
+        let previous =
+            retained_value_bytes(&self.calls.get(call_id).expect("exec call exists").item);
+        let replacement = retained_value_bytes(&item);
+        if replacement > previous {
+            self.check_state_budget(replacement - previous)?;
+        }
+        self.retained_metadata_bytes = self
+            .retained_metadata_bytes
+            .saturating_sub(previous)
+            .saturating_add(replacement);
+        self.calls.get_mut(call_id).expect("exec call exists").item = item;
         Ok(())
     }
 
@@ -648,17 +711,22 @@ impl ExecSseAdapter {
         if call.arguments.len().saturating_add(delta_len) > MAX_CALL_ARGUMENTS {
             return Err(self.reject("exec argument buffer exceeds 1 MiB"));
         }
-        if self.pending_argument_bytes.saturating_add(delta_len) > MAX_PENDING_ARGUMENTS {
-            return Err(self.reject("pending exec argument state exceeds 4 MiB"));
-        }
+        self.check_state_budget(delta_len)?;
+        let call = self.calls.get(call_id).expect("exec call exists");
         if call.input.is_some() {
             return Err(self.reject("exec arguments arrived after completion"));
         }
         let Some(call) = self.calls.get_mut(call_id) else {
             return Err(self.reject("exec argument delta references an unknown call"));
         };
+        let previous_capacity = call.arguments.capacity();
+        call.arguments.reserve_exact(delta_len);
         call.arguments.push_str(delta);
-        self.pending_argument_bytes += delta_len;
+        self.pending_argument_bytes = self
+            .pending_argument_bytes
+            .saturating_sub(previous_capacity)
+            .saturating_add(call.arguments.capacity());
+        self.check_state_budget(0)?;
         Ok(())
     }
 
@@ -694,12 +762,14 @@ impl ExecSseAdapter {
             .get(call_id)
             .expect("exec call exists")
             .arguments
-            .len();
+            .capacity();
         if already_input.is_none()
             && self
                 .pending_argument_bytes
                 .saturating_sub(retained_len)
-                .saturating_add(input.len())
+                .saturating_add(input.capacity())
+                .saturating_add(self.retained_metadata_bytes)
+                .saturating_add(self.frame_buffer.len())
                 > MAX_PENDING_ARGUMENTS
         {
             return Err(self.reject("pending exec state exceeds 4 MiB"));
@@ -721,9 +791,9 @@ impl ExecSseAdapter {
             let call = self.calls.get_mut(call_id).expect("exec call exists");
             self.pending_argument_bytes = self
                 .pending_argument_bytes
-                .saturating_sub(call.arguments.len());
-            call.arguments.clear();
-            self.pending_argument_bytes += input.len();
+                .saturating_sub(call.arguments.capacity());
+            call.arguments = String::new();
+            self.pending_argument_bytes += input.capacity();
             call.input = Some(input.clone());
             if !call.completion_emitted {
                 call.completion_emitted = true;
@@ -806,6 +876,22 @@ impl ExecSseAdapter {
         self.next_sequence = self.next_sequence.saturating_add(1);
         let encoded = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
         output.extend_from_slice(format!("event: {event_type}\ndata: {encoded}\n\n").as_bytes());
+    }
+}
+
+// Includes backing string/array storage and a conservative map-node allowance.
+fn retained_value_bytes(value: &Value) -> usize {
+    match value {
+        Value::String(value) => value.capacity(),
+        Value::Array(values) => {
+            values.capacity() * std::mem::size_of::<Value>()
+                + values.iter().map(retained_value_bytes).sum::<usize>()
+        }
+        Value::Object(values) => values
+            .iter()
+            .map(|(key, value)| key.capacity() + 128 + retained_value_bytes(value))
+            .sum(),
+        _ => 0,
     }
 }
 
@@ -1292,5 +1378,66 @@ mod tests {
             );
             assert!(!adapter.succeeded());
         }
+    }
+
+    #[test]
+    fn retained_metadata_and_identity_registries_share_the_state_budget() {
+        let mut adapter = ExecSseAdapter::new();
+        let mut first = added("metadata-a");
+        first["item"]["metadata"] = json!("x".repeat(3 * 1024 * 1024));
+        adapter
+            .push_bytes(&frame("response.output_item.added", first))
+            .unwrap();
+        let mut second = added("metadata-b");
+        second["item"]["metadata"] = json!("x".repeat(3 * 1024 * 1024));
+        assert!(
+            adapter
+                .push_bytes(&frame("response.output_item.added", second))
+                .is_err()
+        );
+
+        let mut adapter = ExecSseAdapter::new();
+        for index in 0..1024 {
+            adapter
+                .push_bytes(&frame(
+                    "response.output_item.added",
+                    json!({
+                        "type":"response.output_item.added",
+                        "item":{"type":"message","id":format!("msg_{index}"),"role":"assistant"}
+                    }),
+                ))
+                .unwrap();
+        }
+        assert!(
+            adapter
+                .push_bytes(&frame(
+                    "response.output_item.added",
+                    json!({
+                        "type":"response.output_item.added",
+                        "item":{"type":"message","id":"msg_overflow","role":"assistant"}
+                    })
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn replacing_completed_item_metadata_does_not_leak_budget() {
+        let mut adapter = ExecSseAdapter::new();
+        adapter
+            .push_bytes(&frame("response.output_item.added", added("a")))
+            .unwrap();
+        let mut item = completed("a", r#"{"input":"ok"}"#)["response"]["output"][0].clone();
+        item["metadata"] = json!("x".repeat(1024 * 1024));
+        let event = frame(
+            "response.output_item.done",
+            json!({
+                "type":"response.output_item.done", "item":item
+            }),
+        );
+        for _ in 0..6 {
+            adapter.push_bytes(&event).unwrap();
+        }
+        assert!(!adapter.failed);
     }
 }
