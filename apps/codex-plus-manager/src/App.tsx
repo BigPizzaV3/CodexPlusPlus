@@ -1330,6 +1330,15 @@ export function App() {
     }
   };
 
+  const setUserScriptsEnabled = async (enabled: boolean) => {
+    const result = await run(() => call<SettingsResult>("set_user_scripts_enabled", { enabled }));
+    if (!result) return;
+    setSettings(result);
+    setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+    showResultNotice(t("本地拓展"), result);
+    if (isSuccessStatus(result.status)) await reloadUserScripts();
+  };
+
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
     const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
     if (result) {
@@ -3276,6 +3285,7 @@ export function App() {
       refreshUserScriptInventory,
       reloadUserScripts,
       installMarketScript,
+      setUserScriptsEnabled,
       setUserScriptEnabled,
       deleteUserScript,
       refreshLocalSessions,
@@ -3690,6 +3700,7 @@ type Actions = {
   refreshUserScriptInventory: () => Promise<SettingsResult | null>;
   reloadUserScripts: () => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
+  setUserScriptsEnabled: (enabled: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
@@ -6106,6 +6117,15 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
             <Metric label={t("本地整体")} value={inventory?.enabled === false ? t("关闭") : t("开启")} />
           </div>
           <Toolbar>
+            <Button
+              onClick={() => void actions.setUserScriptsEnabled(inventory?.enabled === false)}
+              disabled={!inventory}
+              variant="secondary"
+              aria-pressed={inventory?.enabled !== false}
+              title={t("整体开关不改变单个拓展的启停设置")}
+            >
+              {inventory?.enabled === false ? t("开启本地拓展") : t("关闭本地拓展")}
+            </Button>
             <Button onClick={() => void actions.refreshScriptMarket()}>
               <RefreshCw className="h-4 w-4" />
               {t("刷新市场")}

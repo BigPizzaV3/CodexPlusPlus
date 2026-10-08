@@ -3938,6 +3938,25 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 }
 
 #[tauri::command]
+pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload> {
+    let manager = default_user_script_manager();
+    match manager.set_global_enabled(enabled) {
+        Ok(_) => settings_payload(
+            if enabled {
+                "本地拓展整体已开启。"
+            } else {
+                "本地拓展整体已关闭。"
+            },
+            "本地拓展整体开关设置失败",
+        ),
+        Err(error) => failed(
+            &format!("本地拓展整体开关设置失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
