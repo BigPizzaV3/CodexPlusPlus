@@ -8876,13 +8876,14 @@ function RelayProfileEditor({
                   max={10000}
                   type="number"
                   value={profile.channelRequestsPerMinute}
+                  disabled={!profile.channelQueueEnabled}
                   onChange={(event) =>
                     updateDraft({
                       channelRequestsPerMinute: clampNumber(Number(event.currentTarget.value), 1, 10000),
                     })
                   }
                 />
-                <p className="field-hint">{t("请填入供应商提供的最大RPM")}</p>
+                <p className="field-hint">{t("请填入供应商提供的最大RPM；仅在同渠道队列开启时生效，下一条请求会等待上一条完整响应结束。")}</p>
               </Field>
             </section>
           </div>
