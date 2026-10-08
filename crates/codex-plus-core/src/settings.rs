@@ -501,6 +501,12 @@ pub struct BackendSettings {
     pub codex_app_markdown_export: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
+    #[serde(
+        rename = "codexAppTypingEffect",
+        default = "default_typing_effect",
+        deserialize_with = "deserialize_typing_effect"
+    )]
+    pub codex_app_typing_effect: String,
     #[serde(rename = "codexAppThreadIdBadge", default)]
     pub codex_app_thread_id_badge: bool,
     #[serde(rename = "codexAppConversationView", default)]
@@ -672,6 +678,7 @@ impl Default for BackendSettings {
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
+            codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
@@ -899,6 +906,17 @@ impl BackendSettings {
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
         self.active_relay_transport_uses_protocol_proxy()
             || self.active_relay_session_provider() == RelaySessionProvider::Openai
+    }
+}
+
+pub fn default_typing_effect() -> String {
+    "off".to_string()
+}
+
+pub fn normalize_typing_effect(value: &str) -> String {
+    match value {
+        "off" | "rainbow" | "fireworks" | "stars" => value.to_string(),
+        _ => default_typing_effect(),
     }
 }
 
@@ -1156,6 +1174,17 @@ where
     Ok(value
         .filter(|value| !value.is_empty())
         .unwrap_or_else(default_stepwise_api_key_env))
+}
+
+fn deserialize_typing_effect<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .map(normalize_typing_effect)
+        .unwrap_or_else(default_typing_effect))
 }
 
 fn deserialize_stepwise_protocol<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -1475,6 +1504,14 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppPasteFix");
+    if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =
+        source.get("codexAppTypingEffect").and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppTypingEffect".to_string(),
+            Value::String(value.to_string()),
+        );
+    }
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
@@ -1870,6 +1907,7 @@ fn settings_to_object(settings: &BackendSettings) -> Map<String, Value> {
 
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
     settings.dictation.normalize();
+    settings.codex_app_typing_effect = normalize_typing_effect(&settings.codex_app_typing_effect);
     settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     let (common, extracted_context) =
         split_context_config_sections(&settings.relay_common_config_contents);

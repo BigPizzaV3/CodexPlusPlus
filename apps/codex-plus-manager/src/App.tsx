@@ -259,6 +259,7 @@ type BackendSettings = {
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
   codexAppPasteFix: boolean;
+  codexAppTypingEffect: TypingEffect;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
@@ -343,6 +344,7 @@ type ToolsResult = {
 };
 
 type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
+type TypingEffect = "off" | "rainbow" | "fireworks" | "stars";
 
 export type RelayProfile = {
   id: string;
@@ -997,6 +999,7 @@ const defaultSettings: BackendSettings = {
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
+  codexAppTypingEffect: "off",
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
@@ -5030,6 +5033,24 @@ function EnhanceScreen({
                 <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
                 <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
+                <div className={`feature-toggle ${!masterEnabled ? "disabled" : ""}`}>
+                  <span>
+                    <strong>{t("打字特效（彩虹 P）")}</strong>
+                    <small>{t("在 Codex 输入框的光标附近显示特效，保存后生效；系统减少动态效果时暂停。")}</small>
+                  </span>
+                  <AppSelect<TypingEffect>
+                    ariaLabel={t("打字特效（彩虹 P）")}
+                    value={form.codexAppTypingEffect}
+                    disabled={!masterEnabled}
+                    onChange={(value) => onFormChange({ ...form, codexAppTypingEffect: value })}
+                    options={[
+                      { value: "off", label: t("关闭") },
+                      { value: "rainbow", label: t("彩虹粒子") },
+                      { value: "fireworks", label: t("烟花") },
+                      { value: "stars", label: t("星光") },
+                    ]}
+                  />
+                </div>
                 <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
                 <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
                 <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
@@ -11549,6 +11570,10 @@ function healthItems(overview: OverviewResult | null) {
   ];
 }
 
+function normalizeTypingEffect(value: unknown): TypingEffect {
+  return value === "rainbow" || value === "fireworks" || value === "stars" ? value : "off";
+}
+
 function normalizeSettings(settings: BackendSettings): BackendSettings {
   const backendAggregates = new Map(
     (settings.aggregateRelayProfiles ?? []).map((aggregate) => [aggregate.id, aggregate] as const),
@@ -11617,6 +11642,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...defaultSettings,
     ...settings,
     dictation: normalizeDictationSettings(settings.dictation),
+    codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),

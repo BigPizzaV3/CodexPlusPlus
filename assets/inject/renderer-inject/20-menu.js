@@ -9,6 +9,10 @@
     });
     refreshConversationViewControls();
     refreshCodexServiceTierControls();
+    document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
+      select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
+      select.disabled = !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false;
+    });
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, codexAppVersion: "" };

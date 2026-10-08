@@ -5,6 +5,7 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
+    if (loaded) runScanStep(syncCodexPlusTypingEffects);
     return loaded;
   }
 
@@ -29,6 +30,8 @@
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
+        runScanStep(syncCodexPlusTypingEffects);
+        renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
         }
@@ -59,6 +62,7 @@
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
     });
     syncStepwisePanel();
+    runScanStep(syncCodexPlusTypingEffects);
     renderCodexPlusMenu();
     scan();
   }
@@ -1127,6 +1131,15 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
             </div>
             <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">打字特效（彩虹 P）</div><div class="codex-plus-row-description">在输入框的光标附近显示彩虹粒子、烟花或星光。系统减少动态效果时暂停。</div></div>
+              <select class="codex-plus-typing-effect-select" data-codex-plus-typing-effect="true" aria-label="打字特效（彩虹 P）">
+                <option value="off">关闭</option>
+                <option value="rainbow">彩虹粒子</option>
+                <option value="fireworks">烟花</option>
+                <option value="stars">星光</option>
+              </select>
+            </div>
+            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">会话 ID 标识</div><div class="codex-plus-row-description">在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadIdBadge"><span></span></button>
             </div>
@@ -1211,6 +1224,13 @@
     }, true);
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const typingEffectSelect = target?.closest("[data-codex-plus-typing-effect]");
+      if (typingEffectSelect) {
+        if (!typingEffectSelect.disabled && ["off", "rainbow", "fireworks", "stars"].includes(typingEffectSelect.value)) {
+          setCodexPlusSetting("typingEffect", typingEffectSelect.value);
+        }
+        return;
+      }
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);

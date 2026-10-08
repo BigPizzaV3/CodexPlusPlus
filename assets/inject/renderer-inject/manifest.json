@@ -71,6 +71,11 @@
       "lines": 0
     },
     {
+      "name": "94-typing-effects.js",
+      "description": "光标打字特效：彩虹粒子、烟花、星光与运行时清理",
+      "lines": 0
+    },
+    {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
       "lines": 1240

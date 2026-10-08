@@ -936,6 +936,15 @@
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
+      .codex-plus-typing-effect-select {
+        flex-shrink: 0;
+        align-self: center;
+        min-width: 112px;
+        height: 32px;
+        padding: 0 8px;
+        font-size: 13px;
+      }
+      .codex-plus-typing-effect-select:disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-service-tier-control { display: grid; gap: 6px; min-width: 316px; justify-items: end; align-self: center; }
       .codex-plus-service-tier-status { color: #a1a1aa; font-size: 13px; line-height: 1.3; text-align: right; }
       .codex-plus-service-tier-status[data-status="ok"] { color: #34d399; }
@@ -1222,6 +1231,7 @@
       .codex-plus-toggle span { background: var(--color-token-bg-primary, #fff); box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.16)); }
       .codex-plus-toggle[data-enabled="true"] { background: var(--color-background-primary-solid, var(--color-background-success-solid, #10a37f)); }
       .codex-plus-width-input,
+      .codex-plus-typing-effect-select,
       .codex-plus-form-field input {
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-lg, 8px);
@@ -1230,6 +1240,7 @@
         font-family: inherit;
       }
       .codex-plus-width-input:focus,
+      .codex-plus-typing-effect-select:focus,
       .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
       .codex-plus-service-tier-button[data-active="true"] {
         border-color: var(--color-border-primary, var(--codex-plus-focus));
@@ -1289,7 +1300,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1306,6 +1317,7 @@
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
     pasteFix: "codexAppPasteFix",
+    typingEffect: "codexAppTypingEffect",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
     dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
@@ -1332,6 +1344,7 @@
         sessionDelete: false,
         markdownExport: false,
         pasteFix: false,
+        typingEffect: "off",
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,

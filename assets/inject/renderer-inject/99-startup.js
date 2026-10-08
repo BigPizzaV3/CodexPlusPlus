@@ -1,4 +1,5 @@
   void restoreCodexPlusManagedLocale();
+  runScanStep(installCodexPlusTypingEffects);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);
