@@ -1,7 +1,7 @@
 //! Stateless Responses compatibility transforms for a provider that rejects
 //! the native custom `exec` tool.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, anyhow, bail, ensure};
 use serde::de::{Deserializer, MapAccess, Visitor};
@@ -52,9 +52,12 @@ fn request_has_compaction_trigger(request: &Value) -> bool {
         .get("input")
         .and_then(Value::as_array)
         .is_some_and(|items| {
-            items
-                .iter()
-                .any(|item| item.get("type").and_then(Value::as_str) == Some("compaction_trigger"))
+            items.iter().any(|item| {
+                matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("compaction_trigger") | Some("compaction")
+                )
+            })
         })
 }
 
@@ -210,12 +213,13 @@ fn adapt_request_history(request: &mut Value) -> Result<()> {
         return Ok(());
     };
     validate_item_ids(items)?;
+    let original_ids = collect_item_ids(items);
     let mut all_calls = BTreeSet::new();
     let mut exec_calls = BTreeSet::new();
     let mut output_calls = BTreeSet::new();
     for item in items.iter() {
         match item.get("type").and_then(Value::as_str) {
-            Some("custom_tool_call") => {
+            Some("custom_tool_call") | Some("function_call") => {
                 let call_id = item
                     .get("call_id")
                     .and_then(Value::as_str)
@@ -225,7 +229,9 @@ fn adapt_request_history(request: &mut Value) -> Result<()> {
                     all_calls.insert(call_id.to_owned()),
                     "duplicate tool call_id"
                 );
-                if item.get("name").and_then(Value::as_str) == Some(EXEC_TOOL_NAME) {
+                if item.get("type").and_then(Value::as_str) == Some("custom_tool_call")
+                    && item.get("name").and_then(Value::as_str) == Some(EXEC_TOOL_NAME)
+                {
                     ensure!(
                         exec_calls.insert(call_id.to_owned()),
                         "duplicate exec call_id"
@@ -282,7 +288,8 @@ fn adapt_request_history(request: &mut Value) -> Result<()> {
             _ => {}
         }
     }
-    validate_item_ids(items)
+    validate_item_ids(items)?;
+    remap_item_references(items, &original_ids)
 }
 
 pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
@@ -298,6 +305,7 @@ pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
         .map(|item| {
             item.get("call_id")
                 .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
                 .map(str::to_owned)
                 .ok_or_else(|| anyhow!("exec function_call lacks call_id"))
         })
@@ -305,6 +313,7 @@ pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
     if matching_call_ids.is_empty() {
         return Ok(response);
     }
+    let original_ids = collect_item_ids(items);
     ensure!(
         matching_call_ids.iter().collect::<BTreeSet<_>>().len() == matching_call_ids.len(),
         "duplicate exec call_id"
@@ -384,6 +393,7 @@ pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
         }
     }
     validate_item_ids(items)?;
+    remap_item_references(items, &original_ids)?;
     Ok(response)
 }
 
@@ -436,9 +446,68 @@ impl<'de> Visitor<'de> for ExecArgumentsVisitor {
 fn validate_item_ids(items: &[Value]) -> Result<()> {
     let mut ids = BTreeSet::new();
     for item in items {
+        if item.get("type").and_then(Value::as_str) == Some("item_reference") {
+            continue;
+        }
         if let Some(id) = item.get("id").and_then(Value::as_str) {
             ensure!(ids.insert(id), "duplicate item id");
         }
+    }
+    Ok(())
+}
+
+fn collect_item_ids(items: &[Value]) -> Vec<Option<String>> {
+    items
+        .iter()
+        .map(|item| {
+            (item.get("type").and_then(Value::as_str) != Some("item_reference"))
+                .then(|| item.get("id").and_then(Value::as_str).map(str::to_owned))
+                .flatten()
+        })
+        .collect()
+}
+
+fn remap_item_references(items: &mut [Value], original_ids: &[Option<String>]) -> Result<()> {
+    let mut map = BTreeMap::new();
+    for (original_id, item) in original_ids.iter().zip(items.iter()) {
+        if let Some(original_id) = original_id {
+            let final_id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("item id lost during adaptation"))?;
+            map.insert(original_id.clone(), final_id.to_owned());
+        }
+    }
+    for item in items {
+        remap_reference_fields(item, &map)?;
+    }
+    Ok(())
+}
+
+fn remap_reference_fields(value: &mut Value, ids: &BTreeMap<String, String>) -> Result<()> {
+    match value {
+        Value::Object(object) => {
+            let is_reference = object.get("type").and_then(Value::as_str) == Some("item_reference");
+            for (key, value) in object.iter_mut() {
+                if key == "item_id" || (is_reference && key == "id") {
+                    let original_id = value
+                        .as_str()
+                        .ok_or_else(|| anyhow!("item reference id must be a string"))?;
+                    let final_id = ids
+                        .get(original_id)
+                        .ok_or_else(|| anyhow!("unresolved item reference"))?;
+                    *value = json!(final_id);
+                } else {
+                    remap_reference_fields(value, ids)?;
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                remap_reference_fields(value, ids)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -598,5 +667,100 @@ mod tests {
             ]
         });
         assert!(adapt_response(response).is_err());
+    }
+
+    #[test]
+    fn history_references_follow_item_id_transforms_and_orphans_fail() {
+        let mut native = request();
+        native["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "item_reference", "id": "ctc_old"}));
+        let translated = adapt_request(native).unwrap();
+        assert_eq!(translated["input"][3]["id"], "fc_old");
+        let mut orphan = request();
+        orphan["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "item_reference", "id": "ctc_missing"}));
+        assert!(adapt_request(orphan).is_err());
+    }
+
+    #[test]
+    fn orphan_outputs_and_function_name_conflicts_disable_adaptation() {
+        let mut orphan = request();
+        orphan["input"][2]["call_id"] = json!("missing");
+        assert!(adapt_request(orphan).is_err());
+        let mut conflict = request();
+        conflict["tools"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "function", "name": "exec"}));
+        assert!(!eligible(&conflict, "/v1/responses"));
+        assert!(adapt_request(conflict).is_err());
+    }
+
+    #[test]
+    fn parser_enforces_bounds_and_accepts_escaped_unicode() {
+        let oversized = format!("{{\"input\":\"{}\"}}", "x".repeat(MAX_EXEC_ARGUMENT_BYTES));
+        assert!(decode_exec_input(&oversized).is_err());
+        assert_eq!(
+            decode_exec_input(r#"{"input":"a\\b\n\u96ea"}"#).unwrap(),
+            "a\\b\n\u{96ea}"
+        );
+        assert!(decode_exec_input("{}").is_err());
+        assert!(decode_exec_input(r#"{"input":"x"} trailing"#).is_err());
+    }
+
+    #[test]
+    fn compaction_history_and_unknown_exec_choice_disable_adaptation() {
+        let mut compact = request();
+        compact["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "compaction", "id": "cmp_1"}));
+        assert!(!eligible(&compact, "/v1/responses"));
+        let mut choice = request();
+        choice["tool_choice"] = json!({
+            "type": "allowed_tools", "tools": [{"type": "custom", "name": "exec"}]
+        });
+        assert!(adapt_request(choice).is_err());
+    }
+
+    #[test]
+    fn rejection_bounds_media_type_status_and_nonzero_index_are_enforced() {
+        let native = json!({"tools": [
+            {"type": "custom", "name": "apply_patch"},
+            {"type": "custom", "name": "exec"}
+        ]});
+        let body = json!({"error": {
+            "type": "invalid_request_error", "message": EXEC_REJECTION_MESSAGE,
+            "param": "tools[1]"
+        }})
+        .to_string();
+        assert!(rejection_matches(
+            400,
+            "application/json",
+            body.as_bytes(),
+            &native
+        ));
+        assert!(!rejection_matches(
+            429,
+            "application/json",
+            body.as_bytes(),
+            &native
+        ));
+        assert!(!rejection_matches(
+            400,
+            "text/jsonish",
+            body.as_bytes(),
+            &native
+        ));
+        assert!(!rejection_matches(
+            400,
+            "application/json",
+            &vec![b' '; MAX_REJECTION_BODY_BYTES + 1],
+            &native
+        ));
     }
 }
