@@ -1238,6 +1238,10 @@ async fn handle_helper_connection(
     let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
     let request_beta_features =
         header_value_from_headers(&request_headers, "x-codex-beta-features");
+    let request_session_id = header_value_from_headers(&request_headers, "session-id");
+    let request_thread_id = header_value_from_headers(&request_headers, "thread-id");
+    let request_opencode_session =
+        header_value_from_headers(&request_headers, "x-opencode-session");
     let request_content_type = header_value_from_headers(&request_headers, "content-type");
     let request_content_encoding = header_value_from_headers(&request_headers, "content-encoding");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
@@ -1361,6 +1365,11 @@ async fn handle_helper_connection(
             &request_body,
             request_user_agent.as_deref(),
             request_beta_features.as_deref(),
+            crate::protocol_proxy::ProxySessionHeaders {
+                session_id: request_session_id.as_deref(),
+                thread_id: request_thread_id.as_deref(),
+                opencode_session: request_opencode_session.as_deref(),
+            },
             method,
             path,
             remote_addr_text,
@@ -1701,16 +1710,18 @@ async fn handle_protocol_proxy_connection(
     request_body: &str,
     request_user_agent: Option<&str>,
     request_beta_features: Option<&str>,
+    session_headers: crate::protocol_proxy::ProxySessionHeaders<'_>,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path_with_beta(
+    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path_with_session_headers(
         request_body,
         request_user_agent,
         path,
         request_beta_features,
+        session_headers,
     )
     .await
     {
@@ -4243,7 +4254,7 @@ mod tests {
         });
         let mut client = tokio::net::TcpStream::connect(helper_addr).await.unwrap();
         let headers = format!(
-            "POST /v1/responses HTTP/1.1\r\nHost: {helper_addr}\r\nAuthorization: Bearer chatgpt-secret\r\nContent-Type: application/json\r\nContent-Encoding: zstd\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /v1/responses HTTP/1.1\r\nHost: {helper_addr}\r\nAuthorization: Bearer chatgpt-secret\r\nSeSsIoN-Id: conversation-123\r\nTHREAD-ID: thread-123\r\nX-OpenCode-Session: opencode-123\r\nCookie: private-cookie\r\nX-Unrelated: private-value\r\nContent-Type: application/json\r\nContent-Encoding: zstd\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             compressed.len()
         );
         client.write_all(headers.as_bytes()).await.unwrap();
@@ -4260,6 +4271,11 @@ mod tests {
         assert!(upstream_headers.starts_with("post /v1/responses http/1.1"));
         assert!(upstream_headers.contains("authorization: bearer sk-upstream"));
         assert!(!upstream_headers.contains("chatgpt-secret"));
+        assert!(upstream_headers.contains("session-id: conversation-123"));
+        assert!(upstream_headers.contains("thread-id: thread-123"));
+        assert!(upstream_headers.contains("x-opencode-session: opencode-123"));
+        assert!(!upstream_headers.contains("private-cookie"));
+        assert!(!upstream_headers.contains("private-value"));
         let upstream_body: serde_json::Value =
             serde_json::from_slice(&upstream_request[header_end + 4..]).unwrap();
         assert_eq!(upstream_body["model"], "gpt-5.6-sol");
