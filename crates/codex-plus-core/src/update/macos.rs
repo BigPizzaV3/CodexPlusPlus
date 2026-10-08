@@ -766,6 +766,24 @@ mod runtime {
     }
 
     #[cfg(test)]
+    fn signed_test_bundle(path: &Path, spec: BundleSpec, version: &str) -> anyhow::Result<()> {
+        let binary = path.join("Contents/MacOS").join(spec.executable);
+        fs::create_dir_all(binary.parent().unwrap())?;
+        fs::create_dir_all(path.join("Contents/Resources/nested"))?;
+        fs::copy("/usr/bin/true", &binary)?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        fs::write(path.join("Contents/Resources/test.dat"), format!("private fixture resource {version}"))?;
+        fs::write(path.join("Contents/Resources/nested/version.dat"), version)?;
+        fs::write(path.join("Contents/Info.plist"), format!(
+            "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{}</string><key>CFBundleExecutable</key><string>{}</string><key>CFBundleShortVersionString</key><string>{version}</string><key>CFBundleVersion</key><string>{version}</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>10.0.0</string></dict></plist>",
+            spec.id, spec.executable,
+        ))?;
+        checked("/usr/bin/codesign", &["--force".as_ref(), "--deep".as_ref(), "--sign".as_ref(), "-".as_ref(), path.as_os_str()])?;
+        NativeOps.verify_signature(path)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(super) fn native_smoke(root: &Path) -> anyhow::Result<()> {
         // 仅运行系统工具并读写调用方的 tempfile，不调用 ps/kill/open/hdiutil。
         checked("/usr/bin/true", &[])?;
@@ -778,31 +796,7 @@ mod runtime {
         for spec in BUNDLES {
             let source = root.join(format!("source-{}", spec.name));
             let binary = source.join("Contents/MacOS").join(spec.executable);
-            fs::create_dir_all(binary.parent().unwrap())?;
-            fs::create_dir_all(source.join("Contents/Resources"))?;
-            fs::copy("/usr/bin/true", &binary)?;
-            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
-            fs::write(
-                source.join("Contents/Resources/test.dat"),
-                b"private fixture resource",
-            )?;
-            fs::write(
-                source.join("Contents/Info.plist"),
-                format!(
-                    "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{}</string><key>CFBundleExecutable</key><string>{}</string><key>CFBundleShortVersionString</key><string>2.0.0</string><key>CFBundleVersion</key><string>2.0.0</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>10.0.0</string></dict></plist>",
-                    spec.id, spec.executable,
-                ),
-            )?;
-            checked(
-                "/usr/bin/codesign",
-                &[
-                    "--force".as_ref(),
-                    "--deep".as_ref(),
-                    "--sign".as_ref(),
-                    "-".as_ref(),
-                    source.as_os_str(),
-                ],
-            )?;
+            signed_test_bundle(&source, spec, "2.0.0")?;
             let original = validate_bundle(&NativeOps, &source, spec)?;
             NativeOps.verify_signature(&source)?;
             let copied = root.join(format!("copy-{}", spec.name));
@@ -844,6 +838,87 @@ mod runtime {
             if !error.to_string().contains("至少需要 macOS 99.0.0") {
                 return Err(error);
             }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn native_dmg_transaction(root: &Path, fail_second_rename: bool) -> anyhow::Result<()> {
+        // 真实系统工具与真实文件系统，仅本测试 tempfile；不走启动/退出应用路径。
+        let install_root = root.join("临时 安装目录 Applications with spaces");
+        let payload = root.join("真实 DMG 内容 with spaces");
+        fs::create_dir(&install_root)?;
+        fs::create_dir(&payload)?;
+        for spec in BUNDLES {
+            signed_test_bundle(&install_root.join(spec.name), spec, "1.0.0")?;
+            signed_test_bundle(&payload.join(spec.name), spec, "2.0.0")?;
+        }
+        let old_bundles = [NativeOps.inspect(&install_root.join(BUNDLES[0].name))?, NativeOps.inspect(&install_root.join(BUNDLES[1].name))?];
+        let transaction = install_root.join(".codex-plus-update-native-test");
+        fs::create_dir(&transaction)?;
+        fs::set_permissions(&transaction, fs::Permissions::from_mode(0o700))?;
+        let image = root.join("真实 更新安装包.dmg");
+        checked("/usr/bin/hdiutil", &[
+            "create".as_ref(), "-srcfolder".as_ref(), payload.as_os_str(),
+            "-volname".as_ref(), "CPP private native fixture".as_ref(),
+            "-fs".as_ref(), "HFS+".as_ref(), "-format".as_ref(), "UDZO".as_ref(), image.as_os_str(),
+        ]).context("创建真实测试 DMG 失败")?;
+        let plan = UpdatePlan { schema: 1, install_root, transaction, installer: image, version: "2.0.0".into(), manager_pid: std::process::id(), old_bundles };
+        let mount = plan.transaction.join("private readonly mount");
+        fs::create_dir(&mount)?;
+        let attached = checked("/usr/bin/hdiutil", &[
+            "attach".as_ref(), "-readonly".as_ref(), "-nobrowse".as_ref(), "-noautoopen".as_ref(),
+            "-mountpoint".as_ref(), mount.as_os_str(), plan.installer.as_os_str(),
+        ]).context("只读挂载真实测试 DMG 失败");
+        let prepared = attached.and_then(|_| {
+            if fs::write(mount.join("must-not-write"), b"readonly probe").is_ok() { bail!("测试 DMG 没有以只读方式挂载"); }
+            prepare_bundles(&NativeOps, &plan, &mount).context("从真实 DMG 校验/复制两个 app 失败")
+        });
+        let detached = checked("/usr/bin/hdiutil", &["detach".as_ref(), mount.as_os_str()]).context("卸载私有测试 DMG 失败");
+        if let Err(error) = prepared {
+            if let Err(detach_error) = detached { bail!("{error:#}；且 {detach_error:#}"); }
+            return Err(error);
+        }
+        detached?;
+
+        struct SecondRenameFault { source: PathBuf, target: PathBuf }
+        impl BundleOps for SecondRenameFault {
+            fn inspect(&self, bundle: &Path) -> anyhow::Result<BundleInfo> { NativeOps.inspect(bundle) }
+            fn verify_signature(&self, bundle: &Path) -> anyhow::Result<()> { NativeOps.verify_signature(bundle) }
+            fn copy_bundle(&self, source: &Path, target: &Path) -> anyhow::Result<()> { NativeOps.copy_bundle(source, target) }
+            fn rename(&self, source: &Path, target: &Path) -> anyhow::Result<()> {
+                if source == self.source && target == self.target { bail!("injected second native replacement rename failure"); }
+                NativeOps.rename(source, target)
+            }
+        }
+        if fail_second_rename {
+            let ops = SecondRenameFault { source: plan.transaction.join("staged").join(BUNDLES[1].name), target: plan.install_root.join(BUNDLES[1].name) };
+            let error = replace_bundles(&ops, &plan).unwrap_err();
+            if !error.to_string().contains("两个旧 app 已恢复") { return Err(error); }
+        } else {
+            replace_bundles(&NativeOps, &plan)?;
+        }
+        let expected = if fail_second_rename { "1.0.0" } else { "2.0.0" };
+        for spec in BUNDLES {
+            let target = plan.install_root.join(spec.name);
+            let info = validate_bundle(&NativeOps, &target, spec)?;
+            NativeOps.verify_signature(&target)?;
+            if info.version != expected || fs::read_to_string(target.join("Contents/Resources/nested/version.dat"))? != expected {
+                bail!("真实 DMG 事务后的版本/嵌套资源不正确");
+            }
+            if !fail_second_rename {
+                let backup = plan.transaction.join("backups").join(spec.name);
+                NativeOps.verify_signature(&backup)?;
+                if NativeOps.inspect(&backup)?.version != "1.0.0"
+                    || fs::read_to_string(backup.join("Contents/Resources/nested/version.dat"))? != "1.0.0" {
+                    bail!("真实 DMG 事务没有保留完整旧 app 备份");
+                }
+            }
+        }
+        if fail_second_rename {
+            let rejected = plan.transaction.join("rejected").join(BUNDLES[0].name);
+            NativeOps.verify_signature(&rejected)?;
+            if NativeOps.inspect(&rejected)?.version != "2.0.0" { bail!("回滚没有保留完整被替换的新 app"); }
         }
         Ok(())
     }
@@ -1191,5 +1266,19 @@ mod tests {
     fn macos_update_native_signed_bundle_copy_smoke_uses_only_temp_fixture() {
         let temp = tempfile::tempdir().unwrap();
         runtime::native_smoke(temp.path()).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_update_real_native_dmg_installs_both_bundles_in_temporary_root() {
+        let temp = tempfile::tempdir().unwrap();
+        runtime::native_dmg_transaction(temp.path(), false).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_update_real_native_dmg_rolls_back_both_bundles_on_second_rename_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        runtime::native_dmg_transaction(temp.path(), true).unwrap();
     }
 }

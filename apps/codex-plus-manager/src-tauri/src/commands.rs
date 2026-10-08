@@ -4354,17 +4354,34 @@ pub async fn check_update() -> CommandResult<Value> {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn perform_update(
     app: tauri::AppHandle,
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
-    perform_update_inner(release, Some(app)).await
+    let result = perform_update_inner(release).await;
+    if result.status == "ok" {
+        // 先返回准备结果，再正常退出；独立更新进程等待当前管理工具结束。
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            app.exit(0);
+        });
+    }
+    result
 }
 
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn perform_update(
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    perform_update_inner(release).await
+}
+
+// 无需 app runtime 的业务核心；其它平台测试不应引入 Wry 析构依赖。
 async fn perform_update_inner(
     release: Option<codex_plus_core::update::Release>,
-    app: Option<tauri::AppHandle>,
 ) -> CommandResult<Value> {
     let Some(release) = release else {
         return failed(
@@ -4378,16 +4395,6 @@ async fn perform_update_inner(
     let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
     match codex_plus_core::update::perform_update(&release, &download_dir).await {
         Ok(result) => {
-            #[cfg(target_os = "macos")]
-            if let Some(app) = app {
-                // 先把命令结果返回前端，再正常退出当前管理工具；helper 会等待退出。
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(750));
-                    app.exit(0);
-                });
-            }
-            #[cfg(not(target_os = "macos"))]
-            let _ = app;
             ok(
                 if cfg!(target_os = "macos") {
                     "安装包已验证，管理工具将关闭以安装更新，完成后自动重启；失败时保留旧版。"
@@ -7119,7 +7126,7 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn update_install_requires_release_payload() {
-        let result = tauri::async_runtime::block_on(perform_update_inner(None, None));
+        let result = tauri::async_runtime::block_on(perform_update_inner(None));
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("请先检查更新"));
