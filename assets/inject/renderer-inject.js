@@ -120,7 +120,7 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "9";
-  const codexAppServerModelRequestPatchVersion = "9";
+  const codexAppServerModelRequestPatchVersion = "10";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
@@ -4166,10 +4166,33 @@
     installCodexPlusDictation();
   }
 
-  async function loadBackendSettingsState() {
+  const codexAppServerPreparationTimeoutMs = 2000;
+
+  // 发送前只读取辅助配置；桥接无回包时及时降级，迟到的结果也不再应用。
+  // 写 RPC（尤其 thread/resume）不能这样竞速，否则会在 turn/start 后迟到修改会话。
+  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexAppServerPreparationTimeoutMs) {
+    let timeoutId;
+    try {
+      return await Promise.race([
+        postJson(path, payload),
+        new Promise((_, reject) => {
+          timeoutId = setTimeout(() => {
+            sendCodexPlusDiagnostic("app_server_preparation_read_timeout", { path, timeoutMs });
+            reject(new Error(`Codex++ preparation read timed out: ${path}`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function loadBackendSettingsState(timeoutMs = 0) {
     const seq = codexPlusBackendSettingsSeq;
     try {
-      const settings = await postJson("/settings/get", {});
+      const settings = await (timeoutMs > 0
+        ? readCodexAppServerPreparation("/settings/get", {}, timeoutMs)
+        : postJson("/settings/get", {}));
       if (!settings || typeof settings !== "object" || (!("enhancementsEnabled" in settings) && !("providerSyncEnabled" in settings))) {
         throw new Error("invalid backend settings response");
       }
@@ -7706,6 +7729,7 @@
         codexModelCatalogLoadedAt = Date.now();
         codexModelCatalogPromise = null;
       },
+      loadModelCatalog: (force = false) => loadCodexModelCatalog(force),
       setBackendSettings: (settings = {}) => {
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
         codexPlusBackendSettingsLoaded = true;
@@ -7753,14 +7777,12 @@
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
-    codexModelCatalogPromise = postJson("/codex-model-catalog", {})
+    codexModelCatalogPromise = readCodexAppServerPreparation("/codex-model-catalog", {})
       .then(async (result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
           try {
-            const settingsPromise = postJson("/settings/get", {});
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("fallback timeout")), 3000));
-            const settingsResp = await Promise.race([settingsPromise, timeoutPromise]);
+            const settingsResp = await readCodexAppServerPreparation("/settings/get", {});
             if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
               const activeId = settingsResp.activeRelayId || "";
               const profile = settingsResp.relayProfiles.find(p => p.id === activeId);
@@ -8213,7 +8235,7 @@
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
           && codexRemoteSessionProviderPatchEnabled()
           && window.__codexSessionDeleteBridge) {
-        const settingsLoaded = await loadBackendSettingsState();
+        const settingsLoaded = await loadBackendSettingsState(codexAppServerPreparationTimeoutMs);
         providerRefreshFailed = !settingsLoaded;
         if (providerRefreshFailed) {
           sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
@@ -8221,7 +8243,7 @@
       } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
           && codexRemoteSessionProviderOverrideEnabled()
           && !codexRemoteSessionTargetProvider()) {
-        await loadCodexModelCatalog();
+        providerRefreshFailed = (await loadCodexModelCatalog())?.status === "failed";
       }
       const providerParams = providerRefreshFailed
         ? params
@@ -8240,7 +8262,7 @@
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
       }
-      if (!codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelUnlockEnabled() || requestMethod !== "list-models-for-host") return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
@@ -8406,7 +8428,7 @@
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
           && codexRemoteSessionProviderPatchEnabled()
           && window.__codexSessionDeleteBridge) {
-        const settingsLoaded = await loadBackendSettingsState();
+        const settingsLoaded = await loadBackendSettingsState(codexAppServerPreparationTimeoutMs);
         providerRefreshFailed = !settingsLoaded;
         if (providerRefreshFailed) {
           sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
@@ -8414,7 +8436,7 @@
       } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
           && codexRemoteSessionProviderOverrideEnabled()
           && !codexRemoteSessionTargetProvider()) {
-        await loadCodexModelCatalog();
+        providerRefreshFailed = (await loadCodexModelCatalog())?.status === "failed";
       }
       const providerParams = providerRefreshFailed
         ? params
@@ -8433,7 +8455,7 @@
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
       }
-      if (!codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelUnlockEnabled() || requestMethod !== "list-models-for-host") return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
@@ -8623,7 +8645,6 @@
     const timestamp = Number.parseInt(id.slice(0, 12), 16);
     return Number.isFinite(timestamp) ? timestamp : 0;
   }
-
   function normalizeWorkspacePath(path) {
     const normalized = String(path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
     return normalized || String(path || "").trim();

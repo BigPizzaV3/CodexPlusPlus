@@ -3105,7 +3105,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"9\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"10\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3569,6 +3569,12 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["modelSwitchResumeProvider"], "");
     assert_eq!(cases["failedModelSwitchResumeAttempts"], 2);
     assert_eq!(cases["failedModelSwitchTurnAttempts"], 2);
+    assert_eq!(cases["delayedResumeWaited"], true);
+    assert_eq!(cases["hungSettingsForwarded"], json!(["instance", "prototype"]));
+    assert_eq!(cases["lateSettingsIgnored"], json!(["stale_vendor", "stale_vendor"]));
+    assert_eq!(cases["turnCompletedBeforeCatalogRead"], true);
+    assert_eq!(cases["hungCatalogListReturned"], true);
+    assert_eq!(cases["lateCatalogIgnored"], "failed");
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -4281,6 +4287,94 @@ await failedModelSwitchClient.sendRequest("turn/start", {{
 }});
 const failedModelSwitchResumeAttempts = failedModelSwitchCalls.filter((call) => call.method === "thread/resume").length;
 const failedModelSwitchTurnAttempts = failedModelSwitchCalls.filter((call) => call.method === "turn/start").length;
+
+let finishDelayedResume;
+const delayedResumeCalls = [];
+const delayedResumeClient = {{
+  async sendRequest(method) {{
+    delayedResumeCalls.push(method);
+    return method === "thread/resume" ? new Promise((resolve) => {{ finishDelayedResume = resolve; }}) : {{ ok: true }};
+  }},
+}};
+api.patchAppServerClient(delayedResumeClient);
+await delayedResumeClient.sendRequest("thread/start", {{ threadId: "delayed-resume", model: "model-old" }});
+const delayedResumeTurn = delayedResumeClient.sendRequest("turn/start", {{ threadId: "delayed-resume", model: "model-new" }});
+await new Promise(setImmediate);
+const delayedResumeWaited = delayedResumeCalls.at(-1) === "thread/resume" && !delayedResumeCalls.includes("turn/start");
+finishDelayedResume({{ ok: true }});
+await delayedResumeTurn;
+
+async function expectNativeRequestCompletes(promise) {{
+  let timeoutId;
+  try {{
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {{ timeoutId = setTimeout(() => reject(new Error("native request remained blocked")), 5000); }}),
+    ]);
+  }} finally {{ clearTimeout(timeoutId); }}
+}}
+const hungSettingsForwarded = [];
+const lateSettingsIgnored = [];
+for (const kind of ["instance", "prototype"]) {{
+  api.setBackendSettings({{
+    relayProfilesEnabled: true,
+    activeRelayId: "hung-settings",
+    activeRelayCodexProvider: "stale_vendor",
+    relayProfiles: [{{ id: "hung-settings", relayMode: "pureApi", officialMixApiKey: true, configContents: 'model_provider = "stale_vendor"' }}],
+  }});
+  let resolveSettings;
+  window.__codexSessionDeleteBridge = (path) => path === "/settings/get"
+    ? new Promise((resolve) => {{ resolveSettings = resolve; }})
+    : Promise.resolve({{ status: "ok" }});
+  const nativeParams = {{ threadId: `hung-settings-${{kind}}`, model: "gpt-5.4", modelProvider: "openai" }};
+  const nativeOptions = {{ marker: kind }};
+  class HungSettingsClient {{
+    async sendRequest(method, params, options) {{
+      if (method !== "turn/start" || params.modelProvider !== "openai" || options !== nativeOptions) {{
+        throw new Error("failed settings read changed native request");
+      }}
+      hungSettingsForwarded.push(kind);
+      return {{ nativeComplete: true }};
+    }}
+  }}
+  const client = new HungSettingsClient();
+  if (kind === "instance") {{
+    api.patchAppServerClient(client);
+  }} else {{
+    delete window.__codexPlusAppServerClientPrototypePatchInstalled;
+    window.__codexPlusAppServerClientClass = HungSettingsClient;
+    api.installAppServerClientPrototypePatch();
+  }}
+  await expectNativeRequestCompletes(client.sendRequest("turn/start", nativeParams, nativeOptions));
+  resolveSettings({{
+    enhancementsEnabled: true,
+    activeRelayCodexProvider: "late_vendor",
+    relayProfiles: [{{ id: "hung-settings", relayMode: "pureApi", officialMixApiKey: true, configContents: 'model_provider = "late_vendor"' }}],
+  }});
+  await new Promise(setImmediate);
+  lateSettingsIgnored.push(api.applyProviderOverride("thread/start", {{ modelProvider: "openai" }})?.modelProvider);
+}}
+
+api.setBackendSettings({{ relayProfilesEnabled: false, codexAppModelWhitelistUnlock: true }});
+api.setModelCatalog({{ model: "", default_model: "", models: [] }});
+let resolveCatalog;
+let catalogReadFinished = false;
+window.__codexSessionDeleteBridge = (path) => path === "/codex-model-catalog"
+  ? new Promise((resolve) => {{ resolveCatalog = resolve; }})
+  : Promise.resolve({{ status: "ok" }});
+const catalogRead = api.loadModelCatalog(true).then((result) => {{ catalogReadFinished = true; return result; }});
+const catalogClient = {{
+  async sendRequest(method) {{ return method === "list-models-for-host" ? {{ data: [] }} : {{ nativeComplete: true }}; }},
+}};
+api.patchAppServerClient(catalogClient);
+const catalogTurn = await expectNativeRequestCompletes(catalogClient.sendRequest("turn/start", {{ threadId: "hung-catalog", model: "gpt-5.4" }}));
+const turnCompletedBeforeCatalogRead = catalogTurn.nativeComplete === true && !catalogReadFinished;
+const catalogList = await expectNativeRequestCompletes(catalogClient.sendRequest("list-models-for-host", {{}}));
+const hungCatalogListReturned = Array.isArray(catalogList.data) && catalogReadFinished;
+await catalogRead;
+resolveCatalog({{ status: "ok", model: "late-model", models: ["late-model"] }});
+await new Promise(setImmediate);
+const lateCatalogIgnored = (await api.loadModelCatalog())?.status;
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
@@ -4368,6 +4462,12 @@ process.stdout.write(JSON.stringify({{
   modelSwitchResumeProvider,
   failedModelSwitchResumeAttempts,
   failedModelSwitchTurnAttempts,
+  delayedResumeWaited,
+  hungSettingsForwarded,
+  lateSettingsIgnored,
+  turnCompletedBeforeCatalogRead,
+  hungCatalogListReturned,
+  lateCatalogIgnored,
 }}), () => process.exit(0));
 }}).catch((error) => {{
   console.error(error);

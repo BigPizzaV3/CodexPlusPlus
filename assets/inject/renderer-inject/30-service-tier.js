@@ -1012,10 +1012,33 @@
     installCodexPlusDictation();
   }
 
-  async function loadBackendSettingsState() {
+  const codexAppServerPreparationTimeoutMs = 2000;
+
+  // 发送前只读取辅助配置；桥接无回包时及时降级，迟到的结果也不再应用。
+  // 写 RPC（尤其 thread/resume）不能这样竞速，否则会在 turn/start 后迟到修改会话。
+  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexAppServerPreparationTimeoutMs) {
+    let timeoutId;
+    try {
+      return await Promise.race([
+        postJson(path, payload),
+        new Promise((_, reject) => {
+          timeoutId = setTimeout(() => {
+            sendCodexPlusDiagnostic("app_server_preparation_read_timeout", { path, timeoutMs });
+            reject(new Error(`Codex++ preparation read timed out: ${path}`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function loadBackendSettingsState(timeoutMs = 0) {
     const seq = codexPlusBackendSettingsSeq;
     try {
-      const settings = await postJson("/settings/get", {});
+      const settings = await (timeoutMs > 0
+        ? readCodexAppServerPreparation("/settings/get", {}, timeoutMs)
+        : postJson("/settings/get", {}));
       if (!settings || typeof settings !== "object" || (!("enhancementsEnabled" in settings) && !("providerSyncEnabled" in settings))) {
         throw new Error("invalid backend settings response");
       }
