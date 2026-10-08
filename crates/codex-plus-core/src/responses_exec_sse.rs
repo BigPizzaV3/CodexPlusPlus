@@ -20,7 +20,7 @@ const MAX_ITEM_IDENTITIES: usize = 1024;
 struct ExecCall {
     function_item_id: String,
     custom_item_id: String,
-    output_index: Option<Value>,
+    output_index: Option<u64>,
     item: Value,
     arguments: String,
     input: Option<String>,
@@ -410,7 +410,7 @@ impl ExecSseAdapter {
                     .and_then(Value::as_str)
                     .map(str::to_string)
             });
-        self.complete_call(&call_id, candidate.as_deref(), true, None, output)
+        self.complete_call(&call_id, candidate.as_deref(), false, None, output)
     }
 
     fn handle_item_done(&mut self, mut event: Value, output: &mut Vec<u8>) -> Result<()> {
@@ -448,6 +448,7 @@ impl ExecSseAdapter {
             )?;
         } else {
             self.ensure_call_item(&call_id, &item_id)?;
+            self.ensure_call_output_index(&call_id, event.get("output_index"))?;
             self.replace_call_item(&call_id, item.clone())?;
         }
         let candidate = item
@@ -543,6 +544,8 @@ impl ExecSseAdapter {
                 )?;
             } else {
                 self.ensure_call_item(&call_id, &item_id)?;
+                self.ensure_call_output_index(&call_id, Some(&json!(index)))?;
+                self.replace_call_item(&call_id, item.clone())?;
             }
             let candidate = item.get("arguments").and_then(Value::as_str);
             self.complete_call(&call_id, candidate, true, None, output)?;
@@ -564,6 +567,13 @@ impl ExecSseAdapter {
         output_index: Option<&Value>,
         added: bool,
     ) -> Result<()> {
+        let output_index = output_index
+            .map(|index| {
+                index
+                    .as_u64()
+                    .ok_or_else(|| self.reject("exec output_index must be a nonnegative integer"))
+            })
+            .transpose()?;
         if self.calls.len() >= MAX_CALLS {
             return Err(self.reject("too many in-flight exec calls"));
         }
@@ -599,7 +609,6 @@ impl ExecSseAdapter {
             .remove("arguments");
         // Account for every retained copy, including identity maps and opaque metadata.
         let metadata_bytes = retained_value_bytes(&item)
-            + output_index.map_or(0, retained_value_bytes)
             + 2 * (call_id.len() + item_id.len() + custom_item_id.len())
             + std::mem::size_of::<ExecCall>()
             + 256;
@@ -613,7 +622,7 @@ impl ExecSseAdapter {
             ExecCall {
                 function_item_id: item_id,
                 custom_item_id,
-                output_index: output_index.cloned(),
+                output_index,
                 item,
                 arguments: initial_arguments,
                 input: None,
@@ -667,6 +676,28 @@ impl ExecSseAdapter {
         Ok(())
     }
 
+    fn ensure_call_output_index(&mut self, call_id: &str, index: Option<&Value>) -> Result<()> {
+        let Some(index) = index else {
+            return Ok(());
+        };
+        let index = index
+            .as_u64()
+            .ok_or_else(|| self.reject("exec output_index must be a nonnegative integer"))?;
+        let previous = self
+            .calls
+            .get(call_id)
+            .expect("known exec call")
+            .output_index;
+        if previous.is_some_and(|previous| previous != index) {
+            return Err(self.reject("exec call references conflicting output indices"));
+        }
+        self.calls
+            .get_mut(call_id)
+            .expect("known exec call")
+            .output_index = Some(index);
+        Ok(())
+    }
+
     fn resolve_identity(&mut self, event: &Value) -> Result<(Option<String>, bool)> {
         let item_id = event.get("item_id").and_then(Value::as_str);
         let event_call_id = event.get("call_id").and_then(Value::as_str);
@@ -679,13 +710,14 @@ impl ExecSseAdapter {
                 }
                 return Ok((None, true));
             }
-            if let Some(call_id) = self.item_to_call.get(item_id) {
+            if let Some(call_id) = self.item_to_call.get(item_id).cloned() {
                 if let Some(event_call_id) = event_call_id {
                     if event_call_id != call_id {
                         return Err(self.reject("conflicting exec call identity"));
                     }
                 }
-                return Ok((Some(call_id.clone()), false));
+                self.ensure_call_output_index(&call_id, event.get("output_index"))?;
+                return Ok((Some(call_id), false));
             }
             return Err(self.reject("unknown exec argument event item_id"));
         }
@@ -694,6 +726,7 @@ impl ExecSseAdapter {
                 if item_id.is_some() {
                     return Err(self.reject("exec argument event references conflicting item ids"));
                 }
+                self.ensure_call_output_index(call_id, event.get("output_index"))?;
                 return Ok((Some(call_id.to_string()), false));
             }
             if self.non_exec_calls.contains(call_id) {
@@ -748,7 +781,7 @@ impl ExecSseAdapter {
                     .unwrap_or_else(|| call.arguments.clone()),
                 call.input.clone(),
                 call.custom_item_id.clone(),
-                call.output_index.clone(),
+                call.output_index,
             )
         };
 
@@ -806,7 +839,7 @@ impl ExecSseAdapter {
                 call.added = true;
                 Some(json!({
                     "type": "response.output_item.added",
-                    "output_index": call.output_index.clone().unwrap_or(Value::Null),
+                    "output_index": call.output_index,
                     "item": call.custom_item("")
                 }))
             } else {
@@ -822,8 +855,8 @@ impl ExecSseAdapter {
                 "item_id": custom_item_id,
                 "delta": input
             });
-            if let Some(index) = output_index.clone() {
-                delta["output_index"] = index;
+            if let Some(index) = output_index {
+                delta["output_index"] = json!(index);
             }
             self.emit_value(output, "response.custom_tool_call_input.delta", delta);
         }
@@ -834,21 +867,21 @@ impl ExecSseAdapter {
                 (
                     call.done_emitted,
                     call.custom_item(call.input.as_deref().unwrap_or_default()),
-                    call.output_index.clone(),
+                    call.output_index,
                 )
             };
             if !already_done {
                 let mut done = source_event.cloned().unwrap_or_else(|| {
                     json!({
                         "type": "response.output_item.done",
-                        "output_index": call_output_index.clone().unwrap_or(Value::Null),
+                        "output_index": call_output_index,
                         "item": custom
                     })
                 });
                 done["type"] = json!("response.output_item.done");
                 done["item"] = custom;
                 if let Some(index) = call_output_index {
-                    done["output_index"] = index;
+                    done["output_index"] = json!(index);
                 }
                 self.emit_value(output, "response.output_item.done", done);
                 if let Some(call) = self.calls.get_mut(call_id) {
@@ -1140,17 +1173,23 @@ mod tests {
         let output = adapter.push_bytes(&frame("response.function_call_arguments.done",
             json!({"type":"response.function_call_arguments.done","item_id":"fc_b","output_index":3,"arguments":"{\"input\":\"second\"}"}))).unwrap();
         let parsed = events(&output);
+        assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["item_id"], "ctc_b");
         assert_eq!(parsed[0]["output_index"], 3);
         assert_eq!(parsed[0]["delta"], "second");
-        assert_eq!(parsed[1]["item"]["call_id"], "b");
-        assert_eq!(parsed[1]["item"]["input"], "second");
-        assert!(
-            parsed
-                .windows(2)
-                .all(|pair| pair[0]["sequence_number"].as_u64()
-                    < pair[1]["sequence_number"].as_u64())
-        );
+        let done = adapter
+            .push_bytes(&frame(
+                "response.output_item.done",
+                json!({"type":"response.output_item.done","output_index":3,
+                    "item":completed("b", r#"{"input":"second"}"#)["response"]["output"][0]}),
+            ))
+            .unwrap();
+        let done = events(&done);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0]["item"]["call_id"], "b");
+        assert_eq!(done[0]["item"]["input"], "second");
+        assert_eq!(done[0]["output_index"], 3);
+        assert!(parsed[0]["sequence_number"].as_u64() < done[0]["sequence_number"].as_u64());
     }
 
     #[test]
@@ -1439,5 +1478,102 @@ mod tests {
             adapter.push_bytes(&event).unwrap();
         }
         assert!(!adapter.failed);
+    }
+
+    #[test]
+    fn argument_completion_waits_for_completed_item_or_terminal_snapshot() {
+        for terminal_only in [false, true] {
+            let mut adapter = ExecSseAdapter::new();
+            let mut item_added = added("a");
+            item_added["item"]["status"] = json!("in_progress");
+            adapter
+                .push_bytes(&frame("response.output_item.added", item_added))
+                .unwrap();
+            let output = adapter
+                .push_bytes(&frame(
+                    "response.function_call_arguments.done",
+                    json!({"type":"response.function_call_arguments.done",
+                        "item_id":"fc_a","arguments":"{\"input\":\"ok\"}"}),
+                ))
+                .unwrap();
+            let parsed = events(&output);
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed[0]["type"], "response.custom_tool_call_input.delta");
+            let mut terminal = completed("a", r#"{"input":"ok"}"#);
+            terminal["response"]["output"][0]["status"] = json!("completed");
+            terminal["response"]["output"][0]["metadata"] = json!({"final":true});
+            let (event_type, event) = if terminal_only {
+                ("response.completed", terminal)
+            } else {
+                (
+                    "response.output_item.done",
+                    json!({
+                        "type":"response.output_item.done","output_index":0,
+                        "item":terminal["response"]["output"][0]
+                    }),
+                )
+            };
+            let output = adapter.push_bytes(&frame(event_type, event)).unwrap();
+            let parsed = events(&output);
+            let done = parsed
+                .iter()
+                .find(|event| event["type"] == "response.output_item.done")
+                .unwrap();
+            assert_eq!(done["item"]["status"], "completed");
+            assert_eq!(done["item"]["metadata"]["final"], true);
+        }
+    }
+
+    #[test]
+    fn exec_output_index_cannot_change_across_completion_surfaces() {
+        for source in ["delta", "arguments", "item", "terminal", "invalid-index"] {
+            let mut adapter = ExecSseAdapter::new();
+            adapter
+                .push_bytes(&frame("response.output_item.added", added("a")))
+                .unwrap();
+            let (event_type, event) = match source {
+                "delta" => (
+                    "response.function_call_arguments.delta",
+                    json!({
+                        "type":"response.function_call_arguments.delta","item_id":"fc_a",
+                        "output_index":1,"delta":"{\"input\":\"ok\"}"
+                    }),
+                ),
+                "arguments" => (
+                    "response.function_call_arguments.done",
+                    json!({
+                        "type":"response.function_call_arguments.done","item_id":"fc_a",
+                        "output_index":1,"arguments":"{\"input\":\"ok\"}"
+                    }),
+                ),
+                "item" => (
+                    "response.output_item.done",
+                    json!({
+                        "type":"response.output_item.done","output_index":1,
+                        "item":completed("a", r#"{"input":"ok"}"#)["response"]["output"][0]
+                    }),
+                ),
+                "invalid-index" => (
+                    "response.function_call_arguments.delta",
+                    json!({
+                        "type":"response.function_call_arguments.delta","item_id":"fc_a",
+                        "output_index":"zero","delta":"{\"input\":\"ok\"}"
+                    }),
+                ),
+                _ => {
+                    let mut terminal = completed("a", r#"{"input":"ok"}"#);
+                    terminal["response"]["output"]
+                        .as_array_mut()
+                        .unwrap()
+                        .insert(0, json!({"type":"message","id":"msg_first","content":[]}));
+                    ("response.completed", terminal)
+                }
+            };
+            assert!(
+                adapter.push_bytes(&frame(event_type, event)).is_err(),
+                "{source}"
+            );
+            assert!(!adapter.succeeded());
+        }
     }
 }
