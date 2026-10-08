@@ -1,53 +1,60 @@
-# Codex++
-
 <p align="center">
-  <img src="docs/images/codex-plus-plus.png" alt="Codex++ 图标" width="160">
+  <img src="docs/images/readme-preview/hero.svg" alt="Codex++ — 让 Codex 更顺手。供应商与模型、工作流增强、拓展与个性化。" width="100%">
 </p>
 
 <p align="center">
-  中文 | <a href="README_EN.md">English</a>
+  <strong>给 Codex 桌面应用加一点「++」。</strong><br>
+  统一管理供应商与模型，让会话更好用，也让工作区更像你。
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/github/v/release/BigPizzaV3/CodexPlusPlus">
-  <img alt="Stars" src="https://img.shields.io/github/stars/BigPizzaV3/CodexPlusPlus">
-  <img alt="License" src="https://img.shields.io/github/license/BigPizzaV3/CodexPlusPlus">
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
-  <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
+  <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases"><img src="https://img.shields.io/github/v/release/BigPizzaV3/CodexPlusPlus?style=flat-square&amp;color=7387ff&amp;label=release" alt="最新版本"></a>
+  <a href="https://github.com/BigPizzaV3/CodexPlusPlus/stargazers"><img src="https://img.shields.io/github/stars/BigPizzaV3/CodexPlusPlus?style=flat-square&amp;color=e8b86d" alt="GitHub Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-838da8?style=flat-square" alt="许可证 AGPL-3.0-only"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-838da8?style=flat-square" alt="支持 Windows 和 macOS">
+  <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri-838da8?style=flat-square" alt="使用 Rust 与 Tauri 构建">
 </p>
 
-Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理工具。它通过 Chromium DevTools Protocol 和本地辅助服务提供供应商切换、协议转换、会话管理与界面增强，不修改官方应用的 `app.asar`，也不向安装目录写入补丁文件。
+<p align="center">
+  <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases"><strong>下载最新版 ↗</strong></a> &nbsp; · &nbsp;
+  <a href="#快速上手">快速上手</a> &nbsp; · &nbsp;
+  <a href="#功能一览">功能一览</a> &nbsp; · &nbsp;
+  <a href="https://github.com/BigPizzaV3/CodexPlusPlus/issues">反馈问题</a> &nbsp; · &nbsp;
+  <a href="README_EN.md">English</a>
+</p>
 
-## 快速使用
+<p align="center">
+  <img src="docs/images/readme-preview/manager-enhancements.png" alt="Codex++ 管理工具：集中管理模型、会话、输入体验和挂件设置" width="100%">
+  <br><sub>从供应商配置到界面增强，一个管理工具就够了。</sub>
+</p>
 
-从 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases) 下载最新版安装包：
+Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理工具，通过 CDP 与本地辅助服务提供供应商切换、协议转换、会话管理和界面增强。它不修改官方应用的 `app.asar`，也不向安装目录写入补丁文件。
 
-- Windows：`CodexPlusPlus-*-windows-x64-setup.exe`
-- macOS Intel：`CodexPlusPlus-*-macos-x64.dmg`
-- macOS Apple Silicon：`CodexPlusPlus-*-macos-arm64.dmg`
+## 交流与支持
 
-安装后会有两个入口：
+遇到问题请通过 [GitHub Issues](https://github.com/BigPizzaV3/CodexPlusPlus/issues) 提交，附上系统、Codex++ 版本、复现步骤与已脱敏的日志。欢迎分享拓展、主题和使用经验。
 
-- `Codex++`：静默启动官方桌面应用，并加载已保存的供应商配置与增强功能。
-- `Codex++ 管理工具`：管理供应商、模型、工具插件、会话、增强功能、脚本、更新和诊断。
+<p align="center">
+  <a href="https://qm.qq.com/q/5h3pxpxg7S">QQ 交流 4 群 · 1127858981</a> &nbsp; · &nbsp;
+  <a href="https://t.me/CodexPlusPlus">Telegram 频道</a> &nbsp; · &nbsp;
+  <a href="https://linux.do">LINUX DO</a>
+</p>
 
-首次使用建议先打开管理工具，确认应用路径和运行状态，再配置供应商与增强功能，最后从 `Codex++` 入口启动。Windows 安装包会创建桌面和开始菜单快捷方式；macOS DMG 会安装 `/Applications/Codex++.app` 和 `/Applications/Codex++ 管理工具.app`。
+## 感谢赞助商
 
-## 赞助商
+感谢以下赞助商对项目的支持。服务范围、价格与活动以各平台官网说明为准。
 
 <p align="center">
   <a href="https://jojocode.com/">
-    <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" height="110">
+    <img src="docs/images/readme-preview/jojo-banner-v3.png" alt="JOJO Code 赞助横幅" width="800">
   </a>
 </p>
+
 <p align="center">
   <a href="https://jojocode.com/"><strong>JOJO Code</strong></a><br>
-  JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。
+  JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-6.1、GPT-6、Fable 5.1、Claude Opus 5.5 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。
 </p>
 
-<a href="mailto:1727532@qq.com">想显示在下方？</a>
-<p align="center">
-</p>
 <table>
   <tr>
     <th width="180">🏆 赞助商 🏆</th>
@@ -56,10 +63,10 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   <tr>
     <td align="center">
       <a href="https://jojocode.com/">
-        <img src="docs/images/sponsor-jojocode.png" alt="JOJO Code" height="80">
+        <img src="docs/images/readme-preview/jojo-banner-v3.png" alt="JOJO Code" height="80">
       </a>
     </td>
-    <td><a href="https://jojocode.com/"><strong>JOJO Code</strong></a><br>JOJO Code 提供稳定、价格合理且易于接入的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力，适合日常开发、快速配置、团队协作和长期使用。</td>
+    <td><a href="https://jojocode.com/"><strong>JOJO Code</strong></a><br>JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-6.1、GPT-6、Fable 5.1、Claude Opus 5.5 等模型与图像能力，适合日常开发、团队协作和长期项目工作流。</td>
   </tr>
   <tr>
     <td align="center">
@@ -75,7 +82,7 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
         <img src="docs/images/sponsor-grooroute.png" alt="GrooRoute" width="170">
       </a>
     </td>
-    <td><a href="https://grooroute.com/register?aff=2B3KJR5SRNTX"><strong>GrooRoute｜官方原模型 API</strong></a><br>GrooRoute 提供 Claude 与 GPT 全系官方原模型，一行配置即可接入 Claude Code、Codex 或直接调用 API，官方承诺不掺假、永久保真。限时注册活动：充值 50 美元赠送 50 美元，通过<a href="https://grooroute.com/register?aff=2B3KJR5SRNTX">专属链接注册</a>并完成充值后，联系客服即可获取优惠。官网：<a href="https://grooroute.com/">grooroute.com</a>。</td>
+    <td><a href="https://grooroute.com/register?aff=2B3KJR5SRNTX"><strong>GrooRoute</strong></a><br>GrooRoute 提供 Claude 与 GPT 全系官方原模型，一行配置即可接入 Claude Code、Codex 或直接调用 API，官方承诺不掺假、永久保真。限时注册活动：充值 50 美元赠送 50 美元，通过<a href="https://grooroute.com/register?aff=2B3KJR5SRNTX">专属链接注册</a>并完成充值后，联系客服即可获取优惠。官网：<a href="https://grooroute.com/">grooroute.com</a>。</td>
   </tr>
   <tr>
     <td align="center">
@@ -99,7 +106,7 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
         <img src="docs/images/sponsor-volcengine.png" alt="火山引擎" height="80">
       </a>
     </td>
-    <td><a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html"><strong>火山引擎｜方舟 Agent Plan</strong></a><br>感谢火山引擎赞助本项目！方舟 Agent Plan 模型订阅套餐集成了 Doubao-Seed、Doubao-Seedance、Doubao-Seedream 等字节跳动自研 SOTA 级模型，覆盖文本、代码、图像、视频等多模态任务。最新支持 MiniMax-M3、DeepSeek-V4 系列、GLM-5.2、Doubao-Seed-2.0 系列、Kimi-K2.7 等模型，工具不限。超全模态模型与 Harness 升级一步到位，深度支持 Agent 框架与 AI 编程工具。一次订阅，可以为不同任务切换合适的 AI 引擎。方舟 Agent Plan 限时 2.5 折订阅，<a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html">点击链接抢购</a>，名额有限，先到先得。<a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&amp;utm_content=CodexPlusPlus&amp;utm_medium=devrel_tool_web&amp;utm_source=OWO&amp;utm_term=CodexPlusPlus">For developers outside Mainland China, please click here</a>。</td>
+    <td><a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html"><strong>火山引擎</strong></a><br>感谢火山引擎赞助本项目！方舟 Agent Plan 模型订阅套餐集成了 Doubao-Seed、Doubao-Seedance、Doubao-Seedream 等字节跳动自研 SOTA 级模型，覆盖文本、代码、图像、视频等多模态任务。最新支持 MiniMax-M3、DeepSeek-V4 系列、GLM-5.2、Doubao-Seed-2.0 系列、Kimi-K2.7 等模型，工具不限。超全模态模型与 Harness 升级一步到位，深度支持 Agent 框架与 AI 编程工具。一次订阅，可以为不同任务切换合适的 AI 引擎。方舟 Agent Plan 限时 2.5 折订阅，<a href="https://dis.chatdesks.cn/chatdesk/hsyqCodexPlusPlus.html">点击链接抢购</a>，名额有限，先到先得。<a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&amp;utm_content=CodexPlusPlus&amp;utm_medium=devrel_tool_web&amp;utm_source=OWO&amp;utm_term=CodexPlusPlus">For developers outside Mainland China, please click here</a>。</td>
   </tr>
   <tr>
     <td align="center">
@@ -135,132 +142,239 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
 </table>
 
-## 交流与支持
+想支持项目或展示品牌？[联系维护者](mailto:1727532@qq.com)。
 
-欢迎加入 Codex++ 交流 4 群（QQ群：1127858981），反馈问题、交流使用体验或提出新功能建议。<a href="https://qm.qq.com/q/5h3pxpxg7S">点击链接加入群聊</a>。
+## 功能一览
 
-Telegram 频道：<https://t.me/CodexPlusPlus>
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🔌 供应商自由切换</h3>
+      官方登录、官方登录 + API、纯 API 与聚合供应商。支持 Responses / Chat Completions、模型测试与 Provider Doctor。
+    </td>
+    <td width="50%" valign="top">
+      <h3>🧠 每个模型，各有空间</h3>
+      按模型设置上下文窗口与自动压缩阈值，支持模型元数据导入；按供应商选择 MCP、Skill 和 Plugin。
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>💬 会话管理更省心</h3>
+      本地会话扫描、删除与撤销、批量管理、Markdown 导出、Token 历史、项目移动和线程 ID。
+    </td>
+    <td valign="top">
+      <h3>🧩 拓展你的工作区</h3>
+      浏览与管理社区用户脚本，按需添加模型选择、用量统计等能力；另有 MCP、Skill 与 Codex 插件管理。
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>✨ 输入与阅读，都顺手</h3>
+      语音输入、粘贴修复、会话宽度、滚动位置恢复、下一步建议、回答大纲与光标打字特效。
+    </td>
+    <td valign="top">
+      <h3>🐳 用量可见，也有陪伴 · 开发预览</h3>
+      用量挂件、可更换的桌宠角色、任务状态和预算提醒，搭配皮肤与自定义图片，让界面更有自己的风格。
+    </td>
+  </tr>
+</table>
 
-友情链接：<a href="https://linux.do">LINUX DO</a>
+另外，微信连接支持扫码连接本机 Codex，每个联系人映射到独立会话，并可配置允许访问的微信用户。
 
-## 当前功能
+## 看看它能做什么
 
-| 模块 | 功能 |
+### 把常用增强放到手边
+
+在管理工具中集中配置，在 Codex 内直接使用。插件市场与模型列表、会话操作、输入行为和阅读布局，都可以按自己的习惯开关。
+
+<details>
+  <summary><strong>展开查看 Codex 内的增强设置</strong></summary>
+
+<p align="center">
+  <img src="docs/images/readme-preview/in-app-settings.png" alt="Codex 内的增强设置：后端状态、模型列表、Fast 按钮与会话操作" width="100%">
+</p>
+
+</details>
+
+### 让拓展适应你的工作流
+
+从拓展市场发现社区脚本，为工作区添加用量面板、模型选择器、提示词优化等工具。你可以按需安装、启停，也可以编写自己的脚本。
+
+<p align="center">
+  <img src="docs/images/readme-preview/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" width="100%">
+</p>
+
+这里的「拓展」是 Codex++ 用户脚本，与 Codex 官方插件市场是两个入口。社区脚本的服务配置和使用要求以各自说明为准。开发说明见 [用户脚本热重载](docs/user-script-reload.md)。
+
+### 认真工作，也可以有点趣味
+
+<table>
+  <tr>
+    <td width="42%" valign="top">
+      <strong>用量挂件与桌宠 · 开发预览</strong><br>
+      查看本地会话 Token 与任务状态，支持拖动、缩放和更换角色图片。
+      <p><img src="docs/images/readme-preview/usage-widget.png" alt="角色用量挂件：气泡显示 Token 统计和运行状态" width="100%"></p>
+    </td>
+    <td width="58%" valign="top">
+      <strong>光标打字特效</strong><br>
+      彩虹粒子、烟花与星光，让输入多一点反馈。可随时关闭，系统减少动态效果时暂停。
+      <p><img src="docs/images/readme-preview/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" width="100%"></p>
+    </td>
+  </tr>
+</table>
+
+用量挂件与桌宠目前处于开发预览阶段，截图来自开发版本；正式发布后的开启方式与统计口径将随版本说明提供。截图中的角色素材归属与使用声明见 [上游素材说明](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)。
+
+## 快速上手
+
+### 1. 下载适合你的安装包
+
+前往 [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases)，选择对应平台与架构：
+
+| 你的设备 | 安装包 |
 | --- | --- |
-| 供应商配置 | 官方登录、官方登录混入 API、纯 API、聚合供应商；Grok 供应商管理；Responses / Chat Completions；模型测试、模型列表、Provider Doctor、cc-switch 与链接导入 |
-| 模型与上下文 | 每模型上下文窗口、自动压缩阈值、`model_catalog_json`、模型元数据导入（models.json）、通用配置，以及按供应商选择 MCP、Skill 和 Plugin |
-| 会话管理 | 扫描本地会话、批量删除、Markdown 导出、Token 用量历史、Provider metadata 同步与备份 |
-| 微信连接 | 个人微信扫码连接本机 Codex 会话，每个微信联系人映射到独立会话，可配置允许的微信用户 |
-| Codex 增强 | 插件市场与模型白名单、会话操作、粘贴修复、语音输入、会话宽度与滚动恢复、服务层级控制、Goals、下一步建议、皮肤管理、图片覆盖层 |
-| 开发工作流 | 项目移动、线程 ID |
-| 脚本与维护 | 用户脚本安装与启停、应用检测、快捷方式、Watcher、环境冲突、日志诊断、健康检查和 Release 更新 |
+| Windows · x64 | `CodexPlusPlus-*-windows-x64-setup.exe` |
+| macOS · Apple Silicon | `CodexPlusPlus-*-macos-arm64.dmg` |
+| macOS · Intel | `CodexPlusPlus-*-macos-x64.dmg` |
 
-所有界面增强都可以单独关闭。关闭“Codex 增强”总开关后，Codex++ 仍可作为供应商和启动管理工具使用。
+Codex++ 配合官方桌面应用使用，首次启动前请确认本机已安装对应的 Codex / ChatGPT 应用。
 
-## 供应商模式
+### 2. 打开管理工具，完成配置
 
-Codex++ 将官方登录、混入 API 和纯 API 分开保存和切换：
+安装后有两个入口：
 
-| 模式 | 用途 | 认证边界 |
-| --- | --- | --- |
-| 官方登录 | 只使用 ChatGPT / Codex 官方账号 | 清理自定义 provider 和 API Key，保留官方登录状态 |
-| 官方登录 + API | 保留官方账号与插件入口，模型请求始终走兼容 API（不消耗官方额度，也不是官方优先回落） | API Key 写入 provider bearer token，不写入纯 API 的 `auth.json` |
-| 纯 API | 不依赖官方账号，完全使用自定义 Base URL / Key | 独立保存 `config.toml` 与 API Key，不混入官方认证 |
-| 聚合供应商 | 在多个普通 API 供应商之间路由 | 支持故障转移、按会话轮转、按请求轮转和权重轮转 |
+| 入口 | 用来做什么 |
+| --- | --- |
+| **Codex++ 管理工具** | 检查应用路径与运行状态，配置供应商、模型和增强功能，管理更新与诊断。 |
+| **Codex++** | 静默启动官方桌面应用，并加载已保存的供应商与增强配置。 |
 
-每个供应商可配置 Responses 或 Chat Completions 协议、模型列表、测试模型、User-Agent、上下文窗口、自动压缩阈值，以及该供应商启用的 MCP Server、Skill 和 Plugin。Chat Completions 可通过本地代理转换为 Codex 使用的 Responses 协议。
+首次使用先打开 **Codex++ 管理工具**，确认应用路径，再选择供应商模式，按需开启增强功能并保存。
 
-每模型窗口支持 `1M`、`200K` 或纯数字。Codex++ 会生成独立 `model_catalog_json`，让 Codex 按当前模型使用对应窗口。
+### 3. 从 Codex++ 入口开始工作
 
-切换供应商时会先保存当前配置，再写入目标配置。真实 API Key 只保存在本机，请勿放入日志、截图或 issue。
+从 **Codex++** 启动桌面应用。依赖注入脚本的设置通常需要保存后重启 Codex++ 才会生效。
 
-## Codex 界面增强
+所有界面增强均可单独关闭；关闭增强总开关后，仍可使用供应商与启动管理能力。后续可在管理工具的「关于」页检查并启动更新。
 
-- 会话删除、批量删除、Markdown 导出和项目移动。
-- 插件市场解锁、插件自动展开和模型白名单处理。
-- 富文本粘贴转纯文本和启动加速。
-- API Key 语音输入：在「Codex增强」配置独立语音服务，录音后转写并插入或发送文字。
-- 会话宽度、滚动位置恢复、线程 ID、服务层级切换和 Goals。
-- 下一步建议：在「Codex增强」统一配置开关、API、模型、建议数量与超时。
-- 皮肤管理：Dream Skin 社区主题的搜索、预览、安装和换图。
-- 自定义图片覆盖层和用户脚本。
+## 供应商与模型
 
-依赖注入脚本的设置通常需要保存后重新启动 Codex++ 才会生效。
+### 选一种适合你的使用方式
 
-## 自动更新与安装包
+| 模式 | 适用场景 |
+| --- | --- |
+| **官方登录** | 使用 ChatGPT / Codex 官方账号。 |
+| **官方登录 + API** | 保留官方登录状态与插件入口，模型请求始终走配置的兼容 API。 |
+| **纯 API** | 使用自定义 Base URL / Key，无需官方账号。 |
+| **聚合供应商** | 在多个 API 供应商之间故障转移，或按会话、请求、权重轮转。 |
 
-Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程序，macOS 会生成 Intel x64 和 Apple Silicon arm64 两个 DMG。
+官方登录 + API 模式下，模型请求不消耗官方额度；它没有「先用官方额度，耗尽再切 API」的行为。Chat Completions 供应商可通过本地代理转换为 Codex 使用的 Responses 协议。
 
-管理工具的“关于”页可以检查并启动更新。静默启动器发现新版本时会拉起管理工具并进入更新提示。
+### 给每个模型设置自己的上下文窗口
 
-## 数据位置
+在模型列表中使用窗口后缀，例如：
 
-以下 `~/.codex` 均指 Codex 主目录：设置了 `CODEX_HOME` 环境变量时以该目录为准，否则为用户目录下的 `.codex`。
+```text
+deepseek-v4-pro[1M]
+your-model[200K]
+another-model[128000]
+```
 
-- Codex 配置：`~/.codex/config.toml`
-- Codex 登录状态：`~/.codex/auth.json`
-- Codex 本地数据库：优先读取 `~/.codex/sqlite/*.db`，旧版回退到 `~/.codex/state_5.sqlite`
-- Codex++ 状态与日志：`~/.codex-session-delete/`
-- Provider 同步备份：`~/.codex/backups_state/provider-sync`
+支持 `1M`、`200K` 或纯数字。Codex++ 会生成独立的 `model_catalog_json`，让 Codex 按当前模型使用对应窗口；请按实际供应商能力填写。未指定后缀的模型继续使用供应商级上下文配置。
+
+切换供应商时会先保存当前配置，再写入目标配置。API Key 保存在本机，提交反馈前请隐藏密钥与认证信息。
 
 ## 常见问题
 
-### Codex++ 菜单没出现
+<details>
+  <summary><strong>启动后，为什么没有 Codex++ 菜单？</strong></summary>
 
-确认从 `Codex++` 入口启动，而不是直接打开官方应用。然后在管理工具的“安装维护”和“关于”页面检查应用路径、启动状态与诊断日志。
+确认从 **Codex++** 入口启动。打开管理工具的「安装维护」与「关于」页面，检查应用路径、启动状态和诊断日志。
 
-### 切换供应商后请求失败
+</details>
 
-先在供应商详情中运行模型测试或 Provider Doctor，并确认协议、Base URL、Key 和测试模型匹配。纯 API 与官方混入模式使用不同的认证位置，不要手工复制两种模式的 `auth.json`。
+<details>
+  <summary><strong>切换供应商后，请求为什么失败？</strong></summary>
 
-### 混入 API Key 模式是“官方优先、额度不足时 API 补偿”吗
+先在供应商详情中运行模型测试或 Provider Doctor，确认协议、Base URL、Key 与模型匹配。纯 API 和官方登录 + API 使用不同的认证位置，不要手工复制两种模式的 `auth.json`。
 
-不是。官方登录 + API（混入）模式下，模型请求**始终走你配置的兼容 API**，官方账号只保留登录状态和插件入口，不会先消耗官方额度再回落到 API。需要“一个供应商失败时切到另一个”的行为时，使用聚合供应商：它支持故障转移、按会话轮转、按请求轮转和权重轮转。两种模式的认证保存位置不同，配置前先在供应商详情里用模型测试确认目标 API 可用。
+</details>
 
-### macOS Intel 能用吗
+<details>
+  <summary><strong>增强功能可以关闭吗？官方应用更新后还能用吗？</strong></summary>
 
-可以。Release 会分别提供 `macos-x64.dmg` 和 `macos-arm64.dmg`。Intel Mac 下载 x64 包，Apple Silicon 下载 arm64 包。
+可以分别关闭，也可以关闭增强总开关。Codex++ 依赖官方桌面应用的页面结构、CDP 和本地数据格式；官方应用更新后，部分功能可能需要跟随适配。修改供应商配置或会话数据前，请保留备份。
 
-## 开发
+</details>
+
+<details>
+  <summary><strong>配置、会话和日志存在哪里？</strong></summary>
+
+设置了 `CODEX_HOME` 时，Codex 主目录以该变量为准；否则使用 `~/.codex`。
+
+| 数据 | 位置 |
+| --- | --- |
+| Codex 配置与登录状态 | `~/.codex/config.toml`、`~/.codex/auth.json` |
+| 本地数据库 | 优先 `~/.codex/sqlite/*.db`，旧版回退 `~/.codex/state_5.sqlite` |
+| Codex++ 状态与日志 | `~/.codex-session-delete/` |
+| Provider 同步备份 | `~/.codex/backups_state/provider-sync` |
+
+</details>
+
+## 一起把「++」做得更好
+
+欢迎修复问题、完善文档、开发拓展，或分享你的使用建议。感谢每一位贡献者，也感谢帮助定位问题、测试版本和支持项目的人。
+
+<p align="center">
+  <a href="https://github.com/BigPizzaV3/CodexPlusPlus/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=BigPizzaV3/CodexPlusPlus" alt="CodexPlusPlus 代码贡献者头像墙" width="100%">
+  </a>
+  <br><sub>代码贡献者头像由 <a href="https://contrib.rocks">contrib.rocks</a> 生成，点击查看贡献记录。</sub>
+</p>
+
+<details>
+  <summary><strong>开发与本地检查</strong></summary>
+
+前端位于 `apps/codex-plus-manager`，核心 Rust 库位于 `crates/codex-plus-core`，数据层位于 `crates/codex-plus-data`，界面注入脚本位于 `assets/inject`。
 
 ```bash
-# 前端检查
+# 前端检查（先在 apps/codex-plus-manager 安装项目依赖）
 cd apps/codex-plus-manager
 npm ci
 npm run check
 npm run vite:build
 
-# Rust 检查
+# Rust 检查（回到仓库根目录）
 cd ../..
 cargo fmt --all -- --check
 cargo test
 cargo build --release
 ```
 
-主要结构：
+修改 renderer 注入分片后，运行 `node scripts/assemble-renderer-inject.mjs` 重新组装产物。
 
-```text
-apps/
-  codex-plus-launcher/          静默启动入口
-  codex-plus-manager/           Tauri 管理工具
-assets/inject/
-  renderer-inject.js            注入到 Codex 渲染端的增强脚本
-crates/
-  codex-plus-core/              启动、注入、配置、更新、安装、桥接等核心逻辑
-  codex-plus-data/              会话数据、导出、Provider 同步
-scripts/installer/
-  windows/CodexPlusPlus.nsi     Windows NSIS 安装包
-  macos/package-dmg.sh          macOS DMG 打包
-```
+</details>
 
-## 开源协议
+## Star History
 
-Copyright (C) 2026 BigPizzaV3
+如果 Codex++ 对你有帮助，欢迎 [点一颗 Star](https://github.com/BigPizzaV3/CodexPlusPlus)。
 
-CodexPlusPlus 采用 [GNU Affero General Public License v3.0](LICENSE)，SPDX 标识为 `AGPL-3.0-only`。修改并分发本项目，或通过网络提供修改后的版本时，需要按 AGPLv3 提供对应源代码。
+<p align="center">
+  <a href="https://www.star-history.com/#BigPizzaV3/CodexPlusPlus&amp;Date">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&amp;type=Date&amp;theme=dark">
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&amp;type=Date">
+      <img src="https://api.star-history.com/svg?repos=BigPizzaV3/CodexPlusPlus&amp;type=Date" alt="CodexPlusPlus Star 数量随时间变化的曲线" width="100%">
+    </picture>
+  </a>
+  <br><sub>曲线由 <a href="https://www.star-history.com">Star History</a> 提供；在线图表与贡献者头像依赖第三方服务加载。</sub>
+</p>
 
-许可证只覆盖 CodexPlusPlus 自身代码，不授予 OpenAI、ChatGPT、Codex 的商标、应用资源或其他第三方内容的权利。
+---
 
-## 兼容性说明
+<p align="center">
+  <img src="docs/images/codex-plus-plus.png" alt="Codex++ 项目标志" width="44"><br>
+  <strong>Codex++</strong> · 让 Codex 更顺手。<br>
+  <sub>Copyright © 2026 BigPizzaV3 · <a href="LICENSE">AGPL-3.0-only</a></sub>
+</p>
 
-Codex++ 依赖官方桌面应用的页面结构、CDP 和本地数据格式。官方应用更新后，部分注入功能可能需要跟随适配；修改供应商配置或本地会话数据前应保留备份。
+CodexPlusPlus 的修改与分发、通过网络提供修改后版本的源代码义务，以 [GNU AGPL v3.0](LICENSE) 为准。许可证覆盖本项目自身代码，第三方素材遵循各自声明；不授予 OpenAI、ChatGPT、Codex 商标或应用资源的权利。
