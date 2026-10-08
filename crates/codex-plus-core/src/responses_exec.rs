@@ -97,18 +97,27 @@ pub(crate) fn rejection_matches(
     {
         return false;
     }
-    let Some(index) = error
-        .get("param")
-        .and_then(Value::as_str)
-        .and_then(parse_tools_index)
-    else {
+    let Some(tools) = request.get("tools").and_then(Value::as_array) else {
         return false;
     };
-    request
-        .get("tools")
-        .and_then(Value::as_array)
-        .and_then(|tools| tools.get(index))
-        .is_some_and(is_custom_exec_tool)
+    let unambiguous = tools
+        .iter()
+        .filter(|tool| is_custom_exec_tool(tool))
+        .count()
+        == 1
+        && !tools
+            .iter()
+            .any(|tool| is_named_function_tool(tool, EXEC_TOOL_NAME));
+    if !unambiguous {
+        return false;
+    }
+    match error.get("param") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(param)) => parse_tools_index(param)
+            .and_then(|index| tools.get(index))
+            .is_some_and(is_custom_exec_tool),
+        _ => false,
+    }
 }
 
 pub(crate) fn is_explicit_exec_rejection(
@@ -762,6 +771,47 @@ mod tests {
             "application/json",
             &vec![b' '; MAX_REJECTION_BODY_BYTES + 1],
             &native
+        ));
+    }
+
+    #[test]
+    fn rejection_without_param_requires_one_unambiguous_exec() {
+        let mut error = json!({"error": {
+            "type": "invalid_request_error", "message": EXEC_REJECTION_MESSAGE
+        }});
+        assert!(rejection_matches(
+            400,
+            "application/json",
+            error.to_string().as_bytes(),
+            &request()
+        ));
+        error["error"]["param"] = Value::Null;
+        assert!(rejection_matches(
+            400,
+            "application/json",
+            error.to_string().as_bytes(),
+            &request()
+        ));
+        for param in [json!("tools[1]"), json!("tools[0].type"), json!(1)] {
+            error["error"]["param"] = param;
+            assert!(!rejection_matches(
+                400,
+                "application/json",
+                error.to_string().as_bytes(),
+                &request()
+            ));
+        }
+        error["error"]["param"] = Value::Null;
+        let mut ambiguous = request();
+        ambiguous["tools"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "function", "name": "exec"}));
+        assert!(!rejection_matches(
+            400,
+            "application/json",
+            error.to_string().as_bytes(),
+            &ambiguous
         ));
     }
 
