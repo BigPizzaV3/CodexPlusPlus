@@ -428,7 +428,7 @@
       .replaceAll("'", "&#39;");
   }
 
-  function confirmDelete(title) {
+  function confirmDelete(title, hostId = "local") {
     document.querySelectorAll(".codex-delete-confirm-overlay").forEach((node) => node.remove());
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
@@ -436,7 +436,7 @@
       overlay.innerHTML = `
         <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="删除会话">
           <div class="codex-delete-confirm-title">删除会话</div>
-          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？</div>
+          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？${hostId !== "local" ? "这将永久删除远端任务及其子任务，无法撤销。" : ""}</div>
           <div class="codex-delete-confirm-actions">
             <button type="button" data-codex-delete-cancel="true">取消</button>
             <button type="button" data-codex-delete-confirm="true">删除</button>
@@ -519,12 +519,17 @@
     event.stopPropagation();
     event.stopImmediatePropagation?.();
     releaseDeleteFocus(row, button);
-    confirmDelete(ref.title).then(async (confirmed) => {
+    if (!ref.host_id) {
+      showToast("无法确定会话主机归属，请使用 Codex 原生会话管理", null);
+      return;
+    }
+    confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
       if (!confirmed) return;
       releaseDeleteFocus(row, button);
       const result = await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
-        removeDeletedRow(row, button, ref);
+        // 远端由原生同主机 thread/deleted 通知更新，不能移除可能已重用的本地 DOM。
+        if (ref.host_id === "local") removeDeletedRow(row, button, ref);
         showToast(result.message || "删除成功", result.undo_token);
       } else {
         showToast(result.message || "删除失败", null);
@@ -634,4 +639,3 @@
     row.style.setProperty("--codex-session-title-max-width", `${titleMaxWidth}px`);
     group.dataset.codexActionLayoutStable = "true";
   }
-

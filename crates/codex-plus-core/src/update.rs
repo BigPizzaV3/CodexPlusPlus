@@ -4,6 +4,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+#[cfg(any(target_os = "macos", test))]
+pub mod macos;
+
 pub const DEFAULT_REPOSITORY: &str = "BigPizzaV3/CodexPlusPlus";
 pub const DEFAULT_LATEST_JSON_URL: &str =
     "https://github.com/BigPizzaV3/CodexPlusPlus/releases/latest/download/latest.json";
@@ -275,7 +278,17 @@ pub async fn perform_update(
             "bytes": bytes.len()
         }),
     );
-    if let Err(error) = launch_installer(&installer_path) {
+    #[cfg(target_os = "macos")]
+    let launch_result = {
+        let path = installer_path.clone();
+        let version = release.version.clone();
+        tokio::task::spawn_blocking(move || macos::launch_update(&path, &version))
+            .await
+            .map_err(|error| anyhow::anyhow!("准备 macOS 自动更新失败：{error}"))?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let launch_result = launch_installer(&installer_path);
+    if let Err(error) = launch_result {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "update.launch.failed",
             json!({

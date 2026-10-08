@@ -788,6 +788,8 @@ impl Default for LauncherDataService {
 #[async_trait::async_trait]
 impl BridgeDataService for LauncherDataService {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
+        // 只读本地 SQLite 的实现不能接收远端/未知来源；同 ID 不代表同一主机。
+        session.require_local_delete()?;
         let db_paths = self.candidate_db_paths();
         let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
         tokio::task::spawn_blocking(move || {

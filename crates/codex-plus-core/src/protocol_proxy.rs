@@ -983,6 +983,14 @@ impl Default for ChatSseToResponsesConverter {
 }
 
 impl ChatSseToResponsesConverter {
+    pub fn has_failed(&self) -> bool {
+        self.failed
+    }
+
+    pub fn has_terminal_event(&self) -> bool {
+        self.failed || self.state.completed || self.state.finish_reason.is_some()
+    }
+
     pub fn with_request(original_request: &Value) -> Self {
         Self {
             state: ChatSseState::with_request(original_request),

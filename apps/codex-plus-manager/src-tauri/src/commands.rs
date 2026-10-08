@@ -411,6 +411,8 @@ pub struct SaveRelayFileRequest {
 pub struct BackfillRelayProfileRequest {
     pub settings: BackendSettings,
     pub profile_id: String,
+    #[serde(default)]
+    pub adopt_provider_identity: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -3053,6 +3055,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
     let session = SessionRef {
         session_id: session_id.to_string(),
         title: request.title,
+        host_id: Some("local".into()),
     };
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let mut candidate_paths = Vec::new();
@@ -4080,10 +4083,10 @@ pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
 #[tauri::command]
 pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
-    let remote = all_cached_repo_skills();
+    let payload = skills_payload(&manager, &[], Vec::new());
     ok(
         "已加载本地 Skills。",
-        skills_payload(&manager, &remote, Vec::new()),
+        payload,
     )
 }
 
@@ -4241,7 +4244,7 @@ fn skills_payload(
     repo_errors: Vec<String>,
 ) -> SkillsPayload {
     SkillsPayload {
-        skills: manager.merge_entries(remote),
+        skills: if remote.is_empty() { manager.local_inventory() } else { manager.merge_entries(remote) },
         repos: manager.list_repos(),
         backups: manager.list_backups(),
         repo_errors,
@@ -4394,8 +4397,33 @@ pub async fn check_update() -> CommandResult<Value> {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn perform_update(
+    app: tauri::AppHandle,
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    let result = perform_update_inner(release).await;
+    if result.status == "ok" {
+        // 先返回准备结果，再正常退出；独立更新进程等待当前管理工具结束。
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            app.exit(0);
+        });
+    }
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn perform_update(
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    perform_update_inner(release).await
+}
+
+// 无需 app runtime 的业务核心；其它平台测试不应引入 Wry 析构依赖。
+async fn perform_update_inner(
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
     let Some(release) = release else {
@@ -4409,17 +4437,23 @@ pub async fn perform_update(
     };
     let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
     match codex_plus_core::update::perform_update(&release, &download_dir).await {
-        Ok(result) => ok(
-            "安装包已下载并启动，请按安装向导完成更新。",
-            json!({
+        Ok(result) => {
+            ok(
+                if cfg!(target_os = "macos") {
+                    "安装包已验证，管理工具将关闭以安装更新，完成后自动重启；失败时保留旧版。"
+                } else {
+                    "安装包已下载并启动，请按安装向导完成更新。"
+                },
+                json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "latestVersion": result.release.version,
                 "releaseSummary": result.release.body,
                 "installedPath": result.installer_path.to_string_lossy(),
                 "launched": result.launched,
                 "progress": 100
-            }),
-        ),
+                }),
+            )
+        },
         Err(error) => failed(
             &format!("安装更新失败：{error}"),
             json!({
@@ -4867,16 +4901,39 @@ pub fn backfill_relay_profile_from_live(
         );
     }
 
+    if !request.adopt_provider_identity {
+        match codex_plus_core::relay_config::live_config_matches_other_profile_in_home(
+            &home, &settings, &request.profile_id,
+        ) {
+            Ok(true) => return ok(
+                "实时配置属于其它已保存供应商，已保留原快照。",
+                SettingsBackfillPayload { settings },
+            ),
+            Ok(false) => {}
+            Err(error) => return failed(
+                &format!("读取实时配置归属失败，已保留原配置：{error}"),
+                SettingsBackfillPayload { settings },
+            ),
+        }
+    }
+
     // 回填会就地改写 profile 与公共配置。先在副本上跑，成功才提交，避免中途
     // 失败时留下「改了一半」的 profile 被后续切换流程用上。
     let mut next_profile = settings.relay_profiles[profile_index].clone();
     let mut next_context = settings.relay_context_config_contents.clone();
-    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
+    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common_and_policy(
         &home,
         &mut next_profile,
         &mut next_context,
+        if request.adopt_provider_identity {
+            codex_plus_core::relay_config::RelayBackfillPolicy::AdoptLiveIdentity
+        } else {
+            codex_plus_core::relay_config::RelayBackfillPolicy::PreserveIdentity
+        },
     ) {
         Ok(()) => {
+            let changed = next_profile != settings.relay_profiles[profile_index]
+                || next_context != settings.relay_context_config_contents;
             settings.relay_profiles[profile_index] = next_profile;
             settings.relay_context_config_contents = next_context;
             log_manager_event(
@@ -4886,7 +4943,13 @@ pub fn backfill_relay_profile_from_live(
                 }),
             );
             ok(
-                "当前供应商配置已从 live 文件回填。",
+                if !changed {
+                    "实时配置没有需要回填的内容，已保留当前供应商快照。"
+                } else if request.adopt_provider_identity {
+                    "已采纳当前 URL 与认证，并重置旧自定义请求头。"
+                } else {
+                    "当前供应商配置已从 live 文件回填。"
+                },
                 SettingsBackfillPayload { settings },
             )
         }
@@ -7111,7 +7174,7 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn update_install_requires_release_payload() {
-        let result = tauri::async_runtime::block_on(perform_update(None));
+        let result = tauri::async_runtime::block_on(perform_update_inner(None));
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("请先检查更新"));
@@ -8142,6 +8205,19 @@ enabled = true
                 .codex_app_path
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn backfill_request_preserves_identity_unless_explicitly_adopted() {
+        let settings = serde_json::to_value(BackendSettings::default()).unwrap();
+        let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
+            "settings": settings, "profileId": "profile-a"
+        })).unwrap();
+        assert!(!request.adopt_provider_identity);
+        let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
+            "settings": settings, "profileId": "profile-a", "adoptProviderIdentity": true
+        })).unwrap();
+        assert!(request.adopt_provider_identity);
     }
 
     #[test]

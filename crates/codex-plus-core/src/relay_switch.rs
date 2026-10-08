@@ -25,19 +25,21 @@ pub fn switch_relay_profile_in_home(
     if !selected_settings.relay_profiles_enabled {
         anyhow::bail!("供应商配置总开关已关闭，未写入 config.toml / auth.json。");
     }
-    crate::codex_app_state::capture_app_state_snapshot_nonfatal(home, "relay_switch.before");
-
     // 读不到当前设置时不要用默认值继续：回滚分支会把「仅剩默认供应商」写回磁盘，
     // 这正是供应商列表被清空的成因。读失败直接中止切换，保住原文件。
-    let original_settings = store
+    store
         .load()
         .context("读取当前供应商设置失败，已中止切换以免覆盖用户配置")?;
+    let original_settings_bytes = store
+        .snapshot_raw_bytes()
+        .context("读取当前供应商原始快照失败，已中止切换")?;
     let live_snapshot = LiveFilesSnapshot::capture(home).context("读取当前 Codex 实时配置失败")?;
     if !previous_active_relay_id.trim().is_empty()
         && previous_active_relay_id != selected_settings.active_relay_id
     {
         backfill_profile_before_switch(home, &mut selected_settings, previous_active_relay_id)?;
     }
+    crate::codex_app_state::capture_app_state_snapshot_nonfatal(home, "relay_switch.before");
 
     store
         .save(&selected_settings)
@@ -53,7 +55,10 @@ pub fn switch_relay_profile_in_home(
             Ok(result)
         }
         Err(error) => {
-            let settings_restore_error = store.save(&original_settings).err();
+            // 内部回滚恢复已验证原始字节，保留unknown字段并避免2→default1保护误拦。
+            let settings_restore_error = store
+                .restore_raw_snapshot(original_settings_bytes.as_deref())
+                .err();
             let live_restore_error = live_snapshot.restore(home).err();
             if settings_restore_error.is_some() || live_restore_error.is_some() {
                 anyhow::bail!(
@@ -119,6 +124,14 @@ fn backfill_profile_before_switch(
     settings: &mut BackendSettings,
     previous_active_relay_id: &str,
 ) -> anyhow::Result<()> {
+    // 确认属于另一个已保存供应商的 live 配置，不回填到旧 profile（共享 Key 也适用）。
+    if crate::relay_config::live_config_matches_other_profile_in_home(
+        home,
+        settings,
+        previous_active_relay_id,
+    )? {
+        return Ok(());
+    }
     // 找不到上一个供应商是用户能自助处理的一类原因（它已被删除或 id 变了），
     // 单独给一条能直接照做的话；下面回填失败则属于另一类，见那里的写法。
     let profile = settings
@@ -149,9 +162,7 @@ fn apply_selected_relay_profile(
     let relay = settings.active_relay_profile();
     let common_config = relay_combined_common_config(settings);
     let result = if relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key {
-        let auth_contents =
-            (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
-        crate::relay_config::clear_relay_config_to_home_with_auth(home, auth_contents)?
+        crate::relay_config::apply_official_profile_to_home(home, &relay, &common_config)?
     } else {
         validate_switch_profile_files(&relay)?;
         crate::relay_config::apply_relay_profile_to_home_with_switch_rules(

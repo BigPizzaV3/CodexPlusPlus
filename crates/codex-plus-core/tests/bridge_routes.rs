@@ -54,7 +54,10 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"request": {"lastUserMessage": "请继续", "lastAssistantMessage": "已完成"}}),
         ),
         ("/stepwise/test", json!({})),
-        ("/delete", json!({"session_id": "s1", "title": "First"})),
+        (
+            "/delete",
+            json!({"session_id": "s1", "title": "First", "host_id": "local"}),
+        ),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
             "/export-markdown",
@@ -501,7 +504,7 @@ async fn data_routes_forward_payloads_to_data_service() {
         handle_bridge_request(
             ctx.clone(),
             "/delete",
-            json!({"session_id": "s1", "title": "First"}),
+            json!({"session_id": "s1", "title": "First", "host_id": "local"}),
         )
         .await["undo_token"],
         "undo-s1"
@@ -577,7 +580,7 @@ async fn bridge_context_core_with_data_uses_injected_data_service() {
     let result = handle_bridge_request(
         ctx,
         "/delete",
-        json!({"session_id": "s1", "title": "First"}),
+        json!({"session_id": "s1", "title": "First", "host_id": "local"}),
     )
     .await;
 
@@ -640,6 +643,49 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
         .unwrap(),
         json!({"enabled": false, "scripts": {}})
     );
+}
+
+#[tokio::test]
+async fn delete_refuses_remote_and_unknown_hosts_instead_of_local_fallback() {
+    let ctx = test_context();
+    for host in [
+        json!(null),
+        json!(""),
+        json!("remote-ssh:fixture"),
+        json!({"id":"local"}),
+    ] {
+        let result = handle_bridge_request(
+            ctx.clone(),
+            "/delete",
+            json!({
+                "session_id": "s1", "title": "Same ID on another host", "host_id": host,
+            }),
+        )
+        .await;
+        // FakeData 必定返回 local_deleted/undo-s1，失败说明没有进入本地服务。
+        assert_eq!(result["status"], "failed");
+        assert!(result.get("undo_token").is_none());
+    }
+    let conflict = handle_bridge_request(
+        ctx.clone(),
+        "/delete",
+        json!({
+            "session_id":"s1", "host_id":"local", "hostId":"remote-ssh:fixture",
+        }),
+    )
+    .await;
+    assert_eq!(conflict["status"], "failed");
+    assert!(conflict.get("undo_token").is_none());
+    let local = handle_bridge_request(
+        ctx,
+        "/delete",
+        json!({
+            "session_id":"s1", "title":"Local", "hostId":"local",
+        }),
+    )
+    .await;
+    assert_eq!(local["status"], "local_deleted");
+    assert_eq!(local["undo_token"], "undo-s1");
 }
 
 #[tokio::test]
@@ -1294,6 +1340,7 @@ impl BridgeDataService for FakeData {
         Ok(Some(SessionRef {
             session_id: "archived-1".to_string(),
             title,
+            host_id: None,
         }))
     }
 }
