@@ -1929,10 +1929,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     }))
                 }),
             );
-            let client = crate::http_client::proxied_client(&effective_user_agent(
-                &relay.user_agent,
-                original_user_agent,
-            ))?;
+            let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
+            let client = crate::http_client::proxied_client(&user_agent)?;
             let build_request = |body: &Value| {
                 let mut builder =
                     upstream_request_builder(client.clone(), &endpoint, &relay, is_stream, body);
@@ -1955,6 +1953,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         &relay.id,
                         &build_request(&upstream_body).build()?,
                         &upstream_body,
+                        &user_agent,
                     ));
                 }
                 let cached_body = if key
@@ -1976,6 +1975,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     && !exec_negotiation_used
                     && upstream.status().as_u16() == 400
                 {
+                    let first_retry_after =
+                        crate::channel_protection::retry_after_duration(upstream.headers());
                     let (inspected, rejected) = crate::responses_exec_transport::inspect_rejection(
                         upstream,
                         &upstream_body,
@@ -1986,6 +1987,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         && let Ok(adapted) =
                             crate::responses_exec::adapt_request(upstream_body.clone())
                     {
+                        crate::channel_protection::mark_failure(
+                            &channel_key,
+                            &relay,
+                            upstream.status().as_u16(),
+                            first_retry_after,
+                        )
+                        .await;
                         exec_negotiation_used = true;
                         exec_adapted = true;
                         drop(channel_permit.take());

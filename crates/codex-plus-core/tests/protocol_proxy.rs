@@ -4194,7 +4194,7 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         "unexpected mock response: {}",
         String::from_utf8_lossy(&body)
     );
-    assert_eq!(body.as_ref(), br#"{"id":"resp_1","object":"response"}"#);
+    assert_eq!(body.as_slice(), br#"{"id":"resp_1","object":"response"}"#);
     let first_request = first_server.await.unwrap();
     let second_request = second_server.await.unwrap();
     assert!(
