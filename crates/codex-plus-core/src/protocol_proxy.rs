@@ -3527,6 +3527,21 @@ fn append_responses_item(
         Some(COMPACTION_TRIGGER_TYPE) => {
             // 控制项不进上游历史；正常请求不该出现，出现即忽略。
         }
+        Some("encrypted_content") => {
+            // agent 间消息 payload 的独立项形态：codex 客户端以明文放在
+            // encrypted_content 字段里投递任务正文，此前落入兜底分支被静默丢弃，
+            // 接收模型只收到空消息。与 compaction 同样展开成 user 消息透传给上游。
+            let text = item
+                .get("encrypted_content")
+                .or_else(|| item.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !text.is_empty() {
+                flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+                flush_reasoning(messages, pending_reasoning);
+                messages.push(json!({ "role": "user", "content": text }));
+            }
+        }
         _ => {
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
             if let Some(content) = item.get("content") {
@@ -4142,6 +4157,19 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
                 if let Some(image) = image_part_to_chat(part) {
                     chat_parts.push(image);
                     has_non_text_part = true;
+                }
+            }
+            "encrypted_content" => {
+                // codex 客户端把 agent 间消息（NEW_TASK/MESSAGE）的 payload 放进
+                // encrypted_content 片段以明文发出，官方后端会解包转发；这里若吞掉，
+                // 接收方模型只会看到空消息。按纯文本透传（两种字段形态都出现过）。
+                let value = part
+                    .get("encrypted_content")
+                    .or_else(|| part.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !value.is_empty() {
+                    chat_parts.push(json!({ "type": "text", "text": value }));
                 }
             }
             _ => {}

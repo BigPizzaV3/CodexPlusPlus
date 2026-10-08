@@ -93,6 +93,62 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
 }
 
 #[test]
+fn encrypted_content_part_in_message_is_forwarded_in_order() {
+    // agent 间消息 payload 以 message 内片段形态出现（复现脚本里的 text 字段形态），
+    // 必须按原文顺序透传，否则接收方模型只看到空消息头。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "Repeat the secret word exactly.\nPayload:\n" },
+                { "type": "encrypted_content", "text": "The secret word is PINEAPPLE." }
+            ] }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let forwarded = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("PINEAPPLE"))
+        })
+        .expect("message 内的 encrypted_content 片段应透传为文本");
+    assert_eq!(forwarded["role"], "user");
+    let content = forwarded["content"].as_str().unwrap();
+    let header_pos = content.find("Payload:").expect("头部文本应保留");
+    let payload_pos = content.find("PINEAPPLE").unwrap();
+    assert!(payload_pos > header_pos);
+}
+
+#[test]
+fn standalone_encrypted_content_item_becomes_user_message() {
+    // 独立 encrypted_content 项（encrypted_content 字段形态）不能落入兜底分支被丢弃。
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            { "type": "message", "role": "user",
+              "content": [{ "type": "input_text", "text": "current task" }] },
+            { "type": "encrypted_content", "encrypted_content": "AGENT_PAYLOAD_SENTINEL" }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let forwarded = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("AGENT_PAYLOAD_SENTINEL"))
+        })
+        .expect("独立 encrypted_content 项应展开为 user 消息");
+    assert_eq!(forwarded["role"], "user");
+}
+
+#[test]
 fn compaction_stream_emits_one_done_item_before_completed() {
     let mut converter = CompactionSseConverter::new("custom-model");
     converter.push_summary_text("Preserve this summary.");
