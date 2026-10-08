@@ -55,7 +55,7 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
-Enable the optional Codex usage widget under Codex Enhancements → General → Widgets and pets. It supports dragging, resizing, local character images, current-session tokens, task status, and subscription limits, with optional balance and budget alerts for the current API provider. See the [widget guide](docs/whale-widget.md) for setup and accounting scope.
+Enable the optional Codex usage widget under Codex Enhancements → General → Widgets and pets. It includes the original character, modular bubble editor, sound library and waveform trimming, character/image/audio management, edge snapping and alerts. View session and local usage, observed subscription windows and costs estimated from configured prices, or connect provider balance and quota templates. See the [widget guide](docs/whale-widget.md) and [feature verification](docs/whale-parity.md).
 
 ## Provider Modes
 

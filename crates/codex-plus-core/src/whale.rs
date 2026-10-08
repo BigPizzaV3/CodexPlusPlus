@@ -27,6 +27,8 @@ struct Balance {
     granted: Option<f64>,
     topped_up: Option<f64>,
     observed_today: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accounting: Option<Value>,
 }
 
 struct CacheEntry {
@@ -355,6 +357,7 @@ fn parse_custom_balance(
         granted: None,
         topped_up: None,
         observed_today: 0.0,
+        accounting: None,
     }])
 }
 
@@ -438,19 +441,20 @@ fn parse_balances(value: &Value) -> Result<Vec<Balance>, &'static str> {
                 granted: optional_amount("granted_balance")?,
                 topped_up: optional_amount("topped_up_balance")?,
                 observed_today: 0.0,
+                accounting: None,
             })
         })
         .collect()
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
 }
 
-fn local_day() -> rusqlite::Result<String> {
+pub(crate) fn local_day() -> rusqlite::Result<String> {
     Connection::open_in_memory()?.query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))
 }
 
@@ -474,6 +478,7 @@ fn record_balances(
             updated_at INTEGER NOT NULL, PRIMARY KEY (account, currency)
         );",
     )?;
+    prepare_daily_ledger(&tx)?;
     for balance in &mut balances {
         let previous: Option<(String, i64, i64, u64)> = tx.query_row(
             "SELECT day, total_units, observed_units, updated_at FROM whale_balance_observations
@@ -498,7 +503,9 @@ fn record_balances(
             })
             .unwrap_or(0)
             .max(0);
-        balance.observed_today = observed_units as f64 / MONEY_SCALE;
+        let summary = record_daily(&tx, account, &balance.currency, day, total_units, now)?;
+        balance.observed_today = summary["amount"].as_f64().unwrap_or(0.0);
+        balance.accounting = Some(summary);
         tx.execute(
             "INSERT INTO whale_balance_observations
              (account, currency, day, total_units, observed_units, updated_at)
@@ -518,6 +525,349 @@ fn record_balances(
     }
     tx.commit()?;
     Ok(balances)
+}
+
+// 每日账本保留历史账户。旧版只存最后一天，迁移时保留金额并明确标为部分观测。
+fn prepare_daily_ledger(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS whale_balance_days (
+        account TEXT NOT NULL, currency TEXT NOT NULL, day TEXT NOT NULL,
+        opening_units INTEGER NOT NULL, last_units INTEGER NOT NULL,
+        debit_units INTEGER NOT NULL, credit_units INTEGER NOT NULL,
+        first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0, correction TEXT,
+        partial_unknown INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(account,currency,day)
+    ); CREATE TABLE IF NOT EXISTS whale_balance_corrections (
+        account TEXT NOT NULL,currency TEXT NOT NULL,day TEXT NOT NULL,
+        revision INTEGER NOT NULL,at INTEGER NOT NULL,previous TEXT,next TEXT,
+        PRIMARY KEY(account,currency,day,revision)
+    );",
+    )?;
+    let has_old: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='whale_balance_observations')", [], |row| row.get(0))?;
+    if has_old {
+        connection.execute("INSERT OR IGNORE INTO whale_balance_days
+            (account,currency,day,opening_units,last_units,debit_units,credit_units,first_at,last_at,partial_unknown)
+            SELECT account,currency,day,total_units+observed_units,total_units,observed_units,0,updated_at,updated_at,1
+            FROM whale_balance_observations", [])?;
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct DailyRow {
+    account: String,
+    currency: String,
+    day: String,
+    opening: i64,
+    last: i64,
+    debit: i64,
+    credit: i64,
+    first_at: i64,
+    last_at: i64,
+    revision: i64,
+    correction: Option<Value>,
+    partial_unknown: bool,
+}
+
+fn daily_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DailyRow> {
+    let correction: Option<String> = row.get(10)?;
+    Ok(DailyRow {
+        account: row.get(0)?,
+        currency: row.get(1)?,
+        day: row.get(2)?,
+        opening: row.get(3)?,
+        last: row.get(4)?,
+        debit: row.get(5)?,
+        credit: row.get(6)?,
+        first_at: row.get(7)?,
+        last_at: row.get(8)?,
+        revision: row.get(9)?,
+        correction: correction.and_then(|s| serde_json::from_str(&s).ok()),
+        partial_unknown: row.get(11)?,
+    })
+}
+
+fn daily_select() -> &'static str {
+    "SELECT account,currency,day,opening_units,last_units,debit_units,credit_units,
+     first_at,last_at,revision,correction,partial_unknown FROM whale_balance_days"
+}
+
+fn daily_revision(row: &DailyRow) -> String {
+    let content = json!([
+        row.account,
+        row.currency,
+        row.day,
+        row.first_at,
+        row.last,
+        row.debit,
+        row.credit,
+        row.revision
+    ]);
+    format!("{:x}", Sha256::digest(content.to_string().as_bytes()))
+}
+
+fn daily_summary(connection: &Connection, row: &DailyRow, now: u64) -> rusqlite::Result<Value> {
+    let corrected = row.correction.as_ref();
+    let corrected_credit = corrected
+        .and_then(|v| v["creditUnits"].as_i64())
+        .unwrap_or(0);
+    let corrected_debit = corrected
+        .and_then(|v| v["debitUnits"].as_i64())
+        .unwrap_or(0);
+    let units = corrected
+        .and_then(|v| v["amountUnits"].as_i64())
+        .map(|units| units.saturating_add(row.debit.saturating_sub(corrected_debit)))
+        .unwrap_or(row.debit);
+    let needs_review = row.credit > corrected_credit;
+    let (start,end): (i64,i64) = connection.query_row(
+        "SELECT unixepoch(?1 || ' 00:00:00','utc')*1000,unixepoch(?1 || ' 00:00:00','utc','+1 day')*1000",
+        [&row.day], |r| Ok((r.get(0)?,r.get(1)?)))?;
+    let leading = (row.first_at - start).max(0);
+    let trailing = if now as i64 >= end {
+        (end - row.last_at).max(0)
+    } else {
+        0
+    };
+    let (source, label) = if needs_review {
+        ("balance-needs-review", "已观测消费 · 待核对余额调整")
+    } else if corrected.is_some() {
+        ("balance-corrected", "已校正消费")
+    } else {
+        ("balance-observed", "已观测消费")
+    };
+    Ok(
+        json!({"accountId":row.account,"day":row.day,"date":row.day,"amount":units as f64/MONEY_SCALE,
+        "currency":row.currency,"source":source,"label":label,"firstObservedAt":row.first_at,"lastObservedAt":row.last_at,
+        "openingBalance":row.opening as f64/MONEY_SCALE,"currentBalance":row.last as f64/MONEY_SCALE,
+        "observedDecrease":row.debit as f64/MONEY_SCALE,"observedIncrease":row.credit as f64/MONEY_SCALE,
+        "needsReview":needs_review,"revision":daily_revision(row),"partialDay":row.partial_unknown || leading>600_000 || trailing>600_000,
+        "observedFromMs":row.first_at,"observedToMs":row.last_at,"leadingGapMs":leading,"trailingGapMs":trailing,
+        "credits":corrected.and_then(|v| v["creditsUnits"].as_i64()).map(|v| v as f64/MONEY_SCALE),
+        "otherDebits":corrected.and_then(|v| v["otherDebitsUnits"].as_i64()).map(|v| v as f64/MONEY_SCALE),
+        "correctedAt":corrected.and_then(|v| v["at"].as_u64())}),
+    )
+}
+
+fn record_daily(
+    connection: &Connection,
+    account: &str,
+    currency: &str,
+    day: &str,
+    units: i64,
+    now: u64,
+) -> anyhow::Result<Value> {
+    let sql = format!(
+        "{} WHERE account=?1 AND currency=?2 AND day=?3",
+        daily_select()
+    );
+    let mut row = connection
+        .query_row(&sql, params![account, currency, day], daily_row)
+        .optional()?
+        .unwrap_or(DailyRow {
+            account: account.into(),
+            currency: currency.into(),
+            day: day.into(),
+            opening: units,
+            last: units,
+            debit: 0,
+            credit: 0,
+            first_at: now as i64,
+            last_at: now as i64,
+            revision: 0,
+            correction: None,
+            partial_unknown: false,
+        });
+    if (now as i64) < row.last_at {
+        anyhow::bail!("out of order balance snapshot");
+    }
+    if now as i64 > row.last_at {
+        let delta = row.last.saturating_sub(units);
+        if delta > 0 {
+            row.debit = row
+                .debit
+                .checked_add(delta)
+                .ok_or_else(|| anyhow::anyhow!("amount overflow"))?;
+        }
+        if delta < 0 {
+            row.credit = row
+                .credit
+                .checked_add(-delta)
+                .ok_or_else(|| anyhow::anyhow!("amount overflow"))?;
+        }
+        row.last = units;
+        row.last_at = now as i64;
+    }
+    connection.execute("INSERT INTO whale_balance_days
+        (account,currency,day,opening_units,last_units,debit_units,credit_units,first_at,last_at,revision,correction,partial_unknown)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+        ON CONFLICT(account,currency,day) DO UPDATE SET last_units=excluded.last_units,debit_units=excluded.debit_units,
+        credit_units=excluded.credit_units,last_at=excluded.last_at",params![row.account,row.currency,row.day,row.opening,row.last,
+            row.debit,row.credit,row.first_at,row.last_at,row.revision,row.correction.as_ref().map(Value::to_string),row.partial_unknown])?;
+    Ok(daily_summary(connection, &row, now)?)
+}
+
+pub(crate) fn observe_snapshot(
+    path: &Path,
+    account: &str,
+    currency: &str,
+    total: f64,
+) -> anyhow::Result<Value> {
+    let day = local_day()?;
+    let rows = record_balances(
+        path,
+        account,
+        &day,
+        now_ms(),
+        vec![Balance {
+            currency: currency.into(),
+            total,
+            granted: None,
+            topped_up: None,
+            observed_today: 0.0,
+            accounting: None,
+        }],
+    )?;
+    Ok(rows[0].accounting.clone().unwrap_or(Value::Null))
+}
+
+pub(crate) fn daily_records(path: &Path, account: Option<&str>) -> anyhow::Result<Vec<Value>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='whale_balance_days')",[],|r|r.get(0))?;
+    if !exists {
+        let legacy:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='whale_balance_observations')",[],|r|r.get(0))?;
+        if !legacy {
+            return Ok(Vec::new());
+        }
+        let mut query=connection.prepare("SELECT account,currency,day,total_units+observed_units,total_units,observed_units,0,updated_at,updated_at,0,NULL,1 FROM whale_balance_observations WHERE (?1 IS NULL OR account=?1) ORDER BY day DESC,updated_at DESC LIMIT 5000")?;
+        let rows = query
+            .query_map([account], daily_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        return rows
+            .iter()
+            .map(|row| daily_summary(&connection, row, now_ms()).map_err(Into::into))
+            .collect();
+    }
+    let mut query = connection.prepare(&format!(
+        "{} WHERE (?1 IS NULL OR account=?1) ORDER BY day DESC,last_at DESC LIMIT 5000",
+        daily_select()
+    ))?;
+    let rows = query
+        .query_map([account], daily_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.iter()
+        .map(|row| daily_summary(&connection, row, now_ms()).map_err(Into::into))
+        .collect()
+}
+
+pub(crate) fn reconcile(
+    path: &Path,
+    account: &str,
+    currency: &str,
+    input: &Value,
+) -> anyhow::Result<Value> {
+    let day = input["day"].as_str().unwrap_or_default();
+    if day.len() != 10
+        || !day.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
+    {
+        anyhow::bail!("请选择有效的记账日期");
+    }
+    let mut connection = Connection::open(path)?;
+    connection.busy_timeout(Duration::from_secs(2))?;
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    prepare_daily_ledger(&tx)?;
+    let sql = format!(
+        "{} WHERE account=?1 AND currency=?2 AND day=?3",
+        daily_select()
+    );
+    let row = tx
+        .query_row(&sql, params![account, currency, day], daily_row)
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("这一天没有余额观测记录，无法校正"))?;
+    if input["revision"].as_str() != Some(daily_revision(&row).as_str()) {
+        anyhow::bail!("余额或校正记录已更新，请重新打开校正窗口后核对金额");
+    }
+    let now = now_ms();
+    let correction = if input["action"] == "reset" {
+        None
+    } else {
+        if input["confirmed"] != true {
+            anyhow::bail!("请先确认已核对本统计区间的全部余额调整");
+        }
+        let credits = adjustment_amount(&input["credits"], true)?;
+        let other = adjustment_amount(&input["otherDebits"], false)?;
+        let amount = row
+            .opening
+            .checked_add(credits)
+            .and_then(|v| v.checked_sub(other))
+            .and_then(|v| v.checked_sub(row.last))
+            .filter(|v| *v >= 0)
+            .ok_or_else(|| {
+                anyhow::anyhow!("校正后消费为负或超出范围，请核对统计起点与累计到账金额")
+            })?;
+        Some(
+            json!({"at":now,"creditsUnits":credits,"otherDebitsUnits":other,"amountUnits":amount,"debitUnits":row.debit,"creditUnits":row.credit}),
+        )
+    };
+    let revision = row.revision + 1;
+    tx.execute("INSERT INTO whale_balance_corrections(account,currency,day,revision,at,previous,next) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![account,currency,day,revision,now,row.correction.as_ref().map(Value::to_string),correction.as_ref().map(Value::to_string)])?;
+    tx.execute("UPDATE whale_balance_days SET correction=?4,revision=?5 WHERE account=?1 AND currency=?2 AND day=?3",
+        params![account,currency,day,correction.as_ref().map(Value::to_string),revision])?;
+    // 保留最多 50 条当前日校正审计；每日账本本身不裁剪。
+    tx.execute("DELETE FROM whale_balance_corrections WHERE account=?1 AND currency=?2 AND day=?3 AND revision<=?4",params![account,currency,day,revision-50])?;
+    let summary = daily_summary(
+        &tx,
+        &DailyRow {
+            correction,
+            revision,
+            ..row
+        },
+        now,
+    )?;
+    tx.commit()?;
+    Ok(summary)
+}
+
+fn adjustment_amount(value: &Value, required: bool) -> anyhow::Result<i64> {
+    if value.is_null() || value == "" {
+        if required {
+            anyhow::bail!("请填写本统计区间的累计到账金额，未充值请填 0");
+        }
+        return Ok(0);
+    }
+    let text = value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string());
+    let mut parts = text.split('.');
+    let integer = parts.next().unwrap_or("");
+    let decimals = parts.next().unwrap_or("");
+    if integer.is_empty()
+        || !integer.bytes().all(|b| b.is_ascii_digit())
+        || decimals.len() > 8
+        || !decimals.bytes().all(|b| b.is_ascii_digit())
+        || parts.next().is_some()
+        || integer.len() > 1 && integer.starts_with('0')
+    {
+        anyhow::bail!("金额须为非负数，最多保留 8 位小数");
+    }
+    let number = text
+        .parse::<f64>()
+        .ok()
+        .and_then(|v| amount(&json!(v)))
+        .filter(|v| *v >= 0.0)
+        .ok_or_else(|| anyhow::anyhow!("金额无效或超出可记账范围"))?;
+    Ok((number * MONEY_SCALE).round() as i64)
 }
 
 #[cfg(test)]
@@ -547,7 +897,85 @@ mod tests {
             granted: None,
             topped_up: None,
             observed_today: 0.0,
+            accounting: None,
         }
+    }
+
+    #[test]
+    fn daily_history_keeps_credits_and_reconciles_with_revision_protection() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("ledger.sqlite3");
+        let day = local_day().unwrap();
+        let first = now_ms() - 1000;
+        for (at, total) in [
+            (first, 100.0),
+            (first + 1, 90.0),
+            (first + 2, 140.0),
+            (first + 3, 138.0),
+        ] {
+            record_balances(&path, "account-a", &day, at, vec![sample("USD", total)]).unwrap();
+        }
+        let before = daily_records(&path, Some("account-a")).unwrap().remove(0);
+        assert_eq!(before["amount"], 12.0);
+        assert_eq!(before["observedIncrease"], 50.0);
+        assert_eq!(before["needsReview"], true);
+        let correction = json!({"day":day,"revision":before["revision"],"confirmed":true,"credits":"50","otherDebits":"2"});
+        let corrected = reconcile(&path, "account-a", "USD", &correction).unwrap();
+        assert_eq!(corrected["amount"], 10.0);
+        assert_eq!(corrected["needsReview"], false);
+        assert!(reconcile(&path, "account-a", "USD", &correction).is_err());
+        record_balances(
+            &path,
+            "account-a",
+            &day,
+            first + 4,
+            vec![sample("USD", 135.0)],
+        )
+        .unwrap();
+        let after = daily_records(&path, Some("account-a")).unwrap().remove(0);
+        assert_eq!(after["amount"], 13.0);
+        let reset = reconcile(
+            &path,
+            "account-a",
+            "USD",
+            &json!({"day":day,"revision":after["revision"],"action":"reset"}),
+        )
+        .unwrap();
+        assert_eq!(reset["amount"], 15.0);
+        record_balances(
+            &path,
+            "account-b",
+            &day,
+            first + 5,
+            vec![sample("USD", 999.0)],
+        )
+        .unwrap();
+        assert_eq!(daily_records(&path, None).unwrap().len(), 2);
+        assert_eq!(
+            daily_records(&path, Some("account-a")).unwrap()[0]["amount"],
+            15.0
+        );
+    }
+
+    #[test]
+    fn read_only_reports_preserve_legacy_last_day_before_first_new_observation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("legacy.sqlite3");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE whale_balance_observations(account TEXT,currency TEXT,day TEXT,total_units INTEGER,observed_units INTEGER,updated_at INTEGER);").unwrap();
+        conn.execute("INSERT INTO whale_balance_observations VALUES('old-account','CNY',?1,8000000000,2000000000,?2)",params![local_day().unwrap(),now_ms()]).unwrap();
+        let rows = daily_records(&path, None).unwrap();
+        assert_eq!(rows[0]["amount"], 20.0);
+        assert_eq!(rows[0]["openingBalance"], 100.0);
+        assert_eq!(rows[0]["partialDay"], true);
+        let migrated: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='whale_balance_days')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!migrated, "查询不会创建或覆盖旧账本");
     }
 
     #[test]

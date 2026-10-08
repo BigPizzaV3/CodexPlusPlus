@@ -31,6 +31,17 @@ pub fn session_summary(adapter: &SQLiteStorageAdapter, session: &SessionRef) -> 
     let Some(id) = normalize_session_id(&session.session_id) else {
         return unavailable(&session.session_id, "会话 ID 无效", now.timestamp_millis());
     };
+    if session
+        .host_id
+        .as_deref()
+        .is_some_and(|host| host != "local")
+    {
+        return unavailable(
+            &id,
+            "当前远程会话没有可读取的本机会话用量",
+            now.timestamp_millis(),
+        );
+    }
     let Some(path) = adapter.whale_rollout_path(&id) else {
         return unavailable(&id, "未找到本机会话记录", now.timestamp_millis());
     };
@@ -464,6 +475,23 @@ mod tests {
 
     const ID: &str = "019a11b9-193d-7c32-a71e-ae11fd3be78f";
     const OTHER: &str = "019a11b9-193d-7c32-a71e-ae11fd3be780";
+
+    #[test]
+    fn explicit_remote_scope_cannot_reuse_same_id_local_rollout() {
+        let fixture = Fixture::new(true);
+        fixture.write(&[json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":20}}}})]);
+        let mut session = SessionRef::new(ID, "remote").unwrap();
+        session.host_id = Some("remote-ssh:fixture".into());
+        let result = session_summary(&fixture.adapter, &session);
+        assert_eq!(result["status"], "unavailable");
+        assert!(result["total"].is_null());
+        assert!(result["message"].as_str().unwrap().contains("远程"));
+        session.host_id = Some("local".into());
+        assert_eq!(
+            session_summary(&fixture.adapter, &session)["total"]["totalTokens"],
+            120
+        );
+    }
 
     struct Fixture {
         _temp: TempDir,

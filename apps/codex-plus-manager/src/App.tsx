@@ -5198,7 +5198,7 @@ function EnhanceScreen({
               <FeatureGroup title={t("挂件与桌宠")} detail={t("在 Codex 中查看用量，设置自己的角色和互动方式。")}>
                 <FeatureToggle
                   title={t("Codex 用量挂件")}
-                  detail={t("显示当前会话 token、任务状态和订阅额度。点击角色旁的菜单，可上传角色图片、调整大小和提醒。")}
+                  detail={t("原版角色、泡泡编辑器、音效库和提醒，显示 Codex 会话与全机用量。点击角色旁的菜单配置。")}
                   checked={form.codexAppWhaleWidgetEnabled}
                   disabled={!masterEnabled}
                   onChange={(value) => setEnhanceFlag("codexAppWhaleWidgetEnabled", value)}

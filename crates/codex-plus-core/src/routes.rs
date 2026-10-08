@@ -119,7 +119,10 @@ pub trait BridgeRuntimeService: Send + Sync {
                 .get("source")
                 .and_then(Value::as_str)
                 .unwrap_or("public"),
-            payload.get("id").and_then(Value::as_str).unwrap_or_default(),
+            payload
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
         )
         .await
     }
@@ -130,7 +133,10 @@ pub trait BridgeRuntimeService: Send + Sync {
                 .get("source")
                 .and_then(Value::as_str)
                 .unwrap_or("public"),
-            payload.get("id").and_then(Value::as_str).unwrap_or_default(),
+            payload
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
         )
     }
     /// 注入层适配原生插件页面的列表、详情与安装协议。
@@ -160,6 +166,9 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
+    async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"unavailable","message":"本机用量统计暂不可用"}))
+    }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
@@ -273,7 +282,11 @@ pub async fn handle_bridge_request(
         "/script-market/install" => ctx.runtime.script_market_install(payload.clone()).await,
         "/plugin-market/list" => ctx.runtime.plugin_market_list(payload.clone()).await,
         "/plugin-market/install" => ctx.runtime.plugin_market_install(payload.clone()).await,
-        "/plugin-market/install-status" => ctx.runtime.plugin_market_install_status(payload.clone()).await,
+        "/plugin-market/install-status" => {
+            ctx.runtime
+                .plugin_market_install_status(payload.clone())
+                .await
+        }
         "/plugin-market/native" => ctx.runtime.plugin_market_native(payload.clone()).await,
         "/stepwise/settings" => stepwise_settings_value(ctx.settings.get_settings().await),
         "/stepwise/generate" => {
@@ -308,6 +321,40 @@ pub async fn handle_bridge_request(
                 .await
         }
         // 仅内置挂件使用，不加入第三方拓展路由白名单。
+        "/whale/history" => match ctx.settings.get_settings().await {
+            Ok(settings)
+                if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
+            {
+                ctx.data.whale_history(payload.clone()).await
+            }
+            Ok(_) => Ok(json!({"status":"disabled"})),
+            Err(_) => Ok(json!({"status":"unavailable","message":"无法读取挂件设置"})),
+        },
+        "/whale/full" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                let path = ctx.settings.whale_ledger_path();
+                let requested_path = payload
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let history = if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&path)
+                    && matches!(
+                        requested_path,
+                        "/dsh-whale/usage-records.json" | "/dsh-whale/api-models.json"
+                    ) {
+                    ctx.data
+                        .whale_history(crate::whale_full::history_query(&path))
+                        .await
+                        .unwrap_or_else(|_| json!({"status":"unavailable"}))
+                } else {
+                    Value::Null
+                };
+                Ok(crate::whale_full::handle(&settings, path, payload.clone(), history).await)
+            }
+            Err(_) => Ok(json!({"status":503,"body":{"ok":false,"error":"无法读取挂件设置"}})),
+        },
         "/whale/balance" => match ctx.settings.get_settings().await {
             Ok(settings) => {
                 Ok(crate::whale::balance(&settings, ctx.settings.whale_ledger_path()).await)
@@ -315,7 +362,10 @@ pub async fn handle_bridge_request(
             Err(_) => Ok(crate::whale::unavailable("无法读取挂件设置")),
         },
         "/whale/session" => match ctx.settings.get_settings().await {
-            Ok(settings) if crate::whale::enabled(&settings) => {
+            Ok(settings)
+                if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
+            {
                 ctx.data.whale_session(session_from_payload(&payload)).await
             }
             Ok(_) => Ok(json!({"status": "disabled"})),

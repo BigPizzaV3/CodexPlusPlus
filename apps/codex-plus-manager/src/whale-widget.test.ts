@@ -1,73 +1,65 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
-
 const fragment = (name: string) => readFileSync(new URL(`../../../assets/inject/renderer-inject/${name}`, import.meta.url), "utf8");
-const source = fragment("97-whale-widget.js");
+const source = fragment("96-whale-compat.js") + "\n" + fragment("97-whale-widget.js");
 type Listener = (event: any) => void;
-
-function fixture({ enabled = true, prefs = {}, failStorage = false } = {}) {
-  const timers = new Map<number, { callback: () => void; at: number }>();
-  const stored = new Map<string, string>([["codexPlus.whaleWidget.v1", JSON.stringify(prefs)]]);
-  let timerId = 0, now = 100000, activeSession = "session-one", activeProfile = "profile-one", settingsEnabled = enabled;
-  let quotaFailure = failStorage;
-  const requests: Array<{ path: string; payload: any; resolve: (value: any) => void; reject: (error: Error) => void }> = [];
+function fixture({ enabled = true, legacy = null as any, savedConfig = true } = {}) {
+  let now = 100000, serial = 0, on = enabled, sessionId = "session-one", profileId = "profile-one", sizeSaves = 0;
+  const timers = new Map<number, () => void>(), storage = new Map<string, string>(), requests: any[] = [], dispatcherListeners = new Map<string, Listener[]>();
+  if (legacy) storage.set("codexPlus.whaleWidget.v1", JSON.stringify(legacy));
   class Element {
-    tagName: string;
-    children: Element[] = [];
-    parentElement: Element | null = null;
-    attrs: Record<string, string> = {};
-    dataset: Record<string, string> = {};
-    style: any = { setProperty(key: string, value: string) { this[key] = value; } };
-    listeners = new Map<string, Set<Listener>>();
-    hidden = false; textContent = ""; innerHTML = ""; className = ""; id = ""; type = ""; value = ""; checked = false;
+    tagName: string; children: any[] = []; parentNode: any = null; attrs: any = {}; value = ""; textContent = ""; className = "";
+    listeners = new Map<string, Set<Listener>>(); style: any = { setProperty() {} };
     constructor(tag: string) { this.tagName = tag.toUpperCase(); }
-    get isConnected(): boolean { return this === body || this.parentElement?.isConnected === true; }
-    append(...children: Element[]) { for (const child of children) this.appendChild(child); }
-    appendChild(child: Element) { child.parentElement = this; this.children.push(child); return child; }
-    replaceChildren(...children: Element[]) { for (const child of this.children) child.parentElement = null; this.children = []; this.append(...children); }
-    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
+    appendChild(node: any) { node.parentNode?.removeChild(node); node.parentNode = this; this.children.push(node); return node; }
+    removeChild(node: any) { this.children = this.children.filter((n) => n !== node); node.parentNode = null; return node; }
     setAttribute(name: string, value: string) { this.attrs[name] = value; }
-    addEventListener(name: string, listener: Listener) { if (!this.listeners.has(name)) this.listeners.set(name, new Set()); this.listeners.get(name)!.add(listener); }
+    getAttribute(name: string) { return this.attrs[name]; }
+    remove() { this.parentNode?.removeChild(this); }
+    addEventListener(name: string, listener: Listener) { const set = this.listeners.get(name) || new Set(); set.add(listener); this.listeners.set(name, set); }
     removeEventListener(name: string, listener: Listener) { this.listeners.get(name)?.delete(listener); }
-    emit(name: string, event: any = {}) { for (const listener of this.listeners.get(name) || []) listener({ type: name, target: this, preventDefault() {}, ...event }); }
-    setPointerCapture() {} focus() {}
+    emit(name: string, event: any = {}) { for (const listener of this.listeners.get(name) || []) listener({ type: name, ...event }); }
+    dispatchEvent(event: any) { this.emit(event.type, event); }
   }
-  const body = new Element("body");
-  const document = Object.assign(new Element("document"), { body, hidden: false, createElement: (tag: string) => new Element(tag) });
-  const window: any = Object.assign(new Element("window"), { innerWidth: 1024, innerHeight: 768, __CODEX_PLUS_WHALE_IMAGE__: "data:image/png;base64," + readFileSync(new URL("../../../assets/inject/upstream/whale-widget/DSniang1.png", import.meta.url)).toString("base64") });
-  class ClockDate extends Date { static now() { return now; } }
-  const context = createContext({
-    window, document, Date: ClockDate, Uint8Array,
-    localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { if (quotaFailure) throw new Error("quota"); stored.set(key, value); } },
-    codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: {},
-    codexPlusSettings: () => ({ whaleWidget: settingsEnabled }),
-    currentSessionRef: () => ({ session_id: activeSession }),
-    codexRemoteSessionActiveProfile: () => ({ id: activeProfile }),
-    registerCodexPlusExtensionSelector: () => true,
-    postJson: (path: string, payload: any) => new Promise((resolve, reject) => requests.push({ path, payload, resolve, reject })),
-    setTimeout: (callback: () => void, delay: number) => { const id = ++timerId; timers.set(id, { callback, at: now + delay }); return id; },
-    clearTimeout: (id: number) => timers.delete(id),
-  });
-  const inject = () => runInContext(`(()=>{${source}\nglobalThis.whale={sync:syncCodexPlusWhaleWidget,state:codexPlusWhaleState,poll:codexPlusWhalePoll,save:codexPlusWhaleSavePrefs,normalize:codexPlusWhaleNormalizePrefs,alerts:codexPlusWhaleCheckAlerts,observe:codexPlusWhaleObserveTurn,upload:codexPlusWhaleUpload,settings:codexPlusWhaleSettings,amount:codexPlusWhaleAmount};})()`, context);
-  inject();
-  const api = () => context.whale as any;
-  const settle = async () => { for (let index = 0; index < 6; index++) await Promise.resolve(); };
-  return {
-    api, inject, document, window, body, timers, stored, requests, settle, context,
-    enable(value: boolean) { settingsEnabled = value; api().sync(); },
-    switchSession(id: string) { activeSession = id; api().sync(); },
-    switchProfile(id: string) { activeProfile = id; api().sync(); },
-    tick(ms: number) { now += ms; const callbacks = [...timers].filter(([, item]) => item.at <= now); for (const [id, item] of callbacks) { timers.delete(id); item.callback(); } },
-    setQuota(value: boolean) { quotaFailure = value; },
+  const body = new Element("body"), head = new Element("head"), document = Object.assign(new Element("document"), { body, head, hidden: false, createElement: (tag: string) => new Element(tag), createElementNS: (_ns: string, tag: string) => new Element(tag) });
+  const audioContexts: any[] = [], observers: any[] = [];
+  class Context { closed = false; suspended = false; constructor() { audioContexts.push(this); } close() { this.closed = true; return Promise.resolve(); } suspend() { this.suspended = true; return Promise.resolve(); } }
+  class Observer { disconnected = false; constructor(_callback: Listener) { observers.push(this); } observe() {} disconnect() { this.disconnected = true; } }
+  const window: any = Object.assign(new Element("window"), { innerWidth: 1024, innerHeight: 768, location: { origin: "https://codex.test" }, fetch, AudioContext: Context, MutationObserver: Observer, Image: class extends Element { constructor() { super("img"); } }, Audio: class extends Element { constructor() { super("audio"); } }, __CODEX_PLUS_WHALE_ASSETS__: { "Ya1.mp3": "data:audio/mpeg;base64," + readFileSync(new URL("../../../assets/inject/upstream/whale-widget/Ya1.mp3", import.meta.url)).toString("base64") }, __codexPlusRemoteSessionRecoveryDispatcher: { subscribe(method: string, callback: Listener) { const list = dispatcherListeners.get(method) || []; list.push(callback); dispatcherListeners.set(method, list); return () => dispatcherListeners.set(method, (dispatcherListeners.get(method) || []).filter((item) => item !== callback)); } } });
+  const amounts = { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, totalTokens: 120 };
+  const history: any = { status: "ok", complete: true, periods: Object.fromEntries(["today", "week", "month", "all"].map((key) => [key, { usage: amounts }])), models: [{ model: "gpt-test" }], codex: { ok: true, sessions: 1, days7: [{ date: "2026-10-08", tokens: 120 }] }, today: { modelTotal: null, models: [{ model: "gpt-test", cost: null }] }, days7: [], all: { days: [], events: [] }, records: [], rateLimits: [] };
+  const session: any = { status: "ok", sessionId, model: "gpt-test", total: amounts, today: amounts, lastTurn: { id: "turn-one", status: "running", usage: amounts }, rateLimits: [] };
+  const full: any = { "/dsh-whale/size.json": { ok: true, hasSavedConfig: savedConfig, sound: false, scale: 1.5 }, "/dsh-whale/api-models.json": { ok: true, codexStatsOn: true, models: [{ id: "codex", codex: {} }], relayProfiles: [{ id: "profile-one", name: "Test profile" }] }, "/dsh-whale/usage-records.json": { ok: true, today: { total: 8, currency: "USD", source: "balance-corrected" }, days7: [], all: { days: [], events: [] } }, "/dsh-whale/roles.json": { ok: true, roles: [{ id: "default", name: "小鲸鱼" }] }, "/dsh-whale/bubble.json": { ok: true, config: { items: [] } }, "/dsh-whale/usage-settings.json": { ok: true, settings: {} } };
+  let responder: any = async (path: string, payload: any) => {
+    if (path === "/whale/session") return structuredClone(session);
+    if (path === "/whale/history") return structuredClone(history);
+    if (payload.path === "/dsh-whale/size.json" && payload.method === "PUT") { sizeSaves++; full[payload.path] = { ...payload.body, ok: true, hasSavedConfig: true }; }
+    if (payload.path === "/dsh-whale/roles.json" && payload.method === "POST") full[payload.path].roles.push({ id: "imported", name: payload.body.name, url: "/dsh-whale/role-image.png?id=imported" });
+    return { status: 200, body: structuredClone(full[payload.path] || { ok: true }) };
   };
+  window.__CODEX_PLUS_WHALE_ENGINE__ = (...env: any[]) => {
+    const [win, doc, _fetch, _storage, timeout, _clear, interval, _clearInterval, raf, _cancel, Mutation, _Resize, Audio] = env;
+    const root = doc.createElement("div"); win.__codexPlusWhaleHost.attach(root); doc.body.appendChild(root); doc.head.appendChild(doc.createElement("style"));
+    win.addEventListener("pointerdown", () => {}); doc.addEventListener("keydown", () => {});
+    timeout(() => {}, 100); interval(() => {}, 1000); raf(() => {});
+    new Mutation(() => {}).observe(doc.body); new Audio();
+    win.__codexPlusWhaleHost.bind({ root: doc.body.children.at(-1), pollWaitState() {}, pollLastTurn() {}, refresh() {} });
+  };
+  class ClockDate extends Date { static now() { return now; } }
+  const context = createContext({ window, document, console, Response, Event, Uint8Array, URL, atob, fetch, Date: ClockDate, globalThis: undefined,
+    codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: {}, codexPlusSettings: () => ({ whaleWidget: on }), currentSessionRef: () => ({ session_id: sessionId }), codexRemoteSessionActiveProfile: () => ({ id: profileId }), registerCodexPlusExtensionSelector: () => true,
+    localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
+    postJson: (path: string, payload: any) => { requests.push({ path, payload }); return responder(path, payload); },
+    setTimeout: (callback: () => void) => { const id = ++serial; timers.set(id, callback); return id; }, clearTimeout: (id: number) => timers.delete(id), requestAnimationFrame: (callback: () => void) => { const id = ++serial; timers.set(id, callback); return id; }, cancelAnimationFrame: (id: number) => timers.delete(id),
+  });
+  const inject = () => runInContext(`(()=>{${source}\nwindow.fixture={sync:syncCodexPlusWhaleWidget,state:codexPlusWhaleState,create:createCodexPlusWhaleFullRuntime};})()`, context);
+  inject();
+  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  return { window, document, body, head, timers, storage, requests, audioContexts, observers, history, session, full, context, settle, inject, get state() { return window.fixture.state; }, get runtime() { return window.fixture.state.runtime; }, create() { return window.fixture.create(); }, sync() { window.fixture.sync(); }, enable(value: boolean) { on = value; window.fixture.sync(); }, profile(value: string) { profileId = value; window.fixture.sync(); }, thread(value: string) { sessionId = value; window.fixture.sync(); }, emit(method: string, params: any, id?: string) { for (const callback of dispatcherListeners.get(method) || []) callback(id ? { id, params } : params); }, get sizeSaves() { return sizeSaves; }, responder(fn: any) { responder = fn; }, tick(ms: number) { now += ms; }, dispatcherListeners };
 }
-
-const usage = { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, totalTokens: 120 };
-const session = (status = "running", id = "turn-one") => ({ status: "ok", sessionId: "session-one", today: usage, total: usage, lastTurn: { id, status, usage }, rateLimits: [] });
-const balance = (total = 10, observedToday: number | null = 2) => ({ status: "ok", provider: { id: "account-one", name: "Provider" }, balances: [{ currency: "USD", total, observedToday }], stale: false });
-
 function settingsFixture() {
   const style = fragment("10-style.js");
   const writes: Array<[string, unknown]> = [];
@@ -81,245 +73,201 @@ function settingsFixture() {
   return { context, writes };
 }
 
-test("widget is opt in and follows the enhancement master switch and backend saves", async () => {
+
+test("widget remains opt in and follows master settings", async () => {
   const { context, writes } = settingsFixture();
   assert.equal(context.codexPlusSettings().whaleWidget, false);
   context.codexPlusBackendSettings = { codexAppWhaleWidgetEnabled: true };
   assert.equal(context.codexPlusSettings().whaleWidget, true);
   context.codexPlusBackendSettings.enhancementsEnabled = false;
   assert.equal(context.codexPlusSettings().whaleWidget, false);
-  context.setCodexPlusSetting("whaleWidget", true); await Promise.resolve();
-  assert.deepEqual(writes, [["codexAppWhaleWidgetEnabled", true]]);
-  const f = fixture({ enabled: false }); f.api().sync();
-  assert.equal(f.body.children.length, 0); assert.equal(f.requests.length, 0); assert.equal(f.timers.size, 0);
+  const f = fixture({ enabled: false }); f.sync(); await f.settle();
+  assert.equal(f.requests.length, 0); assert.equal(f.timers.size, 0); assert.equal(f.body.children.length, 0);
 });
 
-test("slow polling has one owner and repeated scans do not duplicate requests", async () => {
-  const f = fixture(); f.api().sync();
-  assert.equal(f.requests.length, 2); assert.equal(f.timers.size, 3);
-  for (let i = 0; i < 20; i++) f.api().sync();
-  assert.equal(f.requests.length, 2); assert.equal(f.body.children.length, 1);
-  f.requests[0].resolve(balance()); f.requests[1].resolve(session()); await f.settle();
-  f.tick(10000); assert.equal(f.requests.length, 3); assert.equal(f.requests[2].path, "/whale/session");
-  f.requests[2].resolve(session()); await f.settle();
-  f.tick(50000); assert.equal(f.requests.filter(item => item.path === "/whale/balance").length, 2);
-  assert.equal(f.timers.size, 3);
+test("complete upstream engine is preserved with verified Codex adapter anchors", () => {
+  const raw = readFileSync(new URL("../../../assets/inject/upstream/whale-widget/full-widget.js", import.meta.url), "utf8");
+  assert.equal(createHash("sha256").update(raw).digest("hex"), "391806b8d4fd7c77a1711e02f58360e641f97b97bfb9085049031365007301b0");
+  const full = readFileSync(new URL("../../../assets/inject/upstream/whale-widget/full-widget-codex.js", import.meta.url), "utf8");
+  assert.doesNotThrow(() => new Function(full));
+  for (const entry of ["openSoundSettingsPanel", "bubbleModuleWizard", "bubblePickChoiceStep", "confirmAudioCrop", "confirmCrop", "openSnapModal", "openResManager"]) assert.match(full, new RegExp("function " + entry));
 });
 
-test("switching threads and disabling discard pending data and history completion", async () => {
-  const f = fixture(); f.api().sync();
-  const oldSession = f.requests[1];
-  f.switchSession("session-two");
-  oldSession.resolve(session("completed")); await f.settle();
-  assert.equal(f.api().state.session, null); assert.equal(f.api().state.message, "");
-  assert.equal(f.requests.at(-1)!.payload.session_id, "session-two");
-  const pending = f.requests.at(-1)!; f.enable(false); pending.resolve(session()); await f.settle();
-  assert.equal(f.body.children.length, 0); assert.equal(f.api().state.session, null); assert.equal(f.timers.size, 0);
-  assert.equal(f.document.listeners.get("visibilitychange")?.size, 0);
+test("repeated scans mount one complete engine; disable frees every native resource", async () => {
+  const f = fixture(); f.sync(); await f.settle();
+  for (let i = 0; i < 20; i++) f.sync();
+  assert.equal(f.body.children.length, 1); assert.equal(f.head.children.length, 1);
+  assert.equal(f.requests.filter((r) => r.payload?.path === "/dsh-whale/size.json").length, 1);
+  assert.equal(f.window.__dshWhaleInit, undefined);
+  assert.equal(f.runtime.state.nodes.size, 2);
+  f.enable(false);
+  assert.equal(f.body.children.length, 0); assert.equal(f.head.children.length, 0); assert.equal(f.timers.size, 0);
+  assert.ok(f.audioContexts.every((audio) => audio.closed)); assert.ok(f.observers.every((observer) => observer.disconnected));
+  assert.ok([...f.document.listeners.values(), ...f.window.listeners.values()].every((listeners) => listeners.size === 0));
 });
 
-test("profile changes discard old balance and clear old session state", async () => {
-  const f = fixture(); f.api().sync();
-  const old = f.requests[0]; f.switchProfile("profile-two"); old.resolve(balance()); await f.settle();
-  assert.equal(f.api().state.balance, null); assert.equal(f.api().state.session, null);
-  assert.equal(f.requests.filter(item => item.path === "/whale/balance").length, 2);
+test("profile switch and reinjection clean old scope and preserve opt-in state", async () => {
+  const f = fixture(); f.sync(); await f.settle(); const old = f.runtime;
+  f.profile("two"); await f.settle(); assert.equal(old.state.disposed, true); assert.equal(f.body.children.length, 1);
+  f.inject(); f.sync(); await f.settle(); assert.equal(f.body.children.length, 1); assert.equal(f.head.children.length, 1);
 });
 
-test("hidden pages stop polling and resume without replaying historical completion", async () => {
-  const f = fixture(); f.api().sync();
-  f.requests[1].resolve(session()); await f.settle();
+test("hidden windows suspend timers, observers, and audio; bridge polling is gated", async () => {
+  const f = fixture(); f.sync(); await f.settle(); const runtime = f.runtime;
   f.document.hidden = true; f.document.emit("visibilitychange");
-  assert.equal(f.timers.size, 0); assert.equal(f.api().state.previousTurn, null);
-  f.requests[0].resolve(balance()); await f.settle(); assert.equal(f.api().state.balance, null);
-  f.document.hidden = false; f.document.emit("visibilitychange");
-  f.requests.at(-1)!.resolve(session("completed")); await f.settle();
-  assert.equal(f.api().state.message, ""); assert.equal(f.timers.size, 1);
+  assert.equal(f.timers.size, 0); assert.ok(f.audioContexts.every((audio) => audio.suspended));
+  const count = f.requests.length; await assert.rejects(runtime.fetch("/dsh-whale/balance.json")); assert.equal(f.requests.length, count);
+  f.document.hidden = false; f.document.emit("visibilitychange"); assert.ok(f.timers.size > 0);
 });
 
-test("reinjection cleans the old node, timer and listeners", () => {
-  const f = fixture(); f.api().sync(); const old = f.api().state;
-  f.inject(); f.api().sync();
-  assert.equal(old.disposed, true); assert.equal(old.root, null);
-  assert.equal(f.body.children.length, 1); assert.equal(f.timers.size, 3);
-  assert.equal(f.document.listeners.get("visibilitychange")?.size, 1);
+test("actual builtin audio bytes use local assets; custom groups never fall back to duck", async () => {
+  const f = fixture(); const runtime = f.create();
+  const response = await runtime.fetch("/dsh-whale/audio-fragment.wav?id=ya1");
+  const original = readFileSync(new URL("../../../assets/inject/upstream/whale-widget/Ya1.mp3", import.meta.url));
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), original); assert.equal(f.requests.length, 0);
+  await runtime.fetch("/dsh-whale/sound/press.mp3?set=custom-group");
+  assert.equal(f.requests.at(-1).payload.path, "/dsh-whale/sound/press.mp3");
+  await assert.rejects(runtime.fetch("https://external.example/key")); runtime.dispose();
 });
 
-test("completion only follows an observed running to completed transition in the same turn", () => {
-  const f = fixture(); f.api().sync();
-  f.api().observe(session("completed")); assert.equal(f.api().state.message, "");
-  f.api().observe(session("running")); f.api().observe(session("completed", "other-turn")); assert.equal(f.api().state.message, "");
-  f.api().observe(session("running", "fresh-turn")); f.api().observe(session("completed", "fresh-turn"));
-  assert.match(f.api().state.message, /任务完成/);
-  f.api().state.message = ""; f.api().observe(session("completed", "fresh-turn")); assert.equal(f.api().state.message, "");
+test("embedded audio remains playable when native data fetch is blocked by the host CSP", async () => {
+  const f = fixture(); let networkCalls = 0;
+  f.window.fetch = async () => { networkCalls++; throw new Error("connect-src blocks data URLs"); };
+  const runtime = f.create();
+  const original = readFileSync(new URL("../../../assets/inject/upstream/whale-widget/Ya1.mp3", import.meta.url));
+  const response = await runtime.fetch("/dsh-whale/audio-fragment.wav?id=ya1");
+  assert.equal(response.headers.get("Content-Type"), "audio/mpeg");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), original);
+  const direct = await runtime.fetch(f.window.__CODEX_PLUS_WHALE_ASSETS__["Ya1.mp3"]);
+  assert.deepEqual(Buffer.from(await direct.arrayBuffer()), original);
+  assert.equal(networkCalls, 0); assert.equal(f.requests.length, 0);
+  runtime.dispose();
 });
 
-test("account thresholds notify once per day and ignore missing or stale balances", () => {
-  const f = fixture({ prefs: { thresholds: { USD: { low: 5, budget: 3 } } } }); f.api().sync();
-  f.api().alerts({ ...balance(2, 4), stale: true }); assert.equal(f.api().state.message, "");
-  f.api().alerts(balance(null as unknown as number, null)); assert.equal(f.api().state.message, "");
-  f.api().alerts(balance(2, 4)); assert.match(f.api().state.message, /余额低于/); assert.match(f.api().state.message, /达到预算/);
-  f.api().state.message = ""; f.api().alerts(balance(1, 5)); assert.equal(f.api().state.message, "");
-  f.inject(); f.api().sync(); f.api().alerts(balance(1, 5)); assert.equal(f.api().state.message, "");
-  f.api().alerts({ ...balance(1, 5), provider: { id: "account-two" } }); assert.match(f.api().state.message, /余额低于/);
+test("request method, query and body round trip through a private bridge", async () => {
+  const f = fixture(); const runtime = f.create();
+  await runtime.fetch("/dsh-whale/audio.json?set=one", { method: "POST", body: JSON.stringify({ action: "save-group", name: "Test", press: "ya1", release: "" }) });
+  assert.equal(f.requests[0].path, "/whale/full");
+  assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0].payload)), { path: "/dsh-whale/audio.json", method: "POST", query: { set: "one" }, body: { action: "save-group", name: "Test", press: "ya1", release: "" } }); runtime.dispose();
 });
 
-test("unknown values remain unknown and unsupported providers leave Codex usage usable", async () => {
-  const f = fixture(); f.api().sync();
-  f.requests[0].resolve({ status: "unsupported", message: "ignored implementation detail" });
-  f.requests[1].resolve({ ...session(), today: null, total: null }); await f.settle();
-  assert.match(f.api().state.elements.balance.textContent, /当前供应商未提供余额数据/);
-  assert.doesNotMatch(f.api().state.elements.balance.textContent, /implementation/);
-  assert.match(f.api().state.elements.session.textContent, /今日 — tokens · 累计 — tokens/);
-  assert.equal(f.api().amount(null), "—"); assert.equal(f.api().amount(0), "0");
+test("fast native turns notify once and thread changes align historical completion", async () => {
+  const f = fixture(); const runtime = f.create(); runtime.subscribe();
+  f.emit("turn/started", { threadId: "session-one", turn: { id: "fast", status: "running" } });
+  f.emit("turn/completed", { threadId: "session-one", turn: { id: "fast", status: "completed" } });
+  assert.equal(runtime.state.seq, 1);
+  f.emit("turn/completed", { threadId: "session-one", turn: { id: "fast", status: "completed" } }); assert.equal(runtime.state.seq, 1);
+  f.emit("turn/started", { threadId: "other-thread", turn: { id: "unrelated" } }); assert.equal(runtime.state.turn.id, "fast"); runtime.dispose();
 });
 
-test("dragging clamps and snaps; taps remain clickable and keyboard movement is bounded", () => {
-  const f = fixture(); f.api().sync(); const pet = f.api().state.elements.pet;
-  pet.emit("pointerdown", { button: 0, pointerId: 1, clientX: 920, clientY: 680 });
-  pet.emit("pointermove", { pointerId: 1, clientX: -1000, clientY: -1000 });
-  pet.emit("pointerup", { pointerId: 1 });
-  assert.equal(f.api().state.root.style.left, "8px"); assert.equal(f.api().state.root.style.top, "8px");
-  pet.emit("click", { detail: 1 }); assert.equal(f.api().state.bubbleOpen, false);
-  pet.emit("click", { detail: 0 }); assert.equal(f.api().state.bubbleOpen, true);
-  f.api().state.root.emit("keydown", { target: pet, key: "ArrowLeft" }); assert.equal(f.api().state.root.style.left, "8px");
-  f.api().state.root.emit("keydown", { target: pet, key: "Escape" }); assert.equal(f.api().state.bubbleOpen, false);
-  assert.ok(f.stored.has("codexPlus.whaleWidget.v1"));
+test("approval and input sound events clear when actual request is resolved", () => {
+  const f = fixture(); const runtime = f.create(); runtime.subscribe();
+  runtime.nativeEnvelope({ type: "mcp-request", message: { method: "item/tool/requestUserInput", id: "request-1", params: { threadId: "session-one", itemId: "question-one" } } });
+  assert.equal(runtime.state.pendingWait.kind, "question");
+  runtime.nativeEnvelope({ method: "serverRequest/resolved", params: { threadId: "other-thread", requestId: "request-1" } }); assert.ok(runtime.state.pendingWait);
+  runtime.nativeEnvelope({ method: "serverRequest/resolved", params: { threadId: "session-one", requestId: "request-1" } }); assert.equal(runtime.state.pendingWait, null);
+  f.emit("item/commandExecution/requestApproval", { threadId: "session-one", itemId: "command-one" }, "approve-one");
+  runtime.nativeEnvelope({ message: { id: "approve-one", result: { decision: "accept" } } }); assert.equal(runtime.state.pendingWait, null); runtime.dispose();
 });
 
-test("preferences reject remote and SVG images, clamp size and retain plain text", () => {
-  const f = fixture();
-  for (const image of ["https://example.com/whale.png", "data:image/svg+xml;base64,PHN2Zz4=", "data:image/png;base64,%%%"]) assert.equal(f.api().normalize({ image }).image, "");
-  assert.equal(f.api().normalize({ size: 900 }).size, 371.5625);
-  assert.equal(f.api().normalize({ phrase: "<script>alert(1)</script>" }).phrase, "<script>alert(1)</script>");
-  f.api().sync(); f.api().state.prefs.phrase = "<b>plain text</b>"; f.api().save();
-  assert.equal(f.api().state.elements.message.textContent, "<b>plain text</b>");
+test("configured prices retain matching patterns and unknown prices remain unknown", async () => {
+  const f = fixture(); const runtime = f.create();
+  runtime.state.models = [{ id: "provider", matchIds: ["gpt"], price: { hit: "1", miss: "2", out: "3", cur: "USD", rate: "7" } }];
+  runtime.state.session = f.session; await runtime.history();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.requests.at(-1).payload.prices)), [{ model: "gpt", currency: "CNY", input: 14, cachedInput: 7, output: 21 }]);
+  runtime.state.models[0].price.hit = ""; assert.equal(runtime.prices().length, 0);
+  assert.equal(runtime.host.completionCost(null), "用量暂不可用");
+  runtime.host.complete({ amount: null, usage: { totalTokens: 120 } }, () => {}); assert.equal(runtime.host.completionCost(null), "120 tokens"); runtime.dispose();
 });
 
-test("quota errors keep the widget interactive and visible; subsequent writes recover", () => {
-  const f = fixture({ failStorage: true }); f.api().sync();
-  assert.equal(f.api().save(), false); assert.match(f.api().state.elements.notice.textContent, /本地存储已满/);
-  f.api().state.elements.pet.emit("click", { detail: 0 }); assert.equal(f.api().state.bubbleOpen, true);
-  f.setQuota(false); assert.equal(f.api().save(), true); assert.equal(f.api().state.elements.notice.hidden, true);
+test("dollar quotes require an explicit exchange rate and disabled statistics read no logs", async () => {
+  const f = fixture(); const runtime = f.create();
+  runtime.state.models = [{ id: "provider", matchIds: ["gpt"], price: { hit: 1, miss: 2, out: 3, cur: "USD" } }];
+  assert.equal(runtime.prices().length, 0);
+  runtime.state.codexStatsOn = false; runtime.subscribe();
+  f.emit("turn/started", { threadId: "session-one", turn: { id: "native-only" } });
+  f.emit("turn/completed", { threadId: "session-one", turn: { id: "native-only", status: "completed" } });
+  await runtime.session(); await runtime.history();
+  assert.equal(f.requests.length, 0); assert.equal(runtime.state.seq, 1); runtime.dispose();
 });
 
-test("uploads reject oversized, SVG and spoofed image files before decoding", async () => {
-  const f = fixture(); f.api().sync();
-  await f.api().upload({ type: "image/svg+xml", size: 20 }); assert.match(f.api().state.message, /仅支持/);
-  await f.api().upload({ type: "image/png", size: 1024 * 1024 + 1 }); assert.match(f.api().state.message, /仅支持/);
-  await f.api().upload({ type: "image/png", size: 12, slice: () => ({ arrayBuffer: async () => new TextEncoder().encode("<svg>bad</svg>").buffer }) });
-  assert.match(f.api().state.message, /内容与格式不符/); assert.equal(f.api().state.prefs.image, "");
+test("automatic quota and token modules preserve unknown values while indexing", () => {
+  const full = readFileSync(new URL("../../../assets/inject/upstream/whale-widget/full-widget-codex.js", import.meta.url), "utf8");
+  const context = createContext({ apiQuotaOf: () => ({ mode: "auto", total: 100, autoUsed: null }) });
+  runInContext(full.slice(full.indexOf("function apiQuotaInfo("), full.indexOf("function apiQuotaResetText(")), context);
+  assert.equal(context.apiQuotaInfo("test").used, null); assert.equal(context.apiQuotaInfo("test").left, null);
+  assert.equal(context.apiQuotaPctText("test"), "—"); assert.equal(context.apiQuotaTotalText("test"), "100");
 });
 
-
-test("balance protocol edits invalidate old units immediately, and account scope separates alerts", async () => {
-  const f = fixture({ prefs: { thresholds: { USD: { low: 5 } } } }); f.api().sync();
-  const old = f.requests[0];
-  f.context.codexPlusBackendSettings.codexAppWhaleBalanceScale = 1000;
-  f.api().sync(); old.resolve(balance()); await f.settle();
-  assert.equal(f.api().state.balance, null);
-  assert.equal(f.requests.filter(item => item.path === "/whale/balance").length, 2);
-  f.api().alerts({ ...balance(2), provider: { id: "same-profile", accountId: "scope-first" } });
-  f.api().state.message = "";
-  f.api().alerts({ ...balance(2), provider: { id: "same-profile", accountId: "scope-second" } });
-  assert.match(f.api().state.message, /余额低于/);
+test("local cost estimates preserve account ledger and corrected currency", async () => {
+  const f = fixture(); const runtime = f.create(); f.history.today.modelTotal = 3;
+  const response = await runtime.fetch("/dsh-whale/usage-records.json"), data = await response.json();
+  assert.equal(data.today.total, 8); assert.equal(data.today.currency, "USD"); assert.equal(data.today.source, "balance-corrected"); assert.equal(data.today.modelTotal, 3); runtime.dispose();
 });
 
-test("a stuck bridge times out and a later poll recovers without applying its late response", async () => {
-  const f = fixture(); f.api().sync(); const old = f.requests[1];
-  f.tick(15000); await f.settle();
-  assert.equal(f.api().state.session.status, "unavailable");
-  f.tick(10000); const next = f.requests.at(-1)!; assert.equal(next.path, "/whale/session");
-  next.resolve(session("running", "new-turn")); await f.settle();
-  old.resolve(session("completed", "old-turn")); await f.settle();
-  assert.equal(f.api().state.session.lastTurn.id, "new-turn");
-  f.enable(false); assert.equal(f.timers.size, 0);
+test("partial scans are visibly marked and expose only actual token totals", async () => {
+  const f = fixture(); const runtime = f.create(); f.history.status = "partial"; f.history.complete = false;
+  const data = await (await runtime.fetch("/dsh-whale/api-models.json")).json();
+  assert.equal(data.models[0].codex.complete, false); assert.ok(data.models[0].codex.deferred > 0);
+  assert.equal(runtime.host.tokens("today"), "120"); runtime.dispose();
 });
 
-test("bubble stays inside a narrow viewport when the character is near its middle", () => {
-  const f = fixture({ prefs: { x: 130, y: 120 } }); f.window.innerWidth = 400; f.window.innerHeight = 300; f.api().sync();
-  const state = f.api().state;
-  const left = parseFloat(state.root.style.left) + parseFloat(state.elements.bubble.style.left);
-  assert.ok(left >= 8); assert.ok(left + 330 <= 392);
-  assert.equal(state.root.dataset.vertical, "above");
+test("legacy uploaded role and explicit mute migrate once without replacing saved full settings", async () => {
+  const f = fixture({ legacy: { image: "data:image/png;base64,aGVsbG8=", size: 100, x: 800, y: 600, sound: false, phrase: "陪你写代码", thresholds: { USD: { low: 5 } } }, savedConfig: false });
+  f.sync(); await f.settle(); assert.equal(f.storage.get("codexPlus.whale.full.v1.dshw-role"), "imported");
+  assert.equal(f.full["/dsh-whale/size.json"].sound, false); assert.equal(f.sizeSaves, 1);
+  f.enable(false); f.enable(true); await f.settle(); assert.equal(f.sizeSaves, 1);
+  const existing = fixture({ legacy: { sound: true, image: "data:image/png;base64,aGVsbG8=" }, savedConfig: true }); existing.sync(); await existing.settle(); assert.equal(existing.sizeSaves, 0);
 });
 
-test("valid local raster upload persists; a late decoder cannot replace a newer reset", async () => {
-  const f = fixture(); f.api().sync();
-  const pendingImages: any[] = [];
-  const data = "data:image/png;base64,iVBORw0KGgo=";
-  f.context.FileReader = class { result = data; onload?: () => void; readAsDataURL() { this.onload?.(); } };
-  f.context.Image = class { naturalWidth = 24; naturalHeight = 24; onload?: () => void; set src(_value: string) { pendingImages.push(this); } };
-  const file = { type: "image/png", size: 8, slice: () => ({ arrayBuffer: async () => new Uint8Array([137,80,78,71,13,10,26,10]).buffer }) };
-  const first = f.api().upload(file); await f.settle(); pendingImages[0].onload(); await first;
-  assert.equal(f.api().state.prefs.image, data);
-  assert.equal(JSON.parse(f.stored.get("codexPlus.whaleWidget.v1")!).image, data);
-  const second = f.api().upload(file); await f.settle(); f.api().state.imageRevision += 1; f.api().state.prefs.image = "";
-  pendingImages[1].onload(); await second; assert.equal(f.api().state.prefs.image, "");
+test("disposal rejects late media and prevents async style reattachment", async () => {
+  const f = fixture(); const runtime = f.create(); const doc = runtime.environment[1]; const node = doc.createElement("style"); runtime.dispose();
+  doc.head.appendChild(node); assert.equal(f.head.children.length, 0); assert.throws(() => doc.createElement("div"));
 });
 
-
-test("native turn events catch short tasks and unsubscribe without double completion", async () => {
-  const f = fixture(); const listeners = new Map<string, Set<(value: any) => void>>();
-  f.window.__codexPlusRemoteSessionRecoveryDispatcher = { subscribe(method: string, callback: (value: any) => void) {
-    if (!listeners.has(method)) listeners.set(method, new Set()); listeners.get(method)!.add(callback);
-    return () => listeners.get(method)!.delete(callback);
-  } };
-  const emit = (method: string, threadId = "session-one", id = "short-turn") => { for (const callback of listeners.get(method) || []) callback({ threadId, turn: { id } }); };
-  f.api().sync(); f.api().sync(); assert.equal(listeners.get("turn/started")!.size, 1);
-  f.requests[1].resolve(session("completed", "previous-turn")); await f.settle();
-  emit("turn/started", "another-session"); emit("turn/completed", "another-session"); assert.equal(f.api().state.message, "");
-  emit("turn/started"); emit("turn/completed"); assert.match(f.api().state.message, /任务完成/);
-  f.api().state.message = "";
-  f.api().observe(session("running", "short-turn")); f.api().observe(session("completed", "short-turn"));
-  assert.equal(f.api().state.message, "");
-  f.enable(false); assert.equal(listeners.get("turn/started")!.size, 0); assert.equal(listeners.get("turn/completed")!.size, 0);
+test("initialization errors have visible feedback and bounded retry", async () => {
+  const f = fixture(); f.responder(async () => { throw new Error("test bridge offline"); }); f.sync(); await f.settle();
+  assert.ok(f.state.notice); assert.match(f.state.notice.textContent, /10 秒/);
+  const count = f.requests.length; for (let i = 0; i < 100; i++) f.sync(); assert.equal(f.requests.length, count);
+  f.tick(10000); f.responder(async () => ({ status: 200, body: f.full["/dsh-whale/size.json"] })); f.sync(); await f.settle();
+  assert.ok(f.runtime.state.controls); assert.equal(f.state.notice, null); f.enable(false);
 });
 
-
-test("failed balance refresh displays its cached value without notifying and labels expired quota snapshots", async () => {
-  const f = fixture({ prefs: { thresholds: { USD: { low: 100 } } } }); f.api().sync();
-  f.requests[0].resolve({ ...balance(2), status: "unavailable", stale: true, message: "余额记录保存失败，今日观测消费暂不可用。" });
-  f.requests[1].resolve({ ...session(), rateLimits: [{ label: "5 小时", usedPercent: 24, resetAt: 1, observedAt: 0 }] });
-  await f.settle();
-  assert.match(f.api().state.elements.balance.textContent, /缓存，刷新失败/);
-  assert.match(f.api().state.elements.balance.textContent, /余额 2 USD/);
-  assert.match(f.api().state.elements.balance.textContent, /余额记录保存失败，今日观测消费暂不可用/);
-  assert.equal(f.api().state.message, "");
-  assert.match(f.api().state.elements.limits.textContent, /额度快照（已过期）/);
-  assert.match(f.api().state.elements.limits.textContent, /记录于/);
+test("native short turns are observed while initial configuration is pending", async () => {
+  const f = fixture(); let resolve!: (value: any) => void;
+  f.responder(() => new Promise((r) => { resolve = r; })); f.sync();
+  f.emit("turn/started", { threadId: "session-one", turn: { id: "during-init" } });
+  f.emit("turn/completed", { threadId: "session-one", turn: { id: "during-init", status: "completed" } });
+  assert.equal(f.runtime.state.seq, 1);
+  resolve({ status: 200, body: f.full["/dsh-whale/size.json"] }); await f.settle();
+  assert.equal(f.runtime.state.seq, 1); assert.ok(f.runtime.state.completed.has("during-init")); f.enable(false);
 });
 
-
-test("the original character is embedded, restore returns to it and the source bubble geometry is retained", () => {
-  const f = fixture(); f.api().sync();
-  const state = f.api().state;
-  assert.equal(state.elements.pet.children[0].src, f.window.__CODEX_PLUS_WHALE_IMAGE__);
-  assert.equal(state.elements.pet.children[0].alt, "小鲸鱼娘");
-  assert.match(state.elements.pop.innerHTML, /viewBox="0 0 1026 700"/);
-  assert.match(state.elements.pop.innerHTML, /M 827 248 A 373 232/);
-  assert.equal(parseFloat(state.elements.pop.style.width), state.prefs.size / 0.5945);
-  state.prefs.image = "data:image/png;base64,iVBORw0KGgo=";
-  f.api().settings();
-  state.elements.settings.children.find((item: any) => item.textContent === "恢复默认角色").emit("click");
-  assert.equal(state.elements.pet.children[0].src, f.window.__CODEX_PLUS_WHALE_IMAGE__);
+test("price edits invalidate old in-flight estimates before they can repaint", async () => {
+  const f = fixture(); const runtime = f.create(); let resolveOld!: (value: any) => void, historyCalls = 0;
+  runtime.state.models = [{ id: "model", matchIds: ["gpt"], price: { hit: 1, miss: 2, out: 3, cur: "CNY" } }];
+  f.responder(async (path: string) => {
+    if (path === "/whale/history") {
+      if (++historyCalls === 1) return new Promise((resolve) => { resolveOld = resolve; });
+      return { ...f.history, priceMarker: "new" };
+    }
+    return { status: 200, body: { ok: true, models: [{ id: "model", matchIds: ["gpt"], price: { hit: 7, miss: 8, out: 9, cur: "CNY" } }] } };
+  });
+  const old = runtime.history();
+  await runtime.fetch("/dsh-whale/api-models.json", { method: "POST", body: JSON.stringify({ action: "save" }) });
+  await runtime.history(); resolveOld({ ...f.history, priceMarker: "old" }); await old;
+  assert.equal(runtime.state.history.priceMarker, "new"); runtime.dispose();
 });
 
-test("press release and cancellation restore the original squash while menu and bubble stay separate", () => {
-  const f = fixture(); f.api().sync(); const state = f.api().state, pet = state.elements.pet;
-  pet.emit("pointerdown", {button: 0, pointerId: 1, clientX: 900, clientY: 680});
-  assert.equal(state.root.dataset.pressed, "true");
-  pet.emit("pointercancel", {pointerId: 1}); assert.equal(state.root.dataset.pressed, "false");
-  pet.emit("click", {detail: 0}); assert.equal(state.elements.pop.hidden, false); assert.equal(state.elements.bubble.hidden, true);
-  pet.emit("contextmenu"); assert.equal(state.elements.bubble.hidden, false); assert.equal(state.elements.pop.hidden, true);
-  state.root.emit("keydown", {target: pet, key: "Escape"}); assert.equal(state.elements.bubble.hidden, true);
-});
-
-test("placeholder defaults migrate without replacing uploaded characters and large sprites fit a small viewport", () => {
-  const f = fixture();
-  assert.equal(f.api().normalize({version: 1, size: 88}).size, f.api().normalize({}).size);
-  assert.equal(f.api().normalize({version: 1, size: 88, image: "data:image/png;base64,iVBORw0KGgo="}).size, 88);
-  f.window.innerWidth = 240; f.window.innerHeight = 260; f.api().state.prefs.size = 371.5625; f.api().sync();
-  const state = f.api().state;
-  assert.ok(parseFloat(state.root.style.width) < 240);
-  assert.ok(parseFloat(state.elements.pop.style.width) <= 224);
+test("turning statistics off discards both pending log summaries", async () => {
+  const f = fixture(); const runtime = f.create(); let resolveHistory!: (value: any) => void, resolveSession!: (value: any) => void;
+  f.responder((path: string) => {
+    if (path === "/whale/history") return new Promise((resolve) => { resolveHistory = resolve; });
+    if (path === "/whale/session") return new Promise((resolve) => { resolveSession = resolve; });
+    return Promise.resolve({ status: 200, body: { ok: true } });
+  });
+  const history = runtime.history(), session = runtime.session();
+  await runtime.fetch("/dsh-whale/size.json", { method: "PUT", body: JSON.stringify({ codexStatsOn: false }) });
+  resolveHistory(f.history); resolveSession(f.session); await Promise.all([history, session]);
+  assert.equal(runtime.state.history, null); assert.equal(runtime.state.session, null); assert.equal(runtime.host.tokens("today"), "—"); runtime.dispose();
 });

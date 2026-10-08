@@ -8,7 +8,7 @@ export const EN_PLAIN: Record<string, string> = {
   "挂件与桌宠": "Widgets and pets",
   "在 Codex 中查看用量，设置自己的角色和互动方式。": "View usage in Codex and customize your character and interactions.",
   "Codex 用量挂件": "Codex usage widget",
-  "显示当前会话 token、任务状态和订阅额度。点击角色旁的菜单，可上传角色图片、调整大小和提醒。": "Show current session tokens, task status and subscription limits. Use the widget settings to upload a character and adjust its size and alerts.",
+  "原版角色、泡泡编辑器、音效库和提醒，显示 Codex 会话与全机用量。点击角色旁的菜单配置。": "Original character, bubble editor, sound library and alerts, with Codex session and local usage. Open the menu beside the character to configure them.",
   "API 余额（可选）": "API balance (optional)",
   "跟随 Codex++ 当前供应商查询余额；Codex 订阅额度和本地 token 无需配置此项。": "Query the current Codex++ provider's balance. Codex subscription limits and local tokens work without this configuration.",
   "余额查询方式": "Balance source",

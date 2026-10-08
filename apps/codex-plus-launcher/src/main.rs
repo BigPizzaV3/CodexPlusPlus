@@ -836,6 +836,15 @@ impl BridgeDataService for LauncherDataService {
         .map_err(|error| anyhow::anyhow!("whale session task failed: {error}"))
     }
 
+    async fn whale_history(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_history::query_history(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale history task failed: {error}"))
+    }
+
     async fn find_archived_thread_by_title(
         &self,
         title: String,

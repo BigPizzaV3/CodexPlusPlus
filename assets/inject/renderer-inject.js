@@ -15947,626 +15947,602 @@
   if (window.__CODEX_PLUS_TEST_CUSTOM_LAYOUT__) {
     Object.assign(window.__CODEX_PLUS_TEST_CUSTOM_LAYOUT__, { normalizeLayout, clampRect, snapRect, rectToRecord, recordToRect });
   }
-  // 内置小鲸鱼：只通过 launcher 读取脱敏数据，角色和个人显示偏好保存在当前窗口的本地存储。
-  window.__codexPlusWhaleWidgetRuntime?.dispose?.();
-  const codexPlusWhaleStorageKey = "codexPlus.whaleWidget.v1";
-  const codexPlusWhaleMaxImageBytes = 1024 * 1024;
-  const codexPlusWhaleState = {
-    disposed: false, mounted: false, root: null, elements: {}, timer: null, generation: 0,
-    sessionId: "", profileId: "", balance: null, session: null, balanceDue: 0, sessionDue: 0,
-    balancePending: null, sessionPending: null, previousTurn: null, drag: null, suppressClick: false,
-    listeners: [], audio: null, bubbleOpen: false, settingsOpen: false, message: "", storageError: "",
-    prefs: null, imageRevision: 0, settingsCurrencies: "", pendingCancels: new Set(),
-    dispatcher: null, subscriptions: [], liveTurn: null, completedTurns: new Set(),
-  };
-
-  function codexPlusWhaleNumber(value) {
+  // 完整上游引擎的词法宿主：不替换页面全局 API；挂件关闭时释放所有副作用。
+  const codexPlusWhaleFullStoragePrefix = "codexPlus.whale.full.v1.";
+  function codexPlusWhaleFullNumber(value) {
     if (value === null || value === undefined || value === "") return null;
-    const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? number : null;
+    const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+  function codexPlusWhaleFullBuiltin(url) {
+    let parsed;
+    try { parsed = new URL(String(url), "https://codex-whale.invalid"); } catch { return ""; }
+    const path = parsed.pathname, id = parsed.searchParams.get("id"), set = parsed.searchParams.get("set");
+    const aliases = { "/dsh-whale/image.png": "DSniang1.png", "/dsh-whale/rua.gif": "rua.gif" };
+    const fragments = { ya1: "Ya1.mp3", ya2: "Ya2.mp3", d1: "D1.mp3", d2: "D2.mp3", exp_orb: "minecraft-exp-orb.wav", end_a: "task-end-a.wav", taskEnd: "task-end-a.wav" };
+    let file = aliases[path];
+    if (path === "/dsh-whale/audio-fragment.wav") file = fragments[id];
+    if (path === "/dsh-whale/bubble-img.png") file = ({ bimg_petpet: "bubble-petpet.gif", bimg_money1: "bubble-money1.gif" })[id];
+    if (/^\/dsh-whale\/sound\/(press|release)\.mp3$/.test(path) && (!set || set === "duck" || set === "fx1")) file = fragments[(set === "fx1" ? "d" : "ya") + (path.includes("press") ? "1" : "2")];
+    if (path === "/dsh-whale/role-image.png" && id === "default") file = "DSniang1.png";
+    return file ? window.__CODEX_PLUS_WHALE_ASSETS__?.[file] || (file === "DSniang1.png" ? window.__CODEX_PLUS_WHALE_IMAGE__ : "") || "" : "";
   }
 
-  function codexPlusWhaleImageSource(value) {
-    return typeof value === "string" && value.length <= 1400000
-      && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(value) ? value : "";
+  function codexPlusWhaleFullDataResponse(source) {
+    // 直接读取本地内嵌字节，避免 fetch(data:) 受到宿主 connect-src 限制。
+    const match = /^data:((?:audio|image)\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(source);
+    if (!match) throw new Error("不支持的本地媒体数据");
+    const bytes = Uint8Array.from(atob(match[2]), (character) => character.charCodeAt(0));
+    return new Response(bytes, { status: 200, headers: { "Content-Type": match[1] } });
   }
 
-  function codexPlusWhaleNormalizePrefs(value) {
-    const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    const amount = (value) => {
-      const number = codexPlusWhaleNumber(value);
-      return number !== null && number > 0 && number <= 1000000000 ? number : null;
+  function createCodexPlusWhaleFullRuntime() {
+    const state = { disposed: false, paused: document.hidden === true, timers: new Map(), rafs: new Map(), observers: new Set(), nodes: new Set(), listeners: [], audio: new Set(), pending: new Set(), media: new Map(), objectUrls: new Set(), subscriptions: [], dispatcher: null, sessionId: "", session: null, sessionAt: 0, sessionPending: null, history: null, historyAt: 0, historyPrices: "", historyPending: null, models: [], relayProfiles: [], turn: null, completed: new Set(), seq: 0, pendingWait: null, completion: null, controls: null, serial: 0 };
+    const isolated = Object.create(null);
+    const wrappedMedia = new WeakSet();
+    const storage = {
+      getItem(key) { return localStorage.getItem(codexPlusWhaleFullStoragePrefix + key); },
+      setItem(key, value) { return localStorage.setItem(codexPlusWhaleFullStoragePrefix + key, String(value)); },
+      removeItem(key) { return localStorage.removeItem(codexPlusWhaleFullStoragePrefix + key); },
     };
-    const thresholds = {};
-    for (const [currency, limits] of Object.entries(raw.thresholds || {}).slice(0, 20)) {
-      if (!/^[A-Z]{3,8}$/.test(currency) || !limits || typeof limits !== "object") continue;
-      thresholds[currency] = { low: amount(limits.low), budget: amount(limits.budget) };
+    try { state.seq = Math.max(0, Number(storage.getItem("dshw-last-seq")) || 0); } catch {}
+    state.initialSeq = state.seq;
+    state.priceRevision = 0;
+    state.statRevision = 0;
+    const active = () => !state.disposed;
+    function listen(target, name, callback, options) {
+      const wrapped = typeof callback === "function" ? function (event) { if (active()) callback.call(target, event); } : { handleEvent(event) { if (active()) callback?.handleEvent?.(event); } };
+      target.addEventListener(name, wrapped, options);
+      state.listeners.push({ target, name, callback, wrapped, options });
     }
-    const notices = {};
-    for (const [key, date] of Object.entries(raw.notices || {}).slice(-120)) {
-      if (key.length <= 240 && /^\d{4}-\d{2}-\d{2}$/.test(String(date))) notices[key] = date;
+    function unlisten(target, name, callback, options) {
+      for (let i = state.listeners.length - 1; i >= 0; i--) {
+        const entry = state.listeners[i];
+        if (entry.target === target && entry.name === name && entry.callback === callback) {
+          target.removeEventListener(name, entry.wrapped, options ?? entry.options); state.listeners.splice(i, 1);
+        }
+      }
     }
-    // 旧版占位鲸鱼的默认 88px 随原版角色迁移；用户上传的角色尺寸保持。
-    const defaultSize = Math.max(122, Math.min(250, Math.min(window.innerWidth || 1024, window.innerHeight || 768) * 0.28)) * 0.5945;
-    const savedSize = raw.version !== 2 && !raw.image && raw.size === 88 ? defaultSize : Number(raw.size);
-    return {
-      version: 2, image: codexPlusWhaleImageSource(raw.image), size: Math.max(72.529, Math.min(371.5625, savedSize || defaultSize)),
-      x: codexPlusWhaleNumber(raw.x), y: codexPlusWhaleNumber(raw.y), snap: raw.snap !== false,
-      sound: raw.sound === true, completion: raw.completion !== false,
-      phrase: typeof raw.phrase === "string" ? raw.phrase.slice(0, 120) : "慢慢来，我陪你一起完成。",
-      thresholds, notices,
+    function arm(id, timer) {
+      if (!active() || state.paused) return;
+      timer.native = setTimeout(() => {
+        if (!state.timers.has(id) || !active() || state.paused) return;
+        timer.native = null;
+        if (!timer.repeat) state.timers.delete(id);
+        try { timer.callback(...timer.args); } finally { if (timer.repeat && state.timers.has(id)) arm(id, timer); }
+      }, timer.delay);
+    }
+    function schedule(callback, delay, repeat, args) {
+      if (!active() || typeof callback !== "function") return 0;
+      const id = ++state.serial, timer = { callback, delay: Math.max(0, Number(delay) || 0), repeat, args, native: null };
+      state.timers.set(id, timer); arm(id, timer); return id;
+    }
+    function clearTimer(id) { const timer = state.timers.get(id); if (timer?.native !== null) clearTimeout(timer?.native); state.timers.delete(id); }
+    function raf(callback) {
+      if (!active()) return 0;
+      const id = ++state.serial, frame = { callback, native: null };
+      state.rafs.set(id, frame);
+      if (!state.paused) frame.native = requestAnimationFrame((time) => { state.rafs.delete(id); if (active() && !state.paused) callback(time); });
+      return id;
+    }
+    function cancelRaf(id) { const frame = state.rafs.get(id); if (frame?.native !== null) cancelAnimationFrame(frame?.native); state.rafs.delete(id); }
+    function trackedObserver(Native) {
+      if (typeof Native !== "function") return undefined;
+      return class {
+        constructor(callback) { this.records = []; this.native = new Native((entries, observer) => { if (active() && !state.paused) callback(entries, this); }); state.observers.add(this); }
+        observe(target, options) { this.records.push([target, options]); if (active() && !state.paused) this.native.observe(target, options); }
+        disconnect() { this.native.disconnect(); this.records = []; }
+        takeRecords() { return this.native.takeRecords?.() || []; }
+      };
+    }
+    function trackedAudioContext(options) {
+      const Native = window.AudioContext || window.webkitAudioContext;
+      if (!Native || !active()) throw new Error("音频不可用");
+      const audio = new Native(options); state.audio.add(audio); return audio;
+    }
+    trackedAudioContext.prototype = (window.AudioContext || window.webkitAudioContext)?.prototype || Object.prototype;
+    function bridge(path, payload) {
+      if (!active() || state.paused) return Promise.reject(new Error("挂件已暂停"));
+      return new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (error, value) => { if (done) return; done = true; clearTimeout(timer); state.pending.delete(cancel); error ? reject(error) : resolve(value); };
+        const cancel = () => finish(new Error("挂件请求已取消"));
+        const timer = setTimeout(() => finish(new Error("挂件请求超时")), 45000);
+        state.pending.add(cancel);
+        Promise.resolve(postJson(path, payload)).then((value) => finish(active() ? null : new Error("挂件已关闭"), value), (error) => finish(error));
+      });
+    }
+    function context() {
+      const ref = currentSessionRef() || {}, id = String(ref.session_id || ""), host = String(ref.host_id || "local");
+      if (id !== state.sessionId || host !== state.sessionHost) {
+        state.sessionId = id; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.turn = null; state.pendingWait = null; state.lastTurnResult = null; state.lastTurnPending = null;
+      }
+      state.sessionHost = host; state.sessionRef = ref; state.remote = host !== "local";
+      return id;
+    }
+    function observe(turn, baseline = false) {
+      if (!turn?.id) return;
+      const previous = state.turn;
+      if (!baseline && previous?.id === turn.id && previous.status === "running" && turn.status === "completed" && !state.completed.has(turn.id)) {
+        state.seq += 1; state.completed.add(turn.id);
+        if (state.completed.size > 128) state.completed.delete(state.completed.values().next().value);
+      }
+      if (baseline && turn.status === "completed") state.completed.add(turn.id);
+      state.turn = { id: turn.id, status: turn.status, usage: turn.usage || null };
+    }
+    function setStatsEnabled(value) {
+      const enabled = value !== false;
+      if (state.codexStatsOn === enabled) return;
+      state.codexStatsOn = enabled; state.statRevision += 1;
+      state.history = null; state.historyAt = 0; state.historyPending = null; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.lastTurnResult = null; state.lastTurnPending = null;
+    }
+    async function session() {
+      const id = context();
+      if (!id) return null;
+      if (state.codexStatsOn === false || state.remote) return { status: "ok", sessionId: id, title: state.sessionRef?.title || "", lastTurn: state.turn, total: state.nativeUsage?.total || null, today: null, rateLimits: [] };
+      if (state.session && Date.now() - state.sessionAt < 5000) return state.session;
+      if (state.sessionPending) return state.sessionPending;
+      const baseline = !state.session && !state.turn;
+      const statRevision = state.statRevision;
+      const pending = bridge("/whale/session", { ...state.sessionRef, session_id: id }).then((data) => {
+        if (!active() || context() !== id || statRevision !== state.statRevision || state.codexStatsOn === false || state.remote) return null;
+        state.session = data; state.sessionAt = Date.now();
+        if (data?.status === "ok" && !(Date.now() - (state.nativeTurnAt || 0) < 10000 && state.turn?.id === data.lastTurn?.id && state.turn.status === "completed" && data.lastTurn.status === "running")) observe(data.lastTurn, baseline);
+        return data;
+      }).finally(() => { if (state.sessionPending === pending) state.sessionPending = null; });
+      state.sessionPending = pending; return pending;
+    }
+    function prices() {
+      const result = [];
+      for (const model of state.models) {
+        const price = model.price;
+        if (!price || ![price.hit, price.miss, price.out].every((value) => value !== "" && codexPlusWhaleFullNumber(value) !== null)) continue;
+        const matchIds = model.matchIds?.length ? model.matchIds : [model.id];
+        const currency = String(price.cur || "USD").toUpperCase(), rate = currency === "CNY" ? 1 : codexPlusWhaleFullNumber(price.rate);
+        if (!(rate > 0) || !["CNY", "USD"].includes(currency)) continue;
+        // 匹配交给数据层：精确匹配优先，其次最长的大小写不敏感子串。
+        for (const id of matchIds) result.push({ model: id, currency: "CNY", input: Number(price.miss) * rate, cachedInput: Number(price.hit) * rate, output: Number(price.out) * rate });
+      }
+      return result;
+    }
+    function pricingFingerprint() { return JSON.stringify(state.models.map((model) => ({ id: model.id, price: model.price, matchIds: model.matchIds }))); }
+    async function history(force = false) {
+      if (state.codexStatsOn === false) return { status: "disabled", complete: false, codex: { ok: false, disabled: true } };
+      const quote = prices(), fingerprint = JSON.stringify(quote);
+      if (!force && state.history && state.historyPrices === fingerprint && Date.now() - state.historyAt < 60000) return state.history;
+      if (state.historyPending) return state.historyPending;
+      const revision = state.priceRevision, statRevision = state.statRevision;
+      const pending = bridge("/whale/history", { period: "all", page: 1, pageSize: 500, prices: quote }).then((data) => {
+        if (statRevision !== state.statRevision || state.codexStatsOn === false) return { status: "disabled", complete: false, codex: { ok: false, disabled: true } };
+        if (active() && revision !== state.priceRevision) return history(true);
+        if (active()) { state.history = data; state.historyAt = Date.now(); state.historyPrices = fingerprint; } return data;
+      }).finally(() => { if (state.historyPending === pending) state.historyPending = null; });
+      state.historyPending = pending; return pending;
+    }
+    const toTokens = (period) => {
+      if (state.codexStatsOn === false) return "—";
+      const value = state.history?.periods?.[period]?.usage?.totalTokens ?? state.history?.machineSummary?.[({ today: "todayTokens", month: "monthTokens", all: "totalTokens" })[period]];
+      const number = codexPlusWhaleFullNumber(value);
+      if (number === null) return "—";
+      return number.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
     };
-  }
-
-  function codexPlusWhaleLoadPrefs() {
-    try { return codexPlusWhaleNormalizePrefs(JSON.parse(localStorage.getItem(codexPlusWhaleStorageKey) || "{}")); }
-    catch { return codexPlusWhaleNormalizePrefs({}); }
-  }
-  codexPlusWhaleState.prefs = codexPlusWhaleLoadPrefs();
-
-  function codexPlusWhaleSavePrefs() {
-    const state = codexPlusWhaleState;
-    try {
-      localStorage.setItem(codexPlusWhaleStorageKey, JSON.stringify(state.prefs));
-      state.storageError = "";
-      codexPlusWhaleRender();
-      return true;
-    } catch {
-      state.storageError = "本地存储已满或不可用，修改只在本次有效；可恢复默认角色后重试。";
-      codexPlusWhaleRender();
-      return false;
+    function codexModel(model, summary) {
+      const data = summary?.codex || summary?.machineSummary || {};
+      const total = (period) => codexPlusWhaleFullNumber(summary?.periods?.[period]?.usage?.totalTokens);
+      const limits = state.session?.rateLimits || summary?.rateLimits || [];
+      const windows = limits.filter((entry) => entry.resetAt == null || Number(entry.resetAt) * 1000 > Date.now()).map((entry, index) => ({ usedPct: entry.usedPercent, windowMinutes: entry.windowMinutes || (index === 0 ? 300 : 10080), resetAt: entry.resetAt == null ? null : Number(entry.resetAt) * 1000 }));
+      return { ...model, codex: { ...data, ok: summary?.status === "ok" || summary?.status === "partial" || data.ok === true, complete: summary?.complete === true, deferred: summary?.complete === false ? Math.max(1, summary?.scan?.deferred || 1) : 0, todayTokens: total("today") ?? data.todayTokens, monthTokens: total("month") ?? data.monthTokens, totalTokens: total("all") ?? data.totalTokens, sessions: summary?.scan?.sessions ?? data.sessions ?? 0, days7: data.days7 || (summary?.days || []).slice(-7).map((day) => ({ date: day.date, tokens: day.usage?.totalTokens })), windows: data.windows || { primary: windows[0] || null, secondary: windows[1] || null } }, planSupport: windows.length > 0, plan: windows.length ? { ok: true, usedPct: windows[0].usedPct, remainPct: windows[0].usedPct == null ? null : 100 - windows[0].usedPct, windows: windows.map((entry, index) => ({ id: index === 0 ? "rolling" : "weekly", key: index === 0 ? "rolling" : "weekly", label: index === 0 ? "5h" : "周", usedPct: entry.usedPct, remainPct: entry.usedPct == null ? null : 100 - entry.usedPct, resetAt: entry.resetAt })) } : model.plan };
     }
+    function subscribe() {
+      const dispatcher = window.__codexPlusRemoteSessionRecoveryDispatcher;
+      if (state.dispatcher === dispatcher && state.onEvent) return;
+      for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe(); } catch {} }
+      state.dispatcher = dispatcher;
+      const onEvent = (payload, method) => {
+        if (!active() || state.paused) return;
+        const data = payload?.params || payload || {}, turn = data.turn || data;
+        const thread = String(data.threadId || data.thread_id || data.conversationId || "").replace(/^local:/, "");
+        if (!thread || thread !== context().replace(/^local:/, "")) return;
+        if (method === "thread/tokenUsage/updated") {
+          state.nativeUsage = data.tokenUsage || null;
+          if (state.turn && data.tokenUsage?.last) state.turn.usage = data.tokenUsage.last;
+        } else if (["serverRequest/resolved", "item/tool/userInputAnswered", "item/approval/responded", "item/completed"].includes(method)) {
+          const id = String(data.requestId || data.itemId || data.item?.id || data.id || "");
+          if (state.pendingWait && (id === state.pendingWait.id || id === state.pendingWait.itemId)) { state.pendingWait = null; void state.controls?.pollWaitState?.(); }
+        } else if (method === "turn/started" || method === "turn/completed") {
+          const id = turn.id || data.turnId;
+          observe({ id, status: method === "turn/started" ? "running" : ({ failed: "failed", interrupted: "aborted", aborted: "aborted" })[turn.status] || "completed", usage: turn.usage });
+          state.nativeTurnAt = Date.now();
+          state.pendingWait = null;
+          state.sessionAt = 0;
+          void state.controls?.pollLastTurn?.();
+        } else {
+          state.pendingWait = { id: String(payload?.id || data.requestId || data.itemId || data.id || ""), itemId: String(data.itemId || ""), kind: method.includes("requestUserInput") || method === "mcpServer/elicitation/request" ? "question" : "approval" };
+          void state.controls?.pollWaitState?.();
+        }
+      };
+      state.onEvent = onEvent;
+      if (!dispatcher?.subscribe) return;
+      for (const method of ["turn/started", "turn/completed", "thread/tokenUsage/updated", "item/tool/requestUserInput", "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "mcpServer/elicitation/request", "serverRequest/resolved", "item/tool/userInputAnswered", "item/approval/responded", "item/completed"]) {
+        try { const remove = dispatcher.subscribe(method, (payload) => onEvent(payload, method)); if (typeof remove === "function") state.subscriptions.push(remove); } catch {}
+      }
+    }
+    function nativeEnvelope(value, depth = 0) {
+      if (!active() || state.paused || !value || typeof value !== "object" || depth > 4) return;
+      if (typeof value.method === "string" && /^(turn\/(started|completed)|thread\/tokenUsage\/updated|item\/(tool\/requestUserInput|commandExecution\/requestApproval|fileChange\/requestApproval|permissions\/requestApproval|completed)|mcpServer\/elicitation\/request|serverRequest\/resolved)$/.test(value.method)) state.onEvent?.(value, value.method);
+      if (value.id != null && (Object.hasOwn(value, "result") || Object.hasOwn(value, "error") || Object.hasOwn(value, "response")) && String(value.id) === state.pendingWait?.id) {
+        state.pendingWait = null; void state.controls?.pollWaitState?.();
+      }
+      for (const key of ["message", "request", "payload", "data", "notification"]) if (value[key] && typeof value[key] === "object") nativeEnvelope(value[key], depth + 1);
+    }
+    async function lastTurn() {
+      await session().catch(() => null);
+      if (state.lastTurnResult?.body?.seq === state.seq) return state.lastTurnResult;
+      if (state.lastTurnPending) return state.lastTurnPending;
+      const seq = state.seq;
+      const turn = state.turn?.status === "completed" ? state.turn : null;
+      let amount = null, currency = null, usage = turn?.usage || state.session?.lastTurn?.usage || null;
+      if (turn && seq > state.initialSeq && prices().length && state.codexStatsOn !== false && !state.remote) {
+        const pending = (async () => {
+        const details = await bridge("/whale/history", { period: "all", sessionId: context().replace(/^local:/, ""), turnId: turn.id, page: 1, pageSize: 500, prices: prices() }).catch(() => null);
+        const totals = {};
+        for (const record of details?.records || []) {
+          if (record.turnId !== turn.id || !record.estimatedCost) continue;
+          const cost = record.estimatedCost; totals[cost.currency] = (totals[cost.currency] || 0) + cost.amount;
+        }
+        const currencies = Object.keys(totals);
+        if (currencies.length === 1) { currency = currencies[0]; amount = totals[currency]; }
+        const result = { status: 200, body: { ok: true, seq, turn, amount, currency, usage, estimated: amount !== null } };
+        if (active() && state.seq === seq) state.lastTurnResult = result;
+        return result;
+        })().finally(() => { if (state.lastTurnPending === pending) state.lastTurnPending = null; });
+        state.lastTurnPending = pending; return pending;
+      }
+      const result = { status: 200, body: { ok: true, seq, turn, amount, currency, usage, estimated: amount !== null } };
+      state.lastTurnResult = result; return result;
+    }
+    async function compatibilityJson(path, method, query, body) {
+      subscribe();
+      if (path === "/dsh-whale/size.json" && method === "GET" && state.startupConfig) return { status: 200, body: state.startupConfig };
+      if (path === "/dsh-whale/last-turn.json") {
+        return lastTurn();
+      }
+      if (path === "/dsh-whale/wait.json") {
+        const data = await session().catch(() => null);
+        return { status: 200, body: { ok: true, sessionName: data?.sessionName || data?.title || state.sessionRef?.title || "", pending: data?.pending || state.pendingWait || null } };
+      }
+      const response = await bridge("/whale/full", { path, method, query, body });
+      if (path === "/dsh-whale/size.json" && method === "PUT" && response?.status === 200) {
+        setStatsEnabled(body.codexStatsOn);
+      }
+      if (path === "/dsh-whale/api-models.json" && response?.body?.ok) {
+        state.relayProfiles = response.body.relayProfiles || state.relayProfiles;
+        setStatsEnabled(response.body.codexStatsOn);
+        const previous = pricingFingerprint();
+        state.models = response.body.models || state.models;
+        if (pricingFingerprint() !== previous) { state.priceRevision += 1; state.history = null; state.historyAt = 0; state.historyPending = null; state.lastTurnResult = null; state.lastTurnPending = null; }
+        if (method === "GET") {
+          const statsOn = response.body.codexStatsOn !== false;
+          const summary = statsOn ? await history().catch(() => null) : null;
+          response.body.models = (response.body.models || []).map((model) => model.id === "codex" ? statsOn ? codexModel(model, summary) : { ...model, codex: { ok: false, disabled: true } } : model);
+        }
+        state.models = response.body.models || state.models;
+      }
+      if (path === "/dsh-whale/usage-records.json" && method === "GET") {
+        state.recordsAccountBase = JSON.parse(JSON.stringify(response.body));
+        const data = await history().catch(() => null);
+        response.body = mergeRecords(response.body, data);
+      }
+      return response;
+    }
+    function mergeRecords(base, data) {
+      if (!data?.today || !data?.days7 || !data?.all) return base;
+      const merge = (account, local) => ({ ...local, ...account, modelTotal: local?.modelTotal, models: local?.models || [], estimatedCosts: local?.estimatedCosts, unpricedRecords: local?.unpricedRecords });
+      const mergeDays = (account, local) => { const days = new Map((local || []).map((day) => [day.date, day])); for (const day of account || []) days.set(day.date, merge(day, days.get(day.date))); return [...days.values()].sort((a, b) => a.date.localeCompare(b.date)); };
+      return { ...base, today: merge(base?.today, data.today), days7: mergeDays(base?.days7, data.days7), all: { ...base?.all, days: mergeDays(base?.all?.days, data.all.days), events: data.all.events || [] }, complete: data.complete, historyPagination: data.pagination, historyArchive: data.archive, ok: true };
+    }
+    const nativeFetch = window.fetch?.bind(window) || globalThis.fetch;
+    function responseOf(result) {
+      if (result?.data) {
+        const bytes = Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0));
+        return new Response(bytes, { status: result.status || 200, headers: { "Content-Type": result.mimeType || "application/octet-stream" } });
+      }
+      return new Response(JSON.stringify(result?.body ?? null), { status: result?.status || 200, headers: { "Content-Type": "application/json" } });
+    }
+    async function fetchCompat(value, options = {}) {
+      if (!active() || state.paused) throw new Error("挂件已暂停");
+      const raw = String(value), builtin = codexPlusWhaleFullBuiltin(raw);
+      if (builtin) return codexPlusWhaleFullDataResponse(builtin);
+      const parsed = new URL(raw, "https://codex-whale.invalid");
+      if (parsed.origin !== "https://codex-whale.invalid" || !parsed.pathname.startsWith("/dsh-whale/")) {
+        // 上游只有本机资源 fetch；用户显式配置的超链接通过 window.open。
+        if (raw.startsWith("data:")) return codexPlusWhaleFullDataResponse(raw);
+        if (raw.startsWith("blob:")) return nativeFetch(raw, options);
+        throw new Error("挂件资源只允许本机桥接");
+      }
+      const method = String(options.method || "GET").toUpperCase();
+      const query = Object.fromEntries(parsed.searchParams.entries());
+      let body = {};
+      if (options.body) { try { body = JSON.parse(options.body); } catch { throw new Error("无效挂件请求"); } }
+      if (options.signal?.aborted) throw new Error("挂件请求已取消");
+      const result = await compatibilityJson(parsed.pathname, method, query, body);
+      if (!active() || options.signal?.aborted) throw new Error("挂件请求已取消");
+      if (result?.builtinFragmentId) {
+        const uri = codexPlusWhaleFullBuiltin("/dsh-whale/audio-fragment.wav?id=" + encodeURIComponent(result.builtinFragmentId));
+        if (!uri) throw new Error("内置音频缺失");
+        return nativeFetch(uri);
+      }
+      return responseOf(result);
+    }
+    async function resolveMedia(path) {
+      const builtin = codexPlusWhaleFullBuiltin(path); if (builtin) return builtin;
+      if (state.media.has(path)) return state.media.get(path);
+      const pending = (async () => {
+      const result = await fetchCompat(path);
+      if (!result.ok) throw new Error("素材加载失败");
+      const blob = await result.blob();
+      if (!active()) throw new Error("挂件已关闭");
+      const objectUrl = URL.createObjectURL(blob); state.objectUrls.add(objectUrl); state.media.set(path, objectUrl); return objectUrl;
+      })().catch((error) => { if (state.media.get(path) === pending) state.media.delete(path); throw error; });
+      state.media.set(path, pending); return pending;
+    }
+    function mediaNode(node) {
+      if (wrappedMedia.has(node)) return node;
+      wrappedMedia.add(node);
+      let proto = node, descriptor;
+      while (proto && !descriptor) { descriptor = Object.getOwnPropertyDescriptor(proto, "src"); proto = Object.getPrototypeOf(proto); }
+      let revision = 0;
+      const set = (value) => { if (descriptor?.set) descriptor.set.call(node, value); else node.setAttribute("src", value); };
+      try { Object.defineProperty(node, "src", { configurable: true, get() { return descriptor?.get ? descriptor.get.call(node) : node.getAttribute("src") || ""; }, set(value) {
+        const rev = ++revision, raw = String(value || "");
+        if (!raw.startsWith("/dsh-whale/")) { if (!raw || /^(data:image\/(png|jpeg|webp|gif|avif);|data:audio\/|blob:)/i.test(raw)) set(raw); return; }
+        const builtin = codexPlusWhaleFullBuiltin(raw);
+        if (builtin) { set(builtin); return; }
+        void resolveMedia(raw).then((url) => { if (active() && rev === revision) set(url); }).catch(() => { if (active() && rev === revision) node.dispatchEvent?.(new Event("error")); });
+      } }); } catch {}
+      return node;
+    }
+    function mark(node) {
+      if (!active()) throw new Error("挂件已关闭");
+      if (!node) return node;
+      node.setAttribute?.("data-codex-plus-ext", "whale-widget");
+      if (["IMG", "AUDIO", "VIDEO", "SOURCE"].includes(node.tagName)) mediaNode(node);
+      return node;
+    }
+    const head = new Proxy(document.head, { get(target, key) {
+      if (["appendChild", "insertBefore", "append", "prepend", "replaceChildren"].includes(key)) return (...args) => { if (!active()) return args[0]; for (const node of args) if (node?.nodeType || node?.tagName) state.nodes.add(node); return target[key](...args); };
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const doc = new Proxy(document, { get(target, key) {
+      if (key === "head") return head;
+      if (key === "createElement") return (...args) => mark(target.createElement(...args));
+      if (key === "createElementNS") return (...args) => mark(target.createElementNS(...args));
+      if (key === "addEventListener") return (name, callback, options) => listen(target, name, callback, options);
+      if (key === "removeEventListener") return (name, callback, options) => unlisten(target, name, callback, options);
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const win = new Proxy(window, { get(target, key) {
+      if (key === "__codexPlusWhaleHost") return host;
+      if (typeof key === "string" && (key.startsWith("__dsh") || key === "dshwRegisterMask")) return isolated[key];
+      if (key === "document") return doc;
+      if (key === "localStorage") return storage;
+      if (key === "Image") return image;
+      if (key === "Audio") return audio;
+      if (key === "AudioContext" || key === "webkitAudioContext") return window.AudioContext || window.webkitAudioContext ? trackedAudioContext : undefined;
+      if (key === "addEventListener") return (name, callback, options) => listen(target, name, callback, options);
+      if (key === "removeEventListener") return (name, callback, options) => unlisten(target, name, callback, options);
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    }, set(target, key, value) { if (typeof key === "string" && (key.startsWith("__dsh") || key === "dshwRegisterMask")) { isolated[key] = value; return true; } return Reflect.set(target, key, value, target); } });
+    function image(width, height) { return mark(new window.Image(width, height)); }
+    image.prototype = window.Image?.prototype || Object.prototype;
+    function audio(url) { const node = mark(new window.Audio()); if (url) node.src = url; return node; }
+    audio.prototype = window.Audio?.prototype || Object.prototype;
+    const host = {
+      active, state, tokens: toTokens,
+      attach(node) { if (active()) state.nodes.add(node); },
+      detach(node) { state.nodes.delete(node); },
+      initialSound() { return state.startupConfig?.sound !== false; },
+      complete(data, show) { state.completion = data; show(data.amount); },
+      completionCost(amount) {
+        const completion = state.completion;
+        if (amount == null) return completion?.usage?.totalTokens == null ? "用量暂不可用" : Number(completion.usage.totalTokens).toLocaleString("zh-CN") + " tokens";
+        return Number(amount).toLocaleString("zh-CN", { maximumFractionDigits: 6 }) + " " + (completion?.currency || "") + "（估算）";
+      },
+      completionModules(modules) {
+        const unknown = state.completion?.amount == null;
+        return modules.map((module) => module.type === "text" ? { ...module, text: String(module.text).replace("上一轮对话消耗:", unknown ? "Codex 任务完成" : "上一轮费用估算:").replace(/^¥\s*/, "") } : module).concat(unknown ? [{ type: "text", text: "未配置单价，费用未知", size: 2, color: "#9fb0d9" }] : []);
+      },
+      recordsPager(body, data, render) {
+        const pagination = data.historyPagination;
+        if (!pagination) return;
+        const area = mark(document.createElement("div")); area.className = "dshwv-usage-hint"; area.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px";
+        const page = pagination.page || 1, pages = Math.max(1, pagination.pages || 1);
+        const label = mark(document.createElement("span")); label.textContent = `明细第 ${page} / ${pages} 页 · 共 ${pagination.total || 0} 条${data.complete === false ? " · 正在统计" : ""}`; area.appendChild(label);
+        const input = mark(document.createElement("input")); input.type = "search"; input.placeholder = "搜索全部明细：日期或模型"; input.value = state.recordsSearch || ""; input.className = "dshwv-colnat"; input.style.width = "100%"; area.appendChild(input);
+        const request = async (next) => {
+          state.recordsRevision = (state.recordsRevision || 0) + 1;
+          const revision = state.recordsRevision, priceRevision = state.priceRevision;
+          const result = await bridge("/whale/history", { period: "all", page: next, pageSize: pagination.pageSize || 500, search: input.value, prices: prices() }).catch(() => null);
+          if (!active() || !body.isConnected || revision !== state.recordsRevision || priceRevision !== state.priceRevision || !result) return;
+          state.recordsSearch = input.value; render(mergeRecords(state.recordsAccountBase, result));
+        };
+        for (const [text, next, disabled] of [["上一页", page - 1, page <= 1], ["下一页", page + 1, page >= pages]]) {
+          const button = mark(document.createElement("button")); button.type = "button"; button.textContent = text; button.className = "dshwv-snapbtn dshwv-snapbtn-no"; button.disabled = disabled; button.addEventListener("click", () => { void request(next); }); area.appendChild(button);
+        }
+        const search = mark(document.createElement("button")); search.type = "button"; search.textContent = "搜索"; search.className = "dshwv-snapbtn dshwv-snapbtn-ok"; search.addEventListener("click", () => { void request(1); }); area.appendChild(search); input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); void request(1); } });
+        if (data.historyArchive?.detailRetentionDays) { const note = mark(document.createElement("span")); note.textContent = `明细保留 ${data.historyArchive.detailRetentionDays} 天；更早用量保留在日汇总中。`; note.style.width = "100%"; area.appendChild(note); }
+        body.appendChild(area);
+      },
+      fail(error) { state.initializationError = error?.name || "Error"; console.warn("[Codex++] 完整鲸鱼初始化失败", state.initializationError); },
+      bind(controls) { state.controls = controls; subscribe(); },
+      defaultBubbleItems(items) {
+        const copy = JSON.parse(JSON.stringify(items));
+        if (copy[0]?.modules) copy[0].modules = [
+          { type: "text", text: "Codex 本机用量", size: 8, bold: true },
+          { type: "today", modelId: "codex", size: 20, rgb: "indigo", tpl: "{tokens_today}" },
+          { type: "today", modelId: "codex", size: 4, color: "#9fb0d9", tpl: "今日 tokens · 近7天 {tokens_week}" },
+          { type: "balance", modelId: "current-provider", size: 3, tpl: "供应商余额 {balance}" },
+          { type: "session", size: 3, tpl: "{session}", len: 20 },
+        ];
+        return copy;
+      },
+      profileSelect(selected) {
+        const select = mark(document.createElement("select")); select.className = "dshwv-colnat";
+        const profiles = state.relayProfiles.length ? state.relayProfiles : [{ id: selected || "", name: selected || "当前供应商" }];
+        for (const profile of profiles) { const option = mark(document.createElement("option")); option.value = profile.id; option.textContent = profile.name || profile.id; select.appendChild(option); }
+        select.value = selected || profiles[0]?.id || ""; return select;
+      },
+    };
+    const mutation = trackedObserver(window.MutationObserver), resize = trackedObserver(window.ResizeObserver);
+    const environment = [win, doc, fetchCompat, storage, (fn, ms, ...args) => schedule(fn, ms, false, args), clearTimer, (fn, ms, ...args) => schedule(fn, ms, true, args), clearTimer, raf, cancelRaf, mutation, resize, trackedAudioContext, trackedAudioContext, image, audio];
+    async function initialize() {
+      const configuration = await bridge("/whale/full", { path: "/dsh-whale/size.json", method: "GET", query: {}, body: {} });
+      if (configuration?.status !== 200 || !configuration.body) throw new Error("完整挂件设置读取失败");
+      state.startupConfig = configuration.body;
+      setStatsEnabled(configuration.body.codexStatsOn);
+      let legacy;
+      try { legacy = JSON.parse(localStorage.getItem("codexPlus.whaleWidget.v1") || "null"); } catch {}
+      if (!legacy || storage.getItem("legacy-migrated") === "1") return;
+      if (configuration.body.hasSavedConfig === true) { storage.setItem("legacy-migrated", "1"); return; }
+      // 只迁移用户实际保存过的旧偏好；保存失败保留旧数据并允许下次重试。
+      const send = async (path, method, body) => {
+        const result = await bridge("/whale/full", { path: "/dsh-whale/" + path, method, query: {}, body });
+        if (result?.status !== 200 || result.body?.ok === false) throw new Error("旧挂件偏好迁移失败");
+        return result.body;
+      };
+      if (typeof legacy.image === "string" && /^data:image\/(png|jpeg|webp|gif);base64,/.test(legacy.image) && legacy.image.length <= 1400000) {
+        const roles = await send("roles.json", "GET", {});
+        let imported = (roles.roles || []).find((role) => role.name === "原挂件角色");
+        if (!imported) {
+          const result = await send("roles.json", "POST", { name: "原挂件角色", image: legacy.image, format: legacy.image.startsWith("data:image/gif;") ? "gif" : "png" });
+          imported = (result.roles || []).find((role) => role.name === "原挂件角色");
+        }
+        if (imported?.id) storage.setItem("dshw-role", imported.id);
+      }
+      if (typeof legacy.phrase === "string" && legacy.phrase.trim()) {
+        const config = await send("bubble.json", "GET", {});
+        if (!config.config?.items?.length) await send("bubble.json", "POST", { v: 1, tapAdvance: false, lib: [], items: [{ kind: "custom", modules: [{ type: "text", text: legacy.phrase.slice(0, 120), size: 8 }, { type: "today", modelId: "codex", size: 12, tpl: "今日 {tokens_today} tokens" }] }] });
+      }
+      const limits = Object.values(legacy.thresholds || {}).find((value) => value && typeof value === "object");
+      if (limits) {
+        const patch = { models: { "current-provider": {} } };
+        if (codexPlusWhaleFullNumber(limits.low) > 0) patch.models["current-provider"].alert = { on: true, below: Number(limits.low) };
+        if (codexPlusWhaleFullNumber(limits.budget) > 0) patch.models["current-provider"].budget = { on: true, amount: Number(limits.budget) };
+        await send("usage-settings.json", "PUT", patch);
+      }
+      const base = Math.max(122, Math.min(250, Math.min(window.innerWidth || 1024, window.innerHeight || 768) * 0.28));
+      const config = { ...configuration.body, sound: legacy.sound === true, turnCostOn: legacy.completion !== false };
+      if (codexPlusWhaleFullNumber(legacy.size) > 0) config.scale = Math.min(2.5, Math.max(0.6, Number(legacy.size) / (base * 0.5945)));
+      if (codexPlusWhaleFullNumber(legacy.x) !== null && codexPlusWhaleFullNumber(legacy.y) !== null) {
+        const fullSize = base * (config.scale || 1.5), right = Math.max(0, (window.innerWidth || 1024) - Number(legacy.x) - Number(legacy.size || 88)), bottom = Math.max(0, (window.innerHeight || 768) - Number(legacy.y) - Number(legacy.size || 88));
+        storage.setItem("dshw-pos", JSON.stringify({ v: 2, hAnchor: legacy.x < (window.innerWidth || 1024) / 2 ? "left" : "right", hDist: legacy.x < (window.innerWidth || 1024) / 2 ? Math.max(0, legacy.x - fullSize * 0.4055) : right, vAnchor: legacy.y < (window.innerHeight || 768) / 2 ? "top" : "bottom", vDist: legacy.y < (window.innerHeight || 768) / 2 ? Math.max(0, legacy.y - fullSize * 0.4055) : bottom }));
+      }
+      if (legacy.snap === false) storage.setItem("dshw-snap", JSON.stringify({ v: 3, mode: "off" }));
+      const result = await send("size.json", "PUT", config); state.startupConfig = { ...config, ...result, hasSavedConfig: true };
+      storage.setItem("legacy-migrated", "1");
+    }
+    function pause(paused) {
+      if (state.paused === paused || !active()) return;
+      state.paused = paused;
+      if (paused) {
+        for (const timer of state.timers.values()) { if (timer.native !== null) clearTimeout(timer.native); timer.native = null; }
+        for (const frame of state.rafs.values()) { if (frame.native !== null) cancelAnimationFrame(frame.native); frame.native = null; }
+        for (const observer of state.observers) observer.native.disconnect();
+        for (const cancel of [...state.pending]) cancel();
+        for (const audio of state.audio) { try { void audio.suspend?.().catch?.(() => {}); } catch {} }
+        state.turn = null; state.sessionAt = 0; state.pendingWait = null;
+      } else {
+        for (const [id, timer] of state.timers) arm(id, timer);
+        for (const [id, frame] of state.rafs) frame.native = requestAnimationFrame((time) => { state.rafs.delete(id); if (active() && !state.paused) frame.callback(time); });
+        for (const observer of state.observers) for (const [target, options] of observer.records) observer.native.observe(target, options);
+        context(); subscribe(); void state.controls?.refresh?.(false);
+      }
+    }
+    function dispose() {
+      if (state.disposed) return; state.disposed = true;
+      for (const id of [...state.timers.keys()]) clearTimer(id);
+      for (const id of [...state.rafs.keys()]) cancelRaf(id);
+      for (const observer of state.observers) observer.disconnect(); state.observers.clear();
+      for (const entry of state.listeners.splice(0)) entry.target.removeEventListener(entry.name, entry.wrapped, entry.options);
+      for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe(); } catch {} }
+      for (const cancel of [...state.pending]) cancel();
+      for (const context of state.audio) { try { void context.close?.().catch?.(() => {}); } catch {} } state.audio.clear();
+      for (const node of state.nodes) { if (node.parentNode) node.parentNode.removeChild(node); } state.nodes.clear();
+      for (const url of state.objectUrls) URL.revokeObjectURL(url); state.objectUrls.clear(); state.media.clear();
+      state.controls = null;
+    }
+    listen(document, "visibilitychange", () => pause(document.hidden === true));
+    listen(window, "message", (event) => {
+      if (event.source !== window || (event.origin && event.origin !== "null" && event.origin !== window.location?.origin)) return;
+      nativeEnvelope(event.data);
+    }, true);
+    listen(window, "codex-message-from-view", (event) => nativeEnvelope(event.detail), true);
+    // 设置迁移和首次读取在异步等待中也要记录短任务，绑定原 UI 后统一由 seq 消费。
+    subscribe();
+    return { state, environment, host, active, pause, dispose, initialize, fetch: fetchCompat, context, session, history, observe, subscribe, nativeEnvelope, prices };
   }
-
-  function codexPlusWhaleDay() {
-    const date = new Date();
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  }
-
-  function codexPlusWhaleAmount(value) {
-    const number = codexPlusWhaleNumber(value);
-    return number === null ? "—" : number.toLocaleString(undefined, { maximumFractionDigits: 4 });
-  }
-
+  // 完整版鲸鱼由上游原始引擎 + Codex 数据适配层组成；默认关闭。
+  window.__codexPlusWhaleWidgetRuntime?.dispose?.();
+  const codexPlusWhaleState = { disposed: false, runtime: null, profile: "", missingSource: false, failedUntil: 0, notice: null };
   function codexPlusWhaleEnabled() {
     return !codexPlusWhaleState.disposed && codexPlusBackendSettingsLoaded && codexPlusSettings().whaleWidget === true;
   }
-
-  function codexPlusWhaleListen(target, name, callback, options) {
-    target.addEventListener(name, callback, options);
-    codexPlusWhaleState.listeners.push(() => target.removeEventListener(name, callback, options));
+  function codexPlusWhaleStop() {
+    codexPlusWhaleState.runtime?.dispose();
+    codexPlusWhaleState.runtime = null;
+    codexPlusWhaleState.notice?.remove(); codexPlusWhaleState.notice = null;
   }
-
-  function codexPlusWhaleSay(message, sound = false) {
-    const state = codexPlusWhaleState;
-    state.message = String(message || "").slice(0, 300);
-    state.bubbleOpen = true;
-    codexPlusWhaleRender();
-    if (sound) codexPlusWhalePlaySound();
+  function codexPlusWhaleInitializationFailed(runtime) {
+    runtime?.dispose(); codexPlusWhaleState.runtime = null; codexPlusWhaleState.failedUntil = Date.now() + 10000;
+    if (codexPlusWhaleState.notice) return;
+    const notice = document.createElement("div"); notice.setAttribute("data-codex-plus-ext", "whale-widget"); notice.setAttribute("role", "status");
+    notice.style.cssText = "position:fixed;right:20px;bottom:20px;z-index:2147483600;max-width:320px;padding:12px;border-radius:10px;background:#fff5ec;color:#7c3218;font:12px/1.6 system-ui;box-shadow:0 3px 16px #0002";
+    notice.textContent = "鲸鱼挂件暂时无法加载，10 秒后自动重试。可在 Codex++ 增强设置关闭后重新开启。";
+    document.body.appendChild(notice); codexPlusWhaleState.notice = notice;
   }
-
-  function codexPlusWhalePlaySound() {
-    const state = codexPlusWhaleState;
-    if (!state.prefs.sound || document.hidden || !state.mounted) return;
-    // 只有用户在设置里打开声音后才创建音频上下文；系统不允许自动播放时保持静音。
-    const audio = state.audio;
-    if (!audio || audio.state !== "running") return;
-    try {
-      const oscillator = audio.createOscillator();
-      const gain = audio.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(660, audio.currentTime);
-      oscillator.frequency.exponentialRampToValueAtTime(880, audio.currentTime + 0.16);
-      gain.gain.setValueAtTime(0.035, audio.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.3);
-      oscillator.connect(gain); gain.connect(audio.destination);
-      oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
-      oscillator.start(); oscillator.stop(audio.currentTime + 0.3);
-    } catch {}
+  function codexPlusWhaleProfileFingerprint() {
+    const profile = codexRemoteSessionActiveProfile?.();
+    const settings = codexPlusBackendSettings || {};
+    return JSON.stringify([profile?.id || "", profile?.relayMode || "", settings.codexAppWhaleBalanceProtocol,
+      settings.codexAppWhaleBalancePath, settings.codexAppWhaleBalanceField, settings.codexAppWhaleBalanceCurrency,
+      settings.codexAppWhaleBalanceScale]);
   }
-
-  function codexPlusWhaleCheckAlerts(balance) {
-    const state = codexPlusWhaleState;
-    if (balance?.status !== "ok" || balance.stale || !balance.provider?.id) return;
-    const day = codexPlusWhaleDay();
-    const messages = [];
-    for (const item of Array.isArray(balance.balances) ? balance.balances : []) {
-      const limits = state.prefs.thresholds[item.currency];
-      if (!limits) continue;
-      for (const [kind, threshold, actual, reached, label] of [
-        ["low", limits.low, codexPlusWhaleNumber(item.total), (a, b) => a <= b, "账户余额低于提醒阈值"],
-        ["budget", limits.budget, codexPlusWhaleNumber(item.observedToday), (a, b) => a >= b, "账户今日观测消费已达到预算"],
-      ]) {
-        const key = `${balance.provider.accountId || balance.provider.id}|${item.currency}|${kind}`;
-        if (threshold === null || threshold === undefined || actual === null || !reached(actual, threshold) || state.prefs.notices[key] === day) continue;
-        state.prefs.notices[key] = day;
-        messages.push(`${label}：${codexPlusWhaleAmount(actual)} ${item.currency}`);
-      }
-    }
-    if (messages.length) {
-      // 每个账户、币种和提醒类型每天最多提示一次，不因重复轮询持续发声。
-      state.prefs.notices = Object.fromEntries(Object.entries(state.prefs.notices).filter(([, date]) => date === day).slice(-120));
-      codexPlusWhaleSavePrefs();
-      codexPlusWhaleSay(messages.join("；"), true);
-    }
-  }
-
-  function codexPlusWhaleObserveTurn(session) {
-    const state = codexPlusWhaleState;
-    const turn = session?.status === "ok" ? session.lastTurn : null;
-    const previous = state.previousTurn;
-    if (turn?.id && previous?.id === turn.id && previous.status === "running" && turn.status === "completed" && !state.completedTurns.has(turn.id) && state.prefs.completion) {
-      codexPlusWhaleSay(`这轮任务完成了。${state.prefs.phrase}`, true);
-    }
-    if (turn?.id && turn.status === "completed") {
-      state.completedTurns.add(turn.id);
-      if (state.completedTurns.size > 64) state.completedTurns.delete(state.completedTurns.values().next().value);
-    }
-    state.previousTurn = turn?.id ? { id: turn.id, status: turn.status } : null;
-  }
-
-  function codexPlusWhaleUnsubscribe() {
-    const state = codexPlusWhaleState;
-    for (const unsubscribe of state.subscriptions.splice(0)) { try { unsubscribe?.(); } catch {} }
-    state.dispatcher = null;
-  }
-
-  function codexPlusWhaleSubscribe() {
-    const state = codexPlusWhaleState;
-    const dispatcher = window.__codexPlusRemoteSessionRecoveryDispatcher;
-    if (!dispatcher || typeof dispatcher.subscribe !== "function" || state.dispatcher === dispatcher) return;
-    codexPlusWhaleUnsubscribe();
-    const observe = (payload, fallback) => {
-      if (!state.mounted || !codexPlusWhaleEnabled() || document.hidden) return;
-      const params = payload?.params || payload || {}, turn = params.turn || params;
-      const threadId = String(params.threadId || params.thread_id || params.conversationId || "").replace(/^local:/, "");
-      const currentId = String(currentSessionRef()?.session_id || "").replace(/^local:/, "");
-      const id = String(turn.id || turn.turnId || params.turnId || "");
-      if (!threadId || threadId !== currentId || !id) return;
-      codexPlusWhaleContext();
-      const status = fallback === "running" ? "running" : ({ failed: "failed", interrupted: "aborted", aborted: "aborted" })[turn.status] || "completed";
-      state.liveTurn = { id, status, observedAt: Date.now() };
-      codexPlusWhaleObserveTurn({ status: "ok", lastTurn: state.liveTurn });
-      codexPlusWhaleRender();
-    };
-    try {
-      for (const [method, status] of [["turn/started", "running"], ["turn/completed", "completed"]]) {
-        const unsubscribe = dispatcher.subscribe(method, (payload) => observe(payload, status));
-        if (typeof unsubscribe === "function") state.subscriptions.push(unsubscribe);
-      }
-      state.dispatcher = dispatcher;
-    } catch { codexPlusWhaleUnsubscribe(); }
-  }
-
-  function codexPlusWhalePosition(save = false) {
-    const state = codexPlusWhaleState;
-    if (!state.root) return;
-    const width = Math.max(64, window.innerWidth || 1024), height = Math.max(64, window.innerHeight || 768);
-    const size = Math.min(state.prefs.size, (width - 16) * 0.5945, (height - 16) * 0.5945);
-    const x = Math.max(8, Math.min(width - size - 8, state.prefs.x ?? width - size - 8));
-    const y = Math.max(8, Math.min(height - size - 8, state.prefs.y ?? height - size - 8));
-    Object.assign(state.root.style, { left: `${x}px`, top: `${y}px`, width: `${size}px`, height: `${size}px` });
-    state.root.dataset.side = x + size / 2 < width / 2 ? "left" : "right";
-    const below = height - y - size;
-    state.root.dataset.vertical = below > y ? "below" : "above";
-    state.root.style.setProperty("--whale-room", `${Math.max(40, Math.max(y, below) - 20)}px`);
-    if (state.elements.bubble) {
-      const panelWidth = Math.min(330, width - 32);
-      const preferredLeft = state.root.dataset.side === "left" ? x : x + size - panelWidth;
-      const panelLeft = Math.max(8, Math.min(width - panelWidth - 8, preferredLeft));
-      Object.assign(state.elements.bubble.style, { left: `${panelLeft - x}px`, right: "auto" });
-    }
-    if (state.elements.pop) {
-      // 与原版的 59.45% 角色/1026×700 气泡比例一致，靠左时气泡和角色一起镜像。
-      const base = size / 0.5945;
-      const preferredLeft = state.root.dataset.side === "left" ? x : x + size - base;
-      const left = Math.max(8, Math.min(width - base - 8, preferredLeft));
-      const top = Math.max(8, y + size - base);
-      Object.assign(state.elements.pop.style, { width: `${base}px`, height: `${base * 700 / 1026}px`, left: `${left - x}px`, top: `${top - y}px` });
-      state.root.style.setProperty("--whale-unit", `${base / 1026}px`);
-    }
-    if (save) { state.prefs.x = x; state.prefs.y = y; codexPlusWhaleSavePrefs(); }
-  }
-
-  function codexPlusWhaleElement(tag, className, text) {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (text !== undefined) element.textContent = text;
-    return element;
-  }
-
-  function codexPlusWhaleRender() {
-    const state = codexPlusWhaleState, elements = state.elements;
-    if (!state.root) return;
-    elements.bubble.hidden = !state.settingsOpen;
-    elements.pop.hidden = !state.bubbleOpen || state.settingsOpen;
-    elements.pop.dataset.open = String(state.bubbleOpen && !state.settingsOpen);
-    elements.settings.hidden = !state.settingsOpen;
-    elements.pet.setAttribute("aria-expanded", String(state.bubbleOpen));
-    elements.message.textContent = state.message || state.prefs.phrase;
-    elements.notice.textContent = state.storageError;
-    elements.notice.hidden = !state.storageError;
-    const balance = state.balance;
-    const balanceLines = [];
-    if (balance?.status === "ok" || (balance?.stale === true && Array.isArray(balance.balances) && balance.balances.length)) {
-      balanceLines.push(`账户：${balance.provider?.name || "当前服务商"}${balance.stale ? "（缓存，刷新失败）" : ""}`);
-      for (const item of Array.isArray(balance.balances) ? balance.balances : []) {
-        balanceLines.push(`余额 ${codexPlusWhaleAmount(item.total)} ${item.currency || ""} · 今日观测消费 ${codexPlusWhaleAmount(item.observedToday)} ${item.currency || ""}`);
-      }
-      if (!balance.balances?.length) balanceLines.push("暂无可用余额数据");
-      if (balance.stale && balance.message) balanceLines.push(String(balance.message).slice(0, 160));
-    } else {
-      balanceLines.push(({ unsupported: "当前供应商未提供余额数据", disabled: "余额查询未启用", unavailable: "余额暂不可用" })[balance?.status] || "正在读取余额…");
-      if (balance?.message && balance.status !== "unsupported") balanceLines.push(String(balance.message).slice(0, 160));
-    }
-    elements.balance.textContent = balanceLines.join("\n");
-    const session = state.session;
-    const currentTurn = state.liveTurn || session?.lastTurn;
-    const status = { running: "运行中", completed: "已完成", failed: "失败", aborted: "已停止", unknown: "未知" };
-    elements.session.textContent = !state.sessionId ? "打开一个会话即可查看用量。" : session?.status === "ok"
-      ? `当前会话${session.model ? ` · ${session.model}` : ""}\n今日 ${codexPlusWhaleAmount(session.today?.totalTokens)} tokens · 累计 ${codexPlusWhaleAmount(session.total?.totalTokens)} tokens\n输入 ${codexPlusWhaleAmount(session.total?.inputTokens)} · 缓存 ${codexPlusWhaleAmount(session.total?.cachedInputTokens)} · 输出 ${codexPlusWhaleAmount(session.total?.outputTokens)}\n任务：${status[currentTurn?.status] || "暂无状态"}`
-      : session ? "当前会话用量暂不可用，稍后自动重试。" : "正在读取会话用量…";
-    if (state.liveTurn && session?.status !== "ok") elements.session.textContent += `\n任务：${status[state.liveTurn.status] || "未知"}`;
-    elements.limits.textContent = (Array.isArray(session?.rateLimits) ? session.rateLimits : []).map((item) => {
-      const percent = codexPlusWhaleNumber(item.usedPercent);
-      const reset = codexPlusWhaleNumber(item.resetAt);
-      const observed = codexPlusWhaleNumber(item.observedAt);
-      const expired = reset !== null && reset * 1000 <= Date.now();
-      return `${item.label || "订阅额度"}额度快照${expired ? "（已过期）" : ""}：已用 ${percent === null ? "—" : `${Math.min(100, percent)}%`}${reset === null ? "" : `，${new Date(reset * 1000).toLocaleString()} 重置`}${observed === null ? "" : `\n记录于 ${new Date(observed * 1000).toLocaleString()}`}`;
-    }).join("\n");
-    elements.limits.hidden = !elements.limits.textContent;
-    const used = session?.status === "ok" ? session.today?.totalTokens : null;
-    elements.popLabel.textContent = state.message ? "Codex" : "今日用量";
-    elements.popAmount.textContent = state.message ? String(state.message).slice(0, 64) : codexPlusWhaleAmount(used);
-    elements.popAmount.dataset.message = String(Boolean(state.message));
-    elements.popHint.textContent = state.message ? "点击气泡收起" : `tokens · ${status[currentTurn?.status] || "等待会话"}`;
-    elements.pop.setAttribute("aria-label", state.message || `Codex 今日用量 ${codexPlusWhaleAmount(used)} tokens，${status[currentTurn?.status] || "等待会话"}`);
-    state.root.dataset.running = String(currentTurn?.status === "running");
-    codexPlusWhalePosition();
-  }
-
-  function codexPlusWhaleRenderCharacter() {
-    const pet = codexPlusWhaleState.elements.pet;
-    if (!pet) return;
-    pet.replaceChildren();
-    const imageSource = codexPlusWhaleImageSource(codexPlusWhaleState.prefs.image);
-    if (imageSource) {
-      const image = codexPlusWhaleElement("img");
-      image.src = imageSource; image.alt = "自定义挂件角色"; image.draggable = false;
-      pet.appendChild(image);
+  function syncCodexPlusWhaleWidget() {
+    if (!codexPlusWhaleEnabled()) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; return; }
+    const profile = codexPlusWhaleProfileFingerprint();
+    if (codexPlusWhaleState.profile !== profile) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; }
+    codexPlusWhaleState.profile = profile;
+    if (codexPlusWhaleState.runtime) {
+      codexPlusWhaleState.runtime.context();
+      codexPlusWhaleState.runtime.subscribe();
+      codexPlusWhaleState.runtime.pause(document.hidden === true);
       return;
     }
-    // 原版 DSniang1.png 由启动器内嵌，无运行时下载。来源和原始声明随素材保存。
-    const image = codexPlusWhaleElement("img");
-    image.src = codexPlusWhaleImageSource(window.__CODEX_PLUS_WHALE_IMAGE__);
-    image.alt = "小鲸鱼娘"; image.draggable = false;
-    pet.appendChild(image);
-  }
-
-  function codexPlusWhaleSettingRow(label, input) {
-    const row = codexPlusWhaleElement("label", "whale-setting");
-    row.append(codexPlusWhaleElement("span", "", label), input);
-    return row;
-  }
-
-  function codexPlusWhaleSettings() {
-    const state = codexPlusWhaleState, panel = state.elements.settings;
-    panel.replaceChildren();
-    panel.appendChild(codexPlusWhaleElement("strong", "", "挂件设置"));
-    const checkbox = (label, key, after) => {
-      const input = codexPlusWhaleElement("input"); input.type = "checkbox"; input.checked = state.prefs[key];
-      input.addEventListener("change", () => { state.prefs[key] = input.checked; codexPlusWhaleSavePrefs(); after?.(input.checked); });
-      panel.appendChild(codexPlusWhaleSettingRow(label, input));
-    };
-    checkbox("边缘吸附", "snap");
-    checkbox("完成时显示气泡", "completion");
-    checkbox("提示音（默认静音）", "sound", async (enabled) => {
-      if (!enabled) { void state.audio?.close?.(); state.audio = null; return; }
-      try {
-        const Audio = window.AudioContext || window.webkitAudioContext;
-        if (Audio && !state.audio) state.audio = new Audio();
-        await state.audio?.resume?.(); codexPlusWhalePlaySound();
-      } catch { codexPlusWhaleSay("当前系统暂不允许播放提示音。"); }
-    });
-    const size = codexPlusWhaleElement("input"); size.type = "range"; size.min = "73"; size.max = "372"; size.value = String(state.prefs.size);
-    size.addEventListener("input", () => { state.prefs.size = Number(size.value); codexPlusWhalePosition(); });
-    size.addEventListener("change", () => codexPlusWhalePosition(true));
-    panel.appendChild(codexPlusWhaleSettingRow("角色大小", size));
-    const phrase = codexPlusWhaleElement("textarea"); phrase.maxLength = 120; phrase.rows = 2; phrase.value = state.prefs.phrase;
-    phrase.addEventListener("change", () => { state.prefs.phrase = phrase.value.slice(0, 120); state.message = ""; codexPlusWhaleSavePrefs(); codexPlusWhaleRender(); });
-    panel.appendChild(codexPlusWhaleSettingRow("陪伴台词（纯文本）", phrase));
-    const upload = codexPlusWhaleElement("input"); upload.type = "file"; upload.accept = "image/png,image/jpeg,image/webp,image/gif";
-    upload.addEventListener("change", () => { const file = upload.files?.[0]; if (file) void codexPlusWhaleUpload(file); upload.value = ""; });
-    panel.appendChild(codexPlusWhaleSettingRow("本地角色图片（最大 1 MiB）", upload));
-    const restore = codexPlusWhaleElement("button", "", "恢复默认角色"); restore.type = "button";
-    restore.addEventListener("click", () => { state.imageRevision += 1; state.prefs.image = ""; codexPlusWhaleSavePrefs(); codexPlusWhaleRenderCharacter(); });
-    panel.appendChild(restore);
-    const currencies = [...new Set((Array.isArray(state.balance?.balances) ? state.balance.balances : []).map((item) => item.currency).filter((currency) => /^[A-Z]{3,8}$/.test(currency)))];
-    state.settingsCurrencies = currencies.join(",");
-    if (!currencies.length) panel.appendChild(codexPlusWhaleElement("p", "whale-muted", "读取到余额币种后可设置阈值与每日预算。"));
-    for (const currency of currencies) {
-      panel.appendChild(codexPlusWhaleElement("strong", "", `${currency} 提醒（留空关闭）`));
-      for (const [key, label] of [["low", "低余额阈值"], ["budget", "账户每日观测消费预算"]]) {
-        const input = codexPlusWhaleElement("input"); input.type = "number"; input.min = "0"; input.max = "1000000000"; input.step = "any";
-        input.value = String(state.prefs.thresholds[currency]?.[key] ?? "");
-        input.addEventListener("change", () => {
-          const value = codexPlusWhaleNumber(input.value);
-          state.prefs.thresholds[currency] = { ...state.prefs.thresholds[currency], [key]: value !== null && value > 0 && value <= 1000000000 ? value : null };
-          codexPlusWhaleSavePrefs(); codexPlusWhaleCheckAlerts(state.balance);
-        });
-        panel.appendChild(codexPlusWhaleSettingRow(`${label}（${currency}）`, input));
-      }
+    // 隐藏窗口等恢复可见后再挂载，不在后台构造音频或轮询会话日志。
+    if (document.hidden) return;
+    if (Date.now() < codexPlusWhaleState.failedUntil) return;
+    if (typeof window.__CODEX_PLUS_WHALE_ENGINE__ !== "function") {
+      if (!codexPlusWhaleState.missingSource) console.warn("[Codex++] 完整鲸鱼运行时未随启动器加载，请重新构建启动器。");
+      codexPlusWhaleState.missingSource = true; codexPlusWhaleInitializationFailed(null); return;
     }
-    panel.appendChild(codexPlusWhaleElement("p", "whale-muted", "消费由同一账户的余额变化观测，充值、其他设备和其他应用都可能影响结果。不会把账户扣费标作本轮费用。"));
-  }
-
-  async function codexPlusWhaleUpload(file) {
-    const state = codexPlusWhaleState, revision = ++state.imageRevision, generation = state.generation;
-    try {
-      if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type) || !file.size || file.size > codexPlusWhaleMaxImageBytes) throw new Error("仅支持不超过 1 MiB 的 PNG、JPEG、WebP 或 GIF 图片。");
-      const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
-      const ascii = (start, length) => String.fromCharCode(...bytes.slice(start, start + length));
-      const valid = file.type === "image/png" ? bytes[0] === 137 && ascii(1, 3) === "PNG" && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10
-        : file.type === "image/jpeg" ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
-        : file.type === "image/gif" ? ["GIF87a", "GIF89a"].includes(ascii(0, 6))
-        : ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP";
-      if (!valid) throw new Error("图片内容与格式不符，请选择有效的本地图片。");
-      const source = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error("读取图片失败。")); reader.readAsDataURL(file); });
-      if (!codexPlusWhaleImageSource(source)) throw new Error("图片格式不受支持。");
-      await new Promise((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => image.naturalWidth > 0 && image.naturalHeight > 0 && image.naturalWidth <= 4096 && image.naturalHeight <= 4096 ? resolve() : reject(new Error("图片边长不能超过 4096 像素。"));
-        image.onerror = () => reject(new Error("无法解码这张图片。")); image.src = source;
-      });
-      if (state.disposed || !state.mounted || state.imageRevision !== revision || state.generation !== generation) return;
-      state.prefs.image = source; codexPlusWhaleSavePrefs(); codexPlusWhaleRenderCharacter();
-      codexPlusWhaleSay("新角色已换好。");
-    } catch (error) {
-      if (state.mounted && state.imageRevision === revision) codexPlusWhaleSay(error?.message || "读取图片失败。");
-    }
-  }
-
-  function codexPlusWhaleMount() {
-    const state = codexPlusWhaleState;
-    const root = codexPlusWhaleElement("aside"); root.id = "codex-plus-whale-widget";
-    root.setAttribute("data-codex-plus-ext", "builtin-whale"); root.setAttribute("aria-label", "Codex 用量挂件");
-    const style = codexPlusWhaleElement("style");
-    style.textContent = `
-      #codex-plus-whale-widget{position:fixed;z-index:2147482500;color:#203170;font:12px/1.55 system-ui,sans-serif;user-select:none;isolation:isolate;pointer-events:none;background:transparent!important;border:0!important;box-shadow:none!important;backdrop-filter:none!important}
-      #codex-plus-whale-widget *{box-sizing:border-box}#codex-plus-whale-widget [hidden]{display:none!important}
-      #codex-plus-whale-widget button,#codex-plus-whale-widget input,#codex-plus-whale-widget textarea{font:inherit;color:inherit}
-      #codex-plus-whale-widget button{cursor:pointer;border:1px solid #8193a644;border-radius:8px;background:#7d98af12;padding:5px 8px}
-      #codex-plus-whale-widget button:focus-visible,#codex-plus-whale-widget input:focus-visible,#codex-plus-whale-widget textarea:focus-visible{outline:2px solid #55b8df;outline-offset:3px}
-      #codex-plus-whale-widget .whale-pet{display:block;width:100%;height:100%;padding:0;border:0;background:none;touch-action:none;cursor:grab;pointer-events:auto;transform-origin:50% 100%;transition:transform .22s cubic-bezier(.34,1.56,.64,1);-webkit-tap-highlight-color:transparent}
-      #codex-plus-whale-widget .whale-pet:active{cursor:grabbing}#codex-plus-whale-widget .whale-pet svg,#codex-plus-whale-widget .whale-pet img{width:100%;height:100%;object-fit:contain;pointer-events:none}
-      #codex-plus-whale-widget .whale-pet img{object-position:right bottom;transition:transform .3s ease}
-      #codex-plus-whale-widget[data-side=left] .whale-pet img{transform:scaleX(-1)}
-      #codex-plus-whale-widget[data-pressed=true] .whale-pet{transform:scaleY(.88) scaleX(1.05)}
-      #codex-plus-whale-widget .whale-pop{position:absolute;padding:0;border:0;background:transparent;pointer-events:none;z-index:1}
-      #codex-plus-whale-widget .whale-pop svg{display:block;width:100%;height:100%;background:transparent!important;border:0!important;overflow:visible}
-      #codex-plus-whale-widget .whale-pop path,#codex-plus-whale-widget .whale-pop ellipse{pointer-events:visiblePainted;cursor:pointer;transform-box:fill-box;transform-origin:50% 50%;animation:codex-plus-whale-bubble .2s ease backwards}
-      #codex-plus-whale-widget .whale-pop .whale-b1{animation-delay:.13s}#codex-plus-whale-widget .whale-pop .whale-bshape{animation-delay:.26s}
-      #codex-plus-whale-widget[data-side=left] .whale-pop{transform:scaleX(-1)}
-      #codex-plus-whale-widget .whale-pop-text{position:absolute;left:44.25%;top:36%;width:66%;height:64%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;line-height:1.15;color:#536ba9;pointer-events:none;animation:codex-plus-whale-text .16s ease .36s backwards}
-      #codex-plus-whale-widget[data-side=left] .whale-pop-text{transform:translate(-50%,-50%) scaleX(-1)}
-      #codex-plus-whale-widget .whale-pop-label{font-size:calc(var(--whale-unit) * 66);font-weight:600;letter-spacing:.06em}
-      #codex-plus-whale-widget .whale-pop-amount{font-size:calc(var(--whale-unit) * 128);font-weight:800;line-height:1.05}
-      #codex-plus-whale-widget .whale-pop-amount[data-message=true]{font-size:calc(var(--whale-unit) * 58);line-height:1.2;white-space:normal;overflow-wrap:anywhere}
-      #codex-plus-whale-widget .whale-pop-hint{font-size:calc(var(--whale-unit) * 56);color:#9fb0d9;letter-spacing:.02em;margin-top:calc(var(--whale-unit) * 9)}
-      #codex-plus-whale-widget .whale-menu-button{position:absolute;top:4px;right:4px;width:26px;height:26px;border:0;border-radius:6px;background:rgba(32,49,112,.85);padding:0;color:white;pointer-events:auto;z-index:2;font-size:18px;line-height:26px;opacity:0;transition:opacity .15s ease}
-      #codex-plus-whale-widget:hover .whale-menu-button,#codex-plus-whale-widget:focus-within .whale-menu-button{opacity:1}
-      #codex-plus-whale-widget[data-side=left] .whale-menu-button{right:auto;left:4px}
-      @media(hover:none){#codex-plus-whale-widget .whale-menu-button{opacity:1}}
-      #codex-plus-whale-widget .whale-bubble{position:absolute;bottom:calc(100% + 8px);right:0;width:min(330px,calc(100vw - 32px));max-height:min(640px,var(--whale-room,70vh));overflow:auto;border:1px solid rgba(32,49,112,.35);border-radius:10px;background:rgba(255,255,255,.96);box-shadow:0 6px 18px rgba(0,0,0,.18);padding:10px 12px;user-select:text;overflow-wrap:anywhere;pointer-events:auto;z-index:3;color-scheme:light}
-      #codex-plus-whale-widget[data-side=left] .whale-bubble{right:auto;left:0}#codex-plus-whale-widget[data-vertical=below] .whale-bubble{bottom:auto;top:calc(100% + 8px)}
-      #codex-plus-whale-widget .whale-toolbar{display:flex;align-items:center;gap:6px;margin-bottom:10px}#codex-plus-whale-widget .whale-toolbar strong{flex:1;font-size:14px}
-      #codex-plus-whale-widget p{margin:9px 0;white-space:pre-line}#codex-plus-whale-widget .whale-muted{opacity:.72;font-size:11px}#codex-plus-whale-widget .whale-notice{color:#e9ae56}
-      #codex-plus-whale-widget .whale-settings{border-top:1px solid #8193a644;margin-top:12px;padding-top:12px}#codex-plus-whale-widget .whale-settings>strong{display:block;margin:8px 0}
-      #codex-plus-whale-widget .whale-setting{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:9px 0}#codex-plus-whale-widget .whale-setting:has(textarea),#codex-plus-whale-widget .whale-setting:has([type=file]){display:block}
-      #codex-plus-whale-widget input[type=number]{width:100px}#codex-plus-whale-widget input[type=range]{width:120px}#codex-plus-whale-widget input[type=file]{display:block;width:100%;margin-top:6px;font-size:11px}
-      #codex-plus-whale-widget input[type=number],#codex-plus-whale-widget textarea{background:#8193a614;border:1px solid #8193a655;border-radius:6px;padding:5px}#codex-plus-whale-widget textarea{display:block;width:100%;resize:vertical;margin-top:5px}
-      @keyframes codex-plus-whale-bubble{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}@keyframes codex-plus-whale-text{from{opacity:0}to{opacity:1}}@media(prefers-reduced-motion:reduce){#codex-plus-whale-widget *{animation:none!important;transition:none!important}}
-    `;
-    const pet = codexPlusWhaleElement("button", "whale-pet"); pet.type = "button"; pet.setAttribute("aria-label", "Codex 用量挂件：查看用量与余额；拖动可移动"); pet.setAttribute("aria-controls", "codex-plus-whale-bubble");
-    // 气泡路径与原版保持一致；仅文字数据换为 Codex 会话用量。
-    const pop = codexPlusWhaleElement("div", "whale-pop"); pop.setAttribute("role", "button"); pop.setAttribute("tabindex", "0");
-    pop.innerHTML = '<svg viewBox="0 0 1026 700" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path class="whale-bshape" fill="#FFFFFF" stroke="#203170" stroke-width="18" stroke-linejoin="round" stroke-linecap="round" d="M 827 248 A 373 232 0 1 0 81 246 A 373 232 0 0 0 301 465 A 57 32 10 0 0 413 484 A 373 232 0 0 0 827 248 Z"/><ellipse class="whale-b1" cx="352" cy="561" rx="37.5" ry="26" fill="#FFFFFF" stroke="#203170" stroke-width="18"/><ellipse class="whale-b2" cx="442" cy="646" rx="24.5" ry="18" fill="#FFFFFF" stroke="#203170" stroke-width="18"/></svg>';
-    const popText = codexPlusWhaleElement("div", "whale-pop-text");
-    const popLabel = codexPlusWhaleElement("span", "whale-pop-label"), popAmount = codexPlusWhaleElement("span", "whale-pop-amount"), popHint = codexPlusWhaleElement("span", "whale-pop-hint");
-    popText.append(popLabel, popAmount, popHint); pop.appendChild(popText);
-    const dismissPop = () => { state.bubbleOpen = false; codexPlusWhaleRender(); };
-    pop.addEventListener("click", dismissPop);
-    pop.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); dismissPop(); } });
-    const menu = codexPlusWhaleElement("button", "whale-menu-button", "☰"); menu.type = "button"; menu.setAttribute("aria-label", "用量详情与挂件设置");
-    const bubble = codexPlusWhaleElement("section", "whale-bubble"); bubble.id = "codex-plus-whale-bubble";
-    const toolbar = codexPlusWhaleElement("div", "whale-toolbar");
-    const settingsButton = codexPlusWhaleElement("button", "", "设置"); settingsButton.type = "button";
-    const close = codexPlusWhaleElement("button", "", "收起"); close.type = "button";
-    toolbar.append(codexPlusWhaleElement("strong", "", "Codex 用量挂件"), settingsButton, close);
-    const message = codexPlusWhaleElement("p"); message.setAttribute("role", "status"); message.setAttribute("aria-live", "polite");
-    const balance = codexPlusWhaleElement("p", "whale-muted"), session = codexPlusWhaleElement("p"), limits = codexPlusWhaleElement("p", "whale-muted");
-    const notice = codexPlusWhaleElement("p", "whale-notice"); notice.setAttribute("role", "status");
-    const settings = codexPlusWhaleElement("div", "whale-settings");
-    bubble.append(toolbar, message, session, limits, balance, codexPlusWhaleElement("p", "whale-muted", "余额约每 60 秒更新；会话约每 10 秒更新。今日消费是账户观测值，非本轮费用。"), notice, settings);
-    root.append(style, pop, bubble, pet, menu);
-    state.root = root; state.elements = { pet, pop, popLabel, popAmount, popHint, bubble, message, balance, session, limits, settings, notice }; state.mounted = true;
-    document.body.appendChild(root);
-    registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-whale"]');
-    codexPlusWhaleRenderCharacter();
-    pet.addEventListener("click", (event) => { if (state.suppressClick && event.detail !== 0) { state.suppressClick = false; return; } state.settingsOpen = false; state.bubbleOpen = !state.bubbleOpen; codexPlusWhaleRender(); });
-    root.addEventListener("click", () => {
-      if (!state.prefs.sound || state.audio) return;
-      try {
-        const Audio = window.AudioContext || window.webkitAudioContext;
-        if (Audio) { state.audio = new Audio(); void state.audio.resume?.().catch?.(() => {}); }
-      } catch {}
-    });
-    const toggleMenu = () => { state.settingsOpen = !state.settingsOpen; if (state.settingsOpen) codexPlusWhaleSettings(); codexPlusWhaleRender(); };
-    menu.addEventListener("click", toggleMenu);
-    pet.addEventListener("contextmenu", (event) => { event.preventDefault(); toggleMenu(); });
-    settingsButton.addEventListener("click", () => { state.settingsOpen = !state.settingsOpen; if (state.settingsOpen) codexPlusWhaleSettings(); codexPlusWhaleRender(); });
-    close.addEventListener("click", () => { state.settingsOpen = false; state.bubbleOpen = false; codexPlusWhaleRender(); pet.focus(); });
-    root.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") { state.settingsOpen = false; state.bubbleOpen = false; codexPlusWhaleRender(); pet.focus(); }
-      if (event.target !== pet || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-      event.preventDefault(); const delta = event.shiftKey ? 30 : 10;
-      state.prefs.x = parseFloat(root.style.left) + (event.key === "ArrowLeft" ? -delta : event.key === "ArrowRight" ? delta : 0);
-      state.prefs.y = parseFloat(root.style.top) + (event.key === "ArrowUp" ? -delta : event.key === "ArrowDown" ? delta : 0);
-      codexPlusWhalePosition(true);
-    });
-    pet.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      state.suppressClick = false; root.dataset.pressed = "true";
-      state.drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: parseFloat(root.style.left), top: parseFloat(root.style.top), moved: false };
-      pet.setPointerCapture?.(event.pointerId);
-    });
-    pet.addEventListener("pointermove", (event) => {
-      const drag = state.drag; if (!drag || event.pointerId !== drag.id) return;
-      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
-      if (!drag.moved && Math.hypot(dx, dy) < 5) return;
-      drag.moved = true; state.prefs.x = drag.left + dx; state.prefs.y = drag.top + dy; codexPlusWhalePosition();
-    });
-    const finish = (event) => {
-      const drag = state.drag; if (!drag || event.pointerId !== drag.id) return;
-      root.dataset.pressed = "false"; state.drag = null; state.suppressClick = drag.moved;
-      if (drag.moved) {
-        if (state.prefs.snap && event.type !== "pointercancel") state.prefs.x = parseFloat(root.style.left) + parseFloat(root.style.width) / 2 < window.innerWidth / 2 ? 8 : window.innerWidth - parseFloat(root.style.width) - 8;
-        codexPlusWhalePosition(true);
+    const runtime = createCodexPlusWhaleFullRuntime();
+    codexPlusWhaleState.runtime = runtime;
+    registerCodexPlusExtensionSelector("[data-codex-plus-ext=whale-widget]");
+    void runtime.initialize().then(() => {
+      if (runtime.active() && codexPlusWhaleState.runtime === runtime && codexPlusWhaleEnabled()) {
+        window.__CODEX_PLUS_WHALE_ENGINE__(...runtime.environment);
+        if (runtime.state.initializationError || !runtime.state.controls) throw new Error("完整鲸鱼初始化未完成");
+        codexPlusWhaleState.notice?.remove(); codexPlusWhaleState.notice = null;
       }
-    };
-    pet.addEventListener("pointerup", finish); pet.addEventListener("pointercancel", finish); pet.addEventListener("lostpointercapture", finish);
-    codexPlusWhaleListen(document, "visibilitychange", () => {
-      state.generation += 1; codexPlusWhaleCancelRequests(); state.balancePending = null; state.sessionPending = null; state.previousTurn = null; state.liveTurn = null;
-      clearTimeout(state.timer); state.timer = null;
-      if (!document.hidden) { state.sessionDue = 0; codexPlusWhalePoll(); }
-    });
-    codexPlusWhaleListen(window, "resize", () => codexPlusWhalePosition());
-    codexPlusWhaleRender();
-  }
-
-  function codexPlusWhaleContext() {
-    const state = codexPlusWhaleState;
-    let sessionId = "", profileId = "";
-    try { sessionId = String(currentSessionRef()?.session_id || ""); } catch {}
-    try {
-      const profile = codexRemoteSessionActiveProfile();
-      const settings = typeof codexPlusBackendSettings === "object" ? codexPlusBackendSettings : {};
-      // 只比较显示协议与公开字段，不读取或保存供应商密钥。
-      profileId = JSON.stringify([profile?.id || "", profile?.baseUrl || "", profile?.relayMode || "",
-        settings.codexAppWhaleBalanceProtocol, settings.codexAppWhaleBalancePath,
-        settings.codexAppWhaleBalanceField, settings.codexAppWhaleBalanceCurrency, settings.codexAppWhaleBalanceScale]);
-    } catch {}
-    if (profileId !== state.profileId) {
-      codexPlusWhaleCancelRequests();
-      state.completedTurns.clear(); state.liveTurn = null;
-      state.profileId = profileId; state.balance = null; state.balanceDue = 0; state.session = null; state.sessionDue = 0;
-      state.generation += 1; state.balancePending = null; state.sessionPending = null; state.previousTurn = null;
-    }
-    if (sessionId !== state.sessionId) {
-      if (state.balancePending) state.balanceDue = 0;
-      codexPlusWhaleCancelRequests();
-      state.completedTurns.clear(); state.liveTurn = null;
-      state.sessionId = sessionId; state.session = null; state.sessionDue = 0; state.previousTurn = null; state.message = "";
-      state.generation += 1; state.balancePending = null; state.sessionPending = null;
-    }
-  }
-
-  function codexPlusWhaleCancelRequests() {
-    for (const cancel of [...codexPlusWhaleState.pendingCancels]) cancel();
-  }
-
-  function codexPlusWhaleBridge(path, payload) {
-    const state = codexPlusWhaleState;
-    return new Promise((resolve) => {
-      let finished = false;
-      const finish = (value) => {
-        if (finished) return;
-        finished = true; clearTimeout(timer); state.pendingCancels.delete(cancel); resolve(value);
-      };
-      const cancel = () => finish(null);
-      const timer = setTimeout(() => finish({ status: "unavailable" }), 15000);
-      state.pendingCancels.add(cancel);
-      try { Promise.resolve(postJson(path, payload)).then(finish, () => finish({ status: "unavailable" })); }
-      catch { finish({ status: "unavailable" }); }
+    }).catch((error) => {
+      if (!runtime.active()) return;
+      if (codexPlusWhaleState.runtime === runtime) codexPlusWhaleInitializationFailed(runtime);
     });
   }
-
-  async function codexPlusWhaleRequest(kind) {
-    const state = codexPlusWhaleState;
-    const generation = state.generation, sessionId = state.sessionId;
-    const marker = {}; state[`${kind}Pending`] = marker;
-    state[`${kind}Due`] = Date.now() + (kind === "balance" ? 60000 : 10000);
-    try {
-      const response = await codexPlusWhaleBridge(`/whale/${kind}`, kind === "session" ? { session_id: sessionId } : {});
-      if (!state.mounted || !codexPlusWhaleEnabled() || document.hidden || state.generation !== generation || state[`${kind}Pending`] !== marker) return;
-      if (kind === "session" && sessionId !== state.sessionId) return;
-      state[kind] = response && typeof response === "object" ? response : { status: "unavailable" };
-      if (kind === "balance") {
-        codexPlusWhaleCheckAlerts(state.balance);
-        const currencies = (Array.isArray(state.balance?.balances) ? state.balance.balances : []).map((item) => item.currency).filter((currency) => /^[A-Z]{3,8}$/.test(currency)).join(",");
-        if (state.settingsOpen && currencies !== state.settingsCurrencies) codexPlusWhaleSettings();
-      }
-      else {
-        // 原生事件先于日志落盘；旧日志不能把刚完成的任务重新显示成运行中。
-        const loggedTurn = state.session?.lastTurn;
-        const live = state.liveTurn;
-        const loggedAt = Date.parse(loggedTurn?.updatedAt || "");
-        const sameTurnCaughtUp = loggedTurn?.id === live?.id
-          && (loggedTurn?.status === live?.status || (live?.status === "running" && ["completed", "failed", "aborted"].includes(loggedTurn?.status)));
-        if (!live || sameTurnCaughtUp || (Number.isFinite(loggedAt) && loggedAt >= live.observedAt) || Date.now() - live.observedAt > 60000) {
-          state.liveTurn = null; codexPlusWhaleObserveTurn(state.session);
-        }
-      }
-      codexPlusWhaleRender();
-    } catch {
-      if (state.mounted && state.generation === generation && state[`${kind}Pending`] === marker) {
-        state[kind] = { status: "unavailable" }; if (kind === "session") state.previousTurn = null; codexPlusWhaleRender();
-      }
-    } finally {
-      if (state[`${kind}Pending`] === marker) state[`${kind}Pending`] = null;
-    }
-  }
-
-  function codexPlusWhalePoll() {
-    const state = codexPlusWhaleState;
-    clearTimeout(state.timer); state.timer = null;
-    if (!state.mounted || !codexPlusWhaleEnabled() || document.hidden) return;
-    codexPlusWhaleContext();
-    if (!state.balancePending && Date.now() >= state.balanceDue) void codexPlusWhaleRequest("balance");
-    if (state.sessionId && !state.sessionPending && Date.now() >= state.sessionDue) void codexPlusWhaleRequest("session");
-    state.timer = setTimeout(codexPlusWhalePoll, 10000);
-  }
-
-  function codexPlusWhaleStop() {
-    const state = codexPlusWhaleState;
-    state.generation += 1; state.imageRevision += 1; state.mounted = false;
-    codexPlusWhaleCancelRequests();
-    codexPlusWhaleUnsubscribe(); state.liveTurn = null; state.completedTurns.clear();
-    clearTimeout(state.timer); state.timer = null;
-    for (const cleanup of state.listeners.splice(0)) cleanup();
-    state.root?.remove(); state.root = null; state.elements = {}; state.drag = null;
-    state.balancePending = null; state.sessionPending = null; state.previousTurn = null;
-    state.balance = null; state.session = null; state.balanceDue = 0; state.sessionDue = 0;
-    state.bubbleOpen = false; state.settingsOpen = false; state.message = "";
-    void state.audio?.close?.(); state.audio = null;
-  }
-
-  function syncCodexPlusWhaleWidget() {
-    const state = codexPlusWhaleState;
-    if (!codexPlusWhaleEnabled()) { if (state.mounted) codexPlusWhaleStop(); return; }
-    if (!document.body) return;
-    if (state.root && !state.root.isConnected) codexPlusWhaleStop();
-    if (!state.mounted) codexPlusWhaleMount();
-    codexPlusWhaleSubscribe();
-    const previousSession = state.sessionId, previousProfile = state.profileId;
-    codexPlusWhaleContext();
-    if (previousSession !== state.sessionId || previousProfile !== state.profileId) codexPlusWhaleRender();
-    if (!state.timer) codexPlusWhalePoll();
-    else if (state.sessionDue === 0 || state.balanceDue === 0) codexPlusWhalePoll();
-  }
-
   window.__codexPlusWhaleWidgetRuntime = {
+    version: 3,
+    sync: syncCodexPlusWhaleWidget,
     dispose() { codexPlusWhaleStop(); codexPlusWhaleState.disposed = true; },
+    get state() { return codexPlusWhaleState.runtime?.state || null; },
   };
   /**
    * 这个节点是不是 Codex++ 自己（或拓展）的 UI。

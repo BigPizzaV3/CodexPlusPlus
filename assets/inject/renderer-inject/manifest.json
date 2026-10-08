@@ -101,8 +101,13 @@
       "lines": 0
     },
     {
+      "name": "96-whale-compat.js",
+      "description": "Codex full whale host and bridge adapters",
+      "lines": 0
+    },
+    {
       "name": "97-whale-widget.js",
-      "description": "内置小鲸鱼：余额与用量、角色上传、拖动与提醒",
+      "description": "Full whale engine opt-in lifecycle",
       "lines": 0
     },
     {
