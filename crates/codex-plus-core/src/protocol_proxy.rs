@@ -1947,18 +1947,25 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             let eligible = wire_api == UpstreamWireApi::Responses
                 && !is_compaction_request
                 && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
-            let key = crate::responses_exec_transport::cache_key(
-                &relay.id,
-                &build_request(&upstream_body).build()?,
-                &upstream_body,
-            );
-            let cached_body = if eligible && crate::responses_exec_transport::cached(&key) {
-                crate::responses_exec::adapt_request(upstream_body.clone()).ok()
-            } else {
-                None
-            };
-            let mut exec_adapted = cached_body.is_some();
+            let mut key = None;
+            let mut exec_adapted = false;
             let send = async {
+                if eligible {
+                    key = Some(crate::responses_exec_transport::cache_key(
+                        &relay.id,
+                        &build_request(&upstream_body).build()?,
+                        &upstream_body,
+                    ));
+                }
+                let cached_body = if key
+                    .as_ref()
+                    .is_some_and(crate::responses_exec_transport::cached)
+                {
+                    crate::responses_exec::adapt_request(upstream_body.clone()).ok()
+                } else {
+                    None
+                };
+                exec_adapted = cached_body.is_some();
                 let mut upstream = send_upstream_request_for_responses(
                     build_request(cached_body.as_ref().unwrap_or(&upstream_body)),
                     is_stream,
@@ -1998,8 +2005,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             let mut upstream = match send.await {
                 Ok(upstream) => upstream,
                 Err(error) => {
-                    if exec_adapted {
-                        crate::responses_exec_transport::evict(&key);
+                    if exec_adapted && let Some(key) = key.as_ref() {
+                        crate::responses_exec_transport::evict(key);
                     }
                     drop(channel_permit.take());
                     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -2272,8 +2279,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 }),
             );
             if !exec_adapted || !(200..300).contains(&status_code) {
-                if exec_adapted {
-                    crate::responses_exec_transport::evict(&key);
+                if exec_adapted && let Some(key) = key.as_ref() {
+                    crate::responses_exec_transport::evict(key);
                 }
                 crate::relay_rotation::record_relay_request_event(
                     &settings,
@@ -2325,8 +2332,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     native_compaction_passthrough: false,
                     buffered_body: None,
                     exec_adapted,
-                    exec_outcome: (exec_adapted && (200..300).contains(&status_code))
-                        .then(|| crate::responses_exec_transport::ExecOutcome::new(key, &settings)),
+                    exec_outcome: (exec_adapted && (200..300).contains(&status_code)).then(|| {
+                        crate::responses_exec_transport::ExecOutcome::new(
+                            key.expect("adapted request has a cache identity"),
+                            &settings,
+                        )
+                    }),
                     response: Some(upstream),
                     _channel_permit: channel_permit,
                 });
