@@ -164,7 +164,12 @@ its fix. A deliberate temporary removal of the duplicate-key guard makes the
 strict-parser regression fail; the guard is restored in the submitted code.
 
 Validation commands are the core test/check commands and scoped rustfmt command
-in the specification. Existing warnings and pre-existing opt-in ignored tests
+in the specification. A clean detached worktree at runtime commit `de74c3a`
+completed the entire default core test suite: **1,470 passed, 0 failed,
+7 pre-existing opt-in tests ignored**. Scoped Rust formatting and the complete
+submitted diff check also passed.
+
+Existing warnings and pre-existing opt-in ignored tests
 are retained, not disabled to obtain a passing result. Submitted files do not
 include private configuration, session logs, generated binaries, or unrelated
 worktree changes.
