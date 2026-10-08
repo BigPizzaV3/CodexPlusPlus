@@ -293,6 +293,10 @@ fn adapt_request_history(request: &mut Value) -> Result<()> {
 }
 
 pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
+    let response_status = response
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let Some(items) = response.get_mut("output").and_then(Value::as_array_mut) else {
         return Ok(response);
     };
@@ -313,6 +317,12 @@ pub(crate) fn adapt_response(mut response: Value) -> Result<Value> {
     if matching_call_ids.is_empty() {
         return Ok(response);
     }
+    ensure!(
+        response_status
+            .as_deref()
+            .is_none_or(|status| status == "completed"),
+        "exec response did not complete successfully"
+    );
     let original_ids = collect_item_ids(items);
     ensure!(
         matching_call_ids.iter().collect::<BTreeSet<_>>().len() == matching_call_ids.len(),
@@ -485,29 +495,20 @@ fn remap_item_references(items: &mut [Value], original_ids: &[Option<String>]) -
 }
 
 fn remap_reference_fields(value: &mut Value, ids: &BTreeMap<String, String>) -> Result<()> {
-    match value {
-        Value::Object(object) => {
-            let is_reference = object.get("type").and_then(Value::as_str) == Some("item_reference");
-            for (key, value) in object.iter_mut() {
-                if key == "item_id" || (is_reference && key == "id") {
-                    let original_id = value
-                        .as_str()
-                        .ok_or_else(|| anyhow!("item reference id must be a string"))?;
-                    let final_id = ids
-                        .get(original_id)
-                        .ok_or_else(|| anyhow!("unresolved item reference"))?;
-                    *value = json!(final_id);
-                } else {
-                    remap_reference_fields(value, ids)?;
-                }
-            }
+    let Some(object) = value.as_object_mut() else {
+        return Ok(());
+    };
+    let is_reference = object.get("type").and_then(Value::as_str) == Some("item_reference");
+    for (key, value) in object.iter_mut() {
+        if key == "item_id" || (is_reference && key == "id") {
+            let original_id = value
+                .as_str()
+                .ok_or_else(|| anyhow!("item reference id must be a string"))?;
+            let final_id = ids
+                .get(original_id)
+                .ok_or_else(|| anyhow!("unresolved item reference"))?;
+            *value = json!(final_id);
         }
-        Value::Array(values) => {
-            for value in values {
-                remap_reference_fields(value, ids)?;
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -762,5 +763,27 @@ mod tests {
             &vec![b' '; MAX_REJECTION_BODY_BYTES + 1],
             &native
         ));
+    }
+
+    #[test]
+    fn unsuccessful_json_response_never_becomes_custom_input() {
+        for status in ["failed", "incomplete", "in_progress", "cancelled"] {
+            let response = json!({
+                "status": status,
+                "output": [{
+                    "type": "function_call", "name": "exec", "id": "fc_1",
+                    "call_id": "call_1", "arguments": "{\"input\":\"unsafe\"}"
+                }]
+            });
+            assert!(adapt_response(response).is_err(), "{status}");
+        }
+    }
+
+    #[test]
+    fn opaque_item_metadata_is_not_treated_as_an_item_reference() {
+        let mut native = request();
+        native["input"][0]["metadata"] = json!({"item_id": "vendor-opaque"});
+        let adapted = adapt_request(native).unwrap();
+        assert_eq!(adapted["input"][0]["metadata"]["item_id"], "vendor-opaque");
     }
 }
