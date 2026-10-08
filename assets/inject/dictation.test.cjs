@@ -71,8 +71,11 @@ function fixture() {
 
 (async () => {
   const backendLoaderSource = readFileSync(`${__dirname}/renderer-inject/30-service-tier.js`, "utf8");
-  const loaderStart = backendLoaderSource.indexOf("  async function loadBackendSettingsState()");
+  const loaderStart = backendLoaderSource.indexOf("  async function loadBackendSettingsState(");
   assert.ok(loaderStart >= 0);
+  const loaderEnd = backendLoaderSource.indexOf("\n  }\n", loaderStart);
+  assert.ok(loaderEnd > loaderStart);
+  const loaderSource = backendLoaderSource.slice(loaderStart, loaderEnd + "\n  }\n".length);
   const scanSource = readFileSync(`${__dirname}/renderer-inject/95-conversation-view.js`, "utf8");
   const scanStart = scanSource.indexOf("  function runScanStep(step)");
   const scanEnd = scanSource.indexOf("  function scan()", scanStart);
@@ -86,7 +89,7 @@ function fixture() {
       postJson: async () => ({ enhancementsEnabled: true, activeRelayCodexProvider: "deepseek", dictation: { enabled: false } }),
       installCodexPlusDictation: () => { installations += 1; throw Error("dictation UI unavailable"); },
     });
-    vm.runInContext(`${scanSource.slice(scanStart, scanEnd)}\n${backendLoaderSource.slice(loaderStart)}`, context);
+    vm.runInContext(`${scanSource.slice(scanStart, scanEnd)}\n${loaderSource}`, context);
     assert.equal(await context.loadBackendSettingsState(), true, "UI installation failure must not invalidate successfully loaded provider settings");
     assert.equal(context.codexPlusBackendSettingsLoaded, true);
     assert.equal(context.codexPlusBackendSettings.activeRelayCodexProvider, "deepseek");
