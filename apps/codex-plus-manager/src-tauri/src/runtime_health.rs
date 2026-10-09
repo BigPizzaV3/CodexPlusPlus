@@ -16,9 +16,9 @@ pub struct ServiceState {
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealth {
     pub codex_app: ServiceState,
-    pub helper: ServiceState,
+    pub local_server: ServiceState,
     pub debugger: ServiceState,
-    pub proxy_server: ServiceState,
+    pub protocol_conversion_enabled: Option<bool>,
 }
 
 impl RuntimeHealth {
@@ -30,9 +30,9 @@ impl RuntimeHealth {
         };
         Self {
             codex_app: state.clone(),
-            helper: state.clone(),
-            debugger: state.clone(),
-            proxy_server: state,
+            local_server: state.clone(),
+            debugger: state,
+            protocol_conversion_enabled: None,
         }
     }
 }
@@ -56,21 +56,13 @@ fn inspect_with(
     debugger_check: impl Fn(u16) -> bool,
 ) -> RuntimeHealth {
     let proxy_port = codex_plus_core::launcher::required_fixed_helper_port(settings);
-    let helper_port = latest
-        .and_then(|s| s.helper_port)
-        .or(proxy_port)
+    let server_port = proxy_port
+        .or_else(|| latest.and_then(|s| s.helper_port))
         .unwrap_or(57321);
     let debug_port = latest.and_then(|s| s.debug_port).unwrap_or(9229);
-    let helper_required = settings.enhancements_enabled || proxy_port.is_some();
-    let helper_ok = helper_required && helper_check(helper_port);
+    let server_required = settings.enhancements_enabled || proxy_port.is_some();
+    let server_ok = server_required && helper_check(server_port);
     let debugger_ok = debugger_check(debug_port);
-    let proxy_ok = proxy_port.is_some_and(|port| {
-        if port == helper_port {
-            helper_ok
-        } else {
-            helper_check(port)
-        }
-    });
     RuntimeHealth {
         codex_app: ServiceState {
             status: if codex_running { "running" } else { "stopped" },
@@ -81,21 +73,21 @@ fn inspect_with(
                 "Codex APP 未运行"
             },
         },
-        helper: ServiceState {
-            status: if !helper_required {
+        local_server: ServiceState {
+            status: if !server_required {
                 "disabled"
-            } else if helper_ok {
+            } else if server_ok {
                 "running"
             } else {
                 "stopped"
             },
-            address: Some(format!("http://127.0.0.1:{helper_port}")),
-            message: if !helper_required {
-                "当前配置无需 Helper"
-            } else if helper_ok {
-                "本地后台服务已连接"
+            address: Some(format!("http://127.0.0.1:{server_port}")),
+            message: if !server_required {
+                "当前配置无需本地服务器"
+            } else if server_ok {
+                "本地服务器已连接"
             } else {
-                "本地后台服务未运行"
+                "本地服务器未运行"
             },
         },
         debugger: ServiceState {
@@ -111,23 +103,7 @@ fn inspect_with(
                 "Codex 调试端点未连接"
             },
         },
-        proxy_server: ServiceState {
-            status: if proxy_port.is_none() {
-                "disabled"
-            } else if proxy_ok {
-                "running"
-            } else {
-                "stopped"
-            },
-            address: proxy_port.map(|port| format!("http://127.0.0.1:{port}/v1")),
-            message: if proxy_port.is_none() {
-                "当前配置无需本地协议代理"
-            } else if proxy_ok {
-                "本地协议代理已就绪"
-            } else {
-                "本地协议代理未运行"
-            },
-        },
+        protocol_conversion_enabled: Some(proxy_port.is_some()),
     }
 }
 
@@ -185,6 +161,17 @@ mod tests {
     use super::*;
     use codex_plus_core::settings::{RelayMode, RelayProfile, RelayProtocol};
 
+    fn read_helper_request(stream: &mut TcpStream) {
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+            assert!(request.len() < 1024);
+        }
+        assert!(String::from_utf8_lossy(&request).starts_with("GET /backend/status "));
+    }
+
     #[test]
     fn persisted_running_status_does_not_make_unreachable_services_healthy() {
         let settings = BackendSettings {
@@ -198,16 +185,16 @@ mod tests {
             ..LaunchStatus::default()
         };
         let health = inspect_with(&settings, Some(&old), false, |_| false, |_| false);
-        assert_eq!(health.helper.status, "stopped");
+        assert_eq!(health.local_server.status, "stopped");
         assert_eq!(health.debugger.status, "disconnected");
         assert_eq!(
-            health.helper.address.as_deref(),
+            health.local_server.address.as_deref(),
             Some("http://127.0.0.1:57322")
         );
     }
 
     #[test]
-    fn proxy_requires_its_fixed_port_even_when_another_helper_is_healthy() {
+    fn protocol_conversion_checks_its_fixed_port_instead_of_an_old_helper_port() {
         let profile = RelayProfile {
             id: "chat".into(),
             relay_mode: RelayMode::PureApi,
@@ -225,19 +212,24 @@ mod tests {
             helper_port: Some(other),
             ..LaunchStatus::default()
         };
+        let probed_ports = std::cell::RefCell::new(Vec::new());
         let health = inspect_with(
             &settings,
             Some(&latest),
             true,
-            |port| port == other,
+            |port| {
+                probed_ports.borrow_mut().push(port);
+                port == other
+            },
             |_| true,
         );
-        assert_eq!(health.helper.status, "running");
+        assert_eq!(health.local_server.status, "stopped");
         assert_eq!(health.debugger.status, "connected");
-        assert_eq!(health.proxy_server.status, "stopped");
+        assert_eq!(health.protocol_conversion_enabled, Some(true));
+        assert_eq!(*probed_ports.borrow(), vec![fixed]);
         assert!(
             health
-                .proxy_server
+                .local_server
                 .address
                 .unwrap()
                 .contains(&fixed.to_string())
@@ -245,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_proxy_is_distinct_from_a_failed_proxy() {
+    fn protocol_conversion_flag_is_independent_from_server_availability() {
         let profile = RelayProfile {
             id: "direct".into(),
             relay_mode: RelayMode::PureApi,
@@ -257,6 +249,16 @@ mod tests {
             enhancements_enabled: false,
             ..BackendSettings::default()
         };
+        let server_enabled = BackendSettings {
+            enhancements_enabled: true,
+            ..settings.clone()
+        };
+        let running = inspect_with(&server_enabled, None, true, |_| true, |_| false);
+        assert_eq!(running.local_server.status, "running");
+        assert_eq!(running.protocol_conversion_enabled, Some(false));
+        let stopped = inspect_with(&server_enabled, None, true, |_| false, |_| false);
+        assert_eq!(stopped.local_server.status, "stopped");
+        assert_eq!(stopped.protocol_conversion_enabled, Some(false));
         let health = inspect_with(
             &settings,
             None,
@@ -264,8 +266,12 @@ mod tests {
             |_| panic!("disabled helper should not be checked"),
             |_| false,
         );
-        assert_eq!(health.helper.status, "disabled");
-        assert_eq!(health.proxy_server.status, "disabled");
+        assert_eq!(health.local_server.status, "disabled");
+        assert_eq!(health.protocol_conversion_enabled, Some(false));
+        assert_eq!(
+            RuntimeHealth::unavailable().protocol_conversion_enabled,
+            None
+        );
     }
 
     #[test]
@@ -297,11 +303,7 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
-                let mut request = [0; 1024];
-                let read = stream.read(&mut request).unwrap();
-                assert!(
-                    String::from_utf8_lossy(&request[..read]).starts_with("GET /backend/status ")
-                );
+                read_helper_request(&mut stream);
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -324,8 +326,7 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();
-            let mut request = [0; 1024];
-            stream.read(&mut request).unwrap();
+            read_helper_request(&mut stream);
             std::thread::sleep(Duration::from_millis(350));
             let body = r#"{"status":"ok","transport":"http-helper","version":"1.7.1"}"#;
             write!(
