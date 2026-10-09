@@ -888,7 +888,6 @@
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
-    if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
     refreshConversationView();
     installCodexServiceTierBadge();
     installSessionShareButton();

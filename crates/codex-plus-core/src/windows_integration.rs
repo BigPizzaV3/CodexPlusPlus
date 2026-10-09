@@ -32,8 +32,8 @@ use windows::Win32::System::Registry::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    QueryFullProcessImageNameW, TerminateProcess,
+    GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
 };
 #[cfg(windows)]
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
@@ -383,6 +383,322 @@ pub fn process_birth_id(process_id: u32) -> Option<u64> {
         .ok()?;
     }
     Some(((creation_time.dwHighDateTime as u64) << 32) | creation_time.dwLowDateTime as u64)
+}
+
+/// 持有实际调试端口所属进程的句柄；PID 被复用也不会换成另一个实例。
+#[cfg(windows)]
+pub(crate) struct TrackedWindowsProcess {
+    pub process_id: u32,
+    pub birth_id: u64,
+    handle: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl TrackedWindowsProcess {
+    pub fn capture(
+        process_id: u32,
+        expected_executable: &std::path::Path,
+    ) -> anyhow::Result<Option<Self>> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                process_id,
+            )
+        }
+        .with_context(|| format!("failed to open Windows process id {process_id}"))?;
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+        let native_handle = HANDLE(handle.as_raw_handle());
+        let mut image = vec![0_u16; 32768];
+        let mut len = image.len() as u32;
+        unsafe {
+            QueryFullProcessImageNameW(
+                native_handle,
+                Default::default(),
+                PWSTR(image.as_mut_ptr()),
+                &mut len,
+            )
+        }
+        .context("failed to query tracked Windows process image")?;
+        let actual = PathBuf::from(OsString::from_wide(&image[..len as usize]));
+        let expected = std::fs::canonicalize(expected_executable)
+            .unwrap_or_else(|_| expected_executable.to_path_buf());
+        let normalize = |path: &std::path::Path| {
+            path.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_ascii_lowercase()
+        };
+        if normalize(&actual) != normalize(&expected) {
+            return Ok(None);
+        }
+        let mut birth = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        unsafe { GetProcessTimes(native_handle, &mut birth, &mut exit, &mut kernel, &mut user) }
+            .context("failed to query tracked Windows process creation time")?;
+        Ok(Some(Self {
+            process_id,
+            birth_id: ((birth.dwHighDateTime as u64) << 32) | birth.dwLowDateTime as u64,
+            handle,
+        }))
+    }
+
+    pub fn is_alive(&self) -> anyhow::Result<bool> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        let result = unsafe { WaitForSingleObject(HANDLE(self.handle.as_raw_handle()), 0) };
+        if result == WAIT_OBJECT_0 {
+            Ok(false)
+        } else if result == WAIT_TIMEOUT {
+            Ok(true)
+        } else {
+            Err(std::io::Error::last_os_error())
+                .context("failed to probe tracked Windows process")
+        }
+    }
+}
+
+// Windows SDK 的稳定 IP Helper ABI。只查询 listener，不启动 netstat/PowerShell，
+// 也不为这一项查询扩大 windows crate 的 feature 面。
+#[cfg(windows)]
+#[link(name = "iphlpapi")]
+unsafe extern "system" {
+    fn GetExtendedTcpTable(
+        table: *mut std::ffi::c_void,
+        size: *mut u32,
+        order: i32,
+        family: u32,
+        class: i32,
+        reserved: u32,
+    ) -> u32;
+}
+
+#[cfg(windows)]
+fn tcp_listener_table(family: u32) -> anyhow::Result<Vec<u8>> {
+    const OWNER_PID_LISTENER: i32 = 3;
+    const INSUFFICIENT_BUFFER: u32 = 122;
+    let mut size = 0_u32;
+    // Vec<u32> 保持 SDK table 的 DWORD 对齐；大小变化时有限重试。
+    for _ in 0..4 {
+        if size > 16 * 1024 * 1024 {
+            anyhow::bail!("Windows TCP listener table exceeds size limit");
+        }
+        let mut words = vec![0_u32; (size as usize).div_ceil(4)];
+        let pointer = if words.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            words.as_mut_ptr().cast()
+        };
+        let result =
+            unsafe { GetExtendedTcpTable(pointer, &mut size, 0, family, OWNER_PID_LISTENER, 0) };
+        match result {
+            0 => {
+                let bytes = words
+                    .into_iter()
+                    .flat_map(u32::to_ne_bytes)
+                    .collect::<Vec<_>>();
+                anyhow::ensure!(
+                    size as usize <= bytes.len(),
+                    "invalid Windows TCP listener table size"
+                );
+                return Ok(bytes[..size as usize].to_vec());
+            }
+            INSUFFICIENT_BUFFER => continue,
+            code => {
+                return Err(std::io::Error::from_raw_os_error(code as i32))
+                    .context("failed to query Windows TCP listener owners");
+            }
+        }
+    }
+    anyhow::bail!("Windows TCP listener table kept changing during query")
+}
+
+#[cfg(windows)]
+pub(crate) fn loopback_listener_process_ids(port: u16) -> anyhow::Result<Vec<u32>> {
+    let mut ids = Vec::new();
+    let mut errors = Vec::new();
+    for (family, ipv6) in [(2, false), (23, true)] {
+        match tcp_listener_table(family)
+            .and_then(|bytes| parse_listener_process_ids(&bytes, ipv6, port))
+        {
+            Ok(found) => ids.extend(found),
+            Err(error) => errors.push(format!("{error:#}")),
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    anyhow::ensure!(
+        !ids.is_empty() || errors.is_empty(),
+        "{}",
+        errors.join("; ")
+    );
+    Ok(ids)
+}
+
+#[cfg(any(windows, test))]
+fn unique_listener_process_id(ids: &[u32]) -> anyhow::Result<Option<u32>> {
+    let first = ids.first().copied();
+    anyhow::ensure!(ids.iter().all(|pid| Some(*pid) == first), "ambiguous Windows debug listener owners across address families");
+    Ok(first)
+}
+
+#[cfg(windows)]
+pub(crate) fn capture_debug_listener(
+    port: u16,
+    executable: &std::path::Path,
+) -> anyhow::Result<Option<TrackedWindowsProcess>> {
+    // 两个地址族若归属不同进程，不能按 PID 排序任意挑一个。
+    let Some(pid) = unique_listener_process_id(&loopback_listener_process_ids(port)?)? else {
+        return Ok(None);
+    };
+    let Some(process) = TrackedWindowsProcess::capture(pid, executable)? else {
+        return Ok(None);
+    };
+    // 取得句柄后再次核对唯一 owner，拒绝陈旧 TCP table 和 PID 复用。
+    if unique_listener_process_id(&loopback_listener_process_ids(port)?)? != Some(pid) {
+        return Ok(None);
+    }
+    Ok(Some(process))
+}
+
+/// 两种 SDK row 的 DWORD 布局均为四字节对齐；逐字段读取并检查长度。
+#[cfg(any(windows, test))]
+fn parse_listener_process_ids(bytes: &[u8], ipv6: bool, port: u16) -> anyhow::Result<Vec<u32>> {
+    let word = |bytes: &[u8]| u32::from_ne_bytes(bytes[..4].try_into().unwrap());
+    anyhow::ensure!(bytes.len() >= 4, "truncated Windows TCP listener table");
+    let row_size = if ipv6 { 56_usize } else { 24_usize };
+    let count = word(bytes) as usize;
+    anyhow::ensure!(
+        count <= (bytes.len() - 4) / row_size,
+        "truncated Windows TCP listener rows"
+    );
+    let mut ids = Vec::new();
+    for row in bytes[4..].chunks_exact(row_size).take(count) {
+        let (address, local_port, state, pid) = if ipv6 {
+            (
+                &row[..16],
+                word(&row[20..]),
+                word(&row[48..]),
+                word(&row[52..]),
+            )
+        } else {
+            (&row[4..8], word(&row[8..]), word(row), word(&row[20..]))
+        };
+        let loopback = if ipv6 {
+            address == std::net::Ipv6Addr::LOCALHOST.octets()
+        } else {
+            address == [127, 0, 0, 1]
+        };
+        let wildcard = address.iter().all(|byte| *byte == 0);
+        if state == 2
+            && u16::from_be(local_port as u16) == port
+            && (loopback || wildcard)
+            && pid != 0
+        {
+            ids.push(pid);
+        }
+    }
+    Ok(ids)
+}
+
+#[cfg(test)]
+mod listener_owner_tests {
+    use super::*;
+
+    fn table(ipv6: bool, rows: &[(u32, u16, bool, u32)]) -> Vec<u8> {
+        let mut bytes = (rows.len() as u32).to_ne_bytes().to_vec();
+        for &(pid, port, local, state) in rows {
+            let mut row = vec![0_u8; if ipv6 { 56 } else { 24 }];
+            let (port_at, state_at, pid_at) = if ipv6 {
+                row[15] = if local { 1 } else { 2 };
+                (20, 48, 52)
+            } else {
+                row[4..8].copy_from_slice(if local {
+                    &[127, 0, 0, 1]
+                } else {
+                    &[192, 0, 2, 1]
+                });
+                (8, 0, 20)
+            };
+            row[port_at..port_at + 4].copy_from_slice(&(port.to_be() as u32).to_ne_bytes());
+            row[state_at..state_at + 4].copy_from_slice(&state.to_ne_bytes());
+            row[pid_at..pid_at + 4].copy_from_slice(&pid.to_ne_bytes());
+            bytes.extend(row);
+        }
+        bytes
+    }
+
+    #[test]
+    fn listener_owners_match_only_requested_loopback_port_for_both_address_families() {
+        for ipv6 in [false, true] {
+            let bytes = table(
+                ipv6,
+                &[
+                    (10, 9229, true, 2),
+                    (20, 9230, true, 2),
+                    (30, 9229, false, 2),
+                    (40, 9229, true, 5),
+                ],
+            );
+            assert_eq!(
+                parse_listener_process_ids(&bytes, ipv6, 9229).unwrap(),
+                vec![10]
+            );
+        }
+    }
+
+    #[test]
+    fn wildcard_listeners_can_own_the_loopback_endpoint() {
+        for ipv6 in [false, true] {
+            let mut bytes = table(ipv6, &[(10, 9229, true, 2)]);
+            let address = if ipv6 { 4..20 } else { 8..12 };
+            bytes[address].fill(0);
+            assert_eq!(
+                parse_listener_process_ids(&bytes, ipv6, 9229).unwrap(),
+                vec![10]
+            );
+        }
+    }
+
+    #[test]
+    fn listener_owner_table_rejects_truncated_or_inconsistent_rows() {
+        assert!(parse_listener_process_ids(&[], false, 9229).is_err());
+        for ipv6 in [false, true] {
+            let mut bytes = table(ipv6, &[(10, 9229, true, 2)]);
+            bytes.pop();
+            assert!(parse_listener_process_ids(&bytes, ipv6, 9229).is_err());
+        }
+    }
+
+    #[test]
+    fn listener_owner_selection_rejects_different_ipv4_and_ipv6_instances() {
+        assert_eq!(unique_listener_process_id(&[]).unwrap(), None);
+        assert_eq!(unique_listener_process_id(&[10, 10]).unwrap(), Some(10));
+        assert!(unique_listener_process_id(&[10, 20]).is_err());
+        assert!(unique_listener_process_id(&[20, 10]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_loopback_listener_owner_is_captured_by_handle_and_checked_against_image() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let ids = loopback_listener_process_ids(listener.local_addr().unwrap().port()).unwrap();
+        let pid = std::process::id();
+        assert!(ids.contains(&pid));
+        let executable = std::env::current_exe().unwrap();
+        let tracked = TrackedWindowsProcess::capture(pid, &executable)
+            .unwrap()
+            .unwrap();
+        assert!(tracked.is_alive().unwrap());
+        assert_eq!(Some(tracked.birth_id), process_birth_id(pid));
+        assert!(
+            TrackedWindowsProcess::capture(pid, &executable.with_file_name("another.exe"))
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 #[cfg(windows)]

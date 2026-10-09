@@ -93,6 +93,95 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
 }
 
 #[test]
+fn chat_conversion_rejects_encrypted_agent_content_without_echoing_payload() {
+    for input in [
+        json!([{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"Payload:"},
+            {"type":"encrypted_content","text":"private-agent-payload"}
+        ]}]),
+        json!([{"type":"encrypted_content","encrypted_content":"private-agent-payload"}]),
+        json!([{"type":"agent_message","content":[
+            {"type":"encrypted_content","encrypted_content":"private-agent-payload"}
+        ]}]),
+        json!({"type":"encrypted_content","encrypted_content":"private-agent-payload"}),
+        json!([{"type":"message","role":"user","content":[{"type":"encrypted_content"}]}]),
+    ] {
+        for standard in [false, true] {
+            let error = responses_to_chat_completions_with_options(
+                json!({"model":"custom-model","input":input}), standard,
+            ).expect_err("加密 agent 内容必须明确拒绝，不能静默丢弃或视为明文");
+            let diagnostic = format!("{error:#}");
+            assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
+            assert!(!diagnostic.contains("private-agent-payload"));
+        }
+    }
+}
+
+#[test]
+fn chat_conversion_keeps_plaintext_and_existing_reasoning_compaction_contracts() {
+    let converted = responses_to_chat_completions(json!({
+        "model":"custom-model",
+        "input":[
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"visible-summary"}],
+             "encrypted_content":"opaque-reasoning"},
+            {"type":"message","role":"user","content":[
+                {"type":"input_text","text":"Payload:"},
+                {"type":"input_text","text":"plaintext-task"}
+            ]},
+            {"type":"compaction","encrypted_content":"local-summary"},
+            {"type":"function_call_output","call_id":"orphan",
+             "output":{"type":"encrypted_content","text":"tool-output-text"}}
+        ]
+    })).unwrap();
+    let messages = converted["messages"].to_string();
+    assert!(messages.contains("plaintext-task"));
+    assert!(messages.contains("visible-summary"));
+    assert!(messages.contains("local-summary"));
+    assert!(messages.contains("tool-output-text"));
+    assert!(!messages.contains("opaque-reasoning"));
+}
+
+#[tokio::test]
+async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let upstream = tokio::spawn(async move {
+        tokio::select! {
+            request = capture_json_request_once(listener) => Some(request),
+            _ = stopped => None,
+        }
+    });
+    let settings = session_header_settings(RelayProtocol::ChatCompletions, format!("http://{address}/v1"));
+    let result = open_responses_proxy_request_with_settings(
+        &json!({"model":"custom-model","stream":false,"input":[
+            {"type":"encrypted_content","encrypted_content":"private-agent-payload"}
+        ]}).to_string(), settings,
+    ).await;
+    let _ = stop.send(());
+    let request = upstream.await.unwrap();
+    assert!(result.is_err(), "必须在发送上游请求前拒绝不支持的加密内容");
+    assert!(request.is_none(), "不得向 Chat 上游发送删掉 payload 的请求");
+}
+
+#[tokio::test]
+async fn responses_upstream_preserves_encrypted_agent_content() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(capture_json_request_once(listener));
+    let request = json!({"model":"custom-model","stream":false,"input":[
+        {"type":"agent_message","sender_agent_id":"sender","recipient_agent_id":"recipient",
+         "content":[{"type":"encrypted_content","encrypted_content":"opaque-agent-payload"}]},
+        {"type":"encrypted_content","encrypted_content":"standalone-opaque-agent-payload"}
+    ]});
+    let settings = session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings).await.unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, sent) = upstream.await.unwrap();
+    assert_eq!(sent, request);
+}
+
+#[test]
 fn compaction_stream_emits_one_done_item_before_completed() {
     let mut converter = CompactionSseConverter::new("custom-model");
     converter.push_summary_text("Preserve this summary.");
@@ -853,6 +942,20 @@ fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
     .unwrap();
     assert_eq!(off["thinking"]["type"], "disabled");
     assert!(off.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn kimi_k3_standard_protocol_avoids_adaptive_and_preserves_opt_in_vendor_behavior() {
+    for model in ["kimi-k3", "k3-256k"] {
+        let request = json!({"model":model,"reasoning":{"effort":"xhigh"},"input":"hello"});
+        let standard = responses_to_chat_completions_with_options(request.clone(), true).unwrap();
+        assert!(standard.get("thinking").is_none());
+        assert!(standard.get("reasoning_effort").is_none());
+        let vendor = responses_to_chat_completions_with_options(request, false).unwrap();
+        assert_eq!(vendor["thinking"]["type"], "adaptive");
+        assert_eq!(vendor["reasoning_effort"], "max");
+        assert_eq!(standard["messages"], vendor["messages"]);
+    }
 }
 
 #[test]

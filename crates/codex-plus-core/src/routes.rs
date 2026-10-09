@@ -775,6 +775,20 @@ mod dictation_privacy_tests {
     use super::*;
 
     #[test]
+    fn settings_bridge_preserves_session_share_choice_for_renderer_master_gating() {
+        for enabled in [false, true] {
+            let settings = BackendSettings {
+                codex_app_session_share: enabled,
+                enhancements_enabled: false,
+                ..BackendSettings::default()
+            };
+            let result = settings_payload_value(settings, String::new()).unwrap();
+            assert_eq!(result["codexAppSessionShare"], enabled);
+            assert_eq!(result["enhancementsEnabled"], false);
+        }
+    }
+
+    #[test]
     fn dictation_settings_bridge_removes_asr_key() {
         let mut settings = BackendSettings::default();
         settings.dictation.api_key = "fake-asr-private-key".to_string();

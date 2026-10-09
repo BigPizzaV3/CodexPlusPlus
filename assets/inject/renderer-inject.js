@@ -2294,7 +2294,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, customLayout: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2302,9 +2302,9 @@
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
     markdownExport: "codexAppMarkdownExport",
+    sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
-    customLayout: "codexAppCustomLayoutEnabled",
     whaleWidget: "codexAppWhaleWidgetEnabled",
     threadScrollRestore: "codexAppThreadScrollRestore",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
@@ -2339,11 +2339,11 @@
         modelWhitelistUnlock: false,
         sessionDelete: false,
         markdownExport: false,
+        sessionShare: false,
         pasteFix: false,
         typingEffect: "off",
         threadIdBadge: false,
         conversationView: false,
-        customLayout: false,
         whaleWidget: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
@@ -2360,6 +2360,7 @@
     }
     try {
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
+      delete settings.customLayout;
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
@@ -3210,9 +3211,6 @@
       button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
     refreshConversationViewControls();
-    document.querySelectorAll("[data-codex-plus-layout-edit]").forEach((button) => {
-      button.disabled = !codexPlusBackendSettingsLoaded || settings.customLayout !== true;
-    });
     refreshCodexServiceTierControls();
     document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
       select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
@@ -4822,7 +4820,6 @@
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
     if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    if (loaded && typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
     return loaded;
   }
 
@@ -4849,7 +4846,7 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-        if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
+        if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -4884,7 +4881,7 @@
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
+    if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
     renderCodexPlusMenu();
     scan();
   }
@@ -5606,17 +5603,10 @@
       button.dataset.active = String(on);
       button.setAttribute("aria-current", on ? "page" : "false");
     }
-    const pluginButton = document.getElementById(codexPlusSidebarPluginMarketId)?.querySelector("button");
-    if (pluginButton) {
-      const on = Boolean(active) && entry === "plugin-market";
-      pluginButton.dataset.active = String(on);
-      pluginButton.setAttribute("aria-current", on ? "page" : "false");
-    }
     [
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
       [codexPlusRailSponsorId, "sponsor"],
-      [codexPlusRailPluginMarketId, "plugin-market"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -6055,6 +6045,10 @@
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">分享会话按钮</div><div class="codex-plus-row-description">在当前会话工具栏显示分享按钮，关闭后立即隐藏。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionShare"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
                 </div>
@@ -6098,13 +6092,6 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">Codex 用量挂件</div><div class="codex-plus-row-description">显示当前 Codex 会话用量、任务状态与可用的供应商余额。可拖动、上传角色图片和设置提醒；默认静音。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="whaleWidget"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">自定义布局</div><div class="codex-plus-row-description">侧边图标与会话栏作为整体移动；拖动侧边栏、任务信息卡或输入框时，其他面板会弹性让位；支持磁吸和下次打开恢复。</div></div>
-                  <div class="codex-plus-width-control">
-                    <button type="button" class="codex-plus-action-button" data-codex-plus-layout-edit="true">编辑布局</button>
-                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="customLayout"><span></span></button>
-                  </div>
                 </div>
               </div>
             </section>
@@ -6257,15 +6244,6 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
-        return;
-      }
-      const layoutEdit = target?.closest("[data-codex-plus-layout-edit]");
-      if (layoutEdit) {
-        if (layoutEdit.disabled || codexPlusSettings().customLayout !== true) return;
-        installCodexPlusCustomLayout();
-        closeCodexPlusPage();
-        document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
-        window.__codexPlusCustomLayoutRuntime?.setEditing(true);
         return;
       }
       // 推荐卡片用 window.open 而非原生 <a target="_blank">：Codex 是 Electron
@@ -6483,7 +6461,7 @@
       navigation.dataset.codexPlusSidebarNavigationListener = "true";
       navigation.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusSidebarNavId}, #${codexPlusSidebarPluginMarketId}`)) return;
+        if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
       }, true);
     }
@@ -6519,7 +6497,6 @@
     }
     const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
-    installCodexPlusPluginMarketSidebarNavigation(parent, wrapper, insertionButton);
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
     setCodexPlusSidebarNavActive(active, codexPlusActiveEntry() || "home");
   }
@@ -6621,7 +6598,7 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailPluginMarketId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
         // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
         // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
         if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
@@ -6641,7 +6618,6 @@
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
-      { id: codexPlusRailPluginMarketId, label: "CodeX 插件市场", iconMarkup: codexPlusPluginMarketIconMarkup(), withStatus: false, onActivate: openCodexPlusNativePluginMarket },
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
@@ -6656,7 +6632,6 @@
         wrapper?.remove();
         wrapper = createCodexPlusRailButton({ ...spec, template });
         if (!wrapper) return;
-        if (spec.id === codexPlusRailPluginMarketId) markCodexPlusExtensionNode(wrapper, "builtin-plugin-market");
       }
       // 顺序：Codex++ 在前，「拓展」在后；紧跟在 primary 区锚点后面。
       if (cursor?.nextSibling) {
@@ -6671,12 +6646,14 @@
 
     const status = document.getElementById(codexPlusRailNavId)?.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
-    if (codexPlusActiveEntry() === "plugin-market") setCodexPlusSidebarNavActive(true, "plugin-market");
     return true;
   }
 
   /** 图标栏存在时走它，否则回退到旧版宽面板侧边栏入口。两条路径互斥，不会重复出现。 */
   function installCodexPlusNavigationEntries() {
+    // 插件入口沿用原生按钮，清理旧注入留下的重复商店入口。
+    document.getElementById(codexPlusRailPluginMarketId)?.remove();
+    document.getElementById(codexPlusSidebarPluginMarketId)?.remove();
     if (installCodexPlusRailNavigation()) {
       detachCodexPlusSidebarNavigation();
       return;
@@ -8679,36 +8656,6 @@
     job.timer = null;
   });
   const codexPlusPluginMarketPageSize = 50;
-
-  function codexPlusPluginMarketIconMarkup() {
-    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9h18l-2-5H5L3 9Z"/><path d="M3 9v3a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0V9M5 15v5h14v-5M10 20v-5h4v5"/></svg>';
-  }
-
-  function installCodexPlusPluginMarketSidebarNavigation(parent, anchor, template) {
-    let wrapper = document.getElementById(codexPlusSidebarPluginMarketId);
-    if (!wrapper || wrapper.parentElement !== parent) {
-      wrapper?.remove();
-      wrapper = document.createElement("div");
-      wrapper.id = codexPlusSidebarPluginMarketId;
-      wrapper.className = "codex-plus-plugin-sidebar";
-      markCodexPlusExtensionNode(wrapper, "builtin-plugin-market");
-      const button = template ? template.cloneNode(true) : document.createElement("button");
-      if (!(button instanceof HTMLElement)) return;
-      button.type = "button";
-      if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
-      ["id", "disabled", "aria-disabled", "aria-current", "data-state", "data-sidebar-destination", "data-selected", "data-suppress-active-style"].forEach((name) => button.removeAttribute(name));
-      button.setAttribute("aria-label", "CodeX 插件市场");
-      button.setAttribute("title", "CodeX 插件市场");
-      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true">${codexPlusPluginMarketIconMarkup()}</span><span class="codex-plus-plugin-sidebar-label">CodeX 插件市场</span>`;
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openCodexPlusNativePluginMarket();
-      }, true);
-      wrapper.appendChild(button);
-    }
-    if (anchor.nextSibling !== wrapper) parent.insertBefore(wrapper, anchor.nextSibling);
-  }
 
   function codexPlusPluginMarketCatalog(source = codexPlusPluginMarketState.source) {
     if (!codexPlusPluginMarketState.catalogs[source]) {
@@ -10812,10 +10759,28 @@
     }
   }
 
+  function sessionSharePlacement() {
+    // 会话操作锚点唯一时才挂载，不能把右侧审查/浏览器的 header 当作会话栏。
+    const headerSelector = 'header, [data-app-shell-header-edge-scroll], [class*="_Header_"]';
+    const anchors = Array.from(document.querySelectorAll('[data-testid="app-shell-header-context-menu-surface"]'))
+      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]'));
+    if (anchors.length !== 1) return null;
+    const header = anchors[0].closest(headerSelector);
+    if (!(header instanceof HTMLElement) || !visibleElement(header)) return null;
+    const nativeShare = Array.from(header.querySelectorAll('button[aria-label="Share"], button[aria-label="分享"], button[aria-label*="Share"], button[aria-label*="分享"]'))
+      .find((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && !node.classList.contains(sessionShareButtonClass) && node.closest(headerSelector) === header);
+    const nativeGroup = nativeShare?.closest?.(".ms-auto");
+    if (nativeGroup && header.contains(nativeGroup)) return nativeGroup;
+    const groups = Array.from(header.querySelectorAll(".ms-auto"))
+      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && node.closest(headerSelector) === header);
+    return groups.length === 1 ? groups[0] : null;
+  }
+
   function installSessionShareButton() {
     const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
     const ref = currentSessionRef();
-    if (!ref.session_id) {
+    const actionGroup = codexPlusSettings().sessionShare && ref.session_id ? sessionSharePlacement() : null;
+    if (!(actionGroup instanceof HTMLElement)) {
       existing.forEach((button) => button.remove());
       return;
     }
@@ -10827,6 +10792,7 @@
       button.className = `${sessionShareButtonClass} ${headerContextButtonClass}`;
       button.textContent = "分享会话";
       button.setAttribute("aria-label", "分享当前会话");
+      button.setAttribute("data-codex-plus-ext", "session-share");
       button.dataset.codexSessionShareVersion = sessionShareButtonVersion;
       button.addEventListener("click", (event) => {
         event.preventDefault();
@@ -10834,35 +10800,13 @@
         void createSessionShare();
       }, true);
     }
-    const nativeShare = Array.from(document.querySelectorAll('header button[aria-label="Share"], header button[aria-label="分享"], header button[aria-label*="Share"], header button[aria-label*="分享"]')).find(visibleElement);
-    const actionGroup = nativeShare?.closest?.(".ms-auto")
-      || document.querySelector("header .ms-auto")
-      || nativeShare?.parentElement?.parentElement?.parentElement;
-    if (actionGroup instanceof HTMLElement) {
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      // 只在按钮还不在操作栏里时才搬动它。过去还要求它必须排在最后，
-      // 一旦 Codex 在它后面挂了别的节点，这个条件就永远成立，
-      // 于是每轮 scan 都 appendChild 一次，反过来又触发下一轮 scan（issue #1960）。
-      if (button.parentElement !== actionGroup) {
-        actionGroup.appendChild(button);
-      }
-      return;
-    }
-    const header = document.querySelector('[data-testid="app-shell-header-context-menu-surface"]')?.closest?.("header")
-      || document.querySelector("header")
-      || document.querySelector(selectors.appHeader);
-    if (header instanceof HTMLElement) {
-      // 没有明确操作栏时也保持文档流，避免遮挡原生按钮。
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      button.style.marginLeft = "8px";
-      if (button.parentElement !== header) header.appendChild(button);
-    } else if (!button.isConnected) {
-      document.body.appendChild(button);
-    }
+    button.setAttribute("data-codex-plus-ext", "session-share");
+    button.style.position = "static";
+    button.style.pointerEvents = "auto";
+    button.style.webkitAppRegion = "no-drag";
+    button.style.marginLeft = "";
+    // 宿主重建时才搬动，避免每轮扫描再次触发 DOM mutation（issue #1960）。
+    if (button.parentElement !== actionGroup) actionGroup.appendChild(button);
   }
 
   function sessionImportMarkdown(session) {
@@ -11588,6 +11532,7 @@
   // 页脚包裹层同样带 `max-w-(--thread-…-max-width)`，会被结构候选误当成内容容器。
   // 用 Codex 自己的页脚标记把它排掉。
   const conversationViewFooterSelector = selectors.conversationViewFooter;
+  const conversationViewPaneBoundarySelector = "#app-shell-sidebar, .app-shell-left-panel, .sidebar-navigation, nav[data-app-navigation-rail], [data-summary-panel-variant]";
   // 两侧留白：Codex 的 `--padding-toolbar` 是 `calc(var(--spacing) * 2)`（= 8px * 2）。
   // 仅在拿不到父节点 computed style 时作为回落的单侧留白。
   const conversationViewSideInset = 8;
@@ -11615,8 +11560,9 @@
     return classes.every((cls) => set.has(cls));
   }
 
-  function conversationViewFindByClasses(classes) {
-    return Array.from(document.querySelectorAll("div")).find((el) => conversationViewHasAllClasses(el, classes)) || null;
+  function conversationViewFindByClasses(classes, root, accept) {
+    return Array.from(root?.querySelectorAll("div") || [])
+      .find((el) => conversationViewHasAllClasses(el, classes) && accept(el)) || null;
   }
 
   function conversationViewHasThreadWidthToken(el) {
@@ -11646,7 +11592,62 @@
   }
 
   function conversationViewScrollContainer() {
-    return document.querySelector(conversationViewScrollContainerSelector);
+    const scrollers = Array.from(document.querySelectorAll(conversationViewScrollContainerSelector))
+      .filter((el) => typeof visibleElement !== "function" || visibleElement(el));
+    // 多个可见会话没有可靠的当前目标，不把任一 pane 当成整页正文。
+    return scrollers.length === 1 ? scrollers[0] : null;
+  }
+
+  function conversationViewSafeWidthTarget(el, scope) {
+    if (!el || !scope || el === scope || !scope.contains?.(el)) return false;
+    if (scope.matches?.(conversationViewScrollContainerSelector)
+        && el.closest?.(conversationViewScrollContainerSelector) !== scope) return false;
+    return conversationViewSafeWidthNode(el);
+  }
+
+  function conversationViewSafeWidthNode(el) {
+    if (!el) return false;
+    if (["MAIN", "ASIDE", "NAV", "HEADER", "BODY", "HTML"].includes(el.tagName)) return false;
+    if (el.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`)) return false;
+    // CSS 变量可继承给整棵布局树；包含其他 pane 的祖先不能改 width/margin/left。
+    // composer 内的状态提示也会用 aside，不能仅按语义标签把它误判为侧栏。
+    return !el.querySelector?.(`${conversationViewPaneBoundarySelector}, .thread-scroll-container`);
+  }
+
+  function conversationViewSamePane(scroller, el) {
+    if (scroller.contains?.(el)) return el.closest?.(conversationViewScrollContainerSelector) === scroller;
+    if (el.closest?.(conversationViewScrollContainerSelector)) return false;
+    if (el.parentElement === scroller.parentElement && el.parentElement !== document.body) return true;
+    for (let pane = scroller.parentElement; pane && pane !== document.body; pane = pane.parentElement) {
+      if (!pane.contains?.(el)) continue;
+      return !pane.querySelector?.(conversationViewPaneBoundarySelector);
+    }
+    return false;
+  }
+
+  function conversationViewFootersFor(scroller) {
+    return Array.from(document.querySelectorAll(conversationViewFooterSelector)).filter((footer) => {
+      if (typeof visibleElement === "function" && !visibleElement(footer)) return false;
+      return !footer.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`) && conversationViewSamePane(scroller, footer);
+    });
+  }
+
+  function conversationViewFindNativeComposer(scroller) {
+    const roots = Array.from(document.querySelectorAll("[data-codex-composer-root]"))
+      .filter((el) => (typeof visibleElement !== "function" || visibleElement(el))
+        && !el.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`) && (!scroller || conversationViewSamePane(scroller, el)));
+    if (roots.length !== 1) return null;
+    const root = roots[0];
+    const accept = (el) => conversationViewLooksLikeThreadWidthBox(el) && conversationViewSafeWidthNode(el)
+      && !el.matches?.(conversationViewFooterSelector) && !el.querySelector?.(conversationViewContentAnchorSelector);
+    const inside = [root, ...root.querySelectorAll("div")].find(accept);
+    if (inside) return inside;
+    // 原生 composer 锚点可能在宽度宿主内部；只爬到局部宿主，不收窄含正文的布局。
+    for (let host = root.parentElement; host && host !== document.body; host = host.parentElement) {
+      if (accept(host)) return host;
+      if (host.matches?.(conversationViewScrollContainerSelector) || host.querySelector?.(conversationViewScrollContainerSelector)) break;
+    }
+    return null;
   }
 
   function conversationViewCollectThreadWidthBoxes(root) {
@@ -11658,6 +11659,7 @@
    * 按候选顺序找内容容器，任一候选命中即返回。
    *
    * 候选链刻意从「最精确」排到「最宽松」：
+   * 所有候选都必须在唯一的会话滚动区内，并排除布局祖先：
    *   1. 旧版类名全等（老版本 Codex 上仍然最准）；
    *   2. Codex 自己的 data-* 锚点（当前版本）；
    *   3. 结构判定（滚动容器内、居中满宽、带 thread 宽度工具类）；
@@ -11666,34 +11668,52 @@
    * 顺序不能反：结构判定会把页脚包裹层也算进来，而它和内容容器在同一棵子树里。
    */
   function conversationViewFindContentEl() {
-    const legacy = conversationViewFindByClasses(conversationViewContentClasses);
-    if (legacy && !conversationViewIsInsideFooter(legacy)) return legacy;
-    const anchored = document.querySelector(conversationViewContentAnchorSelector);
-    if (anchored) return anchored;
     const scroller = conversationViewScrollContainer();
-    const structural = conversationViewCollectThreadWidthBoxes(scroller || document)
+    if (!scroller) return null;
+    const accept = (el) => conversationViewSafeWidthTarget(el, scroller) && !conversationViewIsInsideFooter(el)
+      && !el.querySelector?.(conversationViewFooterSelector);
+    const legacy = conversationViewFindByClasses(conversationViewContentClasses, scroller, accept);
+    if (legacy) return legacy;
+    const anchored = Array.from(scroller.querySelectorAll(conversationViewContentAnchorSelector)).find(accept);
+    if (anchored) return anchored;
+    const structural = conversationViewCollectThreadWidthBoxes(scroller)
       // 页脚包裹层（data-thread-scroll-footer）也带同样的宽度工具类，必须排掉。
-      .find((el) => !conversationViewIsInsideFooter(el));
+      .find(accept);
     if (structural) return structural;
-    return conversationViewFindByThreadWidthVariable(scroller || document);
+    return conversationViewFindByThreadWidthVariable(scroller, accept);
   }
 
   function conversationViewFindComposerEl() {
+    const scroller = conversationViewScrollContainer();
+    if (!scroller) {
+      // 首页没有消息 scroller；只用明确的原生 composer 锚点，不能全页猜宽度变量。
+      if (Array.from(document.querySelectorAll(conversationViewScrollContainerSelector))
+          .some((el) => typeof visibleElement !== "function" || visibleElement(el))) return null;
+      const native = conversationViewFindNativeComposer(null);
+      if (native) return native;
+      const legacy = Array.from(document.querySelectorAll("div")).filter((el) =>
+        conversationViewHasAllClasses(el, conversationViewComposerClasses) && conversationViewSafeWidthNode(el)
+        && !conversationViewIsInsideFooter(el) && el.querySelector?.('textarea, [contenteditable="true"]'));
+      return legacy.length === 1 ? legacy[0] : null;
+    }
     // 页脚包裹层带的是和作曲器同一套工具类，会被旧清单全等命中，所以要排除它。
-    const footer = document.querySelector(conversationViewFooterSelector);
-    const legacy = conversationViewFindByClasses(conversationViewComposerClasses);
-    if (legacy && !conversationViewIsInsideFooter(legacy)) return legacy;
+    const footers = conversationViewFootersFor(scroller);
+    if (footers.length > 1) return null;
+    const footer = footers[0];
+    const accept = (el) => conversationViewSafeWidthTarget(el, footer || scroller)
+      && !el.matches?.(conversationViewFooterSelector) && !conversationViewIsContentCandidate(el);
     // 新版作曲器在页脚包裹层内部——页脚自身也是 max-w 盒子，得往里再找一层。
-    const insideFooter = conversationViewCollectThreadWidthBoxes(footer)[0];
+    const insideFooter = conversationViewCollectThreadWidthBoxes(footer).find(accept);
     if (insideFooter) return insideFooter;
-    // 老版本作曲器不在页脚里；退回整棵文档，但只认页脚缺席时的候选，
-    // 且排除内容容器（两者宽度工具类同形）。
-    const scroller = conversationViewScrollContainer() || document;
-    const anywhere = conversationViewCollectThreadWidthBoxes(scroller)
-      .find((el) => !conversationViewIsContentCandidate(el));
-    if (anywhere) return anywhere;
-    if (footer) return conversationViewFindByThreadWidthVariable(footer, (el) => el !== footer);
-    return conversationViewFindByThreadWidthVariable(document, (el) => !conversationViewIsContentCandidate(el));
+    if (footer) return conversationViewFindByThreadWidthVariable(footer, (el) => el !== footer && accept(el));
+    const native = conversationViewFindNativeComposer(scroller);
+    if (native) return native;
+    // 保留同一会话内的旧类名；无 footer 的新版结构还必须包含明确编辑器。
+    const legacy = conversationViewFindByClasses(conversationViewComposerClasses, scroller, (el) => accept(el) && !conversationViewIsInsideFooter(el));
+    if (legacy) return legacy;
+    return conversationViewCollectThreadWidthBoxes(scroller).find((el) => accept(el)
+      && !conversationViewIsInsideFooter(el) && !el.querySelector?.(conversationViewContentAnchorSelector)
+      && el.querySelector?.('textarea, [contenteditable="true"]')) || null;
   }
 
   // 内容容器的判定（锚点或全等类名），供作曲器查找排除同形节点用。
@@ -11713,6 +11733,8 @@
       if (accept ? !accept(el) : conversationViewIsInsideFooter(el)) return false;
       try {
         const style = getComputedStyle(el);
+        // --thread-* 在后代继承，不代表该节点自身受 max-width 约束（#2414）。
+        if (!style.maxWidth || style.maxWidth === "none") return false;
         for (const name of conversationViewThreadWidthCustomProperties(style)) {
           if (String(style.getPropertyValue(name) || "").trim()) return true;
         }
@@ -12049,8 +12071,22 @@
   }
 
   function conversationViewResolveTargets() {
-    if (!conversationViewState.contentEl?.isConnected) conversationViewState.contentEl = conversationViewFindContentEl();
-    if (!conversationViewState.composerEl?.isConnected) conversationViewState.composerEl = conversationViewFindComposerEl();
+    for (const [key, next] of [
+      ["contentEl", conversationViewFindContentEl()],
+      ["composerEl", conversationViewFindComposerEl()],
+    ]) {
+      const previous = conversationViewState[key];
+      if (previous && previous !== next) {
+        conversationViewRestoreElement(previous);
+        conversationViewState.elements.delete(previous);
+        [previous, previous.parentElement, previous.parentElement?.parentElement].forEach((el) => {
+          if (!el) return;
+          conversationViewState.ro?.unobserve?.(el);
+          conversationViewState.observed.delete(el);
+        });
+      }
+      conversationViewState[key] = next;
+    }
     [
       document.documentElement,
       document.body,
@@ -12069,7 +12105,7 @@
     const targets = [
       conversationViewState.contentEl,
       conversationViewState.composerEl,
-    ].filter((el) => el?.isConnected && !(typeof codexPlusCustomLayoutOwnsElement === "function" && codexPlusCustomLayoutOwnsElement(el)));
+    ].filter((el) => el?.isConnected);
     if (!targets.length) {
       conversationViewReportMissingTargets();
       return;
@@ -14507,7 +14543,6 @@
     sessionRows().forEach(tryAttachButton);
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
-    if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
     refreshConversationView();
     installCodexServiceTierBadge();
     installSessionShareButton();
@@ -14528,1424 +14563,6 @@
     void installDictationSupportPatch();
     runScanStep(scanLightweight);
     requestAnimationFrame(() => runScanStep(scanDeferred));
-  }
-  /**
-   * 四块布局的纯几何求解器。每次从拖动开始的基线求解，不读 DOM，不积累动画误差。
-   * 活跃块优先；其它块沿相邻边缘让位，必要时才收敛尺寸。搜索有固定预算。
-   */
-  function codexPlusLayoutNumber(value, fallback = 0) {
-    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-  }
-
-  function codexPlusLayoutLimit(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-  }
-
-  function codexPlusLayoutArea(bounds) {
-    const left = codexPlusLayoutNumber(bounds?.left);
-    const top = codexPlusLayoutNumber(bounds?.top);
-    return {
-      left, top,
-      width: Math.max(1, codexPlusLayoutNumber(bounds?.width, codexPlusLayoutNumber(bounds?.right, left + 1) - left)),
-      height: Math.max(1, codexPlusLayoutNumber(bounds?.height, codexPlusLayoutNumber(bounds?.bottom, top + 1) - top)),
-    };
-  }
-
-  function codexPlusLayoutRect(value, area, minimum = {}) {
-    const width = codexPlusLayoutLimit(codexPlusLayoutNumber(value?.width, 40), Math.min(area.width, minimum.width || 1), area.width);
-    const height = codexPlusLayoutLimit(codexPlusLayoutNumber(value?.height, 24), Math.min(area.height, minimum.height || 1), area.height);
-    return {
-      left: codexPlusLayoutLimit(codexPlusLayoutNumber(value?.left, area.left), area.left, area.left + area.width - width),
-      top: codexPlusLayoutLimit(codexPlusLayoutNumber(value?.top, area.top), area.top, area.top + area.height - height),
-      width, height,
-    };
-  }
-
-  function codexPlusLayoutOverlap(a, b) {
-    const epsilon = 0.000001;
-    return a.left < b.left + b.width - epsilon && a.left + a.width > b.left + epsilon
-      && a.top < b.top + b.height - epsilon && a.top + a.height > b.top + epsilon;
-  }
-
-  function codexPlusLayoutSame(a, b) {
-    return ["left", "top", "width", "height"].every((key) => Math.abs(a[key] - b[key]) < 0.0001);
-  }
-
-  function codexPlusLayoutCost(rect, base) {
-    const dx = rect.left - base.left;
-    const dy = rect.top - base.top;
-    const dw = rect.width - base.width;
-    const dh = rect.height - base.height;
-    // 小幅移动比改变尺寸便宜；为了几像素碰撞横跳整屏则比小幅收敛尺寸贵。
-    return dx * dx + dy * dy + 12 * (dw * dw + dh * dh);
-  }
-
-  function codexPlusLayoutSizes(original, minimum, available, compress) {
-    if (!compress || original <= minimum) return [original];
-    const values = [original];
-    const free = [...new Set(available.filter((value) => Number.isFinite(value) && value >= minimum && value < original))]
-      .sort((a, b) => b - a);
-    values.push(...free.slice(0, 3));
-    if (!values.some((value) => Math.abs(value - minimum) < 0.0001)) values.push(minimum);
-    return values;
-  }
-
-  function codexPlusLayoutCandidates(panel, placed, baselines, area, compress, budget) {
-    const base = panel.rect;
-    const right = area.left + area.width;
-    const bottom = area.top + area.height;
-    const widths = [], heights = [];
-    const anchorKeys = new Set();
-    const anchors = [...placed, ...baselines.filter((other) => other.id !== panel.id).map((other) => other.rect)]
-      .filter((rect) => {
-        const key = [rect.left, rect.top, rect.width, rect.height].join(",");
-        if (anchorKeys.has(key)) return false;
-        anchorKeys.add(key);
-        return true;
-      });
-    // 尚未排入的原位边缘也提供空隙候选。例如输入框可以收窄到
-    // 「图标栏右沿 → 正在拖动的聊天栏左沿」，而不用先把图标栏挤走。
-    // 这些原位只是搜索锚点，碰撞仍仅以已排入的块为硬约束。
-    for (const obstacle of anchors) {
-      widths.push(obstacle.left - area.left, right - obstacle.left - obstacle.width,
-        obstacle.left - base.left, right - Math.max(base.left, obstacle.left + obstacle.width));
-      heights.push(obstacle.top - area.top, bottom - obstacle.top - obstacle.height,
-        obstacle.top - base.top, bottom - Math.max(base.top, obstacle.top + obstacle.height));
-    }
-    for (const first of anchors) {
-      for (const second of anchors) {
-        widths.push(second.left - first.left - first.width);
-        heights.push(second.top - first.top - first.height);
-      }
-    }
-    const widthOptions = codexPlusLayoutSizes(base.width, panel.minWidth, widths, compress);
-    const heightOptions = codexPlusLayoutSizes(base.height, panel.minHeight, heights, compress && panel.canResizeHeight);
-    const candidates = [];
-    const seen = new Set();
-    for (const width of widthOptions) {
-      for (const height of heightOptions) {
-        const xs = [base.left, area.left, right - width];
-        const ys = [base.top, area.top, bottom - height];
-        for (const obstacle of anchors) {
-          xs.push(obstacle.left - width, obstacle.left + obstacle.width, obstacle.left, obstacle.left + obstacle.width - width);
-          ys.push(obstacle.top - height, obstacle.top + obstacle.height, obstacle.top, obstacle.top + obstacle.height - height);
-        }
-        // 单轴推出和近邻交点都参与搜索，既允许连锁挤开，也允许在空位回填。
-        for (const x of [...new Set(xs)]) {
-          for (const y of [...new Set(ys)]) {
-            if (++budget.candidates > budget.candidateLimit) return candidates.sort((a, b) => a.cost - b.cost).slice(0, 18);
-            if (x < area.left - 0.000001 || x + width > right + 0.000001 || y < area.top - 0.000001 || y + height > bottom + 0.000001) continue;
-            const rect = { left: Math.max(area.left, x), top: Math.max(area.top, y), width, height };
-            const key = [rect.left, rect.top, width, height].map((value) => value.toFixed(5)).join(",");
-            if (seen.has(key) || placed.some((obstacle) => codexPlusLayoutOverlap(rect, obstacle))) continue;
-            seen.add(key);
-            candidates.push({ rect, cost: codexPlusLayoutCost(rect, base) });
-          }
-        }
-      }
-    }
-    return candidates.sort((a, b) => a.cost - b.cost || b.rect.width - a.rect.width || b.rect.height - a.rect.height
-      || a.rect.left - b.rect.left || a.rect.top - b.rect.top).slice(0, 18);
-  }
-
-  function codexPlusLayoutPack(panels, activeId, activeRect, area, compress, budget) {
-    let best = null;
-    let bestCost = Infinity;
-    const initial = { [activeId]: activeRect };
-    const remaining = panels.filter((panel) => panel.id !== activeId);
-    const search = (unplaced, rects, cost) => {
-      if (++budget.nodes > budget.nodeLimit || budget.candidates > budget.candidateLimit || cost >= bestCost) return;
-      if (!unplaced.length) {
-        best = { ...rects };
-        bestCost = cost;
-        return;
-      }
-      const occupied = Object.values(rects);
-      // 先处理直接碰撞的块，再沿已推出的块传播。相同条件按 id 固定排序。
-      const sorted = [...unplaced].sort((a, b) => {
-        const aHits = occupied.filter((rect) => codexPlusLayoutOverlap(a.rect, rect)).length;
-        const bHits = occupied.filter((rect) => codexPlusLayoutOverlap(b.rect, rect)).length;
-        return bHits - aHits || a.id.localeCompare(b.id);
-      });
-      const panel = sorted[0];
-      const next = sorted.slice(1);
-      for (const candidate of codexPlusLayoutCandidates(panel, occupied, panels, area, compress, budget)) {
-        if (cost + candidate.cost >= bestCost) continue;
-        search(next, { ...rects, [panel.id]: candidate.rect }, cost + candidate.cost);
-      }
-    };
-    search(remaining, initial, 0);
-    return best ? { rects: best, cost: bestCost } : null;
-  }
-
-  function codexPlusLayoutSolve(values, activeId, target, bounds, origin = null) {
-    const area = codexPlusLayoutArea(bounds);
-    const input = Array.isArray(values) ? values.map((value) => [value?.id, value]) : Object.entries(values || {});
-    const byId = new Map();
-    for (const [key, value] of input) {
-      if (typeof key !== "string" || !key || !value || ![value.left, value.top, value.width, value.height].every(Number.isFinite)) continue;
-      const minWidth = Math.max(1, Math.min(area.width, codexPlusLayoutNumber(value.minWidth, Math.min(value.width, 80))));
-      const canResizeHeight = value.canResizeHeight === true;
-      const minHeight = canResizeHeight ? Math.max(1, Math.min(area.height, codexPlusLayoutNumber(value.minHeight, Math.min(value.height, 80)))) : Math.min(value.height, area.height);
-      byId.set(key, { id: key, minWidth, minHeight, canResizeHeight,
-        original: { left: value.left, top: value.top, width: value.width, height: value.height },
-        rect: codexPlusLayoutRect(value, area, { width: minWidth, height: minHeight }) });
-    }
-    // 运行时只管理四块；更大输入也限制搜索规模，不把单帧变成无界装箱问题。
-    const panels = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
-    const baseline = Object.fromEntries(panels.map((panel) => [panel.id, { ...panel.rect }]));
-    const active = byId.get(activeId);
-    const result = (rects, blocked, feasible = true) => ({
-      rects,
-      changedIds: panels.filter((panel) => rects[panel.id] && !codexPlusLayoutSame(rects[panel.id], panel.original)).map((panel) => panel.id),
-      blocked,
-      feasible,
-    });
-    if (!active || panels.length > 4) return result(baseline, true, false);
-    const requested = codexPlusLayoutRect({ ...active.rect, ...target }, area, { width: active.minWidth, height: active.minHeight });
-    const boundaryLimited = target != null && ["left", "top", "width", "height"].some((key) => Number.isFinite(target[key]) && Math.abs(target[key] - requested[key]) > 0.0001);
-    const budget = { nodes: 0, candidates: 0, nodeLimit: 1800, candidateLimit: 50000 };
-    const attempt = (rect) => {
-      const preserved = codexPlusLayoutPack(panels, activeId, rect, area, false, budget);
-      if (preserved && preserved.cost <= 24 * 24) return preserved;
-      const compressed = codexPlusLayoutPack(panels, activeId, rect, area, true, budget);
-      return compressed && (!preserved || compressed.cost < preserved.cost) ? compressed : preserved;
-    };
-    // 原位回填走零成本路径：回到基线就恢复其它块，不继承上一帧挤开的偏移。
-    const full = attempt(requested);
-    if (full) return result(full.rects, boundaryLimited);
-    const start = codexPlusLayoutRect(origin || active.rect, area, { width: active.minWidth, height: active.minHeight });
-    const baselineValid = panels.every((panel, index) => panels.slice(index + 1).every((other) => !codexPlusLayoutOverlap(panel.rect, other.rect)));
-    let last = codexPlusLayoutSame(start, active.rect) && baselineValid ? { rects: baseline } : attempt(start);
-    if (!last) return result(baseline, true, false);
-    let low = 0, high = 1;
-    for (let iteration = 0; iteration < 10 && budget.nodes < budget.nodeLimit && budget.candidates < budget.candidateLimit; iteration += 1) {
-      const progress = (low + high) / 2;
-      const probe = {};
-      for (const key of ["left", "top", "width", "height"]) probe[key] = start[key] + (requested[key] - start[key]) * progress;
-      const packed = attempt(probe);
-      if (packed) {
-        low = progress;
-        last = packed;
-      } else high = progress;
-    }
-    return result(last.rects, true);
-  }
-
-  /** 解析阻尼弹簧：dt 以秒计，分帧方式不会改变同一实际时间的运动结果。 */
-  function codexPlusLayoutSpringStep(position, velocity, target, dt, options = {}) {
-    const minimum = codexPlusLayoutNumber(options.min, -Infinity);
-    const maximum = Math.max(minimum, codexPlusLayoutNumber(options.max, Infinity));
-    const sourcePosition = codexPlusLayoutNumber(position);
-    const destination = codexPlusLayoutLimit(codexPlusLayoutNumber(target, sourcePosition), minimum, maximum);
-    const current = codexPlusLayoutLimit(codexPlusLayoutNumber(position, destination), minimum, maximum);
-    const speed = codexPlusLayoutNumber(velocity);
-    if (options.reducedMotion) return { position: destination, velocity: 0, settled: true };
-    const seconds = Math.max(0, codexPlusLayoutNumber(dt));
-    const stiffness = Math.max(0.0001, codexPlusLayoutNumber(options.stiffness, 260));
-    const damping = Math.max(0, codexPlusLayoutNumber(options.damping, 21));
-    const mass = Math.max(0.0001, codexPlusLayoutNumber(options.mass, 1));
-    const omega = Math.sqrt(stiffness / mass);
-    const decay = damping / (2 * mass);
-    const displacement = current - destination;
-    let nextPosition = current, nextVelocity = speed;
-    if (seconds > 0) {
-      if (decay < omega - 0.000001) {
-        const frequency = Math.sqrt(omega * omega - decay * decay);
-        const exponential = Math.exp(-decay * seconds);
-        const cosine = Math.cos(frequency * seconds), sine = Math.sin(frequency * seconds);
-        const coefficient = (speed + decay * displacement) / frequency;
-        const offset = displacement * cosine + coefficient * sine;
-        nextPosition = destination + exponential * offset;
-        nextVelocity = exponential * (-decay * offset - displacement * frequency * sine + coefficient * frequency * cosine);
-      } else if (Math.abs(decay - omega) <= 0.000001) {
-        const exponential = Math.exp(-omega * seconds);
-        const coefficient = speed + omega * displacement;
-        nextPosition = destination + exponential * (displacement + coefficient * seconds);
-        nextVelocity = exponential * (coefficient - omega * (displacement + coefficient * seconds));
-      } else {
-        const delta = Math.sqrt(decay * decay - omega * omega);
-        const first = -decay + delta, second = -decay - delta;
-        const a = (speed - second * displacement) / (first - second), b = displacement - a;
-        const firstTerm = a * Math.exp(first * seconds), secondTerm = b * Math.exp(second * seconds);
-        nextPosition = destination + firstTerm + secondTerm;
-        nextVelocity = first * firstTerm + second * secondTerm;
-      }
-    }
-    if (!Number.isFinite(nextPosition) || !Number.isFinite(nextVelocity)) return { position: destination, velocity: 0, settled: true };
-    if (nextPosition < minimum || nextPosition > maximum) {
-      nextPosition = codexPlusLayoutLimit(nextPosition, minimum, maximum);
-      nextVelocity = 0;
-    }
-    const settled = Math.abs(nextPosition - destination) < 0.05 && Math.abs(nextVelocity) < 0.1;
-    return settled ? { position: destination, velocity: 0, settled: true }
-      : { position: nextPosition, velocity: nextVelocity, settled: false };
-  }
-
-  function springStep(position, velocity, target, dt, options = {}) {
-    return codexPlusLayoutSpringStep(position, velocity, target, dt, options);
-  }
-  /**
-   * 自定义布局只接管原生节点的样式，不移动 React 子树。
-   * 布局数据持久、节点引用瞬态；节点重建后重新识别并应用同一份数据。
-   */
-  const codexPlusCustomLayoutKey = "codexPlus.customLayout.v1";
-  const codexPlusCustomLayoutOwner = "custom-layout";
-  const codexPlusCustomLayoutPanels = {
-    rail: { label: "图标栏", minWidth: 44, resizableHeight: true },
-    sidebar: { label: "侧边栏", minWidth: 180, resizableHeight: true },
-    summary: { label: "详情卡", minWidth: 220, resizableHeight: false },
-    composer: { label: "输入框", minWidth: 280, resizableHeight: false },
-  };
-
-  function codexPlusCustomLayoutFinite(value, fallback = 0) {
-    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-  }
-
-  function codexPlusCustomLayoutClamp(value, minimum, maximum) {
-    return Math.max(minimum, Math.min(maximum, value));
-  }
-
-  function normalizeLayout(value) {
-    const result = { version: 1, panels: {} };
-    if (!value || value.version !== 1 || !value.panels || typeof value.panels !== "object") return result;
-    for (const id of Object.keys(codexPlusCustomLayoutPanels)) {
-      const record = value.panels[id];
-      if (!record || !Number.isFinite(record.x) || !Number.isFinite(record.y)) continue;
-      const next = {
-        x: codexPlusCustomLayoutClamp(record.x, 0, 1),
-        y: codexPlusCustomLayoutClamp(record.y, 0, 1),
-        snapX: ["left", "right"].includes(record.snapX) ? record.snapX : null,
-        snapY: ["top", "bottom"].includes(record.snapY) ? record.snapY : null,
-      };
-      if (id === "sidebar" && record.grouped === true) next.grouped = true;
-      for (const dimension of ["width", "height"]) {
-        if (typeof record[dimension] === "number" && Number.isFinite(record[dimension]) && record[dimension] > 0) {
-          next[dimension] = codexPlusCustomLayoutClamp(record[dimension], 1, 10000);
-        }
-      }
-      result.panels[id] = next;
-    }
-    return result;
-  }
-
-  function codexPlusCustomLayoutBoundsValue(bounds) {
-    return {
-      left: codexPlusCustomLayoutFinite(bounds?.left),
-      top: codexPlusCustomLayoutFinite(bounds?.top),
-      width: Math.max(1, codexPlusCustomLayoutFinite(bounds?.width, 1)),
-      height: Math.max(1, codexPlusCustomLayoutFinite(bounds?.height, 1)),
-    };
-  }
-
-  function clampRect(rect, bounds, minWidth = 40, minHeight = 24) {
-    const area = codexPlusCustomLayoutBoundsValue(bounds);
-    const width = codexPlusCustomLayoutClamp(
-      codexPlusCustomLayoutFinite(rect?.width, minWidth), Math.min(minWidth, area.width), area.width,
-    );
-    const height = codexPlusCustomLayoutClamp(
-      codexPlusCustomLayoutFinite(rect?.height, minHeight), Math.min(minHeight, area.height), area.height,
-    );
-    return {
-      left: codexPlusCustomLayoutClamp(codexPlusCustomLayoutFinite(rect?.left, area.left), area.left, area.left + area.width - width),
-      top: codexPlusCustomLayoutClamp(codexPlusCustomLayoutFinite(rect?.top, area.top), area.top, area.top + area.height - height),
-      width,
-      height,
-    };
-  }
-
-  function snapRect(rect, bounds, otherRects = [], threshold = 16) {
-    const area = codexPlusCustomLayoutBoundsValue(bounds);
-    const next = clampRect(rect, area);
-    const distance = Math.max(0, codexPlusCustomLayoutFinite(threshold, 16));
-    const xCandidates = [
-      { value: area.left, edge: "left" },
-      { value: area.left + area.width - next.width, edge: "right" },
-    ];
-    const yCandidates = [
-      { value: area.top, edge: "top" },
-      { value: area.top + area.height - next.height, edge: "bottom" },
-    ];
-    for (const other of otherRects) {
-      if (![other?.left, other?.top, other?.width, other?.height].every(Number.isFinite)) continue;
-      // 只吸附同一水平/垂直带内的面板，避免隔着整个窗口出现意外跳动。
-      if (next.top < other.top + other.height + distance && next.top + next.height > other.top - distance) {
-        for (const value of [other.left, other.left + other.width, other.left - next.width, other.left + other.width - next.width]) {
-          xCandidates.push({ value, edge: null });
-        }
-      }
-      if (next.left < other.left + other.width + distance && next.left + next.width > other.left - distance) {
-        for (const value of [other.top, other.top + other.height, other.top - next.height, other.top + other.height - next.height]) {
-          yCandidates.push({ value, edge: null });
-        }
-      }
-    }
-    const choose = (candidates, current, minimum, maximum) => candidates
-      .filter((candidate) => candidate.value >= minimum && candidate.value <= maximum && Math.abs(candidate.value - current) <= distance)
-      .sort((a, b) => Math.abs(a.value - current) - Math.abs(b.value - current))[0];
-    const x = choose(xCandidates, next.left, area.left, area.left + area.width - next.width);
-    const y = choose(yCandidates, next.top, area.top, area.top + area.height - next.height);
-    if (x) next.left = x.value;
-    if (y) next.top = y.value;
-    return { rect: next, snapX: x?.edge || null, snapY: y?.edge || null };
-  }
-
-  function rectToRecord(rect, bounds, snaps = {}) {
-    const area = codexPlusCustomLayoutBoundsValue(bounds);
-    const next = clampRect(rect, area);
-    return {
-      x: (next.left - area.left) / Math.max(1, area.width - next.width),
-      y: (next.top - area.top) / Math.max(1, area.height - next.height),
-      width: next.width,
-      height: next.height,
-      snapX: ["left", "right"].includes(snaps.snapX) ? snaps.snapX : null,
-      snapY: ["top", "bottom"].includes(snaps.snapY) ? snaps.snapY : null,
-    };
-  }
-
-  function recordToRect(record, nativeRect, bounds) {
-    const area = codexPlusCustomLayoutBoundsValue(bounds);
-    const size = clampRect({ ...nativeRect, width: record.width ?? nativeRect.width, height: record.height ?? nativeRect.height }, area);
-    const left = record.snapX === "left" ? area.left
-      : record.snapX === "right" ? area.left + area.width - size.width
-      : area.left + codexPlusCustomLayoutClamp(codexPlusCustomLayoutFinite(record.x), 0, 1) * (area.width - size.width);
-    const top = record.snapY === "top" ? area.top
-      : record.snapY === "bottom" ? area.top + area.height - size.height
-      : area.top + codexPlusCustomLayoutClamp(codexPlusCustomLayoutFinite(record.y), 0, 1) * (area.height - size.height);
-    return clampRect({ ...size, left, top }, area);
-  }
-
-  try { window.__codexPlusCustomLayoutRuntime?.cleanup?.(false); } catch {}
-  const codexPlusCustomLayoutState = {
-    enabled: false,
-    editing: false,
-    layout: { version: 1, panels: {} },
-    entries: new Map(),
-    styled: new Map(),
-    ancestors: new Map(),
-    root: null,
-    toolbar: null,
-    notice: "",
-    observer: null,
-    resizeObserver: null,
-    raf: 0,
-    retryTimer: 0,
-    drag: null,
-    motions: new Map(),
-    motionRaf: 0,
-    motionTime: null,
-    motionGeneration: 0,
-    projectedRects: null,
-    projectionSignature: "",
-    lastActiveId: null,
-    listeners: [],
-    storageLoaded: false,
-    registered: false,
-  };
-
-  function codexPlusCustomLayoutEnabled() {
-    try { return codexPlusSettings().customLayout === true; } catch { return false; }
-  }
-
-  function codexPlusCustomLayoutRead() {
-    const state = codexPlusCustomLayoutState;
-    if (state.storageLoaded) return;
-    state.storageLoaded = true;
-    try { state.layout = normalizeLayout(JSON.parse(localStorage.getItem(codexPlusCustomLayoutKey) || "null")); } catch {}
-  }
-
-  function codexPlusCustomLayoutSave() {
-    const state = codexPlusCustomLayoutState;
-    try {
-      localStorage.setItem(codexPlusCustomLayoutKey, JSON.stringify(state.layout));
-      state.notice = "";
-    } catch {
-      state.notice = "保存失败，当前布局仅在本次打开期间有效";
-    }
-    codexPlusCustomLayoutRenderToolbar();
-  }
-
-  function codexPlusCustomLayoutVisible(element) {
-    if (!element?.isConnected || typeof element.getBoundingClientRect !== "function") return false;
-    if (element.closest?.('[inert], [hidden], [aria-hidden="true"]')) return false;
-    const rect = element.getBoundingClientRect();
-    if (!(rect.width > 0 && rect.height > 0)) return false;
-    const style = getComputedStyle(element);
-    return style.display !== "none" && style.visibility !== "hidden";
-  }
-
-  function codexPlusCustomLayoutUnionRect(rects) {
-    const left = Math.min(...rects.map((rect) => rect.left));
-    const top = Math.min(...rects.map((rect) => rect.top));
-    return {
-      left, top,
-      width: Math.max(...rects.map((rect) => rect.left + rect.width)) - left,
-      height: Math.max(...rects.map((rect) => rect.top + rect.height)) - top,
-    };
-  }
-
-  function codexPlusCustomLayoutElements(entry) {
-    return entry.elements || [entry.element];
-  }
-
-  function codexPlusCustomLayoutStyledElements(entry) {
-    const elements = codexPlusCustomLayoutElements(entry);
-    return entry.grouped && elements.length === 1
-      ? [...new Set([...elements, entry.railElement, entry.sidebarElement].filter(Boolean))]
-      : elements;
-  }
-
-  function codexPlusCustomLayoutEntryRect(entry) {
-    return codexPlusCustomLayoutUnionRect(codexPlusCustomLayoutElements(entry).map((element) => element.getBoundingClientRect()));
-  }
-
-  function codexPlusCustomLayoutEntryConnected(entry) {
-    return codexPlusCustomLayoutElements(entry).every((element) => element.isConnected);
-  }
-
-  function codexPlusCustomLayoutMinWidth(entry) {
-    return codexPlusCustomLayoutPanels[entry.id].minWidth + (entry.grouped ? entry.railWidth : 0);
-  }
-
-  function codexPlusCustomLayoutRestoreEntry(entry) {
-    for (const element of codexPlusCustomLayoutStyledElements(entry)) {
-      codexPlusCustomLayoutRestoreStyle(codexPlusCustomLayoutState.styled, element);
-    }
-  }
-
-  /** 只选导航自己的外壳，不能把包含主内容或输入框的祖先一起拖走。 */
-  function codexPlusCustomLayoutNavigationShellSafe(element, rect, protectedElements = [], ownedShell = false) {
-    if (!element || element === document.body || element === document.documentElement || !codexPlusCustomLayoutVisible(element)) return false;
-    if (element.matches?.('main, [data-app-shell-main-surface]')
-      || element.querySelector?.('main, [data-app-shell-main-surface], [data-codex-composer-root], [data-summary-panel-variant]')
-      || protectedElements.some((node) => node && (element === node || element.contains?.(node)))) return false;
-    // 已接管的共同壳不会因一次 flex 尺寸重算就被误拆成两个 fixed 面板。
-    if (ownedShell) return true;
-    const measured = element.getBoundingClientRect();
-    // 允许边框和内边距，拒绝覆盖整张工作区的背景容器。
-    return measured.width <= rect.width + 24 && measured.height <= rect.height + 24
-      && measured.left >= rect.left - 12 && measured.top >= rect.top - 12
-      && measured.left <= rect.left + 12 && measured.top <= rect.top + 12
-      && measured.left + measured.width <= rect.left + rect.width + 12
-      && measured.top + measured.height <= rect.top + rect.height + 12
-      && measured.left + measured.width >= rect.left + rect.width - 12
-      && measured.top + measured.height >= rect.top + rect.height - 12;
-  }
-
-  function codexPlusCustomLayoutNavigationPart(element, protectedElements) {
-    if (!element) return null;
-    const rect = element.getBoundingClientRect();
-    let shell = element;
-    for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
-      if (codexPlusCustomLayoutNavigationShellSafe(node, rect, protectedElements)) shell = node;
-    }
-    return shell;
-  }
-
-  function codexPlusCustomLayoutFindTargets() {
-    const firstVisible = (selector) => Array.from(document.querySelectorAll(selector)).find(codexPlusCustomLayoutVisible) || null;
-    const rail = firstVisible("nav[data-app-navigation-rail]");
-    const sidebar = Array.from(document.querySelectorAll("#app-shell-sidebar .sidebar-navigation, aside.app-shell-left-panel .sidebar-navigation, aside.app-shell-left-panel nav"))
-      .find((node) => node !== rail && !node.matches?.("[data-app-navigation-rail]")
-        && !node.closest?.("nav[data-app-navigation-rail]") && !node.querySelector?.("nav[data-app-navigation-rail]")
-        && codexPlusCustomLayoutVisible(node)) || null;
-    const summary = firstVisible("[data-summary-panel-variant]");
-    let composer = null;
-    try { composer = conversationViewFindComposerEl(); } catch {}
-    if (!codexPlusCustomLayoutVisible(composer)) composer = null;
-    const protectedElements = [summary, composer];
-    const railPart = codexPlusCustomLayoutNavigationPart(rail, [...protectedElements, sidebar]);
-    const sidebarPart = codexPlusCustomLayoutNavigationPart(sidebar, [...protectedElements, rail]);
-    if (rail && sidebar) {
-      const union = codexPlusCustomLayoutUnionRect([railPart.getBoundingClientRect(), sidebarPart.getBoundingClientRect()]);
-      const current = codexPlusCustomLayoutState.entries.get("sidebar");
-      let shell = current?.grouped && current.elements.length === 1 && codexPlusCustomLayoutState.styled.has(current.element)
-        && current.element.contains?.(rail) && current.element.contains?.(sidebar)
-        && codexPlusCustomLayoutNavigationShellSafe(current.element, union, protectedElements, true) ? current.element : null;
-      if (!shell) {
-        for (let node = rail.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
-          if (node.contains?.(sidebar) && codexPlusCustomLayoutNavigationShellSafe(node, union, protectedElements)) shell = node;
-        }
-      }
-      return {
-        rail: null,
-        sidebar: {
-          element: shell || sidebarPart,
-          elements: shell ? [shell] : [railPart, sidebarPart],
-          grouped: true,
-          railElement: railPart, sidebarElement: sidebarPart,
-          railRect: railPart.getBoundingClientRect(),
-          sidebarRect: sidebarPart.getBoundingClientRect(),
-        },
-        summary, composer,
-      };
-    }
-    return { rail: railPart, sidebar: sidebarPart, summary, composer };
-  }
-
-  function codexPlusCustomLayoutBounds() {
-    const width = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
-    const height = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
-    let top = 8;
-    for (const header of document.querySelectorAll('.app-header-tint, [class*="ApplicationMenuTopBar"]')) {
-      const rect = header.getBoundingClientRect();
-      if (rect.height >= 20 && rect.height <= 96 && rect.top < 32 && rect.width > width * 0.4) top = Math.max(top, rect.bottom + 4);
-    }
-    top = Math.min(top, Math.max(0, height - 1));
-    const margin = Math.min(8, Math.max(0, (width - 1) / 2));
-    return { left: margin, top, width: Math.max(1, width - margin * 2), height: Math.max(1, height - top - Math.min(8, height - top - 1)) };
-  }
-
-  function codexPlusCustomLayoutScale(element) {
-    let scale = 1;
-    for (let node = element; node; node = node.parentElement) {
-      const raw = getComputedStyle(node).zoom;
-      const value = Number.parseFloat(raw);
-      if (Number.isFinite(value) && value > 0) scale *= String(raw).endsWith("%") ? value / 100 : value;
-    }
-    return scale > 0 && Number.isFinite(scale) ? scale : 1;
-  }
-
-  function codexPlusCustomLayoutStyleRecord(map, element) {
-    let record = map.get(element);
-    if (!record) {
-      record = { original: new Map(), applied: new Map(), priorities: new Map(), requested: new Map(), lastStyle: "" };
-      map.set(element, record);
-    }
-    return record;
-  }
-
-  function codexPlusCustomLayoutWriteStyle(map, element, values) {
-    const record = codexPlusCustomLayoutStyleRecord(map, element);
-    for (const [property, value] of Object.entries(values)) {
-      if (!record.original.has(property)) {
-        record.original.set(property, { value: element.style.getPropertyValue(property), priority: element.style.getPropertyPriority(property) });
-      }
-      // React/动画可能写回样式。保留它的新值，让关闭功能后回到最新原生状态。
-      const previous = record.applied.get(property);
-      const nativeChanged = record.applied.has(property)
-        && (element.style.getPropertyValue(property) !== previous || element.style.getPropertyPriority(property) !== record.priorities.get(property));
-      if (nativeChanged) {
-        record.original.set(property, { value: element.style.getPropertyValue(property), priority: element.style.getPropertyPriority(property) });
-      }
-      // CSSOM 会将 38.400px 规范化为 38.4px。比较上次请求可以避开重复写入，
-      // 归属判断则必须比较浏览器实际存下来的规范化值与优先级。
-      if (nativeChanged || !record.requested.has(property) || record.requested.get(property) !== value) {
-        element.style.setProperty(property, value, "important");
-      }
-      record.requested.set(property, value);
-      record.applied.set(property, element.style.getPropertyValue(property));
-      record.priorities.set(property, element.style.getPropertyPriority(property));
-    }
-    record.lastStyle = element.getAttribute("style") || "";
-  }
-
-  function codexPlusCustomLayoutRestoreStyle(map, element) {
-    const record = map.get(element);
-    if (!record) return;
-    for (const [property, original] of record.original) {
-      // 原生在我们停止期间写入的更新也不能被旧快照覆盖。
-      if (element.style.getPropertyValue(property) !== record.applied.get(property)
-        || element.style.getPropertyPriority(property) !== record.priorities.get(property)) continue;
-      if (original.value) element.style.setProperty(property, original.value, original.priority);
-      else element.style.removeProperty(property);
-    }
-    map.delete(element);
-  }
-
-  function codexPlusCustomLayoutReleaseAncestors(elements) {
-    const state = codexPlusCustomLayoutState;
-    const needed = new Set();
-    for (const element of elements) {
-      for (let node = element.parentElement; node && node !== document.documentElement; node = node.parentElement) needed.add(node);
-    }
-    for (const element of state.ancestors.keys()) {
-      if (!needed.has(element)) codexPlusCustomLayoutRestoreStyle(state.ancestors, element);
-    }
-    for (const element of needed) {
-      const computed = getComputedStyle(element);
-      const existing = state.ancestors.get(element);
-      const values = existing ? Object.fromEntries(existing.applied) : {};
-      if (computed.contain && computed.contain !== "none" && computed.contain !== "style") values.contain = "none";
-      for (const property of ["transform", "translate", "rotate", "scale", "perspective", "filter", "backdrop-filter", "clip-path"]) {
-        const value = computed.getPropertyValue(property);
-        if (value && value !== "none") values[property] = "none";
-      }
-      if (/transform|filter|perspective|contain/.test(computed.willChange || "")) values["will-change"] = "auto";
-      if (computed.contentVisibility === "auto") values["content-visibility"] = "visible";
-      for (const property of ["overflow-x", "overflow-y"]) {
-        if (["hidden", "clip"].includes(computed.getPropertyValue(property))) values[property] = "visible";
-      }
-      if (Object.keys(values).length) codexPlusCustomLayoutWriteStyle(state.ancestors, element, values);
-    }
-  }
-
-  function codexPlusCustomLayoutOwnedNode(node) {
-    return !!node?.closest?.('[data-codex-plus-ext="custom-layout"]');
-  }
-
-  function codexPlusCustomLayoutUiNode(tag, className = "") {
-    const node = document.createElement(tag);
-    node.setAttribute("data-codex-plus-ext", codexPlusCustomLayoutOwner);
-    node.className = className;
-    return node;
-  }
-
-  function codexPlusCustomLayoutEnsureUi() {
-    const state = codexPlusCustomLayoutState;
-    if (state.root?.isConnected) return;
-    const root = codexPlusCustomLayoutUiNode("div", "codex-plus-custom-layout-ui");
-    root.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:1000;font:12px system-ui,sans-serif;color:var(--color-text-primary,#eee);";
-    const style = codexPlusCustomLayoutUiNode("style");
-    style.textContent = `
-      .codex-plus-custom-layout-toolbar { position:absolute; display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:6px; padding:7px 9px; width:max-content; max-width:calc(100% - 16px); box-sizing:border-box; border:1px solid rgba(128,128,128,.45); border-radius:12px; background:var(--color-surface,#242424); box-shadow:0 4px 20px #0004; pointer-events:auto; }
-      .codex-plus-custom-layout-toolbar button,.codex-plus-custom-layout-grip { border:1px solid rgba(128,128,128,.45); border-radius:7px; background:var(--color-surface-secondary,#353535); color:inherit; padding:5px 8px; font:inherit; cursor:pointer; -webkit-app-region:no-drag; }
-      .codex-plus-custom-layout-toolbar button:focus-visible,.codex-plus-custom-layout-grip:focus-visible { outline:2px solid #60a5fa; outline-offset:2px; }
-      .codex-plus-custom-layout-toolbar button:disabled { opacity:.5; cursor:default; }
-      .codex-plus-custom-layout-handle { position:absolute; display:flex; align-items:center; gap:3px; pointer-events:none; }
-      .codex-plus-custom-layout-grip { pointer-events:auto; touch-action:none; user-select:none; cursor:grab; padding:3px 7px; font-size:11px; line-height:16px; box-shadow:0 2px 8px #0003; }
-      .codex-plus-custom-layout-grip[data-resize] { cursor:nwse-resize; }
-      .codex-plus-custom-layout-grip[data-dragging] { cursor:grabbing; background:#2563eb; color:white; }
-      .codex-plus-custom-layout-outline { position:absolute; box-sizing:border-box; border:1px dashed #60a5fa; border-radius:10px; pointer-events:none; }
-      .codex-plus-custom-layout-notice { flex-basis:100%; text-align:center; color:#fbbf24; }
-    `;
-    root.appendChild(style);
-    const toolbar = codexPlusCustomLayoutUiNode("div", "codex-plus-custom-layout-toolbar");
-    toolbar.setAttribute("role", "toolbar");
-    toolbar.setAttribute("aria-label", "编辑自定义布局");
-    root.appendChild(toolbar);
-    (document.body || document.documentElement).appendChild(root);
-    state.root = root;
-    state.toolbar = toolbar;
-  }
-
-  function codexPlusCustomLayoutRenderToolbar() {
-    const state = codexPlusCustomLayoutState;
-    if (!state.editing || !state.toolbar) return;
-    const toolbar = state.toolbar;
-    toolbar.replaceChildren();
-    const label = codexPlusCustomLayoutUiNode("span");
-    label.textContent = "拖动让位 · 弹簧回弹 · Alt 暂停吸附";
-    toolbar.appendChild(label);
-    for (const [id, definition] of Object.entries(codexPlusCustomLayoutPanels)) {
-      if (id === "rail" && state.entries.get("sidebar")?.grouped) continue;
-      const button = codexPlusCustomLayoutUiNode("button");
-      button.type = "button";
-      const entry = state.entries.get(id);
-      const saved = state.layout.panels[id];
-      const status = !entry ? "未出现" : saved ? (saved.snapX || saved.snapY ? "已吸附" : "悬浮") : "原位";
-      button.textContent = `${definition.label}·${status}`;
-      button.disabled = !entry;
-      button.title = entry ? "定位此面板的拖动手柄；双击手柄恢复该面板" : "面板再次出现时会恢复保存的位置";
-      button.addEventListener("click", () => entry?.move?.focus());
-      toolbar.appendChild(button);
-    }
-    for (const [text, action] of [["恢复默认", codexPlusCustomLayoutReset], ["完成", () => codexPlusCustomLayoutSetEditing(false)]]) {
-      const button = codexPlusCustomLayoutUiNode("button");
-      button.type = "button";
-      button.textContent = text;
-      button.addEventListener("click", action);
-      toolbar.appendChild(button);
-    }
-    if (state.notice) {
-      const notice = codexPlusCustomLayoutUiNode("span", "codex-plus-custom-layout-notice");
-      notice.setAttribute("role", "status");
-      notice.textContent = state.notice;
-      toolbar.appendChild(notice);
-    }
-    const bounds = codexPlusCustomLayoutBounds();
-    const scale = codexPlusCustomLayoutScale(state.root);
-    toolbar.style.left = `${(bounds.left + bounds.width / 2) / scale}px`;
-    toolbar.style.top = `${(bounds.top + 4) / scale}px`;
-    toolbar.style.transform = "translateX(-50%)";
-  }
-
-  function codexPlusCustomLayoutPreferredRect(entry, bounds) {
-    const record = codexPlusCustomLayoutState.layout.panels[entry.id];
-    const measured = codexPlusCustomLayoutEntryRect(entry);
-    const native = { left: measured.left, top: measured.top, width: measured.width, height: measured.height };
-    if (!record) return native;
-    // 输入框/详情卡的内容决定高度，持久数据只约束其宽度。
-    const preferred = { ...record };
-    if (!codexPlusCustomLayoutPanels[entry.id].resizableHeight) delete preferred.height;
-    return clampRect(recordToRect(preferred, native, bounds), bounds,
-      codexPlusCustomLayoutMinWidth(entry),
-      codexPlusCustomLayoutPanels[entry.id].resizableHeight ? 80 : 24);
-  }
-
-  function codexPlusCustomLayoutCreateEntry(id, target) {
-    const element = target.element || target;
-    const elements = Array.isArray(target.elements) ? target.elements : [element];
-    const partRects = elements.map((part) => part.getBoundingClientRect());
-    return {
-      id, element, elements, grouped: target.grouped === true,
-      railWidth: target.grouped ? target.railRect.width : 0,
-      railElement: target.railElement, sidebarElement: target.sidebarElement,
-      railRect: target.railRect, sidebarRect: target.sidebarRect,
-      nativeGroupRect: codexPlusCustomLayoutUnionRect(partRects), partRects,
-      handle: null, outline: null, move: null, justAdded: true,
-    };
-  }
-
-  /** v1 的聊天栏/图标栏位置升级为整组位置；正式交互保存时再写回。 */
-  function codexPlusCustomLayoutMigrateNavigation(entry, bounds) {
-    if (!entry?.grouped) return;
-    const panels = codexPlusCustomLayoutState.layout.panels;
-    const sidebarRecord = panels.sidebar;
-    const railRecord = panels.rail;
-    if (sidebarRecord?.grouped !== true && (sidebarRecord || railRecord)) {
-      const native = entry.nativeGroupRect;
-      const part = sidebarRecord ? entry.sidebarRect : entry.railRect;
-      const previous = recordToRect(sidebarRecord || railRecord, part, bounds);
-      const rect = {
-        left: previous.left - (part.left - native.left),
-        top: previous.top - (part.top - native.top),
-        width: previous.width + native.width - part.width,
-        height: previous.height + native.height - part.height,
-      };
-      panels.sidebar = { ...rectToRecord(rect, bounds, sidebarRecord || railRecord), grouped: true };
-    }
-    // 新版只有一个求解单位，旧图标栏记录不能继续与侧边栏竞争位置。
-    delete panels.rail;
-  }
-
-  function codexPlusCustomLayoutNavigationPartRect(entry, rect, part) {
-    const native = entry.nativeGroupRect;
-    const railStart = entry.railRect.left - native.left;
-    const railEnd = railStart + entry.railWidth;
-    const horizontalScale = Math.max(0, (rect.width - entry.railWidth) / Math.max(1, native.width - entry.railWidth));
-    // 调整组宽时保留图标栏宽度，剩余空间交给聊天栏；两块仍是同一个碰撞单位。
-    const x = (value) => value <= railStart ? value * horizontalScale
-      : value < railEnd ? railStart * horizontalScale + value - railStart
-      : railStart * horizontalScale + entry.railWidth + (value - railEnd) * horizontalScale;
-    const left = x(part.left - native.left);
-    const right = x(part.left + part.width - native.left);
-    const verticalScale = rect.height / Math.max(1, native.height);
-    return {
-      left: rect.left + left, top: rect.top + (part.top - native.top) * verticalScale,
-      width: Math.max(1, right - left), height: Math.max(1, part.height * verticalScale),
-    };
-  }
-
-  function codexPlusCustomLayoutPartRect(entry, rect, index) {
-    return entry.elements.length === 1 ? rect : codexPlusCustomLayoutNavigationPartRect(entry, rect, entry.partRects[index]);
-  }
-
-  function codexPlusCustomLayoutApplyNavigationWidths(entry, rect) {
-    if (!entry.grouped || entry.elements.length !== 1) return;
-    for (const [element, native] of [[entry.railElement, entry.railRect], [entry.sidebarElement, entry.sidebarRect]]) {
-      if (!element?.isConnected || element === entry.element) continue;
-      const part = codexPlusCustomLayoutNavigationPartRect(entry, rect, native);
-      const width = `${(part.width / codexPlusCustomLayoutScale(element)).toFixed(3)}px`;
-      // 只约束共同壳里的正常流子面板，不设置 position，不更换滚动/裁剪规则。
-      codexPlusCustomLayoutWriteStyle(codexPlusCustomLayoutState.styled, element, {
-        width, "min-width": "0", "max-width": width, "flex-basis": width,
-        "flex-grow": "0", "flex-shrink": "0", "box-sizing": "border-box",
-      });
-    }
-  }
-
-  function codexPlusCustomLayoutRefreshNavigationParts(entry, target) {
-    if (!entry.grouped || entry.elements.length !== 1) return;
-    const next = [target.railElement, target.sidebarElement];
-    for (const element of [entry.railElement, entry.sidebarElement]) {
-      if (element && !next.includes(element)) codexPlusCustomLayoutRestoreStyle(codexPlusCustomLayoutState.styled, element);
-    }
-    entry.railElement = target.railElement;
-    entry.sidebarElement = target.sidebarElement;
-  }
-
-  function codexPlusCustomLayoutApplyEntry(entry, bounds) {
-    const state = codexPlusCustomLayoutState;
-    const record = state.layout.panels[entry.id];
-    const motion = state.motions.get(entry.id);
-    const projection = state.projectedRects?.[entry.id];
-    if (!record && !motion && !projection) {
-      codexPlusCustomLayoutRestoreEntry(entry);
-      return;
-    }
-    if (entry.id === "composer" && !state.styled.has(entry.element)
-      && typeof conversationViewRestoreElement === "function"
-      && typeof conversationViewState !== "undefined" && conversationViewState.elements?.has(entry.element)) {
-      // 居中功能的旧快照不能在稍后 cleanup 时覆盖我们接管后的尺寸和位置。
-      conversationViewRestoreElement(entry.element);
-      conversationViewState.elements.delete(entry.element);
-    }
-    const rect = motion?.current || projection || codexPlusCustomLayoutPreferredRect(entry, bounds);
-    for (const [index, element] of entry.elements.entries()) {
-      const part = codexPlusCustomLayoutPartRect(entry, rect, index);
-      const scale = codexPlusCustomLayoutScale(element);
-      const px = (value) => `${(value / scale).toFixed(3)}px`;
-      const values = {
-        position: "fixed", left: px(part.left), top: px(part.top), right: "auto", bottom: "auto",
-        width: px(part.width), "min-width": "0", "max-width": px(bounds.width),
-        "max-height": px(bounds.height), "box-sizing": "border-box", margin: "0",
-        transform: "none", translate: "none", rotate: "none", scale: "none", "z-index": "120",
-      };
-      if (codexPlusCustomLayoutPanels[entry.id].resizableHeight) {
-        values.height = px(part.height);
-        // 整壳保持宿主自己的滚动分工，不能再给 rail/chat 外面套一层滚动条。
-        if (!entry.grouped) {
-          values["overflow-y"] = "auto";
-          values["overflow-x"] = "hidden";
-        }
-      }
-      codexPlusCustomLayoutWriteStyle(state.styled, element, values);
-    }
-    codexPlusCustomLayoutApplyNavigationWidths(entry, rect);
-  }
-
-  function codexPlusCustomLayoutInstallHandle(entry) {
-    const state = codexPlusCustomLayoutState;
-    if (!state.editing || !state.root) return;
-    if (entry.handle?.isConnected) return;
-    const handle = codexPlusCustomLayoutUiNode("div", "codex-plus-custom-layout-handle");
-    const outline = codexPlusCustomLayoutUiNode("div", "codex-plus-custom-layout-outline");
-    const move = codexPlusCustomLayoutUiNode("button", "codex-plus-custom-layout-grip");
-    move.type = "button";
-    move.textContent = entry.id === "rail" ? "⠿" : `⠿ ${codexPlusCustomLayoutPanels[entry.id].label}`;
-    move.setAttribute("aria-label", `拖动${codexPlusCustomLayoutPanels[entry.id].label}，方向键移动，双击恢复原位`);
-    move.title = "拖动时其他面板会弹性让位；Alt 暂停吸附；方向键移动，Shift 加速；双击恢复原位";
-    move.addEventListener("pointerdown", (event) => codexPlusCustomLayoutBeginDrag(event, entry.id, false));
-    move.addEventListener("keydown", (event) => codexPlusCustomLayoutKeyboard(event, entry.id, false));
-    move.addEventListener("dblclick", () => codexPlusCustomLayoutResetPanel(entry.id));
-    const resize = codexPlusCustomLayoutUiNode("button", "codex-plus-custom-layout-grip");
-    resize.type = "button";
-    resize.textContent = "↔";
-    resize.setAttribute("data-resize", "true");
-    resize.setAttribute("aria-label", `调整${codexPlusCustomLayoutPanels[entry.id].label}尺寸`);
-    resize.title = codexPlusCustomLayoutPanels[entry.id].resizableHeight ? "拖动调整宽高，方向键也可调整" : "拖动调整宽度，左右键也可调整";
-    if (entry.id === "rail") handle.style.flexDirection = "column";
-    resize.addEventListener("pointerdown", (event) => codexPlusCustomLayoutBeginDrag(event, entry.id, true));
-    resize.addEventListener("keydown", (event) => codexPlusCustomLayoutKeyboard(event, entry.id, true));
-    handle.appendChild(move);
-    handle.appendChild(resize);
-    state.root.appendChild(outline);
-    state.root.appendChild(handle);
-    Object.assign(entry, { handle, outline, move });
-  }
-
-  function codexPlusCustomLayoutPositionHandle(entry) {
-    if (!entry.handle || !entry.outline) return;
-    const bounds = codexPlusCustomLayoutBounds();
-    const rect = codexPlusCustomLayoutEntryRect(entry);
-    const scale = codexPlusCustomLayoutScale(codexPlusCustomLayoutState.root);
-    const left = codexPlusCustomLayoutClamp(rect.left, bounds.left, bounds.left + bounds.width - 24);
-    const top = codexPlusCustomLayoutClamp(rect.top, bounds.top, bounds.top + bounds.height - 24);
-    entry.handle.style.left = `${left / scale}px`;
-    entry.handle.style.top = `${top / scale}px`;
-    entry.outline.style.left = `${rect.left / scale}px`;
-    entry.outline.style.top = `${rect.top / scale}px`;
-    entry.outline.style.width = `${rect.width / scale}px`;
-    entry.outline.style.height = `${rect.height / scale}px`;
-  }
-
-  function codexPlusCustomLayoutOtherRects(id) {
-    return [...codexPlusCustomLayoutState.entries.values()]
-      .filter((entry) => entry.id !== id && codexPlusCustomLayoutElements(entry).every(codexPlusCustomLayoutVisible))
-      .map(codexPlusCustomLayoutEntryRect);
-  }
-
-  function codexPlusCustomLayoutRecordFor(id, rect, snaps = {}) {
-    const record = rectToRecord(rect, codexPlusCustomLayoutBounds(), snaps);
-    if (id === "sidebar" && codexPlusCustomLayoutState.entries.get(id)?.grouped) record.grouped = true;
-    if (!codexPlusCustomLayoutPanels[id].resizableHeight) delete record.height;
-    return record;
-  }
-
-  function codexPlusCustomLayoutClone(layout) {
-    return { version: 1, panels: Object.fromEntries(Object.entries(layout.panels).map(([id, record]) => [id, { ...record }])) };
-  }
-
-  function codexPlusCustomLayoutRectEqual(a, b, tolerance = 0.15) {
-    return !!a && !!b && ["left", "top", "width", "height"].every((key) => Math.abs(a[key] - b[key]) <= tolerance);
-  }
-
-  function codexPlusCustomLayoutReducedMotion() {
-    return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-  }
-
-  function codexPlusCustomLayoutCaptureRects() {
-    const state = codexPlusCustomLayoutState;
-    return Object.fromEntries([...state.entries.values()].map((entry) => {
-      const measured = state.motions.get(entry.id)?.target || state.projectedRects?.[entry.id] || codexPlusCustomLayoutEntryRect(entry);
-      const definition = codexPlusCustomLayoutPanels[entry.id];
-      return [entry.id, {
-        left: measured.left, top: measured.top, width: measured.width, height: measured.height,
-        minWidth: codexPlusCustomLayoutMinWidth(entry), minHeight: definition.resizableHeight ? 80 : measured.height,
-        canResizeHeight: definition.resizableHeight,
-      }];
-    }));
-  }
-
-  function codexPlusCustomLayoutStopMotion(settle = false) {
-    const state = codexPlusCustomLayoutState;
-    state.motionGeneration += 1;
-    if (state.motionRaf) cancelAnimationFrame(state.motionRaf);
-    state.motionRaf = 0;
-    state.motionTime = null;
-    if (settle && state.enabled) {
-      const bounds = codexPlusCustomLayoutBounds();
-      for (const [id, motion] of state.motions) {
-        motion.current = { ...motion.target };
-        const entry = state.entries.get(id);
-        if (entry) codexPlusCustomLayoutApplyEntry(entry, bounds);
-      }
-    }
-    state.motions.clear();
-  }
-
-  function codexPlusCustomLayoutMotionFrame(time, generation) {
-    const state = codexPlusCustomLayoutState;
-    if (!state.enabled || generation !== state.motionGeneration) return;
-    state.motionRaf = 0;
-    const now = Number.isFinite(time) ? time : performance.now();
-    const dt = state.motionTime == null ? 1 / 60 : Math.max(0.001, Math.min(0.05, (now - state.motionTime) / 1000));
-    state.motionTime = now;
-    const bounds = codexPlusCustomLayoutBounds();
-    const reducedMotion = codexPlusCustomLayoutReducedMotion();
-    const finished = [];
-    // 碰撞求解只写目标；中间帧独立推进弹簧，不能拿中间帧反过来求解。
-    for (const [id, motion] of state.motions) {
-      const entry = state.entries.get(id);
-      if (!entry || !codexPlusCustomLayoutEntryConnected(entry)) { finished.push(id); continue; }
-      let settled = true;
-      const restoring = !state.layout.panels[id] && !state.projectedRects?.[id];
-      const area = restoring
-        ? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
-        : bounds;
-      for (const key of ["width", "height", "left", "top"]) {
-        const minimum = key === "left" ? area.left : key === "top" ? area.top : 1;
-        const maximum = key === "left" ? area.left + area.width - motion.current.width
-          : key === "top" ? area.top + area.height - motion.current.height
-          : key === "width" ? area.width : area.height;
-        const next = springStep(motion.current[key], motion.velocity[key], motion.target[key], dt,
-          { stiffness: 290, damping: 23, mass: 1, min: minimum, max: maximum, reducedMotion });
-        motion.current[key] = next.position;
-        motion.velocity[key] = next.velocity;
-        settled &&= next.settled;
-      }
-      if (settled) { motion.current = { ...motion.target }; finished.push(id); }
-      codexPlusCustomLayoutApplyEntry(entry, bounds);
-    }
-    for (const id of finished) {
-      state.motions.delete(id);
-      const entry = state.entries.get(id);
-      if (entry) codexPlusCustomLayoutApplyEntry(entry, bounds);
-    }
-    if (state.editing) for (const entry of state.entries.values()) codexPlusCustomLayoutPositionHandle(entry);
-    if (state.motions.size) {
-      state.motionRaf = requestAnimationFrame((timestamp) => codexPlusCustomLayoutMotionFrame(timestamp, generation));
-    } else {
-      state.motionTime = null;
-      codexPlusCustomLayoutSchedule();
-    }
-  }
-
-  function codexPlusCustomLayoutAnimate(rects, immediateId = null, releaseVelocity = null) {
-    const state = codexPlusCustomLayoutState;
-    const reducedMotion = codexPlusCustomLayoutReducedMotion();
-    for (const [id, target] of Object.entries(rects)) {
-      const entry = state.entries.get(id);
-      if (!entry || !codexPlusCustomLayoutEntryConnected(entry)) continue;
-      if (id === immediateId || reducedMotion || entry.justAdded) { state.motions.delete(id); continue; }
-      const old = state.motions.get(id);
-      if (old && codexPlusCustomLayoutRectEqual(old.target, target)) continue;
-      const measured = old?.current || codexPlusCustomLayoutEntryRect(entry);
-      const current = { left: measured.left, top: measured.top, width: measured.width, height: measured.height };
-      const velocity = old?.velocity || { left: 0, top: 0, width: 0, height: 0 };
-      if (releaseVelocity?.id === id) {
-        velocity.left = releaseVelocity.left;
-        velocity.top = releaseVelocity.top;
-      }
-      if (codexPlusCustomLayoutRectEqual(current, target) && Math.abs(velocity.left) + Math.abs(velocity.top) < 1) continue;
-      state.motions.set(id, { current, velocity: { ...velocity }, target: { ...target } });
-    }
-    if (state.motions.size && !state.motionRaf) {
-      const generation = state.motionGeneration;
-      state.motionRaf = requestAnimationFrame((timestamp) => codexPlusCustomLayoutMotionFrame(timestamp, generation));
-    }
-  }
-
-  function codexPlusCustomLayoutApplySolution(solution, baseline, previousLayout, activeId, snaps = {}, immediate = true) {
-    const state = codexPlusCustomLayoutState;
-    const next = codexPlusCustomLayoutClone(previousLayout);
-    for (const [id, rect] of Object.entries(solution.rects)) {
-      if (id === activeId || !codexPlusCustomLayoutRectEqual(rect, baseline[id])) {
-        // 让位后的面板清掉原吸附边；不能被旧 snap 再拉回碰撞区。
-        next.panels[id] = codexPlusCustomLayoutRecordFor(id, rect, id === activeId && !solution.blocked ? snaps : {});
-      }
-    }
-    state.layout = next;
-    state.projectedRects = solution.rects;
-    state.projectionSignature = "";
-    state.lastActiveId = activeId;
-    state.notice = solution.blocked ? "空间不足，拖动已限制在可用位置" : "";
-    codexPlusCustomLayoutAnimate(solution.rects, immediate ? activeId : null);
-    codexPlusCustomLayoutRefresh();
-  }
-
-  function codexPlusCustomLayoutBeginDrag(event, id, resize) {
-    const state = codexPlusCustomLayoutState;
-    const entry = state.entries.get(id);
-    if (!state.enabled || !state.editing || !entry || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    codexPlusCustomLayoutFinishDrag(true);
-    codexPlusCustomLayoutStopMotion(true);
-    const origin = codexPlusCustomLayoutEntryRect(entry);
-    const handle = event.currentTarget;
-    const drag = {
-      id, resize, handle, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
-      origin: { left: origin.left, top: origin.top, width: origin.width, height: origin.height },
-      previousLayout: codexPlusCustomLayoutClone(state.layout), baseline: codexPlusCustomLayoutCaptureRects(),
-      previousProjection: state.projectedRects, moved: false,
-      velocityX: 0, velocityY: 0, moveTime: performance.now(), lastX: event.clientX, lastY: event.clientY,
-    };
-    state.drag = drag;
-    try { handle.setPointerCapture(event.pointerId); } catch {}
-    const onMove = (move) => {
-      if (state.drag !== drag || move.pointerId !== drag.pointerId) return;
-      const dx = move.clientX - drag.startX;
-      const dy = move.clientY - drag.startY;
-      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
-      drag.moved = true;
-      move.preventDefault();
-      handle.setAttribute("data-dragging", "true");
-      const area = codexPlusCustomLayoutBounds();
-      const candidate = resize
-        ? { ...drag.origin, width: drag.origin.width + dx, height: drag.origin.height + (codexPlusCustomLayoutPanels[id].resizableHeight ? dy : 0) }
-        : { ...drag.origin, left: drag.origin.left + dx, top: drag.origin.top + dy };
-      const clamped = clampRect(candidate, area, codexPlusCustomLayoutMinWidth(entry),
-        codexPlusCustomLayoutPanels[id].resizableHeight ? 80 : 24);
-      // 吸附候选与碰撞输入使用起始快照；动画中的实际坐标不会改变下一帧解算。
-      const stableSnap = resize || move.altKey ? { rect: clamped }
-        : snapRect(clamped, area, Object.entries(drag.baseline).filter(([otherId]) => otherId !== id).map(([, rect]) => rect));
-      const solution = codexPlusLayoutSolve(drag.baseline, id, stableSnap.rect, area, drag.origin);
-      if (solution.feasible === false) {
-        state.notice = "空间不足，请先缩小面板再拖动";
-        codexPlusCustomLayoutRenderToolbar();
-        return;
-      }
-      const now = Number.isFinite(move.timeStamp) ? move.timeStamp : performance.now();
-      const elapsed = Math.max(0.016, Math.min(0.1, (now - drag.moveTime) / 1000));
-      drag.velocityX = codexPlusCustomLayoutClamp((move.clientX - drag.lastX) / elapsed, -1200, 1200);
-      drag.velocityY = codexPlusCustomLayoutClamp((move.clientY - drag.lastY) / elapsed, -1200, 1200);
-      drag.lastX = move.clientX; drag.lastY = move.clientY; drag.moveTime = now;
-      codexPlusCustomLayoutApplySolution(solution, drag.baseline, drag.previousLayout, id, stableSnap);
-    };
-    const onEnd = (end) => {
-      if (end.pointerId !== drag.pointerId) return;
-      codexPlusCustomLayoutFinishDrag(end.type !== "pointercancel");
-    };
-    drag.cleanup = () => {
-      window.removeEventListener("pointermove", onMove, true);
-      window.removeEventListener("pointerup", onEnd, true);
-      window.removeEventListener("pointercancel", onEnd, true);
-      handle.removeAttribute("data-dragging");
-      try { handle.releasePointerCapture(drag.pointerId); } catch {}
-    };
-    window.addEventListener("pointermove", onMove, { capture: true, passive: false });
-    window.addEventListener("pointerup", onEnd, true);
-    window.addEventListener("pointercancel", onEnd, true);
-  }
-
-  function codexPlusCustomLayoutFinishDrag(commit) {
-    const state = codexPlusCustomLayoutState;
-    const drag = state.drag;
-    if (!drag) return;
-    state.drag = null;
-    drag.cleanup?.();
-    if (!commit) {
-      state.layout = codexPlusCustomLayoutClone(drag.previousLayout);
-      state.projectedRects = drag.previousProjection;
-      state.projectionSignature = "";
-      if (state.enabled && drag.moved) codexPlusCustomLayoutAnimate(drag.baseline);
-    } else if (drag.moved) {
-      // 保存最终整组目标，不把弹簧中间帧写入磁盘。
-      codexPlusCustomLayoutSave();
-      if (state.enabled && state.projectedRects) codexPlusCustomLayoutAnimate(state.projectedRects, null,
-        { id: drag.id, left: drag.velocityX * 0.12, top: drag.velocityY * 0.12 });
-    }
-    if (state.enabled) codexPlusCustomLayoutSchedule();
-  }
-
-  function codexPlusCustomLayoutKeyboard(event, id, resize) {
-    const state = codexPlusCustomLayoutState;
-    const entry = state.entries.get(id);
-    if (!entry || !state.editing || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const delta = event.shiftKey ? 24 : 4;
-    const dx = event.key === "ArrowLeft" ? -delta : event.key === "ArrowRight" ? delta : 0;
-    const dy = event.key === "ArrowUp" ? -delta : event.key === "ArrowDown" ? delta : 0;
-    codexPlusCustomLayoutStopMotion(true);
-    const baseline = codexPlusCustomLayoutCaptureRects();
-    const previousLayout = codexPlusCustomLayoutClone(state.layout);
-    const native = baseline[id];
-    const candidate = resize
-      ? { left: native.left, top: native.top, width: native.width + dx, height: native.height + (codexPlusCustomLayoutPanels[id].resizableHeight ? dy : 0) }
-      : { left: native.left + dx, top: native.top + dy, width: native.width, height: native.height };
-    const bounds = codexPlusCustomLayoutBounds();
-    const clamped = clampRect(candidate, bounds, codexPlusCustomLayoutMinWidth(entry),
-      codexPlusCustomLayoutPanels[id].resizableHeight ? 80 : 24);
-    const snapped = resize || event.altKey ? { rect: clamped } : snapRect(clamped, bounds, codexPlusCustomLayoutOtherRects(id));
-    const solution = codexPlusLayoutSolve(baseline, id, snapped.rect, bounds, native);
-    if (solution.feasible === false) return;
-    codexPlusCustomLayoutApplySolution(solution, baseline, previousLayout, id, snapped, false);
-    codexPlusCustomLayoutSave();
-  }
-
-  function codexPlusCustomLayoutDropEntry(entry) {
-    const state = codexPlusCustomLayoutState;
-    if (state.drag?.id === entry.id) codexPlusCustomLayoutFinishDrag(false);
-    state.motions.delete(entry.id);
-    for (const element of codexPlusCustomLayoutElements(entry)) state.resizeObserver?.unobserve?.(element);
-    codexPlusCustomLayoutRestoreEntry(entry);
-    entry.handle?.remove();
-    entry.outline?.remove();
-    state.entries.delete(entry.id);
-  }
-
-  function codexPlusCustomLayoutSchedule() {
-    const state = codexPlusCustomLayoutState;
-    if (!state.enabled || state.raf) return;
-    state.raf = requestAnimationFrame(() => {
-      state.raf = 0;
-      installCodexPlusCustomLayout();
-    });
-  }
-
-  function codexPlusCustomLayoutBind(target, name, handler, options) {
-    target.addEventListener(name, handler, options);
-    codexPlusCustomLayoutState.listeners.push(() => target.removeEventListener(name, handler, options));
-  }
-
-  function codexPlusCustomLayoutStart() {
-    const state = codexPlusCustomLayoutState;
-    if (state.enabled) return;
-    state.enabled = true;
-    codexPlusCustomLayoutRead();
-    if (!state.registered && typeof registerCodexPlusExtensionSelector === "function") {
-      state.registered = registerCodexPlusExtensionSelector('[data-codex-plus-ext="custom-layout"]');
-    }
-    if (typeof MutationObserver === "function") {
-      state.observer = new MutationObserver((mutations) => {
-        const relevant = mutations.some((mutation) => {
-          if (codexPlusCustomLayoutOwnedNode(mutation.target)) return false;
-          if (mutation.type === "attributes" && mutation.attributeName === "style") {
-            const record = state.styled.get(mutation.target) || state.ancestors.get(mutation.target);
-            if (record && record.lastStyle === (mutation.target.getAttribute("style") || "")) return false;
-          }
-          const nodes = [...(mutation.addedNodes || []), ...(mutation.removedNodes || [])];
-          return !nodes.length || !nodes.every(codexPlusCustomLayoutOwnedNode);
-        });
-        if (relevant) codexPlusCustomLayoutSchedule();
-      });
-      state.observer.observe(document.body || document.documentElement, {
-        childList: true, subtree: true, attributes: true,
-        attributeFilter: ["class", "style", "hidden", "inert", "aria-hidden", "data-summary-panel-variant", "data-codex-composer-root"],
-      });
-    }
-    if (typeof ResizeObserver === "function") state.resizeObserver = new ResizeObserver(() => {
-      if (!state.drag && !state.motions.size) codexPlusCustomLayoutSchedule();
-    });
-    codexPlusCustomLayoutBind(window, "resize", codexPlusCustomLayoutSchedule);
-    codexPlusCustomLayoutBind(window, "blur", () => codexPlusCustomLayoutFinishDrag(true));
-    codexPlusCustomLayoutBind(document, "scroll", () => { if (state.editing) codexPlusCustomLayoutSchedule(); }, true);
-    codexPlusCustomLayoutBind(document, "keydown", (event) => {
-      if (event.key === "Escape" && state.drag) {
-        event.preventDefault();
-        codexPlusCustomLayoutFinishDrag(false);
-      } else if (event.key === "Escape" && state.editing) codexPlusCustomLayoutSetEditing(false);
-    }, true);
-    codexPlusCustomLayoutBind(window, "storage", (event) => {
-      if (event.key !== codexPlusCustomLayoutKey) return;
-      codexPlusCustomLayoutFinishDrag(false);
-      codexPlusCustomLayoutStopMotion();
-      state.projectedRects = null;
-      state.projectionSignature = "";
-      try { state.layout = normalizeLayout(JSON.parse(event.newValue || "null")); } catch { state.layout = normalizeLayout(null); }
-      codexPlusCustomLayoutSchedule();
-    });
-    let attempts = 0;
-    // 原生侧栏常晚于注入数秒出现；只保留有界启动重试。
-    state.retryTimer = setInterval(() => {
-      codexPlusCustomLayoutSchedule();
-      if (++attempts >= 20 || state.entries.size === (state.entries.get("sidebar")?.grouped ? 3 : 4)) {
-        clearInterval(state.retryTimer);
-        state.retryTimer = 0;
-      }
-    }, 300);
-  }
-
-  function codexPlusCustomLayoutRefresh() {
-    const state = codexPlusCustomLayoutState;
-    if (!state.enabled) return;
-    const targets = codexPlusCustomLayoutFindTargets();
-    for (const entry of [...state.entries.values()]) {
-      const target = targets[entry.id];
-      const elements = target ? Array.isArray(target.elements) ? target.elements : [target] : [];
-      if (elements.length !== entry.elements.length || elements.some((element, index) => element !== entry.elements[index])
-        || (target?.grouped === true) !== entry.grouped) codexPlusCustomLayoutDropEntry(entry);
-      else codexPlusCustomLayoutRefreshNavigationParts(entry, target);
-    }
-    for (const [id, target] of Object.entries(targets)) {
-      if (!target || state.entries.has(id)) continue;
-      const entry = codexPlusCustomLayoutCreateEntry(id, target);
-      state.entries.set(id, entry);
-      for (const element of entry.elements) state.resizeObserver?.observe(element);
-    }
-    const bounds = codexPlusCustomLayoutBounds();
-    codexPlusCustomLayoutMigrateNavigation(state.entries.get("sidebar"), bounds);
-    codexPlusCustomLayoutProject(bounds);
-    const floated = [...state.entries.values()].filter((entry) => !!state.layout.panels[entry.id] || state.motions.has(entry.id) || state.projectedRects?.[entry.id]);
-    codexPlusCustomLayoutReleaseAncestors(floated.flatMap(codexPlusCustomLayoutElements));
-    for (const entry of state.entries.values()) {
-      codexPlusCustomLayoutApplyEntry(entry, bounds);
-      entry.justAdded = false;
-    }
-    if (state.editing) {
-      codexPlusCustomLayoutEnsureUi();
-      for (const entry of state.entries.values()) {
-        codexPlusCustomLayoutInstallHandle(entry);
-        codexPlusCustomLayoutPositionHandle(entry);
-      }
-      codexPlusCustomLayoutRenderToolbar();
-    }
-  }
-
-  function codexPlusCustomLayoutProject(bounds) {
-    const state = codexPlusCustomLayoutState;
-    if (state.drag || state.motions.size) return;
-    if (!Object.keys(state.layout.panels).length) {
-      state.projectedRects = null;
-      state.projectionSignature = "";
-      return;
-    }
-    const desired = {};
-    for (const entry of state.entries.values()) {
-      // 没有用户位置的面板先读回原生几何，不能把上次让位投影当首选位置。
-      if (!state.layout.panels[entry.id]) codexPlusCustomLayoutRestoreEntry(entry);
-      const rect = codexPlusCustomLayoutPreferredRect(entry, bounds);
-      const definition = codexPlusCustomLayoutPanels[entry.id];
-      desired[entry.id] = { ...rect, minWidth: codexPlusCustomLayoutMinWidth(entry),
-        minHeight: definition.resizableHeight ? 80 : rect.height, canResizeHeight: definition.resizableHeight };
-    }
-    const signature = JSON.stringify([bounds, desired]);
-    if (signature === state.projectionSignature) return;
-    const activeId = desired[state.lastActiveId] ? state.lastActiveId
-      : Object.keys(desired).find((id) => !!state.layout.panels[id]);
-    if (!activeId) return;
-    const solution = codexPlusLayoutSolve(desired, activeId, desired[activeId], bounds, desired[activeId]);
-    if (solution.feasible === false) {
-      state.notice = "空间不足，请先缩小面板再拖动";
-      // 极小窗口连最小尺寸都放不下时，仍保证全部手柄可达，避免沿用大窗口的越界坐标。
-      state.projectedRects = Object.fromEntries(Object.entries(desired).map(([id, rect]) => [id, clampRect(rect, bounds)]));
-      state.projectionSignature = signature;
-      codexPlusCustomLayoutStopMotion();
-      return;
-    }
-    const animate = !!state.projectionSignature;
-    state.projectedRects = solution.rects;
-    state.projectionSignature = signature;
-    // 窗口变小或内容高度变化只调整显示投影，不覆盖用户在大窗口下的首选布局。
-    if (animate) codexPlusCustomLayoutAnimate(solution.rects);
-  }
-
-  function codexPlusCustomLayoutSetEditing(editing) {
-    installCodexPlusCustomLayout();
-    const state = codexPlusCustomLayoutState;
-    if (!state.enabled) return false;
-    codexPlusCustomLayoutFinishDrag(true);
-    state.editing = !!editing;
-    if (!state.editing) {
-      state.root?.remove();
-      state.root = null;
-      state.toolbar = null;
-      for (const entry of state.entries.values()) Object.assign(entry, { handle: null, outline: null, move: null });
-    }
-    codexPlusCustomLayoutRefresh();
-    return state.editing;
-  }
-
-  function codexPlusCustomLayoutResetPanel(id) {
-    if (!codexPlusCustomLayoutPanels[id]) return;
-    codexPlusCustomLayoutFinishDrag(false);
-    codexPlusCustomLayoutStopMotion();
-    codexPlusCustomLayoutState.projectedRects = null;
-    codexPlusCustomLayoutState.projectionSignature = "";
-    delete codexPlusCustomLayoutState.layout.panels[id];
-    codexPlusCustomLayoutRefresh();
-    codexPlusCustomLayoutSave();
-  }
-
-  function codexPlusCustomLayoutReset() {
-    codexPlusCustomLayoutFinishDrag(false);
-    codexPlusCustomLayoutStopMotion();
-    codexPlusCustomLayoutState.projectedRects = null;
-    codexPlusCustomLayoutState.projectionSignature = "";
-    codexPlusCustomLayoutState.layout = { version: 1, panels: {} };
-    codexPlusCustomLayoutRefresh();
-    codexPlusCustomLayoutSave();
-  }
-
-  function codexPlusCustomLayoutCleanup(restoreConversation = true) {
-    const state = codexPlusCustomLayoutState;
-    state.enabled = false;
-    state.editing = false;
-    codexPlusCustomLayoutFinishDrag(false);
-    codexPlusCustomLayoutStopMotion();
-    state.projectedRects = null;
-    state.projectionSignature = "";
-    if (state.raf) cancelAnimationFrame(state.raf);
-    if (state.retryTimer) clearInterval(state.retryTimer);
-    state.raf = 0;
-    state.retryTimer = 0;
-    state.observer?.disconnect();
-    state.resizeObserver?.disconnect();
-    state.observer = null;
-    state.resizeObserver = null;
-    for (const cleanup of state.listeners.splice(0)) cleanup();
-    for (const element of [...state.styled.keys()]) codexPlusCustomLayoutRestoreStyle(state.styled, element);
-    for (const element of [...state.ancestors.keys()]) codexPlusCustomLayoutRestoreStyle(state.ancestors, element);
-    state.entries.clear();
-    state.root?.remove();
-    state.root = null;
-    state.toolbar = null;
-    if (restoreConversation && typeof refreshConversationView === "function") refreshConversationView();
-  }
-
-  function codexPlusCustomLayoutOwnsElement(element) {
-    const state = codexPlusCustomLayoutState;
-    if (!state.enabled || !element) return false;
-    return [...state.entries.values()].some((entry) => (!!state.layout.panels[entry.id] || state.motions.has(entry.id) || !!state.projectedRects?.[entry.id])
-      && codexPlusCustomLayoutElements(entry).some((part) => part === element || part.contains?.(element)));
-  }
-
-  function installCodexPlusCustomLayout() {
-    // 后端设置尚未读取时沿用已有运行态，不用短暂的默认值拆掉布局。
-    if (typeof codexPlusBackendSettingsLoaded === "boolean" && !codexPlusBackendSettingsLoaded) return;
-    if (!codexPlusCustomLayoutEnabled()) {
-      if (codexPlusCustomLayoutState.enabled) codexPlusCustomLayoutCleanup();
-      return;
-    }
-    codexPlusCustomLayoutStart();
-    codexPlusCustomLayoutRefresh();
-  }
-
-  window.__codexPlusCustomLayoutRuntime = {
-    setEditing: codexPlusCustomLayoutSetEditing,
-    toggleEditing: () => codexPlusCustomLayoutSetEditing(!codexPlusCustomLayoutState.editing),
-    reset: codexPlusCustomLayoutReset,
-    refresh: installCodexPlusCustomLayout,
-    cleanup: codexPlusCustomLayoutCleanup,
-    get editing() { return codexPlusCustomLayoutState.editing; },
-    get enabled() { return codexPlusCustomLayoutState.enabled; },
-  };
-
-  if (window.__CODEX_PLUS_TEST_CUSTOM_LAYOUT__) {
-    Object.assign(window.__CODEX_PLUS_TEST_CUSTOM_LAYOUT__, { normalizeLayout, clampRect, snapRect, rectToRecord, recordToRect });
   }
   // 完整上游引擎的词法宿主：不替换页面全局 API；挂件关闭时释放所有副作用。
   const codexPlusWhaleFullStoragePrefix = "codexPlus.whale.full.v1.";
@@ -16673,7 +15290,6 @@
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
   void restoreCodexPlusManagedLocale();
   runScanStep(installCodexPlusTypingEffects);
-  runScanStep(installCodexPlusCustomLayout);
   runScanStep(syncCodexPlusWhaleWidget);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {

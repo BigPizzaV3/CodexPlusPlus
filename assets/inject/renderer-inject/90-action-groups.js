@@ -419,6 +419,7 @@
   // 页脚包裹层同样带 `max-w-(--thread-…-max-width)`，会被结构候选误当成内容容器。
   // 用 Codex 自己的页脚标记把它排掉。
   const conversationViewFooterSelector = selectors.conversationViewFooter;
+  const conversationViewPaneBoundarySelector = "#app-shell-sidebar, .app-shell-left-panel, .sidebar-navigation, nav[data-app-navigation-rail], [data-summary-panel-variant]";
   // 两侧留白：Codex 的 `--padding-toolbar` 是 `calc(var(--spacing) * 2)`（= 8px * 2）。
   // 仅在拿不到父节点 computed style 时作为回落的单侧留白。
   const conversationViewSideInset = 8;
@@ -446,8 +447,9 @@
     return classes.every((cls) => set.has(cls));
   }
 
-  function conversationViewFindByClasses(classes) {
-    return Array.from(document.querySelectorAll("div")).find((el) => conversationViewHasAllClasses(el, classes)) || null;
+  function conversationViewFindByClasses(classes, root, accept) {
+    return Array.from(root?.querySelectorAll("div") || [])
+      .find((el) => conversationViewHasAllClasses(el, classes) && accept(el)) || null;
   }
 
   function conversationViewHasThreadWidthToken(el) {
@@ -477,7 +479,62 @@
   }
 
   function conversationViewScrollContainer() {
-    return document.querySelector(conversationViewScrollContainerSelector);
+    const scrollers = Array.from(document.querySelectorAll(conversationViewScrollContainerSelector))
+      .filter((el) => typeof visibleElement !== "function" || visibleElement(el));
+    // 多个可见会话没有可靠的当前目标，不把任一 pane 当成整页正文。
+    return scrollers.length === 1 ? scrollers[0] : null;
+  }
+
+  function conversationViewSafeWidthTarget(el, scope) {
+    if (!el || !scope || el === scope || !scope.contains?.(el)) return false;
+    if (scope.matches?.(conversationViewScrollContainerSelector)
+        && el.closest?.(conversationViewScrollContainerSelector) !== scope) return false;
+    return conversationViewSafeWidthNode(el);
+  }
+
+  function conversationViewSafeWidthNode(el) {
+    if (!el) return false;
+    if (["MAIN", "ASIDE", "NAV", "HEADER", "BODY", "HTML"].includes(el.tagName)) return false;
+    if (el.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`)) return false;
+    // CSS 变量可继承给整棵布局树；包含其他 pane 的祖先不能改 width/margin/left。
+    // composer 内的状态提示也会用 aside，不能仅按语义标签把它误判为侧栏。
+    return !el.querySelector?.(`${conversationViewPaneBoundarySelector}, .thread-scroll-container`);
+  }
+
+  function conversationViewSamePane(scroller, el) {
+    if (scroller.contains?.(el)) return el.closest?.(conversationViewScrollContainerSelector) === scroller;
+    if (el.closest?.(conversationViewScrollContainerSelector)) return false;
+    if (el.parentElement === scroller.parentElement && el.parentElement !== document.body) return true;
+    for (let pane = scroller.parentElement; pane && pane !== document.body; pane = pane.parentElement) {
+      if (!pane.contains?.(el)) continue;
+      return !pane.querySelector?.(conversationViewPaneBoundarySelector);
+    }
+    return false;
+  }
+
+  function conversationViewFootersFor(scroller) {
+    return Array.from(document.querySelectorAll(conversationViewFooterSelector)).filter((footer) => {
+      if (typeof visibleElement === "function" && !visibleElement(footer)) return false;
+      return !footer.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`) && conversationViewSamePane(scroller, footer);
+    });
+  }
+
+  function conversationViewFindNativeComposer(scroller) {
+    const roots = Array.from(document.querySelectorAll("[data-codex-composer-root]"))
+      .filter((el) => (typeof visibleElement !== "function" || visibleElement(el))
+        && !el.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`) && (!scroller || conversationViewSamePane(scroller, el)));
+    if (roots.length !== 1) return null;
+    const root = roots[0];
+    const accept = (el) => conversationViewLooksLikeThreadWidthBox(el) && conversationViewSafeWidthNode(el)
+      && !el.matches?.(conversationViewFooterSelector) && !el.querySelector?.(conversationViewContentAnchorSelector);
+    const inside = [root, ...root.querySelectorAll("div")].find(accept);
+    if (inside) return inside;
+    // 原生 composer 锚点可能在宽度宿主内部；只爬到局部宿主，不收窄含正文的布局。
+    for (let host = root.parentElement; host && host !== document.body; host = host.parentElement) {
+      if (accept(host)) return host;
+      if (host.matches?.(conversationViewScrollContainerSelector) || host.querySelector?.(conversationViewScrollContainerSelector)) break;
+    }
+    return null;
   }
 
   function conversationViewCollectThreadWidthBoxes(root) {
@@ -489,6 +546,7 @@
    * 按候选顺序找内容容器，任一候选命中即返回。
    *
    * 候选链刻意从「最精确」排到「最宽松」：
+   * 所有候选都必须在唯一的会话滚动区内，并排除布局祖先：
    *   1. 旧版类名全等（老版本 Codex 上仍然最准）；
    *   2. Codex 自己的 data-* 锚点（当前版本）；
    *   3. 结构判定（滚动容器内、居中满宽、带 thread 宽度工具类）；
@@ -497,34 +555,52 @@
    * 顺序不能反：结构判定会把页脚包裹层也算进来，而它和内容容器在同一棵子树里。
    */
   function conversationViewFindContentEl() {
-    const legacy = conversationViewFindByClasses(conversationViewContentClasses);
-    if (legacy && !conversationViewIsInsideFooter(legacy)) return legacy;
-    const anchored = document.querySelector(conversationViewContentAnchorSelector);
-    if (anchored) return anchored;
     const scroller = conversationViewScrollContainer();
-    const structural = conversationViewCollectThreadWidthBoxes(scroller || document)
+    if (!scroller) return null;
+    const accept = (el) => conversationViewSafeWidthTarget(el, scroller) && !conversationViewIsInsideFooter(el)
+      && !el.querySelector?.(conversationViewFooterSelector);
+    const legacy = conversationViewFindByClasses(conversationViewContentClasses, scroller, accept);
+    if (legacy) return legacy;
+    const anchored = Array.from(scroller.querySelectorAll(conversationViewContentAnchorSelector)).find(accept);
+    if (anchored) return anchored;
+    const structural = conversationViewCollectThreadWidthBoxes(scroller)
       // 页脚包裹层（data-thread-scroll-footer）也带同样的宽度工具类，必须排掉。
-      .find((el) => !conversationViewIsInsideFooter(el));
+      .find(accept);
     if (structural) return structural;
-    return conversationViewFindByThreadWidthVariable(scroller || document);
+    return conversationViewFindByThreadWidthVariable(scroller, accept);
   }
 
   function conversationViewFindComposerEl() {
+    const scroller = conversationViewScrollContainer();
+    if (!scroller) {
+      // 首页没有消息 scroller；只用明确的原生 composer 锚点，不能全页猜宽度变量。
+      if (Array.from(document.querySelectorAll(conversationViewScrollContainerSelector))
+          .some((el) => typeof visibleElement !== "function" || visibleElement(el))) return null;
+      const native = conversationViewFindNativeComposer(null);
+      if (native) return native;
+      const legacy = Array.from(document.querySelectorAll("div")).filter((el) =>
+        conversationViewHasAllClasses(el, conversationViewComposerClasses) && conversationViewSafeWidthNode(el)
+        && !conversationViewIsInsideFooter(el) && el.querySelector?.('textarea, [contenteditable="true"]'));
+      return legacy.length === 1 ? legacy[0] : null;
+    }
     // 页脚包裹层带的是和作曲器同一套工具类，会被旧清单全等命中，所以要排除它。
-    const footer = document.querySelector(conversationViewFooterSelector);
-    const legacy = conversationViewFindByClasses(conversationViewComposerClasses);
-    if (legacy && !conversationViewIsInsideFooter(legacy)) return legacy;
+    const footers = conversationViewFootersFor(scroller);
+    if (footers.length > 1) return null;
+    const footer = footers[0];
+    const accept = (el) => conversationViewSafeWidthTarget(el, footer || scroller)
+      && !el.matches?.(conversationViewFooterSelector) && !conversationViewIsContentCandidate(el);
     // 新版作曲器在页脚包裹层内部——页脚自身也是 max-w 盒子，得往里再找一层。
-    const insideFooter = conversationViewCollectThreadWidthBoxes(footer)[0];
+    const insideFooter = conversationViewCollectThreadWidthBoxes(footer).find(accept);
     if (insideFooter) return insideFooter;
-    // 老版本作曲器不在页脚里；退回整棵文档，但只认页脚缺席时的候选，
-    // 且排除内容容器（两者宽度工具类同形）。
-    const scroller = conversationViewScrollContainer() || document;
-    const anywhere = conversationViewCollectThreadWidthBoxes(scroller)
-      .find((el) => !conversationViewIsContentCandidate(el));
-    if (anywhere) return anywhere;
-    if (footer) return conversationViewFindByThreadWidthVariable(footer, (el) => el !== footer);
-    return conversationViewFindByThreadWidthVariable(document, (el) => !conversationViewIsContentCandidate(el));
+    if (footer) return conversationViewFindByThreadWidthVariable(footer, (el) => el !== footer && accept(el));
+    const native = conversationViewFindNativeComposer(scroller);
+    if (native) return native;
+    // 保留同一会话内的旧类名；无 footer 的新版结构还必须包含明确编辑器。
+    const legacy = conversationViewFindByClasses(conversationViewComposerClasses, scroller, (el) => accept(el) && !conversationViewIsInsideFooter(el));
+    if (legacy) return legacy;
+    return conversationViewCollectThreadWidthBoxes(scroller).find((el) => accept(el)
+      && !conversationViewIsInsideFooter(el) && !el.querySelector?.(conversationViewContentAnchorSelector)
+      && el.querySelector?.('textarea, [contenteditable="true"]')) || null;
   }
 
   // 内容容器的判定（锚点或全等类名），供作曲器查找排除同形节点用。
@@ -544,6 +620,8 @@
       if (accept ? !accept(el) : conversationViewIsInsideFooter(el)) return false;
       try {
         const style = getComputedStyle(el);
+        // --thread-* 在后代继承，不代表该节点自身受 max-width 约束（#2414）。
+        if (!style.maxWidth || style.maxWidth === "none") return false;
         for (const name of conversationViewThreadWidthCustomProperties(style)) {
           if (String(style.getPropertyValue(name) || "").trim()) return true;
         }
@@ -880,8 +958,22 @@
   }
 
   function conversationViewResolveTargets() {
-    if (!conversationViewState.contentEl?.isConnected) conversationViewState.contentEl = conversationViewFindContentEl();
-    if (!conversationViewState.composerEl?.isConnected) conversationViewState.composerEl = conversationViewFindComposerEl();
+    for (const [key, next] of [
+      ["contentEl", conversationViewFindContentEl()],
+      ["composerEl", conversationViewFindComposerEl()],
+    ]) {
+      const previous = conversationViewState[key];
+      if (previous && previous !== next) {
+        conversationViewRestoreElement(previous);
+        conversationViewState.elements.delete(previous);
+        [previous, previous.parentElement, previous.parentElement?.parentElement].forEach((el) => {
+          if (!el) return;
+          conversationViewState.ro?.unobserve?.(el);
+          conversationViewState.observed.delete(el);
+        });
+      }
+      conversationViewState[key] = next;
+    }
     [
       document.documentElement,
       document.body,
@@ -900,7 +992,7 @@
     const targets = [
       conversationViewState.contentEl,
       conversationViewState.composerEl,
-    ].filter((el) => el?.isConnected && !(typeof codexPlusCustomLayoutOwnsElement === "function" && codexPlusCustomLayoutOwnsElement(el)));
+    ].filter((el) => el?.isConnected);
     if (!targets.length) {
       conversationViewReportMissingTargets();
       return;

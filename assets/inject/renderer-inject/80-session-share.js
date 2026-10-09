@@ -284,10 +284,28 @@
     }
   }
 
+  function sessionSharePlacement() {
+    // 会话操作锚点唯一时才挂载，不能把右侧审查/浏览器的 header 当作会话栏。
+    const headerSelector = 'header, [data-app-shell-header-edge-scroll], [class*="_Header_"]';
+    const anchors = Array.from(document.querySelectorAll('[data-testid="app-shell-header-context-menu-surface"]'))
+      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]'));
+    if (anchors.length !== 1) return null;
+    const header = anchors[0].closest(headerSelector);
+    if (!(header instanceof HTMLElement) || !visibleElement(header)) return null;
+    const nativeShare = Array.from(header.querySelectorAll('button[aria-label="Share"], button[aria-label="分享"], button[aria-label*="Share"], button[aria-label*="分享"]'))
+      .find((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && !node.classList.contains(sessionShareButtonClass) && node.closest(headerSelector) === header);
+    const nativeGroup = nativeShare?.closest?.(".ms-auto");
+    if (nativeGroup && header.contains(nativeGroup)) return nativeGroup;
+    const groups = Array.from(header.querySelectorAll(".ms-auto"))
+      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && node.closest(headerSelector) === header);
+    return groups.length === 1 ? groups[0] : null;
+  }
+
   function installSessionShareButton() {
     const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
     const ref = currentSessionRef();
-    if (!ref.session_id) {
+    const actionGroup = codexPlusSettings().sessionShare && ref.session_id ? sessionSharePlacement() : null;
+    if (!(actionGroup instanceof HTMLElement)) {
       existing.forEach((button) => button.remove());
       return;
     }
@@ -299,6 +317,7 @@
       button.className = `${sessionShareButtonClass} ${headerContextButtonClass}`;
       button.textContent = "分享会话";
       button.setAttribute("aria-label", "分享当前会话");
+      button.setAttribute("data-codex-plus-ext", "session-share");
       button.dataset.codexSessionShareVersion = sessionShareButtonVersion;
       button.addEventListener("click", (event) => {
         event.preventDefault();
@@ -306,35 +325,13 @@
         void createSessionShare();
       }, true);
     }
-    const nativeShare = Array.from(document.querySelectorAll('header button[aria-label="Share"], header button[aria-label="分享"], header button[aria-label*="Share"], header button[aria-label*="分享"]')).find(visibleElement);
-    const actionGroup = nativeShare?.closest?.(".ms-auto")
-      || document.querySelector("header .ms-auto")
-      || nativeShare?.parentElement?.parentElement?.parentElement;
-    if (actionGroup instanceof HTMLElement) {
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      // 只在按钮还不在操作栏里时才搬动它。过去还要求它必须排在最后，
-      // 一旦 Codex 在它后面挂了别的节点，这个条件就永远成立，
-      // 于是每轮 scan 都 appendChild 一次，反过来又触发下一轮 scan（issue #1960）。
-      if (button.parentElement !== actionGroup) {
-        actionGroup.appendChild(button);
-      }
-      return;
-    }
-    const header = document.querySelector('[data-testid="app-shell-header-context-menu-surface"]')?.closest?.("header")
-      || document.querySelector("header")
-      || document.querySelector(selectors.appHeader);
-    if (header instanceof HTMLElement) {
-      // 没有明确操作栏时也保持文档流，避免遮挡原生按钮。
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      button.style.marginLeft = "8px";
-      if (button.parentElement !== header) header.appendChild(button);
-    } else if (!button.isConnected) {
-      document.body.appendChild(button);
-    }
+    button.setAttribute("data-codex-plus-ext", "session-share");
+    button.style.position = "static";
+    button.style.pointerEvents = "auto";
+    button.style.webkitAppRegion = "no-drag";
+    button.style.marginLeft = "";
+    // 宿主重建时才搬动，避免每轮扫描再次触发 DOM mutation（issue #1960）。
+    if (button.parentElement !== actionGroup) actionGroup.appendChild(button);
   }
 
   function sessionImportMarkdown(session) {
