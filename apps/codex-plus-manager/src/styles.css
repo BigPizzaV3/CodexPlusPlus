@@ -3003,6 +3003,22 @@ details.relay-fold[open] > .relay-fold-body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.panel-head.overview-health-header {
+  align-items: center;
+}
+
+.overview-health-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
+
+.overview-health-header .overview-health-header-actions p {
+  max-width: none;
+}
+
 .overview-health-grid .health-item,
 .overview-health-grid .health-item > div {
   min-width: 0;

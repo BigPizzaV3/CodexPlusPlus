@@ -3486,17 +3486,6 @@ export function App() {
                   <Rocket className="h-4 w-4" />
                   {codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
                 </Button>
-                {route === "overview" ? (
-                  <Button
-                    aria-label={t("刷新状态")}
-                    title={t("刷新状态")}
-                    size="icon"
-                    variant="outline"
-                    onClick={() => void actions.refreshCurrent()}
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                  </Button>
-                ) : null}
               </>
             ) : null}
           </div>
@@ -4384,7 +4373,22 @@ function OverviewScreen({
       {activeTool === "codex" ? (
         <>
           <Panel>
-            <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
+            <CardHeader className="panel-head overview-health-header">
+              <CardTitle>{t("健康检查")}</CardTitle>
+              <div className="overview-health-header-actions">
+                <CardDescription>{t("概览只展示关键问题，具体配置在对应页面处理")}</CardDescription>
+                <Button
+                  aria-label={t("刷新状态")}
+                  title={t("刷新状态")}
+                  size="icon"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => void actions.refreshCurrent()}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
             <CardContent>
               <div className="health-grid overview-health-grid">
                 <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
