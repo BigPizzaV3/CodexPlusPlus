@@ -1,0 +1,16 @@
+CodexPlusPlus Logo v5 — C++ 笑脸
+生成方式：内置 image_gen 工具，基于用户选定的 C++ 图标编辑
+输出：codexplusplus-logo-v5.png
+
+最终编辑提示词：
+
+Use case: precise-object-edit / logo-brand.
+Asset type: desktop app logo for CodexPlusPlus.
+Edit target: the supplied blue-violet C++ logo on a white rounded-square tile.
+Primary request: evolve this exact logo into a friendly minimalist FACE, with the two upright plus signs serving as the two EYES. The face should still immediately suggest "C++".
+Keep: the thick round-ended C-shaped head outline, the blue-to-violet gradient, the white rounded-square tile, the simple bold geometric vector-like style.
+Change: move and scale down the two plus signs to sit side-by-side horizontally in the upper half of the C-shaped head's interior. Both eyes must fit INSIDE the implied circular head boundary, arranged symmetrically about the face center with generous spacing, same size and stroke. Exactly two upright "+" eyes, not X eyes. Add one small smooth upward-curving smile below the eyes, centered within the lower interior of the C; a single thick U-shaped arc with rounded ends in the same blue-violet gradient. Keep clear negative space between the eyes, mouth, and head outline. Refine the C head's proportions slightly toward a friendly round face but keep the right-side opening visible so it still reads as C. No nose, pupils, eyebrows, cheeks, tongue, teeth, ears, or extra details.
+Composition: optically centered cohesive face emblem; front-facing, cheerful and calm; big bold silhouette easily readable at small icon sizes. Eyes and smile must visually form a face, not a horizontal C++ wordmark.
+Background cleanup: remove the source image's exterior specks and ragged cutout fragments. Use a solid uniform pale cool-white outer background covering the full square canvas, and a white rounded-square tile with perfectly smooth boundaries and no shadow. Fully opaque image.
+Constraints: only one finished square icon, same blue-violet identity, no text labels or extra symbols, no watermark, no mockup, no perspective, no realistic face, no 3D robot, no OpenAI logo. Crisp clean geometry, minimal and brandable.
+

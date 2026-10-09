@@ -1,0 +1,15 @@
+CodexPlusPlus Logo v4
+生成方式：内置 image_gen 工具
+
+初始生成提示词：
+
+Use case: logo-brand.
+Asset type: a single alternative desktop app icon for CodexPlusPlus (Codex++), an independent AI coding companion app.
+Primary request: design a premium dark terminal icon with subtle layered construction, visually different from both a solid blue >++ icon and a white C++ monogram.
+Scene/backdrop: full square very dark ink-navy background extending to all canvas edges, uniform and clean. No transparency and no exterior margin beyond the square background.
+Subject: a large rounded terminal panel drawn with a thick luminous-looking cobalt-to-violet gradient rim. Behind it one simple slightly offset matching panel creates a subtle stacked-card silhouette suggesting enhanced workflows. Both panels are straight-on, with the rear panel visible only as a restrained small offset at the upper-right. The front panel interior is deep navy. Center a bold white terminal chevron followed by exactly two geometric equal plus signs, forming ">++". Keep all three symbols comfortably inside the front panel. The chevron is white; both plus signs are the same soft violet. Thick matching strokes, equal plus-sign arms, spacious balanced composition.
+Style/medium: polished modern desktop app icon, nearly flat vector-like forms, restrained depth, blue-violet accents, crisp geometry, strong contrast and silhouette. No blur or diffuse glow. A small-size-readable emblem, not a miniature app screenshot.
+Composition/framing: square 1024x1024, front view, centered terminal-panel stack occupies 74% of canvas width. No titlebar dots or small interface details. One finished icon only.
+Text (verbatim): ">++" as geometric symbols only; no words, labels, letters, or other text.
+Constraints: no official OpenAI knot, no official Codex logo, no cloud, no mascot, no circuit board, no sparkles, no tiny details, no watermark, no presentation sheet, no mockup, no perspective. Perfectly clean edges and solid dark square background.
+
