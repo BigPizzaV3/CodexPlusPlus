@@ -328,10 +328,7 @@ pub trait LaunchHooks: Send + Sync {
                 Err(error) => Err(error),
             };
             match result {
-                Ok(()) => {
-                    self.capture_injected_launch_identity(debug_port).await;
-                    return true;
-                }
+                Ok(()) => return true,
                 Err(error) => {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "launcher.ensure_injection_retry_failed",
@@ -348,7 +345,7 @@ pub trait LaunchHooks: Send + Sync {
         }
         false
     }
-    /// 首次注入成功时固定本次启动身份；watchdog 的重注入不能重新绑定实例。
+    /// 初次启动初始化结束时固定身份（包含注入降级）；watchdog 不能重新绑定实例。
     async fn capture_injected_launch_identity(&self, _debug_port: u16) {}
     async fn start_bridge_watchdog(
         &self,
@@ -719,7 +716,6 @@ where
                     debug_port,
                 )
                 .await;
-                hooks.start_bridge_watchdog(debug_port, helper_port).await?;
             } else {
                 let degraded = launch_status(
                     "running_degraded",
@@ -733,6 +729,12 @@ where
                 hooks.write_status("running_degraded").await;
                 injection_degraded = true;
             }
+        }
+
+        // 注入降级或只启用协议代理也要固定身份；后台重注入不能为旧启动器换绑实例。
+        hooks.capture_injected_launch_identity(debug_port).await;
+        if settings.enhancements_enabled && !injection_degraded {
+            hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
 
         if !settings.enhancements_enabled || !injection_degraded {
@@ -1164,40 +1166,52 @@ impl LaunchHooks for DefaultLaunchHooks {
             let mut identity = self.packaged_launch_identity.lock().await;
             if identity.is_some() { return; }
             let Some(executable) = self.packaged_executable.lock().await.clone() else { return; };
-            let browser_id = crate::cdp::browser_identity(debug_port).await.ok()
-                .and_then(|identity| identity.browser_id().ok());
-            let mut process = match crate::windows_integration::capture_debug_listener(debug_port, &executable) {
-                Ok(process) => process,
-                Err(error) => {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.packaged_process_identity_unavailable",
-                        serde_json::json!({ "debug_port": debug_port, "message": format!("{error:#}") }),
-                    );
-                    None
-                }
-            };
-            if process.is_some() {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+            let mut last_discovery_error = None;
+            loop {
+                let browser_id = validated_codex_browser_id(debug_port).await;
+                let mut process = match crate::windows_integration::capture_debug_listener(debug_port, &executable) {
+                    Ok(process) => process,
+                    Err(error) => {
+                        let message = format!("{error:#}");
+                        if last_discovery_error.as_ref() != Some(&message) {
+                            let _ = crate::diagnostic_log::append_diagnostic_log(
+                                "launcher.packaged_process_identity_unavailable",
+                                serde_json::json!({ "debug_port": debug_port, "message": message }),
+                            );
+                        }
+                        last_discovery_error = Some(message);
+                        None
+                    }
+                };
                 let activation = self.packaged_activation_process.lock().await;
                 let activation_matches = activation.as_ref().zip(process.as_ref()).is_some_and(|(activation, process)| {
                     activation.process_id == process.process_id && activation.birth_id == process.birth_id
                 });
-                // CDP 读取和 native table 查询之间可能发生实例替换；再核对一次固定 ID。
+                drop(activation);
+                // target 列表、UUID 和 listener 查询之间可能发生替换；只接受稳定的 Codex UUID。
                 let browser_still_matches = if let Some(initial) = browser_id.as_deref() {
-                    crate::cdp::browser_identity(debug_port).await.ok()
-                        .and_then(|identity| identity.browser_id().ok()).as_deref() == Some(initial)
+                    validated_codex_browser_id(debug_port).await.as_deref() == Some(initial)
                 } else { false };
-                if !activation_matches && !browser_still_matches { process = None; }
+                if browser_id.is_some() && !activation_matches && !browser_still_matches { process = None; }
+                let browser_id = browser_id.filter(|_| browser_still_matches);
+                // 无 CDP 页时，已验证可执行文件和句柄的 listener 仍可作为本次进程身份。
+                if browser_id.is_some() || process.is_some() {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.packaged_launch_identity_captured",
+                        serde_json::json!({
+                            "debug_port": debug_port,
+                            "browser_identity_bound": browser_id.is_some(),
+                            "process_id": process.as_ref().map(|process| process.process_id),
+                            "birth_id": process.as_ref().map(|process| process.birth_id),
+                        }),
+                    );
+                    *identity = Some(PackagedLaunchIdentity { browser_id, process });
+                    return;
+                }
+                if tokio::time::Instant::now() >= deadline { return; }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "launcher.packaged_launch_identity_captured",
-                serde_json::json!({
-                    "debug_port": debug_port,
-                    "browser_identity_bound": browser_id.is_some(),
-                    "process_id": process.as_ref().map(|process| process.process_id),
-                    "birth_id": process.as_ref().map(|process| process.birth_id),
-                }),
-            );
-            *identity = Some(PackagedLaunchIdentity { browser_id, process });
         }
         #[cfg(not(windows))]
         let _ = debug_port;
@@ -3080,6 +3094,13 @@ fn owned_launcher_target_alive(owned_process_alive: bool, debug_port_open: bool)
 }
 
 #[cfg(any(windows, test))]
+async fn validated_codex_browser_id(debug_port: u16) -> Option<String> {
+    let targets = crate::cdp::list_targets(debug_port).await.ok()?;
+    crate::cdp::pick_injectable_codex_page_target(&targets).ok()?;
+    crate::cdp::browser_identity(debug_port).await.ok()?.browser_id().ok()
+}
+
+#[cfg(any(windows, test))]
 #[derive(Default)]
 struct PackagedExitGrace {
     missing_since: Option<std::time::Instant>,
@@ -4114,6 +4135,38 @@ mod tests {
         assert!(!grace.keep_waiting(None, binding.owns(Some("unbound")), now + std::time::Duration::from_secs(10)));
     }
 
+    #[tokio::test]
+    async fn packaged_browser_capture_rejects_other_browsers_before_reading_their_identity() {
+        for (url, accepted) in [("chrome://newtab", false), ("app://-/index.html", true)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = requests.clone();
+            let server = tokio::spawn(async move {
+                for _ in 0..if accepted { 2 } else { 1 } {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 4096];
+                    let count = stream.read(&mut request).await.unwrap();
+                    let request = String::from_utf8_lossy(&request[..count]);
+                    let path = request.split_whitespace().nth(1).unwrap().to_string();
+                    recorded.lock().unwrap().push(path.clone());
+                    let body = if path == "/json/version" {
+                        serde_json::json!({ "Browser":"Chrome/fixture", "webSocketDebuggerUrl":format!("ws://127.0.0.1:{port}/devtools/browser/fixture-browser") })
+                    } else {
+                        serde_json::json!([{ "id":"page", "type":"page", "title":"fixture", "url":url,
+                            "webSocketDebuggerUrl":format!("ws://127.0.0.1:{port}/devtools/page/fixture-page") }])
+                    }.to_string();
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            let identity = validated_codex_browser_id(port).await;
+            server.await.unwrap();
+            assert_eq!(identity.as_deref(), accepted.then_some("fixture-browser"));
+            assert_eq!(requests.lock().unwrap().as_slice(), if accepted { &["/json", "/json/version"][..] } else { &["/json"][..] });
+        }
+    }
+
     #[test]
     fn packaged_browser_fallback_after_discovery_error_keeps_only_same_initial_browser() {
         let now = std::time::Instant::now();
@@ -4127,6 +4180,27 @@ mod tests {
         assert!(binding.owns(Some("original")));
         assert!(!binding.owns(Some("replacement")));
         assert!(!binding.owns(Some("original")), "实例替换后不能重新绑定旧 ID");
+    }
+
+    #[test]
+    fn degraded_packaged_launch_keeps_its_captured_browser_after_activation_grace_expires() {
+        let now = std::time::Instant::now();
+        let mut binding = PackagedBrowserBinding {
+            initial_id: Some("captured-degraded-browser".to_string()),
+            replaced: false,
+        };
+        let mut grace = PackagedExitGrace::default();
+        for seconds in [0, 10, 30, 60, 3600] {
+            let elapsed = std::time::Duration::from_secs(seconds);
+            let activation_alive = Some(false)
+                .filter(|alive| activation_process_is_startup_evidence(*alive, elapsed));
+            assert!(grace.keep_waiting(
+                activation_alive,
+                binding.owns(Some("captured-degraded-browser")),
+                now + elapsed,
+            ));
+        }
+        assert_eq!(grace.missed_probes, 0);
     }
 
     #[test]

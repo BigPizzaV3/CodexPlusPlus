@@ -7493,26 +7493,71 @@
   }
 
   function sessionHostIdFromRow(row, sessionId, scopedHost) {
+    return sessionHostEvidenceFromRow(row, sessionId, scopedHost).hostId;
+  }
+
+  function sessionHostEvidenceFromRow(row, sessionId, scopedHost) {
     const hosts = new Set();
+    let matchingMetadata = 0;
+    let identityConflict = false;
     const add = (value) => {
       if (typeof value === "string" && value.trim()) hosts.add(value.trim());
     };
+    const identity = (value) => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      const raw = value.trim();
+      const scoped = raw.match(/^(.+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+      const id = normalizedCodexThreadUuid(raw) || scoped?.[2];
+      return id ? { id: id.toLowerCase(), host: scoped?.[1] } : raw === sessionId ? { id: raw, host: null } : null;
+    };
+    const canonicalWanted = normalizedCodexThreadUuid(sessionId);
+    const wanted = canonicalWanted ? canonicalWanted.toLowerCase() : sessionId || "";
+    const identities = (record) => [record?.conversationId, record?.threadId, record?.id].map(identity).filter(Boolean);
+    const collect = (record) => {
+      if (!record || typeof record !== "object") return;
+      const ownIds = identities(record);
+      const matched = ownIds.some((candidate) => candidate.id === wanted);
+      const nested = [record.threadSummary, record.thread, record.target].filter((value) => value && typeof value === "object");
+      const allIds = [...ownIds, ...nested.flatMap(identities)];
+      if (allIds.some((candidate) => candidate.id === wanted) && allIds.some((candidate) => candidate.id !== wanted)) {
+        identityConflict = true;
+        return;
+      }
+      if (matched) {
+        matchingMetadata += 1;
+        add(record.hostId);
+        ownIds.forEach((candidate) => add(candidate.host));
+        // 26.930 原生 sidebar 行的 {conversationId,hostId,threadSummary}：
+        // hostId ?? threadSummary?.hostId。summary 没有自己的 id 时仍属于这条会话。
+        if (record.threadSummary && !["conversationId", "threadId", "id"].some((key) => typeof record.threadSummary[key] === "string" && record.threadSummary[key].trim())) add(record.threadSummary.hostId);
+      }
+      for (const child of nested) {
+        const childIds = identities(child);
+        if (!childIds.some((candidate) => candidate.id === wanted)) continue;
+        matchingMetadata += 1;
+        add(child.hostId);
+        childIds.forEach((candidate) => add(candidate.host));
+      }
+    };
     add(row.getAttribute("data-app-action-sidebar-thread-host-id"));
-    add(scopedHost);
-    // 仅接受和当前会话 ID 同一份 React props 中的 hostId。
-    // UUID 本身不能说明本地归属，祖先上另一个会话的 hostId 也不能拿来猜。
+    const rowIdentity = identity(row.getAttribute("data-app-action-sidebar-thread-id"));
+    if (rowIdentity?.id === wanted) add(scopedHost || rowIdentity.host);
+    // 只接受同一条会话的成对身份。原生 locator 为 {hostId,threadId}，
+    // sidebarThreadRow 为 {hostId,id}；bare UUID 或不相关祖先的 hostId 都不说明归属。
     const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
     let fiber = fiberKey ? row[fiberKey] : null;
     for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
       for (const props of [fiber.pendingProps, fiber.memoizedProps, fiber.pendingProps?.children?.props, fiber.memoizedProps?.children?.props]) {
-        const conversationId = props?.conversationId;
-        if (conversationId === sessionId || (normalizedCodexThreadUuid(conversationId) && normalizedCodexThreadUuid(conversationId) === sessionId)) {
-          add(props.hostId);
-          if (typeof conversationId === "string" && conversationId.startsWith("local:")) add("local");
-        }
+        collect(props);
       }
     }
-    return hosts.size === 1 ? [...hosts][0] : null;
+    const conflict = identityConflict || hosts.size > 1;
+    return {
+      hostId: !conflict && hosts.size === 1 ? [...hosts][0] : null,
+      reason: conflict ? "conflicting" : hosts.size === 1 ? "resolved" : "unknown",
+      hostCount: hosts.size,
+      matchingMetadata,
+    };
   }
 
   if (window.__CODEX_PLUS_TEST_SESSION_REF__) {
@@ -9313,16 +9358,25 @@
     }
   }
 
+  function codexPlusNativePluginNavigationEntry() {
+    // 每次重查原生导航；注入入口和第三方 Plugins 按钮不能充当原生目标。
+    const destinations = Array.from(document.querySelectorAll('nav [data-sidebar-destination], aside.app-shell-left-panel nav button, nav[data-app-navigation-rail] button'));
+    return destinations.find((button) => {
+      if (button.closest('[data-codex-plus-ext], [data-codex-plus-rail]')) return false;
+      if (button.closest(`#${codexPlusSidebarPluginMarketId}, #${codexPlusRailPluginMarketId}`)) return false;
+      if (typeof isExtensionUiNode === "function" && isExtensionUiNode(button)) return false;
+      if (typeof visibleElement === "function" && !visibleElement(button)) return false;
+      const destination = (button.getAttribute("data-sidebar-destination") || "").trim();
+      const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
+      return destination === "plugins" || destination === "builtin:plugins" || /^(插件|Plugins)$/i.test(label);
+    });
+  }
+
   function openCodexPlusNativePluginMarket() {
     closeCodexPlusPage();
     clearPluginMarketplaceQueryCache();
-    const destinations = Array.from(document.querySelectorAll('[data-sidebar-destination], aside.app-shell-left-panel nav button'));
-    const native = destinations.find((button) => {
-      if (button.closest('[data-codex-plus-ext], [data-codex-plus-rail]')) return false;
-      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
-      return button.getAttribute("data-sidebar-destination") === "plugins" || /^(插件|Plugins)$/i.test(label);
-    });
-    if (native) {
+    const native = codexPlusNativePluginNavigationEntry();
+    if (native && !native.disabled && native.getAttribute("aria-disabled") !== "true") {
       native.click();
       return;
     }
@@ -10944,17 +10998,22 @@
   }
 
   function isCurrentSessionRow(row, ref) {
+    const currentId = locationThreadId();
+    const currentIdentity = normalizedCodexThreadUuid(currentId) || currentId;
+    const rowIdentity = normalizedCodexThreadUuid(ref.session_id) || ref.session_id;
+    if (currentIdentity && currentIdentity !== rowIdentity) return false;
+    // 新版原生 sidebarThreadRow 明确提供 active；false 不能被相同 pathname 覆盖。
+    const nativeActive = row.getAttribute("data-app-action-sidebar-thread-active");
+    if (nativeActive === "true" || nativeActive === "false") return nativeActive === "true";
     if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
     const href = rowHref(row);
     if (href) {
       try {
         const url = new URL(href, window.location.href);
-        if (url.href === window.location.href || url.pathname === window.location.pathname) return true;
-      } catch {
-        if (window.location.href.includes(href)) return true;
-      }
+        if (currentIdentity && url.href === window.location.href) return true;
+      } catch {}
     }
-    return !!ref.session_id && window.location.href.includes(ref.session_id);
+    return !!currentIdentity && currentIdentity === rowIdentity;
   }
 
   function releaseDeleteFocus(row, button) {
@@ -10964,13 +11023,34 @@
     }
   }
 
-  function removeDeletedRow(row, button, ref) {
+  function sameDeletedSessionRef(left, right) {
+    return !!left?.session_id && !!left?.host_id && left.session_id === right?.session_id && left.host_id === right?.host_id;
+  }
+
+  function removeDeletedRow(row, button, ref, requestContext) {
+    // 删除响应期间，React 可能复用或替换 sidebar 行；不能删除其新身份的 DOM。
+    if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) return null;
     releaseDeleteFocus(row, button);
-    const shouldReload = isCurrentSessionRow(row, ref);
-    row.remove();
-    if (shouldReload) {
-      setTimeout(() => window.location.reload(), 10000);
+    const activeRefs = sessionRows().map((candidate) => ({ row: candidate, ref: sessionRefFromRow(candidate) }))
+      .filter((candidate) => isCurrentSessionRow(candidate.row, candidate.ref)).map((candidate) => candidate.ref);
+    const shouldLeave = requestContext?.wasCurrent && requestContext.locationHref === window.location.href
+      && activeRefs.length > 0 && activeRefs.every((active) => sameDeletedSessionRef(active, ref));
+    let navigated = false;
+    if (shouldLeave) {
+      // 已审 native 的 New chat 按钮以 aria-label/newChatMessage 调用 onStartChat。
+      // 只走唯一可见的原生 sidebar 控件；不猜内部路由，也不强制 reload。
+      const navigation = Array.from(document.querySelectorAll("aside.app-shell-left-panel button, nav[data-app-navigation-rail] button"))
+        .filter((candidate) => visibleElement(candidate) && !candidate.disabled && !isExtensionUiNode(candidate)
+          && candidate.closest("aside.app-shell-left-panel, nav[data-app-navigation-rail]")
+          && /^(新聊天|新对话|New chat|New thread)$/i.test((candidate.getAttribute("aria-label") || candidate.textContent || "").trim()));
+      if (navigation.length === 1) {
+        navigation[0].click();
+        navigated = true;
+      }
     }
+    // 原生导航也可能同步重建行，移除前再确认一次，保护被复用的节点。
+    if (row.isConnected && sameDeletedSessionRef(sessionRefFromRow(row), ref)) row.remove();
+    return shouldLeave && !navigated ? "会话已删除，请点击新聊天继续" : null;
   }
 
   function updateDeleteButtonOffsets() {
@@ -10992,17 +11072,36 @@
     event.stopImmediatePropagation?.();
     releaseDeleteFocus(row, button);
     if (!ref.host_id) {
+      const evidence = sessionHostEvidenceFromRow(row, ref.session_id);
+      sendCodexPlusDiagnostic("delete_session_host_unresolved", {
+        reason: evidence.reason, hostCount: evidence.hostCount, matchingMetadata: evidence.matchingMetadata,
+        nativeHostAttributePresent: !!row.getAttribute("data-app-action-sidebar-thread-host-id"),
+      });
       showToast("无法确定会话主机归属，请使用 Codex 原生会话管理", null);
       return;
     }
-    confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
+    ref = { session_id: ref.session_id, title: ref.title, host_id: ref.host_id };
+    return confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
       if (!confirmed) return;
+      if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) {
+        showToast("会话已变化，请重新选择后删除", null);
+        return;
+      }
       releaseDeleteFocus(row, button);
+      const requestContext = { wasCurrent: isCurrentSessionRow(row, ref), locationHref: window.location.href };
       const result = await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
+        if (result.session_id && result.session_id !== ref.session_id) {
+          showToast("删除结果与请求会话不一致，未更新界面", null);
+          return;
+        }
         // 远端由原生同主机 thread/deleted 通知更新，不能移除可能已重用的本地 DOM。
-        if (ref.host_id === "local") removeDeletedRow(row, button, ref);
-        showToast(result.message || "删除成功", result.undo_token);
+        let navigationNotice = null;
+        if (ref.host_id === "local") {
+          navigationNotice = removeDeletedRow(row, button, ref, requestContext);
+          await refreshRecentConversationsForHost();
+        }
+        showToast(navigationNotice || result.message || "删除成功", result.undo_token);
       } else {
         showToast(result.message || "删除失败", null);
       }
@@ -15192,6 +15291,7 @@
       selectors.archiveNav,
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
+      'nav[data-app-navigation-rail]',
       ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }

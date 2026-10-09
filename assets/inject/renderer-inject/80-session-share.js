@@ -469,17 +469,22 @@
   }
 
   function isCurrentSessionRow(row, ref) {
+    const currentId = locationThreadId();
+    const currentIdentity = normalizedCodexThreadUuid(currentId) || currentId;
+    const rowIdentity = normalizedCodexThreadUuid(ref.session_id) || ref.session_id;
+    if (currentIdentity && currentIdentity !== rowIdentity) return false;
+    // 新版原生 sidebarThreadRow 明确提供 active；false 不能被相同 pathname 覆盖。
+    const nativeActive = row.getAttribute("data-app-action-sidebar-thread-active");
+    if (nativeActive === "true" || nativeActive === "false") return nativeActive === "true";
     if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
     const href = rowHref(row);
     if (href) {
       try {
         const url = new URL(href, window.location.href);
-        if (url.href === window.location.href || url.pathname === window.location.pathname) return true;
-      } catch {
-        if (window.location.href.includes(href)) return true;
-      }
+        if (currentIdentity && url.href === window.location.href) return true;
+      } catch {}
     }
-    return !!ref.session_id && window.location.href.includes(ref.session_id);
+    return !!currentIdentity && currentIdentity === rowIdentity;
   }
 
   function releaseDeleteFocus(row, button) {
@@ -489,13 +494,34 @@
     }
   }
 
-  function removeDeletedRow(row, button, ref) {
+  function sameDeletedSessionRef(left, right) {
+    return !!left?.session_id && !!left?.host_id && left.session_id === right?.session_id && left.host_id === right?.host_id;
+  }
+
+  function removeDeletedRow(row, button, ref, requestContext) {
+    // 删除响应期间，React 可能复用或替换 sidebar 行；不能删除其新身份的 DOM。
+    if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) return null;
     releaseDeleteFocus(row, button);
-    const shouldReload = isCurrentSessionRow(row, ref);
-    row.remove();
-    if (shouldReload) {
-      setTimeout(() => window.location.reload(), 10000);
+    const activeRefs = sessionRows().map((candidate) => ({ row: candidate, ref: sessionRefFromRow(candidate) }))
+      .filter((candidate) => isCurrentSessionRow(candidate.row, candidate.ref)).map((candidate) => candidate.ref);
+    const shouldLeave = requestContext?.wasCurrent && requestContext.locationHref === window.location.href
+      && activeRefs.length > 0 && activeRefs.every((active) => sameDeletedSessionRef(active, ref));
+    let navigated = false;
+    if (shouldLeave) {
+      // 已审 native 的 New chat 按钮以 aria-label/newChatMessage 调用 onStartChat。
+      // 只走唯一可见的原生 sidebar 控件；不猜内部路由，也不强制 reload。
+      const navigation = Array.from(document.querySelectorAll("aside.app-shell-left-panel button, nav[data-app-navigation-rail] button"))
+        .filter((candidate) => visibleElement(candidate) && !candidate.disabled && !isExtensionUiNode(candidate)
+          && candidate.closest("aside.app-shell-left-panel, nav[data-app-navigation-rail]")
+          && /^(新聊天|新对话|New chat|New thread)$/i.test((candidate.getAttribute("aria-label") || candidate.textContent || "").trim()));
+      if (navigation.length === 1) {
+        navigation[0].click();
+        navigated = true;
+      }
     }
+    // 原生导航也可能同步重建行，移除前再确认一次，保护被复用的节点。
+    if (row.isConnected && sameDeletedSessionRef(sessionRefFromRow(row), ref)) row.remove();
+    return shouldLeave && !navigated ? "会话已删除，请点击新聊天继续" : null;
   }
 
   function updateDeleteButtonOffsets() {
@@ -517,17 +543,36 @@
     event.stopImmediatePropagation?.();
     releaseDeleteFocus(row, button);
     if (!ref.host_id) {
+      const evidence = sessionHostEvidenceFromRow(row, ref.session_id);
+      sendCodexPlusDiagnostic("delete_session_host_unresolved", {
+        reason: evidence.reason, hostCount: evidence.hostCount, matchingMetadata: evidence.matchingMetadata,
+        nativeHostAttributePresent: !!row.getAttribute("data-app-action-sidebar-thread-host-id"),
+      });
       showToast("无法确定会话主机归属，请使用 Codex 原生会话管理", null);
       return;
     }
-    confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
+    ref = { session_id: ref.session_id, title: ref.title, host_id: ref.host_id };
+    return confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
       if (!confirmed) return;
+      if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) {
+        showToast("会话已变化，请重新选择后删除", null);
+        return;
+      }
       releaseDeleteFocus(row, button);
+      const requestContext = { wasCurrent: isCurrentSessionRow(row, ref), locationHref: window.location.href };
       const result = await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
+        if (result.session_id && result.session_id !== ref.session_id) {
+          showToast("删除结果与请求会话不一致，未更新界面", null);
+          return;
+        }
         // 远端由原生同主机 thread/deleted 通知更新，不能移除可能已重用的本地 DOM。
-        if (ref.host_id === "local") removeDeletedRow(row, button, ref);
-        showToast(result.message || "删除成功", result.undo_token);
+        let navigationNotice = null;
+        if (ref.host_id === "local") {
+          navigationNotice = removeDeletedRow(row, button, ref, requestContext);
+          await refreshRecentConversationsForHost();
+        }
+        showToast(navigationNotice || result.message || "删除成功", result.undo_token);
       } else {
         showToast(result.message || "删除失败", null);
       }

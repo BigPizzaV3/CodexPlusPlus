@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "已发布的版本标签，例如 v1.6.0"
+        description: "已存在的版本标签，例如 v1.7.1"
         required: true
         type: string
       platform:
@@ -17,6 +17,14 @@ on:
           - all
           - windows
           - macos
+      draft:
+        description: "构建并上传到草稿，附件齐备后再发布"
+        default: false
+        type: boolean
+      publish:
+        description: "草稿附件与更新元数据齐备后公开发布"
+        default: false
+        type: boolean
 
 env:
   RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
@@ -121,6 +129,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft }}
           files: |
             dist/windows/*.exe
             dist/windows/*.zip
@@ -227,6 +236,8 @@ jobs:
           bash scripts/installer/macos/build-universal.sh "$VERSION"
 
       - name: Verify macOS bundle structure
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           test -L "dist/macos/stage/Applications"
@@ -260,6 +271,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft }}
           files: |
             dist/macos/*.dmg
 
@@ -319,3 +331,12 @@ jobs:
           REPO: ${{ github.repository }}
         shell: bash
         run: gh release upload "$TAG" latest.json --clobber --repo "$REPO"
+
+      - name: Publish prepared Release
+        if: github.event_name == 'workflow_dispatch' && inputs.draft && inputs.publish && needs.windows-installer.result == 'success' && needs.macos-dmg.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ env.RELEASE_TAG }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: gh release edit "$TAG" --draft=false --latest --verify-tag --repo "$REPO"
