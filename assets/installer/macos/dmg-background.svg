@@ -13,34 +13,34 @@
 
   <g font-family="SF Pro Display, PingFang SC, Helvetica Neue, Arial, sans-serif" text-anchor="middle">
     <text x="600" y="108" fill="#f2f4f7" font-size="34" font-weight="600">Codex++ 安装指南</text>
-    <text x="600" y="148" fill="#aeb7c2" font-size="18">将两个应用拖入 Applications 文件夹即可完成安装</text>
+    <text x="600" y="148" fill="#aeb7c2" font-size="18">将 Codex++ 拖入 Applications 文件夹即可完成安装</text>
     <path d="M 160 180 H 1040" stroke="#ffffff" stroke-opacity="0.12"/>
 
     <g transform="translate(156 205)">
       <circle cx="22" cy="22" r="22" fill="url(#accent)"/>
       <text x="22" y="29" fill="#15191c" font-size="18" font-weight="700">1</text>
-      <text x="62" y="29" text-anchor="start" fill="#dce3ea" font-size="17" font-weight="600">同时选择两个应用</text>
-      <text x="62" y="57" text-anchor="start" fill="#9da8b4" font-size="15">Codex++ 和 Codex++ 管理工具</text>
+      <text x="62" y="29" text-anchor="start" fill="#dce3ea" font-size="17" font-weight="600">选择 Codex++ 应用</text>
+      <text x="62" y="57" text-anchor="start" fill="#9da8b4" font-size="15">一个应用包含界面和后台服务</text>
     </g>
 
     <g transform="translate(754 205)">
       <circle cx="22" cy="22" r="22" fill="url(#accent)"/>
       <text x="22" y="29" fill="#15191c" font-size="18" font-weight="700">2</text>
-      <text x="62" y="29" text-anchor="start" fill="#dce3ea" font-size="17" font-weight="600">将两个应用拖入 Applications</text>
-      <text x="62" y="57" text-anchor="start" fill="#9da8b4" font-size="15">安装后可从启动台打开</text>
+      <text x="62" y="29" text-anchor="start" fill="#dce3ea" font-size="17" font-weight="600">拖入 Applications 文件夹</text>
+      <text x="62" y="57" text-anchor="start" fill="#9da8b4" font-size="15">打开 Codex++，再从界面启动 Codex</text>
     </g>
 
     <circle cx="1000" cy="390" r="116" fill="none" stroke="#77bfff" stroke-opacity="0.24" stroke-width="2" stroke-dasharray="7 8"/>
-    <text x="1000" y="535" fill="#cbd5df" font-size="16">安装目标</text>
+    <text x="1000" y="555" fill="#cbd5df" font-size="16">安装目标</text>
 
     <path d="M 610 390 C 710 390, 790 390, 900 390" fill="none" stroke="#77bfff" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
     <path d="M 618 410 C 710 410, 790 410, 900 410" fill="none" stroke="#77bfff" stroke-opacity="0.2" stroke-width="2" stroke-linecap="round"/>
-    <text x="755" y="364" fill="#b9e4ff" font-size="18" font-weight="600">将两个应用拖入此处</text>
+    <text x="755" y="364" fill="#b9e4ff" font-size="18" font-weight="600">将 Codex++ 拖入此处</text>
 
-    <rect x="136" y="500" width="168" height="30" rx="15" fill="#e7edf2" fill-opacity="0.9"/>
-    <rect x="370" y="500" width="160" height="30" rx="15" fill="#e7edf2" fill-opacity="0.9"/>
+    <rect x="380" y="500" width="160" height="30" rx="15" fill="#e7edf2" fill-opacity="0.9"/>
     <rect x="875" y="500" width="250" height="30" rx="15" fill="#e7edf2" fill-opacity="0.9"/>
 
+    <text x="600" y="630" fill="#aeb7c2" font-size="15">旧版升级：先退出两个旧应用，再拖入并替换同名 Codex++</text>
     <text x="600" y="670" fill="#8e99a5" font-size="15">首次打开若出现安全提示，请在“系统设置 → 隐私与安全性”中允许打开</text>
   </g>
 </svg>
