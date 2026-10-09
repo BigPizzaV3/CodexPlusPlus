@@ -24,6 +24,7 @@ const names = new Set([
   "isAggregateRelayProfile",
   "tomlQuotedValue", "tomlDottedKeyPath", "tomlKeyPathName", "codexProviderSectionName",
   "tomlKeyAssignment", "tomlInlineComment",
+  "tomlStructureMask",
 ]);
 const helpers = app.statements.filter((node) =>
   ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text));
@@ -208,4 +209,28 @@ test("array tables end the provider scope instead of receiving its new token", (
   assert.equal(context.codexExperimentalBearerTokenFromConfig(loaded.configContents), "fixture-provider-key");
   assert.ok(loaded.configContents.indexOf("experimental_bearer_token") < loaded.configContents.indexOf("[[extras]]"));
   assert.ok(loaded.configContents.endsWith('[[extras]]\nname = "unchanged"\n'));
+});
+
+const promptBlocks = [
+  'developer_instructions = """\n[model_providers.custom]\nbase_url = "https://example.invalid"\nexperimental_bearer_token = "prompt-text-not-a-credential"\n# ] and escaped quotes: \\"\\\"\\\"\n"""\n',
+  "developer_instructions = '''\n[model_providers.custom]\nbase_url = \"https://example.invalid\"\nexperimental_bearer_token = 'prompt-text-not-a-credential'\n# ] and double quotes: \"\"\"\n'''\n",
+];
+export const authPromptFixtures = promptBlocks.map((promptBlock) => {
+  const original = '# Outside comment with """ and ]\n' + promptBlock
+    + 'model_provider = "vendor"\n\n[model_providers.vendor]\nbase_url = "https://relay.example/v1"\n';
+  const loaded = context.deriveRelayProfileFromFiles({ ...profile(false), configContents: original });
+  const edited = context.applyRelayProfilePatchToFiles(loaded, { apiKey: "fixture-edited-key" });
+  const reloaded = context.deriveRelayProfileFromFiles(edited);
+  return { original, promptBlock, loaded: loaded.configContents, edited: edited.configContents, reloaded: reloaded.configContents };
+});
+
+test("multiline prompt text never receives provider credentials or supplies fake TOML structure", () => {
+  for (const fixture of authPromptFixtures) {
+    for (const config of [fixture.loaded, fixture.edited, fixture.reloaded]) {
+      assert.equal(context.rootTomlStringValue(config, "model_provider"), "vendor");
+      assert.ok(config.includes(fixture.promptBlock), "prompt source must remain byte-for-byte unchanged");
+    }
+    assert.equal(context.codexExperimentalBearerTokenFromConfig(fixture.loaded), "fixture-provider-key");
+    assert.equal(context.codexExperimentalBearerTokenFromConfig(fixture.reloaded), "fixture-edited-key");
+  }
 });
