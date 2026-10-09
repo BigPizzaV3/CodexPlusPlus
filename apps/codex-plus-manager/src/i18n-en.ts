@@ -5,6 +5,20 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "Helper 状态": "Helper status",
+  "Debugger 状态": "Debugger status",
+  "代理服务器状态": "Proxy server status",
+  "当前配置无需 Helper": "Helper is not needed for the current configuration",
+  "本地后台服务已连接": "Local helper is connected",
+  "本地后台服务未运行": "Local helper is not running",
+  "Codex 调试端点已连接": "Codex debugger is connected",
+  "Codex 调试端点未连接": "Codex debugger is not connected",
+  "当前配置无需本地协议代理": "The current configuration does not require a local protocol proxy",
+  "本地协议代理已就绪": "Local protocol proxy is ready",
+  "本地协议代理未运行": "Local protocol proxy is not running",
+  "未运行": "Not running",
+  "已连接": "Connected",
+  "未连接": "Disconnected",
   "此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。": "This compatibility patch supports Edge / Chrome on Windows and applies the next time you start Codex. Extensions may retain their request identification settings.",
   "Codex++ 应用入口": "Codex++ application",
   "缺少 Codex++ 快捷方式时可在安装维护页修复。": "Repair a missing Codex++ shortcut on the Install & Maintenance page.",

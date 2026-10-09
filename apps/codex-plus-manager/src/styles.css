@@ -2999,6 +2999,25 @@ details.relay-fold[open] > .relay-fold-body {
   gap: 8px;
 }
 
+.overview-health-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.overview-health-grid .health-item,
+.overview-health-grid .health-item > div {
+  min-width: 0;
+}
+
+.overview-health-grid .health-item span {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .overview-health-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .feature-switch-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -9760,4 +9779,13 @@ select {
   .dream-skin-page .dream-skin-selection-actions {
     justify-content: flex-start;
   }
+}
+
+.codex-app-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  white-space: nowrap;
 }
