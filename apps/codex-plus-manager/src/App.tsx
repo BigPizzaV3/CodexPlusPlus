@@ -238,7 +238,7 @@ type OverviewResult = CommandResult<{
   silent_shortcut: PathState;
   management_shortcut: PathState;
   latest_launch: LaunchStatus | null;
-  runtime_health: { codex_app: RuntimeServiceState; helper: RuntimeServiceState; debugger: RuntimeServiceState; proxy_server: RuntimeServiceState };
+  runtime_health: { codex_app: RuntimeServiceState; local_server: RuntimeServiceState; debugger: RuntimeServiceState; protocol_conversion_enabled: boolean | null };
   current_version: string;
   update_status: string;
   settings_path: string;
@@ -11892,11 +11892,15 @@ function truncateSessionDeletePreview(value: string) {
 }
 
 function healthItems(overview: OverviewResult | null) {
-  const serviceItem = (title: string, state: RuntimeServiceState | undefined) => ({
+  const conversionEnabled = overview?.runtime_health?.protocol_conversion_enabled;
+  const conversionDetail = typeof conversionEnabled === "boolean"
+    ? t(conversionEnabled ? "协议转换已启用" : "协议转换未启用")
+    : undefined;
+  const serviceItem = (title: string, state: RuntimeServiceState | undefined, extraDetail?: string) => ({
     title,
     status: state?.status ?? "not_checked",
     ok: ["running", "connected", "disabled"].includes(state?.status ?? ""),
-    detail: state ? [state.address, t(state.message)].filter(Boolean).join(" · ") : t("等待状态检查"),
+    detail: state ? [state.address, t(state.message), extraDetail].filter(Boolean).join(" · ") : t("等待状态检查"),
   });
   return [
     {
@@ -11905,9 +11909,8 @@ function healthItems(overview: OverviewResult | null) {
       ok: overview?.codex_app.status === "found",
       detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
     },
-    serviceItem(t("后台服务状态"), overview?.runtime_health?.helper),
+    serviceItem(t("本地服务器状态"), overview?.runtime_health?.local_server, conversionDetail),
     serviceItem(t("调试连接状态"), overview?.runtime_health?.debugger),
-    serviceItem(t("代理服务器状态"), overview?.runtime_health?.proxy_server),
   ];
 }
 
