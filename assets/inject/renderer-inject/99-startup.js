@@ -5,11 +5,7 @@
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);
     codexPlusResizeRafId = requestAnimationFrame(() => {
-      sessionRows().forEach((row) => {
-        const group = actionGroupFromRow(row);
-        if (group) delete group.dataset.codexActionLayoutStable;
-      });
-      syncActionGroupsLayout();
+      syncActionGroupsLayout(true);
       runScanStep(refreshConversationView);
     });
   };

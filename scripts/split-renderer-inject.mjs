@@ -14,39 +14,41 @@ const root = path.resolve(import.meta.dirname, "..");
 const sourcePath = path.join(root, "assets/inject/renderer-inject.js");
 const outDir = path.join(root, "assets/inject/renderer-inject");
 
-// [起始行(1-based, 含), 分片文件名, 说明]
-const PLAN = [
-  [1, "00-prelude.js", "IIFE 开头、环境守卫、平台探测、常量与工具函数"],
-  [603, "10-style.js", "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化"],
-  [2640, "20-menu.js", "Codex++ 菜单、后端设置加载、插件解锁策略与版本判定"],
-  [3112, "30-service-tier.js", "服务等级（service tier）读写、线程覆盖与控件同步"],
-  [4196, "40-backend-settings.js", "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI"],
-  [5687, "50-navigation.js", "导航入口安装、rail 按钮、页面布局与选中态同步"],
-  [5930, "60-plugin-marketplace.js", "插件市场请求/响应补丁、本地兜底与合并"],
-  [7549, "70-model-catalog.js", "全局状态、模型目录、模型白名单与解锁"],
-  [8482, "80-session-share.js", "会话分享、项目区、toast、工作区路径归一"],
-  [9940, "90-action-groups.js", "会话行操作按钮布局、更多菜单、工具提示"],
-  [10748, "95-conversation-view.js", "会话视图运行时、官方用量策略重写、扫描主循环"],
-  [11988, "98-scan-schedule.js", "扫描相关性判定与调度，启动重试"],
-  [12108, "99-startup.js", "启动序列：resize 处理、MutationObserver 与事件绑定"],
-  [12138, "99-tail.js", "主 IIFE 收尾 `})();`"],
-  [12141, "zz-paste-fix.js", "粘贴修复块：Word 粘贴降级为纯文本"],
-];
+const manifestPath = path.join(outDir, "manifest.json");
+const manifestSource = JSON.parse(await readFile(manifestPath, "utf8"));
+if (!Array.isArray(manifestSource.fragments) || manifestSource.fragments.length === 0) {
+  throw new Error("manifest.json 里没有 fragments");
+}
+const plan = manifestSource.fragments.map((fragment) => {
+  if (!fragment?.name || !Number.isInteger(fragment.lines) || fragment.lines <= 0) {
+    throw new Error(`manifest.json 的分片行数无效: ${JSON.stringify(fragment)}`);
+  }
+  return [fragment.name, fragment.description || "", fragment.lines];
+});
 
 const raw = await readFile(sourcePath, "utf8");
 const lines = raw.split("\n");
 // split("\n") 会把末尾换行后的空串算成一行，去掉它以便按行号切片
 if (lines.at(-1) === "") lines.pop();
 
+const expectedLines = plan.reduce((total, [, , count]) => total + count, 0);
+if (expectedLines !== lines.length) {
+  throw new Error(
+    `manifest.json 行数与产物不一致: manifest=${expectedLines}, artifact=${lines.length}；` +
+    "请先从分片组装产物，或人工同步 manifest 后再切分。",
+  );
+}
+
 const fragments = [];
-for (let i = 0; i < PLAN.length; i += 1) {
-  const [start, name, description] = PLAN[i];
-  const end = i + 1 < PLAN.length ? PLAN[i + 1][0] - 1 : lines.length;
-  if (end < start) throw new Error(`分片 ${name} 行范围非法: ${start}-${end}`);
-  const body = lines.slice(start - 1, end).join("\n");
+let offset = 0;
+for (const [name, description, count] of plan) {
+  const start = offset + 1;
+  const end = offset + count;
+  const body = lines.slice(offset, end).join("\n");
   if (!body) throw new Error(`分片 ${name} 为空`);
   // 每片都以换行结尾，拼接时天然还原原始行结构
   fragments.push({ name, description, start, end, body: `${body}\n` });
+  offset = end;
 }
 
 // 校验一：分片逐个必须是顶层声明开头，不允许从函数体中间下刀

@@ -2,113 +2,113 @@
   "fragments": [
     {
       "name": "00-prelude.js",
-      "description": "IIFE 开头、环境守卫、平台探测、常量与工具函数",
-      "lines": 602
+      "description": "IIFE 开头、环境守卫、平台探测、常量与图片覆盖层",
+      "lines": 1433
     },
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 0
+      "lines": 177
     },
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2037
+      "lines": 2785
     },
     {
       "name": "20-menu.js",
       "description": "Codex++ 菜单、后端设置加载、插件解锁策略与版本判定",
-      "lines": 472
+      "lines": 556
     },
     {
       "name": "30-service-tier.js",
       "description": "服务等级（service tier）读写、线程覆盖与控件同步",
-      "lines": 1084
+      "lines": 1058
     },
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1491
+      "lines": 1837
     },
     {
       "name": "50-navigation.js",
       "description": "导航入口安装、rail 按钮、页面布局与选中态同步",
-      "lines": 243
+      "lines": 188
     },
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1619
+      "lines": 1874
     },
     {
       "name": "61-plugin-market-ui.js",
       "description": "独立 CodeX 插件市场、索引检索与按需单包安装",
-      "lines": 0
+      "lines": 300
     },
     {
       "name": "62-plugin-market-adapter.js",
       "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
-      "lines": 0
+      "lines": 397
     },
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 933
+      "lines": 1144
     },
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 1458
+      "lines": 698
     },
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 808
+      "lines": 1079
     },
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 0
+      "lines": 269
     },
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 0
+      "lines": 317
     },
     {
       "name": "93-dictation.js",
       "description": "独立 ASR 听写入口、录音、取消重试与原生输入框回填",
-      "lines": 0
+      "lines": 513
     },
     {
       "name": "94-typing-effects.js",
       "description": "光标打字特效：彩虹粒子、烟花、星光与运行时清理",
-      "lines": 0
+      "lines": 399
     },
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 1240
+      "lines": 913
     },
     {
       "name": "96-whale-compat.js",
       "description": "Codex full whale host and bridge adapters",
-      "lines": 0
+      "lines": 533
     },
     {
       "name": "97-whale-widget.js",
       "description": "Full whale engine opt-in lifecycle",
-      "lines": 0
+      "lines": 64
     },
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 120
+      "lines": 174
     },
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 30
+      "lines": 33
     },
     {
       "name": "99-tail.js",
@@ -118,7 +118,7 @@
     {
       "name": "zz-paste-fix.js",
       "description": "粘贴修复块：Word 粘贴降级为纯文本",
-      "lines": 39
+      "lines": 49
     }
   ]
 }
