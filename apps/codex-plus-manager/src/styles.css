@@ -205,110 +205,6 @@ body {
   padding: 14px 10px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px 16px;
-  border-bottom: 1px solid hsl(var(--sidebar-border));
-}
-
-.brand-copy {
-  min-width: 0;
-}
-
-.brand-title-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 6px;
-  background: hsl(var(--brand-accent));
-  color: hsl(var(--primary-foreground));
-  font-weight: 700;
-}
-
-.brand-title {
-  background:
-    linear-gradient(
-      90deg,
-      #ff2f70,
-      #ff9f1c,
-      #f7f24a,
-      #25f36b,
-      #18d9ff,
-      #7a5cff,
-      #ff4fe3,
-      #ff2f70,
-      #ff9f1c,
-      #f7f24a,
-      #25f36b,
-      #18d9ff,
-      #7a5cff,
-      #ff4fe3,
-      #ff2f70
-    );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-  text-shadow:
-    0 0 8px rgb(24 217 255 / 0.36),
-    0 0 16px rgb(255 79 227 / 0.24);
-  animation: brand-rainbow-flow 2.8s linear infinite;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-@keyframes brand-rainbow-flow {
-  from {
-    background-position: 0% 50%;
-  }
-
-  to {
-    background-position: 200% 50%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .brand-title {
-    animation: none;
-    background-position: 70% 50%;
-  }
-}
-
-.update-dot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid hsl(var(--brand-accent) / 0.42);
-  border-radius: 999px;
-  background: hsl(var(--brand-accent) / 0.16);
-  color: hsl(var(--brand-accent));
-  cursor: pointer;
-  padding: 0;
-}
-
-.update-dot:hover {
-  background: hsl(var(--brand-accent) / 0.26);
-  transform: translateY(-1px);
-}
-
-.brand-subtitle {
-  margin-top: 2px;
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-}
-
 .nav {
   display: grid;
   gap: 4px;
@@ -407,7 +303,6 @@ body {
   padding: 14px 20px;
   border-bottom: 1px solid hsl(var(--border));
   background: hsl(var(--shell-bg));
-  animation: topbar-enter var(--motion-normal) var(--motion-ease) both;
 }
 /* 注意：下面是 .topbar 的第二处定义，会覆盖上面这条（同优先级、源码更靠后）。
    两处并存是历史遗留，实际生效的是下面那条 grid 布局。 */
@@ -441,8 +336,6 @@ body {
   -webkit-overflow-scrolling: touch;
   padding: 16px 20px 24px;
   scrollbar-gutter: stable;
-  animation: screen-enter 260ms var(--motion-ease) both;
-  will-change: opacity, transform;
 }
 
 .grid {
@@ -605,6 +498,41 @@ body {
   display: grid;
   justify-items: end;
   gap: 10px;
+}
+
+.sponsor-carousel-copy {
+  animation: sponsor-carousel-in 220ms ease-out;
+}
+
+.sponsor-carousel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.sponsor-carousel-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sponsor-carousel-count {
+  min-width: 42px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+@keyframes sponsor-carousel-in {
+  from { opacity: 0.55; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sponsor-carousel-copy { animation: none; }
 }
 
 .jojocode-model-tags {
@@ -2837,8 +2765,7 @@ details.relay-fold[open] > .relay-fold-body {
   box-shadow: var(--focus-ring);
 }
 
-/* 幅は 100% = backdrop の内側基準。vw だと .screen の will-change が作る
-   包含ブロックより広くなり、右側（× ボタン）がはみ出て切れる。 */
+/* 按遮罩容器限定宽度，避免弹层右侧被裁切。 */
 .modal-card.relay-common-config {
   display: grid;
   gap: 12px;
@@ -3672,6 +3599,16 @@ details.relay-fold[open] > .relay-fold-body {
   margin: 0;
   color: hsl(var(--muted-foreground));
   line-height: 1.5;
+}
+
+/* 推荐列表与概览推荐位共用：简介三行后显示省略号，原文保留在悬停提示。 */
+.recommendation-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .ad-tags {
@@ -4879,30 +4816,6 @@ input[type="range"]:disabled {
   }
 }
 
-@keyframes screen-enter {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 10px, 0) scale(0.992);
-  }
-
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-}
-
-@keyframes topbar-enter {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @keyframes relay-detail-enter {
   from {
     opacity: 0;
@@ -4983,12 +4896,6 @@ input[type="range"]:disabled {
     grid-template-columns: 64px minmax(0, 1fr);
   }
 
-  .brand {
-    justify-content: center;
-    padding: 6px 0 16px;
-  }
-
-  .brand > div:not(.brand-mark),
   .nav-label {
     font-size: 0;
   }
@@ -5624,8 +5531,14 @@ select {
 /* ── 外壳 ───────────────────────────────────────────────────── */
 
 .shell {
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 64px 232px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   background: hsl(var(--shell-bg));
+}
+
+/* 通用页面直接占满应用栏右侧，不保留 Agent 导航列。 */
+.shell.global-workspace {
+  grid-template-columns: 64px minmax(0, 1fr);
 }
 
 /* ── 侧边栏 ─────────────────────────────────────────────────── */
@@ -5638,66 +5551,6 @@ select {
   padding: 14px 12px 12px;
 }
 
-.brand {
-  align-items: center;
-  gap: 11px;
-  min-height: 52px;
-  border-bottom: 1px solid hsl(var(--sidebar-border));
-  /* 右侧与 .nav(padding-right) + .nav-item 的内边距之和一致，
-     顶部状态灯才能和下方列表项的状态灯共线（#1975）。 */
-  padding: 2px 12px 14px;
-}
-
-/* 品牌标记：渐变方块 + C++ 字形 */
-.brand::before {
-  content: "C++";
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(140deg, hsl(var(--brand-accent)), hsl(var(--brand-accent-2)));
-  box-shadow:
-    0 4px 14px hsl(var(--brand-accent) / 0.34),
-    inset 0 1px 0 hsl(0 0% 100% / 0.22);
-  color: #fff;
-  font-size: 12.5px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.brand-title-row {
-  gap: 7px;
-}
-
-.brand-title {
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
-  line-height: 1.2;
-}
-
-.brand-subtitle {
-  margin-top: 2px;
-  font-size: 11px;
-  font-weight: 450;
-  letter-spacing: 0.01em;
-}
-
-.update-dot {
-  width: 20px;
-  height: 20px;
-  border: 0;
-  background: hsl(var(--brand-accent) / 0.16);
-  color: hsl(var(--brand-accent));
-}
-
-.update-dot:hover {
-  background: hsl(var(--brand-accent) / 0.28);
-  transform: none;
-}
-
 .nav {
   display: flex;
   flex: 1 1 auto;
@@ -5705,7 +5558,7 @@ select {
   gap: 14px;
   min-height: 0;
   max-height: none;
-  margin-top: 12px;
+  margin-top: 0;
   padding-right: 2px;
 }
 
@@ -5801,6 +5654,7 @@ select {
 /* ── 顶栏 ───────────────────────────────────────────────────── */
 
 .workspace {
+  height: auto;
   background: hsl(var(--shell-bg));
 }
 
@@ -5814,7 +5668,6 @@ select {
   background: hsl(var(--shell-bg) / 0.72);
   backdrop-filter: saturate(180%) blur(20px);
   padding: 10px 22px;
-  animation-duration: 150ms;
 }
 
 /* 顶栏两栏：标题｜右侧操作。
@@ -5848,49 +5701,94 @@ select {
   max-width: 620px;
 }
 
-/* ── 工具切换条（侧栏内） ───────────────────────────────────── */
-/* 放在品牌区下方、导航之上：切换的是「整个控制台在看哪个工具」，
-   放在侧栏比放在顶栏更贴合它的语义，也不会随页面标题宽度漂移。 */
+/* ── 应用图标栏 ─────────────────────────────────────────────── */
+/* Agent 切换在上方，通用入口与界面设置在下方；短窗口可在栏内滚动。 */
+
+.app-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* 留出滚动条空间，短窗口中也不裁切 44px 图标按钮。 */
+  padding: 14px 4px;
+  border-right: 1px solid hsl(var(--sidebar-border));
+  background: hsl(var(--sidebar-bg));
+}
+
+.tool-switcher,
+.rail-navigation,
+.rail-preferences {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
 
 .tool-switcher {
-  display: grid;
-  grid-auto-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
-  gap: 4px;
-  margin-top: 12px;
-  padding: 4px;
-  border: 1px solid hsl(var(--sidebar-border));
-  border-radius: 10px;
-  background: hsl(var(--background) / 0.45);
+  gap: 12px;
+}
+
+.rail-bottom {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: auto;
+  border-top: 1px solid hsl(var(--sidebar-border));
+  padding-top: 12px;
+}
+
+.rail-preferences {
+  border-top: 1px solid hsl(var(--sidebar-border));
+  padding-top: 12px;
+}
+
+.rail-nav-icon {
+  width: 22px;
+  height: 22px;
 }
 
 .tool-chip {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 7px 8px;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  padding: 7px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 12px;
   background: transparent;
   color: hsl(var(--muted-foreground));
   font: inherit;
-  font-size: 12.5px;
   line-height: 1;
   cursor: pointer;
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .tool-chip:hover:not(:disabled) {
-  background: hsl(var(--accent) / 0.6);
+  background: hsl(var(--sidebar-muted) / 0.65);
   color: hsl(var(--foreground));
 }
 
 .tool-chip.active {
-  border-color: hsl(var(--primary) / 0.45);
-  background: hsl(var(--primary) / 0.16);
+  border-color: hsl(var(--foreground) / 0.08);
+  background: hsl(var(--sidebar-muted));
   color: hsl(var(--foreground));
+}
+
+.rail-nav-item.active {
+  color: hsl(var(--brand-accent));
+}
+
+.tool-chip:focus-visible {
+  outline: 2px solid hsl(var(--brand-accent));
+  outline-offset: 2px;
 }
 
 .tool-chip:disabled {
@@ -5899,23 +5797,28 @@ select {
 }
 
 .tool-chip-icon {
-  width: 15px;
-  height: 15px;
+  width: 28px;
+  height: 28px;
   flex: 0 0 auto;
+  object-fit: contain;
+  opacity: 0.65;
 }
 
-.tool-chip-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.tool-chip.active .tool-chip-icon,
+.tool-chip:hover:not(:disabled) .tool-chip-icon,
+.tool-chip:focus-visible .tool-chip-icon {
+  opacity: 1;
 }
 
-.tool-chip-note {
-  padding: 1px 5px;
-  border-radius: 999px;
-  background: hsl(var(--muted) / 0.8);
-  color: hsl(var(--muted-foreground));
-  font-size: 10px;
+/* 品牌标志统一用单色蒙版，随按钮的主题、选中和悬停颜色变化。 */
+.tool-chip-brand-icon {
+  background-color: currentColor;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
 }
 
 /* ── Grok 供应商页 ──────────────────────────────────────────── */
@@ -6067,6 +5970,12 @@ select {
   gap: 14px;
   padding: 18px 22px 28px;
   animation: none;
+}
+
+/* 页面直接切换，不保留标题或正文的入场过渡。 */
+.shell :is(.topbar, .screen) {
+  animation: none;
+  transition: none;
 }
 
 .screen > * {
@@ -6614,23 +6523,14 @@ select {
 
 @media (max-width: 1080px) {
   .shell {
-    grid-template-columns: 68px minmax(0, 1fr);
+    grid-template-columns: 64px 68px minmax(0, 1fr);
   }
 
   .sidebar {
     padding-inline: 8px;
   }
 
-  .brand {
-    min-height: 58px;
-    justify-content: center;
-    gap: 0;
-    padding-inline: 0;
-  }
-
-  /* 收窄时只保留品牌方块，标题文字隐藏 */
-  .brand-title-row,
-  .brand-subtitle,
+  /* 只收起页面导航文字，窗口标题始终显示。 */
   .nav-section-label,
   .nav-label,
   .nav-badge {

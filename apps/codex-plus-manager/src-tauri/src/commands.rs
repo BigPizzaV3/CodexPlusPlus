@@ -488,10 +488,12 @@ pub struct WatcherPayload {
 pub struct AdsPayload {
     pub version: u64,
     pub ads: Vec<Value>,
-    /// 置顶赞助位。与 `ads` 是两回事：`top_ad` 是单独售卖的贵价位置，
-    /// 不参与推荐池的排序，概览页只认它。
+    /// 单条兼容字段，保留给仍使用旧格式的管理端消费者。
     #[serde(rename = "topAd", skip_serializing_if = "Option::is_none")]
     pub top_ad: Option<Value>,
+    /// 独立于推荐池的置顶赞助位，支持概览横幅轮播。
+    #[serde(rename = "topAds", skip_serializing_if = "Vec::is_empty")]
+    pub top_ads: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3796,6 +3798,7 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
                 version: 1,
                 ads: Vec::new(),
                 top_ad: None,
+                top_ads: Vec::new(),
             },
         ),
     }
@@ -3812,6 +3815,46 @@ pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
             &format!("脚本市场加载失败：{error}"),
             failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
         ),
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_plugin_market(source: String, refresh: bool) -> Value {
+    match codex_plus_core::plugin_market::list_plugins(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        refresh,
+    )
+    .await
+    {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string(), "plugins": []}),
+    }
+}
+
+#[tauri::command]
+pub async fn install_plugin_market_item(source: String, id: String) -> Value {
+    match codex_plus_core::plugin_market::install_plugin(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        &id,
+    )
+    .await
+    {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string()}),
+    }
+}
+
+#[tauri::command]
+pub fn plugin_market_install_status(source: String, id: String) -> Value {
+    match codex_plus_core::plugin_market::install_status(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        &id,
+    ) {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string(), "busy": false}),
     }
 }
 
@@ -6183,6 +6226,11 @@ fn ads_payload(payload: Value) -> AdsPayload {
             .cloned()
             .unwrap_or_default(),
         top_ad: payload.get("topAd").cloned(),
+        top_ads: payload
+            .get("topAds")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
     }
 }
 
@@ -8613,12 +8661,20 @@ model_reasoning_effort = "high"
     fn ads_payload_keeps_version_and_ad_items() {
         let payload = ads_payload(json!({
             "version": 1,
-            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}]
+            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}],
+            "topAd": {"id": "banner-1", "type": "sponsor", "title": "Banner 1"},
+            "topAds": [
+                {"id": "banner-1", "type": "sponsor", "title": "Banner 1"},
+                {"id": "banner-2", "type": "sponsor", "title": "Banner 2"}
+            ]
         }));
 
         assert_eq!(payload.version, 1);
         assert_eq!(payload.ads.len(), 1);
         assert_eq!(payload.ads[0]["id"], json!("ad-1"));
+        assert_eq!(payload.top_ad.as_ref().unwrap()["id"], json!("banner-1"));
+        assert_eq!(payload.top_ads.len(), 2);
+        assert_eq!(payload.top_ads[1]["id"], json!("banner-2"));
     }
 
     #[test]

@@ -214,6 +214,8 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /function sessionImportMarkdown\(session\)/);
     assert.match(renderer, /codexpp-import-session/);
     assert.match(renderer, /nativeShare\?\.closest\?\.\("\.ms-auto"\)/);
+    assert.match(renderer, /function sessionSharePlacement\(\)/);
+    assert.match(renderer, /sessionShare: "codexAppSessionShare"/);
     assert.match(renderer, /#k=\$\{encrypted\.key\}/);
     assert.match(renderer, /navigator\.clipboard\.writeText\(shareUrl\)/);
     assert.match(renderer, /data-testid\*=\"message\"/);
@@ -391,7 +393,8 @@ describe("renderer injection header compatibility", () => {
     // 点左面板的行 = 选中（右侧看详情），不直接切开关——
     // 开关移到详情页，避免点行就误触发启停。
     assert.match(renderer, /data-codex-extensions-select="installed:\$\{escapeHtml\(entry\.key\)\}"/);
-    assert.match(renderer, /data-codex-extensions-select="market:\$\{escapeHtml\(entry\.key\)\}"/);
+    assert.match(renderer, /function renderCodexPlusExtensionsOverview\(\)/);
+    assert.match(renderer, /data-codex-extensions-browse="market"/);
     assert.match(renderer, /codex-plus-page-nav-item-state/);
     // 每个条目都有图标，没有自带图标的用默认字形。
     assert.match(renderer, /codex-plus-page-nav-item-icon/);
@@ -400,7 +403,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /if \(codexPlusActiveEntry\(\) === "extensions"\) refreshCodexPlusExtensionsView\(\);/);
   });
 
-  it("shows a VSCode-style detail pane for the selected 拓展", async () => {
+  it("shows a native-style detail pane for the selected 拓展", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /function renderCodexPlusExtensionsDetail\(\)/);
@@ -418,7 +421,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /data-active="\$\{String\(selected\)\}"/);
   });
 
-  it("gives 拓展 a searchable 已安装 / 市场 分组视图", async () => {
+  it("gives 拓展 searchable 已安装 / 市场 views while retaining the search input", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /data-codex-extensions-search="true"/);
@@ -428,12 +431,12 @@ describe("renderer injection header compatibility", () => {
     // 市场走 bridge 的两个新路由。
     assert.match(renderer, /postJson\("\/script-market\/list", \{\}\)/);
     assert.match(renderer, /postJson\("\/script-market\/install", \{ id \}\)/);
-    // 空分组要留着显示占位（加载中/加载失败），只在搜索无匹配时才省略——
-    // 否则「正在读取脚本市场…」和错误提示会被一起藏掉，面板全空。
-    assert.match(renderer, /if \(!entries\.length && searching\) return "";/);
-    assert.doesNotMatch(renderer, /if \(!entries\.length && \(searching \|\| !count\)\) return "";/);
-    // 搜索重绘后要把焦点放回输入框，否则每敲一个字就断。
-    assert.match(renderer, /next\.setSelectionRange\(next\.value\.length, next\.value\.length\)/);
+    assert.match(renderer, /data-codex-extensions-browse="installed"/);
+    const start = renderer.indexOf("  function refreshCodexPlusExtensionsView()");
+    const end = renderer.indexOf("  function codexPlusExtensionsSelectionDetail()", start);
+    assert.ok(start >= 0 && end > start);
+    // 搜索框留在主区标题栏，刷新只更新侧栏和结果，不重建输入框或抢焦点。
+    assert.doesNotMatch(renderer.slice(start, end), /data-codex-extensions-search|setSelectionRange/);
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {
@@ -463,6 +466,228 @@ describe("renderer injection header compatibility", () => {
     assert.doesNotMatch(rootRule, /(?:^|;)\s*font(?:-family)?\s*:/);
     assert.doesNotMatch(rootRule, /(?:^|;)\s*color\s*:/);
     assert.match(css, /:where\([^)]*codex-plus-modal-overlay[^)]*\)\s*\{[^}]*font-family:\s*inherit;/s);
+  });
+
+  it("labels settings switches and keeps their checked state in sync while backend controls wait", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const createButton = (key: string, title: string, relayUnneeded = false) => {
+      const attributes: Record<string, string> = { "data-codex-plus-setting": key };
+      return {
+        attributes,
+        dataset: { relayUnneeded: String(relayUnneeded) } as Record<string, string>,
+        disabled: false,
+        getAttribute: (name: string) => attributes[name] ?? null,
+        setAttribute: (name: string, value: string) => { attributes[name] = value; },
+        closest: () => ({ querySelector: () => ({ textContent: title }) }),
+      };
+    };
+    const mapped = createButton("pluginMarketplaceUnlock", "插件市场解锁");
+    const local = createButton("threadScrollRestore", "切换对话保留位置");
+    const unavailable = createButton("modelWhitelistUnlock", "模型白名单解锁", true);
+    const buttons = [mapped, local, unavailable];
+    const labelStart = renderer.indexOf('    overlay.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting],');
+    const labelEnd = renderer.indexOf("    const closeButton", labelStart);
+    assert.ok(labelStart >= 0 && labelEnd > labelStart);
+    new Function("overlay", renderer.slice(labelStart, labelEnd))({ querySelectorAll: () => buttons });
+    for (const [button, label] of [[mapped, "插件市场解锁"], [local, "切换对话保留位置"], [unavailable, "模型白名单解锁"]] as const) {
+      assert.equal(button.attributes.role, "switch");
+      assert.equal(button.attributes["aria-label"], label);
+      assert.equal(button.attributes["aria-checked"], "false");
+    }
+
+    const renderStart = renderer.indexOf("  function renderCodexPlusMenu()");
+    const renderEnd = renderer.indexOf("\n  let codexPlusBackendSettings =", renderStart);
+    assert.ok(renderStart >= 0 && renderEnd > renderStart);
+    const settings: Record<string, boolean> = { pluginMarketplaceUnlock: true, threadScrollRestore: true, modelWhitelistUnlock: true };
+    const render = new Function("document", "codexPlusSettings", "codexPlusBackendMappedSettings", "refreshConversationViewControls", "refreshCodexServiceTierControls",
+      `let codexPlusBackendSettingsLoaded = false; const codexPlusBackendSettings = {};
+${renderer.slice(renderStart, renderEnd)}
+return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMenu(); };`,
+    )(
+      { querySelectorAll: (selector: string) => selector === ".codex-plus-toggle[data-codex-plus-setting]" ? buttons : [] },
+      () => settings,
+      new Set(["pluginMarketplaceUnlock", "modelWhitelistUnlock"]),
+      () => {},
+      () => {},
+    ) as (loaded: boolean) => void;
+    render(false);
+    assert.equal(mapped.dataset.pending, "true");
+    assert.equal(mapped.disabled, true);
+    assert.equal(local.dataset.pending, "false");
+    assert.equal(local.disabled, false);
+    for (const button of buttons) assert.equal(button.attributes["aria-checked"], button.dataset.enabled);
+    assert.equal(mapped.attributes["aria-checked"], "true");
+
+    for (const key of Object.keys(settings)) settings[key] = false;
+    render(true);
+    for (const button of buttons) {
+      assert.equal(button.dataset.pending, "false");
+      assert.equal(button.dataset.enabled, "false");
+      assert.equal(button.attributes["aria-checked"], "false");
+    }
+    assert.equal(mapped.disabled, false);
+    assert.equal(local.disabled, false);
+    assert.equal(unavailable.disabled, true, "a relay-unavailable switch stays disabled after settings load");
+  });
+
+  it("refreshes backend switches from enabled to disabled without losing their accessible state", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const start = renderer.indexOf("  function refreshCodexPlusBackendToggles()");
+    const end = renderer.indexOf("\n  let codexPlusUserScripts =", start);
+    assert.ok(start >= 0 && end > start);
+    const settings = { enhancementsEnabled: true };
+    const attributes: Record<string, string> = {};
+    const button = {
+      dataset: {} as Record<string, string>,
+      disabled: true,
+      getAttribute: () => "enhancementsEnabled",
+      setAttribute: (name: string, value: string) => { attributes[name] = value; },
+    };
+    let menuRefreshes = 0;
+    const refresh = new Function("document", "codexPlusBackendSettings", "syncStepwisePanel", "runScanStep", "syncCodexPlusTypingEffects", "renderCodexPlusMenu", "scan",
+      `${renderer.slice(start, end)}\nreturn refreshCodexPlusBackendToggles;`,
+    )(
+      { querySelectorAll: () => [button] }, settings, () => {}, () => {}, () => {},
+      () => { menuRefreshes += 1; }, () => {},
+    ) as () => void;
+    refresh();
+    assert.equal(button.dataset.enabled, "true");
+    assert.equal(attributes["aria-checked"], "true");
+    settings.enhancementsEnabled = false;
+    refresh();
+    assert.equal(button.dataset.enabled, "false");
+    assert.equal(attributes["aria-checked"], "false");
+    assert.equal(button.disabled, true, "backend refresh preserves the control's existing disabled state");
+    assert.equal(menuRefreshes, 2, "each backend refresh also synchronizes the other settings controls");
+  });
+
+  it("groups the settings homepage into labelled cards and keeps hidden service controls hidden", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const homeStart = renderer.indexOf('data-codex-plus-panel="home"');
+    const homeEnd = renderer.indexOf("${renderCodexPlusExtensionMenuRows()}", homeStart);
+    assert.ok(homeStart >= 0 && homeEnd > homeStart);
+    const sections = Array.from(renderer.slice(homeStart, homeEnd).matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)">([\s\S]*?)<\/section>/g));
+    assert.deepEqual(sections.map((match) => match[1]), ["常规", "模型与服务", "对话与输入", "外观与布局", "工具与关于"]);
+    for (const [, title, contents] of sections) {
+      assert.ok(contents.includes(`<h2 class="codex-plus-settings-section-title">${title}</h2>`));
+      assert.ok(contents.includes('class="codex-plus-settings-card"'));
+      assert.ok(contents.includes('class="codex-plus-row"'));
+    }
+    const layoutStart = renderer.indexOf("  function installCodexPlusPageLayout(");
+    const layoutEnd = renderer.indexOf("  function codexPlusPageTitle(", layoutStart);
+    assert.ok(layoutStart >= 0 && layoutEnd > layoutStart);
+    assert.match(renderer.slice(layoutStart, layoutEnd), /if \(tab === "home"\)\s*\{[\s\S]*?body\.querySelector\("\.codex-plus-settings"\)\?\.prepend\(header\)/);
+    const css = installRendererStyle(renderer)[0].textContent ?? "";
+    assert.match(css, /\.codex-plus-settings\s+\.codex-plus-row\[hidden\]\s*\{\s*display:\s*none\s*;/);
+  });
+
+  it("synchronizes the typing-effect dropdown label, selection and disabled state", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const start = renderer.indexOf("  function syncCodexPlusTypingEffectDropdown(");
+    const end = renderer.indexOf("  function openCodexPlusTypingEffectDropdown(", start);
+    assert.ok(start >= 0 && end > start);
+    const label = { textContent: "" };
+    const triggerAttributes: Record<string, string> = { "aria-expanded": "true" };
+    const trigger = {
+      disabled: false,
+      querySelector: () => label,
+      setAttribute: (name: string, value: string) => { triggerAttributes[name] = value; },
+    };
+    const options = ["off", "rainbow", "fireworks", "stars"].map((value) => {
+      const attributes: Record<string, string> = {};
+      return {
+        attributes,
+        dataset: { codexPlusTypingEffectOption: value },
+        tabIndex: -1,
+        setAttribute: (name: string, next: string) => { attributes[name] = next; },
+      };
+    });
+    const overlay = { querySelector: () => trigger, querySelectorAll: () => options };
+    const menu = { hidden: false, parentElement: overlay };
+    const select = { value: "rainbow", disabled: false, selectedOptions: [{ textContent: "彩虹粒子" }], closest: () => overlay };
+    let cleanups = 0;
+    const sync = new Function("document", "cleanup",
+      `let codexPlusTypingEffectDropdownCleanup = cleanup;\n${renderer.slice(start, end)}\nreturn syncCodexPlusTypingEffectDropdown;`,
+    )({ querySelector: () => menu }, () => { cleanups += 1; }) as (control: typeof select) => void;
+    sync(select);
+    assert.equal(label.textContent, "彩虹粒子");
+    assert.equal(trigger.disabled, false);
+    assert.equal(menu.hidden, false);
+    for (const option of options) {
+      const selected = option.dataset.codexPlusTypingEffectOption === "rainbow";
+      assert.equal(option.attributes["aria-selected"], String(selected));
+      assert.equal(option.tabIndex, selected ? 0 : -1);
+    }
+    select.value = "off";
+    select.selectedOptions = [];
+    sync(select);
+    assert.equal(label.textContent, "关闭");
+    for (const option of options) {
+      const selected = option.dataset.codexPlusTypingEffectOption === "off";
+      assert.equal(option.attributes["aria-selected"], String(selected));
+      assert.equal(option.tabIndex, selected ? 0 : -1);
+    }
+    select.disabled = true;
+    sync(select);
+    assert.equal(trigger.disabled, true);
+    assert.equal(menu.hidden, true);
+    assert.equal(triggerAttributes["aria-expanded"], "false");
+    assert.equal(cleanups, 1, "disabling an open menu removes its document listeners");
+    sync(select);
+    assert.equal(cleanups, 1, "menu cleanup is consumed once");
+  });
+
+  it("saves dropdown selections through the existing hidden select change contract", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const selectMarkup = renderer.match(/<select[^>]*data-codex-plus-typing-effect="true"[^>]*>[\s\S]*?<\/select>/)?.[0];
+    assert.ok(selectMarkup, "the select data attribute remains available to existing change handling");
+    assert.match(selectMarkup, /\bhidden\b/);
+    assert.match(selectMarkup, /aria-hidden="true"/);
+    assert.deepEqual(Array.from(selectMarkup.matchAll(/<option value="([^"]+)"/g), (match) => match[1]), ["off", "rainbow", "fireworks", "stars"]);
+    const changeStart = renderer.indexOf('      const typingEffectSelect = target?.closest("[data-codex-plus-typing-effect]");');
+    const changeEnd = renderer.indexOf("      const widthInput", changeStart);
+    const optionStart = renderer.indexOf('      const typingEffectOption = target?.closest("[data-codex-plus-typing-effect-option]");');
+    const optionEnd = renderer.indexOf("      // 左面板", optionStart);
+    assert.ok(changeStart >= 0 && changeEnd > changeStart && optionStart >= 0 && optionEnd > optionStart);
+    const saves: Array<{ key: string; value: string }> = [];
+    const events: Array<{ type: string; bubbles: boolean }> = [];
+    const onChange = new Function("target", "setCodexPlusSetting", renderer.slice(changeStart, changeEnd));
+    const select: { value: string; disabled: boolean; dispatchEvent: (event: { type: string; bubbles: boolean }) => void } = {
+      value: "off", disabled: false,
+      dispatchEvent(event) {
+        events.push(event);
+        onChange({ closest: () => select }, (key: string, value: string) => { saves.push({ key, value }); });
+      },
+    };
+    const option = { dataset: { codexPlusTypingEffectOption: "stars" } };
+    let focusRestores = 0;
+    const choose = new Function("target", "overlay", "Event", "closeCodexPlusTypingEffectDropdown", renderer.slice(optionStart, optionEnd));
+    const click = () => choose(
+      { closest: () => option }, { querySelector: () => select },
+      class {
+        type: string;
+        bubbles: boolean;
+        constructor(type: string, options: { bubbles: boolean }) {
+          this.type = type;
+          this.bubbles = options.bubbles;
+        }
+      },
+      (restore: boolean) => { if (restore) focusRestores += 1; },
+    );
+    click();
+    assert.equal(select.value, "stars");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "change");
+    assert.equal(events[0].bubbles, true);
+    assert.deepEqual(saves, [{ key: "typingEffect", value: "stars" }]);
+    click();
+    assert.equal(events.length, 1, "selecting the current value does not save again");
+    select.disabled = true;
+    option.dataset.codexPlusTypingEffectOption = "rainbow";
+    click();
+    assert.equal(select.value, "stars");
+    assert.equal(events.length, 1, "disabled selections cannot change the saved setting");
+    assert.equal(focusRestores, 3);
   });
 
   it("rewrites official usage status at the cache boundary instead of scanning alerts", async () => {
@@ -578,6 +803,173 @@ const codexContainer = { nodeType: 1, relevant: true };
 function mutation(addedNodes: unknown[] = [], removedNodes: unknown[] = []) {
   return { target: codexContainer, addedNodes, removedNodes };
 }
+
+describe("native-style extension and sponsor discovery", () => {
+  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+  function segment(source: string, from: string, to: string) {
+    const start = source.indexOf(from);
+    const end = source.indexOf(to, start);
+    assert.ok(start >= 0 && end > start, `missing renderer segment: ${from}`);
+    return source.slice(start, end);
+  }
+  function escapeSource(renderer: string) {
+    return segment(renderer, "  function escapeHtml(value)", "  function confirmDelete(");
+  }
+  function extensionRuntime(renderer: string) {
+    const icon = renderer.match(/^  const codexPlusDefaultExtensionIconPath = .+;$/m)?.[0];
+    assert.ok(icon);
+    return new Function(`${icon}\n${escapeSource(renderer)}
+let codexPlusUserScripts = { scripts: [] }, codexPlusUserScriptsLoaded = false;
+let codexPlusScriptMarket = { scripts: [], loaded: false, loading: false, message: "" };
+let codexPlusExtensionsQuery = "", codexPlusExtensionsFilter = "market", codexPlusExtensionsSelected = null;
+${segment(renderer, "  function userScriptStatusLabel(", "  async function uninstallUserScript(")}
+${segment(renderer, "  function codexPlusExtensionsEntries()", "  const codexPlusAdsUrl =")}
+return {
+  nav: renderCodexPlusExtensionsNav, overview: renderCodexPlusExtensionsOverview, detail: renderCodexPlusExtensionsDetail,
+  configure(scripts, market, options = {}) {
+    codexPlusUserScripts = { scripts }; codexPlusUserScriptsLoaded = options.userLoaded ?? true;
+    codexPlusScriptMarket = { scripts: market, loaded: options.marketLoaded ?? true, loading: options.loading ?? false, message: options.message || "" };
+    codexPlusExtensionsQuery = options.query || ""; codexPlusExtensionsFilter = options.filter || "market";
+    codexPlusExtensionsSelected = options.selected || null;
+  }
+};`)() as {
+      nav: () => string; overview: () => string; detail: () => string;
+      configure: (scripts: Record<string, unknown>[], market: Record<string, unknown>[], options?: Record<string, unknown>) => void;
+    };
+  }
+
+  it("filters installed and market entries, escapes their data and keeps actions outside selection buttons", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
+    const scripts = [
+      { key: 'user"&', name: "Owned <user>", source: "user", market_id: "owned", enabled: true, status: "loaded" },
+      { key: "builtin.js", name: "Builtin", source: "builtin", enabled: false, status: "disabled" },
+    ];
+    const market = [
+      { id: "owned", name: "Owned market", description: "Owned-document", tags: ["owned-tag"], version: "2" },
+      { id: 'available"&', name: "Available <script>", description: 'Catalog <docs> & "more"', tags: ["catalog"], author: "Author", version: "1", icon: "https://example.test/logo.png?x=1&y=2" },
+    ];
+    runtime.configure(scripts, market);
+    const nav = runtime.nav();
+    assert.ok(nav.includes('data-codex-extensions-select="installed:user&quot;&amp;"'));
+    assert.ok(nav.includes('data-codex-extensions-select="installed:builtin.js"'));
+    assert.ok(nav.includes('data-codex-extensions-browse="market"'));
+    assert.doesNotMatch(nav, /data-codex-market-install|data-codex-extensions-search/);
+    const overview = runtime.overview();
+    assert.ok(overview.includes('data-codex-extensions-select="market:available&quot;&amp;"'));
+    assert.ok(overview.includes('data-codex-market-install="available&quot;&amp;"'));
+    assert.ok(overview.includes("Available &lt;script&gt;"));
+    assert.ok(overview.includes("Catalog &lt;docs&gt; &amp; &quot;more&quot;"));
+    assert.ok(overview.includes('src="https://example.test/logo.png?x=1&amp;y=2"'));
+    assert.doesNotMatch(overview, /<script>|data-codex-market-install="owned"|Owned market|Builtin/);
+    const cards = Array.from(overview.matchAll(/<article class="codex-plus-extension-card">([\s\S]*?)<\/article>/g));
+    assert.equal(cards.length, 1);
+    assert.match(cards[0][1], /<\/button>\s*<div class="codex-plus-extension-card-actions"><button/);
+    assert.equal(Array.from(cards[0][1].matchAll(/<button\b/g)).length, 2);
+    assert.doesNotMatch(cards[0][1], /<button\b(?:(?!<\/button>)[\s\S])*<button\b/);
+    assert.equal(runtime.detail(), overview, "opening extensions initially displays the browse results");
+
+    runtime.configure(scripts, market, { filter: "installed" });
+    const installed = runtime.overview();
+    assert.ok(installed.includes("Owned market"), "installed market scripts use their catalog display name");
+    assert.ok(installed.includes('data-codex-user-script-key="user&quot;&amp;"'));
+    assert.ok(installed.includes('role="switch" aria-checked="true"'));
+    assert.ok(installed.includes('role="switch" aria-checked="false"'));
+    assert.doesNotMatch(installed, /data-codex-market-install|Available/);
+    runtime.configure(scripts, market, { filter: "installed", query: "OWNED-DOCUMENT" });
+    assert.ok(runtime.overview().includes('data-codex-user-script-key="user&quot;&amp;"'));
+    assert.doesNotMatch(runtime.overview(), /Builtin/);
+    runtime.configure(scripts, market, { filter: "installed", query: "Owned <user>" });
+    assert.ok(runtime.overview().includes('data-codex-user-script-key="user&quot;&amp;"'), "the original local name remains searchable");
+    runtime.configure(scripts, market, { filter: "installed", query: 'user"&' });
+    assert.ok(runtime.overview().includes('data-codex-user-script-key="user&quot;&amp;"'), "the local script key remains searchable");
+    runtime.configure(scripts, market, { query: "CATALOG" });
+    assert.ok(runtime.overview().includes("Available &lt;script&gt;"));
+    runtime.configure(scripts, market, { selected: { kind: "installed", key: 'user"&' } });
+    assert.ok(runtime.detail().includes('data-codex-extensions-uninstall="user&quot;&amp;"'));
+    runtime.configure(scripts, market, { selected: { kind: "installed", key: "builtin.js" } });
+    assert.doesNotMatch(runtime.detail(), /data-codex-extensions-uninstall/);
+  });
+
+  it("retains loading, empty and escaped search/error states in extension browse results", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
+    runtime.configure([], [], { marketLoaded: false, loading: true, userLoaded: false });
+    assert.match(runtime.overview(), /role="status">正在读取拓展…/);
+    assert.match(runtime.nav(), /正在读取用户拓展…/);
+    runtime.configure([], [], { filter: "installed", userLoaded: false });
+    assert.match(runtime.overview(), /正在读取用户拓展…/);
+    runtime.configure([], [], { filter: "installed" });
+    assert.match(runtime.overview(), /未发现已安装的拓展。/);
+    runtime.configure([], []);
+    assert.match(runtime.overview(), /市场里没有可安装的拓展。/);
+    runtime.configure([], [], { message: "<backend> & unavailable" });
+    assert.ok(runtime.overview().includes("&lt;backend&gt; &amp; unavailable"));
+    runtime.configure([], [], { query: '<missing> "query"' });
+    assert.ok(runtime.overview().includes("没有匹配「&lt;missing&gt; &quot;query&quot;」的拓展。"));
+    runtime.configure([], [], { selected: { kind: "market", key: "removed" } });
+    assert.match(runtime.detail(), /市场里没有可安装的拓展。/);
+  });
+
+  it("updates extension results without replacing or refocusing the search input", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const input = { value: "query", selectionStart: 2, selectionEnd: 2 };
+    const nav = { innerHTML: "old nav" }, detail = { innerHTML: "old detail" };
+    const nodes: Record<string, object> = {
+      "[data-codex-plus-page-nav-body]": nav,
+      "[data-codex-plus-extensions-detail]": detail,
+      "[data-codex-extensions-search]": input,
+    };
+    const requested: string[] = [];
+    const renderedSelections: unknown[] = [];
+    const runtime = new Function("document", "codexPlusActiveEntry", "renderNav", "renderDetail", "codexPlusExtensionsSelectionDetail",
+      `let codexPlusExtensionsSelected = { kind: "market", key: "removed" };
+function renderCodexPlusExtensionsNav() { return renderNav(codexPlusExtensionsSelected); }
+function renderCodexPlusExtensionsDetail() { return renderDetail(codexPlusExtensionsSelected); }
+${segment(renderer, "  function refreshCodexPlusExtensionsView()", "  function codexPlusExtensionsSelectionDetail()")}
+return { refresh: refreshCodexPlusExtensionsView, selection: () => codexPlusExtensionsSelected };`,
+    )(
+      { querySelector(selector: string) { requested.push(selector); return nodes[selector]; } }, () => "extensions",
+      (selection: unknown) => { renderedSelections.push(selection); return "new nav"; },
+      (selection: unknown) => { renderedSelections.push(selection); return "new results"; },
+      () => null,
+    ) as { refresh: () => void; selection: () => unknown };
+    runtime.refresh();
+    assert.equal(runtime.selection(), null, "removed selections return to the browse list");
+    assert.deepEqual(renderedSelections, [null, null], "the sidebar and results render from the same normalized selection");
+    assert.equal(nav.innerHTML, "new nav");
+    assert.equal(detail.innerHTML, "new results");
+    assert.equal(nodes["[data-codex-extensions-search]"], input);
+    assert.deepEqual(input, { value: "query", selectionStart: 2, selectionEnd: 2 });
+    assert.deepEqual(requested, ["[data-codex-plus-page-nav-body]", "[data-codex-plus-extensions-detail]"]);
+  });
+
+  it("preserves sponsor logos, destinations and highlights in the native recommendation list", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const logo = await readFile(new URL("../../../docs/images/sponsor-volcengine.png", import.meta.url));
+    const image = `data:image/png;base64,${logo.toString("base64")}`;
+    const runtime = new Function(`${escapeSource(renderer)}\n${segment(renderer, "  const codexPlusAdsUrl =", "  function cacheBustCodexPlusAdUrl(")}
+return {
+  render: renderCodexPlusAds,
+  set(payload, loaded = true) { codexPlusAds = normalizeCodexPlusAds(payload); codexPlusAdsLoaded = loaded; return codexPlusAds; }
+};`)() as { render: () => string; set: (payload: unknown, loaded?: boolean) => Array<Record<string, unknown>> };
+    const ad = { id: "volcengine", type: "sponsor", title: "火山方舟｜套餐", description: "原始 <描述>", url: "https://example.test/partner?plan=pro&source=codex", image, highlights: ['原始 "优惠" & 说明', "保留第二条亮点"] };
+    const normalized = runtime.set({ ads: [ad, { ...ad, id: "normal", type: "normal" }, { ...ad, id: "expired", expires_at: "2000-01-01" }] });
+    assert.equal(normalized.length, 1);
+    assert.equal(normalized[0].image, image);
+    assert.equal(normalized[0].url, ad.url);
+    assert.deepEqual(normalized[0].highlights, ad.highlights);
+    const html = runtime.render();
+    assert.ok(html.includes(`src="${image}"`));
+    assert.ok(html.includes('data-codex-plus-ad-url="https://example.test/partner?plan=pro&amp;source=codex"'));
+    assert.ok(html.includes('href="https://example.test/partner?plan=pro&amp;source=codex"'));
+    assert.ok(html.includes("原始 &lt;描述&gt;"));
+    assert.ok(html.includes("原始 &quot;优惠&quot; &amp; 说明"));
+    assert.doesNotMatch(html, /codex-plus-ad-icon-fallback|<描述>/);
+    runtime.set({ ads: [ad] }, false);
+    assert.match(runtime.render(), /推荐内容加载中…/);
+    runtime.set({ ads: [] });
+    assert.match(runtime.render(), /暂无推荐内容。/);
+  });
+});
 
 describe("renderer injection scan scheduling", () => {
   const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
@@ -1410,7 +1802,7 @@ describe("renderer inject 分片与产物一致", () => {
     // 已安装条目要走 codexPlusExtensionMarketItem(entry) 按 market_id 回查。
     const { source } = await assembleFromFragments();
     const openingTag = source.indexOf("  function renderCodexPlusExtensionsNav()");
-    const closingTag = source.indexOf("\n  /** 左面板内容变了就整块重绘", openingTag);
+    const closingTag = source.indexOf("  function refreshCodexPlusExtensionsView()", openingTag);
     assert.ok(openingTag >= 0, "找不到 renderCodexPlusExtensionsNav");
     assert.ok(closingTag > openingTag, "找不到函数结束位置");
     const body = source.slice(openingTag, closingTag);
@@ -1649,10 +2041,13 @@ describe("拓展菜单项", () => {
     const source = await readFile(settingsPath, "utf8");
     const handler = source.indexOf('overlay.addEventListener("click"');
     assert.ok(handler > 0, "找不到点击委托");
-    const body = source.slice(handler, handler + 600);
+    const end = source.indexOf('overlay.addEventListener("keydown"', handler);
+    assert.ok(end > handler, "找不到点击委托之后的键盘委托");
+    const body = source.slice(handler, end);
     const extIdx = body.indexOf("handleCodexPlusExtensionMenuClick(target)");
     const devtoolsIdx = body.indexOf("data-codex-open-devtools");
     assert.ok(extIdx > 0, "点击委托应当调用拓展菜单处理器");
+    assert.ok(devtoolsIdx > 0, "点击委托应当包含内置 DevTools 分支");
     assert.ok(extIdx < devtoolsIdx, "拓展分支应排在内置分支之前");
   });
 
@@ -1711,16 +2106,23 @@ function conversationViewRuntime(renderer: string) {
     dataset: Record<string, string>;
     rect: { left: number; width: number };
     vars: Record<string, string>;
+    computedMaxWidth: string;
     padding: { left: string; right: string };
     querySelectorAll(selector: string): FakeEl[];
     querySelector(selector: string): FakeEl | null;
     matches(selector: string): boolean;
     closest(selector: string): FakeEl | null;
+    contains(el: FakeEl): boolean;
     getBoundingClientRect(): { left: number; width: number; right: number; top: number; bottom: number; height: number };
   };
 
   function matches(el: FakeEl, selector: string): boolean {
+    if (selector.includes(",")) return selector.split(",").some((part) => matches(el, part.trim()));
+    const taggedAttribute = selector.match(/^([a-z]+)(\[.*\])$/);
+    if (taggedAttribute) return el.tagName.toLowerCase() === taggedAttribute[1] && matches(el, taggedAttribute[2]);
     if (selector === "div") return el.tagName === "DIV";
+    if (/^[a-z]+$/.test(selector)) return el.tagName.toLowerCase() === selector;
+    if (selector.startsWith("#")) return el.attrs.id === selector.slice(1);
     if (selector.startsWith("[") && selector.endsWith("]")) {
       const body = selector.slice(1, -1);
       const eq = body.indexOf("=");
@@ -1758,6 +2160,7 @@ function conversationViewRuntime(renderer: string) {
       dataset: {},
       rect: { left: 0, width: 0 },
       vars: {},
+      computedMaxWidth: "none",
       padding: { left: "", right: "" },
       querySelectorAll: (selector: string) => query(node, selector),
       querySelector: (selector: string) => query(node, selector)[0] ?? null,
@@ -1770,6 +2173,7 @@ function conversationViewRuntime(renderer: string) {
         }
         return null;
       },
+      contains: (el) => node === el || descendants(node).includes(el),
       getBoundingClientRect: () => ({
         left: node.rect.left,
         width: node.rect.width,
@@ -1836,6 +2240,7 @@ return {
       const style: Record<string, unknown> = {
         paddingLeft: node.padding.left,
         paddingRight: node.padding.right,
+        maxWidth: node.computedMaxWidth,
         length: Object.keys(node.vars).length,
         getPropertyValue: (name: string) => node.vars[name] ?? "",
       };
@@ -1946,6 +2351,7 @@ describe("renderer injection conversation view alignment", () => {
     // 既没有新版类名工具类，也没有 data-* 锚点，只剩 Codex 注入的 CSS 变量。
     const bare = runtime.append(host, runtime.el("div", "some-renamed-class"));
     bare.vars["--thread-body-max-width"] = "calc(900px + 0px)";
+    bare.computedMaxWidth = "900px";
     const found = runtime.api.findContent();
     assert.ok(found, "兜底候选应能反查到宿主节点");
     assert.equal(found, bare);

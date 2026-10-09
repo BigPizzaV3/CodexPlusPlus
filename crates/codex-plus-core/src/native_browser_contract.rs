@@ -241,10 +241,12 @@ fn detect_with(
 
 #[cfg(test)]
 pub(super) fn synthetic_runtime(temp: &tempfile::TempDir) -> (BrowserPaths, &'static str) {
+    // 复用测试根目录归一化，避免 macOS /var 软链被生产路径保护正确拒绝。
+    let root = super::tests::temp_root(temp);
     let paths = BrowserPaths {
-        codex_home: temp.path().join("home"),
-        runtime_root: temp.path().join("runtimes"),
-        state_root: temp.path().join("state"),
+        codex_home: root.join("home"),
+        runtime_root: root.join("runtimes"),
+        state_root: root.join("state"),
     };
     let key = "0123456789abcdef";
     let runtime = paths.runtime_root.join(key);

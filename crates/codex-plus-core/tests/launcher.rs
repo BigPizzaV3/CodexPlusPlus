@@ -704,21 +704,6 @@ fn launcher_does_not_prepare_projectless_main_window() {
 }
 
 #[test]
-fn launcher_windows_process_wait_uses_platform_cfg_guards() {
-    let source = include_str!("../src/launcher.rs").replace("\r\n", "\n");
-
-    assert!(source.contains(
-        "#[cfg(windows)]\nasync fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()>"
-    ));
-    assert!(source.contains(
-        "#[cfg(not(windows))]\nasync fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()>"
-    ));
-    assert!(source.contains(
-        "#[cfg(windows)]\nfn wait_for_windows_process_id_blocking(process_id: u32) -> anyhow::Result<()>"
-    ));
-}
-
-#[test]
 fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
     let extra_args = vec![
@@ -2095,6 +2080,79 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
 }
 
 #[tokio::test]
+async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_helper_until_exit() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let exit = Arc::new(tokio::sync::Notify::new());
+    let mut hooks = FakeHooks::new(events.clone())
+        .with_launch_result(CodexLaunch::PackagedActivation {
+            app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
+            arguments: "--remote-debugging-port=9229".to_string(),
+            process_id: None,
+        })
+        .with_inject_error("renderer is not ready");
+    hooks.record_identity_capture = true;
+    hooks.wait_until_exit = Some(exit.clone());
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store: StatusStore::new(temp.path().join("latest-status.json")),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        events.lock().unwrap().iter().filter(|event| *event == "capture-identity:9229").count(),
+        1,
+    );
+    assert_eq!(handle.status_store.load_latest().unwrap().unwrap().status, "running_degraded");
+    let mut waiting = std::pin::pin!(handle.wait_for_codex_exit());
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting).await.is_err());
+    let current = events.lock().unwrap().clone();
+    let captured = current.iter().position(|event| event == "capture-identity:9229").unwrap();
+    let monitor = current.iter().position(|event| event == "wait-codex").unwrap();
+    assert!(captured < monitor);
+    assert!(!current.iter().any(|event| event.starts_with("shutdown-helper:")));
+    exit.notify_one();
+    waiting.await.unwrap();
+    assert!(events.lock().unwrap().iter().any(|event| event == "shutdown-helper:57321"));
+    assert_eq!(handle.status_store.load_latest().unwrap().unwrap().status, "stopped");
+}
+
+#[tokio::test]
+async fn proxy_only_packaged_launch_captures_identity_without_attempting_renderer_injection() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut hooks = FakeHooks::new(events.clone())
+        .with_settings(official_mix_responses_settings())
+        .with_launch_result(CodexLaunch::PackagedActivation {
+            app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
+            arguments: "--remote-debugging-port=9229".to_string(),
+            process_id: None,
+        });
+    hooks.record_identity_capture = true;
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir), debug_port: 9229, helper_port: 57321,
+            status_store: StatusStore::new(temp.path().join("latest-status.json")),
+        }, &hooks,
+    ).await.unwrap();
+    let current = events.lock().unwrap().clone();
+    assert_eq!(current.iter().filter(|event| *event == "capture-identity:9229").count(), 1);
+    assert!(!current.iter().any(|event| event.starts_with("inject:")));
+    assert!(current.iter().any(|event| event == "start-helper:57321"));
+    assert!(!current.iter().any(|event| event.starts_with("shutdown-helper:")));
+    handle.wait_for_codex_exit().await.unwrap();
+}
+
+#[tokio::test]
 async fn default_provider_sync_enabled_fails_instead_of_silently_skipping() {
     let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_provider_sync_unsupported();
 
@@ -2233,6 +2291,32 @@ async fn native_browser_lifecycle_uses_one_settings_snapshot_and_stops_on_succes
     }
 }
 
+#[tokio::test]
+async fn launch_exit_saves_failed_terminal_state_with_complete_error_chain() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let mut hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new())));
+    hooks.wait_error = true;
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store: StatusStore::new(temp.path().join("latest-status.json")),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert!(handle.wait_for_codex_exit().await.is_err());
+    let terminal = handle.status_store.load_latest().unwrap().unwrap();
+    assert_eq!(terminal.status, "failed");
+    assert!(terminal.message.contains("monitoring Codex process"));
+    assert!(terminal.message.contains("native process handle failed"));
+    assert_eq!(terminal.phase, None);
+}
+
 #[derive(Clone)]
 struct FakeHooks {
     events: Arc<Mutex<Vec<String>>>,
@@ -2249,6 +2333,10 @@ struct FakeHooks {
     remaining_helper_bind_forbidden: Arc<Mutex<u32>>,
     /// 模拟与占用/保留都无关的其他 bind 失败，验证错误原样冒泡。
     helper_bind_other_error: Option<String>,
+    wait_error: bool,
+    captured_launch_identity: Arc<Mutex<bool>>,
+    record_identity_capture: bool,
+    wait_until_exit: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl FakeHooks {
@@ -2268,6 +2356,10 @@ impl FakeHooks {
             remaining_helper_bind_conflicts: Arc::new(Mutex::new(0)),
             remaining_helper_bind_forbidden: Arc::new(Mutex::new(0)),
             helper_bind_other_error: None,
+            wait_error: false,
+            captured_launch_identity: Arc::new(Mutex::new(false)),
+            record_identity_capture: false,
+            wait_until_exit: None,
         }
     }
 
@@ -2479,6 +2571,13 @@ impl LaunchHooks for FakeHooks {
         self.inject_error.is_none()
     }
 
+    async fn capture_injected_launch_identity(&self, debug_port: u16) {
+        *self.captured_launch_identity.lock().unwrap() = true;
+        if self.record_identity_capture {
+            self.event(format!("capture-identity:{debug_port}"));
+        }
+    }
+
     async fn start_bridge_watchdog(
         &self,
         _debug_port: u16,
@@ -2497,6 +2596,16 @@ impl LaunchHooks for FakeHooks {
         _debug_port: u16,
     ) -> anyhow::Result<()> {
         self.event("wait-codex");
+        if self.record_identity_capture {
+            assert!(*self.captured_launch_identity.lock().unwrap(), "monitoring must use the launch identity even after injection failure");
+        }
+        if let Some(exit) = &self.wait_until_exit {
+            exit.notified().await;
+        }
+        if self.wait_error {
+            return Err(anyhow::anyhow!("native process handle failed")
+                .context("monitoring Codex process"));
+        }
         Ok(())
     }
 

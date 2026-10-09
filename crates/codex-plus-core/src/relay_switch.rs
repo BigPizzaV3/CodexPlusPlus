@@ -8,7 +8,7 @@ use crate::relay_config::{
 };
 use crate::settings::{BackendSettings, RelayMode, SettingsStore};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RelaySwitchResult {
     pub settings: BackendSettings,
     pub configured: bool,

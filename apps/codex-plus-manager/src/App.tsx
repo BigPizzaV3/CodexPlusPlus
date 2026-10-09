@@ -22,11 +22,9 @@ import {
   ArrowRight,
   Bell,
   Blocks,
-  Bot,
   CheckCircle2,
   ChevronDown,
   Camera,
-  CircleArrowUp,
   Copy,
   Download,
   Edit3,
@@ -84,8 +82,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
+import { PluginMarketScreen } from "./PluginMarketScreen";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
+import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceProtocol, type WhaleBalanceSettings } from "./whale-settings";
 import {
   applyDictationPreset,
   defaultDictationSettings,
@@ -244,7 +244,7 @@ type LaunchCommandResult = CommandResult<{
   nativeBrowserRestoreFailed?: boolean;
 }>;
 
-type BackendSettings = {
+type BackendSettings = WhaleBalanceSettings & {
   codexAppPath: string;
   codexExtraArgs: string[];
   dictation: DictationSettings;
@@ -259,7 +259,9 @@ type BackendSettings = {
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
+  codexAppSessionShare: boolean;
   codexAppPasteFix: boolean;
+  codexAppTypingEffect: TypingEffect;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
@@ -311,7 +313,7 @@ type BackendSettings = {
   relayTestModel: string;
   /** 按工具分区的配置镜像，键为工具 id（codex / grok / …）。 */
   tools?: Record<string, ToolShard>;
-  /** 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
+  /** 侧栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
   activeTool?: string;
 };
 
@@ -344,6 +346,7 @@ type ToolsResult = {
 };
 
 type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
+type TypingEffect = "off" | "rainbow" | "fireworks" | "stars";
 
 export type RelayProfile = {
   id: string;
@@ -834,8 +837,10 @@ type AdItem = {
 type AdsResult = CommandResult<{
   version: number;
   ads: AdItem[];
-  /// 置顶赞助位。单独售卖，不参与 ads 的排序与数量上限。
+  /// 兼容旧数据和旧管理端消费者的首条置顶赞助位。
   topAd?: AdItem;
+  /// 独立置顶赞助位列表，供概览横幅轮播。
+  topAds?: AdItem[];
 }>;
 
 type ScriptMarketItem = {
@@ -931,16 +936,16 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-/** 顶栏工具切换条的工具标识。后端 `list_tools` 返回同名字符串。 */
+/** 左侧 Agent 切换栏的工具标识。后端 `list_tools` 返回同名字符串。 */
 type ToolId = string;
 
-/** 各工具在顶栏切换条上的图标；未登记的工具用通用图标兜底。 */
-const TOOL_ICONS: Record<string, LucideIcon> = {
-  codex: Bot,
-  grok: Blocks,
+/** 品牌图标随应用打包，来源和许可见 assets/agents/LICENSE.txt。 */
+const TOOL_ICONS: Record<string, string> = {
+  codex: new URL("./assets/agents/chatgpt.svg", import.meta.url).href,
+  grok: new URL("./assets/agents/grok.svg", import.meta.url).href,
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -965,6 +970,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "enhance", label: t("Codex增强"), icon: Hammer, tool: "codex" },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette, tool: "codex" },
   { id: "userScripts", label: t("拓展"), icon: FileCode2, tool: "codex" },
+  { id: "pluginMarket", label: t("CodeX 插件市场"), icon: Store, tool: "codex" },
   { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
   { id: "agentCache", label: t("AI Agent 缓存清理"), icon: Trash2 },
@@ -981,16 +987,20 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("扩展"),
-    routes: ["weixin", "enhance", "dreamSkin", "userScripts"],
+    routes: ["weixin", "enhance", "dreamSkin", "userScripts", "pluginMarket"],
   },
   {
     label: t("系统"),
-    routes: ["recommendations", "agentCache", "maintenance", "about", "settings"],
+    routes: ["maintenance"],
     placement: "bottom",
   },
 ];
 
+/** 应用级入口放在最左栏；概览仍随当前 Agent 显示各自的状态。 */
+const globalNavigationRoutes: Route[] = ["recommendations", "agentCache", "about", "settings"];
+
 const defaultSettings: BackendSettings = {
+  ...defaultWhaleBalanceSettings(),
   codexAppPath: "",
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
@@ -1005,7 +1015,9 @@ const defaultSettings: BackendSettings = {
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
+  codexAppSessionShare: true,
   codexAppPasteFix: false,
+  codexAppTypingEffect: "off",
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
@@ -1160,7 +1172,7 @@ export function App() {
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
-  // 顶栏工具切换条的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
+  // 左侧 Agent 切换栏的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
   const [toolEntries, setToolEntries] = useState<ToolEntry[]>([]);
   const [activeTool, setActiveTool] = useState<ToolId>("codex");
@@ -1214,10 +1226,14 @@ export function App() {
     return result;
   };
 
-  /// 切换顶栏聚焦的工具。纯 UI 状态：写回 settings.json 的 `activeTool`，
+  /// 切换侧栏聚焦的工具。纯 UI 状态：写回 settings.json 的 `activeTool`，
   /// 不触发任何供应商配置写入 —— 切工具 ≠ 切供应商。
   const switchTool = async (toolId: ToolId) => {
-    if (toolId === activeTool) return;
+    if (toolId === activeTool) {
+      // 通用页面占据整个右侧，点击当前 Agent 也要能回到它的工作区。
+      if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      return;
+    }
     const target = toolEntries.find((tool) => tool.id === toolId);
     if (target && !target.switchable) {
       showNotice(t("该工具暂不可切换"), tf("{0} 的供应商配置还没接入，切过去只会显示空列表。", [target.name]), "failed");
@@ -1235,8 +1251,10 @@ export function App() {
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
+      // 先保存 Agent 选择，再离开通用页；失败时保留原页面与布局。
+      if (globalNavigationRoutes.includes(route)) await navigate("overview");
     } else {
-      // 写盘失败就回滚 UI，别让顶栏显示一个没保存的状态。
+      // 写盘失败就回滚 UI，别让侧栏显示一个没保存的状态。
       setActiveTool(activeTool);
       void refreshSettings(true);
     }
@@ -1263,7 +1281,7 @@ export function App() {
       setSettings(result);
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
-      // 顶栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
+      // 侧栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
       setActiveTool(normalized.activeTool || "codex");
       setLaunchForm((current) => ({
         ...current,
@@ -2088,8 +2106,10 @@ export function App() {
       if (!navigation) return false;
       const destination = managerNavigationDestination(navigation);
       await refreshSettings(true);
-      if (destination.route === "enhance") {
+      if (destination.route === "enhance" || destination.route === "pluginMarket") {
         setActiveTool("codex");
+      }
+      if (destination.route === "enhance") {
         setEnhancementTab(destination.section ?? "general");
       }
       setPendingEnhancementSection(destination.section);
@@ -2302,6 +2322,11 @@ export function App() {
 
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
+    const whaleIssue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(next));
+    if (whaleIssue) {
+      showNotice(t("Codex 用量挂件"), whaleIssue, "failed");
+      return;
+    }
     const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(next.dictation));
     if (dictationIssue) {
       showNotice(t("语音输入"), dictationIssue, "failed");
@@ -2317,6 +2342,11 @@ export function App() {
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
+    const whaleIssue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalized));
+    if (whaleIssue) {
+      showNotice(t("Codex 用量挂件"), whaleIssue, "failed");
+      return null;
+    }
     const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
     if (dictationIssue) {
       showNotice(t("语音输入"), dictationIssue, "failed");
@@ -3343,75 +3373,60 @@ export function App() {
     }),
     [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
-  const hasUpdate = update?.updateAvailable === true;
+  const isGlobalPage = globalNavigationRoutes.includes(route);
 
   return (
-    <div className={`shell ${theme}`}>
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-copy">
-            <div className="brand-title-row">
-              <div className="brand-title">Codex++</div>
-              {hasUpdate ? (
-                <button
-                  className="update-dot"
-                  onClick={() => {
-                    setRoute("about");
-                    void checkUpdate(false);
-                  }}
-                  title={tf("发现新版本 {0}", [update?.latestVersion ?? ""])}
-                  type="button"
-                >
-                  <CircleArrowUp className="h-4 w-4" aria-hidden="true" />
-                </button>
-              ) : null}
-            </div>
-            <div className="brand-subtitle">{t("管理控制台")}</div>
-          </div>
-        </div>
-        <ToolSwitcher
-          tools={toolEntries}
-          activeTool={activeTool}
-          onSelect={(toolId) => void switchTool(toolId)}
-        />
-        <nav className="nav" aria-label={t("主导航")}>
-          {navigationSections.map((section) => {
-            // 按当前工具过滤：只留下属于这个工具、或与工具无关的页面。
-            const visibleRoutes = section.routes.filter((routeId) => {
-              const item = routes.find((candidate) => candidate.id === routeId);
-              if (!item) return false;
-              return !item.tool || item.tool === activeTool;
-            });
-            // 整节都被过滤掉时不渲染标题，免得 Grok 下出现一个空的分组标签。
-            if (visibleRoutes.length === 0) return null;
-            return (
-            <div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
-              <div className="nav-section-label">{section.label}</div>
-              {visibleRoutes.map((routeId) => {
+    <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
+      <ApplicationRail
+        tools={toolEntries}
+        activeTool={activeTool}
+        route={route}
+        theme={theme}
+        onSelect={(toolId) => void switchTool(toolId)}
+        onNavigate={(next) => void navigate(next)}
+        onToggleTheme={actions.toggleTheme}
+      />
+      {!isGlobalPage ? (
+        <aside className="sidebar">
+          <nav className="nav" aria-label={t("主导航")}>
+            {navigationSections.map((section) => {
+              // 按当前工具过滤：只留下属于这个工具、或与工具无关的页面。
+              const visibleRoutes = section.routes.filter((routeId) => {
                 const item = routes.find((candidate) => candidate.id === routeId);
-                if (!item) return null;
-                const Icon = item.icon;
-                return (
-                  <button
-                    className={`nav-item ${route === item.id ? "active" : ""}`}
-                    key={item.id}
-                    onClick={() => void navigate(item.id)}
-                    title={item.label}
-                    type="button"
-                  >
-                    <span className="nav-icon">
-                      <Icon className="h-4 w-4" aria-hidden="true" />
-                    </span>
-                    <span className="nav-label">{item.label}</span>
-                    {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
-                  </button>
-                );
-              })}
-            </div>
-            );
-          })}
-        </nav>
-      </aside>
+                if (!item) return false;
+                return !item.tool || item.tool === activeTool;
+              });
+              // 整节都被过滤掉时不渲染标题，免得 Grok 下出现一个空的分组标签。
+              if (visibleRoutes.length === 0) return null;
+              return (
+              <div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
+                <div className="nav-section-label">{section.label}</div>
+                {visibleRoutes.map((routeId) => {
+                  const item = routes.find((candidate) => candidate.id === routeId);
+                  if (!item) return null;
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      className={`nav-item ${route === item.id ? "active" : ""}`}
+                      key={item.id}
+                      onClick={() => void navigate(item.id)}
+                      title={item.label}
+                      type="button"
+                    >
+                      <span className="nav-icon">
+                        <Icon className="h-4 w-4" aria-hidden="true" />
+                      </span>
+                      <span className="nav-label">{item.label}</span>
+                      {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+              );
+            })}
+          </nav>
+        </aside>
+      ) : null}
       <main className="workspace">
         <header className="topbar" key={`topbar-${route}`}>
           <div>
@@ -3419,23 +3434,7 @@ export function App() {
             <p>{routeSubtitle(route)}</p>
           </div>
           <div className="topbar-actions">
-            <Button
-              onClick={() => toggleLanguage()}
-              size="icon"
-              title={getLanguage() === "en" ? t("切换到中文") : t("切换到英文")}
-              variant="outline"
-            >
-              <Languages className="h-4 w-4" />
-            </Button>
-            <Button
-              onClick={actions.toggleTheme}
-              size="icon"
-              title={theme === "dark" ? t("切换到浅色") : t("切换到深色")}
-              variant="outline"
-            >
-              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </Button>
-            {activeTool === "codex" ? (
+            {activeTool === "codex" && !isGlobalPage ? (
               <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
                 <Rocket className="h-4 w-4" />
                 {t("重启 Codex++")}
@@ -3541,6 +3540,7 @@ export function App() {
             />
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
+          {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "maintenance" ? (
@@ -4215,50 +4215,91 @@ function WeixinConnectScreen({
 /// 数据来自广告源里的 sponsor 条目。
 /// 概览页置顶赞助位。
 ///
-/// 这个位置**不来自推荐池** —— `topAd` 是单独售卖的贵价位置，由广告源里的
-/// `top_ad` 字段单独指定，不参与 `ads` 数组的排序，也不会被推荐列表的
-/// 数量上限影响。没有 `topAd` 时不显示置顶赞助位。
+/// 这个位置**不来自推荐池** —— 广告源里的 `top_ad` 可配置单个对象或数组，
+/// 多条时自动轮播。没有有效条目时不显示置顶赞助位。
 function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const topAd = ads?.topAd;
-  const featured: AdItem[] = topAd && !isExpiredAd(topAd) ? [topAd] : [];
+  const sourceAds = ads?.topAds?.length ? ads.topAds : ads?.topAd ? [ads.topAd] : [];
+  const featured = sourceAds.filter((ad) => !isExpiredAd(ad));
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const paused = hovered || focusWithin;
+
+  useEffect(() => {
+    if (featured.length < 2 || paused) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        setActiveIndex((index) => (index + 1) % featured.length);
+      }
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [featured.length, paused]);
+
+  if (featured.length === 0) return null;
+  const activePosition = activeIndex % featured.length;
+  const ad = featured[activePosition];
+  const move = (offset: number) => {
+    setActiveIndex((index) => (index + offset + featured.length) % featured.length);
+  };
 
   return (
-    <div className="sponsor-board">
-      {featured.map((ad) => (
-        <Panel className="jojocode-overview" key={ad.id || ad.title}>
-          <CardContent>
-            <div className="jojocode-overview-layout">
-              <div className="jojocode-overview-main">
-                {ad.image ? (
-                  <img alt="" className="sponsor-logo" src={ad.image} />
-                ) : (
-                  <div className="jojocode-overview-mark">
-                    <Network className="h-5 w-5" />
-                  </div>
-                )}
-                <div>
-                  <span className="eyebrow">{t("推荐内容")}</span>
-                  <h2>{formatAdTitle(ad.title)}</h2>
-                  <p>{ad.description}</p>
+    <div
+      className="sponsor-board"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusWithin(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocusWithin(false);
+      }}
+    >
+      <Panel className="jojocode-overview">
+        <CardContent>
+          <div className="jojocode-overview-layout">
+            <div className="jojocode-overview-main">
+              {ad.image ? (
+                <img alt="" className="sponsor-logo" src={ad.image} />
+              ) : (
+                <div className="jojocode-overview-mark">
+                  <Network className="h-5 w-5" />
                 </div>
+              )}
+              <div aria-live={paused ? "polite" : "off"} className="sponsor-carousel-copy" key={ad.id || ad.title}>
+                <span className="eyebrow">{t("推荐内容")}</span>
+                <h2>{formatAdTitle(ad.title)}</h2>
+                <p className="recommendation-description" title={ad.description}>{ad.description}</p>
               </div>
-              <div className="jojocode-overview-side">
-                {ad.highlights?.length ? (
-                  <div className="jojocode-model-tags">
-                    {ad.highlights.map((item) => (
-                      <span key={item}>{item}</span>
-                    ))}
-                  </div>
-                ) : null}
+            </div>
+            <div className="jojocode-overview-side">
+              {ad.highlights?.length ? (
+                <div className="jojocode-model-tags">
+                  {ad.highlights.map((item) => (
+                    <span key={item}>{item}</span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="sponsor-carousel-actions">
                 <Button onClick={() => void actions.openExternalUrl(ad.url)}>
                   <ExternalLink className="h-4 w-4" />
                   {t("打开推荐内容")}
                 </Button>
+                {featured.length > 1 ? (
+                  <div aria-label={t("赞助商轮播")} className="sponsor-carousel-controls" role="group">
+                    <Button aria-label={t("上一条")} onClick={() => move(-1)} size="icon" variant="outline">
+                      <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                    <span aria-live={paused ? "polite" : "off"} className="sponsor-carousel-count">
+                      {activePosition + 1} / {featured.length}
+                    </span>
+                    <Button aria-label={t("下一条")} onClick={() => move(1)} size="icon" variant="outline">
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
-          </CardContent>
-        </Panel>
-      ))}
+          </div>
+        </CardContent>
+      </Panel>
     </div>
   );
 }
@@ -4735,6 +4776,61 @@ function envConflictSourceLabel(source: string): string {
   return source || t("环境变量");
 }
 
+function whaleBalanceValidationMessage(issue: WhaleBalanceIssue | null): string | null {
+  if (issue === "path") return t("请填写供应商同域下的余额接口路径，不包含网址、查询参数或片段。");
+  if (issue === "field") return t("请填写余额字段路径，例如 data.balance 或 data.accounts[0].balance。");
+  if (issue === "currency") return t("币种请使用三位代码，例如 USD 或 CNY。");
+  if (issue === "scale") return t("金额倍率必须是大于 0 且不超过 1e12 的有限数值。");
+  return null;
+}
+
+function WhaleBalanceSettingsFields({ form, onFormChange }: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+}) {
+  if (!form.codexAppWhaleWidgetEnabled) return null;
+  const update = (patch: Partial<WhaleBalanceSettings>) => onFormChange({ ...form, ...patch });
+  const issue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalizeWhaleBalanceSettings(form)));
+  const disabled = !form.enhancementsEnabled;
+  return (
+    <details className="settings-block">
+      <summary>{t("API 余额（可选）")}</summary>
+      <p className="field-hint">{t("跟随 Codex++ 当前供应商查询余额；Codex 订阅额度和本地 token 无需配置此项。")}</p>
+      <Field label={t("余额查询方式")}>
+        <AppSelect<WhaleBalanceProtocol>
+          value={form.codexAppWhaleBalanceProtocol}
+          disabled={disabled}
+          onChange={(value) => update({ codexAppWhaleBalanceProtocol: value })}
+          options={[
+            { value: "auto", label: t("自动识别已支持的接口") },
+            { value: "off", label: t("仅显示 Codex 用量") },
+            { value: "custom", label: t("自定义供应商余额接口") },
+          ]}
+        />
+      </Field>
+      {form.codexAppWhaleBalanceProtocol === "custom" ? <>
+        <p className="field-hint">{t("按供应商文档填写 GET 接口和返回字段，复用当前供应商的 API Key。币种和倍率应与供应商账单一致。")}</p>
+        <Field label={t("余额接口路径")}>
+          <Input disabled={disabled} value={form.codexAppWhaleBalancePath} placeholder="/api/balance" onChange={(event) => update({ codexAppWhaleBalancePath: event.currentTarget.value })} />
+        </Field>
+        <Field label={t("余额字段路径")}>
+          <Input disabled={disabled} value={form.codexAppWhaleBalanceField} placeholder="data.balance" onChange={(event) => update({ codexAppWhaleBalanceField: event.currentTarget.value })} />
+        </Field>
+        <div className="form-row">
+          <Field label={t("余额币种")}>
+            <Input disabled={disabled} maxLength={3} value={form.codexAppWhaleBalanceCurrency} placeholder="USD" onChange={(event) => update({ codexAppWhaleBalanceCurrency: event.currentTarget.value.toUpperCase() })} />
+          </Field>
+          <Field label={t("金额倍率")}>
+            <Input disabled={disabled} type="number" step="any" min={0} value={Number.isFinite(form.codexAppWhaleBalanceScale) ? form.codexAppWhaleBalanceScale : ""} onChange={(event) => update({ codexAppWhaleBalanceScale: event.currentTarget.valueAsNumber })} />
+          </Field>
+        </div>
+        <p className="field-hint">{t("显示金额 = 接口数值 × 倍率；例如接口返回分时，倍率填 0.01。")}</p>
+        {issue ? <p className="field-hint" role="alert">{issue}</p> : null}
+      </> : null}
+    </details>
+  );
+}
+
 function DictationSettingsPanel({ form, onFormChange }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
@@ -5075,14 +5171,41 @@ function EnhanceScreen({
               <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
                 <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
                 <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
+                <FeatureToggle title={t("分享会话按钮")} detail={t("在当前会话工具栏显示分享按钮，保存后更新显示，无需重启 Codex。")} checked={form.codexAppSessionShare} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionShare", value)} />
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
+                <div className={`feature-toggle ${!masterEnabled ? "disabled" : ""}`}>
+                  <span>
+                    <strong>{t("打字特效（彩虹 P）")}</strong>
+                    <small>{t("在 Codex 输入框的光标附近显示特效，保存后生效；系统减少动态效果时暂停。")}</small>
+                  </span>
+                  <AppSelect<TypingEffect>
+                    ariaLabel={t("打字特效（彩虹 P）")}
+                    value={form.codexAppTypingEffect}
+                    disabled={!masterEnabled}
+                    onChange={(value) => onFormChange({ ...form, codexAppTypingEffect: value })}
+                    options={[
+                      { value: "off", label: t("关闭") },
+                      { value: "rainbow", label: t("彩虹粒子") },
+                      { value: "fireworks", label: t("烟花") },
+                      { value: "stars", label: t("星光") },
+                    ]}
+                  />
+                </div>
                 <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
                 <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
                 <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
               </FeatureGroup>
-              {isWindowsPlatform ? <FeatureGroup title={t("桌宠")} detail={t("调整桌宠与鼠标的互动。")}>
-                <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} />
-              </FeatureGroup> : null}
+              <FeatureGroup title={t("挂件与桌宠")} detail={t("在 Codex 中查看用量，设置自己的角色和互动方式。")}>
+                <FeatureToggle
+                  title={t("Codex 用量挂件")}
+                  detail={t("原版角色、泡泡编辑器、音效库和提醒，显示 Codex 会话与全机用量。点击角色旁的菜单配置。")}
+                  checked={form.codexAppWhaleWidgetEnabled}
+                  disabled={!masterEnabled}
+                  onChange={(value) => setEnhanceFlag("codexAppWhaleWidgetEnabled", value)}
+                />
+                <WhaleBalanceSettingsFields form={form} onFormChange={onFormChange} />
+                {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
+              </FeatureGroup>
             </div>
             <div className="hint-line enhance-footer-hint">
               <Info className="h-4 w-4" />
@@ -6631,16 +6754,15 @@ function SessionsScreen({
 
 /// 推荐内容页：列出广告源里的全部推荐（含 sponsor 与 normal）。
 ///
-/// 概览页那个置顶位是单独的贵价位置（`topAd` 字段），不从这里取，
-/// 所以两处不会重复展示同一条。
+/// 概览页置顶位独立配置；展示多条时也从推荐池去重，避免重复出现。
 function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
   const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
   // 置顶位排在最前，并把推荐池里指向同一家的那条去掉 —— 广告源里同一条赞助商
   // 常常同时出现在 top_ad 和 ads 里（两个 id、同一个落地页），只比 id 去不掉。
-  const topAd = ads?.topAd && !isExpiredAd(ads.topAd) ? ads.topAd : null;
-  const topIdentity = topAd ? adIdentity(topAd) : "";
-  const pool = topAd ? items.filter((ad) => adIdentity(ad) !== topIdentity) : items;
-  const ordered = topAd ? [topAd, ...pool] : pool;
+  const topAds = (ads?.topAds?.length ? ads.topAds : ads?.topAd ? [ads.topAd] : []).filter((ad) => !isExpiredAd(ad));
+  const topIdentities = new Set(topAds.map(adIdentity));
+  const pool = items.filter((ad) => !topIdentities.has(adIdentity(ad)));
+  const ordered = [...topAds, ...pool];
   const sponsors = ordered.filter((ad) => ad.type === "sponsor");
   const normal = ordered.filter((ad) => ad.type === "normal");
   return (
@@ -7628,15 +7750,41 @@ function SortableModelWindowEntry({ id, children }: SortableModelWindowEntryProp
   );
 }
 
-function RelayFold({ title, children, className = "", bodyClassName = "", issue }: {
+function RelayFold({ title, children, className = "", bodyClassName = "", issue, sectionId, defaultOpen = false }: {
   title: string;
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
   issue?: string | null;
+  sectionId?: string;
+  defaultOpen?: boolean;
 }) {
+  const preferenceKey = sectionId ? `codex-plus-relay-fold:${sectionId}` : null;
+  const [open, setOpen] = useState(() => {
+    if (issue) return true;
+    try {
+      const stored = preferenceKey ? window.localStorage.getItem(preferenceKey) : null;
+      if (stored === "true" || stored === "false") return stored === "true";
+    } catch {
+      // 无法使用本地存储时仍可展开、编辑并保存供应商草稿。
+    }
+    return defaultOpen;
+  });
+  const previousIssue = useRef(issue);
+  useEffect(() => {
+    // 同一项错误更新文字时不抢回用户刚收起的面板，新出现的错误才展开。
+    if (issue && !previousIssue.current) setOpen(true);
+    previousIssue.current = issue;
+  }, [issue]);
   return (
-    <details className={`relay-fold ${className}`.trim()}>
+    <details className={`relay-fold ${className}`.trim()} open={open} onToggle={(event) => {
+      const next = event.currentTarget.open;
+      if (next === open) return;
+      setOpen(next);
+      if (preferenceKey) {
+        try { window.localStorage.setItem(preferenceKey, String(next)); } catch { /* 偏好不可写不影响编辑。 */ }
+      }
+    }}>
       <summary className="relay-fold-summary">
         <ChevronDown aria-hidden="true" className="relay-fold-chevron h-4 w-4" />
         <strong>{title}</strong>
@@ -8217,6 +8365,8 @@ function RelayProfileEditor({
         ) : null}
         <RelayFold
           className="relay-config-section relay-model-settings"
+          sectionId="models"
+          defaultOpen
           issue={modelRowsError || relayModelRoutesSettingsValidation(relaySettingsWithDraft(form, profile.id, profile, isNew))}
           title={t("模型配置")}
         >
@@ -8697,6 +8847,7 @@ function RelayProfileEditor({
         </RelayFold>
         <RelayFold
           className="relay-config-section relay-request-settings"
+          sectionId="requests"
           issue={customHeadersError || relaySessionProviderValidation(profile)}
           title={t("请求设置")}
         >
@@ -8753,6 +8904,8 @@ function RelayProfileEditor({
                   <strong>{t("纯标准协议")}</strong>
                   <small>
                     {t("强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。")}
+                    {" "}
+                    {t("若网关提示 thinking type: adaptive 无效，可启用此项后重试；这会停用厂商私有推理参数。")}
                   </small>
                 </span>
                 <ToggleVisual />
@@ -8848,7 +9001,7 @@ function RelayProfileEditor({
         </RelayFold>
       </div>
       <div className="relay-bottom-options">
-        <RelayFold className="relay-config-section relay-channel-protection" title={t("渠道保护")}>
+        <RelayFold className="relay-config-section relay-channel-protection" sectionId="channel-protection" title={t("渠道保护")}>
           <p className="relay-fold-description">
             {t("仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。")}
           </p>
@@ -8934,7 +9087,7 @@ function RelayProfileEditor({
             </section>
           </div>
         </RelayFold>
-        <RelayFold className="relay-advanced-block" title={t("更多选项")}>
+        <RelayFold className="relay-advanced-block" sectionId="advanced" title={t("更多选项")}>
           <p className="relay-fold-description">
             {t("包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。")}
           </p>
@@ -9741,7 +9894,7 @@ function RelayFileEditors({
   const entries = contextEntriesForProfile(form, contextProfile);
   return (
     <div className="relay-file-grid">
-      <RelayFold className="relay-file-panel relay-config-preview" title={t("config.toml 预览")}>
+      <RelayFold className="relay-file-panel relay-config-preview" sectionId="config-preview" title={t("config.toml 预览")}>
         <p className="relay-fold-description">
           {isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}
         </p>
@@ -9764,6 +9917,7 @@ function RelayFileEditors({
       <RelayFold
         bodyClassName="relay-common-config-body"
         className="relay-file-panel relay-common-config-panel"
+        sectionId="common-config"
         title={t("通用配置文件")}
       >
         <p className="relay-fold-description">
@@ -9805,7 +9959,7 @@ function RelayFileEditors({
             onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
           />
       </RelayFold>
-      <RelayFold className="relay-file-panel relay-auth-preview" title="auth.json">
+      <RelayFold className="relay-file-panel relay-auth-preview" sectionId="auth-preview" title="auth.json">
         <p className="relay-fold-description">
           {isActive
             ? profile.relayMode === "pureApi"
@@ -10682,8 +10836,83 @@ function GrokScreen({
   );
 }
 
+/** 应用栏：上方切换 Agent，下方访问通用页面与界面设置。 */
+function ApplicationRail({
+  tools,
+  activeTool,
+  route,
+  theme,
+  onSelect,
+  onNavigate,
+  onToggleTheme,
+}: {
+  tools: ToolEntry[];
+  activeTool: ToolId;
+  route: Route;
+  theme: Theme;
+  onSelect: (toolId: ToolId) => void;
+  onNavigate: (route: Route) => void;
+  onToggleTheme: () => void;
+}) {
+  const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
+  const themeLabel = theme === "dark" ? t("切换到浅色") : t("切换到深色");
+  return (
+    <aside className="app-rail">
+      <ToolSwitcher
+        tools={tools}
+        activeTool={activeTool}
+        showSelection={!globalNavigationRoutes.includes(route)}
+        onSelect={onSelect}
+      />
+      <div className="rail-bottom">
+        <nav className="rail-navigation" aria-label={t("系统")}>
+          {globalNavigationRoutes.map((routeId) => {
+            const item = routes.find((candidate) => candidate.id === routeId);
+            if (!item) return null;
+            const Icon = item.icon;
+            const selected = route === item.id;
+            return (
+              <button
+                aria-current={selected ? "page" : undefined}
+                aria-label={item.label}
+                className={`tool-chip rail-nav-item ${selected ? "active" : ""}`}
+                key={item.id}
+                onClick={() => onNavigate(item.id)}
+                title={item.label}
+                type="button"
+              >
+                <Icon aria-hidden="true" className="rail-nav-icon" />
+              </button>
+            );
+          })}
+        </nav>
+        <div className="rail-preferences">
+          <button
+            aria-label={languageLabel}
+            className="tool-chip rail-nav-item"
+            onClick={() => toggleLanguage()}
+            title={languageLabel}
+            type="button"
+          >
+            <Languages aria-hidden="true" className="rail-nav-icon" />
+          </button>
+          <button
+            aria-label={themeLabel}
+            className="tool-chip rail-nav-item"
+            onClick={onToggleTheme}
+            title={themeLabel}
+            type="button"
+          >
+            {theme === "dark" ? <Sun aria-hidden="true" className="rail-nav-icon" /> : <Moon aria-hidden="true" className="rail-nav-icon" />}
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 /**
- * 顶栏的工具切换条：一排工具图标，点击切换当前聚焦的工具。
+ * 应用栏上方的 Agent 图标组：点击切换当前聚焦的工具。
  *
  * 这里的「工具」指 Codex / Grok / 后续接入的 CLI，每个工具在自己的供应商
  * 分区里，互相不串配置。未接入写盘能力的工具仍然展示（让用户知道后面会支持），
@@ -10692,39 +10921,46 @@ function GrokScreen({
 function ToolSwitcher({
   tools,
   activeTool,
+  showSelection = true,
   onSelect,
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  showSelection?: boolean;
   onSelect: (toolId: ToolId) => void;
 }) {
-  if (tools.length === 0) return null;
   return (
-    <div className="tool-switcher" role="tablist" aria-label={t("工具切换")}>
+    <nav className="tool-switcher" aria-label={t("工具切换")}>
       {tools.map((tool) => {
-        const Icon = TOOL_ICONS[tool.id] ?? CircleArrowUp;
-        const selected = tool.id === activeTool;
+        const icon = TOOL_ICONS[tool.id];
+        const selected = showSelection && tool.id === activeTool;
         const title = tool.switchable
           ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
           : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
         return (
           <button
-            aria-selected={selected}
+            aria-label={tool.switchable ? tool.name : `${tool.name} · ${t("待接入")}`}
+            aria-pressed={selected}
             className={`tool-chip ${selected ? "active" : ""}`}
             disabled={!tool.switchable}
             key={tool.id}
             onClick={() => onSelect(tool.id)}
-            role="tab"
             title={title}
             type="button"
           >
-            <Icon aria-hidden="true" className="tool-chip-icon" />
-            <span className="tool-chip-name">{tool.name}</span>
-            {!tool.switchable ? <span className="tool-chip-note">{t("待接入")}</span> : null}
+            {icon ? (
+              <span
+                aria-hidden="true"
+                className={`tool-chip-icon tool-chip-brand-icon tool-chip-icon-${tool.id}`}
+                style={{ maskImage: `url("${icon}")`, WebkitMaskImage: `url("${icon}")` }}
+              />
+            ) : (
+              <Blocks aria-hidden="true" className="tool-chip-icon" />
+            )}
           </button>
         );
       })}
-    </div>
+    </nav>
   );
 }
 
@@ -10884,7 +11120,7 @@ function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions
           {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
           <div className="ad-content">
             <strong>{formatAdTitle(ad.title)}</strong>
-            <p>{ad.description}</p>
+            <p className="recommendation-description" title={ad.description}>{ad.description}</p>
           </div>
           {ad.highlights?.length ? (
             <div className="ad-tags">
@@ -10953,6 +11189,7 @@ function routeSubtitle(route: Route) {
     enhance: t("管理常用功能、语音输入与下一步建议。"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
     userScripts: t("内置和用户自定义拓展清单"),
+    pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("普通推荐内容"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
@@ -11616,6 +11853,10 @@ function healthItems(overview: OverviewResult | null) {
   ];
 }
 
+function normalizeTypingEffect(value: unknown): TypingEffect {
+  return value === "rainbow" || value === "fireworks" || value === "stars" ? value : "off";
+}
+
 function normalizeSettings(settings: BackendSettings): BackendSettings {
   const backendAggregates = new Map(
     (settings.aggregateRelayProfiles ?? []).map((aggregate) => [aggregate.id, aggregate] as const),
@@ -11683,8 +11924,11 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    ...normalizeWhaleBalanceSettings(settings),
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
+    codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
+    codexAppSessionShare: settings.codexAppSessionShare !== false,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),

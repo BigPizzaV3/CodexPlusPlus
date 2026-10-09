@@ -541,6 +541,24 @@ button {
   vertical-align: 1px;
 }
 
+.section-note {
+  margin: 24px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.section-note a {
+  color: var(--blue);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.section-note a + span,
+.section-note span + a {
+  margin-left: 4px;
+}
+
 .showcase {
   padding: 116px 0;
   background: var(--ink);
@@ -576,8 +594,12 @@ button {
   object-fit: cover;
 }
 
-.showcase-main img {
-  aspect-ratio: 1.62 / 1;
+.showcase .section-note {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.showcase .section-note a {
+  color: #aab5ff;
 }
 
 .showcase figcaption {
@@ -602,13 +624,240 @@ button {
 
 .showcase-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 14px;
   margin-top: 14px;
 }
 
-.showcase-grid img {
-  aspect-ratio: 1.68 / 1;
+.showcase-personal {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  align-items: start;
+  gap: 24px;
+  margin-top: 48px;
+}
+
+.showcase-grid figcaption,
+.showcase-personal figcaption {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.showcase-grid figcaption span,
+.showcase-personal figcaption span {
+  text-align: left;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.provider-grid article {
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--white);
+}
+
+.provider-grid h3,
+.model-example h3 {
+  margin: 0 0 12px;
+  font-size: 19px;
+  line-height: 1.4;
+}
+
+.provider-grid p,
+.model-example p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.model-example {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr);
+  align-items: center;
+  gap: 48px;
+  margin-top: 40px;
+  padding: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--white);
+}
+
+.model-example pre {
+  min-width: 0;
+  margin: 0;
+  padding: 24px;
+  overflow-x: auto;
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--white);
+  font-size: 14px;
+  line-height: 1.9;
+}
+
+.community-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.community-links a {
+  padding: 12px 18px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--white);
+  font-size: 14px;
+}
+
+.community-links a:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.sponsors {
+  margin-top: 68px;
+}
+
+.sponsors > h3 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.sponsors > .section-note {
+  margin-top: 12px;
+}
+
+.sponsor-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+  color: var(--blue);
+  font-size: 14px;
+}
+
+.sponsor-source a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.sponsor-source button {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--white);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.sponsor-featured:empty,
+.sponsor-grid:empty {
+  display: none;
+}
+
+.sponsor-banner {
+  display: block;
+  max-width: 860px;
+  margin: 28px auto 20px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--white);
+}
+
+.sponsor-banner img {
+  width: 100%;
+  height: auto;
+}
+
+.sponsor-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sponsor-banner .sponsor-copy {
+  padding: 24px;
+}
+
+.sponsor-copy h4 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+.sponsor-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.sponsor-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sponsor-highlights li {
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 12px;
+}
+
+.sponsor-mark {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 28px;
+}
+
+.sponsor-banner > .sponsor-mark {
+  margin: 24px 24px 0;
+}
+
+.sponsor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 28px;
+}
+
+.sponsor-grid a {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--white);
+}
+
+.sponsor-grid img {
+  width: 100%;
+  height: 64px;
+  object-fit: contain;
+}
+
+.sponsor-grid a:hover,
+.sponsor-banner:hover {
+  border-color: var(--blue);
 }
 
 .workflow {
@@ -691,7 +940,7 @@ button {
 
 .platform-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   background: #d8dbe1;
@@ -1353,6 +1602,14 @@ html[data-language="en"] .changelog-page .lang-en {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .provider-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sponsor-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .downloads-shell,
   .trust-layout,
   .faq-layout {
@@ -1485,6 +1742,16 @@ html[data-language="en"] .changelog-page .lang-en {
     display: none;
   }
 
+  .showcase-personal,
+  .model-example {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+  .model-example {
+    padding: 24px;
+  }
+
   .changelog-main {
     padding-top: calc(var(--nav-height) + 52px);
   }
@@ -1578,6 +1845,7 @@ html[data-language="en"] .changelog-page .lang-en {
 
   .feature-grid,
   .showcase-grid,
+  .sponsor-grid,
   .workflow-list,
   .trust-points {
     grid-template-columns: 1fr;
@@ -1585,15 +1853,6 @@ html[data-language="en"] .changelog-page .lang-en {
 
   .feature-card {
     min-height: 330px;
-  }
-
-  .showcase-main img,
-  .showcase-grid img {
-    aspect-ratio: 1.35 / 1;
-  }
-
-  .showcase-main img {
-    object-position: left center;
   }
 
   .showcase figcaption {
@@ -1655,6 +1914,10 @@ html[data-language="en"] .changelog-page .lang-en {
 }
 
 @media (max-width: 460px) {
+  .provider-grid {
+    grid-template-columns: 1fr;
+  }
+
   .hero-product {
     align-items: flex-start;
     flex-direction: column;

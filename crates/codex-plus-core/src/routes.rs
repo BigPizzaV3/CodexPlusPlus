@@ -67,6 +67,10 @@ pub trait BridgeSettingsService: Send + Sync {
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         Ok(String::new())
     }
+
+    fn whale_ledger_path(&self) -> PathBuf {
+        crate::paths::default_settings_path().with_file_name("whale-balance.sqlite3")
+    }
 }
 
 #[async_trait]
@@ -93,6 +97,60 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn script_market_install(&self, _payload: Value) -> anyhow::Result<Value> {
         anyhow::bail!("script market is unavailable")
     }
+    /// 独立插件市场只读取索引，安装时才获取目标插件。
+    async fn plugin_market_list(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::list_plugins(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("public"),
+            payload
+                .get("refresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        )
+        .await
+    }
+    async fn plugin_market_install(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::install_plugin(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("public"),
+            payload
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .await
+    }
+    async fn plugin_market_install_status(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::install_status(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("public"),
+            payload
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+    }
+    /// 注入层适配原生插件页面的列表、详情与安装协议。
+    async fn plugin_market_native(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::plugin_market::native_request(
+            &crate::codex_home::default_codex_home_dir(),
+            payload
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            payload.get("params").cloned().unwrap_or_else(|| json!({})),
+        )
+        .await
+    }
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self, payload: Value) -> anyhow::Result<Value>;
     async fn open_transient_manager(&self, payload: Value) -> anyhow::Result<Value> {
@@ -108,10 +166,16 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
+    async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"unavailable","message":"本机用量统计暂不可用"}))
+    }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
+    async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
+    }
     async fn find_archived_thread_by_title(
         &self,
         title: String,
@@ -216,6 +280,14 @@ pub async fn handle_bridge_request(
         "/share/create" => ctx.runtime.create_share(payload.clone()).await,
         "/script-market/list" => ctx.runtime.script_market_list().await,
         "/script-market/install" => ctx.runtime.script_market_install(payload.clone()).await,
+        "/plugin-market/list" => ctx.runtime.plugin_market_list(payload.clone()).await,
+        "/plugin-market/install" => ctx.runtime.plugin_market_install(payload.clone()).await,
+        "/plugin-market/install-status" => {
+            ctx.runtime
+                .plugin_market_install_status(payload.clone())
+                .await
+        }
+        "/plugin-market/native" => ctx.runtime.plugin_market_native(payload.clone()).await,
         "/stepwise/settings" => stepwise_settings_value(ctx.settings.get_settings().await),
         "/stepwise/generate" => {
             stepwise_generate_value(ctx.settings.get_settings().await, payload.clone()).await
@@ -248,6 +320,57 @@ pub async fn handle_bridge_request(
                 .thread_usage_history(session_from_payload(&payload))
                 .await
         }
+        // 仅内置挂件使用，不加入第三方拓展路由白名单。
+        "/whale/history" => match ctx.settings.get_settings().await {
+            Ok(settings)
+                if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
+            {
+                ctx.data.whale_history(payload.clone()).await
+            }
+            Ok(_) => Ok(json!({"status":"disabled"})),
+            Err(_) => Ok(json!({"status":"unavailable","message":"无法读取挂件设置"})),
+        },
+        "/whale/full" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                let path = ctx.settings.whale_ledger_path();
+                let requested_path = payload
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let history = if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&path)
+                    && matches!(
+                        requested_path,
+                        "/dsh-whale/usage-records.json" | "/dsh-whale/api-models.json"
+                    ) {
+                    ctx.data
+                        .whale_history(crate::whale_full::history_query(&path))
+                        .await
+                        .unwrap_or_else(|_| json!({"status":"unavailable"}))
+                } else {
+                    Value::Null
+                };
+                Ok(crate::whale_full::handle(&settings, path, payload.clone(), history).await)
+            }
+            Err(_) => Ok(json!({"status":503,"body":{"ok":false,"error":"无法读取挂件设置"}})),
+        },
+        "/whale/balance" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                Ok(crate::whale::balance(&settings, ctx.settings.whale_ledger_path()).await)
+            }
+            Err(_) => Ok(crate::whale::unavailable("无法读取挂件设置")),
+        },
+        "/whale/session" => match ctx.settings.get_settings().await {
+            Ok(settings)
+                if crate::whale::enabled(&settings)
+                    && crate::whale_full::history_enabled(&ctx.settings.whale_ledger_path()) =>
+            {
+                ctx.data.whale_session(session_from_payload(&payload)).await
+            }
+            Ok(_) => Ok(json!({"status": "disabled"})),
+            Err(_) => Ok(json!({"status": "unavailable", "message": "无法读取挂件设置"})),
+        },
         "/archived-thread" => {
             let title = payload
                 .get("title")
@@ -650,6 +773,20 @@ fn settings_payload_value(
 #[cfg(test)]
 mod dictation_privacy_tests {
     use super::*;
+
+    #[test]
+    fn settings_bridge_preserves_session_share_choice_for_renderer_master_gating() {
+        for enabled in [false, true] {
+            let settings = BackendSettings {
+                codex_app_session_share: enabled,
+                enhancements_enabled: false,
+                ..BackendSettings::default()
+            };
+            let result = settings_payload_value(settings, String::new()).unwrap();
+            assert_eq!(result["codexAppSessionShare"], enabled);
+            assert_eq!(result["enhancementsEnabled"], false);
+        }
+    }
 
     #[test]
     fn dictation_settings_bridge_removes_asr_key() {

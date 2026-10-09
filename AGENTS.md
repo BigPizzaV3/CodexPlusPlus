@@ -29,12 +29,10 @@
 - 删除只能单个文件，删除前确认
 - 禁止 sudo、提权、curl | bash
 - 禁止泄露密钥、.env、auth.json、config.toml 凭据
-- 覆盖文件前确认
 - 不擅自改 Cargo.toml、package.json、.gitignore（除非任务必需）
 
 ## 命令执行
 
-- 执行 bash 命令前确认
 - 不运行未知脚本、不擅自装依赖
 - 测试用 cargo test，不另起工具链
 

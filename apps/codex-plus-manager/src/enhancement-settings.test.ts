@@ -95,16 +95,21 @@ test("retired enhancements have no settings, navigation or command references in
 test("unified enhancements use the master switch and Chinese suggestion labels", () => {
   const enhance = component("EnhanceScreen");
   const toggles = elements(enhance).filter((element) => element.tagName.getText(app) === "FeatureToggle");
+  const share = fieldControl(enhance, "form.codexAppSessionShare");
+  assert.equal(attribute(share, "onChange"), '(value) => setEnhanceFlag("codexAppSessionShare", value)');
   assert.ok(toggles.length > 0);
   for (const toggle of toggles) assert.equal(attribute(toggle, "disabled"), "!masterEnabled");
   assert.equal(attribute(fieldControl(enhance, "form.codexAppPluginMarketplaceUnlock"), "disabled"), "!masterEnabled");
   const petGroup = elements(enhance).find((element) => element.tagName.getText(app) === "FeatureGroup"
-    && attribute(element, "title") === 't("桌宠")');
+    && attribute(element, "title") === 't("挂件与桌宠")');
   assert.ok(petGroup);
-  assert.equal(attribute(petGroup, "detail"), 't("调整桌宠与鼠标的互动。")');
+  assert.equal(attribute(petGroup, "detail"), 't("在 Codex 中查看用量，设置自己的角色和互动方式。")');
+  const petLook = fieldControl(petGroup.parent, "form.codexAppPetRealMouseLook");
   assert.ok(descendants(enhance).some((node) => ts.isConditionalExpression(node)
-    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(petGroup)), "pet-only groups must remain Windows-only");
-  fieldControl(petGroup.parent, "form.codexAppPetRealMouseLook");
+    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must remain Windows-only");
+  const whaleWidget = fieldControl(petGroup.parent, "form.codexAppWhaleWidgetEnabled");
+  assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
+    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(whaleWidget)), "the Codex usage widget must be available on every platform");
 
   const visibleEnglish = descendants(app).filter((node) => ts.isStringLiteral(node)
     || ts.isNoSubstitutionTemplateLiteral(node) || ts.isJsxText(node)).filter((node) => /Stepwise/.test(node.getText(app)));

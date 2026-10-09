@@ -1,4 +1,7 @@
   function installCodexPlusNavigationEntries() {
+    // 插件入口沿用原生按钮，清理旧注入留下的重复商店入口。
+    document.getElementById(codexPlusRailPluginMarketId)?.remove();
+    document.getElementById(codexPlusSidebarPluginMarketId)?.remove();
     if (installCodexPlusRailNavigation()) {
       detachCodexPlusSidebarNavigation();
       return;

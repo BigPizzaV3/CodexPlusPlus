@@ -41,6 +41,16 @@
       "lines": 1619
     },
     {
+      "name": "61-plugin-market-ui.js",
+      "description": "独立 CodeX 插件市场、索引检索与按需单包安装",
+      "lines": 0
+    },
+    {
+      "name": "62-plugin-market-adapter.js",
+      "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
+      "lines": 0
+    },
+    {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
       "lines": 933
@@ -71,9 +81,24 @@
       "lines": 0
     },
     {
+      "name": "94-typing-effects.js",
+      "description": "光标打字特效：彩虹粒子、烟花、星光与运行时清理",
+      "lines": 0
+    },
+    {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
       "lines": 1240
+    },
+    {
+      "name": "96-whale-compat.js",
+      "description": "Codex full whale host and bridge adapters",
+      "lines": 0
+    },
+    {
+      "name": "97-whale-widget.js",
+      "description": "Full whale engine opt-in lifecycle",
+      "lines": 0
     },
     {
       "name": "98-scan-schedule.js",
