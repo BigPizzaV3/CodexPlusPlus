@@ -1,0 +1,16 @@
+CodexPlusPlus Logo v2
+生成方式：内置 image_gen 工具
+输出：codexplusplus-logo-v2.png，1254 × 1254，PNG，透明背景
+
+最终生成提示词：
+
+Use case: logo-brand.
+Asset type: a single production-ready square desktop application icon for CodexPlusPlus (Codex++), an independent companion app for AI coding, model switching, and workflow enhancements.
+Primary request: redesign the project logo into a distinctive, simple terminal-and-double-plus symbol. Preserve the existing project's blue-to-violet visual identity.
+Scene/backdrop: genuinely transparent outside a single centered rounded-square app tile. The tile fills about 88% of the square canvas with balanced margins. Inside the tile use a refined deep cobalt-to-violet gradient, subtle and smooth.
+Subject: one strong minimalist white terminal chevron followed by exactly two equally sized plus signs, forming the readable symbol ">++". Make the chevron and two plus signs one cohesive bold geometric mark. Generous spacing, thick strokes, optically balanced, ample breathing room inside the tile. The mark occupies about 66% of the tile width. The two plus signs must have equal horizontal and vertical arm lengths and identical stroke widths.
+Style/medium: premium modern desktop app icon, crisp vector-like geometry, largely flat, subtle surface depth only. Polished restrained blue and violet, high contrast white symbol. Strong silhouette and readable at 32 pixels.
+Composition/framing: straight-on, centered, square 1024x1024 output, only one finished icon, no presentation sheet or mockup.
+Text (verbatim): ">++" as geometric symbols only. No other text.
+Constraints: transparent exterior with clean alpha edges; keep the mark simple and bold; no official OpenAI knot, no copied official Codex logo, no cloud shape, no mascot, no circuit patterns, no tiny details, no glow, no floating extra plus signs, no surrounding frame, no watermark, no captions, no perspective.
+
