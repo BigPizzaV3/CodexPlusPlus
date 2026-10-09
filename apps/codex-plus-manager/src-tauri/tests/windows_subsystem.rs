@@ -71,7 +71,7 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
 }
 
 #[test]
-fn manager_keeps_a_visible_compact_template_tray_when_hiding_the_macos_dock_icon() {
+fn manager_keeps_a_visible_brand_tray_and_click_menu_when_hiding_the_macos_dock_icon() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
 
@@ -80,7 +80,9 @@ fn manager_keeps_a_visible_compact_template_tray_when_hiding_the_macos_dock_icon
     assert!(lib_rs.contains("set_manager_activation_policy(&close_event_app, false)"));
     assert!(lib_rs.contains("set_manager_activation_policy(app_handle, true)"));
     assert!(lib_rs.contains("set_manager_activation_policy(&app_handle, false)"));
-    assert!(lib_rs.contains(".icon_as_template(true)"));
+    assert!(lib_rs.contains(".icon_as_template(false)"));
+    assert!(lib_rs.contains("tauri::include_image!(\"icons/icon.png\")"));
+    assert!(lib_rs.contains(".show_menu_on_left_click(true)"));
     assert!(lib_rs.contains(".tooltip(\"Codex++\")"));
     assert!(lib_rs.contains("item.setVisible(true)"));
     assert!(lib_rs.contains("ensure_macos_tray_visible(&close_event_app)"));
