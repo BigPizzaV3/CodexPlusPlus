@@ -9,9 +9,9 @@ set -euo pipefail
 VERSION="${1:-0.0.0}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 UNIVERSAL_DIR="$ROOT/target/universal/release"
-BINARIES=(codex-plus-plus codex-plus-plus-manager)
+BINARIES=(codex-plus-plus)
 
-# 前端产物要由调用方先构建好（vite:build），因为 manager 会把 dist 嵌进二进制。
+# 前端产物要由调用方先构建好（vite:build），统一应用会把 dist 嵌进二进制。
 for target in x86_64-apple-darwin aarch64-apple-darwin; do
   if ! rustup target list --installed | grep -qx "$target"; then
     echo "error: 缺少 Rust target $target，请先运行：" >&2

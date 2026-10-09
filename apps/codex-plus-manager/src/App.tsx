@@ -2152,18 +2152,18 @@ export function App() {
       const result = await launchCommand("restart_codex_plus", syncActiveRelay);
       if (!result) return false;
       if (!isSuccessStatus(result.status)) {
-        showNotice(t("重启 Codex++"), result.message, result.status);
+        showNotice(t("重启 Codex"), result.message, result.status);
         return false;
       }
       showNotice(
-        t("重启 Codex++"),
+        t("重启 Codex"),
         result.nativeBrowserRestoreFailed
           ? t("原生浏览器文件恢复失败，仍会继续启动。")
           : t("正在等待 Codex 重新启动…"),
         result.nativeBrowserRestoreFailed ? "failed" : "accepted",
       );
       const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-      showLaunchCompletionNotice(t("重启 Codex++"), completion, result.launchStartedAtMs);
+      showLaunchCompletionNotice(t("重启 Codex"), completion, result.launchStartedAtMs);
       const succeeded = Boolean(
         completion
         && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
@@ -3046,7 +3046,7 @@ export function App() {
         showLabel: "Show window",
         applySkinLabel: "Apply Dream Skin",
         quitLabel: "Quit",
-        windowTitle: "Codex++ Manager",
+        windowTitle: "Codex++",
       });
     }
   }, []);
@@ -3438,9 +3438,9 @@ export function App() {
           </div>
           <div className="topbar-actions">
             {activeTool === "codex" && !isGlobalPage ? (
-              <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
+              <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex")} variant="outline">
                 <Rocket className="h-4 w-4" />
-                {t("重启 Codex++")}
+                {t("重启 Codex")}
               </Button>
             ) : null}
           </div>
@@ -4372,7 +4372,7 @@ function OverviewScreen({
               <Toolbar>
                 <Button disabled={launchPending} onClick={() => void actions.launch()}>
                   <Rocket className="h-4 w-4" />
-                  {t("启动 Codex++")}
+                  {t("启动 Codex")}
                 </Button>
                 <Button variant="secondary" onClick={() => void actions.goLogs()}>
                   {t("打开关于")}
@@ -4443,7 +4443,7 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
       passed: result ? proxyVariables.length === 0 : false,
       detail: result
         ? proxyVariables.length
-          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex++。", [proxyVariableLabels.join(t("、"))])
+          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex。", [proxyVariableLabels.join(t("、"))])
           : t("未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。")
         : t("等待检测。"),
     },
@@ -5157,7 +5157,7 @@ function EnhanceScreen({
                 {isWindowsPlatform ? <>
                   <FeatureToggle
                     title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
-                    detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex++ 时应用。扩展可能保留请求标识设置。")}
+                    detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。")}
                     checked={form.codexAppNativeBrowserRequireIdentification}
                     disabled={!masterEnabled}
                     onChange={(value) => {
@@ -6624,7 +6624,7 @@ function SessionsScreen({
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
-              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
+              <p><small>{t("自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
               <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
               {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
               {sessionIndexRepairReport.abortedReason ? (
@@ -6828,13 +6828,12 @@ function MaintenanceScreen({
   return (
     <>
       <Panel>
-        <CardHead title={t("检查与修复")} detail={t("检查入口、Codex 应用和 Watcher 状态")} />
+        <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
         <CardContent>
           <div className="status-table">
             <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-            <StatusRow title={t("静默启动入口")} status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
-            <StatusRow title={t("管理控制台入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
-            <StatusRow title={t("Watcher 自动接管")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
+            <StatusRow title={t("Codex++ 应用入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
+            <StatusRow title={t("开机打开 Codex++")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
@@ -6857,18 +6856,18 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持 Codex++ 接管状态")} />
+        <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，Codex 仍需点击启动")} />
         <CardContent>
           <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除 watcher")}</Button>
+            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("设置开机启动")}</Button>
+            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除开机启动")}</Button>
             <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
             <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后静默启动会自动复用")} />
+        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")} />
         <CardContent>
           <div className="status-table">
             <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
@@ -6913,7 +6912,7 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
+            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex")}</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
               {t("保存为默认路径")}
             </Button>
@@ -10387,7 +10386,7 @@ function PendingProviderImportDialog({
         <div className="modal-head">
           <div>
             <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。")}</p>
+            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
@@ -11222,7 +11221,7 @@ function routeSubtitle(route: Route) {
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("普通推荐内容"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
-    maintenance: t("入口安装、修复、Watcher 与手动启动"),
+    maintenance: t("入口安装、修复、开机启动与应用路径"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),
   };
@@ -11873,16 +11872,10 @@ function healthItems(overview: OverviewResult | null) {
       detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
     },
     {
-      title: t("静默启动入口"),
-      status: overview?.silent_shortcut.status ?? "not_checked",
-      ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || t("缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。"),
-    },
-    {
-      title: t("管理工具入口"),
+      title: t("Codex++ 应用入口"),
       status: overview?.management_shortcut.status ?? "not_checked",
       ok: overview?.management_shortcut.status === "installed",
-      detail: overview?.management_shortcut.path || t("缺少管理工具快捷方式时可在安装维护页修复。"),
+      detail: overview?.management_shortcut.path || t("缺少 Codex++ 快捷方式时可在安装维护页修复。"),
     },
   ];
 }

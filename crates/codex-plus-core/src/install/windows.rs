@@ -1,9 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{
-    InstallOptions, MANAGER_BINARY, MANAGER_NAME, SILENT_BINARY, SILENT_NAME,
-    install_root_or_default, option_or_current_exe,
-};
+use super::{APP_NAME, InstallOptions, application_source, install_root_or_default};
 
 const UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexPlusPlus";
 const LEGACY_UNINSTALL_SUBKEY: &str =
@@ -31,8 +28,8 @@ pub struct WindowsEntrypointPlan {
 
 pub fn build_windows_entrypoint_plan(options: &InstallOptions) -> WindowsEntrypointPlan {
     let install_root = install_root_or_default(options);
-    let launcher_path = option_or_current_exe(&options.launcher_path, SILENT_BINARY);
-    let manager_path = option_or_current_exe(&options.manager_path, MANAGER_BINARY);
+    let launcher_path = application_source(options);
+    let manager_path = launcher_path.clone();
     let icon_path = default_icon_path();
     let install_location = manager_path
         .parent()
@@ -47,7 +44,7 @@ pub fn build_windows_entrypoint_plan(options: &InstallOptions) -> WindowsEntrypo
             .to_string_lossy()
             .to_string(),
         manager_shortcut: install_root
-            .join("Codex++ 管理工具.lnk")
+            .join("Codex++.lnk")
             .to_string_lossy()
             .to_string(),
         install_root: install_root.to_string_lossy().to_string(),
@@ -81,20 +78,8 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
             create_entrypoint_shortcut(
                 PathBuf::from(&plan.silent_shortcut),
                 PathBuf::from(&plan.launcher_path),
-                "Launch Codex++ silently",
+                "Open Codex++",
                 PathBuf::from(&plan.silent_icon_path),
-            )
-        },
-    )?;
-    create_desktop_shortcut_on_first_install(
-        Path::new(&plan.manager_shortcut),
-        already_installed,
-        || {
-            create_entrypoint_shortcut(
-                PathBuf::from(&plan.manager_shortcut),
-                PathBuf::from(&plan.manager_path),
-                "Open Codex++ management tool",
-                PathBuf::from(&plan.manager_icon_path),
             )
         },
     )?;
@@ -135,7 +120,6 @@ fn create_desktop_shortcut_on_first_install(
 pub fn uninstall_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     let plan = build_windows_entrypoint_plan(options);
     let _ = std::fs::remove_file(&plan.silent_shortcut);
-    let _ = std::fs::remove_file(&plan.manager_shortcut);
     let _ = crate::windows_integration::delete_current_user_key(&format!(
         r"{URL_PROTOCOL_SUBKEY}\shell\open\command"
     ));
@@ -199,7 +183,7 @@ fn write_uninstall_registration(plan: &WindowsEntrypointPlan) -> anyhow::Result<
         .to_string_lossy()
         .to_string();
     for (name, value) in [
-        ("DisplayName", "Codex++".to_string()),
+        ("DisplayName", APP_NAME.to_string()),
         ("DisplayVersion", crate::version::VERSION.to_string()),
         ("Publisher", "BigPizzaV3".to_string()),
         ("DisplayIcon", plan.manager_icon_path.clone()),
@@ -252,7 +236,7 @@ fn default_icon_path() -> PathBuf {
 
 #[allow(dead_code)]
 fn _entrypoint_names() -> (&'static str, &'static str) {
-    (SILENT_NAME, MANAGER_NAME)
+    (APP_NAME, APP_NAME)
 }
 
 #[cfg(test)]
