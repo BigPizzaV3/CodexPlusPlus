@@ -114,6 +114,7 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
 const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
+const API_QUOTA_GATE_SCRIPT: &str = include_str!("../../../assets/inject/api-quota-gate.js");
 const STEPWISE_SCRIPT: &str = concat!(
     "(() => {\n",
     include_str!("../../../assets/inject/floating-panel/runtime/state.js"),
@@ -381,6 +382,10 @@ pub fn stepwise_script() -> &'static str {
 
 pub fn pet_real_mouse_script() -> &'static str {
     PET_REAL_MOUSE_SCRIPT
+}
+
+pub fn api_quota_gate_script() -> &'static str {
+    API_QUOTA_GATE_SCRIPT
 }
 
 const PET_V2_SPRITE_DETECTION_SCRIPT: &str = r#"
