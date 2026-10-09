@@ -128,7 +128,7 @@ fn chat_conversion_keeps_plaintext_and_existing_reasoning_compaction_contracts()
                 {"type":"input_text","text":"Payload:"},
                 {"type":"input_text","text":"plaintext-task"}
             ]},
-            {"type":"compaction","encrypted_content":"local-summary"},
+            local_compaction_item("local-summary"),
             {"type":"function_call_output","call_id":"orphan",
              "output":{"type":"encrypted_content","text":"tool-output-text"}}
         ]
