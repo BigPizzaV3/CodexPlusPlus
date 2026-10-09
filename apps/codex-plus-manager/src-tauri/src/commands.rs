@@ -7266,23 +7266,14 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    fn dream_skin_tray_actions_reuse_core_lifecycle() {
+    fn tray_menu_only_has_show_and_quit_in_both_languages() {
         let source =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
 
-        for expected in [
-            "tray_apply_dream_skin",
-            "apply_dream_skin_live",
-            "sync_default_dream_skin_base_theme",
-        ] {
-            assert!(
-                source.contains(expected),
-                "missing tray lifecycle entry {expected}"
-            );
-        }
-        assert!(!source.contains("tray_pause_dream_skin"));
-        assert!(!source.contains("pause_dream_skin_from_tray"));
-        assert!(source.contains("!settings.codex_app_dream_skin_paused"));
+        assert!(source.contains("Menu::with_items(app, &[&show_item, &quit_item])"));
+        assert!(source.contains("Menu::with_items(&app, &[&show, &quit])"));
+        assert!(!source.contains("tray_apply_dream_skin"));
+        assert!(!source.contains("apply_dream_skin_from_tray"));
     }
 
     #[test]

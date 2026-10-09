@@ -3044,7 +3044,6 @@ export function App() {
     if (getLanguage() === "en") {
       void invoke("update_tray_labels", {
         showLabel: "Show window",
-        applySkinLabel: "Apply Dream Skin",
         quitLabel: "Quit",
         windowTitle: "Codex++",
       });
