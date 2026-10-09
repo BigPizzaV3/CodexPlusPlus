@@ -4353,16 +4353,6 @@ function OverviewScreen({
                   </div>
                 ))}
               </div>
-              <Toolbar>
-                <Button onClick={() => void actions.checkHealth()}>
-                  <RefreshCw className="h-4 w-4" />
-                  {t("检查")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
-                  <Wrench className="h-4 w-4" />
-                  {t("修复入口")}
-                </Button>
-              </Toolbar>
             </CardContent>
           </Panel>
           <Panel>
@@ -11870,12 +11860,6 @@ function healthItems(overview: OverviewResult | null) {
       status: overview?.codex_app.status ?? "not_checked",
       ok: overview?.codex_app.status === "found",
       detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
-    },
-    {
-      title: t("Codex++ 应用入口"),
-      status: overview?.management_shortcut.status ?? "not_checked",
-      ok: overview?.management_shortcut.status === "installed",
-      detail: overview?.management_shortcut.path || t("缺少 Codex++ 快捷方式时可在安装维护页修复。"),
     },
   ];
 }
