@@ -71,7 +71,7 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
 }
 
 #[test]
-fn manager_hides_macos_dock_icon_when_window_moves_to_tray() {
+fn manager_keeps_a_visible_compact_template_tray_when_hiding_the_macos_dock_icon() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
 
@@ -80,6 +80,10 @@ fn manager_hides_macos_dock_icon_when_window_moves_to_tray() {
     assert!(lib_rs.contains("set_manager_activation_policy(&close_event_app, false)"));
     assert!(lib_rs.contains("set_manager_activation_policy(app_handle, true)"));
     assert!(lib_rs.contains("set_manager_activation_policy(&app_handle, false)"));
+    assert!(lib_rs.contains(".icon_as_template(true)"));
+    assert!(lib_rs.contains(".tooltip(\"Codex++\")"));
+    assert!(lib_rs.contains("item.setVisible(true)"));
+    assert!(lib_rs.contains("ensure_macos_tray_visible(&close_event_app)"));
 }
 
 #[test]
