@@ -44,7 +44,7 @@ impl CdpBrowserIdentity {
 }
 
 /// Returns whether the requested loopback port exposes a CDP target list.
-pub(crate) fn endpoint_available(debug_port: u16) -> bool {
+pub fn endpoint_available(debug_port: u16) -> bool {
     [
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), debug_port),
         SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), debug_port),

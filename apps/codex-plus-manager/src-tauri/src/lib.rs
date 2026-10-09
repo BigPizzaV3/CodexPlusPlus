@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod install;
+mod runtime_health;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

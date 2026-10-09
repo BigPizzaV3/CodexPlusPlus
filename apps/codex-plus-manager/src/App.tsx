@@ -230,12 +230,15 @@ type LaunchStatus = {
   aumid: string | null;
 };
 
+type RuntimeServiceState = { status: string; address: string | null; message: string };
+
 type OverviewResult = CommandResult<{
   codex_app: PathState;
   codex_version: string | null;
   silent_shortcut: PathState;
   management_shortcut: PathState;
   latest_launch: LaunchStatus | null;
+  runtime_health: { codex_app: RuntimeServiceState; helper: RuntimeServiceState; debugger: RuntimeServiceState; proxy_server: RuntimeServiceState };
   current_version: string;
   update_status: string;
   settings_path: string;
@@ -3102,6 +3105,13 @@ export function App() {
     window.localStorage.setItem("codex-plus-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (activeTool !== "codex" || globalNavigationRoutes.includes(route)) return;
+    const refresh = () => { void refreshOverview(true); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [route, activeTool]);
+
   const saveCodexAppPath = async (appPath: string) => {
     const next = { ...settingsForm, codexAppPath: appPath };
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
@@ -3376,6 +3386,7 @@ export function App() {
     [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
+  const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
 
   return (
     <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
@@ -3437,10 +3448,20 @@ export function App() {
           </div>
           <div className="topbar-actions">
             {activeTool === "codex" && !isGlobalPage ? (
-              <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex")} variant="outline">
-                <Rocket className="h-4 w-4" />
-                {t("重启 Codex")}
-              </Button>
+              <>
+                <span className="codex-app-state" aria-live="polite">
+                  <span>Codex APP</span>
+                  <Badge status={overview?.runtime_health?.codex_app?.status ?? "not_checked"} />
+                </span>
+                <Button
+                  disabled={launchPending || !overview?.runtime_health}
+                  onClick={() => void (codexAppRunning ? actions.restart() : actions.launch())}
+                  title={codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
+                >
+                  <Rocket className="h-4 w-4" />
+                  {codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
+                </Button>
+              </>
             ) : null}
           </div>
         </header>
@@ -3448,7 +3469,6 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
-              launchPending={launchPending}
               ads={ads}
               activeTool={activeTool}
               toolEntries={toolEntries}
@@ -4308,14 +4328,12 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
 
 function OverviewScreen({
   overview,
-  launchPending,
   ads,
   activeTool,
   toolEntries,
   actions,
 }: {
   overview: OverviewResult | null;
-  launchPending: boolean;
   ads: AdsResult | null;
   activeTool: ToolId;
   toolEntries: ToolEntry[];
@@ -4332,7 +4350,7 @@ function OverviewScreen({
           <Panel>
             <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
             <CardContent>
-              <div className="health-grid">
+              <div className="health-grid overview-health-grid">
                 <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
                   {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                   <div>
@@ -4352,19 +4370,10 @@ function OverviewScreen({
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Panel>
-          <Panel>
-            <CardHead title={t("最近启动")} detail={overview?.logs_path ?? t("暂无状态文件")} />
-            <CardContent>
-              <LatestLaunch status={overview?.latest_launch ?? null} />
               <Toolbar>
-                <Button disabled={launchPending} onClick={() => void actions.launch()}>
-                  <Rocket className="h-4 w-4" />
-                  {t("启动 Codex")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.goLogs()}>
-                  {t("打开关于")}
+                <Button variant="secondary" onClick={() => void actions.refreshCurrent()}>
+                  <RefreshCw className="h-4 w-4" />
+                  {t("刷新状态")}
                 </Button>
               </Toolbar>
             </CardContent>
@@ -11081,20 +11090,6 @@ function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
 }
 
-function LatestLaunch({ status }: { status: LaunchStatus | null }) {
-  if (!status) return <div className="empty">{t("暂无启动状态。")}</div>;
-  return (
-    <div className="metric-list">
-      <Metric label={t("状态")} value={status.status} />
-      <Metric label={t("消息")} value={status.message} />
-      <Metric label="Debug" value={String(status.debug_port ?? "-")} />
-      <Metric label="Helper" value={String(status.helper_port ?? "-")} />
-      <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
-      {status.aumid && <Metric label="AUMID" value={status.aumid} />}
-    </div>
-  );
-}
-
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -11826,13 +11821,16 @@ function statusLabel(status: string) {
     not_checked: t("未检查"),
     not_implemented: t("未实现"),
     disabled: t("已禁用"),
+    stopped: t("未运行"),
+    connected: t("已连接"),
+    disconnected: t("未连接"),
     unknown: t("未知"),
   };
   return labels[status] ?? status;
 }
 
 function statusClass(status: string) {
-  if (["found", "installed", "ok", "running", "running_degraded"].includes(status)) return "good";
+  if (["found", "installed", "ok", "running", "running_degraded", "connected"].includes(status)) return "good";
   if (["failed", "missing"].includes(status)) return "bad";
   return "warn";
 }
@@ -11853,6 +11851,12 @@ function truncateSessionDeletePreview(value: string) {
 }
 
 function healthItems(overview: OverviewResult | null) {
+  const serviceItem = (title: string, state: RuntimeServiceState | undefined) => ({
+    title,
+    status: state?.status ?? "not_checked",
+    ok: ["running", "connected", "disabled"].includes(state?.status ?? ""),
+    detail: state ? [state.address, t(state.message)].filter(Boolean).join(" · ") : t("等待状态检查"),
+  });
   return [
     {
       title: t("Codex 应用"),
@@ -11860,6 +11864,9 @@ function healthItems(overview: OverviewResult | null) {
       ok: overview?.codex_app.status === "found",
       detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
     },
+    serviceItem(t("Helper 状态"), overview?.runtime_health?.helper),
+    serviceItem(t("Debugger 状态"), overview?.runtime_health?.debugger),
+    serviceItem(t("代理服务器状态"), overview?.runtime_health?.proxy_server),
   ];
 }
 

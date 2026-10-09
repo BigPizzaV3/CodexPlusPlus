@@ -103,6 +103,7 @@ pub struct OverviewPayload {
     pub silent_shortcut: PathState,
     pub management_shortcut: PathState,
     pub latest_launch: Option<LaunchStatus>,
+    pub runtime_health: crate::runtime_health::RuntimeHealth,
     pub current_version: String,
     pub update_status: String,
     pub settings_path: String,
@@ -777,7 +778,7 @@ where
 #[tauri::command]
 pub async fn load_overview() -> CommandResult<OverviewPayload> {
     let payload = tauri::async_runtime::spawn_blocking(load_overview_payload).await;
-    let Ok((codex_app_path, entrypoints, latest_launch)) = payload else {
+    let Ok((codex_app_path, entrypoints, latest_launch, runtime_health)) = payload else {
         return failed(
             "概览后台任务失败。",
             OverviewPayload {
@@ -786,6 +787,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
                 silent_shortcut: path_state(None),
                 management_shortcut: path_state(None),
                 latest_launch: None,
+                runtime_health: crate::runtime_health::RuntimeHealth::unavailable(),
                 current_version: codex_plus_core::version::VERSION.to_string(),
                 update_status: "not_checked".to_string(),
                 settings_path: codex_plus_core::paths::default_settings_path()
@@ -807,6 +809,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
             silent_shortcut: shortcut_state(entrypoints.silent_shortcut),
             management_shortcut: shortcut_state(entrypoints.management_shortcut),
             latest_launch,
+            runtime_health,
             current_version: codex_plus_core::version::VERSION.to_string(),
             update_status: "not_checked".to_string(),
             settings_path: codex_plus_core::paths::default_settings_path()
@@ -6395,7 +6398,7 @@ fn builtin_user_scripts_dir() -> PathBuf {
 }
 
 fn diagnostics_report() -> String {
-    let (codex_app_path, entrypoints, latest_launch) = load_overview_payload();
+    let (codex_app_path, entrypoints, latest_launch, runtime_health) = load_overview_payload();
     let overview = ok(
         "概览已加载。",
         OverviewPayload {
@@ -6406,6 +6409,7 @@ fn diagnostics_report() -> String {
             silent_shortcut: shortcut_state(entrypoints.silent_shortcut),
             management_shortcut: shortcut_state(entrypoints.management_shortcut),
             latest_launch,
+            runtime_health,
             current_version: codex_plus_core::version::VERSION.to_string(),
             update_status: "not_checked".to_string(),
             settings_path: codex_plus_core::paths::default_settings_path()
@@ -6442,15 +6446,19 @@ fn load_overview_payload() -> (
     Option<PathBuf>,
     install::EntryPointState,
     Option<LaunchStatus>,
+    crate::runtime_health::RuntimeHealth,
 ) {
     let settings = SettingsStore::default().load().unwrap_or_default();
+    let latest = StatusStore::default().load_latest().unwrap_or(None);
+    let runtime_health = crate::runtime_health::inspect(&settings, latest.as_ref());
     (
         codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
             None,
             Some(settings.codex_app_path.as_str()),
         ),
         install::inspect_entrypoints(),
-        StatusStore::default().load_latest().unwrap_or(None),
+        latest,
+        runtime_health,
     )
 }
 
