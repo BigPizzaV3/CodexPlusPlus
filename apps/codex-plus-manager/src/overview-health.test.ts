@@ -20,7 +20,7 @@ test("overview shows the three live services and retires the latest launch panel
   assert.match(screen, /t\("Codex 版本"\)/);
   assert.match(items, /t\("Codex 应用"\)/);
   assert.doesNotMatch(screen + items, /management_shortcut|Codex\+\+ 应用入口|actions\.(checkHealth|repairShortcuts)/);
-  for (const title of ["Helper 状态", "Debugger 状态", "代理服务器状态"]) {
+  for (const title of ["后台服务状态", "调试连接状态", "代理服务器状态"]) {
     assert.ok(items.includes(`t("${title}")`));
   }
   assert.match(items, /runtime_health/);

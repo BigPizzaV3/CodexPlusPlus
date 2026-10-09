@@ -11894,8 +11894,8 @@ function healthItems(overview: OverviewResult | null) {
       ok: overview?.codex_app.status === "found",
       detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
     },
-    serviceItem(t("Helper 状态"), overview?.runtime_health?.helper),
-    serviceItem(t("Debugger 状态"), overview?.runtime_health?.debugger),
+    serviceItem(t("后台服务状态"), overview?.runtime_health?.helper),
+    serviceItem(t("调试连接状态"), overview?.runtime_health?.debugger),
     serviceItem(t("代理服务器状态"), overview?.runtime_health?.proxy_server),
   ];
 }
