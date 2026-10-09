@@ -316,7 +316,8 @@ jobs:
             .map((name) => ({ name, url: `${baseUrl}/${encodeURIComponent(name)}` }));
           const payload = {
             version: `v${version}`,
-            url: release.url || `https://github.com/${repo}/releases/tag/${tag}`,
+            // 草稿的 release.url 是临时 untagged 地址，静态元数据必须使用正式 tag 链接。
+            url: `https://github.com/${repo}/releases/tag/${tag}`,
             body: release.body || "",
             assets
           };
