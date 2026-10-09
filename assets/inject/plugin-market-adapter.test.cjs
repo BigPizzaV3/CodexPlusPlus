@@ -53,6 +53,7 @@ function fixture(handler, { enabled = true } = {}) {
     markPluginMarketplaceRemoteCatalogUnavailable: () => {},
     remoteOnlyPluginMarketplaceFallbackResult: () => ({ marketplaces: [] }), localPluginMarketplaceFallbackResult: () => ({ marketplaces: [] }),
     codexPlusModelUnlockEnabled: () => false, codexRemoteSessionProviderPatchEnabled: () => false,
+    registerNativeHostClient: () => {},
     codexPlusSettings: () => ({ serviceTierControls: false }),
     codexRemoteSessionProviderRequestMethod: () => false, codexRemoteSessionProviderOverrideEnabled: () => false,
     applyCodexRemoteSessionProviderOverride: (_, params) => params, applyCodexServiceTierRequestOnly: (_, params) => params,

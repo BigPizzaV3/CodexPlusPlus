@@ -654,26 +654,71 @@
   }
 
   function sessionHostIdFromRow(row, sessionId, scopedHost) {
+    return sessionHostEvidenceFromRow(row, sessionId, scopedHost).hostId;
+  }
+
+  function sessionHostEvidenceFromRow(row, sessionId, scopedHost) {
     const hosts = new Set();
+    let matchingMetadata = 0;
+    let identityConflict = false;
     const add = (value) => {
       if (typeof value === "string" && value.trim()) hosts.add(value.trim());
     };
+    const identity = (value) => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      const raw = value.trim();
+      const scoped = raw.match(/^(.+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+      const id = normalizedCodexThreadUuid(raw) || scoped?.[2];
+      return id ? { id: id.toLowerCase(), host: scoped?.[1] } : raw === sessionId ? { id: raw, host: null } : null;
+    };
+    const canonicalWanted = normalizedCodexThreadUuid(sessionId);
+    const wanted = canonicalWanted ? canonicalWanted.toLowerCase() : sessionId || "";
+    const identities = (record) => [record?.conversationId, record?.threadId, record?.id].map(identity).filter(Boolean);
+    const collect = (record) => {
+      if (!record || typeof record !== "object") return;
+      const ownIds = identities(record);
+      const matched = ownIds.some((candidate) => candidate.id === wanted);
+      const nested = [record.threadSummary, record.thread, record.target].filter((value) => value && typeof value === "object");
+      const allIds = [...ownIds, ...nested.flatMap(identities)];
+      if (allIds.some((candidate) => candidate.id === wanted) && allIds.some((candidate) => candidate.id !== wanted)) {
+        identityConflict = true;
+        return;
+      }
+      if (matched) {
+        matchingMetadata += 1;
+        add(record.hostId);
+        ownIds.forEach((candidate) => add(candidate.host));
+        // 26.930 原生 sidebar 行的 {conversationId,hostId,threadSummary}：
+        // hostId ?? threadSummary?.hostId。summary 没有自己的 id 时仍属于这条会话。
+        if (record.threadSummary && !["conversationId", "threadId", "id"].some((key) => typeof record.threadSummary[key] === "string" && record.threadSummary[key].trim())) add(record.threadSummary.hostId);
+      }
+      for (const child of nested) {
+        const childIds = identities(child);
+        if (!childIds.some((candidate) => candidate.id === wanted)) continue;
+        matchingMetadata += 1;
+        add(child.hostId);
+        childIds.forEach((candidate) => add(candidate.host));
+      }
+    };
     add(row.getAttribute("data-app-action-sidebar-thread-host-id"));
-    add(scopedHost);
-    // 仅接受和当前会话 ID 同一份 React props 中的 hostId。
-    // UUID 本身不能说明本地归属，祖先上另一个会话的 hostId 也不能拿来猜。
+    const rowIdentity = identity(row.getAttribute("data-app-action-sidebar-thread-id"));
+    if (rowIdentity?.id === wanted) add(scopedHost || rowIdentity.host);
+    // 只接受同一条会话的成对身份。原生 locator 为 {hostId,threadId}，
+    // sidebarThreadRow 为 {hostId,id}；bare UUID 或不相关祖先的 hostId 都不说明归属。
     const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
     let fiber = fiberKey ? row[fiberKey] : null;
     for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
       for (const props of [fiber.pendingProps, fiber.memoizedProps, fiber.pendingProps?.children?.props, fiber.memoizedProps?.children?.props]) {
-        const conversationId = props?.conversationId;
-        if (conversationId === sessionId || (normalizedCodexThreadUuid(conversationId) && normalizedCodexThreadUuid(conversationId) === sessionId)) {
-          add(props.hostId);
-          if (typeof conversationId === "string" && conversationId.startsWith("local:")) add("local");
-        }
+        collect(props);
       }
     }
-    return hosts.size === 1 ? [...hosts][0] : null;
+    const conflict = identityConflict || hosts.size > 1;
+    return {
+      hostId: !conflict && hosts.size === 1 ? [...hosts][0] : null,
+      reason: conflict ? "conflicting" : hosts.size === 1 ? "resolved" : "unknown",
+      hostCount: hosts.size,
+      matchingMetadata,
+    };
   }
 
   if (window.__CODEX_PLUS_TEST_SESSION_REF__) {

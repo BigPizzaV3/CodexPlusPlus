@@ -499,6 +499,8 @@ pub struct BackendSettings {
     pub codex_app_session_delete: bool,
     #[serde(rename = "codexAppMarkdownExport", default = "default_true")]
     pub codex_app_markdown_export: bool,
+    #[serde(rename = "codexAppSessionShare", default = "default_true")]
+    pub codex_app_session_share: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
     #[serde(
@@ -700,6 +702,7 @@ impl Default for BackendSettings {
             codex_app_model_whitelist_unlock: true,
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
+            codex_app_session_share: true,
             codex_app_paste_fix: false,
             codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
@@ -1631,6 +1634,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
+    merge_bool_setting(target, source, "codexAppSessionShare");
     merge_bool_setting(target, source, "codexAppPasteFix");
     if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =
         source.get("codexAppTypingEffect").and_then(Value::as_str)

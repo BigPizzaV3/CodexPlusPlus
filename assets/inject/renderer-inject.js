@@ -2294,7 +2294,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, customLayout: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, customLayout: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2302,6 +2302,7 @@
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
     markdownExport: "codexAppMarkdownExport",
+    sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     customLayout: "codexAppCustomLayoutEnabled",
@@ -2339,6 +2340,7 @@
         modelWhitelistUnlock: false,
         sessionDelete: false,
         markdownExport: false,
+        sessionShare: false,
         pasteFix: false,
         typingEffect: "off",
         threadIdBadge: false,
@@ -4850,6 +4852,7 @@
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
         if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
+        if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -4885,6 +4888,7 @@
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
+    if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
     renderCodexPlusMenu();
     scan();
   }
@@ -6055,6 +6059,10 @@
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">分享会话按钮</div><div class="codex-plus-row-description">在当前会话工具栏显示分享按钮，关闭后立即隐藏。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionShare"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
                 </div>
@@ -6645,12 +6653,15 @@
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
+    const nativePluginEntry = codexPlusNativePluginNavigationEntry();
+    if (nativePluginEntry) document.getElementById(codexPlusRailPluginMarketId)?.remove();
     const anchor = codexPlusRailPrimaryAnchor(rail);
     // 插到锚点所在的父容器里，而不是 nav 顶层：原生按钮可能嵌在 nav 内部的分组 div 中，
     // 直接插顶层会破坏它的 flex 布局。
     const host = anchor?.parentElement || rail;
     let cursor = anchor;
     specs.forEach((spec) => {
+      if (spec.id === codexPlusRailPluginMarketId && nativePluginEntry) return;
       let wrapper = document.getElementById(spec.id);
       if (!wrapper || wrapper.parentElement !== host) {
         wrapper?.remove();
@@ -7516,26 +7527,71 @@
   }
 
   function sessionHostIdFromRow(row, sessionId, scopedHost) {
+    return sessionHostEvidenceFromRow(row, sessionId, scopedHost).hostId;
+  }
+
+  function sessionHostEvidenceFromRow(row, sessionId, scopedHost) {
     const hosts = new Set();
+    let matchingMetadata = 0;
+    let identityConflict = false;
     const add = (value) => {
       if (typeof value === "string" && value.trim()) hosts.add(value.trim());
     };
+    const identity = (value) => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      const raw = value.trim();
+      const scoped = raw.match(/^(.+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+      const id = normalizedCodexThreadUuid(raw) || scoped?.[2];
+      return id ? { id: id.toLowerCase(), host: scoped?.[1] } : raw === sessionId ? { id: raw, host: null } : null;
+    };
+    const canonicalWanted = normalizedCodexThreadUuid(sessionId);
+    const wanted = canonicalWanted ? canonicalWanted.toLowerCase() : sessionId || "";
+    const identities = (record) => [record?.conversationId, record?.threadId, record?.id].map(identity).filter(Boolean);
+    const collect = (record) => {
+      if (!record || typeof record !== "object") return;
+      const ownIds = identities(record);
+      const matched = ownIds.some((candidate) => candidate.id === wanted);
+      const nested = [record.threadSummary, record.thread, record.target].filter((value) => value && typeof value === "object");
+      const allIds = [...ownIds, ...nested.flatMap(identities)];
+      if (allIds.some((candidate) => candidate.id === wanted) && allIds.some((candidate) => candidate.id !== wanted)) {
+        identityConflict = true;
+        return;
+      }
+      if (matched) {
+        matchingMetadata += 1;
+        add(record.hostId);
+        ownIds.forEach((candidate) => add(candidate.host));
+        // 26.930 原生 sidebar 行的 {conversationId,hostId,threadSummary}：
+        // hostId ?? threadSummary?.hostId。summary 没有自己的 id 时仍属于这条会话。
+        if (record.threadSummary && !["conversationId", "threadId", "id"].some((key) => typeof record.threadSummary[key] === "string" && record.threadSummary[key].trim())) add(record.threadSummary.hostId);
+      }
+      for (const child of nested) {
+        const childIds = identities(child);
+        if (!childIds.some((candidate) => candidate.id === wanted)) continue;
+        matchingMetadata += 1;
+        add(child.hostId);
+        childIds.forEach((candidate) => add(candidate.host));
+      }
+    };
     add(row.getAttribute("data-app-action-sidebar-thread-host-id"));
-    add(scopedHost);
-    // 仅接受和当前会话 ID 同一份 React props 中的 hostId。
-    // UUID 本身不能说明本地归属，祖先上另一个会话的 hostId 也不能拿来猜。
+    const rowIdentity = identity(row.getAttribute("data-app-action-sidebar-thread-id"));
+    if (rowIdentity?.id === wanted) add(scopedHost || rowIdentity.host);
+    // 只接受同一条会话的成对身份。原生 locator 为 {hostId,threadId}，
+    // sidebarThreadRow 为 {hostId,id}；bare UUID 或不相关祖先的 hostId 都不说明归属。
     const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
     let fiber = fiberKey ? row[fiberKey] : null;
     for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
       for (const props of [fiber.pendingProps, fiber.memoizedProps, fiber.pendingProps?.children?.props, fiber.memoizedProps?.children?.props]) {
-        const conversationId = props?.conversationId;
-        if (conversationId === sessionId || (normalizedCodexThreadUuid(conversationId) && normalizedCodexThreadUuid(conversationId) === sessionId)) {
-          add(props.hostId);
-          if (typeof conversationId === "string" && conversationId.startsWith("local:")) add("local");
-        }
+        collect(props);
       }
     }
-    return hosts.size === 1 ? [...hosts][0] : null;
+    const conflict = identityConflict || hosts.size > 1;
+    return {
+      hostId: !conflict && hosts.size === 1 ? [...hosts][0] : null,
+      reason: conflict ? "conflicting" : hosts.size === 1 ? "resolved" : "unknown",
+      hostCount: hosts.size,
+      matchingMetadata,
+    };
   }
 
   if (window.__CODEX_PLUS_TEST_SESSION_REF__) {
@@ -8686,6 +8742,10 @@
 
   function installCodexPlusPluginMarketSidebarNavigation(parent, anchor, template) {
     let wrapper = document.getElementById(codexPlusSidebarPluginMarketId);
+    if (codexPlusNativePluginNavigationEntry()) {
+      wrapper?.remove();
+      return;
+    }
     if (!wrapper || wrapper.parentElement !== parent) {
       wrapper?.remove();
       wrapper = document.createElement("div");
@@ -9366,16 +9426,25 @@
     }
   }
 
+  function codexPlusNativePluginNavigationEntry() {
+    // 每次重查原生导航；注入入口和第三方 Plugins 按钮不能充当原生目标。
+    const destinations = Array.from(document.querySelectorAll('nav [data-sidebar-destination], aside.app-shell-left-panel nav button, nav[data-app-navigation-rail] button'));
+    return destinations.find((button) => {
+      if (button.closest('[data-codex-plus-ext], [data-codex-plus-rail]')) return false;
+      if (button.closest(`#${codexPlusSidebarPluginMarketId}, #${codexPlusRailPluginMarketId}`)) return false;
+      if (typeof isExtensionUiNode === "function" && isExtensionUiNode(button)) return false;
+      if (typeof visibleElement === "function" && !visibleElement(button)) return false;
+      const destination = (button.getAttribute("data-sidebar-destination") || "").trim();
+      const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
+      return destination === "plugins" || destination === "builtin:plugins" || /^(插件|Plugins)$/i.test(label);
+    });
+  }
+
   function openCodexPlusNativePluginMarket() {
     closeCodexPlusPage();
     clearPluginMarketplaceQueryCache();
-    const destinations = Array.from(document.querySelectorAll('[data-sidebar-destination], aside.app-shell-left-panel nav button'));
-    const native = destinations.find((button) => {
-      if (button.closest('[data-codex-plus-ext], [data-codex-plus-rail]')) return false;
-      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
-      return button.getAttribute("data-sidebar-destination") === "plugins" || /^(插件|Plugins)$/i.test(label);
-    });
-    if (native) {
+    const native = codexPlusNativePluginNavigationEntry();
+    if (native && !native.disabled && native.getAttribute("aria-disabled") !== "true") {
       native.click();
       return;
     }
@@ -10812,10 +10881,28 @@
     }
   }
 
+  function sessionSharePlacement() {
+    // 会话操作锚点唯一时才挂载，不能把右侧审查/浏览器的 header 当作会话栏。
+    const headerSelector = 'header, [data-app-shell-header-edge-scroll], [class*="_Header_"]';
+    const anchors = Array.from(document.querySelectorAll('[data-testid="app-shell-header-context-menu-surface"]'))
+      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]'));
+    if (anchors.length !== 1) return null;
+    const header = anchors[0].closest(headerSelector);
+    if (!(header instanceof HTMLElement) || !visibleElement(header)) return null;
+    const nativeShare = Array.from(header.querySelectorAll('button[aria-label="Share"], button[aria-label="分享"], button[aria-label*="Share"], button[aria-label*="分享"]'))
+      .find((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && !node.classList.contains(sessionShareButtonClass) && node.closest(headerSelector) === header);
+    const nativeGroup = nativeShare?.closest?.(".ms-auto");
+    if (nativeGroup && header.contains(nativeGroup)) return nativeGroup;
+    const groups = Array.from(header.querySelectorAll(".ms-auto"))
+      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && node.closest(headerSelector) === header);
+    return groups.length === 1 ? groups[0] : null;
+  }
+
   function installSessionShareButton() {
     const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
     const ref = currentSessionRef();
-    if (!ref.session_id) {
+    const actionGroup = codexPlusSettings().sessionShare && ref.session_id ? sessionSharePlacement() : null;
+    if (!(actionGroup instanceof HTMLElement)) {
       existing.forEach((button) => button.remove());
       return;
     }
@@ -10827,6 +10914,7 @@
       button.className = `${sessionShareButtonClass} ${headerContextButtonClass}`;
       button.textContent = "分享会话";
       button.setAttribute("aria-label", "分享当前会话");
+      button.setAttribute("data-codex-plus-ext", "session-share");
       button.dataset.codexSessionShareVersion = sessionShareButtonVersion;
       button.addEventListener("click", (event) => {
         event.preventDefault();
@@ -10834,35 +10922,13 @@
         void createSessionShare();
       }, true);
     }
-    const nativeShare = Array.from(document.querySelectorAll('header button[aria-label="Share"], header button[aria-label="分享"], header button[aria-label*="Share"], header button[aria-label*="分享"]')).find(visibleElement);
-    const actionGroup = nativeShare?.closest?.(".ms-auto")
-      || document.querySelector("header .ms-auto")
-      || nativeShare?.parentElement?.parentElement?.parentElement;
-    if (actionGroup instanceof HTMLElement) {
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      // 只在按钮还不在操作栏里时才搬动它。过去还要求它必须排在最后，
-      // 一旦 Codex 在它后面挂了别的节点，这个条件就永远成立，
-      // 于是每轮 scan 都 appendChild 一次，反过来又触发下一轮 scan（issue #1960）。
-      if (button.parentElement !== actionGroup) {
-        actionGroup.appendChild(button);
-      }
-      return;
-    }
-    const header = document.querySelector('[data-testid="app-shell-header-context-menu-surface"]')?.closest?.("header")
-      || document.querySelector("header")
-      || document.querySelector(selectors.appHeader);
-    if (header instanceof HTMLElement) {
-      // 没有明确操作栏时也保持文档流，避免遮挡原生按钮。
-      button.style.position = "static";
-      button.style.pointerEvents = "auto";
-      button.style.webkitAppRegion = "no-drag";
-      button.style.marginLeft = "8px";
-      if (button.parentElement !== header) header.appendChild(button);
-    } else if (!button.isConnected) {
-      document.body.appendChild(button);
-    }
+    button.setAttribute("data-codex-plus-ext", "session-share");
+    button.style.position = "static";
+    button.style.pointerEvents = "auto";
+    button.style.webkitAppRegion = "no-drag";
+    button.style.marginLeft = "";
+    // 宿主重建时才搬动，避免每轮扫描再次触发 DOM mutation（issue #1960）。
+    if (button.parentElement !== actionGroup) actionGroup.appendChild(button);
   }
 
   function sessionImportMarkdown(session) {
@@ -11000,17 +11066,22 @@
   }
 
   function isCurrentSessionRow(row, ref) {
+    const currentId = locationThreadId();
+    const currentIdentity = normalizedCodexThreadUuid(currentId) || currentId;
+    const rowIdentity = normalizedCodexThreadUuid(ref.session_id) || ref.session_id;
+    if (currentIdentity && currentIdentity !== rowIdentity) return false;
+    // 新版原生 sidebarThreadRow 明确提供 active；false 不能被相同 pathname 覆盖。
+    const nativeActive = row.getAttribute("data-app-action-sidebar-thread-active");
+    if (nativeActive === "true" || nativeActive === "false") return nativeActive === "true";
     if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
     const href = rowHref(row);
     if (href) {
       try {
         const url = new URL(href, window.location.href);
-        if (url.href === window.location.href || url.pathname === window.location.pathname) return true;
-      } catch {
-        if (window.location.href.includes(href)) return true;
-      }
+        if (currentIdentity && url.href === window.location.href) return true;
+      } catch {}
     }
-    return !!ref.session_id && window.location.href.includes(ref.session_id);
+    return !!currentIdentity && currentIdentity === rowIdentity;
   }
 
   function releaseDeleteFocus(row, button) {
@@ -11020,13 +11091,34 @@
     }
   }
 
-  function removeDeletedRow(row, button, ref) {
+  function sameDeletedSessionRef(left, right) {
+    return !!left?.session_id && !!left?.host_id && left.session_id === right?.session_id && left.host_id === right?.host_id;
+  }
+
+  function removeDeletedRow(row, button, ref, requestContext) {
+    // 删除响应期间，React 可能复用或替换 sidebar 行；不能删除其新身份的 DOM。
+    if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) return null;
     releaseDeleteFocus(row, button);
-    const shouldReload = isCurrentSessionRow(row, ref);
-    row.remove();
-    if (shouldReload) {
-      setTimeout(() => window.location.reload(), 10000);
+    const activeRefs = sessionRows().map((candidate) => ({ row: candidate, ref: sessionRefFromRow(candidate) }))
+      .filter((candidate) => isCurrentSessionRow(candidate.row, candidate.ref)).map((candidate) => candidate.ref);
+    const shouldLeave = requestContext?.wasCurrent && requestContext.locationHref === window.location.href
+      && activeRefs.length > 0 && activeRefs.every((active) => sameDeletedSessionRef(active, ref));
+    let navigated = false;
+    if (shouldLeave) {
+      // 已审 native 的 New chat 按钮以 aria-label/newChatMessage 调用 onStartChat。
+      // 只走唯一可见的原生 sidebar 控件；不猜内部路由，也不强制 reload。
+      const navigation = Array.from(document.querySelectorAll("aside.app-shell-left-panel button, nav[data-app-navigation-rail] button"))
+        .filter((candidate) => visibleElement(candidate) && !candidate.disabled && !isExtensionUiNode(candidate)
+          && candidate.closest("aside.app-shell-left-panel, nav[data-app-navigation-rail]")
+          && /^(新聊天|新对话|New chat|New thread)$/i.test((candidate.getAttribute("aria-label") || candidate.textContent || "").trim()));
+      if (navigation.length === 1) {
+        navigation[0].click();
+        navigated = true;
+      }
     }
+    // 原生导航也可能同步重建行，移除前再确认一次，保护被复用的节点。
+    if (row.isConnected && sameDeletedSessionRef(sessionRefFromRow(row), ref)) row.remove();
+    return shouldLeave && !navigated ? "会话已删除，请点击新聊天继续" : null;
   }
 
   function updateDeleteButtonOffsets() {
@@ -11048,17 +11140,36 @@
     event.stopImmediatePropagation?.();
     releaseDeleteFocus(row, button);
     if (!ref.host_id) {
+      const evidence = sessionHostEvidenceFromRow(row, ref.session_id);
+      sendCodexPlusDiagnostic("delete_session_host_unresolved", {
+        reason: evidence.reason, hostCount: evidence.hostCount, matchingMetadata: evidence.matchingMetadata,
+        nativeHostAttributePresent: !!row.getAttribute("data-app-action-sidebar-thread-host-id"),
+      });
       showToast("无法确定会话主机归属，请使用 Codex 原生会话管理", null);
       return;
     }
-    confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
+    ref = { session_id: ref.session_id, title: ref.title, host_id: ref.host_id };
+    return confirmDelete(ref.title, ref.host_id).then(async (confirmed) => {
       if (!confirmed) return;
+      if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) {
+        showToast("会话已变化，请重新选择后删除", null);
+        return;
+      }
       releaseDeleteFocus(row, button);
+      const requestContext = { wasCurrent: isCurrentSessionRow(row, ref), locationHref: window.location.href };
       const result = await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
+        if (result.session_id && result.session_id !== ref.session_id) {
+          showToast("删除结果与请求会话不一致，未更新界面", null);
+          return;
+        }
         // 远端由原生同主机 thread/deleted 通知更新，不能移除可能已重用的本地 DOM。
-        if (ref.host_id === "local") removeDeletedRow(row, button, ref);
-        showToast(result.message || "删除成功", result.undo_token);
+        let navigationNotice = null;
+        if (ref.host_id === "local") {
+          navigationNotice = removeDeletedRow(row, button, ref, requestContext);
+          await refreshRecentConversationsForHost();
+        }
+        showToast(navigationNotice || result.message || "删除成功", result.undo_token);
       } else {
         showToast(result.message || "删除失败", null);
       }
@@ -11588,6 +11699,7 @@
   // 页脚包裹层同样带 `max-w-(--thread-…-max-width)`，会被结构候选误当成内容容器。
   // 用 Codex 自己的页脚标记把它排掉。
   const conversationViewFooterSelector = selectors.conversationViewFooter;
+  const conversationViewPaneBoundarySelector = "#app-shell-sidebar, .app-shell-left-panel, .sidebar-navigation, nav[data-app-navigation-rail], [data-summary-panel-variant]";
   // 两侧留白：Codex 的 `--padding-toolbar` 是 `calc(var(--spacing) * 2)`（= 8px * 2）。
   // 仅在拿不到父节点 computed style 时作为回落的单侧留白。
   const conversationViewSideInset = 8;
@@ -11615,8 +11727,9 @@
     return classes.every((cls) => set.has(cls));
   }
 
-  function conversationViewFindByClasses(classes) {
-    return Array.from(document.querySelectorAll("div")).find((el) => conversationViewHasAllClasses(el, classes)) || null;
+  function conversationViewFindByClasses(classes, root, accept) {
+    return Array.from(root?.querySelectorAll("div") || [])
+      .find((el) => conversationViewHasAllClasses(el, classes) && accept(el)) || null;
   }
 
   function conversationViewHasThreadWidthToken(el) {
@@ -11646,7 +11759,62 @@
   }
 
   function conversationViewScrollContainer() {
-    return document.querySelector(conversationViewScrollContainerSelector);
+    const scrollers = Array.from(document.querySelectorAll(conversationViewScrollContainerSelector))
+      .filter((el) => typeof visibleElement !== "function" || visibleElement(el));
+    // 多个可见会话没有可靠的当前目标，不把任一 pane 当成整页正文。
+    return scrollers.length === 1 ? scrollers[0] : null;
+  }
+
+  function conversationViewSafeWidthTarget(el, scope) {
+    if (!el || !scope || el === scope || !scope.contains?.(el)) return false;
+    if (scope.matches?.(conversationViewScrollContainerSelector)
+        && el.closest?.(conversationViewScrollContainerSelector) !== scope) return false;
+    return conversationViewSafeWidthNode(el);
+  }
+
+  function conversationViewSafeWidthNode(el) {
+    if (!el) return false;
+    if (["MAIN", "ASIDE", "NAV", "HEADER", "BODY", "HTML"].includes(el.tagName)) return false;
+    if (el.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`)) return false;
+    // CSS 变量可继承给整棵布局树；包含其他 pane 的祖先不能改 width/margin/left。
+    // composer 内的状态提示也会用 aside，不能仅按语义标签把它误判为侧栏。
+    return !el.querySelector?.(`${conversationViewPaneBoundarySelector}, .thread-scroll-container`);
+  }
+
+  function conversationViewSamePane(scroller, el) {
+    if (scroller.contains?.(el)) return el.closest?.(conversationViewScrollContainerSelector) === scroller;
+    if (el.closest?.(conversationViewScrollContainerSelector)) return false;
+    if (el.parentElement === scroller.parentElement && el.parentElement !== document.body) return true;
+    for (let pane = scroller.parentElement; pane && pane !== document.body; pane = pane.parentElement) {
+      if (!pane.contains?.(el)) continue;
+      return !pane.querySelector?.(conversationViewPaneBoundarySelector);
+    }
+    return false;
+  }
+
+  function conversationViewFootersFor(scroller) {
+    return Array.from(document.querySelectorAll(conversationViewFooterSelector)).filter((footer) => {
+      if (typeof visibleElement === "function" && !visibleElement(footer)) return false;
+      return !footer.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`) && conversationViewSamePane(scroller, footer);
+    });
+  }
+
+  function conversationViewFindNativeComposer(scroller) {
+    const roots = Array.from(document.querySelectorAll("[data-codex-composer-root]"))
+      .filter((el) => (typeof visibleElement !== "function" || visibleElement(el))
+        && !el.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`) && (!scroller || conversationViewSamePane(scroller, el)));
+    if (roots.length !== 1) return null;
+    const root = roots[0];
+    const accept = (el) => conversationViewLooksLikeThreadWidthBox(el) && conversationViewSafeWidthNode(el)
+      && !el.matches?.(conversationViewFooterSelector) && !el.querySelector?.(conversationViewContentAnchorSelector);
+    const inside = [root, ...root.querySelectorAll("div")].find(accept);
+    if (inside) return inside;
+    // 原生 composer 锚点可能在宽度宿主内部；只爬到局部宿主，不收窄含正文的布局。
+    for (let host = root.parentElement; host && host !== document.body; host = host.parentElement) {
+      if (accept(host)) return host;
+      if (host.matches?.(conversationViewScrollContainerSelector) || host.querySelector?.(conversationViewScrollContainerSelector)) break;
+    }
+    return null;
   }
 
   function conversationViewCollectThreadWidthBoxes(root) {
@@ -11658,6 +11826,7 @@
    * 按候选顺序找内容容器，任一候选命中即返回。
    *
    * 候选链刻意从「最精确」排到「最宽松」：
+   * 所有候选都必须在唯一的会话滚动区内，并排除布局祖先：
    *   1. 旧版类名全等（老版本 Codex 上仍然最准）；
    *   2. Codex 自己的 data-* 锚点（当前版本）；
    *   3. 结构判定（滚动容器内、居中满宽、带 thread 宽度工具类）；
@@ -11666,34 +11835,52 @@
    * 顺序不能反：结构判定会把页脚包裹层也算进来，而它和内容容器在同一棵子树里。
    */
   function conversationViewFindContentEl() {
-    const legacy = conversationViewFindByClasses(conversationViewContentClasses);
-    if (legacy && !conversationViewIsInsideFooter(legacy)) return legacy;
-    const anchored = document.querySelector(conversationViewContentAnchorSelector);
-    if (anchored) return anchored;
     const scroller = conversationViewScrollContainer();
-    const structural = conversationViewCollectThreadWidthBoxes(scroller || document)
+    if (!scroller) return null;
+    const accept = (el) => conversationViewSafeWidthTarget(el, scroller) && !conversationViewIsInsideFooter(el)
+      && !el.querySelector?.(conversationViewFooterSelector);
+    const legacy = conversationViewFindByClasses(conversationViewContentClasses, scroller, accept);
+    if (legacy) return legacy;
+    const anchored = Array.from(scroller.querySelectorAll(conversationViewContentAnchorSelector)).find(accept);
+    if (anchored) return anchored;
+    const structural = conversationViewCollectThreadWidthBoxes(scroller)
       // 页脚包裹层（data-thread-scroll-footer）也带同样的宽度工具类，必须排掉。
-      .find((el) => !conversationViewIsInsideFooter(el));
+      .find(accept);
     if (structural) return structural;
-    return conversationViewFindByThreadWidthVariable(scroller || document);
+    return conversationViewFindByThreadWidthVariable(scroller, accept);
   }
 
   function conversationViewFindComposerEl() {
+    const scroller = conversationViewScrollContainer();
+    if (!scroller) {
+      // 首页没有消息 scroller；只用明确的原生 composer 锚点，不能全页猜宽度变量。
+      if (Array.from(document.querySelectorAll(conversationViewScrollContainerSelector))
+          .some((el) => typeof visibleElement !== "function" || visibleElement(el))) return null;
+      const native = conversationViewFindNativeComposer(null);
+      if (native) return native;
+      const legacy = Array.from(document.querySelectorAll("div")).filter((el) =>
+        conversationViewHasAllClasses(el, conversationViewComposerClasses) && conversationViewSafeWidthNode(el)
+        && !conversationViewIsInsideFooter(el) && el.querySelector?.('textarea, [contenteditable="true"]'));
+      return legacy.length === 1 ? legacy[0] : null;
+    }
     // 页脚包裹层带的是和作曲器同一套工具类，会被旧清单全等命中，所以要排除它。
-    const footer = document.querySelector(conversationViewFooterSelector);
-    const legacy = conversationViewFindByClasses(conversationViewComposerClasses);
-    if (legacy && !conversationViewIsInsideFooter(legacy)) return legacy;
+    const footers = conversationViewFootersFor(scroller);
+    if (footers.length > 1) return null;
+    const footer = footers[0];
+    const accept = (el) => conversationViewSafeWidthTarget(el, footer || scroller)
+      && !el.matches?.(conversationViewFooterSelector) && !conversationViewIsContentCandidate(el);
     // 新版作曲器在页脚包裹层内部——页脚自身也是 max-w 盒子，得往里再找一层。
-    const insideFooter = conversationViewCollectThreadWidthBoxes(footer)[0];
+    const insideFooter = conversationViewCollectThreadWidthBoxes(footer).find(accept);
     if (insideFooter) return insideFooter;
-    // 老版本作曲器不在页脚里；退回整棵文档，但只认页脚缺席时的候选，
-    // 且排除内容容器（两者宽度工具类同形）。
-    const scroller = conversationViewScrollContainer() || document;
-    const anywhere = conversationViewCollectThreadWidthBoxes(scroller)
-      .find((el) => !conversationViewIsContentCandidate(el));
-    if (anywhere) return anywhere;
-    if (footer) return conversationViewFindByThreadWidthVariable(footer, (el) => el !== footer);
-    return conversationViewFindByThreadWidthVariable(document, (el) => !conversationViewIsContentCandidate(el));
+    if (footer) return conversationViewFindByThreadWidthVariable(footer, (el) => el !== footer && accept(el));
+    const native = conversationViewFindNativeComposer(scroller);
+    if (native) return native;
+    // 保留同一会话内的旧类名；无 footer 的新版结构还必须包含明确编辑器。
+    const legacy = conversationViewFindByClasses(conversationViewComposerClasses, scroller, (el) => accept(el) && !conversationViewIsInsideFooter(el));
+    if (legacy) return legacy;
+    return conversationViewCollectThreadWidthBoxes(scroller).find((el) => accept(el)
+      && !conversationViewIsInsideFooter(el) && !el.querySelector?.(conversationViewContentAnchorSelector)
+      && el.querySelector?.('textarea, [contenteditable="true"]')) || null;
   }
 
   // 内容容器的判定（锚点或全等类名），供作曲器查找排除同形节点用。
@@ -11713,6 +11900,8 @@
       if (accept ? !accept(el) : conversationViewIsInsideFooter(el)) return false;
       try {
         const style = getComputedStyle(el);
+        // --thread-* 在后代继承，不代表该节点自身受 max-width 约束（#2414）。
+        if (!style.maxWidth || style.maxWidth === "none") return false;
         for (const name of conversationViewThreadWidthCustomProperties(style)) {
           if (String(style.getPropertyValue(name) || "").trim()) return true;
         }
@@ -12049,8 +12238,22 @@
   }
 
   function conversationViewResolveTargets() {
-    if (!conversationViewState.contentEl?.isConnected) conversationViewState.contentEl = conversationViewFindContentEl();
-    if (!conversationViewState.composerEl?.isConnected) conversationViewState.composerEl = conversationViewFindComposerEl();
+    for (const [key, next] of [
+      ["contentEl", conversationViewFindContentEl()],
+      ["composerEl", conversationViewFindComposerEl()],
+    ]) {
+      const previous = conversationViewState[key];
+      if (previous && previous !== next) {
+        conversationViewRestoreElement(previous);
+        conversationViewState.elements.delete(previous);
+        [previous, previous.parentElement, previous.parentElement?.parentElement].forEach((el) => {
+          if (!el) return;
+          conversationViewState.ro?.unobserve?.(el);
+          conversationViewState.observed.delete(el);
+        });
+      }
+      conversationViewState[key] = next;
+    }
     [
       document.documentElement,
       document.body,
@@ -16575,6 +16778,7 @@
       selectors.archiveNav,
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
+      'nav[data-app-navigation-rail]',
       ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }

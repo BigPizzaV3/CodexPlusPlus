@@ -723,6 +723,10 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
+    async fn capture_injected_launch_identity(&self, debug_port: u16) {
+        self.core.capture_injected_launch_identity(debug_port).await;
+    }
+
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         let ctx = self.watchdog_bridge_context()?;
         let runtime = self.runtime.clone();

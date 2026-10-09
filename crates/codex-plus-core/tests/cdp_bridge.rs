@@ -2816,6 +2816,24 @@ fn injection_script_loads_backend_settings_before_initial_scan() {
 }
 
 #[test]
+fn conversation_view_scope_regressions() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let output = Command::new("node")
+        .arg(repo.join("assets/inject/conversation-view.test.cjs"))
+        .output()
+        .expect("node should run the conversation view regression harness");
+    assert!(
+        output.status.success(),
+        "conversation view harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn injection_script_exposes_conversation_view_width_control() {
     let script = assets::injection_script(57321);
 

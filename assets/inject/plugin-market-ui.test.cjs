@@ -180,7 +180,7 @@ test("完整市场与公开市场同 id 的安装状态保持独立", async () =
   assert.equal(f.nodes.get("[data-codex-plugin-source-note]").hidden, true);
 });
 
-test("两个导航布局都有独立市场入口，扫描排除标记存在且写路由不开放给第三方脚本", () => {
+test("两个导航布局保留缺失原生入口时的市场兜底，扫描标记与第三方路由契约不变", () => {
   const navigation = readFileSync(`${fragmentRoot}/40-backend-settings.js`, "utf8");
   const extensionApi = readFileSync(`${fragmentRoot}/91-extension-api.js`, "utf8");
   const manifest = JSON.parse(readFileSync(`${fragmentRoot}/manifest.json`, "utf8"));
@@ -189,6 +189,8 @@ test("两个导航布局都有独立市场入口，扫描排除标记存在且�
   assert.match(navigation, /installCodexPlusPluginMarketSidebarNavigation\(parent, wrapper, insertionButton\)/);
   assert.match(navigation, /markCodexPlusExtensionNode\(wrapper, "builtin-plugin-market"\)/);
   assert.match(source, /wrapper\.id = codexPlusSidebarPluginMarketId/);
+  assert.match(source, /if \(codexPlusNativePluginNavigationEntry\(\)\)/);
+  assert.match(navigation, /const nativePluginEntry = codexPlusNativePluginNavigationEntry\(\)/);
   assert.match(source, /markCodexPlusExtensionNode\(overlay, "builtin-plugin-market"\)/);
   assert.doesNotMatch(source, /(?:codexStateCall|sendRequest|postJson)\(["']plugin\/install["']/);
   assert.doesNotMatch(extensionApi, /["']\/plugin-market\/(?:install|list|install-status)["']/);

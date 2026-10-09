@@ -326,6 +326,46 @@ pub fn local_responses_proxy_base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
 
+#[derive(Debug)]
+pub(crate) struct UnsupportedEncryptedAgentContent;
+
+impl std::fmt::Display for UnsupportedEncryptedAgentContent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unsupported_encrypted_agent_content: Chat Completions 上游无法处理加密的 agent 消息内容，请使用支持该协议的 Responses 上游")
+    }
+}
+
+impl std::error::Error for UnsupportedEncryptedAgentContent {}
+
+impl UnsupportedEncryptedAgentContent {
+    pub(crate) fn response_body(&self) -> Value {
+        json!({"error":{
+            "type":"invalid_request_error",
+            "code":"unsupported_encrypted_agent_content",
+            "param":"input",
+            "message":self.to_string()
+        }})
+    }
+}
+
+fn input_has_encrypted_agent_content(input: &Value) -> bool {
+    fn item_has_encrypted_content(item: &Value) -> bool {
+        item.get("type").and_then(Value::as_str) == Some("encrypted_content")
+            || item.get("content").is_some_and(|content| match content {
+                Value::Array(parts) => parts.iter().any(|part| {
+                    part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                }),
+                Value::Object(_) => content.get("type").and_then(Value::as_str) == Some("encrypted_content"),
+                _ => false,
+            })
+    }
+    match input {
+        Value::Array(items) => items.iter().any(item_has_encrypted_content),
+        Value::Object(_) => item_has_encrypted_content(input),
+        _ => false,
+    }
+}
+
 pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     responses_to_chat_completions_with_options(body, false)
 }
@@ -334,6 +374,11 @@ pub fn responses_to_chat_completions_with_options(
     body: Value,
     standard: bool,
 ) -> anyhow::Result<Value> {
+    // agent 加密内容没有 Chat 文本映射。发送前明确拒绝；不按字段名猜测明文，
+    // 也不遍历工具参数/输出里的用户 JSON。reasoning 和 compaction 保持原契约。
+    if body.get("input").is_some_and(input_has_encrypted_agent_content) {
+        return Err(UnsupportedEncryptedAgentContent.into());
+    }
     let mut result = json!({});
 
     if let Some(model) = body.get("model") {
@@ -604,6 +649,137 @@ pub struct ChatSseToResponsesConverter {
     utf8_remainder: Vec<u8>,
     state: ChatSseState,
     failed: bool,
+}
+
+/// 原生 Responses 只旁路观察终止事件，不改写任何响应字节，也不保存诊断正文。
+/// 只保留每个事件的有限前缀，避免图片等大 payload 令诊断缓冲无界增长。
+#[derive(Default)]
+pub(crate) struct NativeResponsesSseObserver {
+    event_prefix: Vec<u8>,
+    event_tail: [u8; 4],
+    event_too_large: bool,
+    unclassified_large_event: bool,
+    completed: bool,
+    failure: Option<&'static str>,
+}
+
+const NATIVE_SSE_DIAGNOSTIC_PREFIX_LIMIT: usize = 64 * 1024;
+
+impl NativeResponsesSseObserver {
+    pub(crate) fn push_bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            if self.event_prefix.len() < NATIVE_SSE_DIAGNOSTIC_PREFIX_LIMIT {
+                self.event_prefix.push(*byte);
+            } else {
+                self.event_too_large = true;
+            }
+            self.event_tail.rotate_left(1);
+            self.event_tail[3] = *byte;
+            if self.event_tail.ends_with(b"\n\n") || self.event_tail == *b"\r\n\r\n" {
+                self.observe_event();
+                self.event_prefix.clear();
+                self.event_tail = [0; 4];
+                self.event_too_large = false;
+            }
+        }
+    }
+
+    fn observe_event(&mut self) {
+        let prefix = String::from_utf8_lossy(&self.event_prefix);
+        let event_name = prefix.lines().find_map(|line| strip_sse_field(line, "event"));
+        let data = prefix.lines().filter_map(|line| strip_sse_field(line, "data"))
+            .collect::<Vec<_>>().join("\n");
+        // 只观察已完整解析的顶层 type；后续大 payload 超过前缀上限时，
+        // 忽略其解析错误，保留此前读到的类型。它不是原生响应的有效性校验器。
+        struct EventType<'a>(&'a mut Option<String>);
+        impl<'de> serde::de::Visitor<'de> for EventType<'_> {
+            type Value = ();
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an SSE event object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "type" {
+                        *self.0 = Some(map.next_value::<String>()?);
+                    } else {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(())
+            }
+        }
+        let mut deserializer = serde_json::Deserializer::from_str(&data);
+        let mut event_type = None;
+        let _ = serde::Deserializer::deserialize_map(&mut deserializer, EventType(&mut event_type));
+        match event_type.as_deref().or(event_name.map(str::trim)) {
+            Some("response.completed") => self.completed = true,
+            Some("response.failed") => self.failure = Some("原生 Responses 上游返回 response.failed"),
+            Some("response.incomplete") => self.failure = Some("原生 Responses 上游返回 response.incomplete"),
+            Some("error") => self.failure = Some("原生 Responses 上游返回 error 事件"),
+            None if self.event_too_large => self.unclassified_large_event = true,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn finish(self) -> Option<String> {
+        // failed/incomplete 优先于 completed；[DONE] 或 HTTP EOF 都不能证明成功。
+        self.failure.or_else(|| {
+            if self.completed {
+                None
+            } else if self.unclassified_large_event {
+                Some("原生 Responses 流终止状态未知（诊断事件超限），未观察到完成事件")
+            } else {
+                Some("原生 Responses 上游在完成事件前结束了响应流")
+            }
+        }).map(str::to_string)
+    }
+}
+
+#[cfg(test)]
+mod native_responses_observer_tests {
+    use super::{NativeResponsesSseObserver, NATIVE_SSE_DIAGNOSTIC_PREFIX_LIMIT};
+
+    #[test]
+    fn fragmented_crlf_and_data_only_terminal_events_are_observed() {
+        for payload in [
+            "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"text\":\"摘要\"}\r\n\r\n",
+            "data: {\"response\":{},\"type\":\"response.completed\"}\n\n",
+        ] {
+            let mut observer = NativeResponsesSseObserver::default();
+            for byte in payload.as_bytes().chunks(1) {
+                observer.push_bytes(byte);
+            }
+            assert!(observer.finish().is_none());
+        }
+    }
+
+    #[test]
+    fn large_payloads_keep_diagnostic_memory_bounded_and_allow_terminal_observation() {
+        for prefix in ["event: response.completed\ndata: {\"output\":\"", "data: {\"type\":\"response.completed\",\"output\":\""] {
+            let mut observer = NativeResponsesSseObserver::default();
+            observer.push_bytes(prefix.as_bytes());
+            observer.push_bytes(&vec![b'x'; NATIVE_SSE_DIAGNOSTIC_PREFIX_LIMIT * 2]);
+            assert!(observer.event_prefix.len() <= NATIVE_SSE_DIAGNOSTIC_PREFIX_LIMIT);
+            observer.push_bytes(b"\"}\n\n");
+            assert!(observer.finish().is_none());
+        }
+    }
+
+    #[test]
+    fn failed_event_after_completed_still_reports_fixed_failure_without_payload() {
+        let mut observer = NativeResponsesSseObserver::default();
+        observer.push_bytes(b"data: {\"type\":\"response.completed\"}\n\ndata: {\"type\":\"response.failed\",\"error\":\"private-payload\"}\n\n");
+        assert_eq!(observer.finish().as_deref(), Some("原生 Responses 上游返回 response.failed"));
+    }
+
+    #[test]
+    fn unclassified_large_event_reports_unknown_state_without_payload() {
+        let mut observer = NativeResponsesSseObserver::default();
+        observer.push_bytes(b"data: {\"output\":\"");
+        observer.push_bytes(&vec![b'x'; NATIVE_SSE_DIAGNOSTIC_PREFIX_LIMIT * 2]);
+        observer.push_bytes(b"\",\"type\":\"response.completed\"}\n\n");
+        assert!(observer.finish().unwrap().contains("状态未知"));
+    }
 }
 
 /// codex v2 远程压缩的响应包装器：把上游摘要文本（无论 Responses 还是

@@ -20,6 +20,10 @@
 
   function installCodexPlusPluginMarketSidebarNavigation(parent, anchor, template) {
     let wrapper = document.getElementById(codexPlusSidebarPluginMarketId);
+    if (codexPlusNativePluginNavigationEntry()) {
+      wrapper?.remove();
+      return;
+    }
     if (!wrapper || wrapper.parentElement !== parent) {
       wrapper?.remove();
       wrapper = document.createElement("div");

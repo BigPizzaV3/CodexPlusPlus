@@ -35,6 +35,7 @@
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
         if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
+        if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -70,6 +71,7 @@
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
     if (typeof installCodexPlusCustomLayout === "function") runScanStep(installCodexPlusCustomLayout);
+    if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
     renderCodexPlusMenu();
     scan();
   }
@@ -1240,6 +1242,10 @@
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">分享会话按钮</div><div class="codex-plus-row-description">在当前会话工具栏显示分享按钮，关闭后立即隐藏。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionShare"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
                 </div>
@@ -1830,12 +1836,15 @@
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
+    const nativePluginEntry = codexPlusNativePluginNavigationEntry();
+    if (nativePluginEntry) document.getElementById(codexPlusRailPluginMarketId)?.remove();
     const anchor = codexPlusRailPrimaryAnchor(rail);
     // 插到锚点所在的父容器里，而不是 nav 顶层：原生按钮可能嵌在 nav 内部的分组 div 中，
     // 直接插顶层会破坏它的 flex 布局。
     const host = anchor?.parentElement || rail;
     let cursor = anchor;
     specs.forEach((spec) => {
+      if (spec.id === codexPlusRailPluginMarketId && nativePluginEntry) return;
       let wrapper = document.getElementById(spec.id);
       if (!wrapper || wrapper.parentElement !== host) {
         wrapper?.remove();

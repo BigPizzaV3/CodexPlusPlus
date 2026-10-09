@@ -214,6 +214,8 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /function sessionImportMarkdown\(session\)/);
     assert.match(renderer, /codexpp-import-session/);
     assert.match(renderer, /nativeShare\?\.closest\?\.\("\.ms-auto"\)/);
+    assert.match(renderer, /function sessionSharePlacement\(\)/);
+    assert.match(renderer, /sessionShare: "codexAppSessionShare"/);
     assert.match(renderer, /#k=\$\{encrypted\.key\}/);
     assert.match(renderer, /navigator\.clipboard\.writeText\(shareUrl\)/);
     assert.match(renderer, /data-testid\*=\"message\"/);
@@ -2104,16 +2106,23 @@ function conversationViewRuntime(renderer: string) {
     dataset: Record<string, string>;
     rect: { left: number; width: number };
     vars: Record<string, string>;
+    computedMaxWidth: string;
     padding: { left: string; right: string };
     querySelectorAll(selector: string): FakeEl[];
     querySelector(selector: string): FakeEl | null;
     matches(selector: string): boolean;
     closest(selector: string): FakeEl | null;
+    contains(el: FakeEl): boolean;
     getBoundingClientRect(): { left: number; width: number; right: number; top: number; bottom: number; height: number };
   };
 
   function matches(el: FakeEl, selector: string): boolean {
+    if (selector.includes(",")) return selector.split(",").some((part) => matches(el, part.trim()));
+    const taggedAttribute = selector.match(/^([a-z]+)(\[.*\])$/);
+    if (taggedAttribute) return el.tagName.toLowerCase() === taggedAttribute[1] && matches(el, taggedAttribute[2]);
     if (selector === "div") return el.tagName === "DIV";
+    if (/^[a-z]+$/.test(selector)) return el.tagName.toLowerCase() === selector;
+    if (selector.startsWith("#")) return el.attrs.id === selector.slice(1);
     if (selector.startsWith("[") && selector.endsWith("]")) {
       const body = selector.slice(1, -1);
       const eq = body.indexOf("=");
@@ -2151,6 +2160,7 @@ function conversationViewRuntime(renderer: string) {
       dataset: {},
       rect: { left: 0, width: 0 },
       vars: {},
+      computedMaxWidth: "none",
       padding: { left: "", right: "" },
       querySelectorAll: (selector: string) => query(node, selector),
       querySelector: (selector: string) => query(node, selector)[0] ?? null,
@@ -2163,6 +2173,7 @@ function conversationViewRuntime(renderer: string) {
         }
         return null;
       },
+      contains: (el) => node === el || descendants(node).includes(el),
       getBoundingClientRect: () => ({
         left: node.rect.left,
         width: node.rect.width,
@@ -2229,6 +2240,7 @@ return {
       const style: Record<string, unknown> = {
         paddingLeft: node.padding.left,
         paddingRight: node.padding.right,
+        maxWidth: node.computedMaxWidth,
         length: Object.keys(node.vars).length,
         getPropertyValue: (name: string) => node.vars[name] ?? "",
       };
@@ -2339,6 +2351,7 @@ describe("renderer injection conversation view alignment", () => {
     // 既没有新版类名工具类，也没有 data-* 锚点，只剩 Codex 注入的 CSS 变量。
     const bare = runtime.append(host, runtime.el("div", "some-renamed-class"));
     bare.vars["--thread-body-max-width"] = "calc(900px + 0px)";
+    bare.computedMaxWidth = "900px";
     const found = runtime.api.findContent();
     assert.ok(found, "兜底候选应能反查到宿主节点");
     assert.equal(found, bare);

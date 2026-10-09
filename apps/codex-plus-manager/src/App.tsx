@@ -259,6 +259,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
+  codexAppSessionShare: boolean;
   codexAppPasteFix: boolean;
   codexAppTypingEffect: TypingEffect;
   codexAppThreadIdBadge: boolean;
@@ -1015,6 +1016,7 @@ const defaultSettings: BackendSettings = {
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
+  codexAppSessionShare: true,
   codexAppPasteFix: false,
   codexAppTypingEffect: "off",
   codexAppThreadIdBadge: false,
@@ -5171,6 +5173,7 @@ function EnhanceScreen({
               <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
                 <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
                 <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
+                <FeatureToggle title={t("分享会话按钮")} detail={t("在当前会话工具栏显示分享按钮，保存后更新显示，无需重启 Codex。")} checked={form.codexAppSessionShare} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionShare", value)} />
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
                 <div className={`feature-toggle ${!masterEnabled ? "disabled" : ""}`}>
                   <span>
@@ -7750,15 +7753,41 @@ function SortableModelWindowEntry({ id, children }: SortableModelWindowEntryProp
   );
 }
 
-function RelayFold({ title, children, className = "", bodyClassName = "", issue }: {
+function RelayFold({ title, children, className = "", bodyClassName = "", issue, sectionId, defaultOpen = false }: {
   title: string;
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
   issue?: string | null;
+  sectionId?: string;
+  defaultOpen?: boolean;
 }) {
+  const preferenceKey = sectionId ? `codex-plus-relay-fold:${sectionId}` : null;
+  const [open, setOpen] = useState(() => {
+    if (issue) return true;
+    try {
+      const stored = preferenceKey ? window.localStorage.getItem(preferenceKey) : null;
+      if (stored === "true" || stored === "false") return stored === "true";
+    } catch {
+      // 无法使用本地存储时仍可展开、编辑并保存供应商草稿。
+    }
+    return defaultOpen;
+  });
+  const previousIssue = useRef(issue);
+  useEffect(() => {
+    // 同一项错误更新文字时不抢回用户刚收起的面板，新出现的错误才展开。
+    if (issue && !previousIssue.current) setOpen(true);
+    previousIssue.current = issue;
+  }, [issue]);
   return (
-    <details className={`relay-fold ${className}`.trim()}>
+    <details className={`relay-fold ${className}`.trim()} open={open} onToggle={(event) => {
+      const next = event.currentTarget.open;
+      if (next === open) return;
+      setOpen(next);
+      if (preferenceKey) {
+        try { window.localStorage.setItem(preferenceKey, String(next)); } catch { /* 偏好不可写不影响编辑。 */ }
+      }
+    }}>
       <summary className="relay-fold-summary">
         <ChevronDown aria-hidden="true" className="relay-fold-chevron h-4 w-4" />
         <strong>{title}</strong>
@@ -8339,6 +8368,8 @@ function RelayProfileEditor({
         ) : null}
         <RelayFold
           className="relay-config-section relay-model-settings"
+          sectionId="models"
+          defaultOpen
           issue={modelRowsError || relayModelRoutesSettingsValidation(relaySettingsWithDraft(form, profile.id, profile, isNew))}
           title={t("模型配置")}
         >
@@ -8819,6 +8850,7 @@ function RelayProfileEditor({
         </RelayFold>
         <RelayFold
           className="relay-config-section relay-request-settings"
+          sectionId="requests"
           issue={customHeadersError || relaySessionProviderValidation(profile)}
           title={t("请求设置")}
         >
@@ -8875,6 +8907,8 @@ function RelayProfileEditor({
                   <strong>{t("纯标准协议")}</strong>
                   <small>
                     {t("强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。")}
+                    {" "}
+                    {t("若网关提示 thinking type: adaptive 无效，可启用此项后重试；这会停用厂商私有推理参数。")}
                   </small>
                 </span>
                 <ToggleVisual />
@@ -8970,7 +9004,7 @@ function RelayProfileEditor({
         </RelayFold>
       </div>
       <div className="relay-bottom-options">
-        <RelayFold className="relay-config-section relay-channel-protection" title={t("渠道保护")}>
+        <RelayFold className="relay-config-section relay-channel-protection" sectionId="channel-protection" title={t("渠道保护")}>
           <p className="relay-fold-description">
             {t("仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。")}
           </p>
@@ -9056,7 +9090,7 @@ function RelayProfileEditor({
             </section>
           </div>
         </RelayFold>
-        <RelayFold className="relay-advanced-block" title={t("更多选项")}>
+        <RelayFold className="relay-advanced-block" sectionId="advanced" title={t("更多选项")}>
           <p className="relay-fold-description">
             {t("包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。")}
           </p>
@@ -9863,7 +9897,7 @@ function RelayFileEditors({
   const entries = contextEntriesForProfile(form, contextProfile);
   return (
     <div className="relay-file-grid">
-      <RelayFold className="relay-file-panel relay-config-preview" title={t("config.toml 预览")}>
+      <RelayFold className="relay-file-panel relay-config-preview" sectionId="config-preview" title={t("config.toml 预览")}>
         <p className="relay-fold-description">
           {isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}
         </p>
@@ -9886,6 +9920,7 @@ function RelayFileEditors({
       <RelayFold
         bodyClassName="relay-common-config-body"
         className="relay-file-panel relay-common-config-panel"
+        sectionId="common-config"
         title={t("通用配置文件")}
       >
         <p className="relay-fold-description">
@@ -9927,7 +9962,7 @@ function RelayFileEditors({
             onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
           />
       </RelayFold>
-      <RelayFold className="relay-file-panel relay-auth-preview" title="auth.json">
+      <RelayFold className="relay-file-panel relay-auth-preview" sectionId="auth-preview" title="auth.json">
         <p className="relay-fold-description">
           {isActive
             ? profile.relayMode === "pureApi"
@@ -11896,6 +11931,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
+    codexAppSessionShare: settings.codexAppSessionShare !== false,
     codexAppCustomLayoutEnabled: settings.codexAppCustomLayoutEnabled === true,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),

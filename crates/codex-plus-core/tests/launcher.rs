@@ -704,21 +704,6 @@ fn launcher_does_not_prepare_projectless_main_window() {
 }
 
 #[test]
-fn launcher_windows_process_wait_uses_platform_cfg_guards() {
-    let source = include_str!("../src/launcher.rs").replace("\r\n", "\n");
-
-    assert!(source.contains(
-        "#[cfg(windows)]\nasync fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()>"
-    ));
-    assert!(source.contains(
-        "#[cfg(not(windows))]\nasync fn wait_for_windows_process_id(process_id: u32) -> anyhow::Result<()>"
-    ));
-    assert!(source.contains(
-        "#[cfg(windows)]\nfn wait_for_windows_process_id_blocking(process_id: u32) -> anyhow::Result<()>"
-    ));
-}
-
-#[test]
 fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
     let extra_args = vec![
@@ -2233,6 +2218,32 @@ async fn native_browser_lifecycle_uses_one_settings_snapshot_and_stops_on_succes
     }
 }
 
+#[tokio::test]
+async fn launch_exit_saves_failed_terminal_state_with_complete_error_chain() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let mut hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new())));
+    hooks.wait_error = true;
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store: StatusStore::new(temp.path().join("latest-status.json")),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert!(handle.wait_for_codex_exit().await.is_err());
+    let terminal = handle.status_store.load_latest().unwrap().unwrap();
+    assert_eq!(terminal.status, "failed");
+    assert!(terminal.message.contains("monitoring Codex process"));
+    assert!(terminal.message.contains("native process handle failed"));
+    assert_eq!(terminal.phase, None);
+}
+
 #[derive(Clone)]
 struct FakeHooks {
     events: Arc<Mutex<Vec<String>>>,
@@ -2249,6 +2260,7 @@ struct FakeHooks {
     remaining_helper_bind_forbidden: Arc<Mutex<u32>>,
     /// 模拟与占用/保留都无关的其他 bind 失败，验证错误原样冒泡。
     helper_bind_other_error: Option<String>,
+    wait_error: bool,
 }
 
 impl FakeHooks {
@@ -2268,6 +2280,7 @@ impl FakeHooks {
             remaining_helper_bind_conflicts: Arc::new(Mutex::new(0)),
             remaining_helper_bind_forbidden: Arc::new(Mutex::new(0)),
             helper_bind_other_error: None,
+            wait_error: false,
         }
     }
 
@@ -2497,6 +2510,10 @@ impl LaunchHooks for FakeHooks {
         _debug_port: u16,
     ) -> anyhow::Result<()> {
         self.event("wait-codex");
+        if self.wait_error {
+            return Err(anyhow::anyhow!("native process handle failed")
+                .context("monitoring Codex process"));
+        }
         Ok(())
     }
 

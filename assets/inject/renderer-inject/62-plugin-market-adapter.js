@@ -370,16 +370,25 @@
     }
   }
 
+  function codexPlusNativePluginNavigationEntry() {
+    // 每次重查原生导航；注入入口和第三方 Plugins 按钮不能充当原生目标。
+    const destinations = Array.from(document.querySelectorAll('nav [data-sidebar-destination], aside.app-shell-left-panel nav button, nav[data-app-navigation-rail] button'));
+    return destinations.find((button) => {
+      if (button.closest('[data-codex-plus-ext], [data-codex-plus-rail]')) return false;
+      if (button.closest(`#${codexPlusSidebarPluginMarketId}, #${codexPlusRailPluginMarketId}`)) return false;
+      if (typeof isExtensionUiNode === "function" && isExtensionUiNode(button)) return false;
+      if (typeof visibleElement === "function" && !visibleElement(button)) return false;
+      const destination = (button.getAttribute("data-sidebar-destination") || "").trim();
+      const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
+      return destination === "plugins" || destination === "builtin:plugins" || /^(插件|Plugins)$/i.test(label);
+    });
+  }
+
   function openCodexPlusNativePluginMarket() {
     closeCodexPlusPage();
     clearPluginMarketplaceQueryCache();
-    const destinations = Array.from(document.querySelectorAll('[data-sidebar-destination], aside.app-shell-left-panel nav button'));
-    const native = destinations.find((button) => {
-      if (button.closest('[data-codex-plus-ext], [data-codex-plus-rail]')) return false;
-      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
-      return button.getAttribute("data-sidebar-destination") === "plugins" || /^(插件|Plugins)$/i.test(label);
-    });
-    if (native) {
+    const native = codexPlusNativePluginNavigationEntry();
+    if (native && !native.disabled && native.getAttribute("aria-disabled") !== "true") {
       native.click();
       return;
     }
