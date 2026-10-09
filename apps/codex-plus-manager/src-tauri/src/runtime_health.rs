@@ -141,7 +141,8 @@ fn helper_available(port: u16) -> bool {
 }
 
 fn helper_available_at(address: SocketAddr, port: u16) -> bool {
-    let timeout = Duration::from_millis(200);
+    // 启动恢复期间 CDP 检查可能短暂占用 session 线程，不能把正常排队误报为停止。
+    let timeout = Duration::from_secs(1);
     let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
         return false;
     };
@@ -312,5 +313,29 @@ mod tests {
             assert_eq!(helper_available(port), expected);
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn helper_health_tolerates_a_brief_startup_delay() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut request = [0; 1024];
+            stream.read(&mut request).unwrap();
+            std::thread::sleep(Duration::from_millis(350));
+            let body = r#"{"status":"ok","transport":"http-helper","version":"1.7.1"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        assert!(helper_available(port));
+        server.join().unwrap();
     }
 }

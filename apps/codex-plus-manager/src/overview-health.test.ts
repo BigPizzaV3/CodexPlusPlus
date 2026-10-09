@@ -30,6 +30,10 @@ test("overview shows the three live services and retires the latest launch panel
   assert.match(entry, /codexAppRunning \? actions\.restart\(\) : actions\.launch\(\)/);
   assert.match(entry, /runtime_health\?\.codex_app/);
   assert.match(entry, /codex-app-state/);
+  assert.doesNotMatch(entry, /<span>Codex APP<\/span>/);
+  assert.match(entry, /Codex \{statusLabel\(overview\?\.runtime_health\?\.codex_app\?\.status/);
+  assert.match(entry, /aria-label=\{t\("刷新状态"\)\}/);
+  assert.doesNotMatch(screen, /刷新状态|actions\.refreshCurrent/);
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
   assert.match(css, /\.overview-health-grid\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 });
