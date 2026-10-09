@@ -322,13 +322,36 @@ pub fn requires_bundled_metadata_catalog(slug: &str) -> bool {
 }
 
 pub fn model_ui_metadata(slug: &str) -> Option<Value> {
-    let resolved = resolve_builtin_metadata(slug)?;
-    let metadata = resolved.entry;
-    let normalized_slug = resolved.slug;
+    model_ui_metadata_with_override(slug, None)
+}
+
+/// UI 与请求拦截读取同一份供应商模型能力；用户明确声明优先于内置默认。
+pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>) -> Option<Value> {
+    let resolved = resolve_builtin_metadata(slug);
+    let has_builtin = resolved.is_some();
+    let user_override = user_override.and_then(Value::as_object);
+    if resolved.is_none() && user_override.is_none() {
+        return None;
+    }
+    let normalized_slug = resolved.as_ref().map(|entry| entry.slug.clone())
+        .unwrap_or_else(|| normalized_model_slug(slug));
+    let mut metadata = resolved.map(|entry| entry.entry).unwrap_or_else(|| json!({}));
+    if let Some(user) = user_override
+        && let Some(model) = metadata.as_object_mut()
+    {
+        for (key, value) in user {
+            if key != "codex_plus_fast_support" {
+                model.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    let fast_mode = user_override.and_then(|user| user.get("codex_plus_fast_support"));
+    apply_model_fast_support(&mut metadata, fast_mode);
     let levels = metadata
-        .get("supported_reasoning_levels")?
-        .as_array()?
-        .iter()
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(|level| {
             let effort = level.get("effort")?.as_str()?.trim();
             if effort.is_empty() {
@@ -343,7 +366,7 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
             }))
         })
         .collect::<Vec<_>>();
-    Some(json!({
+    let mut ui = json!({
         "displayName": metadata
             .get("display_name")
             .and_then(Value::as_str)
@@ -365,7 +388,72 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
             .get("service_tiers")
             .cloned()
             .unwrap_or_else(|| json!([]))
-    }))
+    });
+    if !has_builtin {
+        // 单独声明 Fast 不能替原生描述符制造名称、描述或推理默认档。
+        for (ui_field, source_field) in [
+            ("displayName", "display_name"),
+            ("description", "description"),
+            ("defaultReasoningEffort", "default_reasoning_level"),
+        ] {
+            if metadata.get(source_field).and_then(Value::as_str).is_none() {
+                ui.as_object_mut().unwrap().remove(ui_field);
+            }
+        }
+    }
+    // 内置空数组不代表用户禁用；只有用户 JSON 中明确的数组才覆盖硬名单。
+    // 此标记仅属于 /model-catalog 的 UI 响应，不写入原生 models.json。
+    if let Some(user) = user_override {
+        let declaration = match fast_mode.and_then(Value::as_str) {
+            Some("supported") => Some(true),
+            Some("unsupported") => Some(false),
+            _ => user.get("service_tiers").and_then(Value::as_array)
+                .map(|tiers| tiers.iter().any(|tier| model_speed_tier_is(tier, "priority")))
+                .or_else(|| user.get("additional_speed_tiers").and_then(Value::as_array)
+                    .map(|tiers| tiers.iter().any(|tier| model_speed_tier_is(tier, "fast")))),
+        };
+        if let Some(supported) = declaration {
+            ui["prioritySupportOverride"] = json!(supported);
+        }
+    }
+    Some(ui)
+}
+
+fn model_speed_tier_is(tier: &Value, expected: &str) -> bool {
+    tier.as_str().or_else(|| tier.get("id").and_then(Value::as_str))
+        .is_some_and(|id| id.trim().eq_ignore_ascii_case(expected))
+}
+
+/// 生成原生 catalog 和 UI 元数据共用解释；私有声明不进入 Codex 的模型 schema。
+pub(crate) fn apply_model_fast_support(model: &mut Value, declaration: Option<&Value>) {
+    let supported = match declaration.and_then(Value::as_str) {
+        Some("supported") => true,
+        Some("unsupported") => false,
+        _ => return,
+    };
+    for (field, tier, added) in [
+        ("service_tiers", "priority", json!({"id":"priority", "name":"Fast", "description":"Priority processing declared for this provider."})),
+        ("additional_speed_tiers", "fast", json!("fast")),
+    ] {
+        let mut values = model.get(field).and_then(Value::as_array).cloned().unwrap_or_default();
+        if supported {
+            if field == "service_tiers" {
+                for value in values.iter_mut().filter(|value| model_speed_tier_is(value, tier)) {
+                    let mut entry = value.as_object().cloned().unwrap_or_default();
+                    for key in ["id", "name", "description"] {
+                        if entry.get(key).is_none_or(|value| !value.is_string()) {
+                            entry.insert(key.to_string(), added[key].clone());
+                        }
+                    }
+                    *value = Value::Object(entry);
+                }
+            }
+            if !values.iter().any(|value| model_speed_tier_is(value, tier)) { values.push(added); }
+        } else {
+            values.retain(|value| !model_speed_tier_is(value, tier));
+        }
+        model[field] = json!(values);
+    }
 }
 
 /// 内置元数据匹配结果：来源名 + 完整条目（含窗口/展示/档位等字段）。

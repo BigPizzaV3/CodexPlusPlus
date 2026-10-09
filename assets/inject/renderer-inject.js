@@ -3676,20 +3676,22 @@
   function codexServiceTierFastSupportedForModel(modelName) {
     const normalized = normalizeCodexServiceTierModelName(modelName);
     if (!normalized) return false;
-    if (codexServiceTierSupportedFastModels.has(normalized)) return true;
     // 不按名字猜：模型叫 deepseek 不代表它的中转站支持 priority tier。
     // 只认上游模型元数据里明确声明的 priority。
     try {
       const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
-      if (metadata && Array.isArray(metadata.serviceTiers) && metadata.serviceTiers.some((t) => String(t.id || t).toLowerCase() === "priority")) return true;
+      if (typeof metadata?.prioritySupportOverride === "boolean") return metadata.prioritySupportOverride;
+      const tierIs = (tier, expected) => String(typeof tier === "string" ? tier : tier?.id || "").trim().toLowerCase() === expected;
+      if (Array.isArray(metadata?.serviceTiers) && metadata.serviceTiers.some((tier) => tierIs(tier, "priority"))) return true;
+      if (Array.isArray(metadata?.additionalSpeedTiers) && metadata.additionalSpeedTiers.some((tier) => tierIs(tier, "fast"))) return true;
     } catch {}
-    // removed blanket apikey fallback to keep test contract (FAST only for known models)
-    return false;
+    // 未声明仍沿用已验证的内置模型；第三方模型不能因名字含 fast 就自动放行。
+    return codexServiceTierSupportedFastModels.has(normalized);
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
     const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+    return `Fast 支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型，${modelText}；可在供应商的模型配置中设置 Fast 支持`;
   }
 
   function codexServiceTierMaybeLoadModelCatalog(force = false) {
@@ -4003,7 +4005,7 @@
     const title = [
       `服务模式：${scope}`,
       "Standard：使用标准处理；不在请求上设置 priority。",
-      `Fast：仅支持 ${codexServiceTierFastModelListLabel()}；对支持模型使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。`,
+      `Fast：支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型；使用 service_tier=\"priority\"，实际支持与计费由供应商决定，可在模型配置中明确声明。`,
     ].join("\n");
     if (effectiveMode === "fast" && !fastAvailability.supported) {
       return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
@@ -6686,6 +6688,7 @@
       return params;
     }
     const next = { ...params };
+    if (next.forceRefetch === true) clearPluginMarketplaceRemoteCatalogUnavailable();
     const requestProfile = pluginMarketplaceRequestProfile(next);
     const requestCwds = Array.isArray(next.cwds)
       ? next.cwds.filter((cwd) => typeof cwd === "string" && cwd.trim())
@@ -6698,7 +6701,7 @@
     const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
     const broadCatalogRequest = codexPluginUsesBroadCatalogKinds()
       && (!hadMarketplaceKinds || next.marketplaceKinds == null);
-    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
+    const remoteCatalogUnavailable = pluginMarketplaceRemoteCatalogUnavailable();
     if (broadCatalogRequest && !remoteCatalogUnavailable) {
       sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
         hadMarketplaceKinds,
@@ -6969,8 +6972,32 @@
     return text.includes("chatgpt authentication required for remote plugin catalog") && text.includes("api key auth is not supported");
   }
 
+  const codexPluginRemoteAuthRetryMs = 60_000;
+
+  function clearPluginMarketplaceRemoteCatalogUnavailable() {
+    delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+    delete window.__codexPluginMarketplaceRemoteCatalogRejectedAt;
+  }
+
+  function pluginMarketplaceRemoteCatalogUnavailable() {
+    if (window.__codexPluginMarketplaceRemoteCatalogUnavailable !== true) return false;
+    const now = Date.now();
+    const rejectedAt = window.__codexPluginMarketplaceRemoteCatalogRejectedAt;
+    // 兼容旧注入留下的标记；只暂时降级，下次浏览可重新验证登录态。
+    if (!Number.isFinite(rejectedAt)) {
+      window.__codexPluginMarketplaceRemoteCatalogRejectedAt = now;
+      return true;
+    }
+    if (now < rejectedAt || now - rejectedAt >= codexPluginRemoteAuthRetryMs) {
+      clearPluginMarketplaceRemoteCatalogUnavailable();
+      return false;
+    }
+    return true;
+  }
+
   function markPluginMarketplaceRemoteCatalogUnavailable(error) {
     window.__codexPluginMarketplaceRemoteCatalogUnavailable = true;
+    window.__codexPluginMarketplaceRemoteCatalogRejectedAt = Date.now();
     sendCodexPlusDiagnostic("plugin_marketplace_remote_auth_fallback", {
       errorMessage: pluginMarketplaceErrorText(error),
       rememberedCwdCount: Array.isArray(window.__codexPluginMarketplaceLastCwds)
@@ -7206,10 +7233,10 @@
       setCodexAppVersion: (version) => {
         codexPlusBackendSettings.codexAppVersion = String(version || "");
       },
-      remoteCatalogUnavailable: () => window.__codexPluginMarketplaceRemoteCatalogUnavailable === true,
+      remoteCatalogUnavailable: pluginMarketplaceRemoteCatalogUnavailable,
       reset: () => {
         delete window.__codexPluginMarketplaceLastCwds;
-        delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+        clearPluginMarketplaceRemoteCatalogUnavailable();
         window.__codexPluginMarketplaceRequestIds = new Set();
         window.__codexPluginMarketplaceFetchRequestIds = new Set();
         window.__codexPluginMarketplaceRequestProfiles = new Map();
@@ -7220,6 +7247,7 @@
   }
 
   function clearPluginMarketplaceQueryCache() {
+    clearPluginMarketplaceRemoteCatalogUnavailable();
     try {
       const queryClient = window.__REACT_QUERY_CLIENT__ || window.__codexQueryClient;
       if (queryClient && typeof queryClient.invalidateQueries === "function") {
@@ -11905,10 +11933,12 @@
       });
   }
 
+  const codexServiceTierComposerFooterSelector = ".composer-footer, [data-composer-footer-responsive]";
+
   function codexServiceTierVisibleComposerFooters(root = document) {
     const footers = [
-      ...(root?.matches?.(".composer-footer") ? [root] : []),
-      ...Array.from(root?.querySelectorAll?.(".composer-footer") || []),
+      ...(root?.matches?.(codexServiceTierComposerFooterSelector) ? [root] : []),
+      ...Array.from(root?.querySelectorAll?.(codexServiceTierComposerFooterSelector) || []),
     ];
     return footers
       .filter(codexServiceTierBadgeVisibleElement)
@@ -11926,8 +11956,8 @@
     if (providerNames.some((name) => name && text.includes(name))) score += 40;
     if (/完全访问权限|full access|model|超高|high|sub2api|provider/i.test(text)) score += 20;
     if (/本地模式|local mode|worktree|branch|codex\//i.test(text)) score -= 30;
-    if (composer.matches?.(".composer-footer")) score += 4;
-    if (composer.querySelector?.(".composer-footer")) score += 8;
+    if (composer.matches?.(codexServiceTierComposerFooterSelector)) score += 4;
+    if (composer.querySelector?.(codexServiceTierComposerFooterSelector)) score += 8;
     const buttons = Array.from(composer.querySelectorAll?.("button, [role='button']") || []).filter(codexServiceTierBadgeVisibleElement);
     if (buttons.some((button) => codexServiceTierLooksLikeProviderButton(button, providerNames))) score += 30;
     score += Math.min(10, buttons.length);
@@ -11935,17 +11965,12 @@
   }
 
   function codexServiceTierComposerCandidates() {
-    const candidates = new Set();
     const threadComposer = conversationViewFindComposerEl();
-    if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
-    codexServiceTierVisibleComposerFooters().forEach((footer) => {
-      candidates.add(footer);
-      let node = footer.parentElement;
-      for (let depth = 0; node instanceof HTMLElement && depth < 6; depth += 1, node = node.parentElement) {
-        if (codexServiceTierBadgeVisibleElement(node)) candidates.add(node);
-      }
-    });
-    return Array.from(candidates);
+    if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) return [threadComposer];
+    const footers = codexServiceTierVisibleComposerFooters().filter((footer) =>
+      !footer.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`));
+    // 只认唯一的原生 footer；不能爬到页面/侧栏祖先，或把 review 的栏当成输入区。
+    return footers.length === 1 ? footers : [];
   }
 
   function codexServiceTierBestComposerFooter(root = document) {
@@ -11973,8 +11998,8 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    if (composer?.matches?.(".composer-footer")) return composer;
-    return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
+    if (composer?.matches?.(codexServiceTierComposerFooterSelector)) return composer;
+    return codexServiceTierBestComposerFooter(composer) || null;
   }
 
   function codexServiceTierBadgeFooterGroup(composer) {
@@ -12030,7 +12055,7 @@
       existingBadges.forEach((badge) => badge.remove());
       return;
     }
-    let badge = existingBadges.find((node) => node.closest?.(".composer-footer") || node.closest?.("button") == null) || existingBadges[0];
+    let badge = existingBadges.find((node) => node.closest?.(codexServiceTierComposerFooterSelector) || node.closest?.("button") == null) || existingBadges[0];
     existingBadges.forEach((node) => {
       if (node !== badge) node.remove();
     });

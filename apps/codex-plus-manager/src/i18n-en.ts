@@ -5,6 +5,14 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "Fast（priority）支持": "Fast (priority) support",
+  "模型配置：元数据与 Fast 支持": "Model settings: metadata and Fast support",
+  "继承模型默认能力": "Inherit model defaults",
+  "明确支持 priority": "Supports priority",
+  "不支持 priority": "Does not support priority",
+  "请先修正当前模型的 JSON 配置，再设置 Fast 支持。": "Fix this model's JSON before configuring Fast support.",
+  "按当前供应商逐模型声明。仅在上游支持 service_tier=priority 时选择支持；继承会清除自定义声明，取消不会保存修改。": "Declare support per model for this provider. Select support only when its upstream accepts service_tier=priority. Inherit clears the custom declaration; Cancel leaves saved settings unchanged.",
+  "需要自定义 Fast 白名单时，打开对应模型的配置按钮，设置 Fast（priority）支持并保存此模型与供应商。": "To customize the Fast allowlist, open the model's settings, configure Fast (priority) support, and save the model and provider.",
   "挂件与桌宠": "Widgets and pets",
   "在 Codex 中查看用量，设置自己的角色和互动方式。": "View usage in Codex and customize your character and interactions.",
   "Codex 用量挂件": "Codex usage widget",
