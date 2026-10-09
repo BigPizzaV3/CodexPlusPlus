@@ -474,20 +474,22 @@
   function codexServiceTierFastSupportedForModel(modelName) {
     const normalized = normalizeCodexServiceTierModelName(modelName);
     if (!normalized) return false;
-    if (codexServiceTierSupportedFastModels.has(normalized)) return true;
     // 不按名字猜：模型叫 deepseek 不代表它的中转站支持 priority tier。
     // 只认上游模型元数据里明确声明的 priority。
     try {
       const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
-      if (metadata && Array.isArray(metadata.serviceTiers) && metadata.serviceTiers.some((t) => String(t.id || t).toLowerCase() === "priority")) return true;
+      if (typeof metadata?.prioritySupportOverride === "boolean") return metadata.prioritySupportOverride;
+      const tierIs = (tier, expected) => String(typeof tier === "string" ? tier : tier?.id || "").trim().toLowerCase() === expected;
+      if (Array.isArray(metadata?.serviceTiers) && metadata.serviceTiers.some((tier) => tierIs(tier, "priority"))) return true;
+      if (Array.isArray(metadata?.additionalSpeedTiers) && metadata.additionalSpeedTiers.some((tier) => tierIs(tier, "fast"))) return true;
     } catch {}
-    // removed blanket apikey fallback to keep test contract (FAST only for known models)
-    return false;
+    // 未声明仍沿用已验证的内置模型；第三方模型不能因名字含 fast 就自动放行。
+    return codexServiceTierSupportedFastModels.has(normalized);
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
     const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+    return `Fast 支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型，${modelText}；可在供应商的模型配置中设置 Fast 支持`;
   }
 
   function codexServiceTierMaybeLoadModelCatalog(force = false) {
