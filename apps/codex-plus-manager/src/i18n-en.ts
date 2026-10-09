@@ -5,8 +5,8 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
-  "Helper 状态": "Helper status",
-  "Debugger 状态": "Debugger status",
+  "后台服务状态": "Backend service status",
+  "调试连接状态": "Debug connection status",
   "代理服务器状态": "Proxy server status",
   "当前配置无需 Helper": "Helper is not needed for the current configuration",
   "本地后台服务已连接": "Local helper is connected",
