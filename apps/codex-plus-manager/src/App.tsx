@@ -11684,10 +11684,12 @@ function applyContextLimitPreview(configContents: string, profile: RelayProfile)
 function removeRootTomlKey(contents: string, key: string): string {
   const lines: string[] = [];
   let inRoot = true;
-  for (const line of contents.split(/\r?\n/)) {
-    if (tomlSectionName(line) !== null) inRoot = false;
+  const sourceLines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(sourceLines);
+  for (const [index, line] of sourceLines.entries()) {
+    if (structural[index] && tomlSectionName(line) !== null) inRoot = false;
     const assignment = tomlKeyAssignment(line);
-    if (inRoot && assignment?.path.length === 1 && assignment.path[0] === key) continue;
+    if (structural[index] && inRoot && assignment?.path.length === 1 && assignment.path[0] === key) continue;
     lines.push(line);
   }
   return ensureTrailingNewline(lines.join("\n").trimEnd());
@@ -11757,7 +11759,8 @@ function dedupeTomlRootLines(rootParts: string[]): string[] {
 
 function splitTomlRootAndTables(section: string): { root: string; tables: string } {
   const lines = section.trim().split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => tomlSectionName(line) !== null);
+  const structural = tomlStructureMask(lines);
+  const firstTable = lines.findIndex((line, index) => structural[index] && tomlSectionName(line) !== null);
   if (firstTable < 0) return { root: lines.join("\n"), tables: "" };
   return {
     root: lines.slice(0, firstTable).join("\n"),
@@ -12473,7 +12476,10 @@ function applyRelayProfilePatchToFiles(
 }
 
 function codexModelFromConfig(contents: string): string {
-  for (const line of contents.split(/\r?\n/)) {
+  const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     if (trimmed.startsWith("[")) break;
@@ -12507,11 +12513,13 @@ function codexProviderStringFromConfig(contents: string, key: string): string {
   const fallbackSection = provider === "openai" && rootTomlStringValue(contents, "openai_base_url") === PROTOCOL_PROXY_BASE_URL
     ? codexProviderSectionName("custom") : "";
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let currentSection = "";
   let rootValue = "";
   let fallbackValue = "";
 
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(line);
     if (section !== null) {
       currentSection = section;
@@ -12540,7 +12548,10 @@ function codexApiKeyFromAuth(contents: string): string {
 function codexTopLevelIntFromConfig(contents: string, key: string): string {
   const topLevel = splitTomlRootAndTables(contents).root;
   const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
-  for (const line of topLevel.split(/\r?\n/)) {
+  const lines = topLevel.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const match = pattern.exec(line);
     if (match) return match[1];
   }
@@ -12549,11 +12560,46 @@ function codexTopLevelIntFromConfig(contents: string, key: string): string {
 
 function rootTomlStringValue(contents: string, key: string): string {
   const topLevel = splitTomlRootAndTables(contents).root;
-  for (const line of topLevel.split(/\r?\n/)) {
+  const lines = topLevel.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const value = tomlStringAssignmentValue(line, key);
     if (value !== null) return value;
   }
   return "";
+}
+
+function tomlStructureMask(lines: string[]): boolean[] {
+  // 提示词里的伪表头/赋值只是字符串正文，不能参与 provider 鉴权读写。
+  let multiline: string | null = null;
+  return lines.map((line) => {
+    const structural = multiline === null;
+    for (let index = 0; index < line.length; index += 1) {
+      if (multiline !== null) {
+        if (multiline === '"' && line[index] === "\\") {
+          index += 1;
+        } else if (line[index] === multiline) {
+          let end = index;
+          while (line[end] === multiline) end += 1;
+          if (end - index >= 3) multiline = null;
+          index = end - 1;
+        }
+      } else if (line[index] === "#") {
+        break;
+      } else if (line[index] === '"' || line[index] === "'") {
+        if (line[index + 1] === line[index] && line[index + 2] === line[index]) {
+          multiline = line[index];
+          index += 2;
+        } else {
+          const quoted = tomlQuotedValue(line, index);
+          if (!quoted) break;
+          index = quoted.end - 1;
+        }
+      }
+    }
+    return structural;
+  });
 }
 
 function tomlSectionName(line: string): string | null {
@@ -12712,9 +12758,11 @@ function setRootTomlIntKey(contents: string, key: string, value: string): string
 
 function setRootTomlLine(contents: string, key: string, lineText: string): string {
   const lines = contents.split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => tomlSectionName(line) !== null);
+  const structural = tomlStructureMask(lines);
+  const firstTable = lines.findIndex((line, index) => structural[index] && tomlSectionName(line) !== null);
   const rootEnd = firstTable >= 0 ? firstTable : lines.length;
   for (let index = 0; index < rootEnd; index += 1) {
+    if (!structural[index]) continue;
     const assignment = tomlKeyAssignment(lines[index]);
     if (assignment?.path.length === 1 && assignment.path[0] === key) {
       const replacement = tomlKeyAssignment(lineText);
@@ -12733,10 +12781,13 @@ function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
   const provider = rootTomlStringValue(contents, "model_provider");
   const targetSection = provider ? codexProviderSectionName(provider) : "";
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let currentSection = "";
   let sawProviderSection = false;
+  let rootRequiresAuth = false;
 
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(line);
     if (section !== null) {
       currentSection = section;
@@ -12744,6 +12795,7 @@ function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
       continue;
     }
     const match = /^\s*requires_openai_auth\s*=\s*(true|false)\s*(?:#.*)?$/i.exec(line);
+    if (match && currentSection === "") rootRequiresAuth = match[1].toLowerCase() === "true";
     if (!match || !currentSection.startsWith("model_providers.")) continue;
     if (targetSection) {
       if (currentSection === targetSection) return match[1].toLowerCase() === "true";
@@ -12752,7 +12804,7 @@ function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
     if (match[1].toLowerCase() === "true") return true;
   }
 
-  return !sawProviderSection && /^\s*requires_openai_auth\s*=\s*true\s*(?:#.*)?$/im.test(contents);
+  return !sawProviderSection && rootRequiresAuth;
 }
 
 function setCodexProviderStringKey(
@@ -12815,9 +12867,11 @@ function setTomlSectionStringKey(contents: string, sectionName: string, key: str
 
 function setTomlSectionRawKey(contents: string, sectionName: string, key: string, value: string): string {
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let sectionStart = -1;
   let sectionEnd = lines.length;
   for (let index = 0; index < lines.length; index += 1) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(lines[index]);
     if (section === null) continue;
     if (sectionStart >= 0) {
@@ -12832,6 +12886,7 @@ function setTomlSectionRawKey(contents: string, sectionName: string, key: string
   }
   const replacement = `${key} = ${value}`;
   for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
+    if (!structural[index]) continue;
     const assignment = tomlKeyAssignment(lines[index]);
     if (assignment?.path.length === 1 && assignment.path[0] === key) {
       lines[index] = lines[index].slice(0, assignment.valueStart) + " " + value + tomlInlineComment(lines[index], assignment.valueStart);
@@ -12846,9 +12901,11 @@ function setTomlSectionRawKey(contents: string, sectionName: string, key: string
 
 function removeTomlSectionKey(contents: string, sectionName: string, key: string): string {
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let sectionStart = -1;
   let sectionEnd = lines.length;
   for (let index = 0; index < lines.length; index += 1) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(lines[index]);
     if (section === null) continue;
     if (sectionStart >= 0) {
@@ -12859,7 +12916,7 @@ function removeTomlSectionKey(contents: string, sectionName: string, key: string
   }
   if (sectionStart < 0) return contents;
   const next = lines.filter((line, index) => {
-    if (index <= sectionStart || index >= sectionEnd) return true;
+    if (index <= sectionStart || index >= sectionEnd || !structural[index]) return true;
     const assignment = tomlKeyAssignment(line);
     return assignment?.path.length !== 1 || assignment.path[0] !== key;
   });
