@@ -121,6 +121,12 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub standard_openai_protocol: bool,
+    #[serde(
+        rename = "webSearchHistoryCompat",
+        default,
+        skip_serializing_if = "is_false"
+    )]
+    pub web_search_history_compat: bool,
     #[serde(rename = "rateLimitCooldownEnabled", default)]
     pub rate_limit_cooldown_enabled: bool,
     #[serde(rename = "channelQueueEnabled", default)]
@@ -264,6 +270,7 @@ impl Default for RelayProfile {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            web_search_history_compat: false,
             rate_limit_cooldown_enabled: false,
             channel_queue_enabled: false,
             channel_requests_per_minute: default_channel_requests_per_minute(),
@@ -275,6 +282,13 @@ impl Default for RelayProfile {
 impl RelayProfile {
     pub fn uses_no_auth(&self) -> bool {
         self.relay_mode == RelayMode::PureApi && self.no_auth
+    }
+
+    pub fn web_search_history_compat_enabled(&self) -> bool {
+        self.web_search_history_compat
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
     }
 
     pub fn has_model_routes(&self) -> bool {
@@ -812,6 +826,7 @@ impl BackendSettings {
                 model_routes: Vec::new(),
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
+                web_search_history_compat: false,
                 rate_limit_cooldown_enabled: false,
                 channel_queue_enabled: false,
                 channel_requests_per_minute: default_channel_requests_per_minute(),
@@ -872,6 +887,7 @@ impl BackendSettings {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            web_search_history_compat: false,
             rate_limit_cooldown_enabled: false,
             channel_queue_enabled: false,
             channel_requests_per_minute: default_channel_requests_per_minute(),
@@ -931,6 +947,7 @@ impl BackendSettings {
             || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
             || self.active_relay_profile().has_model_routes()
             || self.active_relay_profile().uses_no_auth()
+            || self.active_relay_profile().web_search_history_compat_enabled()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -4029,5 +4046,63 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(value["standardOpenaiProtocol"], json!(true));
         let round_tripped: RelayProfile = serde_json::from_value(value).unwrap();
         assert!(round_tripped.standard_openai_protocol);
+    }
+
+    #[test]
+    fn web_search_history_compat_is_default_off_and_round_trips_per_provider() {
+        let legacy = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(legacy.get("webSearchHistoryCompat").is_none());
+        let disabled: RelayProfile = serde_json::from_value(legacy).unwrap();
+        assert!(!disabled.web_search_history_compat_enabled());
+        let enabled = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            web_search_history_compat: true,
+            ..RelayProfile::default()
+        };
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["webSearchHistoryCompat"], json!(true));
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.web_search_history_compat_enabled());
+        let mut settings = BackendSettings {
+            active_relay_id: "off".to_string(),
+            relay_profiles: vec![
+                RelayProfile { id: "off".to_string(), ..RelayProfile::default() },
+                RelayProfile { id: "on".to_string(), ..enabled },
+            ],
+            ..BackendSettings::default()
+        };
+        assert!(!settings.active_relay_transport_uses_protocol_proxy());
+        settings.active_relay_id = "on".to_string();
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        store.save(&settings).unwrap();
+        assert!(store.load().unwrap().relay_profiles[1].web_search_history_compat);
+        settings.relay_profiles[0].web_search_history_compat = true;
+        settings.relay_profiles[1].web_search_history_compat = false;
+        store.save(&settings).unwrap();
+        let loaded = store.load().unwrap();
+        assert!(loaded.relay_profiles[0].web_search_history_compat);
+        assert!(!loaded.relay_profiles[1].web_search_history_compat);
+    }
+
+    #[test]
+    fn web_search_history_compat_does_not_enable_official_or_chat_paths() {
+        for (mode, protocol, mixed, expected) in [
+            (RelayMode::Official, RelayProtocol::Responses, false, false),
+            (RelayMode::Official, RelayProtocol::Responses, true, true),
+            (RelayMode::Aggregate, RelayProtocol::Responses, false, false),
+            (RelayMode::PureApi, RelayProtocol::ChatCompletions, false, false),
+            (RelayMode::PureApi, RelayProtocol::Responses, false, true),
+        ] {
+            let profile = RelayProfile {
+                relay_mode: mode,
+                protocol,
+                official_mix_api_key: mixed,
+                web_search_history_compat: true,
+                ..RelayProfile::default()
+            };
+            assert_eq!(profile.web_search_history_compat_enabled(), expected);
+        }
     }
 }

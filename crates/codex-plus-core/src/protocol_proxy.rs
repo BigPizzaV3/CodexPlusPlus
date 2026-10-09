@@ -1857,6 +1857,60 @@ pub async fn open_chat_completions_proxy_request(
     }
 }
 
+/// 补齐搜索历史的工具声明，不删历史，也不为无工具的压缩请求启用搜索。
+pub fn ensure_web_search_tool_for_history(request_json: &mut Value) -> bool {
+    let Some(input) = request_json.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    if !input.iter().any(|item| item["type"] == "web_search_call") {
+        return false;
+    }
+    let is_web_search = |tool: &Value| {
+        matches!(
+            tool.get("type").and_then(Value::as_str),
+            Some("web_search" | "web_search_preview" | "web_search_preview_2025_03_11")
+        )
+    };
+    let mut has_additional_tools = false;
+    for tool in input
+        .iter()
+        .filter(|item| item["type"] == "additional_tools")
+        .filter_map(|item| item.get("tools").and_then(Value::as_array))
+        .flatten()
+    {
+        has_additional_tools = true;
+        if is_web_search(tool) {
+            return false;
+        }
+    }
+    let has_tools = match request_json.get("tools") {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(tools)) => {
+            if tools.iter().any(is_web_search) {
+                return false;
+            }
+            !tools.is_empty()
+        }
+        _ => return false,
+    } || has_additional_tools;
+    let tool = json!({"type": "web_search", "external_web_access": false});
+    if let Some(tools) = request_json.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.push(tool);
+    } else {
+        request_json["tools"] = json!([tool]);
+    }
+    if !has_tools
+        && (matches!(request_json.get("tool_choice"), None | Some(Value::Null))
+            || matches!(
+                request_json.get("tool_choice").and_then(Value::as_str),
+                Some("auto" | "none")
+            ))
+    {
+        request_json["tool_choice"] = json!("none");
+    }
+    true
+}
+
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     mut request_json: Value,
@@ -1885,6 +1939,15 @@ async fn upstream_request_parts(
         )?,
     };
     if relay.protocol == RelayProtocol::Responses {
+        if relay.web_search_history_compat_enabled()
+            && !is_responses_compact_proxy_path(request_path)
+            && ensure_web_search_tool_for_history(&mut body)
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.web_search_history_compat",
+                json!({"action": "declare_web_search", "inputContainsWebSearchCall": true}),
+            );
+        }
         normalize_responses_item_ids(&mut body);
     }
 

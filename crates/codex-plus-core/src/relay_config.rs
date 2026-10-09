@@ -1339,6 +1339,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
     let proxy_mode = profile.protocol == RelayProtocol::ChatCompletions
         || profile.has_model_routes()
         || profile.uses_no_auth()
+        || profile.web_search_history_compat_enabled()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -4262,7 +4263,13 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
             crate::protocol_proxy::protocol_proxy_port(),
         );
     }
-    if profile.has_model_routes() || profile.uses_no_auth() {
+    let has_managed_proxy_config = provider_string_from_config(&profile.config_contents, "base_url")
+        .is_some_and(|base_url| base_url.trim() == managed_openai_base_url());
+    if profile.has_model_routes()
+        || profile.uses_no_auth()
+        || profile.web_search_history_compat_enabled()
+        || has_managed_proxy_config
+    {
         if !profile.upstream_base_url.trim().is_empty() {
             return profile.upstream_base_url.trim().to_string();
         }
@@ -4432,7 +4439,10 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         provider["requires_openai_auth"] = toml_edit::value(false);
     }
-    let provider_base_url = if profile.has_model_routes() || profile.uses_no_auth() {
+    let provider_base_url = if profile.has_model_routes()
+        || profile.uses_no_auth()
+        || profile.web_search_history_compat_enabled()
+    {
         crate::protocol_proxy::local_responses_proxy_base_url(
             crate::protocol_proxy::protocol_proxy_port(),
         )
