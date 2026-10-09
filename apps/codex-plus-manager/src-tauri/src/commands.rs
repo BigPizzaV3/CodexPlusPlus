@@ -1421,6 +1421,42 @@ fn start_embedded_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
     })
 }
 
+/// 重新打开管理界面时恢复已有 Codex 的 Helper、代理和注入，不启动官方应用。
+pub fn resume_existing_codex_background(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        if crate::app_is_exiting() {
+            return;
+        }
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        let latest = StatusStore::default().load_latest().unwrap_or(None);
+        let options = codex_plus_launcher::LaunchOptions {
+            app_dir: codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+                latest
+                    .as_ref()
+                    .and_then(|status| status.codex_app.as_deref())
+                    .map(Path::new),
+                Some(settings.codex_app_path.as_str()),
+            ),
+            debug_port: latest
+                .as_ref()
+                .and_then(|status| status.debug_port)
+                .unwrap_or_else(default_debug_port),
+            helper_port: latest
+                .as_ref()
+                .and_then(|status| status.helper_port)
+                .unwrap_or_else(default_helper_port),
+            status_store: StatusStore::default(),
+        };
+        if let Err(error) = codex_plus_launcher::resume_if_running(options) {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.resume_existing_failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+        let _ = tauri::Emitter::emit(&app, "runtime-health-changed", ());
+    });
+}
+
 pub fn start_weixin_connect_from_saved_settings() {
     let settings = SettingsStore::default().load().unwrap_or_default();
     if settings.weixin_connect_enabled && !settings.weixin_connect_token.trim().is_empty() {

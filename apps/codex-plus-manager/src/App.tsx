@@ -1175,6 +1175,7 @@ export function App() {
     helperPort: "57321",
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
+  const overviewRequestSequence = useRef(0);
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
@@ -1267,8 +1268,9 @@ export function App() {
   };
 
   const refreshOverview = async (silent = false) => {
+    const requestSequence = ++overviewRequestSequence.current;
     const result = await run(() => call<OverviewResult>("load_overview"));
-    if (result) {
+    if (result && requestSequence === overviewRequestSequence.current) {
       // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
       const prev = prevLaunchStatusRef.current;
       const current = result.latest_launch?.status;
@@ -3112,6 +3114,25 @@ export function App() {
     return () => window.removeEventListener("focus", refresh);
   }, [route, activeTool]);
 
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen("runtime-health-changed", () => {
+      if (!disposed) void refreshOverview(true);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else {
+        stopListening = unlisten;
+        // 先订阅再读取，覆盖后台恢复早于监听安装完成的情况。
+        void refreshOverview(true);
+      }
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
+
   const saveCodexAppPath = async (appPath: string) => {
     const next = { ...settingsForm, codexAppPath: appPath };
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
@@ -3450,8 +3471,12 @@ export function App() {
             {activeTool === "codex" && !isGlobalPage ? (
               <>
                 <span className="codex-app-state" aria-live="polite">
-                  <span>Codex APP</span>
-                  <Badge status={overview?.runtime_health?.codex_app?.status ?? "not_checked"} />
+                  <UiBadge
+                    className={statusClass(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
+                    variant="secondary"
+                  >
+                    Codex {statusLabel(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
+                  </UiBadge>
                 </span>
                 <Button
                   disabled={launchPending || !overview?.runtime_health}
@@ -3461,6 +3486,17 @@ export function App() {
                   <Rocket className="h-4 w-4" />
                   {codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
                 </Button>
+                {route === "overview" ? (
+                  <Button
+                    aria-label={t("刷新状态")}
+                    title={t("刷新状态")}
+                    size="icon"
+                    variant="outline"
+                    onClick={() => void actions.refreshCurrent()}
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </Button>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -4370,12 +4406,6 @@ function OverviewScreen({
                   </div>
                 ))}
               </div>
-              <Toolbar>
-                <Button variant="secondary" onClick={() => void actions.refreshCurrent()}>
-                  <RefreshCw className="h-4 w-4" />
-                  {t("刷新状态")}
-                </Button>
-              </Toolbar>
             </CardContent>
           </Panel>
         </>

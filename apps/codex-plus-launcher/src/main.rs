@@ -56,6 +56,7 @@ impl StartupReply {
 
 struct SessionState {
     ready: bool,
+    attach_only: bool,
     options: LaunchOptions,
     requested_at_ms: u64,
     status_started_at_ms: u64,
@@ -92,7 +93,7 @@ impl std::fmt::Display for ReportedLaunchFailure {
 impl std::error::Error for ReportedLaunchFailure {}
 
 enum RuntimeCommand {
-    Start(LaunchOptions, u64, SessionReply),
+    Start(LaunchOptions, u64, bool, SessionReply),
     Stop(SessionReply),
     Shutdown(SessionReply),
 }
@@ -116,11 +117,13 @@ impl EmbeddedSession {
     fn spawn(
         options: LaunchOptions,
         requested_at_ms: u64,
+        attach_only: bool,
         ready: SessionReply,
         runner: SessionRunner,
     ) -> Result<Self> {
         let state = Arc::new(Mutex::new(SessionState {
             ready: false,
+            attach_only,
             options: options.clone(),
             requested_at_ms,
             status_started_at_ms: requested_at_ms,
@@ -274,7 +277,7 @@ pub fn start(options: LaunchOptions) -> Result<()> {
     let status_options = options.clone();
     let requested_at_ms = requested_launch_timestamp(&status_options);
     let result =
-        send_runtime_command(|reply| RuntimeCommand::Start(options, requested_at_ms, reply));
+        send_runtime_command(|reply| RuntimeCommand::Start(options, requested_at_ms, false, reply));
     if let Err(error) = &result
         && !error.is::<StartupBusy>()
         && !error.is::<ReportedLaunchFailure>()
@@ -282,6 +285,16 @@ pub fn start(options: LaunchOptions) -> Result<()> {
         record_launch_failure(&status_options, requested_at_ms, error);
     }
     result
+}
+
+/// 只恢复已有 Codex 的后台服务。调试端点不存在时不启动或重启官方应用。
+pub fn resume_if_running(options: LaunchOptions) -> Result<bool> {
+    if !codex_plus_core::cdp::endpoint_available(options.debug_port) {
+        return Ok(false);
+    }
+    let requested_at_ms = requested_launch_timestamp(&options);
+    send_runtime_command(|reply| RuntimeCommand::Start(options, requested_at_ms, true, reply))?;
+    Ok(true)
 }
 
 /// 释放当前 session 的 helper、watchdog 和浏览器兼容状态，保留官方 Codex。
@@ -330,7 +343,7 @@ async fn runtime_commands(
             biased;
             command = commands.recv() => {
                 match command {
-                    Some(RuntimeCommand::Start(options, requested_at_ms, ready)) => {
+                    Some(RuntimeCommand::Start(options, requested_at_ms, attach_only, ready)) => {
                         if session.as_mut().is_some_and(EmbeddedSession::is_finished) {
                             if let Some(previous) = session.take() { let _ = previous.join().await; }
                         }
@@ -340,13 +353,14 @@ async fn runtime_commands(
                                 state.ready.then(|| (state.options.clone(), state.status_started_at_ms))
                             };
                             let result = match current_options {
+                                Some(_) if attach_only => Ok(()),
                                 Some((current_options, started_at_ms)) => activate(current_options, started_at_ms).await,
                                 None => Err(StartupBusy.into()),
                             };
                             let _ = ready.send(result);
                             continue;
                         }
-                        match EmbeddedSession::spawn(options, requested_at_ms, ready.clone(), runner.clone()) {
+                        match EmbeddedSession::spawn(options, requested_at_ms, attach_only, ready.clone(), runner.clone()) {
                             Ok(current) => session = Some(current),
                             Err(error) => { let _ = ready.send(Err(error)); }
                         }
@@ -376,6 +390,7 @@ async fn runtime_commands(
 
 #[derive(Clone)]
 struct LauncherHooks {
+    attach_only: bool,
     core: Arc<DefaultLaunchHooks>,
     data: Arc<LauncherDataService>,
     runtime: Arc<LauncherRuntimeService>,
@@ -387,6 +402,7 @@ struct LauncherHooks {
 impl Default for LauncherHooks {
     fn default() -> Self {
         Self {
+            attach_only: false,
             core: Arc::new(DefaultLaunchHooks::default()),
             data: Arc::new(LauncherDataService::default()),
             runtime: Arc::new(LauncherRuntimeService::new(
@@ -462,6 +478,11 @@ async fn run_embedded_session(
         .unwrap_or_else(|error| error.into_inner())
         .requested_at_ms;
     let hooks = LauncherHooks {
+        attach_only: ready
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .attach_only,
         session_state: Some(ready.state.clone()),
         ..LauncherHooks::default()
     };
@@ -553,6 +574,10 @@ async fn launcher_session(
     owns_guard: bool,
 ) -> Result<Option<LaunchHandle>> {
     if !owns_guard {
+        anyhow::ensure!(
+            !hooks.attach_only,
+            "已有 Codex++ 后台服务正在运行，不能重复恢复"
+        );
         if codex_plus_core::watcher::find_codex_processes().is_empty()
             && !codex_plus_core::watcher::cdp_listening(options.debug_port)
         {
@@ -833,11 +858,19 @@ impl LaunchHooks for LauncherHooks {
     }
 
     fn select_debug_port(&self, requested: u16) -> u16 {
-        self.core.select_debug_port(requested)
+        if self.attach_only {
+            requested
+        } else {
+            self.core.select_debug_port(requested)
+        }
     }
 
     fn select_helper_port(&self, requested: u16) -> u16 {
-        self.core.select_helper_port(requested)
+        if self.attach_only {
+            requested
+        } else {
+            self.core.select_helper_port(requested)
+        }
     }
 
     async fn load_settings(&self) -> anyhow::Result<codex_plus_core::settings::BackendSettings> {
@@ -1072,6 +1105,19 @@ impl LaunchHooks for LauncherHooks {
         settings: &codex_plus_core::settings::BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<codex_plus_core::launcher::CodexLaunch> {
+        if self.attach_only {
+            anyhow::ensure!(
+                codex_plus_core::cdp::endpoint_available(debug_port),
+                "恢复后台服务时 Codex 调试连接已断开"
+            );
+            return Ok(codex_plus_core::launcher::CodexLaunch::Process {
+                command: Vec::new(),
+                wait_strategy: codex_plus_core::launcher::ProcessWaitStrategy::ExternalWaitCommand,
+                macos_cleanup_policy: Some(
+                    codex_plus_core::launcher::MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning,
+                ),
+            });
+        }
         self.core
             .launch_codex(app_dir, debug_port, settings, extra_args)
             .await
@@ -1152,7 +1198,9 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn terminate_codex(&self, launch: &codex_plus_core::launcher::CodexLaunch) {
-        self.core.terminate_codex(launch).await;
+        if !self.attach_only {
+            self.core.terminate_codex(launch).await;
+        }
     }
 }
 
@@ -1755,7 +1803,111 @@ mod tests {
     }
 
     fn test_start_command(options: LaunchOptions, reply: SessionReply) -> RuntimeCommand {
-        RuntimeCommand::Start(options, 100, reply)
+        RuntimeCommand::Start(options, 100, false, reply)
+    }
+
+    #[tokio::test]
+    async fn restore_attaches_without_launching_and_preserves_requested_ports() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            stream.read(&mut request).unwrap();
+            let body = format!(
+                r#"[{{"id":"codex","type":"page","title":"Codex","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let hooks = LauncherHooks {
+            attach_only: true,
+            ..Default::default()
+        };
+        assert_eq!(hooks.select_debug_port(port), port);
+        assert_eq!(hooks.select_helper_port(port), port);
+        // 路径不可执行也能附着，证明恢复不会走启动官方应用的分支。
+        let launch = hooks
+            .launch_codex(
+                Path::new("/missing-codex"),
+                port,
+                &codex_plus_core::settings::BackendSettings::default(),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            launch,
+            codex_plus_core::launcher::CodexLaunch::Process {
+                command: Vec::new(),
+                wait_strategy: codex_plus_core::launcher::ProcessWaitStrategy::ExternalWaitCommand,
+                macos_cleanup_policy: Some(
+                    codex_plus_core::launcher::MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
+                ),
+            }
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_does_not_launch_if_the_debugger_disappears() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let hooks = LauncherHooks {
+            attach_only: true,
+            ..Default::default()
+        };
+        let error = hooks
+            .launch_codex(
+                Path::new("/missing-codex"),
+                port,
+                &codex_plus_core::settings::BackendSettings::default(),
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("调试连接已断开"));
+        assert!(
+            !resume_if_running(LaunchOptions {
+                debug_port: port,
+                ..Default::default()
+            })
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn restore_mode_reaches_the_session_and_repeated_restore_does_not_activate_codex() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let restored = Arc::new(AtomicUsize::new(0));
+        let count = restored.clone();
+        let worker = RuntimeWorker::spawn(
+            Arc::new(move |_, stop, ready| {
+                assert!(ready.state.lock().unwrap().attach_only);
+                count.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    ready.send(Ok(())).unwrap();
+                    let _ = stop.await;
+                })
+            }),
+            Arc::new(|_, _| panic!("restoration must not activate or restart Codex")),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            send_test_command(&worker, |reply| {
+                RuntimeCommand::Start(LaunchOptions::default(), 100, true, reply)
+            })
+            .unwrap();
+        }
+        assert_eq!(restored.load(Ordering::SeqCst), 1);
+        send_test_command(&worker, RuntimeCommand::Shutdown).unwrap();
+        worker.thread.join().unwrap();
     }
 
     #[test]
@@ -2198,6 +2350,7 @@ mod tests {
             std::process::id()
         ));
         let hooks = LauncherHooks {
+            attach_only: false,
             core: Arc::new(DefaultLaunchHooks::default()),
             data: Arc::new(LauncherDataService {
                 db_path: test_dir.join("state.sqlite"),

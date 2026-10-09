@@ -78,6 +78,7 @@ pub fn run() {
             start_window_activation_listener(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window);
+            commands::resume_existing_codex_background(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
