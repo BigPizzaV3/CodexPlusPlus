@@ -83,7 +83,7 @@ build_frontend() {
 build_rust() {
     echo ">>> 构建 Rust 二进制..."
     export PATH="$HOME/.cargo/bin:$PATH"
-    cargo build --release -p codex-plus-launcher -p codex-plus-manager
+    cargo build --release -p codex-plus-manager
     echo ">>> Rust 构建完成"
 }
 
@@ -110,10 +110,8 @@ package_deb() {
     mkdir -p "$stage/lib/${PACKAGE_NAME}"
 
     # ── 复制二进制 ──
-    cp "$REPO_DIR/target/release/codex-plus-plus"          "$stage/bin/"
-    cp "$REPO_DIR/target/release/codex-plus-plus-manager"  "$stage/bin/"
+    cp "$REPO_DIR/target/release/codex-plus-plus" "$stage/bin/"
     chmod 755 "$stage/bin/codex-plus-plus"
-    chmod 755 "$stage/bin/codex-plus-plus-manager"
 
     # ── 复制前端资源 ──
     if [ -d "$PROJECT_DIR/dist" ]; then
@@ -123,32 +121,21 @@ package_deb() {
     # ── 复制图标 ──
     local icon_src="$PROJECT_DIR/src-tauri/icons/icon.png"
     if [ -f "$icon_src" ]; then
-        cp "$icon_src" "$stage/share/icons/hicolor/128x128/apps/${PACKAGE_NAME}-manager.png"
+        cp "$icon_src" "$stage/share/icons/hicolor/128x128/apps/${PACKAGE_NAME}.png"
     fi
 
     # ── Desktop 文件 ──
-    cat > "$stage/share/applications/${PACKAGE_NAME}-launcher.desktop" <<'EOF'
+    cat > "$stage/share/applications/${PACKAGE_NAME}.desktop" <<'EOF'
 [Desktop Entry]
 Name=Codex++
-Comment=Codex++ Launcher - silently launch the official Codex desktop app
-Exec=codex-plus-plus
+Comment=Configure and launch the official Codex desktop app
+Exec=codex-plus-plus %u
 Icon=codex-plus-plus
 Type=Application
 Categories=Development;Utility;
 Terminal=false
 StartupNotify=true
-EOF
-
-    cat > "$stage/share/applications/${PACKAGE_NAME}-manager.desktop" <<'EOF'
-[Desktop Entry]
-Name=Codex++ Manager
-Comment=Codex++ Manager - configure providers, models, enhancements
-Exec=codex-plus-plus-manager
-Icon=codex-plus-plus-manager
-Type=Application
-Categories=Development;Utility;
-Terminal=false
-StartupNotify=true
+MimeType=x-scheme-handler/codexplusplus;x-scheme-handler/dreamskin;
 EOF
 
     # ── 复制文档 ──
@@ -170,14 +157,13 @@ Installed-Size: 70620
 Depends: libc6 (>= 2.34), libgcc-s1 (>= 4.2), libstdc++6 (>= 13), libdbus-1-3, libglib2.0-0t64, libgtk-3-0t64, libwebkit2gtk-4.1-0, libsoup-3.0-0, libjavascriptcoregtk-4.1-0, libssl3t64 (>= 3.0.0), libz3-4, libatspi2.0-0t64, libasound2t64
 
 Recommends: codex
-Description: Codex++ is an external launcher and manager for OpenAI Codex / ChatGPT desktop apps.
+Description: Codex++ configures and launches OpenAI Codex / ChatGPT desktop apps.
  It provides provider switching, protocol conversion, session management and UI enhancements
  via Chromium DevTools Protocol and a local helper service, without modifying the official
  app.asar or writing patches to the installation directory.
  .
- Includes two components:
-  - codex-plus-plus: silently launches the official Codex desktop app
-  - codex-plus-plus-manager: manages providers, models, plugins, sessions, enhancements
+ Includes one application, codex-plus-plus, for provider and model configuration,
+ sessions, enhancements and launching the official desktop app from its window.
 EOF
 
     # ── postinst 脚本 ──

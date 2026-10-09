@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Codex++ Manager",
+  "productName": "Codex++",
   "version": "1.7.1",
-  "identifier": "com.bigpizzav3.codexplusplus.manager",
+  "identifier": "com.bigpizzav3.codexplusplus",
   "build": {
     "beforeDevCommand": "npm run vite:dev",
     "beforeBuildCommand": "npm run vite:build",
@@ -14,7 +14,7 @@
       {
         "create": false,
         "label": "main",
-        "title": "Codex++ 管理工具",
+        "title": "Codex++",
         "width": 1180,
         "height": 820,
         "minWidth": 960,

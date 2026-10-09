@@ -62,6 +62,21 @@ pub fn disable_watcher() -> std::io::Result<()> {
     disable_watcher_at(&crate::paths::default_app_state_dir())
 }
 
+pub fn watcher_is_installed() -> bool {
+    #[cfg(windows)]
+    {
+        let registered = crate::windows_integration::read_current_user_string_values(WATCHER_RUN_KEY)
+            .unwrap_or_default()
+            .iter()
+            .any(|(name, value)| name == WATCHER_RUN_NAME && value.as_ref().is_some_and(|value| !value.is_empty()));
+        registered || startup_shortcut_path().is_some_and(|path| path.is_file())
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 pub fn cdp_listening(port: u16) -> bool {
     [
         SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
@@ -71,17 +86,16 @@ pub fn cdp_listening(port: u16) -> bool {
     .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok())
 }
 
-pub fn build_spawn_launcher_command(launcher_path: &str, debug_port: u16) -> Vec<String> {
+pub fn build_spawn_launcher_command(launcher_path: &str, _debug_port: u16) -> Vec<String> {
     vec![
         launcher_path.to_string(),
-        "--debug-port".to_string(),
-        debug_port.to_string(),
+        "--autostart".to_string(),
     ]
 }
 
-pub fn build_watcher_install_plan(launcher_path: PathBuf, debug_port: u16) -> WatcherInstallPlan {
+pub fn build_watcher_install_plan(launcher_path: PathBuf, _debug_port: u16) -> WatcherInstallPlan {
     let launcher = launcher_path.to_string_lossy().to_string();
-    let arguments = format!("--debug-port {debug_port}");
+    let arguments = "--autostart".to_string();
     WatcherInstallPlan {
         run_value_name: WATCHER_RUN_NAME.to_string(),
         run_value: format!("\"{launcher}\" {arguments}"),
@@ -524,7 +538,7 @@ pub fn uninstall_watcher() -> anyhow::Result<()> {
     if let Some(shortcut) = startup_shortcut_path() {
         let _ = std::fs::remove_file(shortcut);
     }
-    stop_launcher_processes();
+    // 开机项现在打开主界面，不再有独立 watcher/launcher 进程需要停止。
     Ok(())
 }
 
@@ -1321,9 +1335,9 @@ fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Res
         target: launcher_path.to_path_buf(),
         arguments: arguments.to_string(),
         working_directory: launcher_path.parent().map(Path::to_path_buf),
-        description: "Codex++ watcher".to_string(),
+        description: "打开 Codex++ 界面".to_string(),
         icon: None,
-        show_minimized: true,
+        show_minimized: false,
     })
 }
 

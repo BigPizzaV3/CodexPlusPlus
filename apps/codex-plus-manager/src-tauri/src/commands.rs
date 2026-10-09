@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
@@ -906,22 +905,14 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Ok(guard) => guard,
         Err(message) => return failed(&message, json!({})),
     };
-    #[cfg(windows)]
-    let launchers = match codex_plus_core::watcher::LauncherExitSnapshot::capture() {
-        Ok(snapshot) => snapshot,
-        Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
-    };
-    #[cfg(windows)]
-    let forced_launcher_process_ids = std::cell::Cell::new(Vec::new());
-    // 停止阶段要先等 Codex 进程退出，再等原生浏览器恢复，最后等旧启动器退出，合计
-    // 可能接近 20 秒且全程阻塞。先落一条「正在停止」状态，让「最近启动」在等待期间
-    // 就有反馈，而不是整整 20 秒界面毫无动静（issue #2403）。
+    // 停止 Codex 后清理同进程后台服务，再确认浏览器恢复结果。
+    // 先记录停止阶段，让界面在等待期间显示进度（issue #2403）。
     // 该状态带的是当前时间戳，早于后面返回给前端的 launch_started_at_ms，
     // 因此等待完成度判定时会被视作 stale，不会误报成最终结果。
     let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
         &request,
         "stopping",
-        "正在停止旧实例（Codex 进程 / 原生浏览器 / 旧启动器），最多约 20 秒…",
+        "正在停止 Codex 并清理后台服务…",
         current_timestamp_ms(),
         "restart_stopping",
         10,
@@ -933,30 +924,8 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
                 "Codex 进程尚未退出；未启动新实例");
             Ok(())
         },
+        codex_plus_launcher::stop,
         || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
-        || {
-            #[cfg(windows)]
-            {
-                // 超时不再直接失败：先带进程身份校验强制结束残留启动器，否则用户会
-                // 落到「重启失败、没有任何可用实例、还要手工结束进程」的境地。
-                let outcome = launchers.wait_for_exit_or_force(std::time::Duration::from_secs(10));
-                if outcome.still_running {
-                    anyhow::bail!(
-                        "旧启动器强制结束后仍未退出（进程：{}）",
-                        outcome
-                            .forced_process_ids
-                            .iter()
-                            .map(u32::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
-                forced_launcher_process_ids.set(outcome.forced_process_ids);
-            }
-            #[cfg(not(windows))]
-            codex_plus_core::watcher::stop_launcher_processes_and_wait();
-            Ok(())
-        },
     ) {
         Ok(shutdown) => shutdown,
         Err(error) => {
@@ -978,7 +947,7 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
     if let Err(error) = prepare_fixed_helper_port_for_restart(settings.as_ref()) {
         return failed(
-            &format!("重启 Codex++ 失败：{error:#}"),
+            &format!("重启 Codex 失败：{error:#}"),
             json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
         );
     }
@@ -1008,37 +977,28 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    // 本次重启是否强制结束了残留启动器，用于给用户一个明确交代。
-    // 取用 take() 而非 get()：Cell::get 要求 T: Copy，而 Vec<u32> 不是 Copy。
-    // 这里本来也只需要消费一次，take 顺带把 Cell 清空。
-    #[cfg(windows)]
-    let forced_launcher_process_count = forced_launcher_process_ids.take().len();
-    #[cfg(not(windows))]
-    let forced_launcher_process_count = 0usize;
-    let restart_message = if forced_launcher_process_count > 0 {
-        format!(
-            "Codex 已请求重启；旧启动器超时未退出，已强制结束 {forced_launcher_process_count} 个残留实例。"
-        )
-    } else {
-        "Codex 已请求重启，启动任务正在后台运行。".to_string()
-    };
+    let restart_message = "Codex 已请求重启，启动任务正在后台运行。".to_string();
     match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
-        spawn_after_provider_guard_release(provider_guard, request, spawn_silent_launcher)
+        spawn_after_provider_guard_release(provider_guard, request, start_embedded_launcher)
     }) {
-        Ok(()) => CommandResult {
-            status: "accepted".to_string(),
-            message: restart_message,
-            payload: json!({
-                "debugPort": request.debug_port,
-                "helperPort": request.helper_port,
-                "syncActiveRelay": request.sync_active_relay,
-                "launchStartedAtMs": launch_started_at_ms,
-                "nativeBrowserRestoreFailed": native_browser_restore_failed,
-                "forcedStoppedLauncherCount": forced_launcher_process_count
-            }),
+        Ok(()) => {
+            let (debug_port, helper_port, started_at_ms) =
+                accepted_launch_identity(&request, launch_started_at_ms);
+            CommandResult {
+                status: "accepted".to_string(),
+                message: restart_message,
+                payload: json!({
+                    "debugPort": debug_port,
+                    "helperPort": helper_port,
+                    "syncActiveRelay": request.sync_active_relay,
+                    "launchStartedAtMs": started_at_ms,
+                    "nativeBrowserRestoreFailed": native_browser_restore_failed,
+                    "forcedStoppedLauncherCount": 0
+                }),
+            }
         },
         Err(error) => {
-            let message = format!("重启 Codex++ 失败：{error}");
+            let message = format!("重启 Codex 失败：{error}");
             let _ =
                 save_requested_launch_status(&request, "failed", &message, launch_started_at_ms);
             failed(
@@ -1057,21 +1017,20 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
 
 fn stop_codex_plus_for_restart(
     stop_codex: impl FnOnce() -> anyhow::Result<()>,
+    stop_runtime: impl FnOnce() -> anyhow::Result<()>,
     wait_native: impl FnOnce() -> anyhow::Result<codex_plus_core::native_browser::NativeBrowserShutdown>,
-    stop_launcher: impl FnOnce() -> anyhow::Result<()>,
 ) -> Result<codex_plus_core::native_browser::NativeBrowserShutdown, RestartStopError> {
-    // The launcher owns native recovery; terminating it first skips that cleanup.
+    // 后台服务持有浏览器恢复任务。停止服务须等待它清理，不能结束主进程。
     stop_codex().map_err(RestartStopError::Codex)?;
-    let shutdown = wait_native().map_err(RestartStopError::NativeBrowser)?;
-    stop_launcher().map_err(RestartStopError::Launcher)?;
-    Ok(shutdown)
+    stop_runtime().map_err(RestartStopError::Runtime)?;
+    wait_native().map_err(RestartStopError::NativeBrowser)
 }
 
 #[derive(Debug)]
 enum RestartStopError {
     Codex(anyhow::Error),
     NativeBrowser(anyhow::Error),
-    Launcher(anyhow::Error),
+    Runtime(anyhow::Error),
 }
 
 fn restart_stop_failure_message(error: &RestartStopError) -> String {
@@ -1090,8 +1049,8 @@ fn restart_stop_failure_message(error: &RestartStopError) -> String {
             };
             format!("Codex 已请求停止，但原生浏览器文件{summary}，未启动新实例：{error}")
         }
-        RestartStopError::Launcher(error) => format!(
-            "Codex 已请求停止，但旧启动器尚未退出，未启动新实例：{error}"
+        RestartStopError::Runtime(error) => format!(
+            "Codex 已请求停止，但后台服务尚未清理完成，未启动新实例：{error}"
         ),
     }
 }
@@ -1160,7 +1119,7 @@ where
     if let Err(error) = spawn(request) {
         if let Some(snapshot) = snapshot {
             if let Err(restore_error) = snapshot.restore(home) {
-                anyhow::bail!("启动静默入口失败：{error}；回滚 live 配置也失败：{restore_error}");
+                anyhow::bail!("启动 Codex 失败：{error}；回滚 live 配置也失败：{restore_error}");
             }
         }
         return Err(error);
@@ -1336,18 +1295,22 @@ fn spawn_codex_plus_launch(
             }),
         );
     }
-    match spawn_silent_launcher(&request) {
-        Ok(()) => CommandResult {
-            status: "accepted".to_string(),
-            message: accepted_message.to_string(),
-            payload: json!({
-                "debugPort": debug_port,
-                "helperPort": helper_port,
-                "launchStartedAtMs": launch_started_at_ms
-            }),
+    match start_embedded_launcher(&request) {
+        Ok(()) => {
+            let (debug_port, helper_port, started_at_ms) =
+                accepted_launch_identity(&request, launch_started_at_ms);
+            CommandResult {
+                status: "accepted".to_string(),
+                message: accepted_message.to_string(),
+                payload: json!({
+                    "debugPort": debug_port,
+                    "helperPort": helper_port,
+                    "launchStartedAtMs": started_at_ms
+                }),
+            }
         },
         Err(error) => {
-            let message = format!("启动静默入口失败：{error}");
+            let message = format!("启动 Codex 失败：{error}");
             let _ =
                 save_requested_launch_status(&request, "failed", &message, launch_started_at_ms);
             failed(
@@ -1359,6 +1322,30 @@ fn spawn_codex_plus_launch(
                 }),
             )
         }
+    }
+}
+
+fn accepted_launch_identity(request: &LaunchRequest, requested_at: u64) -> (u16, u16, u64) {
+    let latest = StatusStore::default().load_latest().ok().flatten();
+    launch_identity_from_status(request, requested_at, latest.as_ref())
+}
+
+fn launch_identity_from_status(
+    request: &LaunchRequest,
+    requested_at: u64,
+    latest: Option<&LaunchStatus>,
+) -> (u16, u16, u64) {
+    // 重复启动会激活当前 session，其身份不能被新请求覆盖；端口也可能已自动换位。
+    if let Some(latest) = latest.filter(|status| {
+        matches!(status.status.as_str(), "running" | "running_degraded")
+    }) {
+        (
+            latest.debug_port.unwrap_or(request.debug_port),
+            latest.helper_port.unwrap_or(request.helper_port),
+            latest.started_at_ms,
+        )
+    } else {
+        (request.debug_port, request.helper_port, requested_at)
     }
 }
 
@@ -1420,17 +1407,15 @@ fn current_timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
-    let mut args = Vec::new();
-    if !request.app_path.trim().is_empty() {
-        args.push("--app-path".to_string());
-        args.push(request.app_path.trim().to_string());
-    }
-    args.push("--debug-port".to_string());
-    args.push(request.debug_port.to_string());
-    args.push("--helper-port".to_string());
-    args.push(request.helper_port.to_string());
-    codex_plus_core::install::spawn_companion(SILENT_BINARY, &args).map(|_| ())
+fn start_embedded_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
+    anyhow::ensure!(!crate::app_is_exiting(), "Codex++ 正在退出，未启动 Codex");
+    codex_plus_launcher::start(codex_plus_launcher::LaunchOptions {
+        app_dir: (!request.app_path.trim().is_empty())
+            .then(|| PathBuf::from(request.app_path.trim())),
+        debug_port: request.debug_port,
+        helper_port: request.helper_port,
+        status_store: StatusStore::default(),
+    })
 }
 
 pub fn start_weixin_connect_from_saved_settings() {
@@ -4397,7 +4382,7 @@ pub async fn check_update() -> CommandResult<Value> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(windows, target_os = "macos"))]
 #[tauri::command]
 pub async fn perform_update(
     app: tauri::AppHandle,
@@ -4405,7 +4390,7 @@ pub async fn perform_update(
 ) -> CommandResult<Value> {
     let result = perform_update_inner(release).await;
     if result.status == "ok" {
-        // 先返回准备结果，再正常退出；独立更新进程等待当前管理工具结束。
+        // 返回下载结果后正常退出，安装器等待后台服务清理完成再替换程序。
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(750));
             app.exit(0);
@@ -4414,7 +4399,7 @@ pub async fn perform_update(
     result
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(windows, target_os = "macos")))]
 #[tauri::command]
 pub async fn perform_update(
     release: Option<codex_plus_core::update::Release>,
@@ -4440,7 +4425,7 @@ async fn perform_update_inner(
         Ok(result) => {
             ok(
                 if cfg!(target_os = "macos") {
-                    "安装包已验证，管理工具将关闭以安装更新，完成后自动重启；失败时保留旧版。"
+                    "安装包已验证，Codex++ 将关闭以安装更新，完成后自动重启；失败时保留旧版。"
                 } else {
                     "安装包已下载并启动，请按安装向导完成更新。"
                 },
@@ -4468,7 +4453,7 @@ async fn perform_update_inner(
 
 #[tauri::command]
 pub fn load_watcher_state() -> CommandResult<WatcherPayload> {
-    ok("watcher 状态已加载。", watcher_payload())
+    ok("开机启动状态已加载。", watcher_payload())
 }
 
 #[tauri::command]
@@ -4476,32 +4461,32 @@ pub fn install_watcher() -> CommandResult<WatcherPayload> {
     let launcher_path =
         codex_plus_core::install::companion_binary_path(codex_plus_core::install::SILENT_BINARY);
     match codex_plus_core::watcher::install_watcher(&launcher_path, default_debug_port()) {
-        Ok(()) => ok("watcher 已安装。", watcher_payload()),
-        Err(error) => failed(&format!("安装 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("开机启动已设置。", watcher_payload()),
+        Err(error) => failed(&format!("设置开机启动失败：{error}"), watcher_payload()),
     }
 }
 
 #[tauri::command]
 pub fn uninstall_watcher() -> CommandResult<WatcherPayload> {
     match codex_plus_core::watcher::uninstall_watcher() {
-        Ok(()) => ok("watcher 已移除。", watcher_payload()),
-        Err(error) => failed(&format!("移除 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("开机启动已移除。", watcher_payload()),
+        Err(error) => failed(&format!("移除开机启动失败：{error}"), watcher_payload()),
     }
 }
 
 #[tauri::command]
 pub fn enable_watcher() -> CommandResult<WatcherPayload> {
     match codex_plus_core::watcher::enable_watcher() {
-        Ok(()) => ok("watcher 已启用。", watcher_payload()),
-        Err(error) => failed(&format!("启用 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("开机启动已启用。", watcher_payload()),
+        Err(error) => failed(&format!("启用开机启动失败：{error}"), watcher_payload()),
     }
 }
 
 #[tauri::command]
 pub fn disable_watcher() -> CommandResult<WatcherPayload> {
     match codex_plus_core::watcher::disable_watcher() {
-        Ok(()) => ok("watcher 已禁用。", watcher_payload()),
-        Err(error) => failed(&format!("禁用 watcher 失败：{error}"), watcher_payload()),
+        Ok(()) => ok("开机启动已禁用。", watcher_payload()),
+        Err(error) => failed(&format!("禁用开机启动失败：{error}"), watcher_payload()),
     }
 }
 
@@ -6482,7 +6467,7 @@ fn install_background_failure(action: &str, error: impl std::fmt::Display) -> In
 fn watcher_payload() -> WatcherPayload {
     let flag = codex_plus_core::watcher::default_watcher_disabled_flag();
     WatcherPayload {
-        enabled: !flag.exists(),
+        enabled: codex_plus_core::watcher::watcher_is_installed() && !flag.exists(),
         disabled_flag: flag.to_string_lossy().to_string(),
     }
 }
@@ -6741,6 +6726,21 @@ mod tests {
         assert_eq!(status.debug_port, Some(9333));
         assert_eq!(status.helper_port, Some(57322));
         assert_eq!(status.codex_app.as_deref(), Some("C:/Program Files/Codex"));
+    }
+
+    #[test]
+    fn repeated_activation_returns_the_current_session_identity_and_actual_ports() {
+        let request = launch_request(false);
+        let current = LaunchStatus {
+            status: "running".into(),
+            started_at_ms: 123,
+            debug_port: Some(9333),
+            helper_port: Some(57322),
+            ..LaunchStatus::default()
+        };
+        assert_eq!(launch_identity_from_status(&request, 456, Some(&current)), (9333, 57322, 123));
+        let starting = LaunchStatus { status: "starting".into(), ..current };
+        assert_eq!(launch_identity_from_status(&request, 456, Some(&starting)), (request.debug_port, request.helper_port, 456));
     }
 
     #[test]
@@ -7566,7 +7566,7 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    /// 回归（issue #1604）：用户点「重启 Codex++」走的就是这条同步路径。
+    /// 回归（issue #1604）：用户点「重启 Codex」走的就是这条同步路径。
     /// 现场遗留的 0 字节 auth.json 必须被修复成合法 JSON，否则仍然停在登录页。
     fn active_aggregate_sync_repairs_empty_auth_json() {
         let temp = tempfile::tempdir().unwrap();
@@ -7642,88 +7642,70 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    fn restart_stops_codex_then_waits_for_native_cleanup_before_launcher() {
+    fn restart_stops_codex_then_runtime_before_checking_native_cleanup() {
         let events = std::cell::RefCell::new(Vec::new());
         stop_codex_plus_for_restart(
             || { events.borrow_mut().push("codex"); Ok(()) },
+            || { events.borrow_mut().push("runtime"); Ok(()) },
             || {
                 events.borrow_mut().push("cleanup");
                 Ok(codex_plus_core::native_browser::NativeBrowserShutdown::Ready)
             },
-            || { events.borrow_mut().push("launcher"); Ok(()) },
         ).unwrap();
-        assert_eq!(*events.borrow(), ["codex", "cleanup", "launcher"]);
+        assert_eq!(*events.borrow(), ["codex", "runtime", "cleanup"]);
     }
 
     #[test]
-    fn restore_failure_still_stops_the_old_launcher() {
-        let stopped_launcher = std::cell::Cell::new(false);
+    fn restore_failure_is_reported_after_runtime_has_stopped() {
+        let stopped = std::cell::Cell::new(false);
         let shutdown = stop_codex_plus_for_restart(
             || Ok(()),
+            || { stopped.set(true); Ok(()) },
             || Ok(codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed),
-            || {
-                stopped_launcher.set(true);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            shutdown,
-            codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
-        );
-        assert!(stopped_launcher.get());
+        ).unwrap();
+        assert!(stopped.get());
+        assert_eq!(shutdown, codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed);
     }
 
     #[test]
     fn restart_stop_errors_name_the_step_that_failed() {
         let browser = restart_stop_failure_message(&RestartStopError::NativeBrowser(
-            anyhow::Error::new(
-                codex_plus_core::native_browser::NativeBrowserCleanupStillRunning,
-            ),
+            anyhow::Error::new(codex_plus_core::native_browser::NativeBrowserCleanupStillRunning),
         ));
-        let launcher = restart_stop_failure_message(&RestartStopError::Launcher(anyhow::anyhow!(
-            "old launcher still exiting"
+        let runtime = restart_stop_failure_message(&RestartStopError::Runtime(anyhow::anyhow!(
+            "runtime still exiting"
         )));
         assert!(browser.contains("原生浏览器文件仍在恢复"));
-        assert!(!browser.contains("旧启动器尚未退出"));
-        assert!(launcher.contains("旧启动器尚未退出"));
-        assert!(!launcher.contains("原生浏览器文件仍在恢复"));
-
+        assert!(runtime.contains("后台服务尚未清理完成"));
+        assert!(!runtime.contains("原生浏览器文件仍在恢复"));
         let codex = restart_stop_failure_message(&RestartStopError::Codex(anyhow::anyhow!(
             "app remains running"
         )));
         assert!(codex.contains("Codex 进程尚未确认退出"));
-        assert!(!codex.contains("原生浏览器文件恢复失败"));
-
         let failed = restart_stop_failure_message(&RestartStopError::NativeBrowser(
             anyhow::anyhow!("Invalid native cleanup receipt"),
         ));
         assert!(failed.contains("原生浏览器文件恢复失败"));
-        assert!(!failed.contains("原生浏览器文件仍在恢复"));
     }
 
     #[test]
-    fn restart_does_not_kill_launcher_when_native_cleanup_is_still_running() {
-        let stopped = std::cell::Cell::new(false);
-        let killed = std::cell::Cell::new(false);
+    fn restart_does_not_continue_when_runtime_cleanup_fails() {
         let result = stop_codex_plus_for_restart(
-            || { stopped.set(true); Ok(()) },
-            || anyhow::bail!("cleanup still running"),
-            || { killed.set(true); Ok(()) },
+            || Ok(()),
+            || anyhow::bail!("runtime still running"),
+            || panic!("must not continue before runtime cleanup"),
         );
-        assert!(result.is_err());
-        assert!(stopped.get());
-        assert!(!killed.get());
+        assert!(matches!(result, Err(RestartStopError::Runtime(_))));
     }
 
     #[test]
-    fn restart_does_not_cleanup_or_spawn_if_app_stop_fails() {
+    fn restart_does_not_cleanup_if_app_stop_fails() {
         let result = stop_codex_plus_for_restart(
             || anyhow::bail!("app remains running"),
+            || panic!("must not stop runtime"),
             || panic!("must not wait on cleanup"),
-            || panic!("must not stop launcher"),
         );
-        assert!(result.is_err());
+        assert!(matches!(result, Err(RestartStopError::Codex(_))));
     }
 
     #[test]
