@@ -363,24 +363,8 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         tray_builder = tray_builder.icon(icon);
     }
 
-    let tray = tray_builder.build(app)?;
-    #[cfg(target_os = "macos")]
-    let native_visibility = tray
-        .with_inner_tray_icon(|inner| {
-            inner.ns_status_item().map(|item| {
-                let before = item.isVisible();
-                item.setVisible(true);
-                (before, item.isVisible())
-            })
-        })
-        .ok()
-        .flatten();
-    #[cfg(not(target_os = "macos"))]
-    let native_visibility: Option<(bool, bool)> = None;
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        "manager.tray_created",
-        serde_json::json!({ "rect": tray.rect().ok().flatten(), "nativeVisibility": native_visibility }),
-    );
+    // Tauri 的资源表持有托盘对象，局部句柄释放不会移除菜单栏入口。
+    let _ = tray_builder.build(app)?;
     Ok(())
 }
 
@@ -427,14 +411,6 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             api.prevent_close();
             let _ = close_event_window.hide();
             set_manager_activation_policy(&close_event_app, false);
-            ensure_macos_tray_visible(&close_event_app);
-            let rect = close_event_app
-                .tray_by_id(TRAY_ID)
-                .and_then(|tray| tray.rect().ok().flatten());
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "manager.window_hidden",
-                serde_json::json!({ "trayRect": rect }),
-            );
         }
         _ => {}
     });
@@ -451,21 +427,6 @@ fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let app_handle = window.app_handle();
     let _ = window.hide();
     set_manager_activation_policy(&app_handle, false);
-    ensure_macos_tray_visible(&app_handle);
-}
-
-fn ensure_macos_tray_visible<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    #[cfg(target_os = "macos")]
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        // tray.set_visible(true) 对已存在的状态项不操作；原生可见属性须单独恢复。
-        let _ = tray.with_inner_tray_icon(|inner| {
-            if let Some(item) = inner.ns_status_item() {
-                item.setVisible(true);
-            }
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = app;
 }
 
 #[tauri::command]

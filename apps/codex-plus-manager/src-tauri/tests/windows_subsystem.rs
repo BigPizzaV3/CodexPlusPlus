@@ -84,8 +84,6 @@ fn manager_keeps_a_visible_brand_tray_and_click_menu_when_hiding_the_macos_dock_
     assert!(lib_rs.contains("tauri::include_image!(\"icons/icon.png\")"));
     assert!(lib_rs.contains(".show_menu_on_left_click(true)"));
     assert!(lib_rs.contains(".tooltip(\"Codex++\")"));
-    assert!(lib_rs.contains("item.setVisible(true)"));
-    assert!(lib_rs.contains("ensure_macos_tray_visible(&close_event_app)"));
 }
 
 #[test]

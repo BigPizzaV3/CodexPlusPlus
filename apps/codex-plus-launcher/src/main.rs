@@ -94,7 +94,6 @@ impl std::error::Error for ReportedLaunchFailure {}
 enum RuntimeCommand {
     Start(LaunchOptions, u64, SessionReply),
     Stop(SessionReply),
-    EnsureProtocolProxy(SessionReply),
     Shutdown(SessionReply),
 }
 
@@ -290,11 +289,6 @@ pub fn stop() -> Result<()> {
     send_runtime_command(RuntimeCommand::Stop)
 }
 
-/// 需要后台协议代理时在当前进程持有，启动 session 前会交还监听端口。
-pub fn ensure_protocol_proxy() -> Result<()> {
-    send_runtime_command(RuntimeCommand::EnsureProtocolProxy)
-}
-
 /// 退出 Codex++ 时清理所有自有服务并等待专用线程退出，保留官方 Codex。
 pub fn shutdown() -> Result<()> {
     let mut worker = RUNTIME_WORKER
@@ -331,8 +325,6 @@ async fn runtime_commands(
     activate: ActivationRunner,
 ) {
     let mut session: Option<EmbeddedSession> = None;
-    let proxy = DefaultLaunchHooks::default();
-    let mut proxy_port = None;
     loop {
         tokio::select! {
             biased;
@@ -354,7 +346,6 @@ async fn runtime_commands(
                             let _ = ready.send(result);
                             continue;
                         }
-                        if let Some(port) = proxy_port.take() { proxy.shutdown_helper(port).await; }
                         match EmbeddedSession::spawn(options, requested_at_ms, ready.clone(), runner.clone()) {
                             Ok(current) => session = Some(current),
                             Err(error) => { let _ = ready.send(Err(error)); }
@@ -362,22 +353,15 @@ async fn runtime_commands(
                     }
                     Some(RuntimeCommand::Stop(reply)) => {
                         let result = match session.take() { Some(current) => current.stop().await, None => Ok(()) };
-                        if let Some(port) = proxy_port.take() { proxy.shutdown_helper(port).await; }
-                        let _ = reply.send(result);
-                    }
-                    Some(RuntimeCommand::EnsureProtocolProxy(reply)) => {
-                        let result = if session.is_some() { Ok(()) } else { ensure_background_protocol_proxy(&proxy, &mut proxy_port).await };
                         let _ = reply.send(result);
                     }
                     Some(RuntimeCommand::Shutdown(reply)) => {
                         let result = match session.take() { Some(current) => current.stop().await, None => Ok(()) };
-                        if let Some(port) = proxy_port.take() { proxy.shutdown_helper(port).await; }
                         let _ = reply.send(result);
                         break;
                     }
                     None => {
                         if let Some(current) = session.take() { let _ = current.stop().await; }
-                        if let Some(port) = proxy_port.take() { proxy.shutdown_helper(port).await; }
                         break;
                     }
                 }
@@ -388,29 +372,6 @@ async fn runtime_commands(
             } => { if let Some(current) = session.take() { let _ = current.join().await; } }
         }
     }
-}
-
-async fn ensure_background_protocol_proxy(
-    hooks: &DefaultLaunchHooks,
-    proxy_port: &mut Option<u16>,
-) -> Result<()> {
-    let settings = hooks.load_settings().await?;
-    let Some(port) = codex_plus_core::launcher::required_fixed_helper_port(&settings) else {
-        if let Some(port) = proxy_port.take() {
-            hooks.shutdown_helper(port).await;
-        }
-        return Ok(());
-    };
-    hooks.ensure_active_protocol_proxy_config(&settings).await?;
-    if *proxy_port == Some(port) {
-        return Ok(());
-    }
-    if let Some(port) = proxy_port.take() {
-        hooks.shutdown_helper(port).await;
-    }
-    hooks.start_helper(port).await?;
-    *proxy_port = Some(port);
-    Ok(())
 }
 
 #[derive(Clone)]
@@ -859,44 +820,6 @@ fn log_launcher_already_running(debug_port: u16) {
             "debug_port": debug_port
         }),
     );
-}
-
-#[cfg(test)]
-fn parse_launch_options<I, S>(args: I) -> LaunchOptions
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut options = LaunchOptions::default();
-    let mut iter = args.into_iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_ref() {
-            "--app-path" => {
-                if let Some(value) = iter.next() {
-                    let value = value.as_ref().trim();
-                    if !value.is_empty() {
-                        options.app_dir = Some(PathBuf::from(value));
-                    }
-                }
-            }
-            "--debug-port" => {
-                if let Some(value) = iter.next() {
-                    if let Ok(port) = value.as_ref().parse::<u16>() {
-                        options.debug_port = port;
-                    }
-                }
-            }
-            "--helper-port" => {
-                if let Some(value) = iter.next() {
-                    if let Ok(port) = value.as_ref().parse::<u16>() {
-                        options.helper_port = port;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    options
 }
 
 #[async_trait::async_trait(?Send)]
@@ -1745,30 +1668,6 @@ mod tests {
         .await
         .unwrap();
         assert!(finished.get());
-    }
-
-    #[test]
-    fn parse_launch_options_accepts_manager_forwarded_ports_and_app_path() {
-        let options = parse_launch_options([
-            "--app-path",
-            "C:/Codex/App",
-            "--debug-port",
-            "9333",
-            "--helper-port",
-            "57322",
-        ]);
-
-        assert_eq!(options.app_dir, Some(PathBuf::from("C:/Codex/App")));
-        assert_eq!(options.debug_port, 9333);
-        assert_eq!(options.helper_port, 57322);
-    }
-
-    #[test]
-    fn parse_launch_options_ignores_invalid_ports() {
-        let options = parse_launch_options(["--debug-port", "nope", "--helper-port", "70000"]);
-
-        assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
-        assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
     }
 
     #[test]
