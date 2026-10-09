@@ -82,14 +82,10 @@ fn assert_auth_and_identity(home: &Path, profile: &RelayProfile, identity: &str)
         auth,
         serde_json::from_str::<Value>(&profile.auth_contents).unwrap()
     );
-    if profile.relay_mode == RelayMode::PureApi {
-        assert!(provider.get("experimental_bearer_token").is_none());
-    } else {
-        assert_eq!(
-            provider["experimental_bearer_token"].as_str(),
-            Some("test-api-key")
-        );
-    }
+    assert_eq!(
+        provider["experimental_bearer_token"].as_str(),
+        Some("test-api-key")
+    );
 }
 
 #[test]

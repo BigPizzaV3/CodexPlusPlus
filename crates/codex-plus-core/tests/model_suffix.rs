@@ -5,11 +5,62 @@ use std::sync::Mutex;
 use codex_plus_core::model_suffix::{
     build_model_catalog_json, build_model_catalog_json_with_template, builtin_model_metadata,
     builtin_model_metadata_index, collect_catalog_entries, find_catalog_entry_for_test,
-    model_ui_metadata, parse_model_suffix,
+    model_ui_metadata, model_ui_metadata_with_override, parse_model_suffix,
 };
 
 /// CODEX_HOME 环境变量是进程级全局，运行时缓存测试必须串行执行。
 static RUNTIME_CACHE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn priority_only_unknown_metadata_never_fabricates_native_descriptor_defaults() {
+    let mode = serde_json::json!({"codex_plus_fast_support":"supported"});
+    let ui = model_ui_metadata_with_override("custom-2443-priority-only", Some(&mode)).unwrap();
+    for field in ["displayName", "description", "defaultReasoningEffort"] {
+        assert!(ui.get(field).is_none(), "Fast-only metadata cannot invent {field}");
+    }
+    assert_eq!(ui["prioritySupportOverride"], true);
+    let explicit = serde_json::json!({
+        "codex_plus_fast_support":"supported", "display_name":"Provider Grok",
+        "description":"Provider description", "default_reasoning_level":"high"
+    });
+    let ui = model_ui_metadata_with_override("custom-2443-priority-only", Some(&explicit)).unwrap();
+    assert_eq!(ui["displayName"], "Provider Grok");
+    assert_eq!(ui["description"], "Provider description");
+    assert_eq!(ui["defaultReasoningEffort"], "high");
+    let known = model_ui_metadata("gpt-5.6-sol").unwrap();
+    for field in ["displayName", "description", "defaultReasoningEffort"] { assert!(known[field].is_string()); }
+}
+
+#[test]
+fn custom_priority_declarations_preserve_other_tiers_and_explicitly_override_known_models() {
+    let original = serde_json::json!({
+        "description":"provider description", "service_tiers":[{"id":"flex", "name":"Flex", "description":"Existing tier"}],
+        "additional_speed_tiers":["slow"]
+    });
+    for (mode, expected) in [("supported", Some(true)), ("unsupported", Some(false)), ("inherit", Some(false))] {
+        let mut metadata = original.clone();
+        metadata["codex_plus_fast_support"] = serde_json::json!(mode);
+        let ui = model_ui_metadata_with_override("gpt-5.4", Some(&metadata)).unwrap();
+        assert_eq!(ui["prioritySupportOverride"].as_bool(), expected);
+        assert_eq!(ui["description"], "provider description");
+        assert_eq!(ui["serviceTiers"][0], original["service_tiers"][0]);
+        assert_eq!(ui["additionalSpeedTiers"][0], "slow");
+        assert_eq!(ui["serviceTiers"].as_array().unwrap().iter().any(|tier| tier["id"] == "priority"), mode == "supported");
+        assert!(ui.get("codex_plus_fast_support").is_none());
+    }
+    assert!(model_ui_metadata_with_override("gpt-5.4", None).unwrap().get("prioritySupportOverride").is_none());
+    assert!(model_ui_metadata_with_override("grok-fast-without-a-declaration", None).is_none());
+
+    // 原生 ModelServiceTier 的 id/name/description 都是无 default 的必填 String。
+    #[derive(serde::Deserialize)]
+    struct NativeModelServiceTier { id: String, name: String, description: String }
+    let declared = serde_json::json!({"codex_plus_fast_support":"supported"});
+    let ui = model_ui_metadata_with_override("grok-custom", Some(&declared)).unwrap();
+    let tiers: Vec<NativeModelServiceTier> = serde_json::from_value(ui["serviceTiers"].clone()).unwrap();
+    assert_eq!(tiers[0].id, "priority");
+    assert_eq!(tiers[0].name, "Fast");
+    assert!(!tiers[0].description.is_empty());
+}
 
 /// 保存并恢复 CODEX_HOME 的守卫，参照 codex_home.rs 内部测试的模式。
 struct CodexHomeEnvGuard {
