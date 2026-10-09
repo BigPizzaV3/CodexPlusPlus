@@ -4,7 +4,7 @@ pub mod install;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 const TRAY_ID: &str = "codex_plus_tray";
@@ -326,7 +326,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
         .tooltip("Codex++")
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_MENU_SHOW => {
                 show_main_window(app);
@@ -343,12 +343,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| match event {
-            TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            }
-            | TrayIconEvent::DoubleClick {
+            TrayIconEvent::DoubleClick {
                 button: MouseButton::Left,
                 ..
             } => {
@@ -359,8 +354,9 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        // 使用紧凑模板图标，避免文字占宽把状态项挤进刘海区域。
-        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(true);
+        // 使用项目原有云朵图标；系统按 18pt 显示，不加标题占据菜单栏空间。
+        // 禁用模板模式以保留品牌渐变颜色。
+        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(false);
     }
     #[cfg(not(target_os = "macos"))]
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -390,39 +386,22 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
 #[cfg(any(target_os = "macos", test))]
 fn macos_tray_icon() -> tauri::image::Image<'static> {
-    // 18×18 pt 的 C++ 标记，以 2 倍像素绘制；透明边缘避免变成实心方块。
-    let mut rgba = vec![0; 36 * 36 * 4];
-    for y in 0..36 {
-        for x in 0..36 {
-            let (px, py) = (x / 2, y / 2);
-            let c = ((2..=3).contains(&px) && (4..=13).contains(&py))
-                || ((3..=7).contains(&px) && ((3..=4).contains(&py) || (13..=14).contains(&py)));
-            let plus = [9, 13].into_iter().any(|left| {
-                ((left..=left + 3).contains(&px) && (8..=9).contains(&py))
-                    || ((left + 1..=left + 2).contains(&px) && (6..=11).contains(&py))
-            });
-            if c || plus {
-                rgba[(y * 36 + x) * 4 + 3] = 255;
-            }
-        }
-    }
-    tauri::image::Image::new_owned(rgba, 36, 36)
+    tauri::include_image!("icons/icon.png")
 }
 
 #[cfg(test)]
 mod tray_tests {
     #[test]
-    fn macos_template_icon_has_visible_glyphs_and_transparent_margins() {
+    fn macos_tray_preserves_the_brand_icons_colour_and_transparency() {
         let icon = super::macos_tray_icon();
-        assert_eq!((icon.width(), icon.height()), (36, 36));
-        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 255));
-        for (index, pixel) in icon.rgba().chunks_exact(4).enumerate() {
-            assert_eq!(&pixel[..3], &[0, 0, 0]);
-            let (x, y) = (index % 36, index / 36);
-            if x == 0 || y == 0 || x == 35 || y == 35 {
-                assert_eq!(pixel[3], 0);
-            }
-        }
+        assert_eq!(icon.width(), icon.height());
+        assert!(icon.width() > 0);
+        assert!(
+            icon.rgba()
+                .chunks_exact(4)
+                .any(|pixel| pixel[3] > 0 && pixel[2] > pixel[0])
+        );
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
     }
 }
 
