@@ -325,6 +325,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
+        .tooltip("Codex++")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_MENU_SHOW => {
@@ -356,12 +357,73 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         });
 
+    #[cfg(target_os = "macos")]
+    {
+        // 使用紧凑模板图标，避免文字占宽把状态项挤进刘海区域。
+        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(true);
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Some(icon) = app.default_window_icon().cloned() {
         tray_builder = tray_builder.icon(icon);
     }
 
-    let _ = tray_builder.build(app)?;
+    let tray = tray_builder.build(app)?;
+    #[cfg(target_os = "macos")]
+    let native_visibility = tray
+        .with_inner_tray_icon(|inner| {
+            inner.ns_status_item().map(|item| {
+                let before = item.isVisible();
+                item.setVisible(true);
+                (before, item.isVisible())
+            })
+        })
+        .ok()
+        .flatten();
+    #[cfg(not(target_os = "macos"))]
+    let native_visibility: Option<(bool, bool)> = None;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.tray_created",
+        serde_json::json!({ "rect": tray.rect().ok().flatten(), "nativeVisibility": native_visibility }),
+    );
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_tray_icon() -> tauri::image::Image<'static> {
+    // 18×18 pt 的 C++ 标记，以 2 倍像素绘制；透明边缘避免变成实心方块。
+    let mut rgba = vec![0; 36 * 36 * 4];
+    for y in 0..36 {
+        for x in 0..36 {
+            let (px, py) = (x / 2, y / 2);
+            let c = ((2..=3).contains(&px) && (4..=13).contains(&py))
+                || ((3..=7).contains(&px) && ((3..=4).contains(&py) || (13..=14).contains(&py)));
+            let plus = [9, 13].into_iter().any(|left| {
+                ((left..=left + 3).contains(&px) && (8..=9).contains(&py))
+                    || ((left + 1..=left + 2).contains(&px) && (6..=11).contains(&py))
+            });
+            if c || plus {
+                rgba[(y * 36 + x) * 4 + 3] = 255;
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, 36, 36)
+}
+
+#[cfg(test)]
+mod tray_tests {
+    #[test]
+    fn macos_template_icon_has_visible_glyphs_and_transparent_margins() {
+        let icon = super::macos_tray_icon();
+        assert_eq!((icon.width(), icon.height()), (36, 36));
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 255));
+        for (index, pixel) in icon.rgba().chunks_exact(4).enumerate() {
+            assert_eq!(&pixel[..3], &[0, 0, 0]);
+            let (x, y) = (index % 36, index / 36);
+            if x == 0 || y == 0 || x == 35 || y == 35 {
+                assert_eq!(pixel[3], 0);
+            }
+        }
+    }
 }
 
 fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
@@ -386,6 +448,14 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             api.prevent_close();
             let _ = close_event_window.hide();
             set_manager_activation_policy(&close_event_app, false);
+            ensure_macos_tray_visible(&close_event_app);
+            let rect = close_event_app
+                .tray_by_id(TRAY_ID)
+                .and_then(|tray| tray.rect().ok().flatten());
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.window_hidden",
+                serde_json::json!({ "trayRect": rect }),
+            );
         }
         _ => {}
     });
@@ -402,6 +472,21 @@ fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let app_handle = window.app_handle();
     let _ = window.hide();
     set_manager_activation_policy(&app_handle, false);
+    ensure_macos_tray_visible(&app_handle);
+}
+
+fn ensure_macos_tray_visible<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    #[cfg(target_os = "macos")]
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        // tray.set_visible(true) 对已存在的状态项不操作；原生可见属性须单独恢复。
+        let _ = tray.with_inner_tray_icon(|inner| {
+            if let Some(item) = inner.ns_status_item() {
+                item.setVisible(true);
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 #[tauri::command]
@@ -484,6 +569,7 @@ fn set_manager_activation_policy<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     main_window_visible: bool,
 ) {
+    // 关闭窗口收起到菜单栏；重新打开窗口时才恢复 Dock 图标。
     let policy = if main_window_visible {
         tauri::ActivationPolicy::Regular
     } else {
