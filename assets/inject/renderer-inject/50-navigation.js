@@ -34,6 +34,7 @@
       return params;
     }
     const next = { ...params };
+    if (next.forceRefetch === true) clearPluginMarketplaceRemoteCatalogUnavailable();
     const requestProfile = pluginMarketplaceRequestProfile(next);
     const requestCwds = Array.isArray(next.cwds)
       ? next.cwds.filter((cwd) => typeof cwd === "string" && cwd.trim())
@@ -46,7 +47,7 @@
     const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
     const broadCatalogRequest = codexPluginUsesBroadCatalogKinds()
       && (!hadMarketplaceKinds || next.marketplaceKinds == null);
-    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
+    const remoteCatalogUnavailable = pluginMarketplaceRemoteCatalogUnavailable();
     if (broadCatalogRequest && !remoteCatalogUnavailable) {
       sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
         hadMarketplaceKinds,

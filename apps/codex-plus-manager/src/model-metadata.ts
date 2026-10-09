@@ -2,6 +2,7 @@ import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactPercent } from "./aut
 
 export type ModelMetadata = Record<string, unknown>;
 export type ModelMetadataMap = Record<string, ModelMetadata>;
+export type ModelFastSupportMode = "inherit" | "supported" | "unsupported";
 
 export type ImportedModelMetadata = {
   slug: string;
@@ -692,6 +693,49 @@ function documentCandidates(root: unknown): ModelMetadata[] | null {
   if (isRecord(root) && Array.isArray(root.models)) return root.models.filter(isRecord);
   if (isRecord(root) && typeof root.slug === "string") return [root];
   return null;
+}
+
+function speedTierIs(value: unknown, id: string): boolean {
+  const tier = typeof value === "string" ? value : isRecord(value) ? value.id : null;
+  return typeof tier === "string" && tier.trim().toLowerCase() === id;
+}
+
+/** 显式空数组表示禁用；缺失字段才表示继承，不能从模型名称猜测 Fast 能力。 */
+export function modelFastSupportMode(metadata: ModelMetadata | null | undefined): ModelFastSupportMode {
+  const mode = metadata?.codex_plus_fast_support;
+  if (mode === "inherit" || mode === "supported" || mode === "unsupported") return mode;
+  if (Array.isArray(metadata?.service_tiers)) {
+    return metadata.service_tiers.some((tier) => speedTierIs(tier, "priority")) ? "supported" : "unsupported";
+  }
+  if (Array.isArray(metadata?.additional_speed_tiers)) {
+    return metadata.additional_speed_tiers.some((tier) => speedTierIs(tier, "fast")) ? "supported" : "unsupported";
+  }
+  return "inherit";
+}
+
+/** 独立声明 Fast 模式，不修改供应商原始档位；继承可以完整恢复原始能力。 */
+export function setModelFastSupportMode(metadata: ModelMetadata, mode: ModelFastSupportMode): ModelMetadata {
+  return { ...metadata, codex_plus_fast_support: mode };
+}
+
+/** 在当前导入草稿中修改能力；不写 profile，取消仍沿用原有草稿回滚。 */
+export function synchronizeModelMetadataFastSupport(
+  source: string,
+  targetSlug: string,
+  mode: ModelFastSupportMode,
+): { document: string; preview: ImportedModelMetadata } | null {
+  let root: unknown;
+  try {
+    root = source.trim() ? JSON.parse(unwrapJsonCompatibleDocument(source))
+      : { models: [{ slug: modelSlugFromRowName(targetSlug) }] };
+  } catch { return null; }
+  const matches = documentCandidates(root)?.filter((entry) => slugMatchesIgnoreCase(entry.slug, targetSlug));
+  if (!matches || matches.length !== 1) return null;
+  const next = setModelFastSupportMode(matches[0], mode);
+  Object.assign(matches[0], next);
+  const document = JSON.stringify(root, null, 2);
+  const parsed = parseModelMetadataDocument(document, targetSlug);
+  return parsed.ok ? { document, preview: parsed.value } : null;
 }
 
 // 强制管理字段顺序，避免保存后 context_window 跑到压缩字段之后。

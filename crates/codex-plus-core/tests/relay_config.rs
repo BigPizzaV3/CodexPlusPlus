@@ -3856,9 +3856,9 @@ experimental_bearer_token = "sk-old"
     let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
     assert_eq!(auth["OPENAI_API_KEY"], "sk-old");
     assert!(
-        !profile
+        profile
             .config_contents
-            .contains("experimental_bearer_token")
+            .contains(r#"experimental_bearer_token = "sk-old""#)
     );
 }
 
@@ -4312,7 +4312,7 @@ base_url = "https://relay.example/v1"
     assert!(auth.get("auth_mode").is_none());
     assert!(auth.get("tokens").is_none());
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
@@ -4356,7 +4356,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(!config.contains("requires_openai_auth"));
     assert!(config.contains(r#"base_url = "https://relay.example/v1""#));
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
     assert!(!config.contains("live_provider"));
     assert!(!config.contains("https://live.example/v1"));
 }
@@ -4392,7 +4392,7 @@ requires_openai_auth = true
     assert!(config.contains(r#"name = "max_ai""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains("requires_openai_auth = true"));
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
     assert!(!config.contains("[model_providers.custom]"));
 }
 
@@ -4619,7 +4619,7 @@ experimental_bearer_token = "sk-provider-token"
     assert!(auth.as_object().is_some_and(|object| object.is_empty()));
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-provider-token""#));
     assert!(config.contains("requires_openai_auth = true"));
 }
 
@@ -4819,7 +4819,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(!config.contains("requires_openai_auth"));
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
 }
 
 #[test]

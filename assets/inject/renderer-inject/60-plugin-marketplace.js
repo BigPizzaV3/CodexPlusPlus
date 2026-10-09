@@ -130,8 +130,32 @@
     return text.includes("chatgpt authentication required for remote plugin catalog") && text.includes("api key auth is not supported");
   }
 
+  const codexPluginRemoteAuthRetryMs = 60_000;
+
+  function clearPluginMarketplaceRemoteCatalogUnavailable() {
+    delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+    delete window.__codexPluginMarketplaceRemoteCatalogRejectedAt;
+  }
+
+  function pluginMarketplaceRemoteCatalogUnavailable() {
+    if (window.__codexPluginMarketplaceRemoteCatalogUnavailable !== true) return false;
+    const now = Date.now();
+    const rejectedAt = window.__codexPluginMarketplaceRemoteCatalogRejectedAt;
+    // 兼容旧注入留下的标记；只暂时降级，下次浏览可重新验证登录态。
+    if (!Number.isFinite(rejectedAt)) {
+      window.__codexPluginMarketplaceRemoteCatalogRejectedAt = now;
+      return true;
+    }
+    if (now < rejectedAt || now - rejectedAt >= codexPluginRemoteAuthRetryMs) {
+      clearPluginMarketplaceRemoteCatalogUnavailable();
+      return false;
+    }
+    return true;
+  }
+
   function markPluginMarketplaceRemoteCatalogUnavailable(error) {
     window.__codexPluginMarketplaceRemoteCatalogUnavailable = true;
+    window.__codexPluginMarketplaceRemoteCatalogRejectedAt = Date.now();
     sendCodexPlusDiagnostic("plugin_marketplace_remote_auth_fallback", {
       errorMessage: pluginMarketplaceErrorText(error),
       rememberedCwdCount: Array.isArray(window.__codexPluginMarketplaceLastCwds)
@@ -367,10 +391,10 @@
       setCodexAppVersion: (version) => {
         codexPlusBackendSettings.codexAppVersion = String(version || "");
       },
-      remoteCatalogUnavailable: () => window.__codexPluginMarketplaceRemoteCatalogUnavailable === true,
+      remoteCatalogUnavailable: pluginMarketplaceRemoteCatalogUnavailable,
       reset: () => {
         delete window.__codexPluginMarketplaceLastCwds;
-        delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+        clearPluginMarketplaceRemoteCatalogUnavailable();
         window.__codexPluginMarketplaceRequestIds = new Set();
         window.__codexPluginMarketplaceFetchRequestIds = new Set();
         window.__codexPluginMarketplaceRequestProfiles = new Map();
@@ -381,6 +405,7 @@
   }
 
   function clearPluginMarketplaceQueryCache() {
+    clearPluginMarketplaceRemoteCatalogUnavailable();
     try {
       const queryClient = window.__REACT_QUERY_CLIENT__ || window.__codexQueryClient;
       if (queryClient && typeof queryClient.invalidateQueries === "function") {
