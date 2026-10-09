@@ -3108,11 +3108,10 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (activeTool !== "codex" || globalNavigationRoutes.includes(route)) return;
     const refresh = () => { void refreshOverview(true); };
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [route, activeTool]);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -3414,6 +3413,7 @@ export function App() {
       <ApplicationRail
         tools={toolEntries}
         activeTool={activeTool}
+        codexAppRunning={codexAppRunning}
         route={route}
         theme={theme}
         onSelect={(toolId) => void switchTool(toolId)}
@@ -10897,6 +10897,7 @@ function GrokScreen({
 function ApplicationRail({
   tools,
   activeTool,
+  codexAppRunning,
   route,
   theme,
   onSelect,
@@ -10905,6 +10906,7 @@ function ApplicationRail({
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  codexAppRunning: boolean;
   route: Route;
   theme: Theme;
   onSelect: (toolId: ToolId) => void;
@@ -10918,6 +10920,7 @@ function ApplicationRail({
       <ToolSwitcher
         tools={tools}
         activeTool={activeTool}
+        codexAppRunning={codexAppRunning}
         showSelection={!globalNavigationRoutes.includes(route)}
         onSelect={onSelect}
       />
@@ -10978,11 +10981,13 @@ function ApplicationRail({
 function ToolSwitcher({
   tools,
   activeTool,
+  codexAppRunning,
   showSelection = true,
   onSelect,
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  codexAppRunning: boolean;
   showSelection?: boolean;
   onSelect: (toolId: ToolId) => void;
 }) {
@@ -10991,18 +10996,19 @@ function ToolSwitcher({
       {tools.map((tool) => {
         const icon = TOOL_ICONS[tool.id];
         const selected = showSelection && tool.id === activeTool;
+        const running = tool.id === "codex" && codexAppRunning;
         const title = tool.switchable
           ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
           : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
         return (
           <button
-            aria-label={tool.switchable ? tool.name : `${tool.name} · ${t("待接入")}`}
+            aria-label={tool.switchable ? `${tool.name}${running ? ` · ${t("运行中")}` : ""}` : `${tool.name} · ${t("待接入")}`}
             aria-pressed={selected}
             className={`tool-chip ${selected ? "active" : ""}`}
             disabled={!tool.switchable}
             key={tool.id}
             onClick={() => onSelect(tool.id)}
-            title={title}
+            title={`${title}${running ? `｜${t("运行中")}` : ""}`}
             type="button"
           >
             {icon ? (
@@ -11014,6 +11020,7 @@ function ToolSwitcher({
             ) : (
               <Blocks aria-hidden="true" className="tool-chip-icon" />
             )}
+            {running ? <span aria-hidden="true" className="tool-chip-running-dot" /> : null}
           </button>
         );
       })}

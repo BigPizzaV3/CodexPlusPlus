@@ -5815,6 +5815,18 @@ select {
   opacity: 0.45;
 }
 
+.tool-chip-running-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #34d399;
+  box-shadow: 0 0 0 2px hsl(var(--sidebar-bg));
+  pointer-events: none;
+}
+
 .tool-chip-icon {
   width: 28px;
   height: 28px;
