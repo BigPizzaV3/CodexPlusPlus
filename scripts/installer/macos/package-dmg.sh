@@ -229,9 +229,9 @@ verify_app() {
 prepare_icon
 prepare_background
 create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "false"
-# 旧版 1.7.x 更新器要求第二个 manager bundle。它使用统一二进制作为兼容壳，
+# 旧版 1.7.x 更新器要求第二个 manager bundle。它使用独立的小型兼容壳，
 # 启动后立即退出；新版启动主 app 后会把这个壳归档到 legacy-migrations。
-create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus.manager" "true"
+create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-legacy-shim" "com.bigpizzav3.codexplusplus.manager" "true"
 
 sign_app "$STAGE/Codex++.app"
 sign_app "$STAGE/Codex++ 管理工具.app"
