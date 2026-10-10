@@ -329,6 +329,7 @@ async fn main() -> Result<()> {
         codex_app_model_whitelist_unlock: false,
         dictation: DictationSettings {
             enabled: true,
+            provider: Default::default(),
             base_url: options.asr_base_url,
             api_key: "fake-asr-key".to_string(),
             api_key_env: String::new(),

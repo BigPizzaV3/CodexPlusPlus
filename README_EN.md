@@ -79,7 +79,7 @@ Provider switching saves the current profile before applying the target profile.
 - Session delete, bulk delete, Markdown export, and project move actions.
 - Plugin marketplace unlock, plugin auto-expand, and model whitelist handling.
 - Plain-text paste and startup acceleration.
-- API-key dictation: configure an independent transcription service in Codex Enhancements, then record and insert or send the text.
+- Dictation: use an independent OpenAI-compatible service or the local SenseVoiceSmall INT8 model (downloaded once and run on-device), then record and insert or send the text.
 - Conversation width, scroll restoration, thread IDs, service-tier controls, and Goals.
 - Next-step suggestions: manage toggles, API, model, item count, and timeout together in Codex Enhancements.
 - Skin management: search, preview, install, and image replacement for Dream Skin community themes.

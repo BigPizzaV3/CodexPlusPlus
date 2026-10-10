@@ -446,10 +446,23 @@ impl Default for DreamSkinThemeConfig {
 }
 
 /// 独立的听写服务配置；不复用编码供应商的密钥。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum DictationProvider {
+    /// OpenAI 兼容的远程转写服务。
+    #[default]
+    Api,
+    /// 本机 SenseVoiceSmall ONNX 模型。
+    #[serde(rename = "sensevoice")]
+    SenseVoice,
+}
+
+/// 独立的听写服务配置；不复用编码供应商的密钥。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DictationSettings {
     pub enabled: bool,
+    pub provider: DictationProvider,
     pub base_url: String,
     pub api_key: String,
     pub api_key_env: String,
@@ -462,6 +475,7 @@ impl Default for DictationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            provider: DictationProvider::Api,
             base_url: "https://api.groq.com/openai/v1".to_string(),
             api_key: String::new(),
             api_key_env: String::new(),
