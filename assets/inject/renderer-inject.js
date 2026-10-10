@@ -4849,7 +4849,6 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-        if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -4884,7 +4883,6 @@
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
     renderCodexPlusMenu();
     scan();
   }
@@ -13981,7 +13979,6 @@
     // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
     refreshCodexPlusRailNavigation();
     installCodexPlusPageNavigationCloseHandler();
-    installSessionShareImportListener();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
     updateThreadScrollHandlers();
@@ -14670,7 +14667,6 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     installCodexServiceTierBadge();
-    installSessionShareButton();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }

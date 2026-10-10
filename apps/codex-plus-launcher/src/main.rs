@@ -1367,13 +1367,6 @@ impl BridgeDataService for LauncherDataService {
         .map_err(|error| anyhow::anyhow!("Remote Control session recovery task failed: {error}"))?
     }
 
-    async fn export_session_file(&self, session: SessionRef) -> anyhow::Result<Value> {
-        LauncherDataService::export_session_file(self, session).await
-    }
-
-    async fn import_session_file(&self, payload: Value) -> anyhow::Result<Value> {
-        LauncherDataService::import_session_file(self, payload).await
-    }
 }
 
 impl LauncherDataService {
@@ -1399,23 +1392,6 @@ impl LauncherDataService {
         .with_codex_home(codex_plus_core::codex_sqlite::default_codex_home_dir())
     }
 
-    async fn export_session_file(&self, session: SessionRef) -> anyhow::Result<Value> {
-        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-        tokio::task::spawn_blocking(move || {
-            codex_plus_core::session_share::export_rollout(&home, &session.session_id)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("session export task failed: {error}"))?
-    }
-
-    async fn import_session_file(&self, payload: Value) -> anyhow::Result<Value> {
-        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-        tokio::task::spawn_blocking(move || {
-            codex_plus_core::session_share::import_rollout(&home, &payload)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("session import task failed: {error}"))?
-    }
 }
 
 struct LauncherRuntimeService {
