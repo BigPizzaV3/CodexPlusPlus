@@ -1878,7 +1878,18 @@ async fn upstream_request_parts(
     // 原生 Responses 状态必须来自上游，不能以普通摘要冒充加密状态。
     let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
     if synthetic_compaction {
+        // 稳定层开启：先取回该会话最近一次普通请求的 tools 字节（压缩轮自带 tools:[]，
+        // 会让转换层丢掉折叠历史 tool 项的 schema，全历史重构、前缀全弃）。
+        let preserved_tools = relay
+            .stabilize_prompt_prefix
+            .then(|| crate::compaction_tools::preserved_tools(&request_json))
+            .flatten();
         request_json = rewrite_request_for_compaction(strip_compaction_trigger(request_json));
+        if let Some(tools) = preserved_tools {
+            request_json["tools"] = tools;
+        }
+    } else if relay.stabilize_prompt_prefix {
+        crate::compaction_tools::remember_tools(&request_json);
     }
     if let Some(model) = model_override
         .map(str::trim)
