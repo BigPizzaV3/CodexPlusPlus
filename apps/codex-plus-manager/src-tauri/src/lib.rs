@@ -107,6 +107,8 @@ pub fn run() {
             commands::launch_codex_plus,
             commands::restart_codex_plus,
             commands::load_settings,
+            commands::dictation_local_model_status,
+            commands::download_dictation_local_model,
             commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,

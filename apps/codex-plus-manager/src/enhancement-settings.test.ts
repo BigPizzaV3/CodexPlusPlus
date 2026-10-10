@@ -136,6 +136,20 @@ test("complete voice and Stepwise panels share the enhancement form and save act
     && (/^form\.dictation(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
 });
 
+test("local speech download requires a configuration button click and mount only reads status", () => {
+  const panel = component("DictationSettingsPanel");
+  const button = elements(panel).find((element) => attribute(element, "onClick")?.includes("downloadLocalModel()"));
+  assert.ok(button, "the voice settings must expose a manual model download action");
+  assert.equal(attribute(button, "disabled"), "downloading");
+  const calls = eventHandlerNodes(panel, button, "onClick").filter(ts.isCallExpression);
+  assert.ok(calls.some((node) => node.expression.getText(app) === "invoke"
+    && node.arguments[0]?.getText(app) === '"download_dictation_local_model"'));
+  const effects = descendants(panel).filter(ts.isCallExpression)
+    .filter((node) => node.expression.getText(app) === "useEffect");
+  assert.ok(effects.some((effect) => effect.getText(app).includes('"dictation_local_model_status"')));
+  for (const effect of effects) assert.ok(!effect.getText(app).includes("download_dictation_local_model"));
+});
+
 test("enhancement panels retain every service field, private key input and Stepwise connection test", () => {
   const dictation = component("DictationSettingsPanel");
   for (const field of ["enabled", "baseUrl", "apiKey", "apiKeyEnv", "model", "language", "timeoutSeconds"]) {

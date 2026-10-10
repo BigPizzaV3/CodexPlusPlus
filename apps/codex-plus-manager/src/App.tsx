@@ -4889,12 +4889,47 @@ function WhaleBalanceSettingsFields({ form, onFormChange }: {
   );
 }
 
+type DictationLocalModelState = {
+  phase: string;
+  modelReady: boolean;
+  completedBytes?: number;
+  totalBytes: number;
+  message?: string;
+};
+
 function DictationSettingsPanel({ form, onFormChange }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
 }) {
   const [dictationPresetSelection, setDictationPresetSelection] = useState<DictationPreset>(() => dictationPreset(form.dictation));
   useEffect(() => setDictationPresetSelection(dictationPreset(form.dictation)), [form.dictation.baseUrl]);
+  const [localModelState, setLocalModelState] = useState<DictationLocalModelState | null>(null);
+  const [localModelDownloading, setLocalModelDownloading] = useState(false);
+  const [localModelError, setLocalModelError] = useState("");
+  useEffect(() => {
+    if (form.dictation.provider !== "sensevoice") return;
+    let active = true;
+    const refresh = () => invoke<DictationLocalModelState>("dictation_local_model_status")
+      .then((state) => { if (active) { setLocalModelState(state); } })
+      .catch(() => { if (active) setLocalModelError(t("无法读取本地模型状态，请重试。")); });
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 1000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [form.dictation.provider]);
+  const downloadLocalModel = async () => {
+    setLocalModelDownloading(true);
+    setLocalModelError("");
+    try {
+      const result = await invoke<CommandResult<DictationLocalModelState>>("download_dictation_local_model");
+      if (result.status !== "ok") setLocalModelError(result.message);
+      else setLocalModelState(result);
+    } catch {
+      setLocalModelError(t("本地模型下载失败，请重试。"));
+    } finally {
+      setLocalModelDownloading(false);
+    }
+  };
+  const downloading = localModelDownloading || localModelState?.phase === "downloading";
   const updateDictation = (patch: Partial<DictationSettings>) => onFormChange({
     ...form,
     dictation: { ...form.dictation, ...patch },
@@ -4938,9 +4973,21 @@ function DictationSettingsPanel({ form, onFormChange }: {
               />
             </Field>
           </div>
-          {form.dictation.provider === "sensevoice" ? (
-            <p className="field-hint">{t("SenseVoiceSmall 在本机 CPU 上运行。首次使用会从 Hugging Face 或镜像下载约 229 MiB 模型，之后音频不会离开本机。")}</p>
-          ) : <>
+          {form.dictation.provider === "sensevoice" ? <>
+            <p className="field-hint">{t("SenseVoiceSmall 在本机 CPU 上运行。请手动下载约 229 MiB 模型，下载并校验完成后才可录音转写；音频不会离开本机。")}</p>
+            <div className="form-row">
+              <Button type="button" disabled={downloading} onClick={() => { void downloadLocalModel(); }}>
+                <Download className="h-4 w-4" />
+                {downloading ? t("正在下载并校验…") : localModelState?.modelReady ? t("校验或重新下载模型") : t("下载本地模型")}
+              </Button>
+              <span className="field-hint" role="status">
+                {downloading
+                  ? `${Math.min(100, Math.floor((localModelState?.completedBytes || 0) / (localModelState?.totalBytes || 239549735) * 100))}%`
+                  : localModelState?.modelReady ? t("本地模型已下载") : t("本地模型尚未下载")}
+              </span>
+            </div>
+            {localModelError || localModelState?.phase === "failed" ? <p className="field-hint" role="alert">{localModelError || localModelState?.message}</p> : null}
+          </> : <>
             <Field label="Base URL">
               <Input
                 value={form.dictation.baseUrl}
@@ -4993,7 +5040,9 @@ function DictationSettingsPanel({ form, onFormChange }: {
           {dictationIssue ? <p className="field-hint" role="alert">{dictationIssue}</p> : null}
           <div className="hint-line enhance-service-note">
             <Info className="h-4 w-4" />
-            <span>{t("保存后 Codex 输入框会显示「语音输入」按钮，停止录音后可插入或发送文字。录音会发送到上面填写的服务地址，无需重启。")}</span>
+            <span>{form.dictation.provider === "sensevoice"
+              ? t("下载模型并保存配置后，可在 Codex 输入框录音，停止后在本机转写并插入文字。")
+              : t("保存后 Codex 输入框会显示「语音输入」按钮，停止录音后可插入或发送文字。录音会发送到上面填写的服务地址，无需重启。")}</span>
           </div>
         </div>
       </CardContent>
