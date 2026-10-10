@@ -6063,3 +6063,106 @@ fn prefix_stabilizer_unpaired_fragments_do_not_diverge_prefix() {
     );
     assert_eq!(c["messages"].as_array().unwrap().len(), 2, "纯残片 developer 消息应整条删除");
 }
+
+// ---------------------------------------------------------------------------
+// 易变重注入具名块「同名去重、保留最后实例（dedup-last）」测试。
+// 根因（SYS_STEP_FORENSICS.md）：codex 客户端累积重注入
+// codex_apps_client_time_context 时区锚块（单实例 271B，wire 步进 +273B），
+// 历史不去重，每次步进首轮全历史 fork。稳定层在规范序之上做同名折叠，
+// 保留到达序最后一个实例，块体零改写。
+// ---------------------------------------------------------------------------
+
+/// 时区锚块原文：与客户端实际注入逐字节同构（无任何敏感字段）。
+fn time_context_block(date: &str) -> String {
+    format!(
+        "<codex_apps_client_time_context><timezone>Asia/Shanghai</timezone>\n<current_date>{date}</current_date>\nUse this client time context for user-facing dates, times, and schedules instead of the execution host\'s timezone and current date.</codex_apps_client_time_context>"
+    )
+}
+
+/// 走稳定层变换，返回头部 system 消息文本。
+fn stabilized_system(chunks: &[String]) -> String {
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core instructions text",
+        "input": developer_messages(chunks),
+    });
+    let stabilized = responses_to_chat_completions_with_options(body, false, true).unwrap();
+    stabilized["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn prefix_stabilizer_time_context_same_name_instances_collapse_to_one() {
+    let t = time_context_block("2026-10-10");
+    let single = stabilized_system(&[t.clone()]);
+    assert_eq!(single, format!("core instructions text\n\n{t}"), "单实例场景必须原样保留块体");
+    // 同一消息内同名两份：合并后与单实例逐字节相等
+    let twice_same_chunk = stabilized_system(&[format!("{t}\n\n{t}")]);
+    assert_eq!(twice_same_chunk, single, "同一消息内同名实例必须合并为一份且逐字节相等");
+    // 跨消息两份：同样与单实例逐字节相等
+    let twice_two_chunks = stabilized_system(&[t.clone(), t.clone()]);
+    assert_eq!(twice_two_chunks, single, "跨消息同名实例必须合并为一份且逐字节相等");
+}
+
+#[test]
+fn prefix_stabilizer_time_context_keeps_last_arrived_instance() {
+    let d10 = time_context_block("2026-10-10");
+    let d11 = time_context_block("2026-10-11");
+    let out = stabilized_system(&[d10.clone(), d11.clone()]);
+    assert_eq!(
+        out,
+        format!("core instructions text\n\n{d11}"),
+        "同名内容不同时保留到达序最后一份（时间语义取最新），块体零改写"
+    );
+    // 契约以到达序为准：最后一份是旧的则保留旧的（现网到达序即时间序，旧实例恒在前）
+    let out_rev = stabilized_system(&[d11.clone(), d10.clone()]);
+    assert_eq!(out_rev, format!("core instructions text\n\n{d10}"), "dedup-last 以到达序为准");
+}
+
+#[test]
+fn prefix_stabilizer_time_context_permutation_of_same_content_is_stable() {
+    let t = time_context_block("2026-10-10");
+    let apps = injection_block("apps_instructions", "apps body");
+    let collab = injection_block("collaboration_mode", "collab body");
+    let first = stabilized_system(&[t.clone(), collab.clone(), apps.clone(), t.clone()]);
+    let second = stabilized_system(&[format!("{apps}\n\n{t}"), t.clone(), collab.clone()]);
+    assert_eq!(first, second, "同名实例内容全等时，任意到达排列输出必须逐字节一致");
+    assert_eq!(
+        first,
+        format!("core instructions text\n\n{apps}\n\n{t}\n\n{collab}"),
+        "规范序：apps_instructions < codex_apps_client_time_context < collaboration_mode，折叠后保留块区自然位置"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_time_context_dedup_is_idempotent() {
+    let d10 = time_context_block("2026-10-10");
+    let d11 = time_context_block("2026-10-11");
+    // 现网到达序即时间序：旧实例在前、最新在后，折叠保留最新
+    let first = stabilized_system(&[d10.clone(), d10.clone(), d11.clone()]);
+    assert_eq!(first, format!("core instructions text\n\n{d11}"));
+    // 输出再切块再排序：第一轮输出回填 instructions、无新增输入，必须逐字节不变
+    let round2 = json!({ "model": "MiniMax-M2.7", "instructions": first, "input": [] });
+    let second = responses_to_chat_completions_with_options(round2, false, true).unwrap();
+    assert_eq!(
+        second["messages"][0]["content"].as_str().unwrap(),
+        first,
+        "幂等契约被破坏：对输出再变换不再逐字节相等"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_unregistered_repeat_blocks_keep_every_instance() {
+    // 未注册名单的相似块名（前缀相近但不相等）与未知重复块：逐实例保留、零改写
+    let similar_1 = injection_block("codex_apps_client_time_context_extra", "instance one body");
+    let similar_2 = injection_block("codex_apps_client_time_context_extra", "instance two body");
+    let unknown = injection_block("legacy_env_context", "legacy instance");
+    let out = stabilized_system(&[similar_1.clone(), unknown.clone(), similar_2.clone(), unknown.clone()]);
+    assert_eq!(
+        out,
+        format!("core instructions text\n\n{similar_1}\n\n{similar_2}\n\n{unknown}\n\n{unknown}"),
+        "名单外同名块必须逐实例保留且零改写（opt-in 边界不破）"
+    );
+}

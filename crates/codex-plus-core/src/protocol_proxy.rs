@@ -4128,12 +4128,21 @@ fn strip_notice_blocks_in_text(text: &str) -> (String, bool, bool) {
 // 2. open_page 系块内容归一：`codex_apps_open_page_instructions` /
 //    `external_codex_apps_open_page` 块随开页状态重写或重复注入（+273B 形态），
 //    在块区统一替换为常量空体块并去重；裸文本形态先按签名包成具名块。
-// 两个变换都确定、幂等；不含签名/名单块的消息与文本逐字节不变。
+// 3. 易变重注入块同名去重：客户端累积重注入 `codex_apps_client_time_context`
+//    等具名锚块（时区块单实例 271B，每实例步进 +273B），同名只保留到达序
+//    最后一个实例（dedup-last），内容零改写，保留块区字典序的自然位置，
+//    不进「内容钉死为常量」的钉尾区。
+// 以上变换都确定、幂等；不含签名/名单块的消息与文本逐字节不变。
 
 /// 内容轮变的具名块名单：块体随会话状态（打开的 Page 等）改写或重复注入，
 /// 归一为常量空体块并同名去重。块名保留在块区（字典序位置不变），只有体被钉死。
 const VOLATILE_CONTENT_BLOCK_NAMES: &[&str] =
     &["codex_apps_open_page_instructions", "external_codex_apps_open_page"];
+
+/// 易变同名重注入块名单：客户端累积式重注入（时区锚块约每 2 小时一次），
+/// 块体语义有效、零改写；同名只保留到达序**最后一个实例**（时间语义取最新），
+/// 块位置仍由块名字典序决定。实例数 >1 时经诊断日志记一条，供线上核查注入频率。
+const DEDUP_LAST_BLOCK_NAMES: &[&str] = &["codex_apps_client_time_context"];
 
 /// 已知可能以「裸文本段」形态出现的易变注入签名：（行首签名, 包裹用的块名）。
 /// 包裹后进入块区，再被名单归一；只收取证确认过的开头句，保守防误吞。
@@ -4412,6 +4421,10 @@ fn block_sort_rank(name: Option<&str>) -> (u8, &str) {
 /// 不依赖到达位置：同一块集合任意排列输入，输出逐字节一致（确定性）；
 /// 对输出再切块再排序，块序列不变（幂等）。
 ///
+/// 易变重注入同名块（`DEDUP_LAST_BLOCK_NAMES`）在规范序后做「同名去重、保留
+/// 最后一个实例」：内容全等时仍满足置换不变；内容不同（日期翻转）按到达序
+/// 取最新，属每日至多一次的可控变化。块体逐字节保留客户端原文。
+///
 /// 已知限制（写入产物报告）：文本段按全局到达序在前，若已出现的历史文本段在
 /// 后续轮次整体缺失，其后的文本段会前移导致局部分叉；已定案的轮变源中 notice
 /// 走剥离、其余均为具名块，不受此影响。
@@ -4430,6 +4443,28 @@ fn order_system_chunks_stably(chunks: &[String]) -> String {
     }
     // sort_by_key 是稳定排序：rank 相同的块（文本段/重复同名块）保持到达相对序
     parts.sort_by_key(|part| part.0.clone());
+    // dedup-last 预扫描：统计易变重注入块的实例数；同名块规范序下必然相邻，
+    // 只放行最后一个实例；实例数 >1 记一条诊断事件供线上核查注入频率。
+    let mut dedup_last: Vec<(&str, usize, usize)> = Vec::new();
+    for ((kind, name_part), _) in parts.iter() {
+        if *kind == 1 && DEDUP_LAST_BLOCK_NAMES.contains(&name_part.as_str()) {
+            match dedup_last
+                .iter_mut()
+                .find(|(name, ..)| *name == name_part.as_str())
+            {
+                Some(entry) => entry.1 += 1,
+                None => dedup_last.push((name_part.as_str(), 1, 0)),
+            }
+        }
+    }
+    for (name, instances, _) in dedup_last.iter() {
+        if *instances > 1 {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.prefix_stabilizer_dedup_last_folded",
+                json!({ "blockName": name, "instances": instances }),
+            );
+        }
+    }
     // 常量块同名去重：只保留第一个，消除重复注入造成的块区平移。
     let mut constant_seen: Vec<&str> = Vec::new();
     let mut out: Vec<&str> = Vec::with_capacity(parts.len());
@@ -4441,6 +4476,18 @@ fn order_system_chunks_stably(chunks: &[String]) -> String {
                 continue;
             }
             constant_seen.push(name_part.as_str());
+        }
+        if *kind == 1 && DEDUP_LAST_BLOCK_NAMES.contains(&name_part.as_str()) {
+            // 只放行到达序最后一个实例，之前的同名实例折叠；块体本身零改写。
+            if let Some(entry) = dedup_last
+                .iter_mut()
+                .find(|(name, ..)| *name == name_part.as_str())
+            {
+                entry.2 += 1;
+                if entry.2 < entry.1 {
+                    continue;
+                }
+            }
         }
         let text = text.trim();
         if text.is_empty() {
