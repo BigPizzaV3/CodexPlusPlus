@@ -214,6 +214,64 @@ fn rewrite_request_for_compaction(mut body: Value) -> Value {
     body
 }
 
+/// 压缩请求回放 `web_search_call` 历史时，部分 Responses 上游要求请求仍声明
+/// web_search 工具；只在确实存在搜索历史且声明缺失时补齐，不改写历史内容。
+pub fn ensure_web_search_tool_for_history(request_json: &mut Value) -> bool {
+    let Some(input) = request_json.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    if !input
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str) == Some("web_search_call"))
+    {
+        return false;
+    }
+    let is_web_search = |tool: &Value| {
+        matches!(
+            tool.get("type").and_then(Value::as_str),
+            Some("web_search" | "web_search_preview" | "web_search_preview_2025_03_11")
+        )
+    };
+    let mut has_other_tools = false;
+    for tool in input
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("additional_tools"))
+        .filter_map(|item| item.get("tools").and_then(Value::as_array))
+        .flatten()
+    {
+        if is_web_search(tool) {
+            return false;
+        }
+        has_other_tools = true;
+    }
+    match request_json.get("tools") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(tools)) => {
+            if tools.iter().any(is_web_search) {
+                return false;
+            }
+            has_other_tools |= !tools.is_empty();
+        }
+        _ => return false,
+    }
+    let tool = json!({"type": "web_search", "external_web_access": false});
+    if let Some(tools) = request_json.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.push(tool);
+    } else {
+        request_json["tools"] = json!([tool]);
+    }
+    if !has_other_tools
+        && (matches!(request_json.get("tool_choice"), None | Some(Value::Null))
+            || matches!(
+                request_json.get("tool_choice").and_then(Value::as_str),
+                Some("auto" | "none")
+            ))
+    {
+        request_json["tool_choice"] = json!("none");
+    }
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatReasoningStyle {
     Default,
@@ -2061,6 +2119,15 @@ async fn upstream_request_parts(
         )?,
     };
     if relay.protocol == RelayProtocol::Responses {
+        if compact
+            && !is_responses_compact_proxy_path(request_path)
+            && ensure_web_search_tool_for_history(&mut body)
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.web_search_history_compat",
+                json!({"action": "declare_web_search", "inputContainsWebSearchCall": true}),
+            );
+        }
         normalize_responses_item_ids(&mut body);
     }
 
