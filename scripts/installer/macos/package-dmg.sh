@@ -241,6 +241,7 @@ verify_app "$STAGE/Codex++ 管理工具.app"
 
 # Finder 隐藏兼容壳；旧更新器按精确路径读取它，不能改名或放入子目录。
 printf '%s\n' "Codex++ 管理工具.app" > "$STAGE/.hidden"
+chflags hidden "$STAGE/Codex++ 管理工具.app"
 
 ln -s /Applications "$STAGE/Applications"
 
@@ -374,6 +375,7 @@ with timeout of 30 seconds
     tell dmgDisk
       set position of item "Applications" to {1000, 390}
       set position of item "Codex++.app" to {460, 390}
+      set visible of item "Codex++ 管理工具.app" to false
     end tell
 
     close dmgWindow
