@@ -137,6 +137,7 @@ import {
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
+  webSearchHistoryCompatEnabled,
   PROTOCOL_PROXY_BASE_URL,
   type RelayModelRoute,
 } from "./model-routes";
@@ -391,6 +392,7 @@ export type RelayProfile = {
   noAuth: boolean;
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
+  webSearchHistoryCompat: boolean;
   rateLimitCooldownEnabled: boolean;
   channelQueueEnabled: boolean;
   channelRequestsPerMinute: number;
@@ -1097,6 +1099,7 @@ const defaultSettings: BackendSettings = {
       noAuth: false,
       sub2apiMultiplier: "",
       standardOpenaiProtocol: false,
+      webSearchHistoryCompat: false,
       rateLimitCooldownEnabled: false,
       channelQueueEnabled: false,
       channelRequestsPerMinute: 20,
@@ -7523,7 +7526,7 @@ function RelayProfileDetail({
         next,
         activeLiveBaseUrl,
       );
-      if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
+      if (requiresRestart && !window.confirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"))) {
         return;
       }
       const savedSettings = await onFormChange(next);
@@ -8901,6 +8904,26 @@ function RelayProfileEditor({
                   placeholder={t("留空使用默认值")}
                 />
               </Field>
+            ) : null}
+            {showApiFields ? (
+              <label
+                className={`switch-row compact relay-switch-row relay-field-search-history${profile.protocol === "responses" ? "" : " is-disabled"}`}
+                title={profile.protocol === "responses" ? undefined : t("仅限 Responses API。")}
+              >
+                <input
+                  checked={profile.webSearchHistoryCompat}
+                  disabled={profile.protocol !== "responses"}
+                  onChange={(event) =>
+                    updateDraft({ webSearchHistoryCompat: event.currentTarget.checked })
+                  }
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("搜索历史压缩兼容（实验）")}</strong>
+                  <small>response protection is unavailable</small>
+                </span>
+                <ToggleVisual />
+              </label>
             ) : null}
             {showApiFields ? (
               <Field className="relay-field-custom-headers" label={t("自定义请求头")}>
@@ -11894,6 +11917,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             noAuth: false,
             sub2apiMultiplier: "",
             standardOpenaiProtocol: false,
+            webSearchHistoryCompat: false,
             rateLimitCooldownEnabled: false,
             channelQueueEnabled: false,
             channelRequestsPerMinute: 20,
@@ -12021,6 +12045,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         noAuth: false,
         sub2apiMultiplier: "",
         standardOpenaiProtocol: false,
+        webSearchHistoryCompat: false,
         rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
         channelQueueEnabled: profile.channelQueueEnabled === true,
         channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
@@ -12062,6 +12087,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
+    webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
     rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
     channelQueueEnabled: profile.channelQueueEnabled === true,
     channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
@@ -12257,10 +12283,16 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider">,
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+  const searchHistoryCompat = profile.webSearchHistoryCompat === true
+    && profile.protocol === "responses"
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  const baseUrl = profile.protocol === "chatCompletions" || searchHistoryCompat
+    ? PROTOCOL_PROXY_BASE_URL
+    : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const rootLines = [
@@ -12392,8 +12424,12 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch) {
-    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch) {
+    const searchHistoryCompat = next.webSearchHistoryCompat === true
+      && next.protocol === "responses"
+      && next.relayMode !== "aggregate"
+      && (next.relayMode !== "official" || next.officialMixApiKey);
+    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -13061,6 +13097,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     sub2apiMultiplier: "",
     modelRoutes: [],
     standardOpenaiProtocol: false,
+    webSearchHistoryCompat: false,
     rateLimitCooldownEnabled: false,
     channelQueueEnabled: false,
     channelRequestsPerMinute: 20,
@@ -13109,6 +13146,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       sub2apiMultiplier: "",
       modelRoutes: [],
       standardOpenaiProtocol: false,
+      webSearchHistoryCompat: false,
       rateLimitCooldownEnabled: false,
       channelQueueEnabled: false,
       channelRequestsPerMinute: 20,
@@ -13243,6 +13281,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     noAuth: false,
     sub2apiMultiplier: "",
     standardOpenaiProtocol: false,
+    webSearchHistoryCompat: false,
     aggregate,
   };
 }
