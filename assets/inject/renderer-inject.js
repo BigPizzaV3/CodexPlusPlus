@@ -123,7 +123,7 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "9";
-  const codexAppServerModelRequestPatchVersion = "12";
+  const codexAppServerModelRequestPatchVersion = "13";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
@@ -4344,10 +4344,9 @@
   }
 
   function codexRemoteSessionProviderRequestMethod(method) {
-    // app-server restores persisted model/provider/reasoning for thread/resume only
-    // when the caller supplies none of those overrides.
     return [
       "thread/start",
+      "thread/resume",
       "start-conversation",
       "start-thread-for-host",
       "thread-prewarm-start",
@@ -4363,6 +4362,8 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
+    // Pure API 恢复旧会话时必须覆盖持久化的 openai；官登会话保留原生恢复语义。
+    if (requestMethod === "thread/resume" && !pureApi) return params;
     if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");
