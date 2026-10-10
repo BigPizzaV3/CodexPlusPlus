@@ -628,6 +628,18 @@ mod runtime {
         let helper = plan.transaction.join("manager-update-helper");
         fs::copy(&executable, &helper)?;
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        // 从已签名 app 直接复制裸 Mach-O 会保留依赖原 Info.plist 的签名，
+        // 脱离 bundle 后 macOS 会立即拒绝执行。临时 helper 只负责本机更新，
+        // 用 ad-hoc 签名重新封装它；正式 app 的 Developer ID 签名不受影响。
+        checked(
+            "/usr/bin/codesign",
+            &[
+                "--force".as_ref(),
+                "--sign".as_ref(),
+                "-".as_ref(),
+                helper.as_os_str(),
+            ],
+        )?;
         let path = plan.transaction.join("plan.json");
         use std::io::Write;
         let mut file = OpenOptions::new()
