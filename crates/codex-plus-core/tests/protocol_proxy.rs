@@ -4188,8 +4188,13 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
     .unwrap();
     let body = result.read_body().await.unwrap();
 
-    assert_eq!(result.status_code, 200);
-    assert_eq!(body, br#"{"id":"resp_1","object":"response"}"#.to_vec());
+    assert_eq!(
+        result.status_code,
+        200,
+        "unexpected mock response: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(body.as_slice(), br#"{"id":"resp_1","object":"response"}"#);
     let first_request = first_server.await.unwrap();
     let second_request = second_server.await.unwrap();
     assert!(
@@ -4717,6 +4722,44 @@ fn aggregate_proxy_settings(
         ..BackendSettings::default()
     }
 }
+
+#[tokio::test]
+async fn aggregate_request_build_error_still_fails_over_with_and_without_exec() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    for with_exec in [false, true] {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "status": "completed", "output": []
+            })))
+            .mount(&server)
+            .await;
+        let settings = aggregate_proxy_settings(
+            &format!("build-error-{with_exec}"),
+            "not-a-url".to_string(),
+            format!("{}/v1", server.uri()),
+        );
+        let mut request = json!({"model": "native-model", "stream": false, "input": "hello"});
+        if with_exec {
+            request["tools"] = json!([{"type": "custom", "name": "exec"}]);
+        }
+        let upstream = open_responses_proxy_request_with_settings_for_path(
+            &request.to_string(),
+            settings,
+            "/v1/responses",
+        )
+        .await
+        .expect("request build errors must participate in ordinary failover");
+        assert_eq!(upstream.status_code, 200);
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(
+            received[0].body_json::<Value>().unwrap()["tools"],
+            request["tools"]
+        );
+    }
+}
+
 #[tokio::test]
 async fn audio_transcriptions_proxy_forwards_multipart_body() {
     let _lock = settings_path_test_lock().lock().unwrap();
