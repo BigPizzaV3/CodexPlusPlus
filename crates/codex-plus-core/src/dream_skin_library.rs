@@ -441,7 +441,18 @@ pub fn prepare_dream_skin_activation(
         crate::dream_skin::prepare_dream_skin_image_for_directory(source, &managed_dir, "current")?
     };
     let active_css = managed_dir.join("current.css");
-    let source_css = source.parent().map(|parent| parent.join("theme.css"));
+    // 当前草稿引用的是 current 图片；重复应用不能因此丢掉已激活的 CSS。
+    let source_css = if crate::dream_skin::is_managed_dream_skin_image(source, state_dir) {
+        if active_css.exists() {
+            Some(active_css.clone())
+        } else {
+            load_stored_dream_skin_theme(state_dir, &draft.config.id)
+                .ok()
+                .map(|stored| PathBuf::from(stored.image_path).with_file_name("theme.css"))
+        }
+    } else {
+        source.parent().map(|parent| parent.join("theme.css"))
+    };
     if let Some(source_css) = source_css {
         let metadata = std::fs::symlink_metadata(&source_css).ok();
         if metadata.is_some_and(|item| {
