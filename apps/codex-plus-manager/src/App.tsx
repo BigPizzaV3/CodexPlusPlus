@@ -4956,10 +4956,10 @@ function DictationSettingsPanel({ form, onFormChange }: {
                   onFormChange({ ...form, dictation: applyDictationPreset(form.dictation, value) });
                 }}
                 options={[
+                  { value: "sensevoice", label: t("本地 SenseVoice（离线）") },
                   { value: "groq", label: "Groq" },
                   { value: "openai", label: t("OpenAI 兼容") },
                   { value: "local", label: t("本地服务") },
-                  { value: "sensevoice", label: t("本地 SenseVoice（离线）") },
                   { value: "custom", label: t("自定义") },
                 ]}
               />
