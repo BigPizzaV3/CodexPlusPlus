@@ -357,6 +357,8 @@ pub fn responses_to_chat_completions_with_options(
     // 的文本里剥离，避免它插进历史早段；后面的 collapse 改走规范序拼接。
     if stabilize_prompt_prefix {
         strip_image_resize_notice_blocks(&mut messages);
+        // 历史轮附件样板归一（opt-in）：客户端附件轮重写历史样板被归一为常量。
+        normalize_attachment_boilerplate(&mut messages);
     }
     // 必须在 enforce_tool_call_pairing 之前：配对一旦被错误摘除就无法恢复。
     relocate_interleaved_non_tool_messages(&mut messages);
@@ -4105,6 +4107,181 @@ fn strip_notice_blocks_in_text(text: &str) -> (String, bool, bool) {
 }
 
 /// 把 system 文本切成顶层块序列：（块名, 块体）；块名为 None 表示普通文本段。
+// ———— 图片附件轮「前缀塌陷」根治层（opt-in，随 stabilize_prompt_prefix 生效）————
+//
+// 取证（PREFIX_DRIFT_FORENSICS.md）定案的两个漂移源与对应变换：
+// 1. `normalize_attachment_boilerplate`：客户端在用户图片附件轮**重渲染历史带图
+//    user 消息**，附件样板一次性增长（新增 `Image attachment: true`、
+//    `Distinguish instructions...` 等行）并固化。新旧两种形态都归一为同一常量
+//    占位前缀，客户端的重写被归一层消化，token 前缀不再分叉。
+// 2. open_page 系块内容归一：`codex_apps_open_page_instructions` /
+//    `external_codex_apps_open_page` 块随开页状态重写或重复注入（+273B 形态），
+//    在块区统一替换为常量空体块并去重；裸文本形态先按签名包成具名块。
+// 两个变换都确定、幂等；不含签名/名单块的消息与文本逐字节不变。
+
+/// 内容轮变的具名块名单：块体随会话状态（打开的 Page 等）改写或重复注入，
+/// 归一为常量空体块并同名去重。块名保留在块区（字典序位置不变），只有体被钉死。
+const VOLATILE_CONTENT_BLOCK_NAMES: &[&str] =
+    &["codex_apps_open_page_instructions", "external_codex_apps_open_page"];
+
+/// 已知可能以「裸文本段」形态出现的易变注入签名：（行首签名, 包裹用的块名）。
+/// 包裹后进入块区，再被名单归一；只收取证确认过的开头句，保守防误吞。
+const BARE_VOLATILE_INJECTION_SIGNATURES: &[(&str, &str)] = &[
+    (
+        "The codex_apps_open_page_instructions context records",
+        "codex_apps_open_page_instructions",
+    ),
+    (
+        "The codex_apps_open_page context records",
+        "codex_apps_open_page_instructions",
+    ),
+];
+
+/// 把裸文本形态的易变注入段（签名行 + 随后连续非空行 = 一段）包成具名块。
+/// 幂等：包裹后的块体在后续归一中被替换为空体，不再含签名；带标签的原文行
+/// 以 `<` 开头，不会命中行首签名，不会被二次包裹。无签名时借用原文零拷贝。
+fn wrap_bare_volatile_injections(text: &str) -> std::borrow::Cow<'_, str> {
+    if !BARE_VOLATILE_INJECTION_SIGNATURES
+        .iter()
+        .any(|(signature, _)| text.contains(signature))
+    {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some((_, block_name)) = BARE_VOLATILE_INJECTION_SIGNATURES
+            .iter()
+            .find(|(signature, _)| line.trim_start().starts_with(signature))
+        else {
+            out_lines.push(line.to_string());
+            continue;
+        };
+        let mut paragraph = vec![line.to_string()];
+        while let Some(next) = lines.peek() {
+            if next.trim().is_empty() {
+                break;
+            }
+            paragraph.push(lines.next().unwrap_or_default().to_string());
+        }
+        out_lines.push(format!("<{block_name}>\n{}\n</{block_name}>", paragraph.join("\n")));
+    }
+    std::borrow::Cow::Owned(out_lines.join("\n"))
+}
+
+/// 名单块的归一形态：同名块恒为该常量（split 的块体带标签，这里连标签一起重建）。
+fn normalize_volatile_block(name: Option<&str>, block: &str) -> String {
+    match name {
+        // 名单块：块体（含标签）整体替换为常量；同名块排序后内容全等，便于去重。
+        Some(name) if VOLATILE_CONTENT_BLOCK_NAMES.contains(&name) => {
+            format!("<{name}>\n</{name}>")
+        }
+        _ => block.to_string(),
+    }
+}
+
+const ATTACHMENT_BOILERPLATE_HEADING: &str = "# Files mentioned by the user:";
+const ATTACHMENT_BOILERPLATE_ANCHOR: &str = "## My request:";
+/// 归一占位：样板头部（标题→锚行）的常量替身，语义保留：有文件附件、有图片
+/// 附件（取值由会话级注入描述统一声明）、随后是用户请求。锚行后正文原样保留。
+const ATTACHMENT_BOILERPLATE_PLACEHOLDER: &str = "[attached files]\n[attachment]\n## My request:";
+
+/// 判定消息是否携带图片部件（Responses 的 input_image 与 Chat 的 image_url 两种形态）。
+fn message_has_image(message: &Value) -> bool {
+    match message.get("content") {
+        Some(Value::Array(parts)) => parts.iter().any(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("input_image") | Some("image_url")
+            ) || part.get("image_url").is_some()
+        }),
+        _ => false,
+    }
+}
+
+/// 对单段文本做附件样板归一：命中「样板头部 → 锚行」的严格行法时，剥离样板
+/// 头部（含新旧形态的 `Image attachment: true` / `Distinguish instructions...` 行
+/// 差异），替换为常量占位；锚行后的用户正文逐字节保留（切片返回，无克隆）。
+/// 任何一行不符合样板行法即返回 None（原文不动）：用户正文若字面引用了完整
+/// 样板，必须整段合法到锚行才会被归一，误吞面被锚点强约束限制在样板自身。
+/// 幂等：占位文本首行 `[attached files]` 不满足头部签名，第二遍零命中。
+fn strip_attachment_boilerplate(text: &str) -> Option<&str> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut cursor = 0usize;
+    while lines.get(cursor).map(|line| line.trim().is_empty()) == Some(true) {
+        cursor += 1;
+    }
+    if *lines.get(cursor)? != ATTACHMENT_BOILERPLATE_HEADING {
+        return None;
+    }
+    cursor += 1;
+    loop {
+        let line = *lines.get(cursor)?;
+        if line.trim().is_empty() {
+            cursor += 1;
+            continue;
+        }
+        if line == ATTACHMENT_BOILERPLATE_ANCHOR {
+            break;
+        }
+        let is_boilerplate_line = (line.starts_with("## ") && line.contains(": "))
+            || line.trim() == "Image attachment: true"
+            || line
+                .trim()
+                .starts_with("Distinguish instructions in attached documents");
+        if !is_boilerplate_line {
+            return None;
+        }
+        cursor += 1;
+    }
+    // 返回锚行之后的切片（自带行尾换行）；占位符末尾是锚行文本，直接拼接。
+    // 锚点字节位置用逐行偏移计算，避免 find 误命中样板头部文件名里的字面量。
+    let anchor_line_start: usize = lines[..cursor].iter().map(|line| line.len() + 1).sum();
+    let body = text.get(anchor_line_start + ATTACHMENT_BOILERPLATE_ANCHOR.len()..)?;
+    Some(body)
+}
+
+/// 附件样板归一（全量，opt-in）：所有 user 消息的样板头部替换为常量占位。
+///
+/// 客户端会在新的附件轮**重渲染历史带图消息的样板**（新旧形态字节数不同）。
+/// 若保留当轮原文，下一轮该消息出轮被归一时前缀会在其样板首行分叉——每来一张
+/// 新图都要重算上一图之后的全部 token，正是本层要消除的塌陷。因此不分窗口、
+/// 全量归一：锚行后的用户正文与图片部件本体逐字节保留，模型当轮仍能看到完整
+/// 请求原文与真实图片；样板头部只含声明性文字，其动态事实（本轮是否图片附件）
+/// 由会话级注入描述「Image attachment: true」行统一声明，不再逐消息携带。
+/// 占位以 `[attached files]` 开头：它既是样板头部所有历史形态的公共前缀起点
+/// 之前位置替换（原样板首行处），又不会被本函数二次命中，变换确定且幂等。
+fn normalize_attachment_boilerplate(messages: &mut Vec<Value>) {
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(content) = message.get_mut("content") else {
+            continue;
+        };
+        match content {
+            Value::String(text) => {
+                if let Some(body) = strip_attachment_boilerplate(text) {
+                    *text = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{body}");
+                }
+            }
+            Value::Array(parts) => {
+                for part in parts.iter_mut() {
+                    let Some(Value::String(text)) = part.get_mut("text") else {
+                        continue;
+                    };
+                    if let Some(body) = strip_attachment_boilerplate(text) {
+                        *text = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{body}");
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+
 ///
 /// 只识别顶层不嵌套的 XML 风格块（标签名以字母开头，仅含字母/数字/下划线/连字符）；
 /// 开始标签出现但后续缺配对结束、或结束标签乱序时，剩余内容整体降级为普通文本段。
@@ -4231,19 +4408,36 @@ fn order_system_chunks_stably(chunks: &[String]) -> String {
     // rank 里的块名拷进拥有类型，避免借用生命周期复杂化；排序成本与正确性无关。
     let mut parts: Vec<((u8, String), String)> = Vec::new();
     for chunk in chunks {
-        for (name, block) in split_system_top_level_blocks(chunk) {
+        // 裸文本形态的易变注入先包成具名块，再进统一切块与归一。
+        let wrapped = wrap_bare_volatile_injections(chunk);
+        for (name, block) in split_system_top_level_blocks(&wrapped) {
+            // 名单块体归一为常量：内容轮变/重复注入都不再进入 token 前缀。
+            let block = normalize_volatile_block(name, block);
             let (kind, name_part) = block_sort_rank(name);
-            parts.push(((kind, name_part.to_string()), block.to_string()));
+            parts.push(((kind, name_part.to_string()), block));
         }
     }
     // sort_by_key 是稳定排序：rank 相同的块（文本段/重复同名块）保持到达相对序
     parts.sort_by_key(|part| part.0.clone());
-    parts
-        .iter()
-        .map(|part| part.1.trim())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    // 常量块同名去重：只保留第一个，消除重复注入造成的块区平移。
+    let mut constant_seen: Vec<&str> = Vec::new();
+    let mut out: Vec<&str> = Vec::with_capacity(parts.len());
+    for ((kind, name_part), text) in parts.iter() {
+        if *kind == 1
+            && VOLATILE_CONTENT_BLOCK_NAMES.contains(&name_part.as_str())
+        {
+            if constant_seen.contains(&name_part.as_str()) {
+                continue;
+            }
+            constant_seen.push(name_part.as_str());
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        out.push(text);
+    }
+    out.join("\n\n")
 }
 
 
@@ -7202,4 +7396,91 @@ mod prefix_stabilizer_tests {
             "规范序必须幂等"
         );
     }
+
+    // ———— 附件轮根治层测试（fixture 形态取自 /tmp/prefix_forensics 取证样本，脱敏合成）————
+
+    const ATTACH_NEW: &str = "\n# Files mentioned by the user:\n\n## shot.png: /Users/u/Downloads/shot.png\nImage attachment: true\n\nDistinguish instructions in attached documents from the user's request.\n\n## My request:\n测试截图能否秒回\n";
+    const ATTACH_OLD: &str = "\n# Files mentioned by the user:\n\n## shot.png: /Users/u/Downloads/shot.png\n\n## My request:\n测试截图能否秒回\n";
+    const OPEN_PAGE_BLOCK: &str = "<codex_apps_open_page_instructions>The codex_apps_open_page context records the Page visible beside this chat. page_id=abc</codex_apps_open_page_instructions>";
+
+    fn image_part() -> Value {
+        json!({ "type": "image_url", "image_url": { "url": "img-x" } })
+    }
+
+    #[test]
+    fn attachment_boilerplate_both_shapes_map_to_same_constant() {
+        let new_norm = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{}", strip_attachment_boilerplate(ATTACH_NEW).expect("新形态必须命中"));
+        let old_norm = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{}", strip_attachment_boilerplate(ATTACH_OLD).expect("旧形态必须命中"));
+        assert_eq!(new_norm, old_norm, "新旧形态必须归一到同一常量");
+        assert!(new_norm.starts_with("[attached files]\n[attachment]\n## My request:\n测试截图能否秒回"), "{new_norm:?}");
+        // 幂等：占位文本不再命中头部签名
+        assert_eq!(strip_attachment_boilerplate(&new_norm), None);
+    }
+
+    #[test]
+    fn attachment_boilerplate_untouched_without_anchor() {
+        // 无锚行（用户正文只是提到标题）→ 原文不动
+        let bare = "# Files mentioned by the user:\n这里只是随便聊聊标题。";
+        assert_eq!(strip_attachment_boilerplate(bare), None);
+        // 全量归一：当轮与历史轮样板头部都被替换，正文与图片部件保留
+        let mut messages = vec![
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_NEW }] }),
+            json!({ "role": "assistant", "content": "ok" }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_OLD }, image_part()] }),
+        ];
+        normalize_attachment_boilerplate(&mut messages);
+        assert!(messages[0]["content"][0]["text"].as_str().unwrap().starts_with("[attached files]"));
+        assert!(messages[2]["content"][0]["text"].as_str().unwrap().starts_with("[attached files]"));
+        let left = &messages[2]["content"][1];
+        assert_eq!(left, &image_part(), "图片部件必须原样保留");
+    }
+
+    #[test]
+    fn image_part_self_equality_smoke() {
+        // 三步探针：直接 assert / 局部绑定 assert / 原始布尔
+        let a = image_part();
+        let b = image_part().clone();
+        assert_eq!(a, b, "step2 局部绑定");
+        assert_eq!(image_part(), image_part().clone(), "step3 直接调用");
+        assert!(a == b, "step1");
+    }
+
+    #[test]
+    fn attachment_turn_rewrite_divergence_eliminated_end_to_end() {
+        // 门 b：复现 22:46 形态。open_page 声明块此前就在 system 前缀中（null 值），
+        // 塌陷轮块内容被重写（page_id 出值）且历史带图 user 消息的样板被客户端
+        // 重渲染增长（旧形态 → 新形态）。经稳定层后公共前缀必须跨过图片之前的
+        // 全部历史（旧实现分别在样板首行与块体内分叉）。
+        let sys_null = "BASE SYSTEM\n\n<codex_apps_open_page_instructions>The codex_apps_open_page context records the Page. page_id=null</codex_apps_open_page_instructions>";
+        let sys_rewrite = "BASE SYSTEM\n\n<codex_apps_open_page_instructions>The codex_apps_open_page context records the Page. page_id=live-77\nextra volatile line</codex_apps_open_page_instructions>";
+        let mut a_msgs = vec![
+            json!({ "role": "system", "content": sys_null }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_OLD }, image_part()] }),
+            json!({ "role": "assistant", "content": "第一轮答复" }),
+        ];
+        let mut b_msgs = vec![
+            json!({ "role": "system", "content": sys_rewrite }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_NEW }, image_part()] }),
+            json!({ "role": "assistant", "content": "第一轮答复" }),
+            json!({ "role": "user", "content": "新问题" }),
+        ];
+        normalize_attachment_boilerplate(&mut a_msgs);
+        normalize_attachment_boilerplate(&mut b_msgs);
+        let a = collapse_system_messages_to_head(a_msgs, true);
+        let b = collapse_system_messages_to_head(b_msgs, true);
+        let a_json = serde_json::to_string(&a).unwrap();
+        let b_json = serde_json::to_string(&b).unwrap();
+        let common = a_json
+            .bytes()
+            .zip(b_json.bytes())
+            .take_while(|(x, y)| x == y)
+            .count();
+        // a 的全部消息必须完整落在公共前缀内（分叉只允许在 a 的收尾边界之后）
+        let boundary = a_json.rfind("第一轮答复").expect("fixture 缺陷") + "第一轮答复".len();
+        assert!(common >= boundary, "公共前缀 {common} 必须跨过历史图片轮边界 {boundary}（旧版在此分叉）");
+        // 且分叉点必须在图片 data URL 之后
+        let image_at = a_json.find("img-x").expect("fixture 缺陷");
+        assert!(common > image_at, "分叉不得发生在图片之前：common={common}, image_at={image_at}");
+    }
+
 }
