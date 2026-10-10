@@ -1866,6 +1866,20 @@ pub async fn open_chat_completions_proxy_request(
     }
 }
 
+/// 前缀对齐诊断事件（命名沿用 prefix_stabilizer_* 风格）。
+fn log_compaction_align(report: &crate::compaction_align::CompactionAlignReport) {
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.prefix_stabilizer_compaction_appended",
+        json!({
+            "instances": report.instances,
+            "moved": report.moved,
+            "appended": report.appended,
+            "toolsBackfilled": report.tools_backfilled,
+            "skippedMixed": report.skipped_mixed,
+        }),
+    );
+}
+
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     mut request_json: Value,
@@ -1888,8 +1902,33 @@ async fn upstream_request_parts(
         if let Some(tools) = preserved_tools {
             request_json["tools"] = tools;
         }
+        // 前缀对齐：老路径的 rewrite 已把指令钉在末尾，这里只把客户端塞进
+        // system 区（instructions/system|developer 项）的指令复制件搬走。
+        if relay.stabilize_prompt_prefix {
+            if let Some((aligned, report)) =
+                crate::compaction_align::align_compaction_request(&request_json)
+            {
+                log_compaction_align(&report);
+                request_json = aligned;
+            }
+        }
     } else if relay.stabilize_prompt_prefix {
-        crate::compaction_tools::remember_tools(&request_json);
+        // 514-msg 流式压缩路径（codex++ 自动压缩）：既不走 /responses/compact
+        // 也不带 compaction_trigger，compact 判定落空；由前缀对齐按指令签名检出，
+        // 做「末尾唯一 user 指令 + tools 字节回填」。检出即跳过 remember_tools，
+        // 杜绝把压缩轮的 tools=[] 毒化进回填缓存；未检出才是普通轮，照常记录。
+        let aligned = if relay.protocol == RelayProtocol::ChatCompletions {
+            crate::compaction_align::align_compaction_request(&request_json)
+        } else {
+            None
+        };
+        match aligned {
+            Some((aligned, report)) => {
+                log_compaction_align(&report);
+                request_json = aligned;
+            }
+            None => crate::compaction_tools::remember_tools(&request_json),
+        }
     }
     if let Some(model) = model_override
         .map(str::trim)
