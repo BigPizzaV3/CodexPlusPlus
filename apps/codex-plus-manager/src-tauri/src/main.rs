@@ -1,6 +1,12 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if launched_from_legacy_manager_compat_bundle() {
+        // 旧版更新器要求 DMG 中有第二个 manager bundle，并会在替换后打开它。
+        // 兼容壳只满足身份校验；让真正的统一 Codex++ app 接管界面。
+        return;
+    }
     // 开机启动也只打开界面；禁用开机项不影响用户主动双击。
     if should_skip_autostart(
         std::env::args(),
@@ -70,6 +76,14 @@ fn main() {
         }
     }
     codex_plus_manager_lib::run();
+}
+
+#[cfg(target_os = "macos")]
+fn launched_from_legacy_manager_compat_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().contains("Codex++ 管理工具.app"))
+        .unwrap_or(false)
 }
 
 fn should_skip_autostart(args: impl IntoIterator<Item = String>, disabled: bool) -> bool {

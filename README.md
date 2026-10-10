@@ -216,7 +216,7 @@ Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」�
 
 首次使用先确认官方应用路径，再选择供应商模式，按需开启增强功能并保存。
 
-**旧版 macOS 用户：**旧的双应用版本携带的更新器无法识别单应用安装包，需要先将新 DMG 中的 **Codex++.app** 拖入「应用程序」并替换旧的同名应用一次。首次打开新版时，会把旧的 **Codex++ 管理工具.app** 移到 `~/.codex-session-delete/legacy-migrations` 备份目录，Applications 中只保留 Codex++；原有配置与会话数据继续沿用。
+**旧版 macOS 用户：**新发布的 DMG 会保留一个隐藏的兼容壳，让 v1.7.x 的旧更新器可以自动替换两个旧 app；更新后首次启动会自动将兼容壳移到 `~/.codex-session-delete/legacy-migrations`，Applications 中只保留 Codex++。v1.5/v1.6 的旧版本只会打开 DMG，请把其中可见的 **Codex++.app** 拖入「应用程序」替换一次；新版启动时同样会自动归档旧的 **Codex++ 管理工具.app**。原有配置与会话数据继续沿用。
 
 ### 3. 在界面中启动 Codex
 
