@@ -220,7 +220,7 @@ fn macos_packager_builds_one_visible_native_gui_with_legacy_update_shim() {
         "create_app \"Codex++\" \"CodexPlusPlus\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus\" \"false\""
     ));
     assert!(script.contains(
-        "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus.manager\" \"true\""
+        "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-legacy-shim\" \"com.bigpizzav3.codexplusplus.manager\" \"true\""
     ));
     assert!(script.contains("printf '%s\\n' \"Codex++ 管理工具.app\" > \"$STAGE/.hidden\""));
     assert!(script.contains("<key>CodexPlusUnifiedApp</key>"));

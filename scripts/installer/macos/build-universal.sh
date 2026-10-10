@@ -9,7 +9,7 @@ set -euo pipefail
 VERSION="${1:-0.0.0}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 UNIVERSAL_DIR="$ROOT/target/universal/release"
-BINARIES=(codex-plus-plus)
+BINARIES=(codex-plus-plus codex-plus-legacy-shim)
 
 # 前端产物要由调用方先构建好（vite:build），统一应用会把 dist 嵌进二进制。
 for target in x86_64-apple-darwin aarch64-apple-darwin; do

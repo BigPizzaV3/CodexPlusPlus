@@ -1,5 +1,6 @@
 [package]
 name = "codex-plus-manager"
+default-run = "codex-plus-plus"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +13,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "codex-plus-plus"
 path = "src/main.rs"
+
+[[bin]]
+name = "codex-plus-legacy-shim"
+path = "src/legacy_shim.rs"
 
 [dependencies]
 anyhow.workspace = true
