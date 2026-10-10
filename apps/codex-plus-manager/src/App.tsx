@@ -70,8 +70,8 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
-import type { PresetPatch } from "@/components/ProviderPresetSelector";
+import { createPresetPatch } from "@/components/ProviderPresetSelector";
+import { PRESETS, type PresetCategory, type ProviderPreset } from "./presets";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -4483,6 +4483,7 @@ function RelayScreen({
   const normalized = normalizeSettings(form);
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
+  const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
   const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
   const [ccsPathSaving, setCcsPathSaving] = useState(false);
@@ -4596,6 +4597,19 @@ function RelayScreen({
     );
   }
 
+  if (providerCatalogOpen) {
+    return (
+      <ProviderCatalogScreen
+        form={normalized}
+        onBack={() => setProviderCatalogOpen(false)}
+        onSelect={(profile) => {
+          setNewProfileDraft(profile);
+          setProviderCatalogOpen(false);
+        }}
+      />
+    );
+  }
+
   return (
     <>
       <Panel>
@@ -4621,8 +4635,9 @@ function RelayScreen({
             <Button
               variant="secondary"
               onClick={() => {
-                setNewProfileDraft(createRelayProfile(normalized));
+                setNewProfileDraft(null);
                 setDetailProfileId(null);
+                setProviderCatalogOpen(true);
               }}
             >
               <Plus className="h-4 w-4" />
@@ -4702,6 +4717,95 @@ function RelayScreen({
         </CardContent>
       </Panel>
     </>
+  );
+}
+
+function ProviderCatalogScreen({
+  form,
+  onBack,
+  onSelect,
+}: {
+  form: BackendSettings;
+  onBack: () => void;
+  onSelect: (profile: RelayProfile) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<PresetCategory | "all">("all");
+  const categories: Array<{ id: PresetCategory | "all"; label: string }> = [
+    { id: "all", label: t("全部") },
+    { id: "official", label: t("账号登录") },
+    { id: "cn_official", label: t("模型厂商") },
+    { id: "aggregator", label: t("聚合/中转") },
+    { id: "third_party", label: t("第三方平台") },
+  ];
+  const filtered = PRESETS.filter((preset) => {
+    if (category !== "all" && preset.category !== category) return false;
+    const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
+    return !query.trim() || haystack.includes(query.trim().toLowerCase());
+  });
+  const selectPreset = (preset?: ProviderPreset) => {
+    const draft = createRelayProfile(form);
+    const patch = preset ? createPresetPatch(preset) : { name: t("自定义供应商") };
+    onSelect(applyRelayProfilePatchToFiles(draft, patch, { allowGenerateFiles: true }));
+  };
+  return (
+    <div className="provider-catalog-screen">
+      <header className="provider-catalog-header" data-tauri-drag-region>
+        <Button onClick={onBack} size="icon" variant="ghost" title={t("返回供应商列表")}>
+          <ArrowLeft className="h-5 w-5" />
+        </Button>
+        <h2>{t("添加供应商")}</h2>
+        <span>Codex</span>
+      </header>
+      <div className="provider-catalog-search">
+        <Search className="h-5 w-5" />
+        <Input
+          aria-label={t("搜索供应商")}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          placeholder={t("搜索名称或网址，例如 kimi、智谱、openrouter")}
+          value={query}
+        />
+      </div>
+      <div className="provider-catalog-body">
+        <aside className="provider-catalog-filters">
+          {categories.map((item) => (
+            <button
+              className={category === item.id ? "active" : ""}
+              key={item.id}
+              onClick={() => setCategory(item.id)}
+              type="button"
+            >
+              <span>{item.label}</span>
+              <small>{item.id === "all" ? PRESETS.length : PRESETS.filter((preset) => preset.category === item.id).length}</small>
+            </button>
+          ))}
+        </aside>
+        <main className="provider-catalog-results">
+          <button className="provider-catalog-custom" onClick={() => selectPreset()} type="button">
+            <span className="provider-catalog-icon">✦</span>
+            <span><strong>{t("自定义配置")}</strong><small>{t("手动填写请求地址和 API Key")}</small></span>
+          </button>
+          {categories.filter((item) => item.id !== "all" && (category === "all" || category === item.id)).map((group) => {
+            const items = filtered.filter((preset) => preset.category === group.id);
+            if (!items.length) return null;
+            return (
+              <section className="provider-catalog-group" key={group.id}>
+                <h3>{group.label}</h3>
+                <div className="provider-catalog-grid">
+                  {items.map((preset) => (
+                    <button className="provider-catalog-card" key={preset.id} onClick={() => selectPreset(preset)} type="button">
+                      <span className="provider-catalog-icon">{preset.name.slice(0, 1).toUpperCase()}</span>
+                      <span><strong>{preset.name}</strong><small>{preset.websiteUrl ? new URL(preset.websiteUrl).host : preset.baseUrl}</small></span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+          {!filtered.length ? <div className="empty">{t("没有匹配的供应商")}</div> : null}
+        </main>
+      </div>
+    </div>
   );
 }
 
@@ -8255,13 +8359,6 @@ function RelayProfileEditor({
   };
   return (
     <div className="relay-profile-editor">
-      {isNew ? (
-        <ProviderPresetSelector
-          onSelect={(patch: PresetPatch) => {
-            updateDraft(patch as unknown as Partial<RelayProfile>);
-          }}
-        />
-      ) : null}
       <div className="relay-fields">
         <section className="relay-config-section relay-basic-section">
           <div className="relay-config-section-head">
