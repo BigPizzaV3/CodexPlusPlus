@@ -84,7 +84,7 @@ import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
 import { PluginMarketScreen } from "./PluginMarketScreen";
-import { McpPage } from "./ManagementPages";
+import { McpPage, PageHeader } from "./ManagementPages";
 import { SkillsPage, SessionPage } from "./ManagementExtra";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
@@ -4611,10 +4611,21 @@ function RelayScreen({
   }
 
   return (
-    <>
-      <Panel>
-        <CardHead title={t("供应商列表")} detail={tf("{0} 个供应商配置；可拖动排序，点编辑进入详情", [normalized.relayProfiles.length])} />
-        <CardContent>
+    <div className="mg-page relay-management-page">
+      <PageHeader
+        icon={<KeyRound className="h-5 w-5" />}
+        title={t("供应商列表")}
+        help={t("管理 Codex 的 API 供应商；选择供应商后会写入当前 Codex 配置。")}
+        actions={(
+          <Button onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}>
+            <Plus className="h-4 w-4" />
+            {t("添加供应商")}
+          </Button>
+        )}
+      />
+      <div className="mg-content">
+        <Panel className="relay-management-panel">
+          <CardContent>
           <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
           <label className="switch-row relay-master-switch">
             <input
@@ -4632,17 +4643,6 @@ function RelayScreen({
             <ToggleVisual />
           </label>
           <div className="relay-add-row">
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setNewProfileDraft(null);
-                setDetailProfileId(null);
-                setProviderCatalogOpen(true);
-              }}
-            >
-              <Plus className="h-4 w-4" />
-              {t("添加供应商")}
-            </Button>
             <Button
               variant="secondary"
               onClick={createNewAggregateProfile}
@@ -4714,9 +4714,10 @@ function RelayScreen({
             disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
             actions={actions}
           />
-        </CardContent>
-      </Panel>
-    </>
+          </CardContent>
+        </Panel>
+      </div>
+    </div>
   );
 }
 

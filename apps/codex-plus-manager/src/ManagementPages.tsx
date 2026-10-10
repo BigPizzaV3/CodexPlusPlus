@@ -20,7 +20,7 @@ function Action({ children, onClick, disabled, primary = false, title }: { child
 function IconAction({ children, onClick, label, disabled }: { children: ReactNode; onClick: () => void; label: string; disabled?: boolean }) {
   return <button type="button" className="mg-icon-button" onClick={onClick} aria-label={label} title={label} disabled={disabled}>{children}</button>;
 }
-function PageHeader({ icon, title, help, actions }: { icon: ReactNode; title: string; help: string; actions?: ReactNode }) {
+export function PageHeader({ icon, title, help, actions }: { icon: ReactNode; title: string; help: string; actions?: ReactNode }) {
   return <header className="mg-header" data-tauri-drag-region><div className="mg-header-title" data-tauri-drag-region>{icon}<h1 data-tauri-drag-region>{title}</h1><span className="mg-help" title={help} tabIndex={0} aria-label={help}><HelpCircle size={14} /></span></div><div className="mg-header-actions">{actions}</div></header>;
 }
 function SearchField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
