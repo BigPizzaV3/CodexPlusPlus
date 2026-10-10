@@ -950,6 +950,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(minimax.get("reasoning_split").is_none());
@@ -964,6 +965,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(glm.get("thinking").is_none());
@@ -976,6 +978,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(qwen.get("enable_thinking").is_none());
@@ -988,6 +991,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(openrouter.get("reasoning").is_none());
@@ -1001,6 +1005,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert_eq!(deepseek["reasoning_effort"], "xhigh");
@@ -1013,6 +1018,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert_eq!(gpt5["reasoning_effort"], "high");
@@ -5705,4 +5711,283 @@ async fn native_compaction_preserves_protocol_and_opaque_state() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 「prompt 前缀稳定层」（mediafix4）测试。
+// 变换为 opt-in（RelayProfile.stabilize_prompt_prefix，默认关=转发行为逐字节
+// 不变）；开启时剥离 image_resize_notice、system 头部块进入规范序。
+// ---------------------------------------------------------------------------
+
+fn injection_block(name: &str, body: &str) -> String {
+    format!("<{name}>\n{body}\n</{name}>")
+}
+
+fn resize_notice_block(body: &str) -> String {
+    injection_block("image_resize_notice", body)
+}
+
+fn developer_messages(chunks: &[String]) -> Vec<Value> {
+    chunks
+        .iter()
+        .map(|chunk| {
+            json!({
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": chunk }],
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn prefix_stabilizer_strips_resize_notice_from_every_role_and_leaves_no_empty_message() {
+    let notice = resize_notice_block(
+        "Image 1 of 1 in the preceding user message was resized from 1206x2622 to 942x2048 pixels.",
+    );
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "root system",
+        "input": [
+            { "type": "message", "role": "user", "content": "first" },
+            // 纯 notice 的 system（developer）消息：应整条删除，不能折叠成空 system
+            { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": notice.clone() }] },
+            { "type": "function_call", "call_id": "call_a", "name": "shell", "arguments": "{}" },
+            { "type": "function_call_output", "call_id": "call_a", "output": "done" },
+            // 夹心在 tool 结果之间的 user 消息：删除 notice 后仅保留前后文本
+            { "type": "message", "role": "user", "content": format!("prelude\n{notice}\ncoda") },
+            // 非成对残留：按普通文本保留
+            { "type": "message", "role": "user", "content": "<image_resize_notice> dangling marker" },
+        ],
+    });
+
+    let stabilized = responses_to_chat_completions_with_options(body.clone(), false, true).unwrap();
+    let rendered = serde_json::to_string(&stabilized["messages"]).unwrap();
+    assert!(
+        !rendered.contains("resized from 1206x2622"),
+        "完整 notice 块必须被剥离：{rendered}"
+    );
+
+    let messages = stabilized["messages"].as_array().unwrap();
+    let system_messages: Vec<&Value> = messages
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .collect();
+    assert_eq!(
+        system_messages.len(),
+        1,
+        "纯 notice 的 system 消息应被整条删除，头部只留非空 system：{rendered}"
+    );
+    assert_eq!(system_messages[0]["content"], "root system");
+
+    for message in messages.iter() {
+        let blank = match &message["content"] {
+            // 带 tool_calls/reasoning 的骨架消息 content 为空是既有正常形态
+            Value::String(text) => {
+                text.trim().is_empty()
+                    && message.get("tool_calls").is_none()
+                    && message.get("reasoning_content").is_none()
+            },
+            Value::Array(parts) => parts.is_empty(),
+            _ => false,
+        };
+        assert!(!blank, "剥离后不得留下空消息：{message}");
+    }
+
+    let mixed = messages
+        .iter()
+        .find(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("prelude"))
+        })
+        .expect("夹心 user 消息应保留 notice 前后的文本");
+    assert_eq!(mixed["content"], "prelude\n\ncoda");
+
+    let dangling_text = messages
+        .iter()
+        .find_map(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .filter(|text| text.contains("dangling marker"))
+        })
+        .expect("非成对残留应按普通文本保留");
+    assert!(dangling_text.contains("<image_resize_notice> dangling marker"));
+
+    // 开关关闭时 notice 原样保留、位于原位（即与现行为一致）
+    let plain = responses_to_chat_completions_with_options(body, false, false).unwrap();
+    let plain_rendered = serde_json::to_string(&plain["messages"]).unwrap();
+    assert!(
+        plain_rendered.contains("resized from 1206x2622 to 942x2048 pixels."),
+        "默认关闭时必须保留 notice 原文：{plain_rendered}"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_orders_system_blocks_identically_for_any_arrival_order() {
+    let apps = injection_block("apps_instructions", "apps body");
+    let collab = injection_block("collaboration_mode", "collab body");
+    let multi = injection_block("multi_agent_mode", "multi body");
+    let fresh = injection_block("fresh_unknown_block", "fresh body");
+
+    let make_body = |chunks: Vec<String>| {
+        json!({
+            "model": "MiniMax-M2.7",
+            "instructions": "core instructions text",
+            "input": developer_messages(&chunks),
+        })
+    };
+
+    let first = make_body(vec![multi.clone(), collab.clone(), apps.clone(), fresh.clone()]);
+    // 第二种变体：换到达顺序，并跨消息拆分/合并，改变块的到达边界
+    let second = make_body(vec![format!("{apps}\n\n{fresh}"), multi.clone(), collab.clone()]);
+
+    let a = responses_to_chat_completions_with_options(first.clone(), false, true).unwrap();
+    let b = responses_to_chat_completions_with_options(second, false, true).unwrap();
+    assert_eq!(
+        serde_json::to_string(&a["messages"]).unwrap(),
+        serde_json::to_string(&b["messages"]).unwrap(),
+        "同块集合任意到达顺序，变换输出必须逐字节相等"
+    );
+    // 规范序：普通文本段在前（到达序），具名块按块名字典序钉在块尾
+    let expected = format!("core instructions text\n\n{apps}\n\n{collab}\n\n{fresh}\n\n{multi}");
+    assert_eq!(a["messages"][0]["content"].as_str().unwrap(), expected);
+
+    // 旧行为（关闭开关）严格按到达序拼接，块随插入位置轮轮平移
+    let old = responses_to_chat_completions_with_options(first.clone(), false, false).unwrap();
+    let old_expected = format!("core instructions text\n\n{multi}\n\n{collab}\n\n{apps}\n\n{fresh}");
+    assert_eq!(old["messages"][0]["content"].as_str().unwrap(), old_expected);
+    let old_shuffled =
+        responses_to_chat_completions_with_options(make_body(vec![apps, multi, collab, fresh]), false, false)
+            .unwrap();
+    assert_ne!(
+        old["messages"][0], old_shuffled["messages"][0],
+        "关闭开关时输出必须对到达顺序敏感（反证稳定层生效）"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_transformation_is_idempotent() {
+    let apps = injection_block("apps_instructions", "apps body");
+    let collab = injection_block("collaboration_mode", "collab body");
+    let notice = resize_notice_block("resized from 100x200 to 50x100 pixels.");
+    let chunks = vec![collab.clone(), format!("{notice}\n\n{apps}")];
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": developer_messages(&chunks),
+    });
+
+    let first = responses_to_chat_completions_with_options(body.clone(), false, true).unwrap();
+    let system_once = first["messages"][0]["content"].as_str().unwrap();
+    // 规范序：core 在前，之后按块名字典序
+    assert_eq!(system_once, format!("core\n\n{apps}\n\n{collab}"));
+
+    // 幂等：把第一轮输出当新一轮输入再变换，逐字节不变
+    let mut round2 = body.clone();
+    round2["instructions"] = json!(system_once);
+    round2["input"] = json!([]);
+    let second = responses_to_chat_completions_with_options(round2, false, true).unwrap();
+    assert_eq!(second["messages"][0]["content"].as_str().unwrap(), system_once);
+}
+
+#[test]
+fn prefix_stabilizer_disabled_output_matches_snapshot_and_wrapper_defaults() {
+    // 「默认关」快照：开关关闭时的转发 messages 逐字节快照。
+    // 该快照固化了现行为（notice 原文保留、developer 注入块按到达序平移插入、
+    // tool_call 规范化形态），稳定层若意外改变关闭路径会立刻打破快照。
+    let notice = resize_notice_block("resized from 1206x2622 to 942x2048 pixels.");
+    let collab = injection_block("collaboration_mode", "mode body");
+    let mut input = vec![
+        json!({ "type": "message", "role": "user", "content": "hello" }),
+        json!({ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "hi" }] }),
+        json!({ "type": "function_call", "call_id": "call_a", "name": "shell", "arguments": "{}" }),
+        json!({ "type": "function_call_output", "call_id": "call_a", "output": "done" }),
+        json!({ "type": "message", "role": "user", "content": format!("pre\n{notice}\npost") }),
+    ];
+    // developer 注入块插在 tool 结果之后：固化夹心形态在关闭路径下的现状
+    input.extend(developer_messages(&[collab]));
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "root system",
+        "input": input,
+    });
+    let snapshot = r#"[{"content":"root system\n\n<collaboration_mode>\nmode body\n</collaboration_mode>","role":"system"},{"content":"hello","role":"user"},{"content":"hi","role":"assistant","tool_calls":[{"function":{"arguments":"{}","name":"shell"},"id":"call_a","type":"function"}]},{"content":"done","role":"tool","tool_call_id":"call_a"},{"content":"pre\n<image_resize_notice>\nresized from 1206x2622 to 942x2048 pixels.\n</image_resize_notice>\npost","role":"user"}]"#;
+    let disabled = responses_to_chat_completions_with_options(body.clone(), false, false).unwrap();
+    let rendered = serde_json::to_string(&disabled["messages"]).unwrap();
+    assert_eq!(rendered, snapshot, "关闭开关的输出与快照不再一致（现行为被改变）");
+
+    // 公开入口（等价于现网默认路径）与显式关闭必须完全一致
+    let wrapper = responses_to_chat_completions(body).unwrap();
+    assert_eq!(
+        serde_json::to_string(&wrapper["messages"]).unwrap(),
+        rendered,
+        "默认入口与显式关闭输出必须逐字节一致"
+    );
+}
+
+#[tokio::test]
+async fn prefix_stabilizer_setting_flows_from_profile_to_upstream_body() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let response = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 43\r\n\r\n{\"id\":\"r1\",\"object\":\"response\",\"output\":[]}";
+    let make_settings = |stabilize: bool, upstream: String| BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "relay-stab".to_string(),
+            name: "Stab".to_string(),
+            base_url: upstream.clone(),
+            upstream_base_url: upstream,
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
+            no_auth: true,
+            stabilize_prompt_prefix: stabilize,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "relay-stab".to_string(),
+        ..BackendSettings::default()
+    };
+    let request = json!({
+        "model": "test-model",
+        "instructions": "core",
+        "input": developer_messages(&[
+            resize_notice_block("resized on"),
+            injection_block("collaboration_mode", "mode body"),
+        ]),
+    })
+    .to_string();
+
+    let on = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let on_addr = on.local_addr().unwrap();
+    let off = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let off_addr = off.local_addr().unwrap();
+    let on_server = tokio::spawn(capture_request_and_respond_once(on, response));
+    let off_server = tokio::spawn(capture_request_and_respond_once(off, response));
+
+    let on_result = open_responses_proxy_request_with_settings(
+        &request,
+        make_settings(true, format!("http://{on_addr}/v1")),
+    )
+    .await
+    .unwrap();
+    on_result.response.bytes().await.unwrap();
+    let off_result = open_responses_proxy_request_with_settings(
+        &request,
+        make_settings(false, format!("http://{off_addr}/v1")),
+    )
+    .await
+    .unwrap();
+    off_result.response.bytes().await.unwrap();
+
+    let on_raw = on_server.await.unwrap();
+    let off_raw = off_server.await.unwrap();
+    assert!(
+        !on_raw.contains("image_resize_notice"),
+        "开关开启时发往上游的 body 不得含 notice：{on_raw}"
+    );
+    assert!(on_raw.contains("collaboration_mode"), "具名注入块必须保留：{on_raw}");
+    assert!(
+        off_raw.contains("image_resize_notice"),
+        "开关关闭时必须保持现行为（notice 透传）：{off_raw}"
+    );
 }

@@ -1908,6 +1908,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            stabilize_prompt_prefix: false,
             rate_limit_cooldown_enabled: false,
             channel_queue_enabled: false,
             channel_requests_per_minute:

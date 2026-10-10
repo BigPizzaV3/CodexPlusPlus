@@ -328,12 +328,13 @@ pub fn local_responses_proxy_base_url(port: u16) -> String {
 }
 
 pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
-    responses_to_chat_completions_with_options(body, false)
+    responses_to_chat_completions_with_options(body, false, false)
 }
 
 pub fn responses_to_chat_completions_with_options(
     body: Value,
     standard: bool,
+    stabilize_prompt_prefix: bool,
 ) -> anyhow::Result<Value> {
     let mut result = json!({});
 
@@ -352,6 +353,11 @@ pub fn responses_to_chat_completions_with_options(
     if let Some(input) = body.get("input") {
         append_responses_input(input, &mut messages)?;
     }
+    // 「prompt 前缀稳定层」（opt-in，默认关）：先把轮变的 resize notice 从所有角色
+    // 的文本里剥离，避免它插进历史早段；后面的 collapse 改走规范序拼接。
+    if stabilize_prompt_prefix {
+        strip_image_resize_notice_blocks(&mut messages);
+    }
     // 必须在 enforce_tool_call_pairing 之前：配对一旦被错误摘除就无法恢复。
     relocate_interleaved_non_tool_messages(&mut messages);
     enforce_tool_call_pairing(&mut messages);
@@ -364,7 +370,7 @@ pub fn responses_to_chat_completions_with_options(
     normalize_chat_messages(&mut messages);
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
     normalize_image_data_urls_for_model(&mut messages, model);
-    let messages = collapse_system_messages_to_head(messages);
+    let messages = collapse_system_messages_to_head(messages, stabilize_prompt_prefix);
     result["messages"] = json!(messages);
     if let Some(value) = body.get("max_output_tokens") {
         if is_openai_o_series(model) {
@@ -1883,6 +1889,7 @@ async fn upstream_request_parts(
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
             relay.standard_openai_protocol,
+            relay.stabilize_prompt_prefix,
         )?,
     };
     if relay.protocol == RelayProtocol::Responses {
@@ -3941,7 +3948,295 @@ fn system_message_text(content: Option<&Value>) -> String {
     }
 }
 
-fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
+/// 「prompt 前缀稳定层」（mediafix4）易变注入块名单。
+///
+/// 取证（MEDIAFIX3_TURN_BOUNDARY.md 第五节）确认：下列块随会话状态整段出现/消失，
+/// 到达顺序轮轮漂移——混进折叠后的 system 头部块后，上游 token 前缀会在块区分叉，
+/// 导致每轮全量重算。排序时把它们钉在块尾（按名字典序），保证新出现的注入块
+/// 永远追加在 system 区最尾，历史前缀不被平移。
+/// 名单保守：只收取证确认轮变的块；其余具名块（如 AGENTS、skills_instructions）
+/// 不参与重排，一旦出现即保持到达位置。
+/// `image_resize_notice` 已被剥离步骤删尽，保留在名单中仅作为非成对残留路径的兜底。
+const VOLATILE_INJECTION_BLOCK_NAMES: &[&str] = &[
+    "apps_instructions",
+    "collaboration_mode",
+    "image_resize_notice",
+    "multi_agent_mode",
+    "recommended_plugins",
+];
+
+const IMAGE_RESIZE_NOTICE_OPEN: &str = "<image_resize_notice>";
+const IMAGE_RESIZE_NOTICE_CLOSE: &str = "</image_resize_notice>";
+
+/// 从所有角色（system/user/tool，developer 此前已映射为 system）的消息文本中
+/// 剥离成对的 `<image_resize_notice>…</image_resize_notice>` 块。
+///
+/// 消息被块整体消耗时整条删除（不留空消息）；非成对残留按普通文本保留并记 debug 日志。
+/// 变换幂等：第二次运行零命中，不会改写已清洁的消息。
+fn strip_image_resize_notice_blocks(messages: &mut Vec<Value>) {
+    let mut unpaired = false;
+    messages.retain_mut(|message| {
+        // 带 tool_calls 的结构消息不允许因剥离被删（会破坏配对协议）。
+        let has_tool_calls = message.get("tool_calls").is_some();
+        let Some(content) = message.get_mut("content") else {
+            return true;
+        };
+        match content {
+            Value::String(text) => {
+                let (cleaned, removed, has_unpaired) = strip_notice_blocks_in_text(text);
+                unpaired = unpaired || has_unpaired;
+                if !removed {
+                    return true;
+                }
+                *text = cleaned;
+                // retain 返回 false 才整条删除：无结构负载的纯 notice 消息删除；
+                // 带 tool_calls 的骨架消息保留，内容已清空。
+                !text.is_empty() || has_tool_calls
+            }
+            Value::Array(parts) => {
+                let mut removed_any = false;
+                for part in parts.iter_mut() {
+                    // 只处理带 text 字段的 part；image_url 等形态不受影响。
+                    let Some(Value::String(text)) = part.get_mut("text") else {
+                        continue;
+                    };
+                    let (cleaned, removed, has_unpaired) = strip_notice_blocks_in_text(text);
+                    unpaired = unpaired || has_unpaired;
+                    if !removed {
+                        continue;
+                    }
+                    removed_any = true;
+                    *text = cleaned;
+                }
+                if !removed_any {
+                    return true;
+                }
+                parts.retain(|part| match part.get("text") {
+                    Some(Value::String(text)) => !text.is_empty(),
+                    _ => true,
+                });
+                if parts.is_empty() && !has_tool_calls {
+                    return false;
+                }
+                true
+            }
+            _ => true,
+        }
+    });
+    if unpaired {
+        // 非成对残留按普通文本保留；只记 debug 日志，不影响转发。
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.prefix_stabilizer_unpaired_notice",
+            json!({
+                "note": "存在非成对的 image_resize_notice 标记，已按普通文本保留",
+                "volatileBlocks": VOLATILE_INJECTION_BLOCK_NAMES,
+            }),
+        );
+    }
+}
+
+/// 从单段文本剥离完整的该块，返回（清洁后文本, 是否删除过块, 是否存在非成对标记）。
+///
+/// 完整块 = 开始标签到其后最近的结束标签；孤儿结束标签、无配对开始标签都视为普通文本。
+/// 未删除任何块时返回的清洁文本无意义，调用方凭 removed=false 保持原文逐字节不变。
+fn strip_notice_blocks_in_text(text: &str) -> (String, bool, bool) {
+    let mut segments: Vec<&str> = Vec::new();
+    let mut rest = text;
+    let mut removed = false;
+    let mut unpaired = false;
+    loop {
+        let open_at = rest.find(IMAGE_RESIZE_NOTICE_OPEN);
+        let close_at = rest.find(IMAGE_RESIZE_NOTICE_CLOSE);
+        match (open_at, close_at) {
+            (None, None) => {
+                segments.push(rest);
+                break;
+            }
+            (Some(_), None) => {
+                // 开始标签无配对结束：剩余内容按普通文本保留
+                unpaired = true;
+                segments.push(rest);
+                break;
+            }
+            (None, Some(close)) => {
+                // 孤儿结束标签：原样保留，继续扫它之后的文本
+                unpaired = true;
+                let split = close + IMAGE_RESIZE_NOTICE_CLOSE.len();
+                segments.push(&rest[..split]);
+                rest = &rest[split..];
+            }
+            (Some(open), Some(close)) if close < open => {
+                // 结束标签先于开始标签出现，属于残留文本，原样保留
+                unpaired = true;
+                let split = close + IMAGE_RESIZE_NOTICE_CLOSE.len();
+                segments.push(&rest[..split]);
+                rest = &rest[split..];
+            }
+            (Some(open), Some(close)) => {
+                // 完整块：保留块前文本，跳过块体
+                removed = true;
+                segments.push(&rest[..open]);
+                rest = &rest[close + IMAGE_RESIZE_NOTICE_CLOSE.len()..];
+            }
+        }
+    }
+    if !removed {
+        return (String::new(), false, unpaired);
+    }
+    // 删块后的空白残迹整理：非空段之间用空行拼接，不留空段。
+    let cleaned = segments
+        .iter()
+        .map(|segment| segment.trim())
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (cleaned, true, unpaired)
+}
+
+/// 把 system 文本切成顶层块序列：（块名, 块体）；块名为 None 表示普通文本段。
+///
+/// 只识别顶层不嵌套的 XML 风格块（标签名以字母开头，仅含字母/数字/下划线/连字符）；
+/// 开始标签出现但后续缺配对结束、或结束标签乱序时，剩余内容整体降级为普通文本段。
+/// 输入不含任何块形态时返回逐字节等于原文的单元素。
+fn split_system_top_level_blocks(text: &str) -> Vec<(Option<&str>, &str)> {
+    let mut blocks: Vec<(Option<&str>, &str)> = Vec::new();
+    let mut plain_start = 0usize;
+    let mut cursor = 0usize;
+    let bytes = text.as_bytes();
+    // 全扫描：任意位置的「<name>…完整闭合…</name>」都视为顶层块（只认首个
+    // 闭合、不处理嵌套）；其余字节一律留在普通文本段，逐字节不变。
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'<' {
+            cursor += 1;
+            continue;
+        }
+        let Some((name, body_start)) = open_tag_at(text, cursor) else {
+            cursor += 1;
+            continue;
+        };
+        // find_close_tag 返回结束标签 `>` 之后的偏移；找不到配对该处按普通文本继续扫
+        let Some(block_end) = find_close_tag(text, body_start, name) else {
+            cursor += 1;
+            continue;
+        };
+        if plain_start < cursor {
+            blocks.push((None, &text[plain_start..cursor]));
+        }
+        blocks.push((Some(name), &text[cursor..block_end]));
+        cursor = block_end;
+        plain_start = block_end;
+    }
+    if blocks.is_empty() {
+        return vec![(None, text)];
+    }
+    if plain_start < text.len() {
+        blocks.push((None, &text[plain_start..]));
+    }
+    blocks
+}
+
+fn is_block_name_char(value: u8) -> bool {
+    value.is_ascii_alphanumeric() || value == b'_' || value == b'-'
+}
+
+/// 识别 at 处的 `<name>`（或 `<name >`）开始标签，返回（块名, 块体起始偏移）。
+/// 块名须以字母开头、仅含字母/数字/下划线/连字符；带属性、自闭合形态一律视为非块，
+/// 保持原文逐字节不变。
+fn open_tag_at(text: &str, at: usize) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    if bytes.get(at) != Some(&b'<') {
+        return None;
+    }
+    let start = at + 1;
+    if !bytes.get(start)?.is_ascii_alphabetic() {
+        return None;
+    }
+    let mut index = start;
+    while index < bytes.len() && is_block_name_char(bytes[index]) {
+        index += 1;
+    }
+    let name_end = index;
+    while matches!(bytes.get(index), Some(b' ') | Some(b'\t')) {
+        index += 1;
+    }
+    if bytes.get(index) != Some(&b'>') {
+        return None;
+    }
+    Some((&text[start..name_end], index + 1))
+}
+
+/// 从 from 起搜索 `</name>`（名前名后允许空白）。
+/// 返回结束标签 `>` 之后的字节偏移；扫到结尾仍无配对则返回 None，调用方据此降级。
+fn find_close_tag(text: &str, from: usize, name: &str) -> Option<usize> {
+    let mut search = from;
+    loop {
+        let found = text.get(search..)?.find("</")? + search;
+        let bytes = text.as_bytes();
+        let mut index = found + 2;
+        while matches!(bytes.get(index), Some(b' ') | Some(b'\t')) {
+            index += 1;
+        }
+        let name_start = index;
+        while index < bytes.len() && is_block_name_char(bytes[index]) {
+            index += 1;
+        }
+        if &text[name_start..index] != name {
+            // 名字不匹配的结束标签或非标签文本：跳过已扫部分继续找
+            search = index.max(found + 2);
+            continue;
+        }
+        while matches!(bytes.get(index), Some(b' ') | Some(b'\t')) {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b'>') {
+            return Some(index + 1);
+        }
+        search = index.max(found + 2);
+    }
+}
+
+/// 块的排序权重：普通文本段取 (0, 空名) 保持到达相对序在前；具名块取 (1, 块名)，
+/// 易变名单与未知名同档，统一按块名字典序钉在块尾。
+/// 名单的语义是「取证确认轮变、靠本层规范序兜底的块」：具名 XML 块无论是否在
+/// 名单内都会被规范重排；名单是取证文档与后续扩展点（新增轮变块只需加名单）。
+fn block_sort_rank(name: Option<&str>) -> (u8, &str) {
+    match name {
+        None => (0, ""),
+        Some(name) => (1, name),
+    }
+}
+
+/// 稳定重排 system 头部块（「prompt 前缀稳定层」的规范序部分）。
+///
+/// 把每个到达 chunk 切成顶层块后按全局规则重排：普通文本段保持到达相对序在前；
+/// 具名块进块区按名字典序（名单内与未知名同档）。排序只依赖块名与到达相对序，
+/// 不依赖到达位置：同一块集合任意排列输入，输出逐字节一致（确定性）；
+/// 对输出再切块再排序，块序列不变（幂等）。
+///
+/// 已知限制（写入产物报告）：文本段按全局到达序在前，若已出现的历史文本段在
+/// 后续轮次整体缺失，其后的文本段会前移导致局部分叉；已定案的轮变源中 notice
+/// 走剥离、其余均为具名块，不受此影响。
+fn order_system_chunks_stably(chunks: &[String]) -> String {
+    // rank 里的块名拷进拥有类型，避免借用生命周期复杂化；排序成本与正确性无关。
+    let mut parts: Vec<((u8, String), String)> = Vec::new();
+    for chunk in chunks {
+        for (name, block) in split_system_top_level_blocks(chunk) {
+            let (kind, name_part) = block_sort_rank(name);
+            parts.push(((kind, name_part.to_string()), block.to_string()));
+        }
+    }
+    // sort_by_key 是稳定排序：rank 相同的块（文本段/重复同名块）保持到达相对序
+    parts.sort_by_key(|part| part.0.clone());
+    parts
+        .iter()
+        .map(|part| part.1.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+
+fn collapse_system_messages_to_head(messages: Vec<Value>, stabilize: bool) -> Vec<Value> {
     let mut system_chunks = Vec::new();
     let mut rest = Vec::with_capacity(messages.len());
 
@@ -3958,10 +4253,13 @@ fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
 
     let mut output = Vec::with_capacity(rest.len() + usize::from(!system_chunks.is_empty()));
     if !system_chunks.is_empty() {
-        output.push(json!({
-            "role": "system",
-            "content": system_chunks.join("\n\n")
-        }));
+        // 前缀稳定层开启时改走规范序拼接；关闭时与历史行为逐字节一致。
+        let content = if stabilize {
+            order_system_chunks_stably(&system_chunks)
+        } else {
+            system_chunks.join("\n\n")
+        };
+        output.push(json!({ "role": "system", "content": content }));
     }
     output.extend(rest);
     output
@@ -6813,5 +7111,62 @@ mod channel_cooldown_retry_tests {
         assert!(should_retry_after_cooldown(2));
         assert!(!should_retry_after_cooldown(3));
         assert!(!should_retry_after_cooldown(usize::MAX));
+    }
+}
+
+#[cfg(test)]
+mod prefix_stabilizer_tests {
+    use super::*;
+
+    const NOTICE_TEXT: &str =
+        "Image 1 of 1 in the preceding user message was resized from 1206x2622 to 942x2048 pixels.";
+
+    fn notice() -> String {
+        format!("<image_resize_notice>\n{NOTICE_TEXT}\n</image_resize_notice>")
+    }
+
+    #[test]
+    fn strip_removes_notice_from_string_and_part_content() {
+        let mut messages = vec![
+            json!({ "role": "system", "content": notice() }),
+            json!({ "role": "system", "content": [{ "type": "text", "text": notice() }] }),
+            json!({ "role": "tool", "tool_call_id": "call_a", "content": notice() }),
+            json!({ "role": "user", "content": "keep" }),
+        ];
+        strip_image_resize_notice_blocks(&mut messages);
+        assert_eq!(messages.len(), 1, "整条 notice 消息必须被删除：{messages:?}");
+        assert_eq!(messages[0]["content"], "keep");
+    }
+
+    #[test]
+    fn strip_keeps_dangling_markers_and_is_idempotent() {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": format!("pre\n{}\npost\n<image_resize_notice> dangling", notice()),
+        })];
+        strip_image_resize_notice_blocks(&mut messages);
+        let once = messages.clone();
+        strip_image_resize_notice_blocks(&mut messages);
+        assert_eq!(messages, once, "变换必须幂等");
+        let text = messages[0]["content"].as_str().unwrap();
+        assert!(text.contains("pre"));
+        assert!(text.contains("post"));
+        assert!(text.contains("<image_resize_notice> dangling"));
+        assert!(!text.contains(NOTICE_TEXT));
+    }
+
+    #[test]
+    fn split_and_order_blocks_ignores_whitespace_and_arrival_position() {
+        let chunks = vec![
+            format!("core\n\n<b_block>\nb\n</b_block>\n\n<a_block>\na\n</a_block>"),
+            "tail".to_string(),
+        ];
+        let ordered = order_system_chunks_stably(&chunks);
+        assert_eq!(ordered, "core\n\ntail\n\n<a_block>\na\n</a_block>\n\n<b_block>\nb\n</b_block>");
+        assert_eq!(
+            order_system_chunks_stably(&[ordered.clone()]),
+            ordered,
+            "规范序必须幂等"
+        );
     }
 }

@@ -213,6 +213,7 @@ fn relay_profile_from_request(
         model_routes: Vec::new(),
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
+        stabilize_prompt_prefix: false,
         rate_limit_cooldown_enabled: false,
         channel_queue_enabled: false,
         channel_requests_per_minute: crate::settings::default_channel_requests_per_minute(),
