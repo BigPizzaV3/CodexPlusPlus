@@ -2968,8 +2968,6 @@ pub fn list_local_sessions(
     }
 }
 
-
-
 #[tauri::command]
 pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
     let session_id = request.session_id.trim();
