@@ -3,6 +3,7 @@ use codex_plus_core::protocol_proxy::{
     audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, image_edits_url, image_generations_url,
+    ensure_web_search_tool_for_history,
     is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
     is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
     is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
@@ -66,6 +67,46 @@ fn compaction_trigger_detection() {
 
     let string_input = json!({ "model": "m", "input": "hi" });
     assert!(!request_has_compaction_trigger(&string_input));
+}
+
+#[test]
+fn compaction_search_history_restores_missing_web_search_declaration() {
+    let mut request = json!({
+        "input": [
+            {"type": "web_search_call", "id": "ws_1", "status": "completed"}
+        ],
+        "tools": []
+    });
+    assert!(ensure_web_search_tool_for_history(&mut request));
+    assert_eq!(
+        request["tools"],
+        json!([{"type": "web_search", "external_web_access": false}])
+    );
+    assert_eq!(request["tool_choice"], "none");
+    let repaired = request.clone();
+    assert!(!ensure_web_search_tool_for_history(&mut request));
+    assert_eq!(request, repaired);
+}
+
+#[test]
+fn compaction_search_history_preserves_existing_tools_and_choices() {
+    let mut request = json!({
+        "input": [
+            {"type": "web_search_call", "id": "ws_1"}
+        ],
+        "tools": [{"type": "function", "name": "lookup"}],
+        "tool_choice": {"type": "function", "name": "lookup"}
+    });
+    assert!(ensure_web_search_tool_for_history(&mut request));
+    assert_eq!(request["tools"][0]["name"], "lookup");
+    assert_eq!(request["tools"][1]["type"], "web_search");
+    assert_eq!(request["tool_choice"]["name"], "lookup");
+
+    let mut already_declared = json!({
+        "input": [{"type": "web_search_call"}],
+        "tools": [{"type": "web_search_preview"}]
+    });
+    assert!(!ensure_web_search_tool_for_history(&mut already_declared));
 }
 
 #[test]
