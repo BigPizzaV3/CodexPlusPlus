@@ -5710,6 +5710,7 @@ fn web_search_action_from_arguments(arguments: &str) -> Value {
     let parsed = responses_arguments_to_chat_parse(arguments);
     let query = parsed
         .get("query")
+        .or_else(|| parsed.get("input"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty());
     let url = parsed
@@ -5744,6 +5745,36 @@ fn web_search_action_from_arguments(arguments: &str) -> Value {
             json!({ "type": "search", "query": first, "queries": queries })
         }
         (None, None) => json!({ "type": "search" }),
+    }
+}
+
+#[cfg(test)]
+mod web_search_action_tests {
+    use super::web_search_action_from_arguments;
+    use serde_json::json;
+
+    #[test]
+    fn maps_input_alias_to_search_query() {
+        assert_eq!(
+            web_search_action_from_arguments(r#"{"input":"rust async traits"}"#),
+            json!({"type": "search", "query": "rust async traits"})
+        );
+    }
+
+    #[test]
+    fn query_takes_precedence_over_input_alias() {
+        assert_eq!(
+            web_search_action_from_arguments(r#"{"query":"preferred","input":"fallback"}"#),
+            json!({"type": "search", "query": "preferred"})
+        );
+    }
+
+    #[test]
+    fn preserves_open_page_mapping() {
+        assert_eq!(
+            web_search_action_from_arguments(r#"{"url":"https://example.com"}"#),
+            json!({"type": "open_page", "url": "https://example.com"})
+        );
     }
 }
 
