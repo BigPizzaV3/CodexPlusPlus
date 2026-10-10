@@ -372,7 +372,10 @@ pub fn responses_to_chat_completions_with_options(
     normalize_chat_messages(&mut messages);
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
     normalize_image_data_urls_for_model(&mut messages, model);
-    let messages = collapse_system_messages_to_head(messages, stabilize_prompt_prefix);
+    let mut messages = collapse_system_messages_to_head(messages, stabilize_prompt_prefix);
+    if stabilize_prompt_prefix {
+        relocate_turn_aborted_blocks(&mut messages);
+    }
     result["messages"] = json!(messages);
     if let Some(value) = body.get("max_output_tokens") {
         if is_openai_o_series(model) {
@@ -4571,6 +4574,75 @@ fn order_system_chunks_stably(chunks: &[String]) -> String {
     out.join("\n\n")
 }
 
+
+/// 「prompt 前缀稳定层」（opt-in）：客户端把 `<turn_aborted>` 状态块注入
+/// system 区尾部（2026-10-11 探针基线实锤：sys 尾部 @50259，重启重放时
+/// 块的出现的/消失让 sys 字节 +223~347B，前缀在历史最前端分叉，重启首轮
+/// 全历史冷算）。块的语义是「紧邻下一轮的一次性提示」，正确归宿是瞬态区：
+/// 这里把它从头部 system 合并文本中摘除，改挂到最后一条 user 消息之前。
+/// 转换产物不进客户端历史，下一轮客户端再注入时再摘，sys 头部字节恒稳，
+/// 前缀恢复纯追加。无块时零改写，与旧行为逐字节一致。
+fn relocate_turn_aborted_blocks(messages: &mut Vec<Value>) {
+    const OPEN: &str = "<turn_aborted>";
+    const CLOSE: &str = "</turn_aborted>";
+    let Some(head) = messages.first_mut() else { return };
+    if head.get("role").and_then(Value::as_str) != Some("system") {
+        return;
+    }
+    let Some(Value::String(content)) = head.get("content") else { return };
+    if !content.contains(OPEN) {
+        return;
+    }
+    let content = content.clone();
+    if !content.contains(OPEN) {
+        return;
+    }
+    let mut stripped = String::with_capacity(content.len());
+    let mut blocks: Vec<String> = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(open_rel) = content[cursor..].find(OPEN) {
+        let open = cursor + open_rel;
+        stripped.push_str(&content[cursor..open]);
+        match content[open..].find(CLOSE) {
+            Some(close_rel) => {
+                let end = open + close_rel + CLOSE.len();
+                blocks.push(content[open..end].to_string());
+                cursor = end;
+            }
+            None => {
+                // 残缺块（只见开标签）：整段保守放弃，不改 system。
+                stripped.push_str(&content[open..]);
+                cursor = content.len();
+            }
+        }
+    }
+    if cursor < content.len() {
+        stripped.push_str(&content[cursor..]);
+    }
+    if blocks.is_empty() {
+        return;
+    }
+    // 残缺回退判定：stripped 只剩空白说明块外正文为空，宁留原状。
+    if stripped.trim().is_empty() {
+        return;
+    }
+    if let Some(Value::String(target)) = head.get_mut("content") {
+        *target = stripped.trim_end().to_string();
+    } else {
+        return;
+    }
+    let block_messages: Vec<Value> = blocks
+        .into_iter()
+        .map(|block| json!({ "role": "system", "content": block }))
+        .collect();
+    // 插到最后一条 user 消息之前；没有 user 消息则挂在 system 之后。
+    let insert_at = messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .unwrap_or(1)
+        .max(1);
+    messages.splice(insert_at..insert_at, block_messages);
+}
 
 fn collapse_system_messages_to_head(messages: Vec<Value>, stabilize: bool) -> Vec<Value> {
     let mut system_chunks = Vec::new();

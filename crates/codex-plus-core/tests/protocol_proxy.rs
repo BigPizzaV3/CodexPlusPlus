@@ -6166,3 +6166,87 @@ fn prefix_stabilizer_unregistered_repeat_blocks_keep_every_instance() {
         "名单外同名块必须逐实例保留且零改写（opt-in 边界不破）"
     );
 }
+
+// —— turn_aborted 状态块摘除（2026-10-11 探针基线实锤的重启分叉毒源）——
+
+fn turn_aborted_body(with_block: bool) -> Value {
+    let aborted = "<turn_aborted>\nThe previous turn was interrupted on purpose. Any running unified exec processes may still be running in the background.\n</turn_aborted>";
+    let developer = if with_block {
+        format!("tools doc\n\n{aborted}")
+    } else {
+        "tools doc".to_string()
+    };
+    json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core instructions text",
+        "input": [
+            {"role": "developer", "content": developer},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second question"},
+        ],
+    })
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_moved_before_last_user_message() {
+    let out = responses_to_chat_completions_with_options(turn_aborted_body(true), false, true).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let head = messages[0]["content"].as_str().unwrap();
+    assert!(!head.contains("<turn_aborted>"), "system 头部不得残留 turn_aborted 块");
+    let last_user = messages
+        .iter()
+        .rposition(|m| m["role"].as_str() == Some("user"))
+        .expect("必须存在 user 消息");
+    assert_eq!(
+        messages[last_user - 1]["content"].as_str().unwrap(),
+        turn_aborted_body(true)["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .split("\n\n")
+            .nth(1)
+            .unwrap()
+            .trim_end(),
+        "块必须原样搬到最后一条 user 消息之前"
+    );
+    assert_eq!(messages[last_user]["content"].as_str().unwrap(), "second question");
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_appearance_keeps_system_head_pure_append() {
+    // 核心不变式：块出现与否不得改变 system 头部字节（重启/中断轮不再前缀分叉）
+    let without = responses_to_chat_completions_with_options(turn_aborted_body(false), false, true).unwrap();
+    let with = responses_to_chat_completions_with_options(turn_aborted_body(true), false, true).unwrap();
+    assert_eq!(
+        without["messages"][0]["content"], with["messages"][0]["content"],
+        "turn_aborted 注入/撤除不得扰动 system 头部字节"
+    );
+    // 摘除块后两条消息序列前缀一致（with 仅多出搬移的块，落在瞬态区）
+    let head_without = serde_json::to_string(&without["messages"][0]).unwrap();
+    let head_with = serde_json::to_string(&with["messages"][0]).unwrap();
+    assert_eq!(head_without, head_with);
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_malformed_block_left_untouched() {
+    // 只见开标签的残缺块：保守放弃，system 不动
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core instructions text",
+        "input": [
+            {"role": "developer", "content": "tools doc\n\n<turn_aborted> dangling without close"},
+            {"role": "user", "content": "q"},
+        ],
+    });
+    let out = responses_to_chat_completions_with_options(body, false, true).unwrap();
+    let head = out["messages"][0]["content"].as_str().unwrap();
+    assert!(head.contains("<turn_aborted>"), "残缺块必须原样保留，宁留分叉不腐蚀 system");
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_stays_when_stabilizer_disabled() {
+    // opt-in 边界：开关关闭时行为与旧版逐字节一致（块留在 system）
+    let out = responses_to_chat_completions_with_options(turn_aborted_body(true), false, false).unwrap();
+    let rendered = serde_json::to_string(&out["messages"]).unwrap();
+    assert!(rendered.contains("<turn_aborted>"), "关开关不得改动任何字节");
+}
