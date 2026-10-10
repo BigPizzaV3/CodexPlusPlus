@@ -5756,8 +5756,9 @@ fn prefix_stabilizer_strips_resize_notice_from_every_role_and_leaves_no_empty_me
             { "type": "function_call_output", "call_id": "call_a", "output": "done" },
             // 夹心在 tool 结果之间的 user 消息：删除 notice 后仅保留前后文本
             { "type": "message", "role": "user", "content": format!("prelude\n{notice}\ncoda") },
-            // 非成对残留：按普通文本保留
-            { "type": "message", "role": "user", "content": "<image_resize_notice> dangling marker" },
+            // 非成对残片（开始标签+上半残体 / 下半残体+结束标签）：应连同残片整体移除
+            { "type": "message", "role": "user", "content": "<image_resize_notice>\nbody fragment 1206x2622 upper" },
+            { "type": "message", "role": "user", "content": "lower half 942x2048 pixels\n</image_resize_notice>" },
         ],
     });
 
@@ -5805,16 +5806,19 @@ fn prefix_stabilizer_strips_resize_notice_from_every_role_and_leaves_no_empty_me
         .expect("夹心 user 消息应保留 notice 前后的文本");
     assert_eq!(mixed["content"], "prelude\n\ncoda");
 
-    let dangling_text = messages
+    let joined = messages
         .iter()
-        .find_map(|message| {
-            message
-                .get("content")
-                .and_then(Value::as_str)
-                .filter(|text| text.contains("dangling marker"))
-        })
-        .expect("非成对残留应按普通文本保留");
-    assert!(dangling_text.contains("<image_resize_notice> dangling marker"));
+        .map(|message| message["content"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("|");
+    assert!(
+        !joined.contains("image_resize_notice"),
+        "孤儿标签不得出现在任何消息里：{joined}"
+    );
+    assert!(
+        !joined.contains("body fragment 1206x2622 upper") && !joined.contains("lower half 942x2048 pixels"),
+        "残片正文必须随孤儿标签一并移除：{joined}"
+    );
 
     // 开关关闭时 notice 原样保留、位于原位（即与现行为一致）
     let plain = responses_to_chat_completions_with_options(body, false, false).unwrap();
@@ -5990,4 +5994,72 @@ async fn prefix_stabilizer_setting_flows_from_profile_to_upstream_body() {
         off_raw.contains("image_resize_notice"),
         "开关关闭时必须保持现行为（notice 透传）：{off_raw}"
     );
+}
+
+#[test]
+fn prefix_stabilizer_unpaired_fragments_do_not_diverge_prefix() {
+    // 根因回归：非成对 notice 残片随轮次以不同长度/后缀重写进历史前缀区时，
+    // 两次请求的归一化输出必须逐字节一致，且上游看不到任何残片文本。
+    let open_head = concat!("<", "image_resize_notice", ">\nbody fragment ");
+    let close_tail = concat!("\n</image_resize_notice>");
+    let make_body = |frag: &str, tail: &str| {
+        json!({
+            "model": "MiniMax-M2.7",
+            "instructions": "root system",
+            "input": [
+                { "type": "message", "role": "user", "content": "first" },
+                { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": format!("{frag}{tail}") }] },
+                { "type": "message", "role": "user", "content": format!("next {tail}") },
+            ],
+        })
+    };
+    let a = responses_to_chat_completions_with_options(
+        make_body(&format!("{open_head}1206x2622 upper"), "alpha"),
+        false,
+        true,
+    )
+    .unwrap();
+    let b = responses_to_chat_completions_with_options(
+        make_body(&format!("{open_head}800x600 mid"), "beta"),
+        false,
+        true,
+    )
+    .unwrap();
+    // 公共前缀（system 头部 + 已发生的历史消息）必须逐字节一致；
+    // 当前轮新增的 user 消息允许不同，属预期追加而非分叉。
+    let common_prefix = |v: &serde_json::Value| {
+        let messages = v["messages"].as_array().unwrap();
+        serde_json::to_string(&messages[..messages.len() - 1]).unwrap()
+    };
+    assert_eq!(
+        common_prefix(&a),
+        common_prefix(&b),
+        "非成对残片轮必须与另一残片轮产出逐字节一致的公共前缀"
+    );
+    let rendered = serde_json::to_string(&a["messages"]).unwrap();
+    assert!(!rendered.contains("image_resize_notice"), "上游不得看到残片：{rendered}");
+    assert!(!rendered.contains("1206x2622"), "残片正文不得进入上游：{rendered}");
+    // 残片消息被整体清除后，历史只剩两条 user 消息与头部 system
+    let messages = a["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "残片消息应整条删除：{rendered}");
+    // 另一轮里的 close_tail 孤儿结束标签同样不得泄漏
+    let c = responses_to_chat_completions_with_options(
+        json!({
+            "model": "MiniMax-M2.7",
+            "instructions": "root system",
+            "input": [
+                { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": format!("orphan body{close_tail}") }] },
+                { "type": "message", "role": "user", "content": "keep" },
+            ],
+        }),
+        false,
+        true,
+    )
+    .unwrap();
+    let c_rendered = serde_json::to_string(&c["messages"]).unwrap();
+    assert!(
+        !c_rendered.contains("image_resize_notice") && !c_rendered.contains("orphan body"),
+        "孤儿结束标签轮同样必须归零：{c_rendered}"
+    );
+    assert_eq!(c["messages"].as_array().unwrap().len(), 2, "纯残片 developer 消息应整条删除");
 }

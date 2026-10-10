@@ -3969,9 +3969,11 @@ const IMAGE_RESIZE_NOTICE_OPEN: &str = "<image_resize_notice>";
 const IMAGE_RESIZE_NOTICE_CLOSE: &str = "</image_resize_notice>";
 
 /// 从所有角色（system/user/tool，developer 此前已映射为 system）的消息文本中
-/// 剥离成对的 `<image_resize_notice>…</image_resize_notice>` 块。
+/// 剥离 `<image_resize_notice>…</image_resize_notice>` 块及其残片。
 ///
-/// 消息被块整体消耗时整条删除（不留空消息）；非成对残留按普通文本保留并记 debug 日志。
+/// 消息被块整体消耗时整条删除（不留空消息）；非成对残留（孤儿标签连同其
+/// 残片）一并移除并记 debug 日志——残片属易变内容，按普通文本留在前缀里
+/// 会让后续轮次的前缀字节级分叉。
 /// 变换幂等：第二次运行零命中，不会改写已清洁的消息。
 fn strip_image_resize_notice_blocks(messages: &mut Vec<Value>) {
     let mut unpaired = false;
@@ -4024,21 +4026,28 @@ fn strip_image_resize_notice_blocks(messages: &mut Vec<Value>) {
         }
     });
     if unpaired {
-        // 非成对残留按普通文本保留；只记 debug 日志，不影响转发。
+        // 非成对残片已随本步骤归零；只记 debug 日志，不影响转发。
         let _ = crate::diagnostic_log::append_diagnostic_log(
-            "protocol_proxy.prefix_stabilizer_unpaired_notice",
+            "protocol_proxy.prefix_stabilizer_unpaired_notice_stripped",
             json!({
-                "note": "存在非成对的 image_resize_notice 标记，已按普通文本保留",
+                "note": "存在非成对的 image_resize_notice 标记，孤儿标签连同残片已按契约移除",
                 "volatileBlocks": VOLATILE_INJECTION_BLOCK_NAMES,
             }),
         );
     }
 }
 
-/// 从单段文本剥离完整的该块，返回（清洁后文本, 是否删除过块, 是否存在非成对标记）。
+/// 从单段文本剥离 notice 相关内容，返回（清洁后文本, 是否删除过内容, 是否存在非成对标记）。
 ///
-/// 完整块 = 开始标签到其后最近的结束标签；孤儿结束标签、无配对开始标签都视为普通文本。
-/// 未删除任何块时返回的清洁文本无意义，调用方凭 removed=false 保持原文逐字节不变。
+/// 三态契约（前缀字节级稳定优先于残片原文保全，仅在 opt-in 开关开启时生效）：
+/// - 完整块（开始标签后随结束标签）：整块删除；
+/// - 孤儿结束标签（先于任何开始标签出现）：文本段开头到该标签（含）视为残片，整体删除；
+/// - 孤儿开始标签（其后无配对结束标签）：该标签（含）到文本段结尾视为残片，整体删除。
+/// 上游客户端把 notice 以整块或「开始标签+上半残体」「下半残体+结束标签」的跨字段
+/// 拆分形态注入历史早段，且轮轮重写；残片只要进入前缀就必然漂移。删除范围只由
+/// 标签位置决定、与内容无关，因此变换确定且幂等。前提：轮变内容只出现在 notice
+/// 标签内部；若客户端日后把用户原文并入残片，删除会一并吞掉该部分，属契约内代价。
+/// 未删除任何内容时返回的清洁文本无意义，调用方凭 removed=false 保持原文逐字节不变。
 fn strip_notice_blocks_in_text(text: &str) -> (String, bool, bool) {
     let mut segments: Vec<&str> = Vec::new();
     let mut rest = text;
@@ -4047,37 +4056,39 @@ fn strip_notice_blocks_in_text(text: &str) -> (String, bool, bool) {
     loop {
         let open_at = rest.find(IMAGE_RESIZE_NOTICE_OPEN);
         let close_at = rest.find(IMAGE_RESIZE_NOTICE_CLOSE);
-        match (open_at, close_at) {
+        let first_is_open = match (open_at, close_at) {
             (None, None) => {
                 segments.push(rest);
                 break;
             }
-            (Some(_), None) => {
-                // 开始标签无配对结束：剩余内容按普通文本保留
-                unpaired = true;
-                segments.push(rest);
-                break;
+            (Some(open), Some(close)) if close < open => false,
+            (Some(_), Some(_)) => true,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+        };
+        if first_is_open {
+            let open = open_at.unwrap();
+            match close_at {
+                Some(close) if close > open => {
+                    // 完整块：保留块前文本，跳过块体
+                    removed = true;
+                    segments.push(&rest[..open]);
+                    rest = &rest[close + IMAGE_RESIZE_NOTICE_CLOSE.len()..];
+                }
+                _ => {
+                    // 孤儿开始标签：该标签（含）到文本段结尾整体视为残片删除
+                    unpaired = true;
+                    removed = true;
+                    segments.push(&rest[..open]);
+                    break;
+                }
             }
-            (None, Some(close)) => {
-                // 孤儿结束标签：原样保留，继续扫它之后的文本
-                unpaired = true;
-                let split = close + IMAGE_RESIZE_NOTICE_CLOSE.len();
-                segments.push(&rest[..split]);
-                rest = &rest[split..];
-            }
-            (Some(open), Some(close)) if close < open => {
-                // 结束标签先于开始标签出现，属于残留文本，原样保留
-                unpaired = true;
-                let split = close + IMAGE_RESIZE_NOTICE_CLOSE.len();
-                segments.push(&rest[..split]);
-                rest = &rest[split..];
-            }
-            (Some(open), Some(close)) => {
-                // 完整块：保留块前文本，跳过块体
-                removed = true;
-                segments.push(&rest[..open]);
-                rest = &rest[close + IMAGE_RESIZE_NOTICE_CLOSE.len()..];
-            }
+        } else {
+            // 孤儿结束标签（含「结束先于开始」形态）：文本段开头到该标签（含）删除
+            let close = close_at.unwrap();
+            unpaired = true;
+            removed = true;
+            rest = &rest[close + IMAGE_RESIZE_NOTICE_CLOSE.len()..];
         }
     }
     if !removed {
@@ -7121,6 +7132,8 @@ mod prefix_stabilizer_tests {
     const NOTICE_TEXT: &str =
         "Image 1 of 1 in the preceding user message was resized from 1206x2622 to 942x2048 pixels.";
 
+    const NOTICE_TEXT_OPEN: &str = "<image_resize_notice>\nImage 1 of 1 in the preceding user message was resized from 1206x2622 to 942x2048 pixels.";
+
     fn notice() -> String {
         format!("<image_resize_notice>\n{NOTICE_TEXT}\n</image_resize_notice>")
     }
@@ -7139,7 +7152,7 @@ mod prefix_stabilizer_tests {
     }
 
     #[test]
-    fn strip_keeps_dangling_markers_and_is_idempotent() {
+    fn strip_removes_dangling_markers_and_is_idempotent() {
         let mut messages = vec![json!({
             "role": "user",
             "content": format!("pre\n{}\npost\n<image_resize_notice> dangling", notice()),
@@ -7151,8 +7164,28 @@ mod prefix_stabilizer_tests {
         let text = messages[0]["content"].as_str().unwrap();
         assert!(text.contains("pre"));
         assert!(text.contains("post"));
-        assert!(text.contains("<image_resize_notice> dangling"));
+        assert!(
+            !text.contains("<image_resize_notice>"),
+            "孤儿开始标签连同残片必须移除：{text}"
+        );
         assert!(!text.contains(NOTICE_TEXT));
+    }
+
+    #[test]
+    fn strip_removes_cross_part_notice_fragments() {
+        // 客户端重写历史后，notice 以「开始标签+上半残体」「下半残体+结束标签」跨 part 拆分
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": format!("head\n{}\n", NOTICE_TEXT_OPEN) },
+                { "type": "text", "text": format!("body tail pixels\n</image_resize_notice>\ntail") },
+            ],
+        })];
+        strip_image_resize_notice_blocks(&mut messages);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2, "两段文本各留一半：{parts:?}");
+        assert_eq!(parts[0]["text"], "head");
+        assert_eq!(parts[1]["text"], "tail");
     }
 
     #[test]
