@@ -137,13 +137,20 @@ jobs:
           test -L "dist/macos/stage/Applications"
           test "$(readlink "dist/macos/stage/Applications")" = "/Applications"
           apps=(dist/macos/stage/*.app)
-          test "${#apps[@]}" = "1"
-          for app in "dist/macos/stage/Codex++.app"; do
+          test "${#apps[@]}" = "2"
+          test -f "dist/macos/stage/.hidden"
+          grep -qx "Codex++ 管理工具.app" "dist/macos/stage/.hidden"
+          for app in "dist/macos/stage/Codex++.app" "dist/macos/stage/Codex++ 管理工具.app"; do
             test -f "$app/Contents/Info.plist"
             test -f "$app/Contents/PkgInfo"
             test -x "$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
-            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "com.bigpizzav3.codexplusplus"
-            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = "CodexPlusPlus"
+            if [[ "$app" == *"管理工具.app" ]]; then
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "com.bigpizzav3.codexplusplus.manager"
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = "CodexPlusPlusManager"
+            else
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "com.bigpizzav3.codexplusplus"
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = "CodexPlusPlus"
+            fi
             test "$(/usr/libexec/PlistBuddy -c 'Print :CodexPlusUnifiedApp' "$app/Contents/Info.plist")" = "true"
             plutil -lint "$app/Contents/Info.plist" >/dev/null
             codesign -dv "$app" >/dev/null 2>&1

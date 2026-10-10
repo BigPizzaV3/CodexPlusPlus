@@ -202,7 +202,7 @@ fn manager_launch_button_uses_the_embedded_runtime() {
 }
 
 #[test]
-fn macos_packager_builds_one_visible_native_gui() {
+fn macos_packager_builds_one_visible_native_gui_with_legacy_update_shim() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let packager = manifest_dir
         .parent()
@@ -219,7 +219,10 @@ fn macos_packager_builds_one_visible_native_gui() {
     assert!(script.contains(
         "create_app \"Codex++\" \"CodexPlusPlus\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus\" \"false\""
     ));
-    assert!(!script.contains("create_app \"Codex++ 管理工具\""));
+    assert!(script.contains(
+        "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus.manager\" \"true\""
+    ));
+    assert!(script.contains("printf '%s\\n' \"Codex++ 管理工具.app\" > \"$STAGE/.hidden\""));
     assert!(script.contains("<key>CodexPlusUnifiedApp</key>"));
 }
 
