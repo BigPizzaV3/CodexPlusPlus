@@ -4730,12 +4730,12 @@ function ProviderCatalogScreen({
   onBack: () => void;
   onSelect: (profile: RelayProfile) => void;
 }) {
-  const [query, setQuery] = useState("");
-  const quickPresets = PRESETS.slice(0, 5);
-  const filtered = PRESETS.filter((preset) => {
-    const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
-    return !query.trim() || haystack.includes(query.trim().toLowerCase());
-  });
+  const categories: Array<{ id: ProviderPreset["category"]; label: string }> = [
+    { id: "official", label: t("账号登录") },
+    { id: "cn_official", label: t("模型厂商") },
+    { id: "aggregator", label: t("聚合/中转") },
+    { id: "third_party", label: t("第三方平台") },
+  ];
   const selectPreset = (preset?: ProviderPreset) => {
     const draft = createRelayProfile(form);
     const patch = preset ? createPresetPatch(preset) : { name: t("自定义供应商") };
@@ -4750,38 +4750,31 @@ function ProviderCatalogScreen({
         <h2>{t("添加新供应商")}</h2>
         <span>Codex</span>
       </header>
-      <main className="provider-add-simple-body">
-        <section className="provider-quick-templates">
-          <strong>{t("快速选择模板：")}</strong>
-          <div className="provider-quick-template-list">
-            {quickPresets.map((preset) => (
-              <button key={preset.id} onClick={() => selectPreset(preset)} type="button">
-                {preset.name}
-              </button>
-            ))}
-            <button className="outline" onClick={() => selectPreset()} type="button">{t("自定义配置")}</button>
-          </div>
-        </section>
-        <div className="provider-add-divider" />
-        <div className="provider-add-search">
-          <Search className="h-4 w-4" />
-          <Input
-            aria-label={t("搜索供应商")}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder={t("搜索更多供应商名称或网址")}
-            value={query}
-          />
-        </div>
+      <main className="provider-add-simple-body provider-add-reference-layout">
         <div className="provider-add-results">
-          {filtered.slice(0, 12).map((preset) => (
-            <button className="provider-add-result" key={preset.id} onClick={() => selectPreset(preset)} type="button">
-              <strong>{preset.name}</strong>
-              <small>{preset.websiteUrl ? new URL(preset.websiteUrl).host : preset.baseUrl}</small>
-            </button>
-          ))}
+          <button className="provider-add-result provider-add-custom-result" onClick={() => selectPreset()} type="button">
+            <span className="provider-add-icon">✦</span>
+            <span><strong>{t("自定义配置")}</strong><small>{t("手动填写请求地址和 API Key")}</small></span>
+          </button>
         </div>
-        {!filtered.length ? <div className="empty">{t("没有匹配的供应商")}</div> : null}
-        <p className="provider-add-hint">{t("选择模板后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。")}</p>
+        {categories.map((category) => {
+          const presets = PRESETS.filter((preset) => preset.category === category.id);
+          if (!presets.length) return null;
+          return (
+            <section className="provider-add-section" key={category.id}>
+              <h3>{category.label}</h3>
+              <div className="provider-add-results">
+                {presets.map((preset) => (
+                  <button className="provider-add-result" key={preset.id} onClick={() => selectPreset(preset)} type="button">
+                    <span className="provider-add-icon">{preset.name.slice(0, 1).toUpperCase()}</span>
+                    <span><strong>{preset.name}</strong><small>{preset.websiteUrl ? new URL(preset.websiteUrl).host : preset.baseUrl}</small></span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+        <p className="provider-add-hint">{t("选择供应商后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。")}</p>
       </main>
     </div>
   );
