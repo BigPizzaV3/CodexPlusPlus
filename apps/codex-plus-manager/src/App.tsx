@@ -4484,6 +4484,7 @@ function RelayScreen({
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
+  const [providerView, setProviderView] = useState<"direct" | "aggregate">("direct");
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
   const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
   const [ccsPathSaving, setCcsPathSaving] = useState(false);
@@ -4527,11 +4528,24 @@ function RelayScreen({
     setNewProfileDraft(draft);
     if (!normalizeAggregateConfig(draft.aggregate, aggregateMemberCandidates(normalized, draft.id)).members.length) {
       void actions.showMessage(
-        t("添加聚合供应商"),
+        t("创建聚合供应商"),
         t("已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。"),
         "failed",
       );
     }
+  };
+  const visibleProfiles = normalized.relayProfiles.filter((profile) => (
+    providerView === "aggregate" ? isAggregateRelayProfile(profile) : !isAggregateRelayProfile(profile)
+  ));
+  const listForm = syncLegacyRelayFields({ ...normalized, relayProfiles: visibleProfiles });
+  const saveVisibleRelaySettings = async (next: BackendSettings) => {
+    const hiddenProfiles = normalized.relayProfiles.filter((profile) => (
+      providerView === "aggregate" ? !isAggregateRelayProfile(profile) : isAggregateRelayProfile(profile)
+    ));
+    return saveRelaySettings(syncLegacyRelayFields({
+      ...next,
+      relayProfiles: [...next.relayProfiles, ...hiddenProfiles],
+    }));
   };
   const editRelayProfile = async (profileId: string) => {
     setNewProfileDraft(null);
@@ -4553,29 +4567,6 @@ function RelayScreen({
     setThirdPartyImportOpen((open) => !open);
     if (!ccsProviders) void actions.refreshCcsProviders(true);
   };
-  /// issue #595：切到中转后没有回官方登录态的路。
-  ///
-  /// 直接调 `clear_relay_injection` 会丢掉切换所需的 profile 上下文（它读的是
-  /// 磁盘上 current 的那一份），而且在中转 profile 已经是 active 时不会把
-  /// settings 的 activeRelayId 拨回来。所以这里走既有的供应商切换链路：复用一个
-  /// 「官方登录（不混入 API）」profile，没有就建一个，再设为当前。清理由
-  /// relay_config 的 clear 路径完成，与手动选该 profile 完全一致。
-  const restoreOfficialRelayProfile = async () => {
-    if (actions.relaySwitching) return;
-    const existing = normalized.relayProfiles.find(
-      (profile) => profile.relayMode === "official" && !profile.officialMixApiKey && !isAggregateRelayProfile(profile),
-    );
-    const nextProfile = existing ?? createRelayProfile(normalized);
-    const next = syncLegacyRelayFields({
-      ...normalized,
-      relayProfiles: existing
-        ? normalized.relayProfiles
-        : [...normalized.relayProfiles, nextProfile],
-      activeRelayId: nextProfile.id,
-    });
-    await actions.switchRelayProfile(next, normalized.activeRelayId);
-  };
-
   if (detailProfile) {
     return (
       <RelayProfileDetail
@@ -4643,30 +4634,6 @@ function RelayScreen({
             <ToggleVisual />
           </label>
           <div className="relay-add-row">
-            <Button
-              variant="secondary"
-              onClick={createNewAggregateProfile}
-            >
-              <Plus className="h-4 w-4" />
-              {t("添加聚合供应商")}
-            </Button>
-            {/* issue #595：缺一个「回到官方登录态」的显式入口。当前已经是官方登录
-                （无混入）时置灰，避免无意义的重写。 */}
-            <Button
-              disabled={!normalized.relayProfilesEnabled || actions.relaySwitching || isOfficialLoginActive(normalized)}
-              onClick={() => void restoreOfficialRelayProfile()}
-              title={
-                !normalized.relayProfilesEnabled
-                  ? t("供应商配置总开关已关闭")
-                  : isOfficialLoginActive(normalized)
-                    ? t("当前已是官方登录态")
-                    : t("清除中转 API 配置，切回 ChatGPT 官方登录")
-              }
-              variant="secondary"
-            >
-              <RotateCcw className="h-4 w-4" />
-              {t("恢复官方登录")}
-            </Button>
             <div className="third-party-import">
               <Button
                 onClick={openThirdPartyImport}
@@ -4707,10 +4674,21 @@ function RelayScreen({
               ) : null}
             </div>
           </div>
+          <div className="provider-view-tabs" role="tablist" aria-label={t("供应商配置模式")}>
+            <button className={providerView === "direct" ? "active" : ""} onClick={() => setProviderView("direct")} role="tab" type="button">{t("普通供应商")} <small>{normalized.relayProfiles.filter((profile) => !isAggregateRelayProfile(profile)).length}</small></button>
+            <button className={providerView === "aggregate" ? "active" : ""} onClick={() => setProviderView("aggregate")} role="tab" type="button">{t("聚合供应商")} <small>{normalized.relayProfiles.filter((profile) => isAggregateRelayProfile(profile)).length}</small></button>
+          </div>
+          {providerView === "aggregate" && !visibleProfiles.length ? (
+            <div className="provider-aggregate-empty">
+              <strong>{t("还没有聚合供应商")}</strong>
+              <span>{t("切换到聚合配置后，在编辑页选择成员供应商和路由规则。")}</span>
+              <Button onClick={createNewAggregateProfile}>{t("创建聚合配置")}</Button>
+            </div>
+          ) : null}
           <RelayProfileList
-            form={normalized}
+            form={listForm}
             onEdit={(profileId) => void editRelayProfile(profileId)}
-            onFormChange={saveRelaySettings}
+            onFormChange={saveVisibleRelaySettings}
             disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
             actions={actions}
           />
@@ -12261,13 +12239,6 @@ function activeRelayProfile(settings: BackendSettings): RelayProfile {
 
 function relayProtocolLabel(protocol: RelayProtocol): string {
   return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
-}
-
-/// 当前 active 供应商是否就是「纯官方登录」（官方模式且不混入 API Key）。
-/// 用于给「恢复官方登录」按钮置灰（issue #595）。
-function isOfficialLoginActive(settings: BackendSettings): boolean {
-  const active = activeRelayProfile(settings);
-  return active.relayMode === "official" && !active.officialMixApiKey && !isAggregateRelayProfile(active);
 }
 
 function ccsProviderSummary(result: CcsProvidersResult | null): string {
