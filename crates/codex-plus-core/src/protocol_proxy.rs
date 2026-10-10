@@ -5708,10 +5708,18 @@ fn web_search_item_id(call_id: &str) -> String {
 /// 这里按存在性择一，都取不到就退化成 `{"type":"search"}`，让客户端自己判空。
 fn web_search_action_from_arguments(arguments: &str) -> Value {
     let parsed = responses_arguments_to_chat_parse(arguments);
+    // Codex++ 自己发的 FREEFORM schema 用 `input` 作参数名，上游也可能用原生
+    // `query` 字段，两个都认，避免「模型填了参数但转换层取不到」的假空。
     let query = parsed
         .get("query")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            parsed
+                .get("input")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        });
     let url = parsed
         .get("url")
         .and_then(Value::as_str)
@@ -6912,5 +6920,45 @@ mod channel_cooldown_retry_tests {
         assert!(should_retry_after_cooldown(2));
         assert!(!should_retry_after_cooldown(3));
         assert!(!should_retry_after_cooldown(usize::MAX));
+    }
+}
+
+/// `web_search_action_from_arguments` 的 query 提取链必须同时认原生 `query`
+/// 和 Codex++ FREEFORM schema 的 `input` 字段。
+#[cfg(test)]
+mod web_search_action_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_query_from_native_query_field() {
+        let action = web_search_action_from_arguments("{\"query\":\"nginx latest\"}");
+        assert_eq!(action, json!({"type": "search", "query": "nginx latest"}));
+    }
+
+    #[test]
+    fn extracts_query_from_freeform_input_field() {
+        // Codex++ 自己发的工具 schema 用 `input` 作参数名，模型填了这个字段。
+        let action = web_search_action_from_arguments("{\"input\":\"nginx latest\"}");
+        assert_eq!(action, json!({"type": "search", "query": "nginx latest"}));
+    }
+
+    #[test]
+    fn empty_input_falls_through_to_empty_action() {
+        let action = web_search_action_from_arguments("{\"input\":\"\"}");
+        assert_eq!(action, json!({"type": "search"}));
+    }
+
+    #[test]
+    fn url_still_takes_precedence() {
+        let action = web_search_action_from_arguments
+            ("{\"input\":\"ignored\",\"url\":\"https://example.com\"}");
+        assert_eq!(action, json!({"type": "open_page", "url": "https://example.com"}));
+    }
+
+    #[test]
+    fn query_takes_precedence_over_input() {
+        let action =
+            web_search_action_from_arguments("{\"query\":\"first\",\"input\":\"second\"}");
+        assert_eq!(action, json!({"type": "search", "query": "first"}));
     }
 }
