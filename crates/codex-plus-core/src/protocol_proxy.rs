@@ -1936,6 +1936,18 @@ async fn upstream_request_parts(
     {
         request_json["model"] = json!(model);
     }
+    // 探针用 key 需在 request_json 被转换层 move 之前取出。
+    let probe_key = if relay.protocol == RelayProtocol::ChatCompletions
+        && relay.stabilize_prompt_prefix
+        && !compact
+    {
+        request_json
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    } else {
+        None
+    };
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
@@ -1946,6 +1958,28 @@ async fn upstream_request_parts(
     };
     if relay.protocol == RelayProtocol::Responses {
         normalize_responses_item_ids(&mut body);
+    }
+
+    // 前缀分叉探针（opt-in）：普通轮观察「system 块序列 + tools」前缀，
+    // 字节突变即 dump 分叉点（重启首轮重放取证用）；压缩轮前缀本就有意
+    // 重写，跳过观察以免噪声。
+    if relay.protocol == RelayProtocol::ChatCompletions && relay.stabilize_prompt_prefix && !compact {
+        if let Some(report) = crate::prefix_divergence::observe(probe_key.as_deref(), &body) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                if matches!(report.kind, crate::prefix_divergence::DivergenceKind::Baseline) {
+                    "protocol_proxy.prefix_stabilizer_prefix_baseline"
+                } else {
+                    "protocol_proxy.prefix_stabilizer_prefix_divergence"
+                },
+                json!({
+                    "oldLen": report.old_len,
+                    "newLen": report.new_len,
+                    "firstDiff": report.first_diff,
+                    "oldSnip": report.old_snip,
+                    "newSnip": report.new_snip,
+                }),
+            );
+        }
     }
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
