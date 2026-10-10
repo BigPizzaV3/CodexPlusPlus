@@ -5,7 +5,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Edit3, ExternalLink, Folder, HelpCircle, History, MoreHorizontal, Plus, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
 import { t } from "./i18n";
-import { MCP_PRESETS } from "./mcp-presets";
 import { matchesManagementQuery, sessionGroups, skillRepoKey, type ManagedSession } from "./management-model";
 import "./ManagementPages.css";
 
@@ -160,7 +159,6 @@ function McpEditor({ entry, kind, onClose, onSave, notify, busy }: { entry?: Con
     } catch (e) { setError(String(e)); await notify("MCP", String(e), "failed"); } finally { setSaving(false); }
   };
   return <ManagementDrawer title={entry ? t("编辑 MCP 服务器") : t("添加 MCP 服务器")} onClose={() => { if (!saving) onClose(); }} footer={<><Action onClick={onClose} disabled={saving || busy}>{t("取消")}</Action><Action primary disabled={!id.trim() || saving || busy || loading} onClick={() => void save()}>{saving || busy ? t("保存中…") : t("保存")}</Action></>}>
-    {!entry && kind === "mcp" && <Field label={t("从模板开始")}><select defaultValue="" onChange={async (e) => { const preset = MCP_PRESETS.find((p) => p.id === e.target.value); if (!preset) return; setId(preset.id); try { await loadBody(preset.tomlBody({ windows: /Win/i.test(navigator.userAgent) })); setError(""); } catch (error) { setError(String(error)); } }}><option value="">{t("自定义服务器")}</option>{MCP_PRESETS.map((p) => <option value={p.id} key={p.id}>{p.id} — {t(p.description)}</option>)}</select></Field>}
     <Field label={t("服务器 ID")} hint={t("唯一标识，添加后不可更改。") }><input value={id} disabled={Boolean(entry)} onChange={(e) => setId(e.target.value)} placeholder="context7" /></Field>
     {kind === "mcp" && <div className="mg-tabs"><button type="button" data-active={mode === "form"} disabled={loading || saving} onClick={() => void switchMode("form")}>{t("表单")}</button><button type="button" data-active={mode === "toml"} disabled={loading || saving} onClick={() => void switchMode("toml")}>TOML</button></div>}
     {loading ? <p role="status">{t("正在读取配置…")}</p> : mode === "toml" ? <Field label={t("配置内容")} hint={t("保留自定义字段，保存时由 Codex 配置解析器校验。") }><textarea className="mg-code" value={body} onChange={(e) => setBody(e.target.value)} spellCheck={false} rows={16} /></Field> : <>
