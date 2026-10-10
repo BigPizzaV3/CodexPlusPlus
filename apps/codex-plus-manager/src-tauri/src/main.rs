@@ -29,6 +29,7 @@ fn main() {
                 ))
             };
             if let Err(error) = result {
+                eprintln!("更新 helper 失败：{error:#}");
                 let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                     "update.macos.helper_failed",
                     serde_json::json!({ "message": error.to_string() }),

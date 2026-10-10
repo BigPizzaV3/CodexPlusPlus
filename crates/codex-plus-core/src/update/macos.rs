@@ -601,6 +601,29 @@ mod runtime {
         Ok(plan)
     }
 
+    fn prepare_detached_helper(executable: &Path, transaction: &Path) -> anyhow::Result<PathBuf> {
+        let helper = transaction.join("manager-update-helper");
+        fs::copy(executable, &helper)?;
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        // bundle 内的签名引用 Info.plist；裸副本须重新签名才能独立运行。
+        checked(
+            "/usr/bin/codesign",
+            &[
+                "--force".as_ref(),
+                "--sign".as_ref(),
+                "-".as_ref(),
+                helper.as_os_str(),
+            ],
+        )
+        .context("临时更新 helper 重新签名失败")?;
+        checked(
+            "/usr/bin/codesign",
+            &["--verify".as_ref(), "--strict".as_ref(), helper.as_os_str()],
+        )
+        .context("临时更新 helper 签名校验失败")?;
+        Ok(helper)
+    }
+
     pub(super) fn launch(installer: &Path, version: &str) -> anyhow::Result<()> {
         let executable = fs::canonicalize(std::env::current_exe()?)?;
         let root = installed_root_from_executable(&executable)?;
@@ -625,21 +648,7 @@ mod runtime {
             manager_pid: std::process::id(),
             old_bundles,
         };
-        let helper = plan.transaction.join("manager-update-helper");
-        fs::copy(&executable, &helper)?;
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
-        // 从已签名 app 直接复制裸 Mach-O 会保留依赖原 Info.plist 的签名，
-        // 脱离 bundle 后 macOS 会立即拒绝执行。临时 helper 只负责本机更新，
-        // 用 ad-hoc 签名重新封装它；正式 app 的 Developer ID 签名不受影响。
-        checked(
-            "/usr/bin/codesign",
-            &[
-                "--force".as_ref(),
-                "--sign".as_ref(),
-                "-".as_ref(),
-                helper.as_os_str(),
-            ],
-        )?;
+        let helper = prepare_detached_helper(&executable, &plan.transaction)?;
         let path = plan.transaction.join("plan.json");
         use std::io::Write;
         let mut file = OpenOptions::new()
@@ -649,12 +658,18 @@ mod runtime {
             .open(&path)?;
         file.write_all(&serde_json::to_vec(&plan)?)?;
         file.sync_all()?;
+        let stderr_path = plan.transaction.join("helper-stderr.log");
+        let stderr = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&stderr_path)?;
         let mut child = Command::new(helper)
             .arg("--apply-codex-plus-update")
             .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()?;
         let start = Instant::now();
         loop {
@@ -675,8 +690,16 @@ mod runtime {
                     );
                 }
             }
-            if child.try_wait()?.is_some() {
-                bail!("更新 helper 提前退出，旧版未替换。");
+            if let Some(status) = child.try_wait()? {
+                let mut bytes = Vec::new();
+                File::open(&stderr_path)?
+                    .take(8192)
+                    .read_to_end(&mut bytes)?;
+                let detail: String = String::from_utf8_lossy(&bytes).chars().take(1024).collect();
+                bail!(
+                    "更新 helper 提前退出（{status}），旧版未替换。{}",
+                    detail.trim()
+                );
             }
             sleep(Duration::from_millis(100));
         }
@@ -753,6 +776,35 @@ mod runtime {
                 Err(error)
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn detached_helper_smoke(root: &Path) -> anyhow::Result<()> {
+        let bundle = root.join(BUNDLES[0].name);
+        signed_test_bundle(&bundle, BUNDLES[0], "1.0.0")?;
+        let executable = bundle.join("Contents/MacOS").join(BUNDLES[0].executable);
+        let original = fs::read(&executable)?;
+        let raw = root.join("unsigned-detached-copy");
+        fs::copy(&executable, &raw)?;
+        anyhow::ensure!(
+            !output(
+                "/usr/bin/codesign",
+                &["--verify".as_ref(), "--strict".as_ref(), raw.as_os_str()]
+            )?
+            .status
+            .success(),
+            "fixture must reproduce a signature that depends on the app Info.plist"
+        );
+        let transaction = root.join("private-helper");
+        fs::create_dir(&transaction)?;
+        let helper = prepare_detached_helper(&executable, &transaction)?;
+        checked(helper.to_str().context("helper path is not UTF-8")?, &[])?;
+        anyhow::ensure!(
+            fs::read(&executable)? == original,
+            "helper preparation changed the source app"
+        );
+        NativeOps.verify_signature(&bundle)?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1394,6 +1446,13 @@ mod tests {
     fn macos_update_pipe_deadline_is_bounded_when_own_fixture_inherits_pipe() {
         let temp = tempfile::tempdir().unwrap();
         runtime::pipe_deadline_smoke(temp.path()).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_update_detached_signed_helper_executes_without_modifying_source_app() {
+        let temp = tempfile::tempdir().unwrap();
+        runtime::detached_helper_smoke(temp.path()).unwrap();
     }
 
     #[cfg(target_os = "macos")]
