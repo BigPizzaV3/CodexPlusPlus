@@ -22,6 +22,7 @@ import {
   ArrowRight,
   Bell,
   Blocks,
+  Cable,
   BookOpen,
   CheckCircle2,
   ChevronDown,
@@ -34,9 +35,11 @@ import {
   Info,
   ImagePlus,
   Github,
+  GitBranch,
   ExternalLink,
   Hammer,
   KeyRound,
+  Layers3,
   Languages,
   LayoutGrid,
   LayoutDashboard,
@@ -4484,7 +4487,7 @@ function RelayScreen({
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
-  const [providerView, setProviderView] = useState<"direct" | "aggregate">("direct");
+  const [providerView, setProviderView] = useState<"direct" | "routing" | "aggregate">("direct");
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
   const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
   const [ccsPathSaving, setCcsPathSaving] = useState(false);
@@ -4535,12 +4538,12 @@ function RelayScreen({
     }
   };
   const visibleProfiles = normalized.relayProfiles.filter((profile) => (
-    providerView === "aggregate" ? isAggregateRelayProfile(profile) : !isAggregateRelayProfile(profile)
+    relayProviderView(profile) === providerView
   ));
   const listForm = syncLegacyRelayFields({ ...normalized, relayProfiles: visibleProfiles });
   const saveVisibleRelaySettings = async (next: BackendSettings) => {
     const hiddenProfiles = normalized.relayProfiles.filter((profile) => (
-      providerView === "aggregate" ? !isAggregateRelayProfile(profile) : isAggregateRelayProfile(profile)
+      relayProviderView(profile) !== providerView
     ));
     return saveRelaySettings(syncLegacyRelayFields({
       ...next,
@@ -4675,8 +4678,21 @@ function RelayScreen({
             </div>
           </div>
           <div className="provider-view-tabs" role="tablist" aria-label={t("供应商配置模式")}>
-            <button className={providerView === "direct" ? "active" : ""} onClick={() => setProviderView("direct")} role="tab" type="button">{t("普通供应商")} <small>{normalized.relayProfiles.filter((profile) => !isAggregateRelayProfile(profile)).length}</small></button>
-            <button className={providerView === "aggregate" ? "active" : ""} onClick={() => setProviderView("aggregate")} role="tab" type="button">{t("聚合供应商")} <small>{normalized.relayProfiles.filter((profile) => isAggregateRelayProfile(profile)).length}</small></button>
+            <button aria-selected={providerView === "direct"} className={providerView === "direct" ? "active" : ""} onClick={() => setProviderView("direct")} role="tab" type="button">
+              <Cable className="h-4 w-4" />
+              <span>{t("直连")}</span>
+              {providerView === "direct" ? <span aria-hidden="true" className="provider-view-dot" /> : null}
+            </button>
+            <button aria-selected={providerView === "routing"} className={providerView === "routing" ? "active" : ""} onClick={() => setProviderView("routing")} role="tab" type="button">
+              <GitBranch className="h-4 w-4" />
+              <span>{t("路由")}</span>
+              {providerView === "routing" ? <span aria-hidden="true" className="provider-view-dot" /> : null}
+            </button>
+            <button aria-selected={providerView === "aggregate"} className={providerView === "aggregate" ? "active" : ""} onClick={() => setProviderView("aggregate")} role="tab" type="button">
+              <Layers3 className="h-4 w-4" />
+              <span>{t("聚合")}</span>
+              {providerView === "aggregate" ? <span aria-hidden="true" className="provider-view-dot" /> : null}
+            </button>
           </div>
           {providerView === "aggregate" && !visibleProfiles.length ? (
             <div className="provider-aggregate-empty">
@@ -13368,6 +13384,11 @@ const aggregateStrategyOptions: Array<{ value: RelayAggregateStrategy; label: st
 
 function isAggregateRelayProfile(profile: Pick<RelayProfile, "relayMode" | "aggregate">): boolean {
   return profile.relayMode === "aggregate" || !!profile.aggregate;
+}
+
+function relayProviderView(profile: RelayProfile): "direct" | "routing" | "aggregate" {
+  if (isAggregateRelayProfile(profile)) return "aggregate";
+  return normalizeRelayModelRoutes(profile.modelRoutes).length ? "routing" : "direct";
 }
 
 function normalizeAggregateRelayProfile(profile: RelayProfile, settings: BackendSettings | null): RelayProfile {
