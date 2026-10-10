@@ -32,6 +32,24 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
+    #[cfg(target_os = "macos")]
+    if let Some(root) = codex_plus_core::install::default_install_root() {
+        match codex_plus_core::install::macos::migrate_legacy_manager_bundle(&root) {
+            Ok(Some(archive)) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.legacy_manager_migrated",
+                    serde_json::json!({ "archive": archive }),
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.legacy_manager_migration_failed",
+                    serde_json::json!({ "message": error.to_string() }),
+                );
+            }
+        }
+    }
     if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load()
         && let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled

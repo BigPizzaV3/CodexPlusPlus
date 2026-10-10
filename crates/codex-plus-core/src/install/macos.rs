@@ -5,10 +5,16 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+
 use super::{
     APP_BUNDLE_ID, APP_NAME, InstallOptions, MACOS_APP_EXECUTABLE, MacosAppBundle,
     application_source, install_root_or_default,
 };
+
+#[cfg(target_os = "macos")]
+const LEGACY_MANAGER_BUNDLE_NAME: &str = "Codex++ 管理工具.app";
 
 pub fn build_app_bundle(options: &InstallOptions, _manager: bool) -> MacosAppBundle {
     // 保留 manager 参数供已有调用方使用；安装计划始终只有同一个原生界面 app。
@@ -69,6 +75,47 @@ pub fn uninstall_app_bundles(options: &InstallOptions) -> anyhow::Result<()> {
         fs::remove_dir_all(app)?;
     }
     Ok(())
+}
+
+/// 将旧双应用布局中的管理工具移到可恢复的迁移备份目录。
+///
+/// 旧版更新器只能处理两个 app，因此它无法直接安装新版单 app DMG。
+/// 新版首次启动时执行这一步，清理 Applications 中的旧入口，同时保留完整
+/// bundle 供用户需要时恢复；后续更新不会再次触发迁移。
+#[cfg(target_os = "macos")]
+pub fn migrate_legacy_manager_bundle(root: &Path) -> anyhow::Result<Option<PathBuf>> {
+    migrate_legacy_manager_bundle_to(
+        root,
+        &crate::paths::default_app_state_dir().join("legacy-migrations"),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_legacy_manager_bundle_to(
+    root: &Path,
+    archive_root: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let legacy = root.join(LEGACY_MANAGER_BUNDLE_NAME);
+    if !legacy.exists() {
+        return Ok(None);
+    }
+    if fs::symlink_metadata(&legacy)?.file_type().is_symlink() {
+        anyhow::bail!("旧管理工具是符号链接，未自动迁移：{}", legacy.display());
+    }
+    fs::create_dir_all(archive_root)?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let archive = archive_root.join(format!("legacy-manager-{timestamp}-{}", std::process::id()));
+    fs::rename(&legacy, &archive).with_context(|| {
+        format!(
+            "迁移旧管理工具失败：{} → {}",
+            legacy.display(),
+            archive.display()
+        )
+    })?;
+    Ok(Some(archive))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -185,6 +232,40 @@ fn plist_true_value(plist: &str, key: &str) -> bool {
     plist
         .split_once(&format!("<key>{key}</key>"))
         .is_some_and(|(_, tail)| tail.trim_start().starts_with("<true/>"))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_manager_is_moved_out_of_applications_and_kept_recoverable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Applications");
+        let archive = temp.path().join("migration-backups");
+        let legacy = root.join(LEGACY_MANAGER_BUNDLE_NAME);
+        fs::create_dir_all(legacy.join("Contents/MacOS")).unwrap();
+        fs::write(
+            legacy.join("Contents/MacOS/CodexPlusPlusManager"),
+            b"legacy",
+        )
+        .unwrap();
+
+        let moved = migrate_legacy_manager_bundle_to(&root, &archive)
+            .unwrap()
+            .expect("legacy manager should be migrated");
+        assert!(!legacy.exists());
+        assert_eq!(
+            fs::read(moved.join("Contents/MacOS/CodexPlusPlusManager")).unwrap(),
+            b"legacy"
+        );
+        assert!(moved.starts_with(&archive));
+        assert!(
+            migrate_legacy_manager_bundle_to(&root, &archive)
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 fn info_plist() -> String {
