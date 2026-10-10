@@ -25,6 +25,20 @@ static AGENT_CACHE_PLAN: OnceLock<Mutex<Option<codex_plus_core::agent_cache::Cac
     OnceLock::new();
 
 #[tauri::command]
+pub fn dictation_local_model_status() -> Value {
+    codex_plus_core::dictation::local_model_status()
+}
+
+/// 只注册为管理器命令，不开放给用户脚本或公开 HTTP 路由。
+#[tauri::command]
+pub async fn download_dictation_local_model() -> CommandResult<Value> {
+    match codex_plus_core::dictation::prepare_local_model().await {
+        Ok(state) => ok("本地 SenseVoice 模型下载并校验完成。", state),
+        Err(error) => failed(&error.message, json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn scan_agent_cache() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Value> {
         let mut slot = AGENT_CACHE_PLAN
