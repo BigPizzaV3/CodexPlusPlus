@@ -4730,12 +4730,17 @@ function ProviderCatalogScreen({
   onBack: () => void;
   onSelect: (profile: RelayProfile) => void;
 }) {
+  const [query, setQuery] = useState("");
   const categories: Array<{ id: ProviderPreset["category"]; label: string }> = [
     { id: "official", label: t("账号登录") },
     { id: "cn_official", label: t("模型厂商") },
     { id: "aggregator", label: t("聚合/中转") },
     { id: "third_party", label: t("第三方平台") },
   ];
+  const filteredPresets = PRESETS.filter((preset) => {
+    const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
+    return !query.trim() || haystack.includes(query.trim().toLowerCase());
+  });
   const selectPreset = (preset?: ProviderPreset) => {
     const draft = createRelayProfile(form);
     const patch = preset ? createPresetPatch(preset) : { name: t("自定义供应商") };
@@ -4751,6 +4756,15 @@ function ProviderCatalogScreen({
         <span>Codex</span>
       </header>
       <main className="provider-add-simple-body provider-add-reference-layout">
+        <div className="provider-add-search">
+          <Search className="h-4 w-4" />
+          <Input
+            aria-label={t("搜索供应商")}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder={t("搜索名称或网址，例如 kimi、智谱、openrouter")}
+            value={query}
+          />
+        </div>
         <div className="provider-add-results">
           <button className="provider-add-result provider-add-custom-result" onClick={() => selectPreset()} type="button">
             <span className="provider-add-icon">✦</span>
@@ -4758,7 +4772,7 @@ function ProviderCatalogScreen({
           </button>
         </div>
         {categories.map((category) => {
-          const presets = PRESETS.filter((preset) => preset.category === category.id);
+          const presets = filteredPresets.filter((preset) => preset.category === category.id);
           if (!presets.length) return null;
           return (
             <section className="provider-add-section" key={category.id}>
@@ -4774,6 +4788,7 @@ function ProviderCatalogScreen({
             </section>
           );
         })}
+        {!filteredPresets.length ? <div className="empty">{t("没有匹配的供应商")}</div> : null}
         <p className="provider-add-hint">{t("选择供应商后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。")}</p>
       </main>
     </div>
