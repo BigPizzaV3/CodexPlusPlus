@@ -1893,6 +1893,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            web_search_history_compat: false,
             rate_limit_cooldown_enabled: false,
             channel_queue_enabled: false,
             channel_requests_per_minute:
@@ -1993,6 +1994,40 @@ async fn launch_starts_helper_when_model_routing_is_enabled() {
     handle.wait_for_codex_exit().await.unwrap();
     let after_stop = events.lock().unwrap().clone();
     assert!(after_stop.contains(&"shutdown-helper:57321".to_string()));
+}
+
+#[tokio::test]
+async fn launch_starts_helper_when_web_search_history_compat_is_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let settings = BackendSettings {
+        enhancements_enabled: false,
+        active_relay_id: "search-compat".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "search-compat".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            web_search_history_compat: true,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    let hooks = FakeHooks::new(events.clone()).with_settings(settings);
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 58000,
+            status_store: StatusStore::new(temp.path().join("latest-status.json")),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert!(events.lock().unwrap().contains(&"start-helper:57321".to_string()));
+    handle.wait_for_codex_exit().await.unwrap();
+    assert!(events.lock().unwrap().contains(&"shutdown-helper:57321".to_string()));
 }
 
 #[tokio::test]
