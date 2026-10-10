@@ -108,14 +108,26 @@ fn migrate_legacy_manager_bundle_to(
         .unwrap_or_default()
         .as_millis();
     let archive = archive_root.join(format!("legacy-manager-{timestamp}-{}", std::process::id()));
-    fs::rename(&legacy, &archive).with_context(|| {
+    let mut last_error = None;
+    for attempt in 0..5 {
+        match fs::rename(&legacy, &archive) {
+            Ok(()) => return Ok(Some(archive)),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+            }
+        }
+    }
+    let error = last_error.expect("migration rename attempts should produce an error");
+    Err(error).with_context(|| {
         format!(
             "迁移旧管理工具失败：{} → {}",
             legacy.display(),
             archive.display()
         )
-    })?;
-    Ok(Some(archive))
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
