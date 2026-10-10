@@ -2119,7 +2119,7 @@ async fn upstream_request_parts(
         )?,
     };
     if relay.protocol == RelayProtocol::Responses {
-        if compact
+        if relay.web_search_history_compat_enabled()
             && !is_responses_compact_proxy_path(request_path)
             && ensure_web_search_tool_for_history(&mut body)
         {
