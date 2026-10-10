@@ -288,11 +288,11 @@ mod tests {
     fn helper_identity_is_verified_over_http() {
         for (body, expected) in [
             (
-                r#"{"status":"ok","transport":"http-helper","version":"1.7.1"}"#,
+                r#"{"status":"ok","transport":"http-helper","version":"1.7.2"}"#,
                 true,
             ),
             (
-                r#"{"status":"ok","transport":"other","version":"1.7.1"}"#,
+                r#"{"status":"ok","transport":"other","version":"1.7.2"}"#,
                 false,
             ),
         ] {
@@ -328,7 +328,7 @@ mod tests {
                 .unwrap();
             read_helper_request(&mut stream);
             std::thread::sleep(Duration::from_millis(350));
-            let body = r#"{"status":"ok","transport":"http-helper","version":"1.7.1"}"#;
+            let body = r#"{"status":"ok","transport":"http-helper","version":"1.7.2"}"#;
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
