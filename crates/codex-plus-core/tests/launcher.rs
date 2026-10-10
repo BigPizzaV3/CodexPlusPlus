@@ -199,11 +199,36 @@ fn app_paths_resolves_portable_current_link_to_directory_version() {
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("Codex.exe"), "").unwrap();
     std::fs::write(target.join("version"), "42.1.0\n").unwrap();
-    std::os::windows::fs::symlink_dir(&target, &current).unwrap();
+    link_current_dir(&target, &current);
 
     assert_eq!(
         codex_app_version(&current).as_deref(),
         Some("26.519.2736.0")
+    );
+}
+
+/// 建目录软链需要开发者模式或管理员权限（Windows 错误 1314）；拿不到特权时
+/// 退回 junction。junction 与软链都是 reparse point，`canonicalize` 的解析
+/// 行为一致，被测逻辑不受影响，测试在无特权的机器上也能验证链接解析。
+#[cfg(windows)]
+fn link_current_dir(target: &Path, link: &Path) {
+    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let output = std::process::Command::new("cmd")
+        .args([
+            "/c",
+            "mklink",
+            "/J",
+            &link.to_string_lossy(),
+            &target.to_string_lossy(),
+        ])
+        .output()
+        .expect("运行 mklink /J 创建 junction 失败");
+    assert!(
+        output.status.success(),
+        "junction 创建失败：{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
