@@ -4906,7 +4906,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
       <CardContent className="settings-content">
         <div className="settings-block enhance-service-block" id={ENHANCEMENT_SECTION_IDS.dictation}>
           <FeatureToggle
-            title={t("启用 API Key 语音输入")}
+            title={t("启用语音输入")}
             detail={t("停止录音后，可将转写文字插入或发送到当前会话。")}
             disabled={!form.enhancementsEnabled}
             checked={form.dictation.enabled}
@@ -4924,6 +4924,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
                   { value: "groq", label: "Groq" },
                   { value: "openai", label: t("OpenAI 兼容") },
                   { value: "local", label: t("本地服务") },
+                  { value: "sensevoice", label: t("本地 SenseVoice（离线）") },
                   { value: "custom", label: t("自定义") },
                 ]}
               />
@@ -4937,24 +4938,28 @@ function DictationSettingsPanel({ form, onFormChange }: {
               />
             </Field>
           </div>
-          <Field label="Base URL">
-            <Input
-              value={form.dictation.baseUrl}
-              onChange={(event) => updateDictation({ baseUrl: event.currentTarget.value })}
-              placeholder="https://api.groq.com/openai/v1"
-              spellCheck={false}
-            />
-          </Field>
-          <p className="field-hint">{t("填写服务的 API 基础地址，转写请求会发送到 /audio/transcriptions。可修改预设地址和模型。")}</p>
-          <Field label="API Key">
-            <Input
-              type="password"
-              autoComplete="off"
-              value={form.dictation.apiKey}
-              onChange={(event) => updateDictation({ apiKey: event.currentTarget.value })}
-            />
-          </Field>
-          <p className="field-hint">{t("可填写 API Key 或环境变量名称。本地服务不要求认证时可留空。")}</p>
+          {form.dictation.provider === "sensevoice" ? (
+            <p className="field-hint">{t("SenseVoiceSmall 在本机 CPU 上运行。首次使用会从 Hugging Face 或镜像下载约 229 MiB 模型，之后音频不会离开本机。")}</p>
+          ) : <>
+            <Field label="Base URL">
+              <Input
+                value={form.dictation.baseUrl}
+                onChange={(event) => updateDictation({ baseUrl: event.currentTarget.value })}
+                placeholder="https://api.groq.com/openai/v1"
+                spellCheck={false}
+              />
+            </Field>
+            <p className="field-hint">{t("填写服务的 API 基础地址，转写请求会发送到 /audio/transcriptions。可修改预设地址和模型。")}</p>
+            <Field label="API Key">
+              <Input
+                type="password"
+                autoComplete="off"
+                value={form.dictation.apiKey}
+                onChange={(event) => updateDictation({ apiKey: event.currentTarget.value })}
+              />
+            </Field>
+            <p className="field-hint">{t("可填写 API Key 或环境变量名称。本地服务不要求认证时可留空。")}</p>
+          </>}
           <details className="stepwise-advanced enhance-service-advanced">
             <summary>{t("高级参数")}</summary>
             <Field label={t("API Key 环境变量")}>

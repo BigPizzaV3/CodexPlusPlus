@@ -57,6 +57,14 @@ test("presets select independent speech endpoints while custom preserves its con
   assert.deepEqual(applyDictationPreset(custom, "custom"), custom);
 });
 
+test("SenseVoice preset selects the local provider and does not require an API endpoint", () => {
+  const next = applyDictationPreset(defaultDictationSettings(), "sensevoice");
+  assert.equal(next.provider, "sensevoice");
+  assert.equal(next.model, "SenseVoiceSmall (INT8)");
+  assert.equal(dictationPreset(next), "sensevoice");
+  assert.equal(dictationSettingsIssue({ ...next, enabled: true }), null);
+});
+
 test("enabled settings validate endpoints and environment names without requiring local credentials", () => {
   const local = { ...applyDictationPreset(defaultDictationSettings(), "local"), enabled: true };
   assert.equal(dictationSettingsIssue(local), null);

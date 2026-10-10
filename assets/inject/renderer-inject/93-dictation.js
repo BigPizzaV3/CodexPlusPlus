@@ -293,6 +293,42 @@
     return encoded;
   }
 
+  // SenseVoice 接收 16 kHz/单声道 PCM WAV；MediaRecorder 在 Chromium 中通常只提供 WebM/Opus，
+  // 因此只在选择本地 provider 时通过浏览器音频解码器做一次无损 PCM 转换。
+  async function codexPlusDictationSenseVoiceWav(blob, signal) {
+    if (signal.aborted) throw new DOMException("转写已取消", "AbortError");
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    const OfflineContextCtor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!AudioContextCtor || !OfflineContextCtor) throw new Error("当前环境无法转换本地 SenseVoice 音频");
+    const context = new AudioContextCtor();
+    try {
+      const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+      if (signal.aborted) throw new DOMException("转写已取消", "AbortError");
+      const frames = Math.max(1, Math.ceil(decoded.duration * 16000));
+      const offline = new OfflineContextCtor(1, frames, 16000);
+      const source = offline.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offline.destination);
+      source.start();
+      const rendered = await offline.startRendering();
+      const samples = rendered.getChannelData(0);
+      const bytes = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(bytes);
+      const write = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+      write(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); write(8, "WAVE");
+      write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+      write(36, "data"); view.setUint32(40, samples.length * 2, true);
+      for (let i = 0; i < samples.length; i++) {
+        const sample = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      }
+      return new Blob([bytes], { type: "audio/wav" });
+    } finally {
+      void context.close?.();
+    }
+  }
+
   async function transcribeCodexPlusDictation() {
     if (!codexPlusDictationEnabled()) { cancelCodexPlusDictation(); return; }
     if (!codexPlusDictation.blob) return;
@@ -313,14 +349,17 @@
         if (requestStarted) void postJson("/dictation/cancel", { requestId, helperToken: status.helperToken }).catch(() => {});
       };
       controller.signal.addEventListener("abort", cancelRequest, { once: true });
-      const audioBase64 = await codexPlusDictationAudioBase64(codexPlusDictation.blob, controller.signal);
+      const uploadBlob = status.provider === "sensevoice"
+        ? await codexPlusDictationSenseVoiceWav(codexPlusDictation.blob, controller.signal)
+        : codexPlusDictation.blob;
+      const audioBase64 = await codexPlusDictationAudioBase64(uploadBlob, controller.signal);
       if (revision !== codexPlusDictation.revision || controller.signal.aborted) return;
       if (!codexPlusDictationEnabled()) { cancelCodexPlusDictation(); return; }
-      const extension = codexPlusDictation.blob.type.includes("mp4") ? "m4a" : "webm";
+      const extension = uploadBlob.type.includes("wav") ? "wav" : uploadBlob.type.includes("mp4") ? "m4a" : "webm";
       requestStarted = true;
       // app:// 的 CSP 不允许 renderer 直接 fetch localhost；音频经既有特权桥接交给 Rust。
       const result = await postJson("/dictation/transcribe", {
-        requestId, audioBase64, mimeType: codexPlusDictation.blob.type || "audio/webm",
+        requestId, audioBase64, mimeType: uploadBlob.type || "audio/webm",
         filename: `dictation.${extension}`, helperToken: status.helperToken,
       });
       controller.signal.removeEventListener("abort", cancelRequest);
