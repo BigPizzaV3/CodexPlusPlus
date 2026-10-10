@@ -9829,3 +9829,6 @@ select {
 
 /* 四个管理页统一内容容器：外层边框承载页面内容，内部列表保持独立分组。 */
 .mg-page>.mg-content{margin:18px 22px 22px;padding:20px;border:1px solid hsl(var(--border));border-radius:14px;background:hsl(var(--surface-sunken)/.32);box-shadow:var(--shadow-sm)}.mg-page>.mg-content>.mg-matrix,.mg-page>.mg-content>.mg-skill-list,.mg-page>.mg-content>.mg-session-list{background:hsl(var(--card)/.78);border-color:hsl(var(--border)/.95)}.relay-management-page>.mg-content>.relay-management-panel{border:0;background:transparent;box-shadow:none}.relay-management-page>.mg-content>.relay-management-panel:hover{box-shadow:none;border-color:transparent}.relay-management-page>.mg-content>.relay-management-panel>.card-content{padding:0}.mg-page>.mg-content>.mg-notice{margin-top:12px}@media(max-width:760px){.mg-page>.mg-content{margin:14px 14px 18px;padding:14px}}
+
+/* 外层页面边框：包住管理页标题栏与全部内容，内部列表只保留分组边框。 */
+.mg-page{margin:0 22px 22px;border:1px solid hsl(var(--border));border-radius:14px;overflow:hidden}.mg-page>.mg-content{margin:0;border:0;border-radius:0;background:transparent;box-shadow:none;padding:20px}.relay-management-page>.mg-content>.relay-management-panel{border:0;border-radius:0}.relay-management-page>.mg-content>.relay-management-panel>.card-content{padding:0}@media(max-width:760px){.mg-page{margin:0 14px 18px}.mg-page>.mg-content{padding:14px}}
