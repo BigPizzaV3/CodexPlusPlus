@@ -223,6 +223,8 @@ fn macos_packager_builds_one_visible_native_gui_with_legacy_update_shim() {
         "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-legacy-shim\" \"com.bigpizzav3.codexplusplus.manager\" \"true\""
     ));
     assert!(script.contains("printf '%s\\n' \"Codex++ 管理工具.app\" > \"$STAGE/.hidden\""));
+    assert!(script.contains("chflags hidden \"$STAGE/Codex++ 管理工具.app\""));
+    assert!(script.contains("set visible of item \"Codex++ 管理工具.app\" to false"));
     assert!(script.contains("<key>CodexPlusUnifiedApp</key>"));
 }
 
