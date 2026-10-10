@@ -16,22 +16,20 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-Codex++ is an external launcher and manager for the OpenAI Codex / ChatGPT desktop app. It uses the Chromium DevTools Protocol and a local helper for provider switching, protocol conversion, session management, and UI enhancements without modifying the official app's `app.asar` or installation files.
+Codex++ is a unified management application for the OpenAI Codex / ChatGPT desktop app. Double-clicking opens its window; the official app is started from that window. It uses the Chromium DevTools Protocol and an embedded runtime for provider switching, protocol conversion, session management, and UI enhancements without modifying the official app's `app.asar` or installation files.
 
 ## Quick Start
 
 Download the latest installer from [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases):
 
 - Windows: `CodexPlusPlus-*-windows-x64-setup.exe`
-- macOS Intel: `CodexPlusPlus-*-macos-x64.dmg`
-- macOS Apple Silicon: `CodexPlusPlus-*-macos-arm64.dmg`
+- macOS Intel and Apple Silicon: `CodexPlusPlus-*-macos-universal.dmg`
 
-After installation, two entry points are available:
+After installation, one `Codex++` entry is available. Double-click it to open the window, verify the detected official app path, configure a provider and optional enhancements, then click **Launch** to start the official app with your saved configuration.
 
-- `Codex++`: silently starts the official desktop app with saved provider settings and enhancements.
-- `Codex++ Manager`: manages providers, models, tools, sessions, enhancements, scripts, updates, and diagnostics.
+The Windows installer creates Desktop and Start Menu shortcuts. On macOS, drag `Codex++.app` from the DMG into Applications.
 
-For first-time setup, open the manager, verify the detected app path, configure a provider and optional enhancements, then launch through `Codex++`. The Windows installer creates Desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
+**Upgrading an older macOS version:** The old two-app updater cannot install the new single-app package. Quit both old apps, then drag `Codex++.app` from the new DMG into Applications and replace the old app with the same name. Remove the old `Codex++ 管理工具.app`. Existing settings and session data are preserved.
 
 ## Community and Support
 
@@ -87,13 +85,13 @@ Provider switching saves the current profile before applying the target profile.
 - Skin management: search, preview, install, and image replacement for Dream Skin community themes.
 - Custom image overlays and user scripts.
 
-Settings that depend on renderer injection generally require saving and restarting Codex++.
+Settings that depend on renderer injection generally require saving and restarting Codex from the Codex++ window.
 
 ## Updates and Packages
 
-Codex++ publishes installers through GitHub Releases. Windows builds an NSIS installer, while macOS builds separate Intel x64 and Apple Silicon arm64 DMGs.
+Codex++ publishes installers through GitHub Releases. Windows builds an NSIS installer, while macOS builds one universal DMG for Intel and Apple Silicon Macs. Each package contains one application executable.
 
-The manager's About page can check and start updates. When the silent launcher finds a new version, it opens the manager directly on the update prompt.
+The About page can check and start updates. Older macOS two-app versions require the manual migration described above.
 
 ## Data Locations
 
@@ -109,7 +107,7 @@ The manager's About page can check and start updates. When the silent launcher f
 
 ### The Codex++ menu does not appear
 
-Launch through the `Codex++` entry instead of opening the official app directly. Check the detected app path, launch status, and diagnostic logs in the manager's Maintenance and About pages.
+Open `Codex++` and click **Launch** to start the official app. Check the detected app path, launch status, and diagnostic logs in the Maintenance and About pages.
 
 ### Requests fail after switching providers
 
@@ -137,8 +135,8 @@ Project structure:
 
 ```text
 apps/
-  codex-plus-launcher/          Silent launcher
-  codex-plus-manager/           Tauri manager
+  codex-plus-launcher/          Embedded launch and injection runtime library
+  codex-plus-manager/           Unified Tauri application (codex-plus-plus)
 assets/inject/
   renderer-inject.js            Enhancement script injected into Codex
 crates/

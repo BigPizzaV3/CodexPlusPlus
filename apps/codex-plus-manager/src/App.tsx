@@ -230,12 +230,15 @@ type LaunchStatus = {
   aumid: string | null;
 };
 
+type RuntimeServiceState = { status: string; address: string | null; message: string };
+
 type OverviewResult = CommandResult<{
   codex_app: PathState;
   codex_version: string | null;
   silent_shortcut: PathState;
   management_shortcut: PathState;
   latest_launch: LaunchStatus | null;
+  runtime_health: { codex_app: RuntimeServiceState; local_server: RuntimeServiceState; debugger: RuntimeServiceState; protocol_conversion_enabled: boolean | null };
   current_version: string;
   update_status: string;
   settings_path: string;
@@ -1172,6 +1175,7 @@ export function App() {
     helperPort: "57321",
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
+  const overviewRequestSequence = useRef(0);
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
@@ -1264,8 +1268,9 @@ export function App() {
   };
 
   const refreshOverview = async (silent = false) => {
+    const requestSequence = ++overviewRequestSequence.current;
     const result = await run(() => call<OverviewResult>("load_overview"));
-    if (result) {
+    if (result && requestSequence === overviewRequestSequence.current) {
       // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
       const prev = prevLaunchStatusRef.current;
       const current = result.latest_launch?.status;
@@ -2152,18 +2157,18 @@ export function App() {
       const result = await launchCommand("restart_codex_plus", syncActiveRelay);
       if (!result) return false;
       if (!isSuccessStatus(result.status)) {
-        showNotice(t("重启 Codex++"), result.message, result.status);
+        showNotice(t("重启 Codex"), result.message, result.status);
         return false;
       }
       showNotice(
-        t("重启 Codex++"),
+        t("重启 Codex"),
         result.nativeBrowserRestoreFailed
           ? t("原生浏览器文件恢复失败，仍会继续启动。")
           : t("正在等待 Codex 重新启动…"),
         result.nativeBrowserRestoreFailed ? "failed" : "accepted",
       );
       const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-      showLaunchCompletionNotice(t("重启 Codex++"), completion, result.launchStartedAtMs);
+      showLaunchCompletionNotice(t("重启 Codex"), completion, result.launchStartedAtMs);
       const succeeded = Boolean(
         completion
         && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
@@ -3044,9 +3049,8 @@ export function App() {
     if (getLanguage() === "en") {
       void invoke("update_tray_labels", {
         showLabel: "Show window",
-        applySkinLabel: "Apply Dream Skin",
         quitLabel: "Quit",
-        windowTitle: "Codex++ Manager",
+        windowTitle: "Codex++",
       });
     }
   }, []);
@@ -3102,6 +3106,31 @@ export function App() {
     document.documentElement.classList.toggle("light", theme === "light");
     window.localStorage.setItem("codex-plus-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const refresh = () => { void refreshOverview(true); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen("runtime-health-changed", () => {
+      if (!disposed) void refreshOverview(true);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else {
+        stopListening = unlisten;
+        // 先订阅再读取，覆盖后台恢复早于监听安装完成的情况。
+        void refreshOverview(true);
+      }
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
 
   const saveCodexAppPath = async (appPath: string) => {
     const next = { ...settingsForm, codexAppPath: appPath };
@@ -3377,12 +3406,14 @@ export function App() {
     [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
+  const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
 
   return (
     <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
       <ApplicationRail
         tools={toolEntries}
         activeTool={activeTool}
+        codexAppRunning={codexAppRunning}
         route={route}
         theme={theme}
         onSelect={(toolId) => void switchTool(toolId)}
@@ -3438,10 +3469,24 @@ export function App() {
           </div>
           <div className="topbar-actions">
             {activeTool === "codex" && !isGlobalPage ? (
-              <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
-                <Rocket className="h-4 w-4" />
-                {t("重启 Codex++")}
-              </Button>
+              <>
+                <span className="codex-app-state" aria-live="polite">
+                  <UiBadge
+                    className={statusClass(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
+                    variant="secondary"
+                  >
+                    Codex {statusLabel(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
+                  </UiBadge>
+                </span>
+                <Button
+                  disabled={launchPending || !overview?.runtime_health}
+                  onClick={() => void (codexAppRunning ? actions.restart() : actions.launch())}
+                  title={codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
+                >
+                  <Rocket className="h-4 w-4" />
+                  {codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
+                </Button>
+              </>
             ) : null}
           </div>
         </header>
@@ -3449,7 +3494,6 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
-              launchPending={launchPending}
               ads={ads}
               activeTool={activeTool}
               toolEntries={toolEntries}
@@ -4309,14 +4353,12 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
 
 function OverviewScreen({
   overview,
-  launchPending,
   ads,
   activeTool,
   toolEntries,
   actions,
 }: {
   overview: OverviewResult | null;
-  launchPending: boolean;
   ads: AdsResult | null;
   activeTool: ToolId;
   toolEntries: ToolEntry[];
@@ -4331,9 +4373,24 @@ function OverviewScreen({
       {activeTool === "codex" ? (
         <>
           <Panel>
-            <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
+            <CardHeader className="panel-head overview-health-header">
+              <CardTitle>{t("健康检查")}</CardTitle>
+              <div className="overview-health-header-actions">
+                <CardDescription>{t("概览只展示关键问题，具体配置在对应页面处理")}</CardDescription>
+                <Button
+                  aria-label={t("刷新状态")}
+                  title={t("刷新状态")}
+                  size="icon"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => void actions.refreshCurrent()}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
             <CardContent>
-              <div className="health-grid">
+              <div className="health-grid overview-health-grid">
                 <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
                   {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                   <div>
@@ -4353,31 +4410,6 @@ function OverviewScreen({
                   </div>
                 ))}
               </div>
-              <Toolbar>
-                <Button onClick={() => void actions.checkHealth()}>
-                  <RefreshCw className="h-4 w-4" />
-                  {t("检查")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
-                  <Wrench className="h-4 w-4" />
-                  {t("修复入口")}
-                </Button>
-              </Toolbar>
-            </CardContent>
-          </Panel>
-          <Panel>
-            <CardHead title={t("最近启动")} detail={overview?.logs_path ?? t("暂无状态文件")} />
-            <CardContent>
-              <LatestLaunch status={overview?.latest_launch ?? null} />
-              <Toolbar>
-                <Button disabled={launchPending} onClick={() => void actions.launch()}>
-                  <Rocket className="h-4 w-4" />
-                  {t("启动 Codex++")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.goLogs()}>
-                  {t("打开关于")}
-                </Button>
-              </Toolbar>
             </CardContent>
           </Panel>
         </>
@@ -4443,7 +4475,7 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
       passed: result ? proxyVariables.length === 0 : false,
       detail: result
         ? proxyVariables.length
-          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex++。", [proxyVariableLabels.join(t("、"))])
+          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex。", [proxyVariableLabels.join(t("、"))])
           : t("未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。")
         : t("等待检测。"),
     },
@@ -5157,7 +5189,7 @@ function EnhanceScreen({
                 {isWindowsPlatform ? <>
                   <FeatureToggle
                     title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
-                    detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex++ 时应用。扩展可能保留请求标识设置。")}
+                    detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。")}
                     checked={form.codexAppNativeBrowserRequireIdentification}
                     disabled={!masterEnabled}
                     onChange={(value) => {
@@ -6624,7 +6656,7 @@ function SessionsScreen({
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
-              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
+              <p><small>{t("自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
               <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
               {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
               {sessionIndexRepairReport.abortedReason ? (
@@ -6828,13 +6860,12 @@ function MaintenanceScreen({
   return (
     <>
       <Panel>
-        <CardHead title={t("检查与修复")} detail={t("检查入口、Codex 应用和 Watcher 状态")} />
+        <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
         <CardContent>
           <div className="status-table">
             <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-            <StatusRow title={t("静默启动入口")} status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
-            <StatusRow title={t("管理控制台入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
-            <StatusRow title={t("Watcher 自动接管")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
+            <StatusRow title={t("Codex++ 应用入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
+            <StatusRow title={t("开机打开 Codex++")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
@@ -6857,18 +6888,18 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持 Codex++ 接管状态")} />
+        <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，Codex 仍需点击启动")} />
         <CardContent>
           <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除 watcher")}</Button>
+            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("设置开机启动")}</Button>
+            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除开机启动")}</Button>
             <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
             <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后静默启动会自动复用")} />
+        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")} />
         <CardContent>
           <div className="status-table">
             <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
@@ -6913,7 +6944,7 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
+            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex")}</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
               {t("保存为默认路径")}
             </Button>
@@ -10387,7 +10418,7 @@ function PendingProviderImportDialog({
         <div className="modal-head">
           <div>
             <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。")}</p>
+            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
@@ -10870,6 +10901,7 @@ function GrokScreen({
 function ApplicationRail({
   tools,
   activeTool,
+  codexAppRunning,
   route,
   theme,
   onSelect,
@@ -10878,6 +10910,7 @@ function ApplicationRail({
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  codexAppRunning: boolean;
   route: Route;
   theme: Theme;
   onSelect: (toolId: ToolId) => void;
@@ -10891,6 +10924,7 @@ function ApplicationRail({
       <ToolSwitcher
         tools={tools}
         activeTool={activeTool}
+        codexAppRunning={codexAppRunning}
         showSelection={!globalNavigationRoutes.includes(route)}
         onSelect={onSelect}
       />
@@ -10951,11 +10985,13 @@ function ApplicationRail({
 function ToolSwitcher({
   tools,
   activeTool,
+  codexAppRunning,
   showSelection = true,
   onSelect,
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  codexAppRunning: boolean;
   showSelection?: boolean;
   onSelect: (toolId: ToolId) => void;
 }) {
@@ -10964,18 +11000,19 @@ function ToolSwitcher({
       {tools.map((tool) => {
         const icon = TOOL_ICONS[tool.id];
         const selected = showSelection && tool.id === activeTool;
+        const running = tool.id === "codex" && codexAppRunning;
         const title = tool.switchable
           ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
           : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
         return (
           <button
-            aria-label={tool.switchable ? tool.name : `${tool.name} · ${t("待接入")}`}
+            aria-label={tool.switchable ? `${tool.name}${running ? ` · ${t("运行中")}` : ""}` : `${tool.name} · ${t("待接入")}`}
             aria-pressed={selected}
             className={`tool-chip ${selected ? "active" : ""}`}
             disabled={!tool.switchable}
             key={tool.id}
             onClick={() => onSelect(tool.id)}
-            title={title}
+            title={`${title}${running ? `｜${t("运行中")}` : ""}`}
             type="button"
           >
             {icon ? (
@@ -10987,6 +11024,7 @@ function ToolSwitcher({
             ) : (
               <Blocks aria-hidden="true" className="tool-chip-icon" />
             )}
+            {running ? <span aria-hidden="true" className="tool-chip-running-dot" /> : null}
           </button>
         );
       })}
@@ -11091,20 +11129,6 @@ function StatusRow({ title, status = "unknown", path }: { title: string; status?
 
 function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
-}
-
-function LatestLaunch({ status }: { status: LaunchStatus | null }) {
-  if (!status) return <div className="empty">{t("暂无启动状态。")}</div>;
-  return (
-    <div className="metric-list">
-      <Metric label={t("状态")} value={status.status} />
-      <Metric label={t("消息")} value={status.message} />
-      <Metric label="Debug" value={String(status.debug_port ?? "-")} />
-      <Metric label="Helper" value={String(status.helper_port ?? "-")} />
-      <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
-      {status.aumid && <Metric label="AUMID" value={status.aumid} />}
-    </div>
-  );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -11222,7 +11246,7 @@ function routeSubtitle(route: Route) {
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("普通推荐内容"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
-    maintenance: t("入口安装、修复、Watcher 与手动启动"),
+    maintenance: t("入口安装、修复、开机启动与应用路径"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),
   };
@@ -11838,13 +11862,16 @@ function statusLabel(status: string) {
     not_checked: t("未检查"),
     not_implemented: t("未实现"),
     disabled: t("已禁用"),
+    stopped: t("未运行"),
+    connected: t("已连接"),
+    disconnected: t("未连接"),
     unknown: t("未知"),
   };
   return labels[status] ?? status;
 }
 
 function statusClass(status: string) {
-  if (["found", "installed", "ok", "running", "running_degraded"].includes(status)) return "good";
+  if (["found", "installed", "ok", "running", "running_degraded", "connected"].includes(status)) return "good";
   if (["failed", "missing"].includes(status)) return "bad";
   return "warn";
 }
@@ -11865,6 +11892,16 @@ function truncateSessionDeletePreview(value: string) {
 }
 
 function healthItems(overview: OverviewResult | null) {
+  const conversionEnabled = overview?.runtime_health?.protocol_conversion_enabled;
+  const conversionDetail = typeof conversionEnabled === "boolean"
+    ? t(conversionEnabled ? "协议转换已启用" : "协议转换未启用")
+    : undefined;
+  const serviceItem = (title: string, state: RuntimeServiceState | undefined, extraDetail?: string) => ({
+    title,
+    status: state?.status ?? "not_checked",
+    ok: ["running", "connected", "disabled"].includes(state?.status ?? ""),
+    detail: state ? [state.address, t(state.message), extraDetail].filter(Boolean).join(" · ") : t("等待状态检查"),
+  });
   return [
     {
       title: t("Codex 应用"),
@@ -11872,18 +11909,8 @@ function healthItems(overview: OverviewResult | null) {
       ok: overview?.codex_app.status === "found",
       detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
     },
-    {
-      title: t("静默启动入口"),
-      status: overview?.silent_shortcut.status ?? "not_checked",
-      ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || t("缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。"),
-    },
-    {
-      title: t("管理工具入口"),
-      status: overview?.management_shortcut.status ?? "not_checked",
-      ok: overview?.management_shortcut.status === "installed",
-      detail: overview?.management_shortcut.path || t("缺少管理工具快捷方式时可在安装维护页修复。"),
-    },
+    serviceItem(t("本地服务器状态"), overview?.runtime_health?.local_server, conversionDetail),
+    serviceItem(t("调试连接状态"), overview?.runtime_health?.debugger),
   ];
 }
 

@@ -5,6 +5,25 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "本地服务器状态": "Local server status",
+  "调试连接状态": "Debug connection status",
+  "当前配置无需本地服务器": "The current configuration does not require a local server",
+  "本地服务器已连接": "Local server is connected",
+  "本地服务器未运行": "Local server is not running",
+  "Codex 调试端点已连接": "Codex debugger is connected",
+  "Codex 调试端点未连接": "Codex debugger is not connected",
+  "协议转换已启用": "Protocol conversion enabled",
+  "协议转换未启用": "Protocol conversion disabled",
+  "未运行": "Not running",
+  "已连接": "Connected",
+  "未连接": "Disconnected",
+  "此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。": "This compatibility patch supports Edge / Chrome on Windows and applies the next time you start Codex. Extensions may retain their request identification settings.",
+  "Codex++ 应用入口": "Codex++ application",
+  "缺少 Codex++ 快捷方式时可在安装维护页修复。": "Repair a missing Codex++ shortcut on the Install & Maintenance page.",
+  "开机打开 Codex++": "Open Codex++ at login",
+  "登录系统后打开 Codex++ 界面，Codex 仍需点击启动": "Open the Codex++ window at login. Start Codex from this window.",
+  "检查 Codex++ 入口、Codex 应用和开机启动状态": "Check the Codex++ shortcut, Codex app and login startup status",
+
   "Fast（priority）支持": "Fast (priority) support",
   "模型配置：元数据与 Fast 支持": "Model settings: metadata and Fast support",
   "继承模型默认能力": "Inherit model defaults",
@@ -55,7 +74,7 @@ export const EN_PLAIN: Record<string, string> = {
   "正在读取插件清单…": "Loading the plugin catalog…",
   "使用本地索引缓存": "Using the cached catalog",
   "重试": "Retry",
-  "新开聊天或重启 Codex++ 后加载已安装插件。": "Open a new chat or restart Codex++ to load installed plugins.",
+  "新开聊天或重启 Codex 后加载已安装插件。": "Open a new chat or restart Codex to load installed plugins.",
   "暂无插件描述。": "No plugin description available.",
   "版本未声明": "Version not specified",
   "未声明许可": "License not specified",
@@ -163,8 +182,8 @@ export const EN_PLAIN: Record<string, string> = {
   "修复警告：": "Repair warning: ",
   "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。":
     "Repair session ownership and check for missing messages before launch; recheck the index every 30 minutes while running. Save settings to apply.",
-  "自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":
-    "Automatic checks require the Codex++ launcher to be running and automatic repair to be enabled and saved; checks repeat 30 minutes after the previous check finishes. This page refreshes the report every 15 seconds without starting a repair; another check does not guarantee recovery.",
+  "自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":
+    "Automatic checks require starting Codex from this window and keeping Codex++ running and automatic repair to be enabled and saved; checks repeat 30 minutes after the previous check finishes. This page refreshes the report every 15 seconds without starting a repair; another check does not guarantee recovery.",
   "短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。":
     "Items wait for up to 30 minutes; when both the original message and its record file have been unchanged for more than 24 hours, the item goes directly to review. A missing native turn or completion state means there is insufficient evidence to safely restore it; later checks will still verify it.",
   "主导航": "Main navigation",
@@ -577,10 +596,10 @@ export const EN_PLAIN: Record<string, string> = {
   "健康检查": "Health check",
   "先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。":
     "Add at least 1 API provider with a Base URL / Key before creating an aggregate provider.",
-  "免安装版或解包版只需要选择一次，之后静默启动会自动复用": "Portable or unpacked builds only need to be selected once; silent launch reuses it afterwards",
+  "免安装版或解包版只需要选择一次，之后从界面启动会自动复用": "Portable or unpacked builds only need to be selected once; launching from the window reuses it afterwards",
   "入口卸载": "Entrypoint uninstall",
   "入口安装": "Entrypoint install",
-  "入口安装、修复、Watcher 与手动启动": "Entrypoint install, repair, watcher and manual launch",
+  "入口安装、修复、开机启动与应用路径": "Entrypoint install, repair, watcher and manual launch",
   "入口管理": "Entrypoint management",
   "全选当前列表": "Select all in current list",
   "关于": "About",
@@ -690,7 +709,7 @@ export const EN_PLAIN: Record<string, string> = {
   "名称": "Name",
   "启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。":
     "Appended after the default CDP arguments when launching the Codex app. Leave empty to keep default launch behavior.",
-  "启动 Codex++": "Launch Codex++",
+  "启动 Codex": "Launch Codex",
   "启动任务": "Launch task",
   "启动前自动修复历史会话": "Auto-repair historical sessions before launch",
   "启用": "Enable",
@@ -706,8 +725,8 @@ export const EN_PLAIN: Record<string, string> = {
   "图片覆盖层": "Image overlay",
   "在会话列表悬停显示删除按钮，并支持撤销。": "Show a delete button on hover in the session list, with undo support.",
   "在会话列表显示导出按钮，导出带时间戳的 Markdown。": "Show an export button in the session list to export timestamped Markdown.",
-  "在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。启停后需重启 Codex++ 生效。":
-    "Shows a draggable follow-up suggestion overlay in the Codex page. Suggestions are generated by a separate Stepwise API. Restart Codex++ after changing this setting.",
+  "在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。启停后需重启 Codex 生效。":
+    "Shows a draggable follow-up suggestion overlay in the Codex page. Suggestions are generated by a separate Stepwise API. Restart Codex after changing this setting.",
   "在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。":
     "Show a short ID and UUIDv7 creation time before session titles in the sidebar to help locate past sessions.",
   "基础设置": "Basic settings",
@@ -723,7 +742,7 @@ export const EN_PLAIN: Record<string, string> = {
   "如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。":
     "If you use official mode or official mixed-API mode, you usually don't need plugin marketplace unlock.",
   "安装": "Install",
-  "安装 watcher": "Install watcher",
+  "设置开机启动": "Set up login startup",
   "安装入口": "Install entrypoints",
   "安装包更新失败，请查看错误提示后重试。": "Installer update failed. Check the error message and retry.",
   "安装包更新进度": "Installer update progress",
@@ -892,7 +911,7 @@ export const EN_PLAIN: Record<string, string> = {
   "诊断供应商": "Diagnose provider",
   "检测": "Detect",
   "检测到 OPENAI 环境变量": "OPENAI environment variables detected",
-  "检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。":
+  "检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。":
     "A provider config import request from the web was detected; confirming writes it to this machine's Codex++ manager.",
   "概览": "Overview",
   "概览只展示关键问题，具体配置在对应页面处理": "The overview shows only key issues; specific configuration is handled on the relevant pages",
@@ -969,7 +988,7 @@ export const EN_PLAIN: Record<string, string> = {
   "确认导入": "Confirm import",
   "禁用": "Disable",
   "禁用此扩展项": "Disable this entry",
-  "移除 watcher": "Remove watcher",
+  "移除开机启动": "Remove login startup",
   "立刻修复历史会话": "Repair historical sessions now",
   "第三方": "Third party",
   "策略": "Strategy",
@@ -1112,7 +1131,7 @@ export const EN_PLAIN: Record<string, string> = {
     "This provider writes only its own config.toml and skips the common config.",
   "配置": "Config",
   "配置文件": "Config file",
-  "重启 Codex++": "Restart Codex++",
+  "重启 Codex": "Restart Codex",
   "重新安装": "Reinstall",
   "重新生成": "Regenerate",
   "重置背景": "Reset background",
@@ -1413,8 +1432,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "检测到 TUN 模式已开启，请在 Clash Verge Rev 中关闭。配置：{0}":
     "TUN mode is enabled. Disable it in Clash Verge Rev. Configuration: {0}",
   "TUN 模式已关闭。配置：{0}": "TUN mode is disabled. Configuration: {0}",
-  "检测到代理环境变量：{0}。请清理后重新启动 Codex++。":
-    "Proxy environment variables detected: {0}. Remove them and restart Codex++.",
+  "检测到代理环境变量：{0}。请清理后重新启动 Codex。":
+    "Proxy environment variables detected: {0}. Remove them and restart Codex.",
   "检测到可能干扰供应商配置的 .env 文件：{0}": "A .env file that may interfere with provider configuration was found: {0}",
   "未发现 .env 文件：{0}": "No .env file found: {0}",
   "官方登录已就绪：{0}，会混入当前 API Key。": "Official login ready: {0}, the current API Key will be mixed in.",
@@ -1597,8 +1616,8 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^打开链接失败：(.+)$/, "Failed to open link: $1"],
   [/^检查更新失败：(.+)$/, "Failed to check for updates: $1"],
   [/^安装更新失败：(.+)$/, "Failed to install update: $1"],
-  [/^安装 watcher 失败：(.+)$/, "Failed to install watcher: $1"],
-  [/^移除 watcher 失败：(.+)$/, "Failed to remove watcher: $1"],
+  [/^设置开机启动 失败：(.+)$/, "Failed to install watcher: $1"],
+  [/^移除开机启动 失败：(.+)$/, "Failed to remove watcher: $1"],
   [/^启用 watcher 失败：(.+)$/, "Failed to enable watcher: $1"],
   [/^禁用 watcher 失败：(.+)$/, "Failed to disable watcher: $1"],
   [/^读取日志失败：(.+)$/, "Failed to read logs: $1"],

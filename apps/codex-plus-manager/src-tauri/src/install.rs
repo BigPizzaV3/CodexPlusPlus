@@ -19,10 +19,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inspect_entrypoints_reports_two_entrypoints() {
+    fn compatibility_fields_report_the_same_application_entrypoint() {
         let state = inspect_entrypoints();
 
-        assert!(matches!(state.silent_shortcut.installed, true | false));
-        assert!(matches!(state.management_shortcut.installed, true | false));
+        assert_eq!(
+            state.silent_shortcut.installed,
+            state.management_shortcut.installed
+        );
+        assert_eq!(state.silent_shortcut.path, state.management_shortcut.path);
     }
 }

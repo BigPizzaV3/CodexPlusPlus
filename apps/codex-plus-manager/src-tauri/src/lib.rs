@@ -1,20 +1,25 @@
 pub mod commands;
 pub mod install;
+mod runtime_health;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 const TRAY_ID: &str = "codex_plus_tray";
 
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
+static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
+static SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
 const TRAY_MENU_SHOW: &str = "tray_show_main";
-const TRAY_MENU_DREAM_SKIN_APPLY: &str = "tray_apply_dream_skin";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
-const DREAM_SKIN_DEBUG_PORT: u16 = 9229;
 const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
+
+pub(crate) fn app_is_exiting() -> bool {
+    APP_EXITING.load(Ordering::SeqCst)
+}
 
 pub fn run() {
     install_panic_logger();
@@ -27,6 +32,24 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
+    #[cfg(target_os = "macos")]
+    if let Some(root) = codex_plus_core::install::default_install_root() {
+        match codex_plus_core::install::macos::migrate_legacy_manager_bundle(&root) {
+            Ok(Some(archive)) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.legacy_manager_migrated",
+                    serde_json::json!({ "archive": archive }),
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.legacy_manager_migration_failed",
+                    serde_json::json!({ "message": error.to_string() }),
+                );
+            }
+        }
+    }
     if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load()
         && let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
@@ -51,22 +74,29 @@ pub fn run() {
             };
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                    .title("Codex++ 管理工具")
-                    .visible(!startup_is_background())
-                    .focused(!startup_is_background())
+                    .title("Codex++")
+                    .visible(true)
+                    .focused(true)
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
                 main_window_builder = main_window_builder.icon(icon)?;
             }
             let main_window = main_window_builder.build()?;
-            if startup_is_background() {
-                main_window.hide()?;
-                set_manager_activation_policy(app.handle(), false);
-            }
             install_tray(app)?;
+            let navigation_app = app.handle().clone();
+            codex_plus_launcher::set_navigation_handler(move |_payload| {
+                let app = navigation_app.clone();
+                navigation_app.run_on_main_thread(move || {
+                    show_main_window(&app);
+                    let _ = app.emit(MANAGER_NAVIGATION_EVENT, ());
+                })?;
+                Ok(())
+            });
+            start_window_activation_listener(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
-            register_main_window_events(main_window, startup_is_transient());
+            register_main_window_events(main_window);
+            commands::resume_existing_codex_background(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -205,6 +235,25 @@ pub fn run() {
         .build(tauri::generate_context!());
     match app_result {
         Ok(app) => app.run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                if !SHUTDOWN_COMPLETE.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    if !SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) {
+                        APP_EXITING.store(true, Ordering::SeqCst);
+                        let app = app_handle.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) = codex_plus_launcher::shutdown() {
+                                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                                    "app.shutdown_failed",
+                                    serde_json::json!({ "message": error.to_string() }),
+                                );
+                            }
+                            SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
+                            app.exit(0);
+                        });
+                    }
+                }
+            }
             #[cfg(target_os = "macos")]
             match event {
                 tauri::RunEvent::Opened { urls } => {
@@ -282,27 +331,16 @@ pub fn handle_session_share_url(url: &str) -> bool {
 
 fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, TRAY_MENU_SHOW, "显示主窗口", true, None::<&str>)?;
-    let apply_skin_item = MenuItem::with_id(
-        app,
-        TRAY_MENU_DREAM_SKIN_APPLY,
-        "应用 Dream Skin",
-        true,
-        None::<&str>,
-    )?;
     let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出程序", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(app, &[&show_item, &apply_skin_item, &quit_item])?;
+    let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
-        .show_menu_on_left_click(false)
+        .tooltip("Codex++")
+        .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_MENU_SHOW => {
                 show_main_window(app);
-            }
-            TRAY_MENU_DREAM_SKIN_APPLY => {
-                tauri::async_runtime::spawn(async {
-                    record_tray_dream_skin_result("apply", apply_dream_skin_from_tray().await);
-                });
             }
             TRAY_MENU_QUIT => {
                 APP_EXITING.store(true, Ordering::SeqCst);
@@ -311,12 +349,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| match event {
-            TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            }
-            | TrayIconEvent::DoubleClick {
+            TrayIconEvent::DoubleClick {
                 button: MouseButton::Left,
                 ..
             } => {
@@ -325,18 +358,44 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         });
 
+    #[cfg(target_os = "macos")]
+    {
+        // 使用项目原有云朵图标；系统按 18pt 显示，不加标题占据菜单栏空间。
+        // 禁用模板模式以保留品牌渐变颜色。
+        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(false);
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Some(icon) = app.default_window_icon().cloned() {
         tray_builder = tray_builder.icon(icon);
     }
 
+    // Tauri 的资源表持有托盘对象，局部句柄释放不会移除菜单栏入口。
     let _ = tray_builder.build(app)?;
     Ok(())
 }
 
-fn register_main_window_events<R: tauri::Runtime>(
-    window: tauri::WebviewWindow<R>,
-    transient: bool,
-) {
+#[cfg(any(target_os = "macos", test))]
+fn macos_tray_icon() -> tauri::image::Image<'static> {
+    tauri::include_image!("icons/icon.png")
+}
+
+#[cfg(test)]
+mod tray_tests {
+    #[test]
+    fn macos_tray_preserves_the_brand_icons_colour_and_transparency() {
+        let icon = super::macos_tray_icon();
+        assert_eq!(icon.width(), icon.height());
+        assert!(icon.width() > 0);
+        assert!(
+            icon.rgba()
+                .chunks_exact(4)
+                .any(|pixel| pixel[3] > 0 && pixel[2] > pixel[0])
+        );
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+    }
+}
+
+fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let event_window = window.clone();
     let close_event_window = event_window.clone();
     let close_event_app = event_window.app_handle().clone();
@@ -355,45 +414,12 @@ fn register_main_window_events<R: tauri::Runtime>(
                 return;
             }
 
-            if transient {
-                APP_EXITING.store(true, Ordering::SeqCst);
-                close_event_app.exit(0);
-                return;
-            }
-
             api.prevent_close();
             let _ = close_event_window.hide();
             set_manager_activation_policy(&close_event_app, false);
         }
         _ => {}
     });
-}
-
-fn startup_is_transient() -> bool {
-    std::env::args().any(|arg| arg == "--transient")
-}
-
-fn startup_is_background() -> bool {
-    is_background_launch(std::env::args())
-}
-
-fn is_background_launch(args: impl IntoIterator<Item = String>) -> bool {
-    args.into_iter().any(|arg| arg == "--background")
-}
-
-#[cfg(test)]
-mod manager_launch_mode_tests {
-    use super::is_background_launch;
-
-    #[test]
-    fn explicit_open_is_visible_and_only_background_flag_hides() {
-        for args in [vec!["manager"], vec!["manager", "--transient"], vec!["manager", "--show-update"]] {
-            assert!(!is_background_launch(args.into_iter().map(String::from)));
-        }
-        for args in [vec!["manager", "--background"], vec!["manager", "--show-update", "--background"]] {
-            assert!(is_background_launch(args.into_iter().map(String::from)));
-        }
-    }
 }
 
 #[tauri::command]
@@ -413,22 +439,14 @@ fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
 fn update_tray_labels<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     show_label: String,
-    apply_skin_label: String,
     quit_label: String,
     window_title: String,
 ) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let show_item = MenuItem::with_id(&app, TRAY_MENU_SHOW, &show_label, true, None::<&str>);
-        let apply_skin_item = MenuItem::with_id(
-            &app,
-            TRAY_MENU_DREAM_SKIN_APPLY,
-            &apply_skin_label,
-            true,
-            None::<&str>,
-        );
         let quit_item = MenuItem::with_id(&app, TRAY_MENU_QUIT, &quit_label, true, None::<&str>);
-        if let (Ok(show), Ok(apply_skin), Ok(quit)) = (show_item, apply_skin_item, quit_item) {
-            if let Ok(menu) = Menu::with_items(&app, &[&show, &apply_skin, &quit]) {
+        if let (Ok(show), Ok(quit)) = (show_item, quit_item) {
+            if let Ok(menu) = Menu::with_items(&app, &[&show, &quit]) {
                 let _ = tray.set_menu(Some(menu));
             }
         }
@@ -436,43 +454,6 @@ fn update_tray_labels<R: tauri::Runtime>(
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title(&window_title);
     }
-}
-
-async fn apply_dream_skin_from_tray() -> anyhow::Result<()> {
-    let store = codex_plus_core::settings::SettingsStore::default();
-    let current = store.load()?;
-    if !current.enhancements_enabled {
-        anyhow::bail!("Codex enhancements are disabled");
-    }
-    let settings = store.update(serde_json::json!({
-        "codexAppDreamSkinEnabled": true,
-        "codexAppDreamSkinPaused": false
-    }))?;
-    debug_assert!(settings.enhancements_enabled);
-    codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
-        true,
-        &settings.codex_app_dream_skin_theme_config,
-    )?;
-    codex_plus_core::dream_skin_runtime::apply_dream_skin_live(
-        DREAM_SKIN_DEBUG_PORT,
-        codex_plus_core::protocol_proxy::protocol_proxy_port(),
-    )
-    .await?;
-    Ok(())
-}
-
-fn record_tray_dream_skin_result(action: &str, result: anyhow::Result<()>) {
-    let (event, detail) = match result {
-        Ok(()) => (
-            "manager.tray_dream_skin_ok",
-            serde_json::json!({ "action": action }),
-        ),
-        Err(error) => (
-            "manager.tray_dream_skin_failed",
-            serde_json::json!({ "action": action, "error": error.to_string() }),
-        ),
-    };
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(event, detail);
 }
 
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
@@ -489,6 +470,7 @@ fn set_manager_activation_policy<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     main_window_visible: bool,
 ) {
+    // 关闭窗口收起到菜单栏；重新打开窗口时才恢复 Dock 图标。
     let policy = if main_window_visible {
         tauri::ActivationPolicy::Regular
     } else {
@@ -506,6 +488,17 @@ fn set_manager_activation_policy<R: tauri::Runtime>(
 
 /// Restores and focuses an existing manager window on desktop platforms.
 pub fn focus_existing_manager_window() {
+    // 锁持有者在主进程内消费请求，Linux 及隐藏窗口也能重新打开。
+    let path = window_activation_request_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let request = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .to_string();
+    let _ = std::fs::write(path, request);
     #[cfg(windows)]
     {
         let current_process_id = std::process::id();
@@ -513,11 +506,11 @@ pub fn focus_existing_manager_window() {
             if process.process_id == current_process_id {
                 continue;
             }
-            if process
-                .exe_file
-                .eq_ignore_ascii_case("codex-plus-plus-manager.exe")
+            if ["codex-plus-plus.exe", "codex-plus-plus-manager.exe"]
+                .iter()
+                .any(|name| process.exe_file.eq_ignore_ascii_case(name))
+                && codex_plus_core::windows_activate_process_window(process.process_id)
             {
-                let _ = codex_plus_core::windows_activate_process_window(process.process_id);
                 break;
             }
         }
@@ -525,10 +518,44 @@ pub fn focus_existing_manager_window() {
 
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("/usr/bin/open")
-            .args(["-b", codex_plus_core::install::MANAGER_BUNDLE_ID])
-            .status();
+        if let Ok(executable) = std::env::current_exe()
+            && let Ok(app) =
+                codex_plus_core::install::macos::native_application_bundle_from_executable(
+                    &executable,
+                )
+        {
+            let _ = std::process::Command::new("/usr/bin/open")
+                .arg(app)
+                .status();
+        }
     }
+}
+
+fn window_activation_request_path() -> std::path::PathBuf {
+    codex_plus_core::paths::default_app_state_dir().join(format!(
+        "window-activation-{}.request",
+        codex_plus_core::ports::manager_guard_port()
+    ))
+}
+
+fn start_window_activation_listener(app: tauri::AppHandle) {
+    let path = window_activation_request_path();
+    let mut previous = std::fs::read(&path).unwrap_or_default();
+    std::thread::spawn(move || {
+        while !SHUTDOWN_STARTED.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let current = std::fs::read(&path).unwrap_or_default();
+            if !current.is_empty() && current != previous {
+                previous = current;
+                let app = app.clone();
+                let handle = app.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    show_main_window(&app);
+                    let _ = app.emit(MANAGER_NAVIGATION_EVENT, ());
+                });
+            }
+        }
+    });
 }
 
 fn install_panic_logger() {
@@ -584,9 +611,7 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                     "guard_port": codex_plus_core::ports::manager_guard_port()
                 }),
             );
-            if !startup_is_background() {
-                focus_existing_manager_window();
-            }
+            focus_existing_manager_window();
             None
         }
         Err(error) => {

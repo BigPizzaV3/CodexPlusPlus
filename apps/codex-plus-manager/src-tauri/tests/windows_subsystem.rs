@@ -62,15 +62,16 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
     assert!(!lib_rs.contains(".dialog()"));
     assert!(!lib_rs.contains("manager://close-requested"));
     assert!(lib_rs.contains("let _ = close_event_window.hide();"));
-    assert!(lib_rs.contains("startup_is_transient()"));
-    assert!(lib_rs.contains("arg == \"--transient\""));
+    assert!(!lib_rs.contains("startup_is_transient()"));
+    assert!(lib_rs.contains(".visible(true)"));
+    assert!(lib_rs.contains("codex_plus_launcher::shutdown()"));
     assert!(!app_tsx.contains("CloseConfirmDialog"));
     assert!(app_tsx.contains("manager_exit_app"));
     assert!(app_tsx.contains("manager_hide_to_tray"));
 }
 
 #[test]
-fn manager_hides_macos_dock_icon_when_window_moves_to_tray() {
+fn manager_keeps_a_visible_brand_tray_and_click_menu_when_hiding_the_macos_dock_icon() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
 
@@ -79,6 +80,10 @@ fn manager_hides_macos_dock_icon_when_window_moves_to_tray() {
     assert!(lib_rs.contains("set_manager_activation_policy(&close_event_app, false)"));
     assert!(lib_rs.contains("set_manager_activation_policy(app_handle, true)"));
     assert!(lib_rs.contains("set_manager_activation_policy(&app_handle, false)"));
+    assert!(lib_rs.contains(".icon_as_template(false)"));
+    assert!(lib_rs.contains("tauri::include_image!(\"icons/icon.png\")"));
+    assert!(lib_rs.contains(".show_menu_on_left_click(true)"));
+    assert!(lib_rs.contains(".tooltip(\"Codex++\")"));
 }
 
 #[test]
@@ -95,7 +100,8 @@ fn manager_second_instance_activates_existing_macos_bundle() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
 
-    assert!(lib_rs.contains("codex_plus_core::install::MANAGER_BUNDLE_ID"));
+    assert!(lib_rs.contains("native_application_bundle_from_executable"));
+    assert!(!lib_rs.contains("codex_plus_core::install::MANAGER_BUNDLE_ID"));
     assert!(lib_rs.contains("std::process::Command::new(\"/usr/bin/open\")"));
 }
 
@@ -111,17 +117,21 @@ fn manager_queues_codexplusplus_provider_urls_for_confirmation_on_startup() {
 }
 
 #[test]
-fn launcher_binary_embeds_codex_icon_resource() {
+fn only_the_gui_binary_is_built_with_the_codex_icon() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let launcher_build = manifest_dir
+    let launcher_manifest = manifest_dir
         .parent()
         .and_then(std::path::Path::parent)
         .unwrap()
-        .join("codex-plus-launcher/build.rs");
-    let build_rs = std::fs::read_to_string(&launcher_build).expect("read launcher build.rs");
-
-    assert!(build_rs.contains("WindowsResource"));
-    assert!(build_rs.contains("icons/icon.ico"));
+        .join("codex-plus-launcher/Cargo.toml");
+    let launcher = std::fs::read_to_string(&launcher_manifest).expect("read runtime manifest");
+    let manager = std::fs::read_to_string(manifest_dir.join("Cargo.toml")).unwrap();
+    let config = std::fs::read_to_string(manifest_dir.join("tauri.conf.json")).unwrap();
+    assert!(launcher.contains("autobins = false"));
+    assert!(launcher.contains("build = false"));
+    assert!(!launcher.contains("[[bin]]"));
+    assert!(manager.contains("name = \"codex-plus-plus\""));
+    assert!(config.contains("icons/icon.ico"));
 }
 
 #[test]
@@ -174,18 +184,25 @@ fn windows_entrypoints_register_codexplusplus_url_protocol() {
 }
 
 #[test]
-fn manager_launch_button_spawns_silent_launcher_binary() {
+fn manager_launch_button_uses_the_embedded_runtime() {
     let commands_rs =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands.rs"))
             .expect("read manager commands.rs");
 
-    assert!(commands_rs.contains("SILENT_BINARY"));
-    assert!(commands_rs.contains("std::process::Command::new"));
-    assert!(!commands_rs.contains("launch_and_inject_with_hooks(options"));
+    let body = commands_rs
+        .split("fn start_embedded_launcher(")
+        .nth(1)
+        .unwrap()
+        .split("pub fn start_weixin_connect_from_saved_settings")
+        .next()
+        .unwrap();
+    assert!(body.contains("codex_plus_launcher::start"));
+    assert!(!body.contains("spawn_companion"));
+    assert!(!body.contains("Command::new"));
 }
 
 #[test]
-fn macos_packager_hides_silent_launcher_but_not_manager() {
+fn macos_packager_builds_one_visible_native_gui_with_legacy_update_shim() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let packager = manifest_dir
         .parent()
@@ -200,11 +217,15 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
     assert!(script.contains("BINARY_DIR=\"${BINARY_DIR:-$ROOT/target/release}\""));
     assert!(script.contains("CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"));
     assert!(script.contains(
-        "create_app \"Codex++\" \"CodexPlusPlus\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus\" \"true\""
+        "create_app \"Codex++\" \"CodexPlusPlus\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus\" \"false\""
     ));
     assert!(script.contains(
-        "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-plus-manager\" \"com.bigpizzav3.codexplusplus.manager\" \"false\""
+        "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-legacy-shim\" \"com.bigpizzav3.codexplusplus.manager\" \"true\""
     ));
+    assert!(script.contains("printf '%s\\n' \"Codex++ 管理工具.app\" > \"$STAGE/.hidden\""));
+    assert!(script.contains("chflags hidden \"$STAGE/Codex++ 管理工具.app\""));
+    assert!(script.contains("set visible of item \"Codex++ 管理工具.app\" to false"));
+    assert!(script.contains("<key>CodexPlusUnifiedApp</key>"));
 }
 
 #[test]

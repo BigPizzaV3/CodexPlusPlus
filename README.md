@@ -28,7 +28,7 @@
   <br><sub>从供应商配置到界面增强，一个管理工具就够了。</sub>
 </p>
 
-Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理工具，通过 CDP 与本地辅助服务提供供应商切换、协议转换、会话管理和界面增强。它不修改官方应用的 `app.asar`，也不向安装目录写入补丁文件。
+Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通过 CDP 与内置运行服务提供供应商切换、协议转换、会话管理和界面增强。双击打开配置界面，再从界面启动官方应用。它不修改官方应用的 `app.asar`，也不向安装目录写入补丁文件。
 
 ## 交流与支持
 
@@ -210,20 +210,17 @@ Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」�
 
 **鲸鱼功能来源与鸣谢：**原始功能、完整界面引擎、鲸鱼角色及内置音效/动图来自 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，本项目将其适配为 Codex++ 内置功能；Codex 桌面版技术路线另参考 [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public)。原始代码与素材声明见随项目保留的 [LICENSE](assets/inject/upstream/whale-widget/LICENSE) 和 [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md)，素材不重新声明为本项目原创。
 
-### 2. 打开管理工具，完成配置
+### 2. 打开 Codex++，完成配置
 
-安装后有两个入口：
+安装后只有一个 **Codex++** 入口。Windows 提供桌面与开始菜单快捷方式，macOS 将 DMG 内的 **Codex++.app** 拖入「应用程序」。双击始终打开界面，可以检查应用路径与运行状态，配置供应商、模型和增强功能，管理更新与诊断。
 
-| 入口 | 用来做什么 |
-| --- | --- |
-| **Codex++ 管理工具** | 检查应用路径与运行状态，配置供应商、模型和增强功能，管理更新与诊断。 |
-| **Codex++** | 静默启动官方桌面应用，并加载已保存的供应商与增强配置。 |
+首次使用先确认官方应用路径，再选择供应商模式，按需开启增强功能并保存。
 
-首次使用先打开 **Codex++ 管理工具**，确认应用路径，再选择供应商模式，按需开启增强功能并保存。
+**旧版 macOS 用户：**新发布的 DMG 会保留一个隐藏的兼容壳，让 v1.7.x 的旧更新器可以自动替换两个旧 app；更新后首次启动会自动将兼容壳移到 `~/.codex-session-delete/legacy-migrations`，Applications 中只保留 Codex++。v1.5/v1.6 的旧版本只会打开 DMG，请把其中可见的 **Codex++.app** 拖入「应用程序」替换一次；新版启动时同样会自动归档旧的 **Codex++ 管理工具.app**。原有配置与会话数据继续沿用。
 
-### 3. 从 Codex++ 入口开始工作
+### 3. 在界面中启动 Codex
 
-从 **Codex++** 启动桌面应用。依赖注入脚本的设置通常需要保存后重启 Codex++ 才会生效。
+在 **Codex++** 界面中点击「启动」，加载已保存的供应商与增强配置并打开官方桌面应用。依赖注入脚本的设置通常需要保存后，在界面中重启 Codex 才会生效。
 
 所有界面增强均可单独关闭；关闭增强总开关后，仍可使用供应商与启动管理能力。后续可在管理工具的「关于」页检查并启动更新。
 
@@ -259,7 +256,7 @@ another-model[128000]
 <details>
   <summary><strong>启动后，为什么没有 Codex++ 菜单？</strong></summary>
 
-确认从 **Codex++** 入口启动。打开管理工具的「安装维护」与「关于」页面，检查应用路径、启动状态和诊断日志。
+确认在 **Codex++** 界面中点击「启动」打开官方应用。打开「安装维护」与「关于」页面，检查应用路径、启动状态和诊断日志。
 
 </details>
 

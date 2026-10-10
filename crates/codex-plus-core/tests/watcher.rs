@@ -50,26 +50,25 @@ fn watcher_enable_and_disable_toggle_flag() {
 }
 
 #[test]
-fn watcher_install_plan_registers_rust_launcher_at_logon() {
+fn watcher_install_plan_opens_the_gui_at_logon() {
     let plan = build_watcher_install_plan("C:/Tools/codex-plus-plus.exe".into(), 9333);
 
     assert_eq!(plan.run_value_name, "CodexPlusPlusWatcher");
     assert_eq!(
         plan.run_value,
-        "\"C:/Tools/codex-plus-plus.exe\" --debug-port 9333"
+        "\"C:/Tools/codex-plus-plus.exe\" --autostart"
     );
     assert_eq!(plan.shortcut_name, "CodexPlusPlusWatcher.lnk");
     assert_eq!(plan.shortcut_target, "C:/Tools/codex-plus-plus.exe");
-    assert_eq!(plan.shortcut_arguments, "--debug-port 9333");
+    assert_eq!(plan.shortcut_arguments, "--autostart");
 }
 
 #[test]
-fn spawn_launcher_command_points_to_silent_binary_only() {
+fn startup_command_opens_only_the_unified_gui() {
     let command = build_spawn_launcher_command("C:/Tools/codex-plus-plus.exe", 9444);
 
     assert_eq!(command[0], "C:/Tools/codex-plus-plus.exe");
-    assert!(command.contains(&"--debug-port".to_string()));
-    assert!(command.contains(&"9444".to_string()));
+    assert_eq!(command, ["C:/Tools/codex-plus-plus.exe", "--autostart"]);
     assert!(!command.iter().any(|part| part.contains("manager")));
 }
 

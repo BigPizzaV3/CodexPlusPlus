@@ -12,22 +12,51 @@ struct BundleSpec {
     executable: &'static str,
 }
 
-const BUNDLES: [BundleSpec; 2] = [
-    BundleSpec {
-        name: "Codex++.app",
-        id: "com.bigpizzav3.codexplusplus",
-        executable: "CodexPlusPlus",
-    },
-    BundleSpec {
-        name: "Codex++ 管理工具.app",
-        id: "com.bigpizzav3.codexplusplus.manager",
-        executable: "CodexPlusPlusManager",
-    },
-];
+const BUNDLES: [BundleSpec; 1] = [BundleSpec {
+    name: "Codex++.app",
+    id: "com.bigpizzav3.codexplusplus",
+    executable: "CodexPlusPlus",
+}];
+
+const LEGACY_MIGRATION_MESSAGE: &str = "旧双应用布局需手动迁移：下载新版安装包，将完整 Codex++.app 安装到 Applications 后打开；旧版自动更新器不支持单应用安装包，旧入口请确认后自行移除。";
+
+fn installed_root_from_executable(executable: &Path) -> anyhow::Result<PathBuf> {
+    let root = executable
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow::anyhow!("请从已安装的 Codex++.app 内更新。"))?;
+    let expected = root
+        .join(BUNDLES[0].name)
+        .join("Contents/MacOS")
+        .join(BUNDLES[0].executable);
+    // Finder 可能保留目录大小写；是否为新版界面由 CodexPlusUnifiedApp 标记校验。
+    if !expected
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&executable.to_string_lossy())
+    {
+        let app_name = executable
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str());
+        if app_name.is_some_and(|name| name.eq_ignore_ascii_case("Codex++ 管理工具.app")) {
+            bail!("{LEGACY_MIGRATION_MESSAGE}");
+        }
+        bail!(
+            "当前应用目录名称不符合自动更新布局；请将完整新版 Codex++.app 手动安装到标准应用目录后更新。"
+        );
+    }
+    Ok(root.to_path_buf())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BundleInfo {
+    name: String,
+    unified: bool,
     id: String,
     executable: String,
     version: String,
@@ -43,7 +72,7 @@ struct UpdatePlan {
     installer: PathBuf,
     version: String,
     manager_pid: u32,
-    old_bundles: [BundleInfo; 2],
+    old_bundles: [BundleInfo; 1],
 }
 
 trait BundleOps {
@@ -100,8 +129,14 @@ fn validate_bundle(
         bail!("更新 app 不允许是符号链接：{}", bundle.display());
     }
     let info = ops.inspect(bundle)?;
-    if info.id != spec.id || info.executable != spec.executable {
+    if info.id != spec.id
+        || info.executable != spec.executable
+        || info.name != crate::install::APP_NAME
+    {
         bail!("更新 app 身份或可执行文件不匹配：{}", bundle.display());
+    }
+    if !info.unified {
+        bail!("{LEGACY_MIGRATION_MESSAGE}");
     }
     super::parse_version_tag(&info.version)?;
     let executable = bundle.join("Contents/MacOS").join(spec.executable);
@@ -196,7 +231,7 @@ fn replace_bundles(ops: &impl BundleOps, plan: &UpdatePlan) -> anyhow::Result<()
                 backups.display()
             );
         }
-        bail!("更新失败，两个旧 app 已恢复：{error}");
+        bail!("更新失败，旧 Codex++ app 已恢复：{error}");
     }
     Ok(())
 }
@@ -350,6 +385,9 @@ mod runtime {
                 .filter(|team| !team.is_empty() && *team != "not set")
                 .map(ToString::to_string);
             Ok(BundleInfo {
+                name: plist(bundle, "CFBundleName")?,
+                unified: optional_plist(bundle, "CodexPlusUnifiedApp")?
+                    .is_some_and(|value| value == "true"),
                 id: plist(bundle, "CFBundleIdentifier")?,
                 executable: plist(bundle, "CFBundleExecutable")?,
                 version: plist(bundle, "CFBundleShortVersionString")?,
@@ -422,14 +460,11 @@ mod runtime {
     }
 
     fn manager_executable(root: &Path) -> PathBuf {
-        root.join(BUNDLES[1].name)
+        let executable = root
+            .join(BUNDLES[0].name)
             .join("Contents/MacOS")
-            .join(BUNDLES[1].executable)
-    }
-    fn launcher_executable(root: &Path) -> PathBuf {
-        root.join(BUNDLES[0].name)
-            .join("Contents/MacOS")
-            .join(BUNDLES[0].executable)
+            .join(BUNDLES[0].executable);
+        fs::canonicalize(&executable).unwrap_or(executable)
     }
     fn write_state(plan: &UpdatePlan, status: &str, message: &str) -> anyhow::Result<()> {
         crate::settings::atomic_write(
@@ -481,7 +516,7 @@ mod runtime {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                bail!("未收到管理工具批准，旧 app 未替换。");
+                bail!("未收到 Codex++ 批准，旧 app 未替换。");
             }
             sleep(Duration::from_millis(100));
         }
@@ -510,50 +545,12 @@ mod runtime {
         let start = Instant::now();
         while let Some(path) = process_path(plan.manager_pid)? {
             if path != expected {
-                bail!("管理工具进程身份已变化，未替换 app。");
+                bail!("Codex++ 进程身份已变化，未替换 app。");
             }
             if start.elapsed() > Duration::from_secs(60) {
-                bail!("等待管理工具正常退出超时，未替换 app。");
+                bail!("等待 Codex++ 正常退出超时，未替换 app。");
             }
             sleep(Duration::from_millis(100));
-        }
-        Ok(())
-    }
-    fn stop_owned_launchers(plan: &UpdatePlan, was_running: &mut bool) -> anyhow::Result<()> {
-        let expected = launcher_executable(&plan.install_root);
-        let result = checked(
-            "/bin/ps",
-            &["-ww".as_ref(), "-axo".as_ref(), "pid=,comm=".as_ref()],
-        )?;
-        let mut pids = Vec::new();
-        for line in String::from_utf8(result.stdout)?.lines() {
-            let line = line.trim();
-            if let Some((pid, path)) = line.split_once(char::is_whitespace) {
-                if fs::canonicalize(Path::new(path.trim())).ok().as_deref()
-                    == Some(expected.as_path())
-                {
-                    if let Ok(pid) = pid.parse::<u32>() {
-                        pids.push(pid);
-                    }
-                }
-            }
-        }
-        *was_running = !pids.is_empty();
-        for pid in &pids {
-            // 只针对本安装目录的静默 launcher，发送前再次确认；不终止 Codex 客户端。
-            if process_path(*pid)?.as_deref() != Some(expected.as_path()) {
-                bail!("launcher 身份已变化，未发送退出信号。");
-            }
-            checked("/bin/kill", &["-TERM".as_ref(), pid.to_string().as_ref()])?;
-        }
-        let start = Instant::now();
-        for pid in &pids {
-            while process_path(*pid)?.as_deref() == Some(expected.as_path()) {
-                if start.elapsed() > Duration::from_secs(30) {
-                    bail!("等待本安装目录 launcher 退出超时，未替换 app。");
-                }
-                sleep(Duration::from_millis(100));
-            }
         }
         Ok(())
     }
@@ -569,7 +566,7 @@ mod runtime {
         let root = fs::canonicalize(&plan.install_root)?;
         let transaction = fs::canonicalize(&plan.transaction)?;
         let txn_meta = fs::metadata(&transaction)?;
-        if plan.schema != 1
+        if plan.schema != 2
             || plan.manager_pid <= 1
             || plan.manager_pid == std::process::id()
             || root != plan.install_root
@@ -591,7 +588,7 @@ mod runtime {
             bail!("更新计划的 DMG 不存在。");
         }
         if process_path(plan.manager_pid)?.as_deref() != Some(manager_executable(&root).as_path()) {
-            bail!("启动更新的管理工具会话已失效或不属于本安装目录。");
+            bail!("启动更新的 Codex++ 会话已失效或不属于本安装目录。");
         }
         for (index, spec) in BUNDLES.iter().copied().enumerate() {
             let info = validate_bundle(&NativeOps, &root.join(spec.name), spec)?;
@@ -604,30 +601,46 @@ mod runtime {
         Ok(plan)
     }
 
+    fn prepare_detached_helper(executable: &Path, transaction: &Path) -> anyhow::Result<PathBuf> {
+        let helper = transaction.join("manager-update-helper");
+        fs::copy(executable, &helper)?;
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        // bundle 内的签名引用 Info.plist；裸副本须重新签名才能独立运行。
+        checked(
+            "/usr/bin/codesign",
+            &[
+                "--force".as_ref(),
+                "--sign".as_ref(),
+                "-".as_ref(),
+                helper.as_os_str(),
+            ],
+        )
+        .context("临时更新 helper 重新签名失败")?;
+        checked(
+            "/usr/bin/codesign",
+            &["--verify".as_ref(), "--strict".as_ref(), helper.as_os_str()],
+        )
+        .context("临时更新 helper 签名校验失败")?;
+        Ok(helper)
+    }
+
     pub(super) fn launch(installer: &Path, version: &str) -> anyhow::Result<()> {
         let executable = fs::canonicalize(std::env::current_exe()?)?;
-        let root = executable
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .ok_or_else(|| anyhow::anyhow!("请从已安装的 macOS 管理工具 app 内更新。"))?;
-        if manager_executable(root) != executable {
-            bail!("当前管理工具不在标准 macOS app 内，请手动安装两个完整 app。");
-        }
-        let old_bundles = [
-            validate_bundle(&NativeOps, &root.join(BUNDLES[0].name), BUNDLES[0])?,
-            validate_bundle(&NativeOps, &root.join(BUNDLES[1].name), BUNDLES[1])?,
-        ];
-        if !super::super::is_newer_version(version, &old_bundles[1].version)? {
-            bail!("更新版本未高于当前管理工具版本。");
+        let root = installed_root_from_executable(&executable)?;
+        let old_bundles = [validate_bundle(
+            &NativeOps,
+            &root.join(BUNDLES[0].name),
+            BUNDLES[0],
+        )?];
+        if !super::super::is_newer_version(version, &old_bundles[0].version)? {
+            bail!("更新版本未高于当前 Codex++ 版本。");
         }
         let transaction = root.join(format!(".codex-plus-update-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&transaction)
             .context("安装目录不可写；未请求提升权限，请在可写位置手动安装完整 app")?;
         fs::set_permissions(&transaction, fs::Permissions::from_mode(0o700))?;
         let plan = UpdatePlan {
-            schema: 1,
+            schema: 2,
             install_root: root.to_path_buf(),
             transaction,
             installer: fs::canonicalize(installer)?,
@@ -635,9 +648,7 @@ mod runtime {
             manager_pid: std::process::id(),
             old_bundles,
         };
-        let helper = plan.transaction.join("manager-update-helper");
-        fs::copy(&executable, &helper)?;
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        let helper = prepare_detached_helper(&executable, &plan.transaction)?;
         let path = plan.transaction.join("plan.json");
         use std::io::Write;
         let mut file = OpenOptions::new()
@@ -647,12 +658,18 @@ mod runtime {
             .open(&path)?;
         file.write_all(&serde_json::to_vec(&plan)?)?;
         file.sync_all()?;
+        let stderr_path = plan.transaction.join("helper-stderr.log");
+        let stderr = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&stderr_path)?;
         let mut child = Command::new(helper)
             .arg("--apply-codex-plus-update")
             .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()?;
         let start = Instant::now();
         loop {
@@ -673,8 +690,16 @@ mod runtime {
                     );
                 }
             }
-            if child.try_wait()?.is_some() {
-                bail!("更新 helper 提前退出，旧版未替换。");
+            if let Some(status) = child.try_wait()? {
+                let mut bytes = Vec::new();
+                File::open(&stderr_path)?
+                    .take(8192)
+                    .read_to_end(&mut bytes)?;
+                let detail: String = String::from_utf8_lossy(&bytes).chars().take(1024).collect();
+                bail!(
+                    "更新 helper 提前退出（{status}），旧版未替换。{}",
+                    detail.trim()
+                );
             }
             sleep(Duration::from_millis(100));
         }
@@ -693,7 +718,6 @@ mod runtime {
             .mode(0o600)
             .open(lock_path)?;
         fs2::FileExt::try_lock_exclusive(&lock).context("本安装目录已有另一个更新在进行")?;
-        let mut restart_launcher = false;
         let mut approved = false;
         let result = (|| -> anyhow::Result<()> {
             let mount = plan.transaction.join("mount");
@@ -715,15 +739,10 @@ mod runtime {
             let detached = checked("/usr/bin/hdiutil", &["detach".as_ref(), mount.as_os_str()]);
             prepared?;
             detached?;
-            write_state(
-                &plan,
-                "ready",
-                "两个 app 已校验并完整复制，等待管理工具退出",
-            )?;
+            write_state(&plan, "ready", "Codex++.app 已校验并完整复制，等待程序退出")?;
             wait_approval(&plan)?;
             approved = true;
             wait_manager(&plan)?;
-            stop_owned_launchers(&plan, &mut restart_launcher)?;
             replace_bundles(&NativeOps, &plan)?;
             Ok(())
         })();
@@ -732,13 +751,10 @@ mod runtime {
                 write_state(
                     &plan,
                     "installed",
-                    "两个完整 app 已安装；旧 app 保留在事务 backups 目录",
+                    "Codex++.app 已安装；旧 app 保留在事务 backups 目录",
                 )?;
                 let restarted = (|| -> anyhow::Result<()> {
-                    open_bundle(&plan.install_root.join(BUNDLES[1].name))?;
-                    if restart_launcher {
-                        open_bundle(&plan.install_root.join(BUNDLES[0].name))?;
-                    }
+                    open_bundle(&plan.install_root.join(BUNDLES[0].name))?;
                     Ok(())
                 })();
                 if let Err(error) = restarted {
@@ -753,16 +769,42 @@ mod runtime {
             }
             Err(error) => {
                 let _ = write_state(&plan, "failed", &error.to_string());
-                // 只在原管理工具已退出时重开；验证或签名拒绝不改变旧 app。
+                // 只在原 Codex++ 已退出时重开；验证或签名拒绝不改变旧 app。
                 if approved && wait_manager(&plan).is_ok() {
-                    let _ = open_bundle(&plan.install_root.join(BUNDLES[1].name));
-                    if restart_launcher {
-                        let _ = open_bundle(&plan.install_root.join(BUNDLES[0].name));
-                    }
+                    let _ = open_bundle(&plan.install_root.join(BUNDLES[0].name));
                 }
                 Err(error)
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn detached_helper_smoke(root: &Path) -> anyhow::Result<()> {
+        let bundle = root.join(BUNDLES[0].name);
+        signed_test_bundle(&bundle, BUNDLES[0], "1.0.0")?;
+        let executable = bundle.join("Contents/MacOS").join(BUNDLES[0].executable);
+        let original = fs::read(&executable)?;
+        let raw = root.join("unsigned-detached-copy");
+        fs::copy(&executable, &raw)?;
+        anyhow::ensure!(
+            !output(
+                "/usr/bin/codesign",
+                &["--verify".as_ref(), "--strict".as_ref(), raw.as_os_str()]
+            )?
+            .status
+            .success(),
+            "fixture must reproduce a signature that depends on the app Info.plist"
+        );
+        let transaction = root.join("private-helper");
+        fs::create_dir(&transaction)?;
+        let helper = prepare_detached_helper(&executable, &transaction)?;
+        checked(helper.to_str().context("helper path is not UTF-8")?, &[])?;
+        anyhow::ensure!(
+            fs::read(&executable)? == original,
+            "helper preparation changed the source app"
+        );
+        NativeOps.verify_signature(&bundle)?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -772,13 +814,28 @@ mod runtime {
         fs::create_dir_all(path.join("Contents/Resources/nested"))?;
         fs::copy("/usr/bin/true", &binary)?;
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
-        fs::write(path.join("Contents/Resources/test.dat"), format!("private fixture resource {version}"))?;
+        fs::write(
+            path.join("Contents/Resources/test.dat"),
+            format!("private fixture resource {version}"),
+        )?;
         fs::write(path.join("Contents/Resources/nested/version.dat"), version)?;
-        fs::write(path.join("Contents/Info.plist"), format!(
-            "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{}</string><key>CFBundleExecutable</key><string>{}</string><key>CFBundleShortVersionString</key><string>{version}</string><key>CFBundleVersion</key><string>{version}</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>10.0.0</string></dict></plist>",
-            spec.id, spec.executable,
-        ))?;
-        checked("/usr/bin/codesign", &["--force".as_ref(), "--deep".as_ref(), "--sign".as_ref(), "-".as_ref(), path.as_os_str()])?;
+        fs::write(
+            path.join("Contents/Info.plist"),
+            format!(
+                "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CodexPlusUnifiedApp</key><true/><key>CFBundleName</key><string>Codex++</string><key>CFBundleIdentifier</key><string>{}</string><key>CFBundleExecutable</key><string>{}</string><key>CFBundleShortVersionString</key><string>{version}</string><key>CFBundleVersion</key><string>{version}</string><key>CFBundlePackageType</key><string>APPL</string><key>LSMinimumSystemVersion</key><string>10.0.0</string></dict></plist>",
+                spec.id, spec.executable,
+            ),
+        )?;
+        checked(
+            "/usr/bin/codesign",
+            &[
+                "--force".as_ref(),
+                "--deep".as_ref(),
+                "--sign".as_ref(),
+                "-".as_ref(),
+                path.as_os_str(),
+            ],
+        )?;
         NativeOps.verify_signature(path)?;
         Ok(())
     }
@@ -843,7 +900,10 @@ mod runtime {
     }
 
     #[cfg(test)]
-    pub(super) fn native_dmg_transaction(root: &Path, fail_second_rename: bool) -> anyhow::Result<()> {
+    pub(super) fn native_dmg_transaction(
+        root: &Path,
+        fail_second_rename: bool,
+    ) -> anyhow::Result<()> {
         // 真实系统工具与真实文件系统，仅本测试 tempfile；不走启动/退出应用路径。
         let install_root = root.join("临时 安装目录 Applications with spaces");
         let payload = root.join("真实 DMG 内容 with spaces");
@@ -853,48 +913,98 @@ mod runtime {
             signed_test_bundle(&install_root.join(spec.name), spec, "1.0.0")?;
             signed_test_bundle(&payload.join(spec.name), spec, "2.0.0")?;
         }
-        let old_bundles = [NativeOps.inspect(&install_root.join(BUNDLES[0].name))?, NativeOps.inspect(&install_root.join(BUNDLES[1].name))?];
+        let old_bundles = [NativeOps.inspect(&install_root.join(BUNDLES[0].name))?];
         let transaction = install_root.join(".codex-plus-update-native-test");
         fs::create_dir(&transaction)?;
         fs::set_permissions(&transaction, fs::Permissions::from_mode(0o700))?;
         let image = root.join("真实 更新安装包.dmg");
-        checked("/usr/bin/hdiutil", &[
-            "create".as_ref(), "-srcfolder".as_ref(), payload.as_os_str(),
-            "-volname".as_ref(), "CPP private native fixture".as_ref(),
-            "-fs".as_ref(), "HFS+".as_ref(), "-format".as_ref(), "UDZO".as_ref(), image.as_os_str(),
-        ]).context("创建真实测试 DMG 失败")?;
-        let plan = UpdatePlan { schema: 1, install_root, transaction, installer: image, version: "2.0.0".into(), manager_pid: std::process::id(), old_bundles };
+        checked(
+            "/usr/bin/hdiutil",
+            &[
+                "create".as_ref(),
+                "-srcfolder".as_ref(),
+                payload.as_os_str(),
+                "-volname".as_ref(),
+                "CPP private native fixture".as_ref(),
+                "-fs".as_ref(),
+                "HFS+".as_ref(),
+                "-format".as_ref(),
+                "UDZO".as_ref(),
+                image.as_os_str(),
+            ],
+        )
+        .context("创建真实测试 DMG 失败")?;
+        let plan = UpdatePlan {
+            schema: 2,
+            install_root,
+            transaction,
+            installer: image,
+            version: "2.0.0".into(),
+            manager_pid: std::process::id(),
+            old_bundles,
+        };
         let mount = plan.transaction.join("private readonly mount");
         fs::create_dir(&mount)?;
-        let attached = checked("/usr/bin/hdiutil", &[
-            "attach".as_ref(), "-readonly".as_ref(), "-nobrowse".as_ref(), "-noautoopen".as_ref(),
-            "-mountpoint".as_ref(), mount.as_os_str(), plan.installer.as_os_str(),
-        ]).context("只读挂载真实测试 DMG 失败");
+        let attached = checked(
+            "/usr/bin/hdiutil",
+            &[
+                "attach".as_ref(),
+                "-readonly".as_ref(),
+                "-nobrowse".as_ref(),
+                "-noautoopen".as_ref(),
+                "-mountpoint".as_ref(),
+                mount.as_os_str(),
+                plan.installer.as_os_str(),
+            ],
+        )
+        .context("只读挂载真实测试 DMG 失败");
         let prepared = attached.and_then(|_| {
-            if fs::write(mount.join("must-not-write"), b"readonly probe").is_ok() { bail!("测试 DMG 没有以只读方式挂载"); }
-            prepare_bundles(&NativeOps, &plan, &mount).context("从真实 DMG 校验/复制两个 app 失败")
+            if fs::write(mount.join("must-not-write"), b"readonly probe").is_ok() {
+                bail!("测试 DMG 没有以只读方式挂载");
+            }
+            prepare_bundles(&NativeOps, &plan, &mount)
+                .context("从真实 DMG 校验/复制 Codex++.app 失败")
         });
-        let detached = checked("/usr/bin/hdiutil", &["detach".as_ref(), mount.as_os_str()]).context("卸载私有测试 DMG 失败");
+        let detached = checked("/usr/bin/hdiutil", &["detach".as_ref(), mount.as_os_str()])
+            .context("卸载私有测试 DMG 失败");
         if let Err(error) = prepared {
-            if let Err(detach_error) = detached { bail!("{error:#}；且 {detach_error:#}"); }
+            if let Err(detach_error) = detached {
+                bail!("{error:#}；且 {detach_error:#}");
+            }
             return Err(error);
         }
         detached?;
 
-        struct SecondRenameFault { source: PathBuf, target: PathBuf }
+        struct SecondRenameFault {
+            source: PathBuf,
+            target: PathBuf,
+        }
         impl BundleOps for SecondRenameFault {
-            fn inspect(&self, bundle: &Path) -> anyhow::Result<BundleInfo> { NativeOps.inspect(bundle) }
-            fn verify_signature(&self, bundle: &Path) -> anyhow::Result<()> { NativeOps.verify_signature(bundle) }
-            fn copy_bundle(&self, source: &Path, target: &Path) -> anyhow::Result<()> { NativeOps.copy_bundle(source, target) }
+            fn inspect(&self, bundle: &Path) -> anyhow::Result<BundleInfo> {
+                NativeOps.inspect(bundle)
+            }
+            fn verify_signature(&self, bundle: &Path) -> anyhow::Result<()> {
+                NativeOps.verify_signature(bundle)
+            }
+            fn copy_bundle(&self, source: &Path, target: &Path) -> anyhow::Result<()> {
+                NativeOps.copy_bundle(source, target)
+            }
             fn rename(&self, source: &Path, target: &Path) -> anyhow::Result<()> {
-                if source == self.source && target == self.target { bail!("injected second native replacement rename failure"); }
+                if source == self.source && target == self.target {
+                    bail!("injected second native replacement rename failure");
+                }
                 NativeOps.rename(source, target)
             }
         }
         if fail_second_rename {
-            let ops = SecondRenameFault { source: plan.transaction.join("staged").join(BUNDLES[1].name), target: plan.install_root.join(BUNDLES[1].name) };
+            let ops = SecondRenameFault {
+                source: plan.transaction.join("staged").join(BUNDLES[0].name),
+                target: plan.install_root.join(BUNDLES[0].name),
+            };
             let error = replace_bundles(&ops, &plan).unwrap_err();
-            if !error.to_string().contains("两个旧 app 已恢复") { return Err(error); }
+            if !error.to_string().contains("旧 Codex++ app 已恢复") {
+                return Err(error);
+            }
         } else {
             replace_bundles(&NativeOps, &plan)?;
         }
@@ -903,22 +1013,22 @@ mod runtime {
             let target = plan.install_root.join(spec.name);
             let info = validate_bundle(&NativeOps, &target, spec)?;
             NativeOps.verify_signature(&target)?;
-            if info.version != expected || fs::read_to_string(target.join("Contents/Resources/nested/version.dat"))? != expected {
+            if info.version != expected
+                || fs::read_to_string(target.join("Contents/Resources/nested/version.dat"))?
+                    != expected
+            {
                 bail!("真实 DMG 事务后的版本/嵌套资源不正确");
             }
             if !fail_second_rename {
                 let backup = plan.transaction.join("backups").join(spec.name);
                 NativeOps.verify_signature(&backup)?;
                 if NativeOps.inspect(&backup)?.version != "1.0.0"
-                    || fs::read_to_string(backup.join("Contents/Resources/nested/version.dat"))? != "1.0.0" {
+                    || fs::read_to_string(backup.join("Contents/Resources/nested/version.dat"))?
+                        != "1.0.0"
+                {
                     bail!("真实 DMG 事务没有保留完整旧 app 备份");
                 }
             }
-        }
-        if fail_second_rename {
-            let rejected = plan.transaction.join("rejected").join(BUNDLES[0].name);
-            NativeOps.verify_signature(&rejected)?;
-            if NativeOps.inspect(&rejected)?.version != "2.0.0" { bail!("回滚没有保留完整被替换的新 app"); }
         }
         Ok(())
     }
@@ -1024,6 +1134,8 @@ mod tests {
         fs::create_dir_all(path.join("Contents/Resources/nested")).unwrap();
         fs::create_dir_all(path.join("Contents/_CodeSignature")).unwrap();
         let info = BundleInfo {
+            name: spec.name.strip_suffix(".app").unwrap_or(spec.name).into(),
+            unified: spec.id == crate::install::APP_BUNDLE_ID,
             id: spec.id.into(),
             executable: spec.executable.into(),
             version: version.into(),
@@ -1051,24 +1163,20 @@ mod tests {
         .unwrap();
         info
     }
-    fn fixture(include_manager: bool) -> (tempfile::TempDir, UpdatePlan, PathBuf) {
+    fn fixture(include_app: bool) -> (tempfile::TempDir, UpdatePlan, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("自定义 Applications with spaces");
         let payload = temp.path().join("只读 DMG fixture");
         fs::create_dir(&root).unwrap();
         fs::create_dir(&payload).unwrap();
-        let old_bundles = [
-            bundle(&root, BUNDLES[0], "1.0.0"),
-            bundle(&root, BUNDLES[1], "1.0.0"),
-        ];
-        bundle(&payload, BUNDLES[0], "2.0.0");
-        if include_manager {
-            bundle(&payload, BUNDLES[1], "2.0.0");
+        let old_bundles = [bundle(&root, BUNDLES[0], "1.0.0")];
+        if include_app {
+            bundle(&payload, BUNDLES[0], "2.0.0");
         }
         let transaction = root.join(".codex-plus-update-fixture");
         fs::create_dir(&transaction).unwrap();
         let plan = UpdatePlan {
-            schema: 1,
+            schema: 2,
             install_root: root,
             transaction,
             installer: temp.path().join("fixture.dmg"),
@@ -1099,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_update_copies_both_full_bundles_and_preserves_backups_in_unicode_root() {
+    fn macos_update_copies_single_full_bundle_and_preserves_backup_in_unicode_root() {
         let (_temp, plan, payload) = fixture(true);
         let ops = FixtureOps::default();
         prepare_bundles(&ops, &plan, &payload).unwrap();
@@ -1125,10 +1233,10 @@ mod tests {
     }
 
     #[test]
-    fn macos_update_rolls_back_both_apps_when_second_replacement_fails() {
+    fn macos_update_rolls_back_app_when_replacement_rename_fails() {
         let (_temp, plan, payload) = fixture(true);
         let ops = FixtureOps {
-            fail_rename: Some(4),
+            fail_rename: Some(2),
             ..FixtureOps::default()
         };
         prepare_bundles(&ops, &plan, &payload).unwrap();
@@ -1136,24 +1244,103 @@ mod tests {
             replace_bundles(&ops, &plan)
                 .unwrap_err()
                 .to_string()
-                .contains("两个旧 app 已恢复")
+                .contains("旧 Codex++ app 已恢复")
         );
         assert_old_apps(&ops, &plan);
-        assert_eq!(
-            ops.inspect(&plan.transaction.join("rejected").join(BUNDLES[0].name))
-                .unwrap()
-                .version,
-            "2.0.0"
+        assert!(
+            !plan
+                .transaction
+                .join("rejected")
+                .join(BUNDLES[0].name)
+                .exists()
         );
     }
 
     #[test]
-    fn macos_update_rejects_missing_manager_before_any_replacement() {
+    fn macos_update_rejects_missing_single_app_before_any_replacement() {
         let (_temp, plan, payload) = fixture(false);
         let ops = FixtureOps::default();
         assert!(prepare_bundles(&ops, &plan, &payload).is_err());
         assert_eq!(ops.renames.get(), 0);
         assert_old_apps(&ops, &plan);
+    }
+
+    #[test]
+    fn macos_update_accepts_unified_installation_and_requests_manual_legacy_migration() {
+        assert_eq!(
+            installed_root_from_executable(Path::new(
+                "/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus"
+            ))
+            .unwrap(),
+            PathBuf::from("/Applications")
+        );
+        assert_eq!(
+            installed_root_from_executable(Path::new(
+                "/Applications/codex++.app/Contents/MacOS/CodexPlusPlus"
+            ))
+            .unwrap(),
+            PathBuf::from("/Applications")
+        );
+        for executable in ["/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"]
+        {
+            let error = installed_root_from_executable(Path::new(executable)).unwrap_err();
+            assert!(error.to_string().contains("手动迁移"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("旧版自动更新器不支持单应用安装包")
+            );
+        }
+        let renamed = installed_root_from_executable(Path::new(
+            "/Applications/Codex++ 2.app/Contents/MacOS/CodexPlusPlus",
+        ))
+        .unwrap_err();
+        assert!(renamed.to_string().contains("标准应用目录"));
+        assert!(!renamed.to_string().contains("旧双应用"));
+    }
+
+    #[test]
+    fn macos_update_rejects_legacy_silent_identity_with_shared_bundle_id() {
+        let (_temp, plan, payload) = fixture(true);
+        let ops = FixtureOps::default();
+        let app = payload.join(BUNDLES[0].name);
+        let mut info = ops.inspect(&app).unwrap();
+        info.unified = false;
+        fs::write(
+            app.join("Contents/Info.plist"),
+            serde_json::to_vec(&info).unwrap(),
+        )
+        .unwrap();
+        assert!(prepare_bundles(&ops, &plan, &payload).is_err());
+        assert_eq!(ops.renames.get(), 0);
+        assert_old_apps(&ops, &plan);
+    }
+
+    #[test]
+    fn macos_update_leaves_legacy_manager_bundle_in_place() {
+        let (_temp, plan, payload) = fixture(true);
+        let legacy = BundleSpec {
+            name: "Codex++ 管理工具.app",
+            id: "com.bigpizzav3.codexplusplus.manager",
+            executable: "CodexPlusPlusManager",
+        };
+        bundle(&plan.install_root, legacy, "1.0.0");
+        let ops = FixtureOps::default();
+        prepare_bundles(&ops, &plan, &payload).unwrap();
+        replace_bundles(&ops, &plan).unwrap();
+        assert_eq!(ops.renames.get(), 2);
+        assert_eq!(
+            ops.inspect(&plan.install_root.join(legacy.name))
+                .unwrap()
+                .version,
+            "1.0.0"
+        );
+        assert_eq!(
+            ops.inspect(&plan.install_root.join(BUNDLES[0].name))
+                .unwrap()
+                .version,
+            "2.0.0"
+        );
     }
 
     #[test]
@@ -1263,6 +1450,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn macos_update_detached_signed_helper_executes_without_modifying_source_app() {
+        let temp = tempfile::tempdir().unwrap();
+        runtime::detached_helper_smoke(temp.path()).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn macos_update_native_signed_bundle_copy_smoke_uses_only_temp_fixture() {
         let temp = tempfile::tempdir().unwrap();
         runtime::native_smoke(temp.path()).unwrap();
@@ -1270,14 +1464,14 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_update_real_native_dmg_installs_both_bundles_in_temporary_root() {
+    fn macos_update_real_native_dmg_installs_single_bundle_in_temporary_root() {
         let temp = tempfile::tempdir().unwrap();
         runtime::native_dmg_transaction(temp.path(), false).unwrap();
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_update_real_native_dmg_rolls_back_both_bundles_on_second_rename_failure() {
+    fn macos_update_real_native_dmg_rolls_back_single_bundle_on_replacement_failure() {
         let temp = tempfile::tempdir().unwrap();
         runtime::native_dmg_transaction(temp.path(), true).unwrap();
     }
