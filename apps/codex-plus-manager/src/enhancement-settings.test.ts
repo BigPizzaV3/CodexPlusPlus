@@ -95,8 +95,6 @@ test("retired enhancements have no settings, navigation or command references in
 test("unified enhancements use the master switch and Chinese suggestion labels", () => {
   const enhance = component("EnhanceScreen");
   const toggles = elements(enhance).filter((element) => element.tagName.getText(app) === "FeatureToggle");
-  const share = fieldControl(enhance, "form.codexAppSessionShare");
-  assert.equal(attribute(share, "onChange"), '(value) => setEnhanceFlag("codexAppSessionShare", value)');
   assert.ok(toggles.length > 0);
   for (const toggle of toggles) assert.equal(attribute(toggle, "disabled"), "!masterEnabled");
   assert.equal(attribute(fieldControl(enhance, "form.codexAppPluginMarketplaceUnlock"), "disabled"), "!masterEnabled");

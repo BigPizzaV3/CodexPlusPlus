@@ -22,6 +22,7 @@ import {
   ArrowRight,
   Bell,
   Blocks,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
   Camera,
@@ -83,6 +84,8 @@ import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
 import { PluginMarketScreen } from "./PluginMarketScreen";
+import { McpPage } from "./ManagementPages";
+import { SkillsPage, SessionPage } from "./ManagementExtra";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceProtocol, type WhaleBalanceSettings } from "./whale-settings";
@@ -265,7 +268,6 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
-  codexAppSessionShare: boolean;
   codexAppPasteFix: boolean;
   codexAppTypingEffect: TypingEffect;
   codexAppThreadIdBadge: boolean;
@@ -546,15 +548,6 @@ type LocalSessionsResult = CommandResult<{
   limit: number;
   hasMore: boolean;
   totalCount: number;
-}>;
-
-type SessionImportResult = CommandResult<{
-  sessionId: string;
-  title: string;
-}>;
-
-type PendingSessionShareResult = CommandResult<{
-  url: string | null;
 }>;
 
 type DeleteLocalSessionResult = CommandResult<{
@@ -971,7 +964,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
-  { id: "context", label: t("MCP&插件"), icon: Network, tool: "codex" },
+  { id: "context", label: "MCP", icon: Network, tool: "codex" },
+  { id: "skills", label: "Skills", icon: BookOpen, tool: "codex" },
   { id: "weixin", label: t("微信连接"), icon: ScanLine, tool: "codex" },
   { id: "enhance", label: t("Codex增强"), icon: Hammer, tool: "codex" },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette, tool: "codex" },
@@ -989,7 +983,11 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
   {
     label: t("工作区"),
-    routes: ["overview", "relay", "grok", "sessions", "context"],
+    routes: ["overview", "relay", "grok"],
+  },
+  {
+    label: t("全局管理"),
+    routes: ["context", "skills", "sessions"],
   },
   {
     label: t("扩展"),
@@ -1021,7 +1019,6 @@ const defaultSettings: BackendSettings = {
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
-  codexAppSessionShare: true,
   codexAppPasteFix: false,
   codexAppTypingEffect: "off",
   codexAppThreadIdBadge: false,
@@ -1144,7 +1141,6 @@ export function App() {
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
-  const [sessionShareUrl, setSessionShareUrl] = useState("");
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
@@ -1510,50 +1506,6 @@ export function App() {
     return result;
   };
 
-  const importLocalSession = async () => {
-    let selected: string | string[] | null;
-    try {
-      selected = await open({
-        title: t("导入 Codex 会话"),
-        multiple: false,
-        directory: false,
-        filters: [{ name: t("会话文件"), extensions: ["jsonl", "json", "txt"] }],
-      });
-    } catch (error) {
-      showNotice(t("会话导入"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
-      return;
-    }
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (!path) return;
-    const result = await run(() => call<SessionImportResult>("import_local_session", { path }));
-    if (!result) return;
-    showResultNotice(t("会话导入"), result);
-    if (isSuccessStatus(result.status)) await refreshLocalSessions(true, 0);
-  };
-
-  const refreshPendingSessionShare = async (silent = true) => {
-    const result = await run(() => call<PendingSessionShareResult>("load_pending_session_share"));
-    if (result?.url) setSessionShareUrl(result.url);
-    if (result && (!silent || !isSuccessStatus(result.status))) {
-      showResultNotice(t("会话导入"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
-  const importSessionUrl = async (value = sessionShareUrl) => {
-    const url = value.trim();
-    if (!url) {
-      showNotice(t("会话导入"), t("请粘贴 Codex++ 分享链接。"), "failed");
-      return;
-    }
-    const result = await run(() => call<SessionImportResult>("import_session_url", { url }));
-    if (!result) return;
-    showResultNotice(t("会话导入"), result);
-    if (isSuccessStatus(result.status)) {
-      setSessionShareUrl("");
-      await refreshLocalSessions(true, 0);
-    }
-  };
 
   const requestDeleteLocalSession = (session: LocalSession) =>
     call<DeleteLocalSessionResult>("delete_local_session", {
@@ -2990,7 +2942,6 @@ export function App() {
       await refreshEnvConflicts(true);
       await refreshProviderSyncTargets(true);
       await refreshPendingProviderImport(true);
-      await refreshPendingSessionShare(true);
       await refreshPendingDreamSkinCommunity();
     })();
   }, []);
@@ -3058,7 +3009,6 @@ export function App() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       void refreshPendingProviderImport(true);
-      void refreshPendingSessionShare(true);
       void refreshPendingDreamSkinCommunity();
     }, 1200);
     return () => window.clearInterval(timer);
@@ -3360,10 +3310,6 @@ export function App() {
       setUserScriptEnabled,
       deleteUserScript,
       refreshLocalSessions,
-      importLocalSession,
-      importSessionUrl,
-      sessionShareUrl,
-      setSessionShareUrl,
       deleteLocalSession,
       deleteLocalSessions,
       openExternalUrl,
@@ -3403,7 +3349,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
@@ -3517,29 +3463,25 @@ export function App() {
             <GrokScreen settings={settings} form={settingsForm} actions={actions} />
           ) : null}
           {route === "sessions" ? (
-            <SessionsScreen
-              settings={settings}
-              form={settingsForm}
+            <SessionPage
               sessions={localSessions}
-              providerSyncProgress={providerSyncProgress}
-              sessionIndexRepairActive={sessionIndexRepairActive}
-              sessionIndexRepairReport={sessionIndexRepairReport}
-              sessionIndexRepairReportError={sessionIndexRepairReportError}
-              providerSyncTargets={providerSyncTargets}
-              selectedProviderSyncTarget={selectedProviderSyncTarget}
-              onFormChange={setSettingsForm}
-              actions={actions}
+              onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
+              onDelete={actions.deleteLocalSession}
+              onDeleteMany={actions.deleteLocalSessions}
+              notify={actions.showMessage}
             />
           ) : null}
           {route === "context" ? (
-            <ContextScreen
-              form={settingsForm}
-              liveEntries={liveContextEntries}
-              relayFiles={relayFiles}
-              onFormChange={setSettingsForm}
-              actions={actions}
+            <McpPage
+              entries={[...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "mcp"), ...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "plugin")]}
+              onSave={async (kind, id, body) => Boolean(await actions.upsertContextEntry(settingsForm, kind, id, body))}
+              onDelete={async (entry) => Boolean(await actions.deleteContextEntry(settingsForm, entry.kind, entry.id))}
+              onRefresh={async () => { await actions.refreshLiveContextEntries(); await actions.refreshRelayFiles(); }}
+              onImport={async (json) => Boolean(await actions.importMcpServersJson(settingsForm, json))}
+              notify={actions.showMessage}
             />
           ) : null}
+          {route === "skills" ? <SkillsPage notify={actions.showMessage} /> : null}
           {route === "weixin" ? (
             <WeixinConnectScreen
               form={settingsForm}
@@ -3760,10 +3702,6 @@ type Actions = {
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
-  importLocalSession: () => Promise<void>;
-  importSessionUrl: (url?: string) => Promise<void>;
-  sessionShareUrl: string;
-  setSessionShareUrl: (url: string) => void;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
@@ -5206,7 +5144,6 @@ function EnhanceScreen({
               <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
                 <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
                 <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
-                <FeatureToggle title={t("分享会话按钮")} detail={t("在当前会话工具栏显示分享按钮，保存后更新显示，无需重启 Codex。")} checked={form.codexAppSessionShare} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionShare", value)} />
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
                 <div className={`feature-toggle ${!masterEnabled ? "disabled" : ""}`}>
                   <span>
@@ -6581,10 +6518,6 @@ function SessionsScreen({
                 <RefreshCw className="h-4 w-4" />
                 {t("刷新会话")}
               </Button>
-              <Button onClick={() => void actions.importLocalSession()} variant="outline">
-                <PackageOpen className="h-4 w-4" />
-                {t("导入文件")}
-              </Button>
               <Button
                 disabled={providerSyncProgress.active || sessionIndexRepairActive || !canRepairProviderSessions}
                 onClick={() => void actions.syncProvidersNow()}
@@ -6604,18 +6537,6 @@ function SessionsScreen({
               <Button onClick={() => void actions.saveSettings()}>
                 <Save className="h-4 w-4" />
                 {t("保存设置")}
-              </Button>
-            </div>
-            <div className="session-share-import">
-              <Input
-                aria-label={t("会话分享链接")}
-                onChange={(event) => actions.setSessionShareUrl(event.currentTarget.value)}
-                placeholder={t("粘贴 Codex++ 会话分享链接")}
-                value={actions.sessionShareUrl}
-              />
-              <Button disabled={!actions.sessionShareUrl.trim()} onClick={() => void actions.importSessionUrl()} variant="outline">
-                <Download className="h-4 w-4" />
-                {t("导入链接")}
               </Button>
             </div>
           </div>
@@ -11989,7 +11910,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
-    codexAppSessionShare: settings.codexAppSessionShare !== false,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),

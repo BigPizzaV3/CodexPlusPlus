@@ -188,8 +188,8 @@ test("backend refresh synchronizes share immediately and skips failed heartbeat 
   const start = source.indexOf("  let syncBackendSettingsInFlight");
   const end = source.indexOf("  async function setBackendSetting(", start);
   vm.runInContext(source.slice(start, end), context);
-  await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 1);
-  loaded = false; await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 1);
+  await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0);
+  loaded = false; await context.syncBackendSettingsFromHeartbeat(); assert.equal(installs, 0);
 });
 
 test("optimistic backend writes immediately clean up sharing before their response arrives", async () => {
