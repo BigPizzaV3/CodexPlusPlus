@@ -486,8 +486,9 @@ pub struct LaunchRequest {
 /// 启动一个与管理器当前实例完全隔离的 Codex Desktop 实例。
 ///
 /// 这个入口故意不复用 `launch_codex_plus`：后者只管理默认 CODEX_HOME，且
-/// launcher/helper 的生命周期是单例。多开实例直接拉起 Codex 可执行文件，给
-/// 每个供应商分配独立的 CODEX_HOME、SQLite、Electron user-data-dir 和 CDP 端口。
+/// launcher/helper 的生命周期是单例。多开实例通过隐藏 worker 进程复用完整的
+/// Codex++ launcher/injection 链，并给每个供应商分配独立的 CODEX_HOME、SQLite、
+/// Electron user-data-dir 和 CDP/helper 端口。
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexMultiLaunchRequest {
@@ -505,6 +506,14 @@ pub struct CodexMultiLaunchRequest {
     /// 为 0 时按 instance id 选择一个可用端口。
     #[serde(default)]
     pub debug_port: u16,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiWorkerOptions {
+    pub app_path: String,
+    pub debug_port: u16,
+    pub helper_port: u16,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1038,17 +1047,87 @@ fn launch_codex_multi_instance_blocking(
         );
     }
     let debug_port = select_multi_instance_port(request.debug_port, &instance_id);
-    let mut command = std::process::Command::new(&executable);
+    let helper_port = select_multi_instance_port(
+        debug_port.saturating_add(1),
+        &format!("{instance_id}-helper"),
+    );
+    let launcher_guard_port = select_multi_instance_port(0, &format!("{instance_id}-guard"));
+    let worker_home = root.join("worker-home");
+    let worker_state_dir = worker_home.join(".codex-session-delete");
+    if let Err(error) = std::fs::create_dir_all(&worker_state_dir) {
+        return failed(
+            &format!("创建多开 launcher 状态目录失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+    let worker_settings_path = worker_state_dir.join("settings.json");
+    let mut worker_settings = settings.clone();
+    worker_settings.codex_app_path = app_dir.to_string_lossy().to_string();
+    worker_settings.active_relay_id = profile.id.clone();
+    worker_settings.relay_profiles = vec![profile.clone()];
+    worker_settings.aggregate_relay_profiles.clear();
+    worker_settings.active_aggregate_relay_id.clear();
+    worker_settings.provider_sync_enabled = false;
+    worker_settings.relay_profiles_enabled = false;
+    worker_settings.codex_extra_args = multi_instance_extra_args(&settings.codex_extra_args);
+    worker_settings
+        .codex_extra_args
+        .push(format!("--user-data-dir={}", user_data_dir.display()));
+    if let Err(error) = SettingsStore::new(worker_settings_path).save(&worker_settings) {
+        return failed(
+            &format!("保存多开 launcher 设置失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+    let worker_options_path = root.join("worker-options.json");
+    let worker_options = CodexMultiWorkerOptions {
+        app_path: app_dir.to_string_lossy().to_string(),
+        debug_port,
+        helper_port,
+    };
+    let worker_options_bytes = match serde_json::to_vec_pretty(&worker_options) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return failed(
+                &format!("序列化多开 worker 参数失败：{error}"),
+                json!({ "instanceId": instance_id }),
+            );
+        }
+    };
+    if let Err(error) = codex_plus_core::settings::atomic_write(
+        &worker_options_path,
+        &worker_options_bytes,
+    ) {
+        return failed(
+            &format!("保存多开 worker 参数失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+    let manager_executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return failed(
+            &format!("定位多开 launcher 可执行文件失败：{error}"),
+            json!({ "instanceId": instance_id }),
+            );
+        }
+    };
+    let shared_config_home = directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(".config"))
+        .unwrap_or_else(|| PathBuf::from(".config"));
+    let mut command = std::process::Command::new(manager_executable);
     command
-        .args(multi_instance_extra_args(&settings.codex_extra_args))
-        .arg(format!("--user-data-dir={}", user_data_dir.display()))
-        .arg(format!("--remote-debugging-port={debug_port}"))
-        .arg(format!(
-            "--remote-allow-origins=http://127.0.0.1:{debug_port}"
-        ))
+        .arg("--codex-plus-multi-worker")
+        .arg(&worker_options_path)
+        .env("HOME", &worker_home)
         .env("CODEX_HOME", &codex_home)
         .env("CODEX_SQLITE_HOME", &sqlite_home)
+        .env("CODEX_PLUS_MULTI_INSTANCE", "1")
         .env("CODEX_PLUS_INSTANCE_ID", &instance_id)
+        .env("CODEX_PLUS_INSTANCE_LABEL", &profile.name)
+        .env("CODEX_PLUS_LAUNCHER_GUARD_PORT", launcher_guard_port.to_string())
+        .env("CODEX_PLUS_PROTOCOL_PROXY_PORT", helper_port.to_string())
+        .env("XDG_CONFIG_HOME", &shared_config_home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -1075,6 +1154,7 @@ fn launch_codex_multi_instance_blocking(
             "instance_id": instance_id,
             "profile_id": profile_id,
             "debug_port": debug_port,
+            "helper_port": helper_port,
             "codex_home": codex_home,
             "sqlite_home": sqlite_home,
             "user_data_dir": user_data_dir,
@@ -1095,6 +1175,25 @@ fn launch_codex_multi_instance_blocking(
             "appPath": app_dir.to_string_lossy()
         }),
     )
+}
+
+/// Hidden child process used by Codex multi-launch. Its environment is isolated
+/// before this function is called, so the normal launcher can safely use its
+/// existing default-home/settings/helper/bridge code without touching the main
+/// Codex++ instance.
+pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
+    let options: CodexMultiWorkerOptions = serde_json::from_slice(&std::fs::read(options_path)?)?;
+    let launch_options = codex_plus_launcher::LaunchOptions {
+        app_dir: Some(PathBuf::from(options.app_path)),
+        debug_port: options.debug_port,
+        helper_port: options.helper_port,
+        status_store: StatusStore::default(),
+    };
+    codex_plus_launcher::start(launch_options)?;
+    while codex_plus_core::cdp::endpoint_available(options.debug_port) {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    codex_plus_launcher::shutdown()
 }
 
 fn multi_instance_slug(value: &str) -> String {

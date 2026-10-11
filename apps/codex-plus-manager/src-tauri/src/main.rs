@@ -1,6 +1,20 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if let Some(options_path) = args
+        .windows(2)
+        .find(|window| window[0] == "--codex-plus-multi-worker")
+        .and_then(|window| window.get(1))
+    {
+        if let Err(error) = codex_plus_manager_lib::commands::run_codex_multi_worker(
+            std::path::Path::new(options_path),
+        ) {
+            eprintln!("Codex 多开 worker 失败：{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     #[cfg(target_os = "macos")]
     if launched_from_legacy_manager_compat_bundle() {
         // 旧版更新器要求 DMG 中有第二个 manager bundle，并会在替换后打开它。

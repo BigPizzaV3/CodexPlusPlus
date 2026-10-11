@@ -108,7 +108,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 30
+      "lines": 99
     },
     {
       "name": "99-tail.js",

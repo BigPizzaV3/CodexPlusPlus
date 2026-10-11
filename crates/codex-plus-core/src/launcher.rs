@@ -1016,7 +1016,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
         let launch_extra_args = normalize_codex_extra_args(extra_args);
-        if cfg!(windows) {
+        let isolated_multi_instance = std::env::var_os("CODEX_PLUS_MULTI_INSTANCE")
+            .is_some_and(|value| value == "1");
+        if cfg!(windows) && !isolated_multi_instance {
             // AUMID 解析留在调用点：它要查系统里的 Store 注册表（#2140），是有副作用
             // 的一步；下面的构造函数只做纯拼接。解析不出来（目录名像包、但系统里没
             // 这个包）就不再走打包激活，继续往下按路径启动——与既有回退路径一致。
@@ -1095,7 +1097,9 @@ impl LaunchHooks for DefaultLaunchHooks {
             }
         }
 
-        if app_dir.extension().and_then(|value| value.to_str()) == Some("app") {
+        if app_dir.extension().and_then(|value| value.to_str()) == Some("app")
+            && !isolated_multi_instance
+        {
             let launch_action = select_macos_debug_launch_action(
                 is_macos_app_running(app_dir).await,
                 crate::cdp::endpoint_available(debug_port),
