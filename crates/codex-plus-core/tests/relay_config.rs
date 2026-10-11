@@ -3,6 +3,7 @@ use codex_plus_core::relay_config::{
     apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
     chatgpt_auth_status_from_home, cleanup_unsupported_approval_policies_in_home,
     clear_relay_config_to_home, clear_relay_config_to_home_with_auth,
@@ -1513,6 +1514,43 @@ base_url = "http://127.0.0.1:57321/v1"
     let live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(!live.contains("codex_plus_chat_base_url"));
     assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+}
+
+#[test]
+fn chat_protocol_profile_uses_supplied_multi_instance_proxy_port() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-chat-multi".to_string(),
+        model: "glm-4.5".to_string(),
+        base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+        upstream_base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        protocol: RelayProtocol::ChatCompletions,
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "glm-4.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+        temp.path(),
+        &profile,
+        "",
+        61234,
+    )
+    .unwrap();
+    let live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(live.contains(r#"base_url = "http://127.0.0.1:61234/v1""#));
+    assert!(!live.contains("open.bigmodel.cn"));
 }
 
 #[test]

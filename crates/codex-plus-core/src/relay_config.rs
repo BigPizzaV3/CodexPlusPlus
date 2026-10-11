@@ -700,6 +700,23 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     profile: &RelayProfile,
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+        home,
+        profile,
+        common_config_contents,
+        crate::protocol_proxy::protocol_proxy_port(),
+    )
+}
+
+/// 与 [`apply_relay_profile_to_home_with_switch_rules`] 相同，但允许调用方指定
+/// 协议代理端口。多开实例各自运行一个 helper，必须在写入 config.toml 时使用
+/// 实例自己的端口，不能先写默认 57321 再依赖启动器补救。
+pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+    proxy_port: u16,
+) -> anyhow::Result<RelayApplyResult> {
     if profile.relay_mode == RelayMode::Official && !profile.official_mix_api_key {
         return apply_official_profile_to_home(home, profile, common_config_contents);
     }
@@ -710,7 +727,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     } else {
         String::new()
     };
-    let profile_config = complete_relay_profile_config(profile)?;
+    let profile_config = complete_relay_profile_config_with_proxy_port(profile, proxy_port)?;
     let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
     let config_with_common =
         preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
@@ -4370,6 +4387,16 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 }
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
+    complete_relay_profile_config_with_proxy_port(
+        profile,
+        crate::protocol_proxy::protocol_proxy_port(),
+    )
+}
+
+fn complete_relay_profile_config_with_proxy_port(
+    profile: &RelayProfile,
+    proxy_port: u16,
+) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
     let session_provider_id = active_session_provider_id(&doc);
     let uses_openai_provider = session_provider_id == "openai";
@@ -4475,15 +4502,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
         || profile.uses_no_auth()
         || profile.web_search_history_compat_enabled()
     {
-        crate::protocol_proxy::local_responses_proxy_base_url(
-            crate::protocol_proxy::protocol_proxy_port(),
-        )
+        crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {
-        codex_base_url_for_protocol(
-            base_url.trim(),
-            profile.protocol,
-            crate::protocol_proxy::protocol_proxy_port(),
-        )
+        codex_base_url_for_protocol(base_url.trim(), profile.protocol, proxy_port)
     };
     if !provider_base_url.trim().is_empty() {
         provider["base_url"] = toml_edit::value(provider_base_url.trim());

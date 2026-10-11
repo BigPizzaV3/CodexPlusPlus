@@ -957,11 +957,9 @@ fn launch_codex_multi_instance_blocking(
             json!({ "profileId": profile_id }),
         );
     }
-    if profile.protocol != codex_plus_core::settings::RelayProtocol::Responses
-        || profile.has_model_routes()
-    {
+    if profile.has_model_routes() {
         return failed(
-            "Codex 多开当前只支持直连 Responses 供应商；Chat Completions 和模型路由需要本地协议代理。",
+            "Codex 多开暂不支持模型路由，请选择单一上游供应商。",
             json!({ "profileId": profile_id }),
         );
     }
@@ -975,6 +973,13 @@ fn launch_codex_multi_instance_blocking(
     let root = codex_plus_core::paths::default_app_state_dir()
         .join("codex-multi")
         .join(&slug);
+    // 先分配端口，再生成 config.toml。Chat Completions 通过实例专属协议代理
+    // 转换，配置里的本地 base_url 必须与这个 helper 端口一致。
+    let debug_port = select_multi_instance_port(request.debug_port, &instance_id);
+    let helper_port = select_multi_instance_port(
+        debug_port.saturating_add(1),
+        &format!("{instance_id}-helper"),
+    );
     let codex_home = root.join("codex-home");
     let sqlite_home = root.join("sqlite-home");
     let user_data_dir = multi_instance_user_data_dir(&slug);
@@ -1006,10 +1011,11 @@ fn launch_codex_multi_instance_blocking(
     } else {
         ""
     };
-    if let Err(error) = codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+    if let Err(error) = codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
         &codex_home,
         &profile,
         common_config,
+        helper_port,
     ) {
         return failed(
             &format!("应用供应商到多开实例失败：{error}"),
@@ -1052,11 +1058,6 @@ fn launch_codex_multi_instance_blocking(
             json!({ "appPath": app_dir.to_string_lossy() }),
         );
     }
-    let debug_port = select_multi_instance_port(request.debug_port, &instance_id);
-    let helper_port = select_multi_instance_port(
-        debug_port.saturating_add(1),
-        &format!("{instance_id}-helper"),
-    );
     let launcher_guard_port = select_multi_instance_port(0, &format!("{instance_id}-guard"));
     let worker_home = root.join("worker-home");
     let worker_state_dir = worker_home.join(".codex-session-delete");
@@ -1074,7 +1075,12 @@ fn launch_codex_multi_instance_blocking(
     worker_settings.aggregate_relay_profiles.clear();
     worker_settings.active_aggregate_relay_id.clear();
     worker_settings.provider_sync_enabled = false;
-    worker_settings.relay_profiles_enabled = false;
+    // Chat Completions（例如 Zhipu GLM）需要 launcher 启动实例自己的协议代理。
+    // 保持 relay_profiles_enabled，让 `ensure_active_protocol_proxy_config_in_home`
+    // 用多开进程的 CODEX_PLUS_PROTOCOL_PROXY_PORT 修正 config.toml 中的本地代理地址；
+    // 否则父进程写入的默认 57321 会让多个实例互相抢同一个代理端口。
+    worker_settings.relay_profiles_enabled =
+        profile.protocol == codex_plus_core::settings::RelayProtocol::ChatCompletions;
     worker_settings.codex_extra_args = multi_instance_extra_args(&settings.codex_extra_args);
     worker_settings
         .codex_extra_args
