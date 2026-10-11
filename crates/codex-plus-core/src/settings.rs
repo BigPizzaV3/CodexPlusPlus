@@ -489,6 +489,14 @@ impl Default for DictationSettings {
 impl DictationSettings {
     pub fn normalize(&mut self) {
         self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        // 兼容早期 SenseVoice 设置：旧版保存预设时可能只写入了
+        // `local://sensevoice`，没有保存 provider 字段。加载时恢复 provider，
+        // 否则离线标记会被语音服务按 HTTP(S) URL 校验并报错。
+        if self.provider == DictationProvider::Api
+            && self.base_url.eq_ignore_ascii_case("local://sensevoice")
+        {
+            self.provider = DictationProvider::SenseVoice;
+        }
         self.api_key = self.api_key.trim().to_string();
         self.api_key_env = self.api_key_env.trim().to_string();
         self.model = self.model.trim().to_string();
@@ -1609,7 +1617,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             .cloned()
             .unwrap_or_default();
         merge_bool_setting(&mut dictation, patch, "enabled");
-        for key in ["baseUrl", "apiKey", "apiKeyEnv", "model", "language"] {
+        for key in ["provider", "baseUrl", "apiKey", "apiKeyEnv", "model", "language"] {
             if let Some(value) = patch.get(key).and_then(Value::as_str) {
                 dictation.insert(key.to_string(), Value::String(value.trim().to_string()));
             }
@@ -3721,6 +3729,34 @@ experimental_bearer_token = "sk-existing""#
         store.save(&updated).unwrap();
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.get("launchMode").is_none());
+    }
+
+    #[test]
+    fn settings_update_persists_dictation_provider_and_migrates_legacy_sensevoice_marker() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let mut legacy = serde_json::to_value(BackendSettings::default()).unwrap();
+        legacy["dictation"]["enabled"] = json!(true);
+        legacy["dictation"]["baseUrl"] = json!("local://sensevoice");
+        legacy["dictation"]["model"] = json!("SenseVoiceSmall (INT8)");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.dictation.provider, DictationProvider::SenseVoice);
+
+        let updated = store
+            .update(json!({
+                "dictation": {
+                    "provider": "sensevoice",
+                    "baseUrl": "local://sensevoice",
+                    "enabled": true
+                }
+            }))
+            .unwrap();
+        assert_eq!(updated.dictation.provider, DictationProvider::SenseVoice);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["dictation"]["provider"], "sensevoice");
     }
 
     #[test]

@@ -20,8 +20,23 @@ use crate::settings::{BackendSettings, DictationProvider, DictationSettings};
 /// 总开关只控制运行时能力，不修改用户保存的语音开关或独立密钥。
 pub(crate) fn effective_settings(settings: &BackendSettings) -> DictationSettings {
     let mut effective = settings.dictation.clone();
+    // 兼容早期版本把本地 SenseVoice 保存成 API provider + local:// URL 的配置。
+    // 这类配置不能再走 HTTP(S) endpoint 校验，否则点击语音输入时会被误报为
+    // “语音服务需要 HTTP(S) 地址”。
+    if is_local_sensevoice(&effective) {
+        effective.provider = DictationProvider::SenseVoice;
+    }
     effective.enabled &= settings.enhancements_enabled;
     effective
+}
+
+fn is_local_sensevoice(settings: &DictationSettings) -> bool {
+    settings.provider == DictationProvider::SenseVoice
+        || settings
+            .base_url
+            .trim()
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case("local://sensevoice")
 }
 
 pub const MAX_AUDIO_BODY_BYTES: usize = 25 * 1024 * 1024;
@@ -139,7 +154,7 @@ fn configuration(settings: &DictationSettings) -> Result<(reqwest::Url, String),
 }
 
 pub fn public_status(settings: &DictationSettings) -> Value {
-    if settings.provider == DictationProvider::SenseVoice {
+    if is_local_sensevoice(settings) {
         let ready = local_model_ready();
         return json!({
             "enabled": settings.enabled,
@@ -513,7 +528,7 @@ pub async fn transcribe(
     if !settings.enabled {
         return Err(DictationError::new(403, "语音输入未启用"));
     }
-    if settings.provider == DictationProvider::SenseVoice {
+    if is_local_sensevoice(settings) {
         let recording = recording(body, content_type)?;
         return transcribe_local_recording(settings, recording).await;
     }
@@ -528,7 +543,7 @@ async fn transcribe_recording(
     endpoint: reqwest::Url,
     key: String,
 ) -> Result<Value, DictationError> {
-    if settings.provider == DictationProvider::SenseVoice {
+    if is_local_sensevoice(settings) {
         return transcribe_local_recording(settings, recording).await;
     }
     let language = if settings.language.trim().is_empty() {
@@ -853,7 +868,7 @@ pub async fn transcribe_bridge(
             mime_type,
             language,
         };
-        if settings.provider == DictationProvider::SenseVoice {
+        if is_local_sensevoice(settings) {
             return transcribe_local_recording(settings, recording).await;
         }
         let (endpoint, key) = configuration(settings)?;
@@ -951,6 +966,18 @@ mod tests {
         let error = transcribe_bridge(&settings, &bridge_payload(b"invalid-wave", "audio/wav")).await.unwrap_err();
         assert_eq!(error.status, 400);
         assert!(error.message.contains("WAV"));
+
+        // 旧版本可能只保存了 local:// 标记，provider 仍为 API；它也必须绕过
+        // HTTP(S) endpoint 校验并进入本地音频解析路径。
+        let legacy = DictationSettings {
+            enabled: true,
+            provider: DictationProvider::Api,
+            base_url: "local://sensevoice".to_string(),
+            ..Default::default()
+        };
+        let error = transcribe_bridge(&legacy, &bridge_payload(b"invalid-wave", "audio/wav")).await.unwrap_err();
+        assert_eq!(error.status, 400);
+        assert!(error.message.contains("WAV"));
     }
 
     fn upload(audio: &[u8], language: &str) -> (Vec<u8>, String) {
@@ -1042,6 +1069,31 @@ mod tests {
         assert_eq!(status["provider"], "sensevoice");
         assert_eq!(status["configured"], status["modelReady"]);
         assert!(!status.to_string().contains("must-not-be-used"));
+    }
+
+    #[test]
+    fn legacy_sensevoice_url_is_treated_as_local_provider() {
+        let settings = DictationSettings {
+            enabled: true,
+            base_url: "LOCAL://SENSEVOICE/".to_string(),
+            ..Default::default()
+        };
+        let status = public_status(&settings);
+        assert_eq!(status["provider"], "sensevoice");
+        assert!(status.get("error").is_none());
+    }
+
+    #[test]
+    fn legacy_sensevoice_marker_status_is_local() {
+        let settings = DictationSettings {
+            enabled: true,
+            provider: DictationProvider::Api,
+            base_url: "local://sensevoice".to_string(),
+            ..Default::default()
+        };
+        let status = public_status(&settings);
+        assert_eq!(status["provider"], "sensevoice");
+        assert_eq!(status["configured"], status["modelReady"]);
     }
 
     #[test]
