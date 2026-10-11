@@ -20,50 +20,88 @@ def run(args):
 
 
 def fuses(app):
-    binary = app / "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
-    data = binary.read_bytes()
-    if data.count(WIRE) != 1:
-        raise RuntimeError("Electron fuse 格式已变化，无法安全汉化此版本")
-    start = data.index(WIRE) + len(WIRE)
-    if data[start + 1] < 4:
-        raise RuntimeError("不支持的 Electron fuse 版本")
-    return binary, start + 2, data[start + 2:start + 2 + data[start + 1]]
+    root = app.parent if app.is_file() else app
+    candidates = []
+    if os.name != "nt":
+        candidates.append(root / "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework")
+    candidates.extend([root, root / "Claude.exe", root / "resources/electron.exe"])
+    candidates.extend(p for p in root.rglob("*.exe") if p.is_file())
+    for binary in candidates:
+        if not binary.is_file():
+            continue
+        data = binary.read_bytes()
+        if data.count(WIRE) != 1:
+            continue
+        start = data.index(WIRE) + len(WIRE)
+        if data[start + 1] < 4:
+            raise RuntimeError("不支持的 Electron fuse 版本")
+        return binary, start + 2, data[start + 2:start + 2 + data[start + 1]]
+    raise RuntimeError("Electron fuse 格式已变化，无法安全汉化此版本")
+
+
+def root_for(app):
+    return app.parent if app.is_file() else app
+
+
+def ion_for(app):
+    root = root_for(app)
+    candidates = [root / "Contents/Resources/ion-dist", root / "resources/ion-dist", root / "ion-dist"]
+    return next((path for path in candidates if path.is_dir()), candidates[0])
+
+
+def app_asar(root):
+    candidates = [root / "Contents/Resources/app.asar", root / "resources/app.asar"]
+    return next((path for path in candidates if path.is_file()), None)
 
 
 def check(source, copy):
     _, _, flags = fuses(copy)
     if flags[3] != ord("1"):
         raise RuntimeError("副本未启用启动注入")
-    run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(copy)])
-    run(["/usr/bin/cmp", "-s", str(source / "Contents/Resources/app.asar"),
-         str(copy / "Contents/Resources/app.asar")])
-    ion = copy / "Contents/Resources/ion-dist"
+    if os.name != "nt":
+        run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(copy)])
+    source_asar, copy_asar = app_asar(root_for(source)), app_asar(root_for(copy))
+    if source_asar and copy_asar:
+        if os.name == "nt":
+            if source_asar.read_bytes() != copy_asar.read_bytes():
+                raise RuntimeError("app.asar 已被改动")
+        else:
+            run(["/usr/bin/cmp", "-s", str(source_asar), str(copy_asar)])
+    ion = ion_for(copy)
     if not (ion / "i18n/zh-Hans.json").is_file() or not (ion / "i18n/dynamic/zh-Hans.json").is_file():
         raise RuntimeError("中文词表缺失")
     if "zh-Hans:" not in (ion / "index.html").read_text():
         raise RuntimeError("本地界面未注册中文词表")
-    with (source / "Contents/Info.plist").open("rb") as f:
-        source_info = plistlib.load(f)
-    with (copy / "Contents/Info.plist").open("rb") as f:
-        copy_info = plistlib.load(f)
-    if source_info.get("CFBundleVersion") != copy_info.get("CFBundleVersion"):
-        raise RuntimeError("官方应用已更新，请重新准备副本")
+    if os.name != "nt":
+        with (source / "Contents/Info.plist").open("rb") as f:
+            source_info = plistlib.load(f)
+        with (copy / "Contents/Info.plist").open("rb") as f:
+            copy_info = plistlib.load(f)
+        if source_info.get("CFBundleVersion") != copy_info.get("CFBundleVersion"):
+            raise RuntimeError("官方应用已更新，请重新准备副本")
     print("副本签名、注入开关、中文词表与 app.asar 一致性检查通过", flush=True)
 
 
 def build(source, copy):
     if copy.exists() or copy.is_symlink() or source.resolve() == copy.resolve():
         raise RuntimeError("构建目标必须是新的暂存目录")
-    if not (source / "Contents/Resources/ion-dist/index.html").is_file():
+    if not ion_for(source).joinpath("index.html").is_file():
         raise RuntimeError("此版本缺少 ion-dist 本地界面，暂不支持此版本汉化")
-    run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(source)])
+    if os.name != "nt":
+        run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(source)])
     copy.parent.mkdir(parents=True, exist_ok=True)
     print("克隆官方应用到暂存副本…", flush=True)
-    try:
-        run(["/bin/cp", "-Rc", str(source), str(copy)])
-    except RuntimeError:
-        # ditto 可补全非 APFS 上的部分复制；不删除任何现有目录。
-        run(["/usr/bin/ditto", str(source), str(copy)])
+    if os.name == "nt":
+        source_root, copy_root = root_for(source), root_for(copy)
+        if copy_root.exists():
+            raise RuntimeError("构建目标必须是新的暂存目录")
+        shutil.copytree(source_root, copy_root)
+    else:
+        try:
+            run(["/bin/cp", "-Rc", str(source), str(copy)])
+        except RuntimeError:
+            # ditto 可补全非 APFS 上的部分复制；不删除任何现有目录。
+            run(["/usr/bin/ditto", str(source), str(copy)])
     binary, offset, flags = fuses(copy)
     if flags[3] not in (ord("0"), ord("1")):
         raise RuntimeError("此版本禁用了 Electron inspect fuse，无法汉化")
@@ -71,7 +109,7 @@ def build(source, copy):
         f.seek(offset + 3)
         f.write(b"1")
 
-    ion = copy / "Contents/Resources/ion-dist"
+    ion = ion_for(copy)
     for rel in ("zh-Hans.json", "dynamic/zh-Hans.json", "zh-Hans.overrides.json"):
         target = ion / "i18n" / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +141,8 @@ def build(source, copy):
         raise RuntimeError("本地界面的 HTML 格式已变化")
     index.write_text(html, encoding="utf-8")
     print("安装中文词表并重签副本…", flush=True)
-    run([sys.executable, str(HERE / "sign-copy.py"), str(source), str(copy)])
+    if os.name != "nt":
+        run([sys.executable, str(HERE / "sign-copy.py"), str(source), str(copy)])
     check(source, copy)
 
 

@@ -48,7 +48,9 @@ const PROFILE = argOf('--user-data-dir', null);
 const LOCALE = String(argOf('--locale', 'zh-Hans'));
 if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(LOCALE)) throw new Error('无效的语言代码');
 
-const EXEC = path.join(APP, 'Contents', 'MacOS', 'Claude');
+const EXEC = process.platform === 'win32'
+  ? APP
+  : path.join(APP, 'Contents', 'MacOS', 'Claude');
 
 function log(msg) {
   console.log(msg);
@@ -66,6 +68,10 @@ function freePort() {
 }
 
 function runningPids() {
+  if (process.platform === 'win32') {
+    const out = spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq Claude.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8' }).stdout || '';
+    return out.split(/\r?\n/).filter((line) => line.includes('Claude.exe')).map((line) => ({ pid: line, cmd: line }));
+  }
   const out = spawnSync('pgrep', ['-f', 'MacOS/Claude'], { encoding: 'utf8' }).stdout || '';
   const pids = out.split('\n').map((s) => s.trim()).filter(Boolean);
   const mine = [];
@@ -193,12 +199,23 @@ async function evaluate(c, expression) {
     }
     port = await freePort();
     log(`→ 启动副本（inspector 端口 ${port}）`);
-    const openArgs = ['-n', '-a', APP, '--args', `--inspect=127.0.0.1:${port}`];
-    if (PROFILE) openArgs.push(`--user-data-dir=${PROFILE}`); // 必须用 = 形式，空格分隔 Chromium 不认
-    const r = spawnSync('open', openArgs, { encoding: 'utf8' });
-    if (r.status !== 0) {
-      console.error('✗ open 失败：' + (r.stderr || r.stdout));
-      process.exit(1);
+    if (process.platform === 'win32') {
+      const args = [`--inspect=127.0.0.1:${port}`];
+      if (PROFILE) args.push(`--user-data-dir=${PROFILE}`);
+      const child = require('node:child_process').spawn(EXEC, args, {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false,
+      });
+      child.unref();
+    } else {
+      const openArgs = ['-n', '-a', APP, '--args', `--inspect=127.0.0.1:${port}`];
+      if (PROFILE) openArgs.push(`--user-data-dir=${PROFILE}`); // 必须用 = 形式，空格分隔 Chromium 不认
+      const r = spawnSync('open', openArgs, { encoding: 'utf8' });
+      if (r.status !== 0) {
+        console.error('✗ open 失败：' + (r.stderr || r.stdout));
+        process.exit(1);
+      }
     }
   } else if (!port) {
     port = 9411;
@@ -208,7 +225,9 @@ async function evaluate(c, expression) {
   const target = await waitForTarget(port, Date.now() + TIMEOUT);
   if (!target) {
     console.error('✗ inspector 没出现。可能原因：副本没起来 / fuse 没打开 / 端口被占。');
-    console.error('  排查：pgrep -fl "MacOS/Claude" ；codesign --verify --deep --strict "' + APP + '"');
+    console.error(process.platform === 'win32'
+      ? '  排查：tasklist /FI "IMAGENAME eq Claude.exe"；确认副本允许 --inspect。'
+      : '  排查：pgrep -fl "MacOS/Claude" ；codesign --verify --deep --strict "' + APP + '"');
     process.exit(1);
   }
 

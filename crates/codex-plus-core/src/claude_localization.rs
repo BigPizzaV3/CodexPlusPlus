@@ -74,6 +74,7 @@ fn runtime_dir() -> PathBuf {
     crate::paths::default_app_state_dir().join("claude-localization")
 }
 
+#[cfg(target_os = "macos")]
 fn source_app() -> PathBuf {
     let system = PathBuf::from("/Applications/Claude.app");
     if system.is_dir() {
@@ -82,16 +83,54 @@ fn source_app() -> PathBuf {
     home_dir().join("Applications/Claude.app")
 }
 
+#[cfg(target_os = "windows")]
+fn source_app() -> PathBuf {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(home_dir);
+    let program = std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+    let candidates = [
+        local.join(r"Programs\Claude\Claude.exe"),
+        local.join(r"Programs\claude-desktop\Claude.exe"),
+        local.join(r"Claude\Claude.exe"),
+        program.join(r"Claude\Claude.exe"),
+    ];
+    candidates.into_iter().find(|path| path.is_file()).unwrap_or_else(|| local.join(r"Programs\Claude\Claude.exe"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn source_app() -> PathBuf {
+    PathBuf::from("Claude.exe")
+}
+
 fn home_dir() -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_default()
 }
 
-fn copy_app() -> PathBuf {
-    runtime_dir().join("Claude CN.app")
+#[cfg(target_os = "macos")]
+fn copy_app() -> PathBuf { runtime_dir().join("Claude CN.app") }
+
+#[cfg(target_os = "windows")]
+fn copy_app() -> PathBuf { runtime_dir().join("Claude CN").join("Claude.exe") }
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn copy_app() -> PathBuf { runtime_dir().join("Claude CN") }
+
+#[cfg(target_os = "windows")]
+fn staged_copy_path(label: &str) -> PathBuf {
+    runtime_dir().join(label).join("Claude.exe")
 }
 
+#[cfg(not(target_os = "windows"))]
+fn staged_copy_path(label: &str) -> PathBuf {
+    runtime_dir().join(format!("{label}.app"))
+}
+
+#[cfg(target_os = "macos")]
 fn config_path() -> PathBuf {
     let support = home_dir().join("Library/Application Support");
     for name in ["Claude-3p", "Claude"] {
@@ -107,11 +146,41 @@ fn config_path() -> PathBuf {
         .join("config.json")
 }
 
+#[cfg(target_os = "windows")]
+fn config_path() -> PathBuf {
+    let support = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join("AppData/Roaming"));
+    for name in ["Claude", "Claude-3p"] {
+        let dir = support.join(name);
+        if dir.is_dir() { return dir.join("config.json"); }
+    }
+    support.join("Claude").join("config.json")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn config_path() -> PathBuf { home_dir().join(".claude/config.json") }
+
 fn find_runtime(name: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let names: Vec<String> = if name == "python3" {
+        vec!["python.exe".to_string(), "py.exe".to_string(), "python3.exe".to_string()]
+    } else {
+        vec![format!("{name}.exe"), name.to_string()]
+    };
+    #[cfg(target_os = "windows")]
+    let candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)).collect::<Vec<_>>())
+        .collect();
+    #[cfg(not(target_os = "windows"))]
     let mut candidates = vec![home_dir().join(".local/bin").join(name)];
+    #[cfg(not(target_os = "windows"))]
     candidates.extend(
         ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(|dir| Path::new(dir).join(name)),
     );
+    #[cfg(not(target_os = "windows"))]
     if let Some(paths) = std::env::var_os("PATH") {
         candidates.extend(std::env::split_paths(&paths).map(|dir| dir.join(name)));
     }
@@ -127,6 +196,7 @@ fn find_runtime(name: &str) -> Option<PathBuf> {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn app_version(app: &Path, key: &str) -> String {
     Command::new("/usr/bin/defaults")
         .args(["read"])
@@ -139,6 +209,20 @@ fn app_version(app: &Path, key: &str) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "windows")]
+fn app_version(app: &Path, _key: &str) -> String {
+    let escaped = app.to_string_lossy().replace('\'', "''");
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(format!("(Get-Item -LiteralPath '{escaped}').VersionInfo.ProductVersion"))
+        .output().ok().filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string()).unwrap_or_default()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn app_version(_app: &Path, _key: &str) -> String { String::new() }
+
+#[cfg(target_os = "macos")]
 fn claude_running() -> bool {
     // 仅取 PID，不读取/输出进程参数或用户档案。
     Command::new("/usr/bin/pgrep")
@@ -148,6 +232,17 @@ fn claude_running() -> bool {
         .status()
         .is_ok_and(|status| status.success())
 }
+
+#[cfg(target_os = "windows")]
+fn claude_running() -> bool {
+    Command::new("tasklist.exe")
+        .args(["/FI", "IMAGENAME eq Claude.exe", "/NH"])
+        .stdout(Stdio::null()).stderr(Stdio::null()).status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn claude_running() -> bool { false }
 
 pub fn status() -> ClaudeLocalizationStatus {
     let source = source_app();
@@ -168,7 +263,7 @@ pub fn status() -> ClaudeLocalizationStatus {
         .and_then(|value| value.as_object().map(|obj| obj.len()))
         .unwrap_or(0);
     ClaudeLocalizationStatus {
-        supported: cfg!(target_os = "macos"),
+        supported: cfg!(any(target_os = "macos", target_os = "windows")) && source.exists(),
         source_app: source.to_string_lossy().to_string(),
         copy_app: copy.to_string_lossy().to_string(),
         needs_rebuild: prepared
@@ -276,7 +371,7 @@ fn set_locale_at(config: &Path, backup: &Path, locale: Option<&str>, restore: bo
 }
 
 pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
-    ensure!(cfg!(target_os = "macos"), "Claude 汉化目前仅支持 macOS");
+    ensure!(cfg!(any(target_os = "macos", target_os = "windows")), "Claude 汉化目前支持 macOS 和 Windows");
     ensure!(
         ["prepare", "check", "launch", "restore"].contains(&action),
         "未知汉化操作"
@@ -302,11 +397,12 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
                 find_runtime("node").is_some(),
                 "需要带有内置 WebSocket 的 Node.js 22 或更新版本才能中文启动"
             );
-            let staged = root.join(format!("Claude-staging-{}.app", uuid::Uuid::new_v4()));
+            let staged = staged_copy_path(&format!("Claude-staging-{}", uuid::Uuid::new_v4()));
             run_script(&python, "build-copy.py", &staged, &[])?;
             // 校验通过后才替换；旧副本保留，构建失败时不会影响它。
-            let old = root.join(format!("Claude-backup-{}.app", uuid::Uuid::new_v4()));
+            let old = staged_copy_path(&format!("Claude-backup-{}", uuid::Uuid::new_v4()));
             if copy.exists() {
+                if let Some(parent) = old.parent() { fs::create_dir_all(parent)?; }
                 fs::rename(&copy, &old)?;
             }
             if let Err(error) = fs::rename(&staged, &copy) {

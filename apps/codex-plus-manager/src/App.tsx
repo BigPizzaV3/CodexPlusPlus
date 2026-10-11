@@ -10769,7 +10769,7 @@ function ClaudeLocalizationScreen() {
             <Metric label={t("官方词条")} value={s ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")} />
           </div>
           <div className="hint-line" role="note">
-            {t("首次准备会创建独立副本并重新签名；官方应用、登录态和 app.asar 不会被改写。启动副本时可能需要在钥匙串弹窗中选择“始终允许”。")}
+            {t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}
           </div>
           {error ? <div className="inline-error">{error}</div> : null}
           <Toolbar>
@@ -10792,7 +10792,7 @@ function ClaudeLocalizationScreen() {
         <CardHead title={t("实现方式")} detail={t("安全边界") } />
         <CardContent>
           <ul className="claude-localization-list">
-            <li>{t("从官方应用克隆受管副本，只翻转副本的 Electron inspector 开关并做 ad-hoc 重签名。")}</li>
+            <li>{t("从官方应用克隆受管副本，只调整副本的 Electron inspector 开关；macOS 使用受管重签名，Windows 使用独立副本。")}</li>
             <li>{t("把官方 zh-Hans 词表装入副本的 ion-dist；启动器短暂连接本地 inspector，注入页面脚本后关闭端口。")}</li>
             <li>{t("更新失败会保留当前可用副本；构建完成且校验 app.asar 一致后才替换旧副本。")}</li>
           </ul>
