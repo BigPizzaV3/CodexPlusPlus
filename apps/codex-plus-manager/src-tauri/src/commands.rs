@@ -1025,6 +1025,12 @@ fn launch_codex_multi_instance_blocking(
             json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
         );
     }
+    if let Err(error) = remove_invalid_multi_instance_mcp_servers(&codex_home) {
+        return failed(
+            &format!("清理多开实例无效 MCP 配置失败：{error}"),
+            json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
+        );
+    }
     if let Err(error) = seed_multi_instance_onboarding_state(&codex_home) {
         return failed(
             &format!("写入多开实例首次启动状态失败：{error}"),
@@ -1286,6 +1292,42 @@ fn seed_multi_instance_onboarding_state(home: &Path) -> anyhow::Result<()> {
         .or_insert_with(|| Value::from(current_timestamp_ms() / 1000));
     let bytes = serde_json::to_vec_pretty(&state)?;
     codex_plus_core::settings::atomic_write(&path, &bytes)?;
+    Ok(())
+}
+
+fn remove_invalid_multi_instance_mcp_servers(home: &Path) -> anyhow::Result<()> {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path)?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let Some(servers) = doc
+        .get_mut("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return Ok(());
+    };
+    let invalid = servers
+        .iter()
+        .filter_map(|(id, item)| {
+            let table = item.as_table_like()?;
+            let valid = ["command", "url"].iter().any(|key| {
+                table
+                    .get(*key)
+                    .and_then(toml_edit::Item::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            });
+            (!valid).then_some(id.to_string())
+        })
+        .collect::<Vec<_>>();
+    if invalid.is_empty() {
+        return Ok(());
+    }
+    for id in invalid {
+        servers.remove(&id);
+    }
+    if servers.is_empty() {
+        doc.as_table_mut().remove("mcp_servers");
+    }
+    codex_plus_core::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
     Ok(())
 }
 
@@ -9258,5 +9300,21 @@ model_reasoning_effort = "high"
         assert_eq!(atoms["electron:onboarding-projectless-completed"], true);
         assert!(atoms["last_completed_onboarding"].is_number());
         assert!(state.get("auth").is_none());
+    }
+
+    #[test]
+    fn multi_instance_removes_mcp_entries_without_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "[mcp_servers.stitch.http_headers]\nkey = \"redacted\"\n\n[mcp_servers.node_repl]\ncommand = \"node\"\n",
+        )
+        .unwrap();
+
+        remove_invalid_multi_instance_mcp_servers(temp.path()).unwrap();
+
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(!config.contains("stitch"));
+        assert!(config.contains("[mcp_servers.node_repl]"));
     }
 }
