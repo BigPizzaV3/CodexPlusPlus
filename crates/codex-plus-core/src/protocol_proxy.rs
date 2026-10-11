@@ -6396,14 +6396,16 @@ fn web_search_item_id(call_id: &str) -> String {
 /// 把上游 web_search 工具调用的 arguments 映射成客户端 action 结构。
 ///
 /// 客户端 rollout 里的形态是 `{"type":"search","query":…,"queries":[…]}` 或
-/// `{"type":"open_page","url":…}`。上游各家字段名不一（query / queries / url），
+/// `{"type":"open_page","url":…}`。上游各家字段名不一（input / query /
+/// queries / url），
 /// 这里按存在性择一，都取不到就退化成 `{"type":"search"}`，让客户端自己判空。
 fn web_search_action_from_arguments(arguments: &str) -> Value {
     let parsed = responses_arguments_to_chat_parse(arguments);
     let query = parsed
         .get("query")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
+        .or_else(|| parsed.get("input").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty());
     let url = parsed
         .get("url")
         .and_then(Value::as_str)
@@ -7644,6 +7646,9 @@ mod response_compatibility_tests {
         assert!(!web_search_action_has_target(&json!({ "type": "search" })));
         assert!(web_search_action_has_target(
             &json!({ "type": "search", "query": "Codex" })
+        ));
+        assert!(web_search_action_has_target(
+            &web_search_action_from_arguments(r#"{"input":"Codex"}"#)
         ));
         assert!(web_search_action_has_target(
             &json!({ "type": "open_page", "url": "https://example.com" })
