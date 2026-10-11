@@ -66,11 +66,13 @@ Official login, mixed API, and pure API are stored and switched separately:
 | Official login | Use only the official ChatGPT / Codex account | Removes custom providers and API keys while preserving official login state |
 | Official login + API | Keep official account features and plugins while routing model requests to a compatible API | Stores the key as a provider bearer token, not in pure API `auth.json` |
 | Pure API | Use a custom Base URL and key without an official account | Maintains independent `config.toml` and API-key auth without mixing official credentials |
-| Aggregate provider | Route across multiple ordinary API providers | Supports failover, conversation round-robin, request round-robin, and weighted round-robin |
+| Aggregate provider | Fail over or rotate across ordinary API providers, or bind catalog models to specific members | Supports failover, conversation round-robin, request round-robin, weighted round-robin, and opt-in model aggregation |
 
 Each provider can configure Responses or Chat Completions, model lists, a test model, User-Agent, context windows, auto-compact limits, and enabled MCP servers, Skills, and Plugins. Chat Completions can be converted locally into the Responses protocol used by Codex.
 
 Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
+
+Enable **Aggregate by model** in an aggregate provider to merge member models into Codex's model list. Entries prefixed with `cpx-<provider-id>/` stay bound to that member, while unprefixed model names continue to use the aggregate strategy. Each member keeps its own model list, context window, and auto-compact settings.
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
 
