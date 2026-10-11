@@ -257,6 +257,18 @@ type LaunchCommandResult = CommandResult<{
   nativeBrowserRestoreFailed?: boolean;
 }>;
 
+type MultiLaunchResult = CommandResult<{
+  instanceId?: string;
+  profileId?: string;
+  pid?: number;
+  debugPort?: number;
+  helperPort?: number;
+  codexHome?: string;
+  sqliteHome?: string;
+  userDataDir?: string;
+  appPath?: string;
+}>;
+
 type BackendSettings = WhaleBalanceSettings & {
   codexAppPath: string;
   codexExtraArgs: string[];
@@ -950,7 +962,7 @@ const TOOL_ICONS: Record<string, string> = {
   claude: new URL("./assets/agents/claude.svg", import.meta.url).href,
 };
 
-type Route = "overview" | "relay" | "grok" | "claude" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -968,6 +980,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
+  { id: "multiLaunch", label: t("Codex多开"), icon: Layers3, tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
   { id: "claude", label: t("Claude 汉化"), icon: Languages, tool: "claude" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
@@ -990,7 +1003,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
   {
     label: t("工作区"),
-    routes: ["overview", "relay", "grok", "claude"],
+    routes: ["overview", "relay", "multiLaunch", "grok", "claude"],
   },
   {
     label: t("全局管理"),
@@ -1182,6 +1195,7 @@ export function App() {
   const overviewRequestSequence = useRef(0);
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
+  const [multiLaunchPending, setMultiLaunchPending] = useState<string | null>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   // 左侧 Agent 切换栏的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
@@ -2018,7 +2032,7 @@ export function App() {
     }
     setRoute(next);
     if (next === "overview") await refreshOverview(true);
-    if (next === "relay") {
+    if (next === "relay" || next === "multiLaunch") {
       await refreshSettings(true);
       await refreshWeixinStatus(true);
       await refreshRelay(true);
@@ -2089,6 +2103,19 @@ export function App() {
       logDiagnostic("manager.navigation_failed", { error: stringifyError(error) });
     }
     return false;
+  };
+
+  const launchMultiInstance = async (profile: RelayProfile) => {
+    if (multiLaunchPending) return;
+    setMultiLaunchPending(profile.id);
+    try {
+      const result = await run(() => call<MultiLaunchResult>("launch_codex_multi_instance", {
+        request: { profileId: profile.id },
+      }));
+      if (result) showNotice(t("Codex多开"), result.message, result.status);
+    } finally {
+      setMultiLaunchPending(null);
+    }
   };
 
   const launch = async () => {
@@ -3169,6 +3196,8 @@ export function App() {
     () => ({
       refreshCurrent: () => navigate(route),
       launch,
+      launchMultiInstance,
+      multiLaunchPending,
       restart,
       installEntrypoints,
       uninstallEntrypoints,
@@ -3359,7 +3388,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
@@ -3465,6 +3494,9 @@ export function App() {
               form={settingsForm}
               actions={actions}
             />
+          ) : null}
+          {route === "multiLaunch" ? (
+            <CodexMultiLaunchScreen form={settingsForm} actions={actions} />
           ) : null}
           {route === "relayEnvironment" ? (
             <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
@@ -3657,6 +3689,8 @@ export function App() {
 type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
+  launchMultiInstance: (profile: RelayProfile) => Promise<void>;
+  multiLaunchPending: string | null;
   restart: (syncActiveRelay?: boolean) => Promise<boolean>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
@@ -4720,6 +4754,78 @@ function RelayScreen({
             disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
             actions={actions}
           />
+          </CardContent>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function multiLaunchSupported(profile: RelayProfile): boolean {
+  return !isAggregateRelayProfile(profile)
+    && profile.protocol === "responses"
+    && !(profile.modelRoutes ?? []).some((route) => route.model.trim() || route.targetRelayId.trim());
+}
+
+function CodexMultiLaunchScreen({
+  form,
+  actions,
+}: {
+  form: BackendSettings;
+  actions: Actions;
+}) {
+  const normalized = normalizeSettings(form);
+  return (
+    <div className="mg-page relay-management-page">
+      <PageHeader
+        icon={<Layers3 className="h-5 w-5" />}
+        title={t("Codex多开")}
+        actions={(
+          <Button onClick={() => void actions.refreshSettings(true)} variant="secondary">
+            <RefreshCw className="h-4 w-4" />
+            {t("刷新供应商")}
+          </Button>
+        )}
+      />
+      <div className="mg-content">
+        <Panel className="relay-management-panel">
+          <CardHeader>
+            <CardTitle>{t("选择供应商身份启动 Codex")}</CardTitle>
+            <CardDescription>{t("每个身份使用独立的配置、会话和用户数据目录，可与其他直连 Responses 供应商同时运行。")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="relay-profile-list">
+              {normalized.relayProfiles.map((profile) => {
+                const aggregate = isAggregateRelayProfile(profile);
+                const unsupported = !multiLaunchSupported(profile);
+                const pending = actions.multiLaunchPending === profile.id;
+                return (
+                  <div className="relay-profile-card" data-relay-profile-id={profile.id} key={profile.id}>
+                    <span className="relay-index" title={profile.name || t("未命名供应商")}>{providerInitial(profile.name)}</span>
+                    <span className="relay-summary">
+                      <strong>{profile.name || t("未命名供应商")}</strong>
+                      <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+                    </span>
+                    <span className="relay-card-actions">
+                      <Button
+                        disabled={unsupported || pending}
+                        onClick={() => void actions.launchMultiInstance(profile)}
+                        title={aggregate
+                          ? t("聚合供应商暂不支持独立多开")
+                          : unsupported
+                            ? t("仅支持直连 Responses 供应商")
+                            : t("启动此供应商的独立 Codex 实例")}
+                        size="sm"
+                      >
+                        <Rocket className="h-4 w-4" />
+                        {pending ? t("启动中") : t("启动")}
+                      </Button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {!normalized.relayProfiles.length ? <div className="empty">{t("暂无供应商，请先添加供应商配置。")}</div> : null}
           </CardContent>
         </Panel>
       </div>
@@ -7450,6 +7556,23 @@ function SortableRelayProfileCard({
           {active ? t("使用中") : t("使用")}
         </Button>
         <span className="relay-card-extra">
+          <Button
+            disabled={!multiLaunchSupported(profile) || actions.multiLaunchPending === profile.id}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!multiLaunchSupported(profile)) return;
+              void actions.launchMultiInstance(profile);
+            }}
+            size="icon"
+            title={isAggregateRelayProfile(profile)
+              ? t("聚合供应商暂不支持独立多开")
+              : multiLaunchSupported(profile)
+                ? t("启动独立 Codex 实例")
+                : t("仅支持直连 Responses 供应商")}
+            variant="ghost"
+          >
+            <Rocket className="h-4 w-4" />
+          </Button>
           <Button
             disabled={isAggregateRelayProfile(profile)}
             onClick={(event) => {
@@ -11400,6 +11523,7 @@ function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     grok: t("管理 Grok CLI 的模型与 API 端点"),
     claude: t("保留官方 Claude.app 原样，通过受管副本动态应用中文界面"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),

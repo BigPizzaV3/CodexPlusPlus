@@ -483,6 +483,30 @@ pub struct LaunchRequest {
     pub sync_active_relay: bool,
 }
 
+/// 启动一个与管理器当前实例完全隔离的 Codex Desktop 实例。
+///
+/// 这个入口故意不复用 `launch_codex_plus`：后者只管理默认 CODEX_HOME，且
+/// launcher/helper 的生命周期是单例。多开实例直接拉起 Codex 可执行文件，给
+/// 每个供应商分配独立的 CODEX_HOME、SQLite、Electron user-data-dir 和 CDP 端口。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiLaunchRequest {
+    /// 前端当前设置快照。省略时读取磁盘上的设置；API key 等不可序列化字段
+    /// 会从磁盘中同 id 的 profile 补回。
+    #[serde(default)]
+    pub settings: Option<BackendSettings>,
+    #[serde(default)]
+    pub profile_id: String,
+    /// 同一身份再次点击会复用这个目录，默认使用 profile id。
+    #[serde(default)]
+    pub instance_id: String,
+    #[serde(default)]
+    pub app_path: String,
+    /// 为 0 时按 instance id 选择一个可用端口。
+    #[serde(default)]
+    pub debug_port: u16,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogRequest {
@@ -862,6 +886,264 @@ pub async fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         Ok(result) => result,
         Err(error) => failed(&format!("启动后台任务失败：{error}"), json!({})),
     }
+}
+
+#[tauri::command]
+pub async fn launch_codex_multi_instance(
+    request: CodexMultiLaunchRequest,
+) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || launch_codex_multi_instance_blocking(request))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(&format!("启动 Codex 多开实例失败：{error}"), json!({})),
+    }
+}
+
+fn launch_codex_multi_instance_blocking(
+    request: CodexMultiLaunchRequest,
+) -> CommandResult<Value> {
+    let stored_settings = match SettingsStore::default().load() {
+        Ok(settings) => settings,
+        Err(error) => return failed(&format!("读取供应商设置失败：{error}"), json!({})),
+    };
+    let mut settings = request
+        .settings
+        .clone()
+        .unwrap_or_else(|| stored_settings.clone());
+    let profile_id = if request.profile_id.trim().is_empty() {
+        settings.active_relay_id.clone()
+    } else {
+        request.profile_id.trim().to_string()
+    };
+    let Some(profile_index) = settings
+        .relay_profiles
+        .iter()
+        .position(|profile| profile.id == profile_id)
+    else {
+        return failed(
+            &format!("供应商身份不存在：{profile_id}"),
+            json!({ "profileId": profile_id }),
+        );
+    };
+    // 前端序列化 BackendSettings 时会省略 api_key；使用磁盘中的同一 profile
+    // 补回密钥，避免把未持久化的空 key 写入多开实例。
+    if let Some(saved_profile) = stored_settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+    {
+        let profile = &mut settings.relay_profiles[profile_index];
+        if profile.api_key.trim().is_empty() {
+            profile.api_key = saved_profile.api_key.clone();
+        }
+        if profile.auth_contents.trim().is_empty() {
+            profile.auth_contents = saved_profile.auth_contents.clone();
+        }
+    }
+    let profile = settings.relay_profiles[profile_index].clone();
+    if profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate {
+        return failed(
+            "Codex 多开暂不支持需要共享本地聚合代理的供应商，请选择纯 API 或官方身份。",
+            json!({ "profileId": profile_id }),
+        );
+    }
+    if profile.protocol != codex_plus_core::settings::RelayProtocol::Responses
+        || profile.has_model_routes()
+    {
+        return failed(
+            "Codex 多开当前只支持直连 Responses 供应商；Chat Completions 和模型路由需要本地协议代理。",
+            json!({ "profileId": profile_id }),
+        );
+    }
+
+    let instance_id = if request.instance_id.trim().is_empty() {
+        profile_id.clone()
+    } else {
+        request.instance_id.trim().to_string()
+    };
+    let slug = multi_instance_slug(&instance_id);
+    let root = codex_plus_core::paths::default_app_state_dir()
+        .join("codex-multi")
+        .join(&slug);
+    let codex_home = root.join("codex-home");
+    let sqlite_home = root.join("sqlite-home");
+    let user_data_dir = multi_instance_user_data_dir(&slug);
+    if let Err(error) = std::fs::create_dir_all(&codex_home)
+        .and_then(|_| std::fs::create_dir_all(&sqlite_home))
+        .and_then(|_| std::fs::create_dir_all(&user_data_dir))
+    {
+        return failed(
+            &format!("创建 Codex 多开隔离目录失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+
+    // 官方 profile 通常没有 authContents；复制一次当前默认 CODEX_HOME 的登录态，
+    // 用户也可以在新窗口中重新登录。纯 API 实例不复制官方 auth，避免两个身份
+    // 重新混在一起。永远不覆盖实例已有 auth.json。
+    let default_home = codex_plus_core::relay_config::default_codex_home_dir();
+    let instance_auth = codex_home.join("auth.json");
+    if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+        && !instance_auth.exists()
+    {
+        let default_auth = default_home.join("auth.json");
+        if let Ok(contents) = std::fs::read(&default_auth) {
+            let _ = codex_plus_core::settings::atomic_write(&instance_auth, &contents);
+        }
+    }
+    let common_config = if settings.relay_profiles_enabled {
+        settings.relay_common_config_contents.as_str()
+    } else {
+        ""
+    };
+    if let Err(error) = codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+        &codex_home,
+        &profile,
+        common_config,
+    ) {
+        return failed(
+            &format!("应用供应商到多开实例失败：{error}"),
+            json!({
+                "profileId": profile_id,
+                "codexHome": codex_home.to_string_lossy()
+            }),
+        );
+    }
+
+    let app_dir = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+        (!request.app_path.trim().is_empty()).then(|| Path::new(request.app_path.trim())),
+        Some(settings.codex_app_path.as_str()),
+    );
+    let Some(app_dir) = app_dir else {
+        return failed("未找到 Codex Desktop，请先设置应用路径。", json!({}));
+    };
+    let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
+    if !executable.is_file() {
+        return failed(
+            &format!("Codex 可执行文件不存在：{}", executable.display()),
+            json!({ "appPath": app_dir.to_string_lossy() }),
+        );
+    }
+    let debug_port = select_multi_instance_port(request.debug_port, &instance_id);
+    let mut command = std::process::Command::new(&executable);
+    command
+        .args(multi_instance_extra_args(&settings.codex_extra_args))
+        .arg(format!("--user-data-dir={}", user_data_dir.display()))
+        .arg(format!("--remote-debugging-port={debug_port}"))
+        .arg(format!(
+            "--remote-allow-origins=http://127.0.0.1:{debug_port}"
+        ))
+        .env("CODEX_HOME", &codex_home)
+        .env("CODEX_SQLITE_HOME", &sqlite_home)
+        .env("CODEX_PLUS_INSTANCE_ID", &instance_id)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return failed(
+                &format!("启动 Codex 多开实例失败：{error}"),
+                json!({ "executable": executable.to_string_lossy() }),
+            );
+        }
+    };
+    let pid = child.id();
+    // Child drop 不会终止 Unix 子进程；Codex Desktop 自己持有生命周期。
+    drop(child);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.multi_instance_started",
+        json!({
+            "instance_id": instance_id,
+            "profile_id": profile_id,
+            "debug_port": debug_port,
+            "codex_home": codex_home,
+            "sqlite_home": sqlite_home,
+            "user_data_dir": user_data_dir,
+            "pid": pid
+        }),
+    );
+    ok(
+        "Codex 多开实例已启动。",
+        json!({
+            "instanceId": instance_id,
+            "profileId": profile_id,
+            "pid": pid,
+            "debugPort": debug_port,
+            "homeDir": codex_home.to_string_lossy(),
+            "codexHome": codex_home.to_string_lossy(),
+            "sqliteHome": sqlite_home.to_string_lossy(),
+            "userDataDir": user_data_dir.to_string_lossy(),
+            "appPath": app_dir.to_string_lossy()
+        }),
+    )
+}
+
+fn multi_instance_slug(value: &str) -> String {
+    let mut slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "instance".to_string()
+    } else {
+        slug.chars().take(64).collect()
+    }
+}
+
+fn multi_instance_user_data_dir(slug: &str) -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.data_local_dir().join("CodexPlusPlus").join("multi").join(slug))
+        .unwrap_or_else(|| {
+            codex_plus_core::paths::default_app_state_dir()
+                .join("user-data")
+                .join(slug)
+        })
+}
+
+fn multi_instance_extra_args(args: &[String]) -> Vec<String> {
+    codex_plus_core::settings::normalize_codex_extra_args(args)
+        .into_iter()
+        .filter(|arg| {
+            !arg.starts_with("--remote-debugging-port")
+                && !arg.starts_with("--remote-allow-origins")
+                && !arg.starts_with("--user-data-dir")
+        })
+        .collect()
+}
+
+fn select_multi_instance_port(requested: u16, instance_id: &str) -> u16 {
+    let base = if requested > 0 {
+        requested
+    } else {
+        let sum = instance_id
+            .bytes()
+            .fold(0u16, |sum, byte| sum.wrapping_add(byte as u16));
+        9300u16.saturating_add(sum % 500)
+    };
+    (0..1000)
+        .map(|offset| base.saturating_add(offset))
+        .find(|port| {
+            *port > 0
+                && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
+        })
+        .unwrap_or(base)
 }
 
 #[tauri::command]
@@ -8753,5 +9035,21 @@ model_reasoning_effort = "high"
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("只允许打开 http 或 https 链接"));
+    }
+
+    #[test]
+    fn multi_instance_slug_is_safe_and_bounded() {
+        assert_eq!(multi_instance_slug("Deep/Seek .. profile"), "Deep-Seek-profile");
+        assert_eq!(multi_instance_slug("///"), "instance");
+        assert!(multi_instance_slug(&"x".repeat(200)).len() <= 64);
+    }
+
+    #[test]
+    fn multi_instance_port_selection_finds_distinct_loopback_ports() {
+        let first = select_multi_instance_port(0, "official");
+        let second = select_multi_instance_port(first.saturating_add(1), "deepseek");
+        assert!(first > 0);
+        assert!(second > 0);
+        assert_ne!(first, second);
     }
 }

@@ -105,6 +105,7 @@ pub fn run() {
             commands::consume_pending_manager_navigation,
             commands::load_overview,
             commands::launch_codex_plus,
+            commands::launch_codex_multi_instance,
             commands::restart_codex_plus,
             commands::load_settings,
             commands::dictation_local_model_status,
