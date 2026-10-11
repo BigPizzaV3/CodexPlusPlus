@@ -109,6 +109,8 @@ pub fn run() {
             commands::load_settings,
             commands::dictation_local_model_status,
             commands::download_dictation_local_model,
+            commands::claude_localization_status,
+            commands::claude_localization_action,
             commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,
@@ -257,8 +259,7 @@ pub fn run() {
             match event {
                 tauri::RunEvent::Opened { urls } => {
                     for url in urls {
-                        if handle_dream_skin_url(url.as_str())
-                        {
+                        if handle_dream_skin_url(url.as_str()) {
                             show_main_window(app_handle);
                         }
                     }
