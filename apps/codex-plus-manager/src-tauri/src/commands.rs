@@ -10,7 +10,7 @@ use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{
-    BackendSettings, RelayProfile, RelaySessionProvider, SettingsStore,
+    BackendSettings, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
 };
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
@@ -1724,6 +1724,13 @@ fn sync_active_relay_to_home(
         let aggregate = settings
             .active_aggregate_relay_profile()
             .ok_or_else(|| anyhow::anyhow!("当前聚合供应商配置不完整"))?;
+        if aggregate.model_aggregation_enabled {
+            return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+                home,
+                &relay,
+                &relay_combined_common_config(settings),
+            );
+        }
         return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
@@ -6335,6 +6342,38 @@ fn apply_aggregate_relay_injection_to_home(
     home: &Path,
     session_provider: RelaySessionProvider,
 ) -> CommandResult<RelayPayload> {
+    // 模型聚合需要和普通供应商切换共用 catalog 写盘链路；旧的直接代理
+    // 写入路径保留给未开启模型聚合的旧配置和无 settings 测试调用。
+    if let Ok(settings) = SettingsStore::default().load() {
+        let profile = settings.active_relay_profile();
+        if profile.relay_mode == RelayMode::Aggregate
+            && settings
+                .active_aggregate_relay_profile()
+                .is_some_and(|aggregate| aggregate.model_aggregation_enabled)
+        {
+            let common_config = relay_combined_common_config(&settings);
+            match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+                home,
+                &profile,
+                &common_config,
+            ) {
+                Ok(result) => {
+                    let status = codex_plus_core::relay_config::relay_status_from_home(home);
+                    return ok(
+                        "聚合供应商配置和模型目录已写入，选中的模型会固定发送到对应成员。",
+                        relay_payload(status, result.backup_path),
+                    );
+                }
+                Err(error) => {
+                    let status = codex_plus_core::relay_config::relay_status_from_home(home);
+                    return failed(
+                        &format!("写入聚合供应商配置失败：{error}"),
+                        relay_payload(status, None),
+                    );
+                }
+            }
+        }
+    }
     match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(

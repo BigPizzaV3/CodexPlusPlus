@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 use crate::settings::{
-    BackendSettings, RelayMode, RelayProfile, RelayProtocol, RelaySessionProvider,
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, RelaySessionProvider, SettingsStore,
 };
 
 const RELAY_PROVIDER: &str = "custom";
@@ -2869,6 +2869,27 @@ fn apply_model_catalog_to_config_with_live_policy(
         sanitize_catalog_filename(&profile.id)
     );
     let mut config_text = config_text.to_string();
+    if let Some(catalog_json) = crate::aggregate_catalog::build_catalog_for_profile(profile)? {
+        let catalog_path = home.join(&catalog_relative);
+        if let Some(parent) = catalog_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
+        let mut doc = parse_toml_document(&config_text)?;
+        if root_key_string(&config_text, "model").is_none()
+            && let Ok(catalog) = serde_json::from_str::<Value>(&catalog_json)
+            && let Some(default_model) = catalog
+                .get("models")
+                .and_then(Value::as_array)
+                .and_then(|models| models.first())
+                .and_then(|model| model.get("slug"))
+                .and_then(Value::as_str)
+        {
+            doc["model"] = toml_edit::value(default_model);
+        }
+        doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+        return Ok(normalize_optional_toml(doc));
+    }
     let mut model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
     validate_model_windows(&model_windows)?;
     let model_list = if profile.model_list.contains('[') {
@@ -3102,7 +3123,7 @@ fn validate_model_auto_compact(model_auto_compact: &HashMap<String, String>) -> 
     Ok(())
 }
 
-fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
+pub(crate) fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
     if metadata_json.trim().is_empty() {
         return Ok(serde_json::Map::new());
     }
@@ -3341,7 +3362,7 @@ mod managed_catalog_predicate_tests {
     }
 }
 
-fn apply_model_metadata_overrides(
+pub(crate) fn apply_model_metadata_overrides(
     catalog_json: &str,
     override_map: &serde_json::Map<String, Value>,
 ) -> anyhow::Result<String> {
@@ -4398,7 +4419,20 @@ fn complete_relay_profile_config_with_proxy_port(
     proxy_port: u16,
 ) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
-    let session_provider_id = active_session_provider_id(&doc);
+    let session_provider_id = if profile.relay_mode == RelayMode::Aggregate {
+        SettingsStore::default()
+            .load()
+            .ok()
+            .and_then(|settings| {
+                settings
+                    .active_aggregate_relay_profile()
+                    .filter(|aggregate| aggregate.model_aggregation_enabled)
+            })
+            .map(|aggregate| aggregate.session_provider.as_str().to_string())
+            .unwrap_or_else(|| active_session_provider_id(&doc))
+    } else {
+        active_session_provider_id(&doc)
+    };
     let uses_openai_provider = session_provider_id == "openai";
     if uses_openai_provider && profile.protocol != RelayProtocol::Responses {
         anyhow::bail!("OpenAI 会话身份仅支持 Responses API");

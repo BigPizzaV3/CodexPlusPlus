@@ -31,6 +31,7 @@ fn aggregate(strategy: AggregateRelayStrategy) -> AggregateRelayProfile {
         id: "agg".to_string(),
         name: "聚合".to_string(),
         session_provider: RelaySessionProvider::Custom,
+        model_aggregation_enabled: false,
         strategy,
         members: vec![
             AggregateRelayMember {
@@ -55,6 +56,7 @@ fn aggregate_with_id(id: &str, strategy: AggregateRelayStrategy) -> AggregateRel
         id: id.to_string(),
         name: "聚合".to_string(),
         session_provider: RelaySessionProvider::Custom,
+        model_aggregation_enabled: false,
         strategy,
         members: vec![
             AggregateRelayMember {
@@ -786,6 +788,7 @@ fn aggregate_route_serializes_with_camel_case_fields() {
         id: "agg".to_string(),
         name: "聚合".to_string(),
         session_provider: RelaySessionProvider::Custom,
+        model_aggregation_enabled: false,
         strategy: AggregateRelayStrategy::Failover,
         members: Vec::new(),
         routes: vec![route("deepseek-*", "relay-b", 10)],

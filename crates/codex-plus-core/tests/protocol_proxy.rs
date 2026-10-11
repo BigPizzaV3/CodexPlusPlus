@@ -4557,6 +4557,46 @@ async fn aggregate_proxy_rewrites_requested_model_to_selected_member_default_mod
     fallback_server.abort();
 }
 
+#[tokio::test]
+async fn aggregate_prefixed_model_binds_member_and_preserves_upstream_model() {
+    let first = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let first_addr = first.local_addr().unwrap();
+    let second = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let second_addr = second.local_addr().unwrap();
+    let first_server = tokio::spawn(capture_json_request_once(first));
+    let second_server = tokio::spawn(respond_once(
+        second,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n",
+    ));
+    let mut settings = aggregate_proxy_settings(
+        "prefixed-model",
+        format!("http://{first_addr}/v1"),
+        format!("http://{second_addr}/v1"),
+    );
+    for relay in settings.relay_profiles.iter_mut().take(2) {
+        relay.relay_mode = RelayMode::PureApi;
+        relay.no_auth = true;
+        relay.api_key.clear();
+    }
+    let first_id = settings.relay_profiles[0].id.clone();
+    settings.relay_profiles[0].model = "deepseek-v4-pro".to_string();
+    settings.relay_profiles[0].model_list = "deepseek-v4-pro".to_string();
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+
+    let request = format!(
+        r#"{{"model":"cpx-{first_id}/deepseek-v4-pro","input":"hi","stream":false}}"#
+    );
+    let mut result = open_responses_proxy_request_with_settings(&request, settings)
+        .await
+        .unwrap();
+    let (_, body) = first_server.await.unwrap();
+    assert_eq!(result.status_code, 200);
+    assert_eq!(body["model"], "deepseek-v4-pro");
+    let response: Value = serde_json::from_slice(&result.read_body().await.unwrap()).unwrap();
+    assert_eq!(response["id"], "resp_model_route");
+    second_server.abort();
+}
+
 async fn respond_once(listener: tokio::net::TcpListener, response: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let mut buffer = [0; 1024];
@@ -4701,6 +4741,7 @@ fn aggregate_proxy_settings(
             id: aggregate_id,
             name: "aggregate".to_string(),
             session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
             strategy: AggregateRelayStrategy::RequestRoundRobin,
             members: vec![
                 AggregateRelayMember {

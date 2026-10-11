@@ -227,6 +227,9 @@ pub struct AggregateRelayProfile {
     pub name: String,
     #[serde(default)]
     pub session_provider: RelaySessionProvider,
+    /// 将成员模型合并到 Codex 模型目录，并按模型 ID 固定绑定成员。
+    #[serde(rename = "modelAggregationEnabled", default)]
+    pub model_aggregation_enabled: bool,
     #[serde(default)]
     pub strategy: AggregateRelayStrategy,
     #[serde(default)]
@@ -3378,6 +3381,7 @@ experimental_bearer_token = "sk-existing""#
                 id: "agg".to_string(),
                 name: "聚合".to_string(),
                 session_provider: RelaySessionProvider::Openai,
+                model_aggregation_enabled: true,
                 strategy: AggregateRelayStrategy::WeightedRoundRobin,
                 members: vec![
                     AggregateRelayMember {
@@ -3411,6 +3415,7 @@ experimental_bearer_token = "sk-existing""#
             active_aggregate.session_provider,
             RelaySessionProvider::Openai
         );
+        assert!(active_aggregate.model_aggregation_enabled);
         assert_eq!(
             loaded.active_relay_session_provider(),
             RelaySessionProvider::Openai
@@ -3905,6 +3910,7 @@ experimental_bearer_token = "sk-existing""#
                     {
                         "id": "agg",
                         "name": "聚合",
+                        "modelAggregationEnabled": true,
                         "strategy": "weightedRoundRobin",
                         "members": [
                             { "relayId": "relay-a", "weight": 1 },
@@ -3923,6 +3929,7 @@ experimental_bearer_token = "sk-existing""#
             active_aggregate.strategy,
             AggregateRelayStrategy::WeightedRoundRobin
         );
+        assert!(active_aggregate.model_aggregation_enabled);
         assert_eq!(active_aggregate.members.len(), 2);
         assert_eq!(active_aggregate.members[1].relay_id, "relay-b");
         assert_eq!(active_aggregate.members[1].weight, 4);

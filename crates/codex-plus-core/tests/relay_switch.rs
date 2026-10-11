@@ -254,6 +254,7 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
             id: "agg".to_string(),
             name: "聚合供应商 1".to_string(),
             session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
             strategy: AggregateRelayStrategy::Failover,
             members: vec![AggregateRelayMember {
                 relay_id: "api".to_string(),
@@ -594,6 +595,7 @@ fn official_oauth_survives_aggregate_round_trip() {
             id: "agg".to_string(),
             name: "聚合".to_string(),
             session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
             strategy: AggregateRelayStrategy::Failover,
             members: vec![AggregateRelayMember {
                 relay_id: "official".to_string(),
@@ -669,6 +671,7 @@ fn aggregate_target_settings(api: RelayProfile, aggregate: RelayProfile) -> Back
             id: "agg".to_string(),
             name: "聚合供应商".to_string(),
             session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
             strategy: AggregateRelayStrategy::Failover,
             members: vec![AggregateRelayMember {
                 relay_id: "api".to_string(),

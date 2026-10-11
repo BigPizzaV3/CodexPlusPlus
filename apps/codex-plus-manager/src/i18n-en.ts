@@ -1042,9 +1042,15 @@ export const EN_PLAIN: Record<string, string> = {
   "聚合供应商会在真实对话中轮转成员，请测试成员供应商": "Aggregate providers rotate members in real conversations; test the member providers instead",
   "聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。":
     "Aggregate providers only store member and strategy config drawn from existing API providers; once active, requests rotate through the local protocol proxy.",
+  "此聚合会把成员模型合并到 Codex 列表；带供应商前缀的模型固定发送到对应成员，普通模型仍按策略轮转。":
+    "This aggregate merges member models into the Codex list; prefixed models stay bound to their member, while plain model names still follow the strategy.",
   "聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。":
     "An aggregate provider needs at least 1 selected API provider with a Base URL / Key filled in.",
   "聚合策略": "Aggregate strategy",
+  "按模型聚合": "Aggregate by model",
+  "把成员模型合并到 Codex 模型列表": "Merge member models into the Codex model list",
+  "开启后，模型会带供应商前缀并固定发送到对应成员；普通模型名仍按聚合策略轮转。":
+    "Enabled models get a provider prefix and stay bound to that member; plain model names still rotate by strategy.",
   "聚合配置只引用已有供应商，不复制 Key 和配置文件": "Aggregate config only references existing providers; it doesn't copy keys or config files",
   "该路由的目标供应商不可用或未选择，请重新选择或删除该规则。": "Route target provider is unavailable or unselected; pick one or delete this rule.",
   "路由规则": "Route rules",

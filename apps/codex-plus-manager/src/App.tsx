@@ -430,6 +430,7 @@ type RelayAggregateConfig = {
   strategy: RelayAggregateStrategy;
   members: RelayAggregateMember[];
   routes?: RelayAggregateRoute[];
+  modelAggregationEnabled?: boolean;
 };
 type AggregateRelayMember = {
   relayId: string;
@@ -439,6 +440,7 @@ type AggregateRelayProfile = {
   id: string;
   name: string;
   sessionProvider?: RelaySessionProvider;
+  modelAggregationEnabled?: boolean;
   strategy: RelayAggregateStrategy;
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
@@ -9675,6 +9677,19 @@ function AggregateRelayProfileEditor({
             options={aggregateStrategyOptions.map((option) => ({ value: option.value, label: option.label }))}
           />
         </Field>
+        <Field className="aggregate-model-aggregation-field" label={t("按模型聚合")}>
+          <label className="toggle-row">
+            <input
+              checked={aggregate.modelAggregationEnabled === true}
+              onChange={(event) => updateAggregate({ ...aggregate, modelAggregationEnabled: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>{t("把成员模型合并到 Codex 模型列表")}</span>
+          </label>
+          <p className="field-hint">
+            {t("开启后，模型会带供应商前缀并固定发送到对应成员；普通模型名仍按聚合策略轮转。")}
+          </p>
+        </Field>
         <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
           <AppSelect
             value={sessionProvider}
@@ -12455,6 +12470,7 @@ function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: Aggregat
     sessionProvider: normalizeRelaySessionProvider(aggregate.sessionProvider),
     aggregate: {
       strategy: aggregate.strategy,
+      modelAggregationEnabled: aggregate.modelAggregationEnabled === true,
       members: aggregate.members.map((member) => ({
         profileId: member.relayId,
         weight: clampAggregateWeight(member.weight),
@@ -12560,6 +12576,10 @@ function relayProfileConfigBrief(profile: RelayProfile): string {
 
 function relayProfileModeHelp(profile: RelayProfile): string {
   if (isAggregateRelayProfile(profile)) {
+    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
+    if (aggregate.modelAggregationEnabled) {
+      return t("此聚合会把成员模型合并到 Codex 列表；带供应商前缀的模型固定发送到对应成员，普通模型仍按策略轮转。");
+    }
     return t("聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。");
   }
   if (profile.relayMode === "official") {
@@ -13371,6 +13391,7 @@ function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): 
       id: profile.id,
       name: profile.name || t("聚合供应商"),
       sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
+      modelAggregationEnabled: aggregate.modelAggregationEnabled === true,
       strategy: aggregate.strategy,
       members: aggregate.members.map((member) => ({
         relayId: member.profileId,
@@ -13496,6 +13517,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       cooldownErrorStatuses: [429, 500],
       aggregate: {
         strategy: "failover",
+        modelAggregationEnabled: false,
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
       },
     },
@@ -13646,6 +13668,7 @@ function normalizeAggregateConfig(
     aggregate?.strategy && aggregateStrategyOptions.some((option) => option.value === aggregate.strategy)
       ? aggregate.strategy
       : "failover";
+  const modelAggregationEnabled = aggregate?.modelAggregationEnabled === true;
   const members = (aggregate?.members ?? [])
     .filter((member) => member.profileId && !seen.has(member.profileId))
     .filter((member) => !candidateIds.size || candidateIds.has(member.profileId))
@@ -13660,7 +13683,7 @@ function normalizeAggregateConfig(
       profileId: route.profileId,
       priority: clampAggregateRoutePriority(route.priority),
     }));
-  return { strategy, members, routes };
+  return { strategy, modelAggregationEnabled, members, routes };
 }
 
 function aggregateMemberCandidates(settings: BackendSettings, aggregateId: string): RelayProfile[] {

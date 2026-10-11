@@ -1889,7 +1889,16 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
-    let model_route = select_model_route(&settings, &source_model)?;
+    let aggregate_model =
+        crate::aggregate_catalog::resolve_active_model(&settings, &source_model)?;
+    if let Some(binding) = &aggregate_model {
+        request_json["model"] = Value::String(binding.upstream_model.clone());
+    }
+    let model_route = if aggregate_model.is_some() {
+        None
+    } else {
+        select_model_route(&settings, &source_model)?
+    };
     if let Some(route) = &model_route
         && route.upstream_model != source_model
     {
@@ -1900,7 +1909,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         conversation_id: conversation_id_from_responses_request(&request_json),
         model,
     };
-    let (relay, relays) = if let Some(route) = &model_route {
+    let (relay, relays) = if let Some(binding) = &aggregate_model {
+        (binding.relay.clone(), vec![binding.relay.clone()])
+    } else if let Some(route) = &model_route {
         (route.relay.clone(), vec![route.relay.clone()])
     } else {
         let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
@@ -1914,6 +1925,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         relays.first().map(|item| item.id.as_str()),
         Some(relay.id.as_str())
     );
+    let strict_aggregate_model = aggregate_model.is_some();
     let relay_count = relays.len();
     let mut cooldown_retries = 0_usize;
     'request: loop {
@@ -1922,7 +1934,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             validate_upstream(&relay)?;
             let channel_key = crate::channel_protection::key_for_relay(&relay);
             let mut channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
-            let model_override = aggregate_upstream_model_override(&settings, &relay);
+            let model_override = aggregate_model
+                .as_ref()
+                .map(|binding| binding.upstream_model.clone())
+                .or_else(|| aggregate_upstream_model_override(&settings, &relay));
             let preserve_native_request = relay.protocol == RelayProtocol::Responses
                 && (request_has_compaction_trigger(&request_json)
                     || is_responses_compact_proxy_path(request_path));
@@ -1942,7 +1957,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     Ok(parts) => parts,
                     Err(error) => {
                         drop(channel_permit);
-                        if has_more_candidates && error.is::<NativeCompactionUnsupported>() {
+                        if has_more_candidates
+                            && !strict_aggregate_model
+                            && error.is::<NativeCompactionUnsupported>()
+                        {
                             crate::relay_rotation::record_relay_request_failure(&settings);
                             continue;
                         }
@@ -2000,7 +2018,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                             "error": error.to_string()
                         }),
                     );
-                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    if !strict_aggregate_model {
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                    }
                     if has_more_candidates {
                         continue;
                     }
@@ -2051,7 +2071,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 drop(channel_permit);
 
                 if success && upstream_has_terminal_failure(&probed, &content_type) {
-                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    if !strict_aggregate_model {
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                    }
                     return Ok(UpstreamProxyResponse {
                         status_code,
                         is_stream: stream_response,
@@ -2067,10 +2089,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 if success && stream_response {
                     match upstream_compaction_item_count(&probed, &content_type) {
                         Some(1) => {
-                            crate::relay_rotation::record_relay_request_event(
-                                &settings,
-                                RotationEvent::Success,
-                            );
+                            if !strict_aggregate_model {
+                                crate::relay_rotation::record_relay_request_event(
+                                    &settings,
+                                    RotationEvent::Success,
+                                );
+                            }
                             return Ok(UpstreamProxyResponse {
                                 status_code,
                                 is_stream: true,
@@ -2084,7 +2108,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                             });
                         }
                         None => {
-                            crate::relay_rotation::record_relay_request_failure(&settings);
+                            if !strict_aggregate_model {
+                                crate::relay_rotation::record_relay_request_failure(&settings);
+                            }
                             return Ok(UpstreamProxyResponse {
                                 status_code,
                                 is_stream: true,
@@ -2102,10 +2128,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 } else if success
                     && upstream_compaction_item_count(&probed, &content_type) == Some(1)
                 {
-                    crate::relay_rotation::record_relay_request_event(
-                        &settings,
-                        RotationEvent::Success,
-                    );
+                    if !strict_aggregate_model {
+                        crate::relay_rotation::record_relay_request_event(
+                            &settings,
+                            RotationEvent::Success,
+                        );
+                    }
                     if !is_stream {
                         return Ok(UpstreamProxyResponse {
                             status_code,
@@ -2134,7 +2162,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     }
                 }
                 if !success && !compaction_input_rejected(status_code, &probed) {
-                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    if !strict_aggregate_model {
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                    }
                     if has_more_candidates {
                         continue;
                     }
@@ -2169,7 +2199,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
                     Ok(parts) => parts,
                     Err(error) => {
-                        if has_more_candidates && error.is::<NativeCompactionUnsupported>() {
+                        if has_more_candidates
+                            && !strict_aggregate_model
+                            && error.is::<NativeCompactionUnsupported>()
+                        {
                             crate::relay_rotation::record_relay_request_failure(&settings);
                             continue;
                         }
@@ -2204,7 +2237,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                                 "error": error.to_string()
                             }),
                         );
-                        crate::relay_rotation::record_relay_request_failure(&settings);
+                        if !strict_aggregate_model {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                        }
                         if has_more_candidates {
                             continue;
                         }
@@ -2241,14 +2276,16 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     "willFailover": has_more_candidates && !(200..300).contains(&status_code)
                 }),
             );
-            crate::relay_rotation::record_relay_request_event(
-                &settings,
-                if (200..300).contains(&status_code) {
-                    RotationEvent::Success
-                } else {
-                    RotationEvent::Failure
-                },
-            );
+            if !strict_aggregate_model {
+                crate::relay_rotation::record_relay_request_event(
+                    &settings,
+                    if (200..300).contains(&status_code) {
+                        RotationEvent::Success
+                    } else {
+                        RotationEvent::Failure
+                    },
+                );
+            }
             if (200..300).contains(&status_code) || !has_more_candidates {
                 if !(200..300).contains(&status_code) {
                     let cooldown_started = crate::channel_protection::mark_failure(
