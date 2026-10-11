@@ -154,9 +154,9 @@ fn unknown_tool_shard_survives_load_and_save() {
     std::fs::write(
         &path,
         r#"{
-          "activeTool": "claude",
+          "activeTool": "new-tool",
           "tools": {
-            "claude": {
+            "new-tool": {
               "relayProfiles": [ { "id": "claude-a", "name": "Claude 供应商", "relayMode": "pureApi" } ],
               "activeRelayId": "claude-a"
             }
@@ -168,16 +168,16 @@ fn unknown_tool_shard_survives_load_and_save() {
     let store = SettingsStore::new(path.clone());
     let settings = store.load().unwrap();
 
-    assert_eq!(settings.active_tool, ToolId::Unknown("claude".into()));
-    let claude = settings.tool_config(&ToolId::Unknown("claude".into()));
-    assert_eq!(claude.active_relay_id, "claude-a");
-    assert_eq!(claude.relay_profiles[0].name, "Claude 供应商");
+    assert_eq!(settings.active_tool, ToolId::Unknown("new-tool".into()));
+    let new_tool = settings.tool_config(&ToolId::Unknown("new-tool".into()));
+    assert_eq!(new_tool.active_relay_id, "claude-a");
+    assert_eq!(new_tool.relay_profiles[0].name, "Claude 供应商");
 
     store.save(&settings).unwrap();
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(raw["tools"]["claude"]["activeRelayId"], "claude-a");
-    assert_eq!(raw["activeTool"], "claude");
+    assert_eq!(raw["tools"]["new-tool"]["activeRelayId"], "claude-a");
+    assert_eq!(raw["activeTool"], "new-tool");
 }
 
 /// 未知工具的分片在 Codex 保存流程里也不能被抹掉。
