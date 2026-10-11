@@ -4800,7 +4800,7 @@ function CodexMultiLaunchScreen({
                 const unsupported = !multiLaunchSupported(profile);
                 const pending = actions.multiLaunchPending === profile.id;
                 return (
-                  <div className="relay-profile-card" data-relay-profile-id={profile.id} key={profile.id}>
+                  <div className="relay-profile-card multi-launch-card" data-relay-profile-id={profile.id} key={profile.id}>
                     <span className="relay-index" title={profile.name || t("未命名供应商")}>{providerInitial(profile.name)}</span>
                     <span className="relay-summary">
                       <strong>{profile.name || t("未命名供应商")}</strong>

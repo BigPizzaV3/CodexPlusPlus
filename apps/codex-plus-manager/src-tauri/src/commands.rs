@@ -1010,6 +1010,18 @@ fn launch_codex_multi_instance_blocking(
             }),
         );
     }
+    if let Err(error) = absolutize_multi_instance_model_catalog(&codex_home) {
+        return failed(
+            &format!("修正多开实例 model_catalog_json 路径失败：{error}"),
+            json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
+        );
+    }
+    if let Err(error) = seed_multi_instance_onboarding_state(&codex_home) {
+        return failed(
+            &format!("写入多开实例首次启动状态失败：{error}"),
+            json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
+        );
+    }
 
     let app_dir = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
         (!request.app_path.trim().is_empty()).then(|| Path::new(request.app_path.trim())),
@@ -1126,6 +1138,56 @@ fn multi_instance_extra_args(args: &[String]) -> Vec<String> {
                 && !arg.starts_with("--user-data-dir")
         })
         .collect()
+}
+
+fn absolutize_multi_instance_model_catalog(home: &Path) -> anyhow::Result<()> {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path)?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let Some(raw_path) = doc
+        .get("model_catalog_json")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let path = PathBuf::from(raw_path);
+    if path.is_absolute() {
+        return Ok(());
+    }
+    let absolute = home.join(path);
+    doc["model_catalog_json"] = toml_edit::value(absolute.to_string_lossy().to_string());
+    codex_plus_core::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    Ok(())
+}
+
+fn seed_multi_instance_onboarding_state(home: &Path) -> anyhow::Result<()> {
+    let path = home.join(".codex-global-state.json");
+    let mut state = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| json!({})),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    let root = state
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!(".codex-global-state.json 不是 JSON 对象"))?;
+    let atoms = root
+        .entry("electron-persisted-atom-state")
+        .or_insert_with(|| json!({}));
+    let atoms = atoms
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("electron-persisted-atom-state 不是 JSON 对象"))?;
+    atoms.insert(
+        "electron:onboarding-projectless-completed".to_string(),
+        Value::Bool(true),
+    );
+    atoms
+        .entry("last_completed_onboarding".to_string())
+        .or_insert_with(|| Value::from(current_timestamp_ms() / 1000));
+    let bytes = serde_json::to_vec_pretty(&state)?;
+    codex_plus_core::settings::atomic_write(&path, &bytes)?;
+    Ok(())
 }
 
 fn select_multi_instance_port(requested: u16, instance_id: &str) -> u16 {
@@ -9051,5 +9113,51 @@ model_reasoning_effort = "high"
         assert!(first > 0);
         assert!(second > 0);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn multi_instance_catalog_pointer_is_absolute() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("model-catalogs")).unwrap();
+        std::fs::write(
+            temp.path().join("model-catalogs/catalog.json"),
+            "{\"models\":[]}",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model_catalog_json = \"model-catalogs/catalog.json\"\n",
+        )
+        .unwrap();
+
+        absolutize_multi_instance_model_catalog(temp.path()).unwrap();
+
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+        let pointer = doc["model_catalog_json"].as_str().unwrap();
+        assert!(Path::new(pointer).is_absolute(), "{pointer}");
+        assert!(Path::new(pointer).is_file(), "{pointer}");
+    }
+
+    #[test]
+    fn multi_instance_onboarding_state_is_seeded_without_account_data() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(".codex-global-state.json"),
+            r#"{"electron-persisted-atom-state":{"keep":true}}"#,
+        )
+        .unwrap();
+
+        seed_multi_instance_onboarding_state(temp.path()).unwrap();
+
+        let state: Value = serde_json::from_slice(
+            &std::fs::read(temp.path().join(".codex-global-state.json")).unwrap(),
+        )
+        .unwrap();
+        let atoms = &state["electron-persisted-atom-state"];
+        assert_eq!(atoms["keep"], true);
+        assert_eq!(atoms["electron:onboarding-projectless-completed"], true);
+        assert!(atoms["last_completed_onboarding"].is_number());
+        assert!(state.get("auth").is_none());
     }
 }

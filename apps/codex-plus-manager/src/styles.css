@@ -998,6 +998,15 @@ body {
   color: hsl(var(--primary));
 }
 
+.multi-launch-card {
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+}
+
+.multi-launch-card .relay-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .relay-profile-card:hover .relay-card-actions,
 .relay-profile-card:focus-within .relay-card-actions {
   opacity: 1;
