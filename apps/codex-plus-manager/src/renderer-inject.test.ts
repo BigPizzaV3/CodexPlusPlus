@@ -2,6 +2,29 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
 
+it("keeps background-resume scan scheduling bounded and independent of retired features", async () => {
+  const schedule = await readFile(
+    new URL("../../../assets/inject/renderer-inject/98-scan-schedule.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(schedule, /if \(document\.hidden\) \{\s*clearTimeout/);
+  assert.match(schedule, /window\.__codexSessionDeleteScanPending/);
+  assert.match(schedule, /window\.__codexSessionDeleteDeferredPending/);
+  assert.match(schedule, /requestAnimationFrame/);
+  assert.match(schedule, /document\.addEventListener\("visibilitychange", onScanVisibilityChange\)/);
+  assert.match(schedule, /window\.__codexPlusScanScheduleCleanup/);
+  assert.doesNotMatch(schedule, /scheduleZedRemoteMenuRefresh|__codexZedRemoteMenuRefresh/);
+  const view = await readFile(
+    new URL("../../../assets/inject/renderer-inject/95-conversation-view.js", import.meta.url),
+    "utf8",
+  );
+  const scan = view.match(/^  function scan\(\) \{[^]*?^  \}/m)?.[0];
+  assert.ok(scan);
+  assert.match(scan, /if \(document\.hidden\)/);
+  assert.match(scan, /scheduleDeferredScan\(\)/);
+  assert.doesNotMatch(scan, /requestAnimationFrame/);
+});
+
 const STEPWISE_FRAGMENT_PATHS = [
   "floating-panel/runtime/state.js",
   "floating-panel/core/appearance-runtime.js",
@@ -1727,10 +1750,14 @@ describe("renderer inject 分片与产物一致", () => {
   const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
   const artifactPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
 
-  async function assembleFromFragments(): Promise<{ source: string; names: string[] }> {
+  async function assembleFromFragments(): Promise<{
+    source: string;
+    names: string[];
+    fragments: Array<{ name: string; description?: string; lines: number }>;
+  }> {
     const manifest = JSON.parse(
       await readFile(new URL("manifest.json", fragmentDir), "utf8"),
-    ) as { fragments: Array<{ name: string; description?: string }> };
+    ) as { fragments: Array<{ name: string; description?: string; lines: number }> };
     assert.ok(
       Array.isArray(manifest.fragments) && manifest.fragments.length > 0,
       "manifest.json 必须有 fragments",
@@ -1744,7 +1771,11 @@ describe("renderer inject 分片与产物一致", () => {
         return body;
       }),
     );
-    return { source: bodies.join(""), names: manifest.fragments.map((f) => f.name) };
+    return {
+      source: bodies.join(""),
+      names: manifest.fragments.map((f) => f.name),
+      fragments: manifest.fragments,
+    };
   }
 
   it("分片按 manifest 顺序拼接后与产物逐字节一致", async () => {
@@ -1764,6 +1795,21 @@ describe("renderer inject 分片与产物一致", () => {
     assert.ok(source.includes("\n})();\n"), "必须包含主 IIFE 的收尾");
     // 语法解析（不执行）能抓出分片切坏造成的括号不匹配。
     assert.doesNotThrow(() => new Function(source));
+  });
+
+  it("manifest 的行数与分片内容保持一致且没有重复文件", async () => {
+    const { source, fragments } = await assembleFromFragments();
+    const names = fragments.map((fragment) => fragment.name);
+    assert.equal(new Set(names).size, names.length, "manifest 不得重复引用同一分片");
+    assert.ok(fragments.every((fragment) => Number.isInteger(fragment.lines) && fragment.lines > 0));
+    const manifestLines = fragments.reduce((total, fragment) => total + fragment.lines, 0);
+    const artifactLines = source.endsWith("\n") ? source.slice(0, -1).split("\n").length : source.split("\n").length;
+    assert.equal(manifestLines, artifactLines, "manifest 总行数必须覆盖完整产物");
+    for (const fragment of fragments) {
+      const body = await readFile(new URL(fragment.name, fragmentDir), "utf8");
+      const lineCount = body.endsWith("\n") ? body.slice(0, -1).split("\n").length : body.split("\n").length;
+      assert.equal(lineCount, fragment.lines, fragment.name);
+    }
   });
 
   it("测试辅助依赖的锚点仍落在同一个分片里且顺序不变", async () => {

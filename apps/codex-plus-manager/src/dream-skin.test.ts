@@ -140,7 +140,9 @@ describe("dream skin theme helpers", () => {
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "24-home-composer-rounded"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "25-community-shell-material"/);
+    assert.match(assets, /DREAM_SKIN_COMMUNITY_COMPAT_CSS/);
+    assert.match(assets, /format!\("\{compiled\}\\n\{DREAM_SKIN_COMMUNITY_COMPAT_CSS\}"\)/);
   });
 
   it("covers the current shell, composer, message, and top-fade contracts", async () => {

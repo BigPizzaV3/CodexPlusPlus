@@ -107,6 +107,8 @@ const GLASS_VISION_CSS: &str =
     include_str!("../../../assets/inject/upstream/glass-vision/glass-vision.css");
 const GLASS_VISION_RENDERER: &str =
     include_str!("../../../assets/inject/upstream/glass-vision/renderer-inject.js");
+const DREAM_SKIN_COMMUNITY_COMPAT_CSS: &str =
+    include_str!("../../../assets/inject/dream-skin-community-compat.css");
 #[cfg(windows)]
 const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg");
@@ -139,7 +141,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "24-home-composer-rounded";
+const DREAM_SKIN_RENDERER_REVISION: &str = "25-community-shell-material";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -298,7 +300,10 @@ fn managed_dream_skin_css(settings: &BackendSettings) -> String {
     let Ok(css) = std::fs::read_to_string(css_path) else {
         return String::new();
     };
-    crate::dream_skin_package::compile_safe_css(&css).unwrap_or_default()
+    let Ok(compiled) = crate::dream_skin_package::compile_safe_css(&css) else {
+        return String::new();
+    };
+    format!("{compiled}\n{DREAM_SKIN_COMMUNITY_COMPAT_CSS}")
 }
 
 fn dream_skin_skin_api_bootstrap_script(theme: &str) -> String {
@@ -600,7 +605,7 @@ pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Val
         "opacity": f64::from(settings.codex_app_image_overlay_opacity.clamp(1, 100)) / 100.0,
         "fitMode": settings.codex_app_image_overlay_fit_mode.as_str(),
         "dataUrl": data_url,
-        "imageUrl": if enabled {
+        "imageUrl": if enabled && !data_url.is_empty() {
             format!("http://127.0.0.1:{helper_port}/overlay/image")
         } else {
             String::new()
@@ -682,6 +687,29 @@ mod tests {
     }
 
     #[test]
+    fn community_shell_css_only_changes_native_surface_paint_and_insets() {
+        let css = DREAM_SKIN_COMMUNITY_COMPAT_CSS;
+        assert!(css.contains("[data-codex-os=\"win32\"]"));
+        assert!(css.contains("[data-dream-task-mode=\"full\"]"));
+        assert!(css.contains("--app-shell-titlebar-height: 0px"));
+        assert!(css.contains("[data-app-action-timeline-scroll]"));
+        assert!(css.contains("[role=\"menu\"]"));
+        for excluded in [
+            "opacity:",
+            "z-index:",
+            "position:",
+            "img",
+            "canvas",
+            "video",
+        ] {
+            assert!(
+                !css.contains(excluded),
+                "unexpected media/layer override: {excluded}"
+            );
+        }
+    }
+
+    #[test]
     fn image_overlay_config_includes_fit_mode() {
         let settings = BackendSettings {
             codex_app_image_overlay_fit_mode: "fill".to_string(),
@@ -690,5 +718,19 @@ mod tests {
         let config = image_overlay_config(57321, &settings);
 
         assert_eq!(config["fitMode"].as_str(), Some("fill"));
+    }
+
+    #[test]
+    fn image_overlay_config_clears_endpoint_when_asset_is_unavailable() {
+        let settings = BackendSettings {
+            codex_app_image_overlay_enabled: true,
+            codex_app_image_overlay_path: "C:\\missing\\overlay.png".to_string(),
+            ..BackendSettings::default()
+        };
+        let config = image_overlay_config(57321, &settings);
+
+        assert_eq!(config["enabled"], false);
+        assert_eq!(config["dataUrl"], "");
+        assert_eq!(config["imageUrl"], "");
     }
 }

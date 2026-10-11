@@ -1,0 +1,34 @@
+/* Native Windows shell paint for full-wallpaper community themes. */
+html[data-dream-skin="active"][data-codex-os="win32"][data-dream-art-wide="true"][data-dream-task-mode="full"]
+  [class*="_ApplicationMenuPageSurfaceLayout_"] {
+  --app-shell-titlebar-height: 0px !important;
+  padding-inline-end: 0 !important;
+  padding-block-end: 0 !important;
+}
+
+html[data-dream-skin="active"][data-codex-os="win32"][data-dream-art-wide="true"][data-dream-task-mode="full"]
+  [class*="_ApplicationMenuPageHeader_"] {
+  margin-inline-end: 0 !important;
+}
+
+/* Clear only the native footer's own backdrop, not the composer or its media. */
+html[data-dream-skin="active"][data-codex-os="win32"][data-dream-art-wide="true"][data-dream-task-mode="full"]
+  [data-app-action-timeline-scroll]
+  > [class~="pointer-events-none"][class~="absolute"]:has(:is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]))
+  > [class~="pointer-events-none"][class~="absolute"][class~="bg-surface"] {
+  background: transparent !important;
+}
+
+html[data-dream-skin="active"][data-codex-os="win32"][data-dream-art-wide="true"][data-dream-task-mode="full"]
+  :is([class*="_homeUtilityBar_"], [class*="_ComposerHomeUtilityBar_"]) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Paint actual menu surfaces; positioning wrappers keep their native behavior. */
+html[data-dream-skin="active"][data-codex-os="win32"][data-dream-art-wide="true"][data-dream-task-mode="full"]
+  :is([role="menu"], [role="listbox"], [data-slot="popover-content"]) {
+  background-color: var(--ds-panel) !important;
+  border-color: var(--ds-line) !important;
+  backdrop-filter: blur(24px) saturate(1.2) !important;
+}
