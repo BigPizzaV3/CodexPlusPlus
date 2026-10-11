@@ -4763,7 +4763,7 @@ function RelayScreen({
 
 function multiLaunchSupported(profile: RelayProfile): boolean {
   return !isAggregateRelayProfile(profile)
-    && profile.protocol === "responses"
+    && (profile.protocol === "responses" || profile.protocol === "chatCompletions")
     && !(profile.modelRoutes ?? []).some((route) => route.model.trim() || route.targetRelayId.trim());
 }
 
@@ -4791,7 +4791,7 @@ function CodexMultiLaunchScreen({
         <Panel className="relay-management-panel">
           <CardHeader>
             <CardTitle>{t("选择供应商身份启动 Codex")}</CardTitle>
-            <CardDescription>{t("每个身份使用独立的配置、会话和用户数据目录，可与其他直连 Responses 供应商同时运行。")}</CardDescription>
+            <CardDescription>{t("每个身份使用独立的配置、会话和用户数据目录，可与其他单一 Responses 或 Chat Completions 供应商同时运行。")}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="relay-profile-list">
@@ -4813,7 +4813,7 @@ function CodexMultiLaunchScreen({
                         title={aggregate
                           ? t("聚合供应商暂不支持独立多开")
                           : unsupported
-                            ? t("仅支持直连 Responses 供应商")
+                            ? t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")
                             : t("启动此供应商的独立 Codex 实例")}
                         size="sm"
                       >
@@ -7568,7 +7568,7 @@ function SortableRelayProfileCard({
               ? t("聚合供应商暂不支持独立多开")
               : multiLaunchSupported(profile)
                 ? t("启动独立 Codex 实例")
-                : t("仅支持直连 Responses 供应商")}
+                : t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")}
             variant="ghost"
           >
             <Rocket className="h-4 w-4" />

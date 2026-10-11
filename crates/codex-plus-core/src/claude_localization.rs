@@ -92,6 +92,8 @@ fn source_app() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
     let candidates = [
+        local.join(r"Microsoft\WindowsApps\claude-desktop.exe"),
+        local.join(r"Microsoft\WindowsApps\Claude_pzs8sxrjxfjjc\claude-desktop.exe"),
         local.join(r"Programs\Claude\Claude.exe"),
         local.join(r"Programs\claude-desktop\Claude.exe"),
         local.join(r"Claude\Claude.exe"),
@@ -99,6 +101,14 @@ fn source_app() -> PathBuf {
     ];
     candidates.into_iter().find(|path| path.is_file()).unwrap_or_else(|| local.join(r"Programs\Claude\Claude.exe"))
 }
+
+#[cfg(target_os = "windows")]
+fn windows_msix_source(path: &Path) -> bool {
+    path.to_string_lossy().to_ascii_lowercase().contains("\\windowsapps\\")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_msix_source(_path: &Path) -> bool { false }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn source_app() -> PathBuf {
@@ -115,7 +125,10 @@ fn home_dir() -> PathBuf {
 fn copy_app() -> PathBuf { runtime_dir().join("Claude CN.app") }
 
 #[cfg(target_os = "windows")]
-fn copy_app() -> PathBuf { runtime_dir().join("Claude CN").join("Claude.exe") }
+fn copy_app() -> PathBuf {
+    let source = source_app();
+    if windows_msix_source(&source) { source } else { runtime_dir().join("Claude CN").join("Claude.exe") }
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn copy_app() -> PathBuf { runtime_dir().join("Claude CN") }
@@ -397,6 +410,13 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
                 find_runtime("node").is_some(),
                 "需要带有内置 WebSocket 的 Node.js 22 或更新版本才能中文启动"
             );
+            if cfg!(target_os = "windows") && windows_msix_source(&source) {
+                fs::write(root.join("prepared.json"), serde_json::to_vec(&json!({
+                    "sourceBuild": app_version(&source, "ProductVersion"),
+                    "msix": true
+                }))?)?;
+                "已检测到 Windows MSIX 版 Claude；保留官方包不变，使用启动注入。".to_string()
+            } else {
             let staged = staged_copy_path(&format!("Claude-staging-{}", uuid::Uuid::new_v4()));
             run_script(&python, "build-copy.py", &staged, &[])?;
             // 校验通过后才替换；旧副本保留，构建失败时不会影响它。
@@ -418,15 +438,23 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
                 }))?,
             )?;
             "副本已准备并通过签名及 app.asar 一致性校验。".to_string()
+            }
         }
         "check" => {
-            run_script(&python, "build-copy.py", &copy, &["--check"])?;
-            "副本签名、中文词表、注入开关及 app.asar 一致性校验通过。".to_string()
+            if cfg!(target_os = "windows") && windows_msix_source(&source) {
+                ensure!(source.exists(), "未找到 Claude MSIX 安装入口");
+                "Windows MSIX 安装入口已检测到，采用原版包启动注入。".to_string()
+            } else {
+                run_script(&python, "build-copy.py", &copy, &["--check"])?;
+                "副本签名、中文词表、注入开关及 app.asar 一致性校验通过。".to_string()
+            }
         }
         "launch" | "restore" => {
             let node =
                 find_runtime("node").context("未找到带内置 WebSocket 的 Node.js 22 或更新版本")?;
-            run_script(&python, "build-copy.py", &copy, &["--check"])?;
+            if !(cfg!(target_os = "windows") && windows_msix_source(&source)) {
+                run_script(&python, "build-copy.py", &copy, &["--check"])?;
+            }
             let config = config_path();
             let backup = config.with_extension("codex-plus-locale-backup.json");
             let previous = read_config(&config)?.get("locale").cloned();
