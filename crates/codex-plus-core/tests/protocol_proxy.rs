@@ -6250,3 +6250,79 @@ fn prefix_stabilizer_turn_aborted_stays_when_stabilizer_disabled() {
     let rendered = serde_json::to_string(&out["messages"]).unwrap();
     assert!(rendered.contains("<turn_aborted>"), "关开关不得改动任何字节");
 }
+
+// —— web_search_call 历史回放（多 Agent 会话重复搜索/空 FINAL 的根治）——
+
+fn web_search_input(action: Value) -> Vec<Value> {
+    vec![
+        json!({"role": "user", "content": "帮我调研麦当劳设计语言"}),
+        json!({"type": "web_search_call", "id": "ws_call_1", "status": "completed", "action": action}),
+        json!({"role": "user", "content": "继续"}),
+    ]
+}
+
+#[test]
+fn web_search_call_history_preserves_query_and_sources_when_present() {
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": web_search_input(json!({
+            "type": "search",
+            "query": "mcdonald design language",
+            "sources": [{"url": "https://example.com/a", "title": "A"}]
+        })),
+    });
+    let out = responses_to_chat_completions(body).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let call = messages
+        .iter()
+        .find(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
+        .expect("web_search 调用必须回放为 assistant tool_calls");
+    let fn_name = call["tool_calls"][0]["function"]["name"].as_str().unwrap();
+    assert_eq!(fn_name, "web_search");
+    let args = call["tool_calls"][0]["function"]["arguments"].as_str().unwrap();
+    assert!(args.contains("mcdonald design language"), "query 必须透传给模型");
+    let tool_msg = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("必须回放 tool 结果消息");
+    assert_eq!(tool_msg["tool_call_id"].as_str().unwrap(), "ws_call_1");
+    assert!(tool_msg["content"].as_str().unwrap().contains("example.com"), "sources 必须透传");
+}
+
+#[test]
+fn web_search_call_history_stripped_by_client_informs_model_instead_of_vanishing() {
+    // 2026-10-11 实锤形态：codex 客户端把 query/results 剥离，只留 completed 标记。
+    // 旧行为：整项静默丢弃 → 模型失忆重搜（3 轮 8 次）。新行为：如实告知。
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": web_search_input(json!({"type": "search"})),
+    });
+    let out = responses_to_chat_completions(body).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let tool_msg = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("剥离形态也必须留下回放痕迹，不得整项消失");
+    let text = tool_msg["content"].as_str().unwrap();
+    assert!(text.contains("completed") && text.contains("Do not repeat"), "必须告知状态并劝阻重复搜索");
+    // 配对完整性：tool 消息必须紧跟在带同 id tool_calls 的 assistant 之后
+    let idx_tool = messages.iter().position(|m| m["role"] == "tool").unwrap();
+    let assistant = &messages[idx_tool - 1];
+    assert_eq!(assistant["role"].as_str().unwrap(), "assistant");
+    assert_eq!(assistant["tool_calls"][0]["id"].as_str().unwrap(), "ws_call_1");
+}
+
+#[test]
+fn web_search_call_history_idempotent_second_conversion_stable() {
+    // 同一历史二次请求：回放消息为转换层产物，不进入客户端历史，字节必稳
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": web_search_input(json!({"type": "search"})),
+    });
+    let first = serde_json::to_string(&responses_to_chat_completions(body.clone()).unwrap()["messages"]).unwrap();
+    let second = serde_json::to_string(&responses_to_chat_completions(body).unwrap()["messages"]).unwrap();
+    assert_eq!(first, second, "转换层输出必须确定");
+}

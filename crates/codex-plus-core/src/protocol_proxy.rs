@@ -3499,6 +3499,43 @@ fn append_responses_item(
                 }
             }));
         }
+        Some("web_search_call") => {
+            // codex 的 web_search 由客户端执行，item 是「调用+结果」合体形态。
+            // 此前该 item 没有 content 字段，回放时整项被 `_` 兜底静默丢弃：
+            // 模型既看不到自己搜过、也看不到结果，导致重复搜索与轮次失联
+            // （2026-10-11 多 Agent 会话实锤：3 轮 8 次重复搜索、两轮空 FINAL）。
+            // 回放为 assistant 调用 + tool 结果消息：query/sources 存在则透传，
+            // 被客户端剥离时如实告知状态，杜绝模型失忆重搜。
+            let call_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            if call_id.is_empty() {
+                return Ok(());
+            }
+            let action = item.get("action").cloned().unwrap_or_else(|| json!({}));
+            let query = action
+                .get("query")
+                .and_then(Value::as_str)
+                .or_else(|| action.get("input").and_then(Value::as_str))
+                .unwrap_or("");
+            let arguments = serde_json::to_string(&json!({ "input": query }))
+                .unwrap_or_else(|_| "{\"input\":\"\"}".to_string());
+            seen_tool_call_ids.insert(call_id.to_string());
+            pending_tool_calls.push(json!({
+                "id": call_id,
+                "type": "function",
+                "function": { "name": "web_search", "arguments": arguments }
+            }));
+            flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+            let status = item.get("status").and_then(Value::as_str).unwrap_or("completed");
+            let content = match action.get("sources").or_else(|| action.get("results")) {
+                Some(sources) if !sources.is_null() => {
+                    serde_json::to_string(sources).unwrap_or_else(|_| format!("Web search ({status}) results: {sources}"))
+                }
+                _ => format!(
+                    "Web search ({status}) was performed; its query and results were not preserved in this history. Do not repeat it; continue with the available context."
+                ),
+            };
+            messages.push(json!({ "role": "tool", "tool_call_id": call_id, "content": content }));
+        }
         Some("tool_search_call") => {
             // Codex 的 tool_search 是客户端执行的代理工具，历史回放时按
             // function tool_call 形态映射进 chat 消息流。
