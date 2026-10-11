@@ -154,11 +154,11 @@ fn unknown_tool_shard_survives_load_and_save() {
     std::fs::write(
         &path,
         r#"{
-          "activeTool": "claude",
+          "activeTool": "future-tool",
           "tools": {
-            "claude": {
-              "relayProfiles": [ { "id": "claude-a", "name": "Claude 供应商", "relayMode": "pureApi" } ],
-              "activeRelayId": "claude-a"
+            "future-tool": {
+              "relayProfiles": [ { "id": "future-a", "name": "未来工具供应商", "relayMode": "pureApi" } ],
+              "activeRelayId": "future-a"
             }
           }
         }"#,
@@ -168,16 +168,16 @@ fn unknown_tool_shard_survives_load_and_save() {
     let store = SettingsStore::new(path.clone());
     let settings = store.load().unwrap();
 
-    assert_eq!(settings.active_tool, ToolId::Unknown("claude".into()));
-    let claude = settings.tool_config(&ToolId::Unknown("claude".into()));
-    assert_eq!(claude.active_relay_id, "claude-a");
-    assert_eq!(claude.relay_profiles[0].name, "Claude 供应商");
+    assert_eq!(settings.active_tool, ToolId::Unknown("future-tool".into()));
+    let future = settings.tool_config(&ToolId::Unknown("future-tool".into()));
+    assert_eq!(future.active_relay_id, "future-a");
+    assert_eq!(future.relay_profiles[0].name, "未来工具供应商");
 
     store.save(&settings).unwrap();
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(raw["tools"]["claude"]["activeRelayId"], "claude-a");
-    assert_eq!(raw["activeTool"], "claude");
+    assert_eq!(raw["tools"]["future-tool"]["activeRelayId"], "future-a");
+    assert_eq!(raw["activeTool"], "future-tool");
 }
 
 /// 未知工具的分片在 Codex 保存流程里也不能被抹掉。
@@ -191,9 +191,9 @@ fn unknown_tool_shard_is_preserved_across_codex_save() {
           "relayProfiles": [ { "id": "codex-a", "name": "Codex 供应商", "relayMode": "pureApi" } ],
           "activeRelayId": "codex-a",
           "tools": {
-            "claude": {
-              "relayProfiles": [ { "id": "claude-a", "name": "Claude 供应商", "relayMode": "pureApi" } ],
-              "activeRelayId": "claude-a"
+            "future-tool": {
+              "relayProfiles": [ { "id": "future-a", "name": "未来工具供应商", "relayMode": "pureApi" } ],
+              "activeRelayId": "future-a"
             }
           }
         }"#,
@@ -210,8 +210,8 @@ fn unknown_tool_shard_is_preserved_across_codex_save() {
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(
-        raw["tools"]["claude"]["relayProfiles"][0]["name"],
-        "Claude 供应商"
+        raw["tools"]["future-tool"]["relayProfiles"][0]["name"],
+        "未来工具供应商"
     );
     assert_eq!(
         raw["tools"]["codex"]["relayProfiles"]
