@@ -21,6 +21,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../assets/claude-localization/sign-copy.py"),
     ),
     (
+        "build-copy.ps1",
+        include_bytes!("../../../assets/claude-localization/build-copy.ps1"),
+    ),
+    (
+        "inject-cn.ps1",
+        include_bytes!("../../../assets/claude-localization/inject-cn.ps1"),
+    ),
+    (
         "inject-cn.js",
         include_bytes!("../../../assets/claude-localization/inject-cn.js"),
     ),
@@ -91,6 +99,17 @@ fn source_app() -> PathBuf {
     let program = std::env::var_os("ProgramFiles")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+    // MSIX 的 shim 在 WindowsApps 下，而真正的 Electron 可执行文件位于
+    // 包目录的 app\claude.exe；优先取后者，才能创建受管副本。
+    if let Ok(output) = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg("(Get-AppxPackage -Name Claude).InstallLocation")
+        .output()
+    {
+        let install = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let packaged = PathBuf::from(install).join(r"app\claude.exe");
+        if packaged.is_file() { return packaged; }
+    }
     let candidates = [
         local.join(r"Microsoft\WindowsApps\claude-desktop.exe"),
         local.join(r"Microsoft\WindowsApps\Claude_pzs8sxrjxfjjc\claude-desktop.exe"),
@@ -104,7 +123,8 @@ fn source_app() -> PathBuf {
 
 #[cfg(target_os = "windows")]
 fn windows_msix_source(path: &Path) -> bool {
-    path.to_string_lossy().to_ascii_lowercase().contains("\\windowsapps\\")
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    lower.ends_with("\\claude-desktop.exe") && lower.contains("\\windowsapps\\")
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -202,6 +222,8 @@ fn find_runtime(name: &str) -> Option<PathBuf> {
         let mut command = Command::new(path);
         if name == "node" {
             command.args(["-e", "process.exit(typeof WebSocket === 'function' && typeof fetch === 'function' ? 0 : 1)"]);
+        } else if name == "powershell" {
+            command.args(["-NoProfile", "-NonInteractive", "-Command", "exit 0"]);
         } else {
             command.arg("--version");
         }
@@ -271,7 +293,7 @@ pub fn status() -> ClaudeLocalizationStatus {
     let shell_locale = read_config(&config_path())
         .ok()
         .and_then(|v| v.get("locale")?.as_str().map(str::to_string));
-    let catalog_entries = serde_json::from_slice::<Value>(ASSETS[5].1)
+    let catalog_entries = serde_json::from_slice::<Value>(ASSETS[7].1)
         .ok()
         .and_then(|value| value.as_object().map(|obj| obj.len()))
         .unwrap_or(0);
@@ -306,7 +328,11 @@ fn run_script(program: &Path, script: &str, copy: &Path, args: &[&str]) -> Resul
     let root = runtime_dir();
     let log = root.join("operation.log");
     let output = fs::File::create(&log)?;
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    if cfg!(target_os = "windows") && script.ends_with(".ps1") {
+        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+    }
+    let mut child = command
         .arg(root.join(script))
         .args(args)
         .env("CODEX_PLUS_CLAUDE_SOURCE", source_app())
@@ -394,7 +420,11 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
         .map_err(|_| anyhow::anyhow!("另一项 Claude 汉化操作正在进行"))?;
     let source = source_app();
     ensure!(source.is_dir(), "未找到 Claude.app，请先安装官方应用");
-    let python = find_runtime("python3").context("未找到 Python 3，请安装后再准备副本")?;
+    let script_runtime = if cfg!(target_os = "windows") {
+        find_runtime("powershell").context("未找到 Windows PowerShell")?
+    } else {
+        find_runtime("python3").context("未找到 Python 3，请安装后再准备副本")?
+    };
     if action != "check" {
         ensure!(
             !claude_running(),
@@ -418,7 +448,8 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
                 "已检测到 Windows MSIX 版 Claude；保留官方包不变，使用启动注入。".to_string()
             } else {
             let staged = staged_copy_path(&format!("Claude-staging-{}", uuid::Uuid::new_v4()));
-            run_script(&python, "build-copy.py", &staged, &[])?;
+            let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
+            run_script(&script_runtime, script, &staged, &[])?;
             // 校验通过后才替换；旧副本保留，构建失败时不会影响它。
             let old = staged_copy_path(&format!("Claude-backup-{}", uuid::Uuid::new_v4()));
             if copy.exists() {
@@ -445,15 +476,20 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
                 ensure!(source.exists(), "未找到 Claude MSIX 安装入口");
                 "Windows MSIX 安装入口已检测到，采用原版包启动注入。".to_string()
             } else {
-                run_script(&python, "build-copy.py", &copy, &["--check"])?;
+                let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
+                run_script(&script_runtime, script, &copy, &["--check"])?;
                 "副本签名、中文词表、注入开关及 app.asar 一致性校验通过。".to_string()
             }
         }
         "launch" | "restore" => {
-            let node =
-                find_runtime("node").context("未找到带内置 WebSocket 的 Node.js 22 或更新版本")?;
+            let launcher = if cfg!(target_os = "windows") {
+                script_runtime.clone()
+            } else {
+                find_runtime("node").context("未找到带内置 WebSocket 的 Node.js 22 或更新版本")?
+            };
             if !(cfg!(target_os = "windows") && windows_msix_source(&source)) {
-                run_script(&python, "build-copy.py", &copy, &["--check"])?;
+                let script = if cfg!(target_os = "windows") { "build-copy.ps1" } else { "build-copy.py" };
+                run_script(&script_runtime, script, &copy, &["--check"])?;
             }
             let config = config_path();
             let backup = config.with_extension("codex-plus-locale-backup.json");
@@ -470,7 +506,8 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
             };
             set_locale_at(&config, &backup, original.as_deref(), action == "restore")?;
             let locale = original.as_deref().unwrap_or("en-US");
-            if let Err(error) = run_script(&node, "inject-cn.js", &copy, &["--locale", locale]) {
+            let script = if cfg!(target_os = "windows") { "inject-cn.ps1" } else { "inject-cn.js" };
+            if let Err(error) = run_script(&launcher, script, &copy, &["--locale", locale]) {
                 // 启动失败后只在应用未运行时还原本次外壳语言，避免与 Claude 写盘竞争。
                 if !claude_running() {
                     let _ = set_locale_at(
