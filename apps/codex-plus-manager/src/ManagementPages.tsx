@@ -3,7 +3,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Edit3, ExternalLink, Folder, HelpCircle, History, MoreHorizontal, Plus, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Edit3, ExternalLink, Folder, History, MoreHorizontal, Plus, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
 import { t } from "./i18n";
 import { matchesManagementQuery, sessionGroups, skillRepoKey, type ManagedSession } from "./management-model";
 import "./ManagementPages.css";
@@ -20,8 +20,8 @@ function Action({ children, onClick, disabled, primary = false, title }: { child
 function IconAction({ children, onClick, label, disabled }: { children: ReactNode; onClick: () => void; label: string; disabled?: boolean }) {
   return <button type="button" className="mg-icon-button" onClick={onClick} aria-label={label} title={label} disabled={disabled}>{children}</button>;
 }
-export function PageHeader({ icon, title, help, actions }: { icon: ReactNode; title: string; help: string; actions?: ReactNode }) {
-  return <header className="mg-header" data-tauri-drag-region><div className="mg-header-title" data-tauri-drag-region>{icon}<h1 data-tauri-drag-region>{title}</h1><span className="mg-help" title={help} tabIndex={0} aria-label={help}><HelpCircle size={14} /></span></div><div className="mg-header-actions">{actions}</div></header>;
+export function PageHeader({ icon, title, actions }: { icon: ReactNode; title: string; actions?: ReactNode }) {
+  return <header className="mg-header" data-tauri-drag-region><div className="mg-header-title" data-tauri-drag-region>{icon}<h1 data-tauri-drag-region>{title}</h1></div><div className="mg-header-actions">{actions}</div></header>;
 }
 function SearchField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
   return <div className="mg-search"><Search size={15} /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />{value && <IconAction label={t("清除搜索")} onClick={() => onChange("")}><X size={13} /></IconAction>}</div>;
@@ -103,7 +103,7 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
       return true;
     }).catch((e) => notify("MCP", String(e), "failed"));
   };
-  return <div className="mg-page"><PageHeader icon={<Server size={20} strokeWidth={1.5} />} title={kind === "mcp" ? "MCP" : t("插件配置")} help={t("这里直接管理当前 Codex 的 MCP 配置，保存或启停会立即写入本机。")} actions={<>
+  return <div className="mg-page"><PageHeader icon={<Server size={20} strokeWidth={1.5} />} title={kind === "mcp" ? "MCP" : t("插件配置")} actions={<>
     <Action onClick={() => void onRefresh()} disabled={busy}><Download size={16} />{t("刷新本机配置")}</Action>
     <Action onClick={() => setEditor({})} disabled={busy} primary><Plus size={16} />{kind === "mcp" ? t("添加服务器") : t("添加插件")}</Action>
     <Menu><MenuItem onClick={() => void onRefresh()} disabled={busy}>{t("重新读取本机配置")}</MenuItem><MenuItem onClick={() => setImporting(true)} disabled={kind !== "mcp" || busy}>{t("导入 JSON")}</MenuItem><MenuItem onClick={() => setKind(kind === "mcp" ? "plugin" : "mcp")}>{kind === "mcp" ? t("管理插件配置") : t("返回 MCP")}</MenuItem></Menu>

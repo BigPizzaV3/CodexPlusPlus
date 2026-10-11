@@ -39,6 +39,31 @@ pub async fn download_dictation_local_model() -> CommandResult<Value> {
 }
 
 #[tauri::command]
+pub fn claude_localization_status()
+-> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
+    ok(
+        "Claude 汉化状态已读取。",
+        codex_plus_core::claude_localization::status(),
+    )
+}
+
+#[tauri::command]
+pub async fn claude_localization_action(action: String) -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::perform(&action)
+    })
+    .await;
+    match result {
+        Ok(Ok(payload)) => ok(
+            &payload.message,
+            serde_json::to_value(payload.status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 汉化操作失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn scan_agent_cache() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Value> {
         let mut slot = AGENT_CACHE_PLAN
@@ -831,7 +856,9 @@ pub async fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             Err(message) => return failed(message, json!({})),
         };
         spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
-    }).await {
+    })
+    .await
+    {
         Ok(result) => result,
         Err(error) => failed(&format!("启动后台任务失败：{error}"), json!({})),
     }
@@ -856,7 +883,8 @@ impl Drop for LaunchGuard {
 }
 
 fn try_acquire_launch_guard() -> Result<LaunchGuard, &'static str> {
-    LAUNCH_IN_PROGRESS.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+    LAUNCH_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .map(|_| LaunchGuard)
         .map_err(|_| "启动或重启正在进行，请等待本次操作完成。")
 }
@@ -882,12 +910,18 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     };
     let request = normalize_launch_request(request);
     // macOS scopes by debug port; other platforms detect all Codex desktop processes.
-    let app_running = !codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port).is_empty();
-    if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly {
+    let app_running =
+        !codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port)
+            .is_empty();
+    if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly
+    {
         return spawn_codex_plus_launch(request, "Codex 未运行，已按直接启动方式在后台唤起。");
     }
     let Ok(_guard) = relay_switch_mutex().try_lock() else {
-        return failed("供应商切换正在进行或锁不可用，未执行重启；请稍后重试。", json!({}));
+        return failed(
+            "供应商切换正在进行或锁不可用，未执行重启；请稍后重试。",
+            json!({}),
+        );
     };
     let settings = if request.sync_active_relay {
         match SettingsStore::default().load() {
@@ -923,13 +957,22 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
         || {
-            codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
-            anyhow::ensure!(codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port).is_empty(),
-                "Codex 进程尚未退出；未启动新实例");
+            codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
+                request.debug_port,
+            );
+            anyhow::ensure!(
+                codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port)
+                    .is_empty(),
+                "Codex 进程尚未退出；未启动新实例"
+            );
             Ok(())
         },
         codex_plus_launcher::stop,
-        || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
+        || {
+            codex_plus_core::native_browser::wait_for_monitor_shutdown(
+                std::time::Duration::from_secs(10),
+            )
+        },
     ) {
         Ok(shutdown) => shutdown,
         Err(error) => {
@@ -1000,7 +1043,7 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
                     "forcedStoppedLauncherCount": 0
                 }),
             }
-        },
+        }
         Err(error) => {
             let message = format!("重启 Codex 失败：{error}");
             let _ =
@@ -1053,9 +1096,9 @@ fn restart_stop_failure_message(error: &RestartStopError) -> String {
             };
             format!("Codex 已请求停止，但原生浏览器文件{summary}，未启动新实例：{error}")
         }
-        RestartStopError::Runtime(error) => format!(
-            "Codex 已请求停止，但后台服务尚未清理完成，未启动新实例：{error}"
-        ),
+        RestartStopError::Runtime(error) => {
+            format!("Codex 已请求停止，但后台服务尚未清理完成，未启动新实例：{error}")
+        }
     }
 }
 
@@ -1094,7 +1137,9 @@ fn spawn_after_provider_guard_release(
     request: &LaunchRequest,
     spawn: impl FnOnce(&LaunchRequest) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    guard.release().map_err(|error| anyhow::anyhow!("释放历史同步锁失败，未启动新实例：{error}"))?;
+    guard
+        .release()
+        .map_err(|error| anyhow::anyhow!("释放历史同步锁失败，未启动新实例：{error}"))?;
     spawn(request)
 }
 
@@ -1269,10 +1314,7 @@ fn normalize_launch_request(mut request: LaunchRequest) -> LaunchRequest {
     request
 }
 
-fn spawn_codex_plus_launch(
-    request: LaunchRequest,
-    accepted_message: &str,
-) -> CommandResult<Value> {
+fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
     let request = normalize_launch_request(request);
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
@@ -1312,7 +1354,7 @@ fn spawn_codex_plus_launch(
                     "launchStartedAtMs": started_at_ms
                 }),
             }
-        },
+        }
         Err(error) => {
             let message = format!("启动 Codex 失败：{error}");
             let _ =
@@ -1340,9 +1382,9 @@ fn launch_identity_from_status(
     latest: Option<&LaunchStatus>,
 ) -> (u16, u16, u64) {
     // 重复启动会激活当前 session，其身份不能被新请求覆盖；端口也可能已自动换位。
-    if let Some(latest) = latest.filter(|status| {
-        matches!(status.status.as_str(), "running" | "running_degraded")
-    }) {
+    if let Some(latest) =
+        latest.filter(|status| matches!(status.status.as_str(), "running" | "running_degraded"))
+    {
         (
             latest.debug_port.unwrap_or(request.debug_port),
             latest.helper_port.unwrap_or(request.helper_port),
@@ -1719,7 +1761,6 @@ pub fn query_builtin_model_metadata(slug: String) -> CommandResult<Value> {
     }
 }
 
-
 #[tauri::command]
 pub fn builtin_model_metadata_index() -> CommandResult<Value> {
     let index = codex_plus_core::model_suffix::builtin_model_metadata_index();
@@ -1784,7 +1825,6 @@ pub fn find_desktop_codex_cli() -> CommandResult<Value> {
             "已填入桌面版内置 Codex CLI。",
             json!({ "path": path.to_string_lossy() }),
         )
-
     }
 }
 
@@ -1792,19 +1832,29 @@ fn codex_cli_can_start(path: &std::path::Path) -> bool {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let mut command = Command::new(path);
-    command.arg("--version").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(codex_plus_core::windows_create_no_window());
     }
-    let Ok(mut child) = command.spawn() else { return false; };
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
-            _ => { let _ = child.kill(); let _ = child.wait(); return false; }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
         }
     }
 }
@@ -1915,13 +1965,18 @@ pub struct NativeBrowserDiagnostics {
 
 #[tauri::command]
 pub async fn native_browser_status() -> NativeBrowserDiagnostics {
-    let compatibility = tauri::async_runtime::spawn_blocking(codex_plus_core::native_browser::read_status)
-        .await
-        .unwrap_or_else(|_| codex_plus_core::native_browser::BrowserStatus {
-            state: "unavailable".into(), detail: String::new(),
-        });
+    let compatibility =
+        tauri::async_runtime::spawn_blocking(codex_plus_core::native_browser::read_status)
+            .await
+            .unwrap_or_else(|_| codex_plus_core::native_browser::BrowserStatus {
+                state: "unavailable".into(),
+                detail: String::new(),
+            });
     let connection = codex_plus_core::native_browser_connection::check_connection().await;
-    NativeBrowserDiagnostics { compatibility, connection }
+    NativeBrowserDiagnostics {
+        compatibility,
+        connection,
+    }
 }
 
 #[tauri::command]
@@ -3435,10 +3490,11 @@ fn merge_manual_provider_sync_targets(
 
 #[tauri::command]
 pub async fn repair_session_index() -> CommandResult<Value> {
-    let result = tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_session_index(None))
-        .await
-        .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))
-        .and_then(|result| result);
+    let result =
+        tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_session_index(None))
+            .await
+            .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))
+            .and_then(|result| result);
     match result {
         Ok(report) => ok(
             &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
@@ -3596,7 +3652,10 @@ pub async fn sync_providers_now(
     let result = tauri::async_runtime::spawn_blocking(move || {
         // issue #1341：快照要读整份 app state 文件，属阻塞 IO，必须留在阻塞线程里，
         // 否则同步一跑起来就把 async 运行时的那条工作线程占住，界面卡死。
-        prepare_codex_app_state_before_provider_switch(&before_home, "manager.sync_providers_now.before");
+        prepare_codex_app_state_before_provider_switch(
+            &before_home,
+            "manager.sync_providers_now.before",
+        );
         codex_plus_data::run_provider_sync_with_target_and_progress(
             None,
             target_provider.as_deref(),
@@ -4029,10 +4088,7 @@ pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
 pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
     let payload = skills_payload(&manager, &[], Vec::new());
-    ok(
-        "已加载本地 Skills。",
-        payload,
-    )
+    ok("已加载本地 Skills。", payload)
 }
 
 #[tauri::command]
@@ -4189,7 +4245,11 @@ fn skills_payload(
     repo_errors: Vec<String>,
 ) -> SkillsPayload {
     SkillsPayload {
-        skills: if remote.is_empty() { manager.local_inventory() } else { manager.merge_entries(remote) },
+        skills: if remote.is_empty() {
+            manager.local_inventory()
+        } else {
+            manager.merge_entries(remote)
+        },
         repos: manager.list_repos(),
         backups: manager.list_backups(),
         repo_errors,
@@ -4382,23 +4442,21 @@ async fn perform_update_inner(
     };
     let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
     match codex_plus_core::update::perform_update(&release, &download_dir).await {
-        Ok(result) => {
-            ok(
-                if cfg!(target_os = "macos") {
-                    "安装包已验证，Codex++ 将关闭以安装更新，完成后自动重启；失败时保留旧版。"
-                } else {
-                    "安装包已下载并启动，请按安装向导完成更新。"
-                },
-                json!({
-                "currentVersion": codex_plus_core::version::VERSION,
-                "latestVersion": result.release.version,
-                "releaseSummary": result.release.body,
-                "installedPath": result.installer_path.to_string_lossy(),
-                "launched": result.launched,
-                "progress": 100
-                }),
-            )
-        },
+        Ok(result) => ok(
+            if cfg!(target_os = "macos") {
+                "安装包已验证，Codex++ 将关闭以安装更新，完成后自动重启；失败时保留旧版。"
+            } else {
+                "安装包已下载并启动，请按安装向导完成更新。"
+            },
+            json!({
+            "currentVersion": codex_plus_core::version::VERSION,
+            "latestVersion": result.release.version,
+            "releaseSummary": result.release.body,
+            "installedPath": result.installer_path.to_string_lossy(),
+            "launched": result.launched,
+            "progress": 100
+            }),
+        ),
         Err(error) => failed(
             &format!("安装更新失败：{error}"),
             json!({
@@ -4848,17 +4906,23 @@ pub fn backfill_relay_profile_from_live(
 
     if !request.adopt_provider_identity {
         match codex_plus_core::relay_config::live_config_matches_other_profile_in_home(
-            &home, &settings, &request.profile_id,
+            &home,
+            &settings,
+            &request.profile_id,
         ) {
-            Ok(true) => return ok(
-                "实时配置属于其它已保存供应商，已保留原快照。",
-                SettingsBackfillPayload { settings },
-            ),
+            Ok(true) => {
+                return ok(
+                    "实时配置属于其它已保存供应商，已保留原快照。",
+                    SettingsBackfillPayload { settings },
+                );
+            }
             Ok(false) => {}
-            Err(error) => return failed(
-                &format!("读取实时配置归属失败，已保留原配置：{error}"),
-                SettingsBackfillPayload { settings },
-            ),
+            Err(error) => {
+                return failed(
+                    &format!("读取实时配置归属失败，已保留原配置：{error}"),
+                    SettingsBackfillPayload { settings },
+                );
+            }
         }
     }
 
@@ -6619,10 +6683,10 @@ fn degraded<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
 }
 
 // Hold ownership across stop and config sync, then release before the successor starts.
-fn ensure_provider_sync_is_idle_before_stop() -> Result<codex_plus_data::ProviderSyncLifecycleGuard, String> {
-    codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None).map_err(|error| {
-        format!("历史会话同步正在进行或锁不可用，未执行重启；请稍后重试：{error}")
-    })
+fn ensure_provider_sync_is_idle_before_stop()
+-> Result<codex_plus_data::ProviderSyncLifecycleGuard, String> {
+    codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None)
+        .map_err(|error| format!("历史会话同步正在进行或锁不可用，未执行重启；请稍后重试：{error}"))
 }
 
 fn default_debug_port() -> u16 {
@@ -6658,13 +6722,19 @@ mod tests {
     fn native_browser_diagnostics_keeps_connection_independent_from_patch_status() {
         let result = NativeBrowserDiagnostics {
             compatibility: codex_plus_core::native_browser::BrowserStatus {
-                state: "runtime_unverified".into(), detail: "Legacy runtime mismatch".into(),
+                state: "runtime_unverified".into(),
+                detail: "Legacy runtime mismatch".into(),
             },
             connection: codex_plus_core::native_browser_connection::ConnectionStatus {
-                state: "available".into(), failed_checks: 0,
-                browsers: vec![codex_plus_core::native_browser_connection::ConnectedBrowser {
-                    family: "edge".into(), header_enabled: Some(true), recognized: true,
-                }],
+                state: "available".into(),
+                failed_checks: 0,
+                browsers: vec![
+                    codex_plus_core::native_browser_connection::ConnectedBrowser {
+                        family: "edge".into(),
+                        header_enabled: Some(true),
+                        recognized: true,
+                    },
+                ],
             },
         };
         let json = serde_json::to_value(result).unwrap();
@@ -6703,9 +6773,18 @@ mod tests {
             helper_port: Some(57322),
             ..LaunchStatus::default()
         };
-        assert_eq!(launch_identity_from_status(&request, 456, Some(&current)), (9333, 57322, 123));
-        let starting = LaunchStatus { status: "starting".into(), ..current };
-        assert_eq!(launch_identity_from_status(&request, 456, Some(&starting)), (request.debug_port, request.helper_port, 456));
+        assert_eq!(
+            launch_identity_from_status(&request, 456, Some(&current)),
+            (9333, 57322, 123)
+        );
+        let starting = LaunchStatus {
+            status: "starting".into(),
+            ..current
+        };
+        assert_eq!(
+            launch_identity_from_status(&request, 456, Some(&starting)),
+            (request.debug_port, request.helper_port, 456)
+        );
     }
 
     #[test]
@@ -7039,9 +7118,15 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn restart_absent_app_uses_launch_but_explicit_sync_still_restarts() {
-        assert_eq!(restart_disposition(false, false), RestartDisposition::LaunchOnly);
+        assert_eq!(
+            restart_disposition(false, false),
+            RestartDisposition::LaunchOnly
+        );
         for (sync, running) in [(true, false), (false, true), (true, true)] {
-            assert_eq!(restart_disposition(sync, running), RestartDisposition::StopAndRestart);
+            assert_eq!(
+                restart_disposition(sync, running),
+                RestartDisposition::StopAndRestart
+            );
         }
     }
 
@@ -7056,29 +7141,41 @@ base_url = "https://example.invalid/v1"
     #[test]
     fn restart_provider_guard_is_held_until_spawn_and_released_first() {
         let temp = tempfile::tempdir().unwrap();
-        let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
-        assert!(codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).is_err());
+        let guard =
+            codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
+        assert!(
+            codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).is_err()
+        );
         let spawned = std::cell::Cell::new(false);
         spawn_after_provider_guard_release(guard, &launch_request(false), |_| {
-            let next = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path()))?;
+            let next =
+                codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path()))?;
             next.release()?;
             spawned.set(true);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         assert!(spawned.get());
     }
 
     #[test]
     fn restart_provider_guard_release_failure_blocks_spawn() {
         let temp = tempfile::tempdir().unwrap();
-        let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
-        fs::write(temp.path().join("tmp/provider-sync.lock/owner.json"),
-            json!({"pid": std::process::id(), "startedAt":1, "lockId":"replacement"}).to_string()).unwrap();
+        let guard =
+            codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
+        fs::write(
+            temp.path().join("tmp/provider-sync.lock/owner.json"),
+            json!({"pid": std::process::id(), "startedAt":1, "lockId":"replacement"}).to_string(),
+        )
+        .unwrap();
         let spawned = std::cell::Cell::new(false);
-        assert!(spawn_after_provider_guard_release(guard, &launch_request(false), |_| {
-            spawned.set(true);
-            Ok(())
-        }).is_err());
+        assert!(
+            spawn_after_provider_guard_release(guard, &launch_request(false), |_| {
+                spawned.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
         assert!(!spawned.get());
     }
 
@@ -7601,13 +7698,20 @@ base_url = "https://example.invalid/v1"
     fn restart_stops_codex_then_runtime_before_checking_native_cleanup() {
         let events = std::cell::RefCell::new(Vec::new());
         stop_codex_plus_for_restart(
-            || { events.borrow_mut().push("codex"); Ok(()) },
-            || { events.borrow_mut().push("runtime"); Ok(()) },
+            || {
+                events.borrow_mut().push("codex");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("runtime");
+                Ok(())
+            },
             || {
                 events.borrow_mut().push("cleanup");
                 Ok(codex_plus_core::native_browser::NativeBrowserShutdown::Ready)
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(*events.borrow(), ["codex", "runtime", "cleanup"]);
     }
 
@@ -7616,11 +7720,18 @@ base_url = "https://example.invalid/v1"
         let stopped = std::cell::Cell::new(false);
         let shutdown = stop_codex_plus_for_restart(
             || Ok(()),
-            || { stopped.set(true); Ok(()) },
+            || {
+                stopped.set(true);
+                Ok(())
+            },
             || Ok(codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(stopped.get());
-        assert_eq!(shutdown, codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed);
+        assert_eq!(
+            shutdown,
+            codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
+        );
     }
 
     #[test]
@@ -8150,11 +8261,13 @@ enabled = true
         let settings = serde_json::to_value(BackendSettings::default()).unwrap();
         let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
             "settings": settings, "profileId": "profile-a"
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(!request.adopt_provider_identity);
         let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
             "settings": settings, "profileId": "profile-a", "adoptProviderIdentity": true
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(request.adopt_provider_identity);
     }
 
@@ -8195,16 +8308,24 @@ enabled = true
         );
     }
 
-
     #[test]
     fn normalize_settings_before_save_ignores_legacy_launch_mode_and_preserves_provider_mode() {
         let settings: BackendSettings = serde_json::from_value(json!({
             "activeRelayId": "api", "launchMode": "relay",
             "relayProfiles": [{ "id": "api", "name": "API", "relayMode": "pureApi" }],
-        })).unwrap();
+        }))
+        .unwrap();
         let normalized = normalize_settings_before_save(settings);
-        assert_eq!(normalized.relay_profiles[0].relay_mode, codex_plus_core::settings::RelayMode::PureApi);
-        assert!(serde_json::to_value(&normalized).unwrap().get("launchMode").is_none());
+        assert_eq!(
+            normalized.relay_profiles[0].relay_mode,
+            codex_plus_core::settings::RelayMode::PureApi
+        );
+        assert!(
+            serde_json::to_value(&normalized)
+                .unwrap()
+                .get("launchMode")
+                .is_none()
+        );
     }
 
     #[test]
@@ -8270,6 +8391,17 @@ enabled = true
         assert_eq!(grok.active_relay_name.as_deref(), Some("Grok 供应商"));
         assert_eq!(grok.relay_count, 1);
         assert!(grok.home_dir.ends_with(".grok"));
+
+        // Claude Code 已注册展示，可进入本地化管理页。
+        let claude = result
+            .payload
+            .tools
+            .iter()
+            .find(|tool| tool.id == "claude")
+            .expect("claude 必须在工具列表里");
+        assert!(claude.switchable);
+        assert!(!claude.active);
+        assert!(claude.home_dir.ends_with(".claude"));
     }
 
     /// 走一遍真实的命令链路：Grok 分区里配一个供应商 → apply 写进 config.toml。
