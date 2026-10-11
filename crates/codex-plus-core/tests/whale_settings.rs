@@ -14,6 +14,25 @@ fn whale_widget_is_opt_in_for_existing_settings() {
 }
 
 #[test]
+fn activity_overlay_right_layout_is_opt_in_and_persisted() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let defaults = store.load().unwrap();
+    assert!(!defaults.codex_app_activity_overlay_right);
+
+    let enabled = store
+        .update(json!({"codexAppActivityOverlayRight": true}))
+        .unwrap();
+    assert!(enabled.codex_app_activity_overlay_right);
+    assert!(store.load().unwrap().codex_app_activity_overlay_right);
+
+    let disabled = store
+        .update(json!({"codexAppActivityOverlayRight": false}))
+        .unwrap();
+    assert!(!disabled.codex_app_activity_overlay_right);
+}
+
+#[test]
 fn whale_widget_partial_updates_preserve_other_settings_and_ignore_invalid_patches() {
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));

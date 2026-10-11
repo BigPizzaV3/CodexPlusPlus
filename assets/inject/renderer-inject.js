@@ -2294,7 +2294,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2310,6 +2310,7 @@
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
     petRealMouseLook: "codexAppPetRealMouseLook",
+    activityOverlayRight: "codexAppActivityOverlayRight",
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
     pasteFix: "codexAppPasteFix",
@@ -2350,6 +2351,7 @@
         nativeMenuPlacement: false,
         serviceTierControls: false,
         petRealMouseLook: false,
+        activityOverlayRight: false,
         stepwise: false,
         answerOutline: false,
         dreamSkinEnabled: false,
@@ -4823,6 +4825,7 @@
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
     if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
   }
 
@@ -4849,6 +4852,7 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -4863,11 +4867,13 @@
     const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
     codexPlusBackendSettingsLoaded = true;
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     refreshCodexPlusBackendToggles();
     try {
       const settings = await postJson("/settings/set", { [key]: value });
       if (seq === codexPlusBackendSettingsSeq) {
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
       }
     } finally {
       refreshCodexPlusBackendToggles();
@@ -4875,6 +4881,7 @@
   }
 
   function refreshCodexPlusBackendToggles() {
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
@@ -15461,6 +15468,60 @@
   syncOfficialUsagePolicy();
   scheduleSidebarNavStartupRetry();
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
+  // Optional right-side layout for Codex's native message navigation rail.
+  // The native page recreates the rail and preview card during navigation, so
+  // this uses stable data attributes instead of retaining DOM node references.
+  (() => {
+    const styleId = "codex-plus-avatar-overlay-layout-style";
+    const root = document.documentElement;
+    const enabledAttribute = "data-codex-plus-activity-overlay-right";
+
+    function installStyle() {
+      const existing = document.getElementById(styleId);
+      if (existing) return;
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.dataset.codexPlusExt = "builtin-avatar-overlay-layout";
+      style.textContent = `
+        /* The native rail is mounted inside an absolute nav with left-3. */
+        html[${enabledAttribute}="true"] nav:has([data-thread-user-message-navigation-rail-list]) {
+          left: auto !important;
+          right: max(12px, env(safe-area-inset-right, 0px)) !important;
+        }
+
+        /* Native marker lines grow from their left edge. Once the rail is on
+           the right, the same level indicator must grow toward the left. */
+        html[${enabledAttribute}="true"] [data-thread-user-message-navigation-rail-list] [data-thread-user-message-navigation-item-id] > span > span > span {
+          transform-origin: 100% 50% !important;
+        }
+
+        /* Floating preview cards are positioned by Radix beside the old left
+           rail. Use the individual translate property so Floating UI's own
+           transform stays intact while the card moves to the opposite side. */
+        html[${enabledAttribute}="true"] [data-radix-popper-content-wrapper]:has([data-thread-user-message-navigation-tooltip-preview]) {
+          translate: calc(-100% - 8px) 0 !important;
+        }
+      `;
+      document.head?.appendChild(style);
+    }
+
+    function sync() {
+      installStyle();
+      const enabled = typeof codexPlusSettings === "function"
+        && codexPlusSettings().activityOverlayRight === true;
+      root.toggleAttribute(enabledAttribute, enabled);
+      root.setAttribute(enabledAttribute, String(enabled));
+    }
+
+    installStyle();
+    sync();
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__ = sync;
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      sync();
+      if (++attempts >= 60 && codexPlusBackendSettingsLoaded) window.clearInterval(timer);
+    }, 250);
+  })();
   /**
    * 多开实例身份提示。
    *
