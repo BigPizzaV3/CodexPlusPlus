@@ -7596,7 +7596,7 @@ mod response_compatibility_tests {
                         "id": "call_search",
                         "type": "function",
                         "function": { "name": "web_search", "arguments": "{}" }
-                    ]
+                    }]
                 }
             }]
         });
