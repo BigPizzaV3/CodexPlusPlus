@@ -75,7 +75,7 @@ create_app() {
   cp "$ICON_ICNS" "$app_dir/Contents/Resources/$ICON_NAME"
   chmod +x "$app_dir/Contents/MacOS/$executable_name"
   printf 'APPL????' > "$app_dir/Contents/PkgInfo"
-  if [ "$executable_name" = "CodexPlusPlusManager" ]; then
+  if [ "$executable_name" = "CodexPlusPlus" ]; then
     url_types='  <key>CFBundleURLTypes</key>
   <array>
     <dict>
@@ -108,6 +108,8 @@ create_app() {
   <string>6.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CodexPlusUnifiedApp</key>
+  <true/>
   <key>CFBundleSignature</key>
   <string>????</string>
   <key>CFBundleExecutable</key>
@@ -226,14 +228,20 @@ verify_app() {
 
 prepare_icon
 prepare_background
-create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
-create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
+create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "false"
+# 旧版 1.7.x 更新器要求第二个 manager bundle。它使用独立的小型兼容壳，
+# 启动后立即退出；新版启动主 app 后会把这个壳归档到 legacy-migrations。
+create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-legacy-shim" "com.bigpizzav3.codexplusplus.manager" "true"
 
 sign_app "$STAGE/Codex++.app"
 sign_app "$STAGE/Codex++ 管理工具.app"
 
 verify_app "$STAGE/Codex++.app"
 verify_app "$STAGE/Codex++ 管理工具.app"
+
+# Finder 隐藏兼容壳；旧更新器按精确路径读取它，不能改名或放入子目录。
+printf '%s\n' "Codex++ 管理工具.app" > "$STAGE/.hidden"
+chflags hidden "$STAGE/Codex++ 管理工具.app"
 
 ln -s /Applications "$STAGE/Applications"
 
@@ -366,8 +374,8 @@ with timeout of 30 seconds
 
     tell dmgDisk
       set position of item "Applications" to {1000, 390}
-      set position of item "Codex++.app" to {220, 390}
-      set position of item "Codex++ 管理工具.app" to {460, 390}
+      set position of item "Codex++.app" to {460, 390}
+      set visible of item "Codex++ 管理工具.app" to false
     end tell
 
     close dmgWindow

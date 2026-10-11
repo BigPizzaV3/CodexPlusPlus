@@ -95,8 +95,6 @@ test("retired enhancements have no settings, navigation or command references in
 test("unified enhancements use the master switch and Chinese suggestion labels", () => {
   const enhance = component("EnhanceScreen");
   const toggles = elements(enhance).filter((element) => element.tagName.getText(app) === "FeatureToggle");
-  const share = fieldControl(enhance, "form.codexAppSessionShare");
-  assert.equal(attribute(share, "onChange"), '(value) => setEnhanceFlag("codexAppSessionShare", value)');
   assert.ok(toggles.length > 0);
   for (const toggle of toggles) assert.equal(attribute(toggle, "disabled"), "!masterEnabled");
   assert.equal(attribute(fieldControl(enhance, "form.codexAppPluginMarketplaceUnlock"), "disabled"), "!masterEnabled");
@@ -136,6 +134,20 @@ test("complete voice and Stepwise panels share the enhancement form and save act
   assert.ok(!elements(settings).some((element) => ["DictationSettingsPanel", "StepwiseSettingsPanel"].includes(element.tagName.getText(app))));
   assert.ok(!descendants(settings).some((node) => ts.isPropertyAccessExpression(node)
     && (/^form\.dictation(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
+});
+
+test("local speech download requires a configuration button click and mount only reads status", () => {
+  const panel = component("DictationSettingsPanel");
+  const button = elements(panel).find((element) => attribute(element, "onClick")?.includes("downloadLocalModel()"));
+  assert.ok(button, "the voice settings must expose a manual model download action");
+  assert.equal(attribute(button, "disabled"), "downloading");
+  const calls = eventHandlerNodes(panel, button, "onClick").filter(ts.isCallExpression);
+  assert.ok(calls.some((node) => node.expression.getText(app) === "invoke"
+    && node.arguments[0]?.getText(app) === '"download_dictation_local_model"'));
+  const effects = descendants(panel).filter(ts.isCallExpression)
+    .filter((node) => node.expression.getText(app) === "useEffect");
+  assert.ok(effects.some((effect) => effect.getText(app).includes('"dictation_local_model_status"')));
+  for (const effect of effects) assert.ok(!effect.getText(app).includes("download_dictation_local_model"));
 });
 
 test("enhancement panels retain every service field, private key input and Stepwise connection test", () => {

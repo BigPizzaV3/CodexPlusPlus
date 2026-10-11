@@ -1,10 +1,10 @@
 # AGENTS.md
 
-本文件为 CodexPlusPlus fork 的工作规范，指导 agent 在本仓库工作。
+本文件为 CodexPlusPlus 的工作规范，指导 agent 在本仓库工作。
 
 ## 项目概述
 
-本仓库是 [BigPizzaV3/CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus) 的 fork，目标是实现「按模型粒度配置上下文窗口与自动压缩阈值」feature（对应 issue #1171 / #931）。
+本仓库是用户自己的 [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus) 仓库，支持按模型粒度配置上下文窗口与自动压缩阈值（对应 issue #1171 / #931）。
 
 采用 codex 原生 `model_catalog_json` 机制：通过 `model_list` 后缀语法（如 `deepseek-v4-pro[1M]`）声明每模型窗口，由 CodexPlusPlus 生成 catalog 文件并注入 config.toml 指针，codex 客户端运行时按模型识别各自窗口。
 
@@ -13,7 +13,7 @@
 - `crates/codex-plus-core/` — 核心 Rust 库（配置生成、catalog 解析、数据模型）
 - `apps/codex-plus-manager/` — Tauri 桌面应用，前端 React+TS
 - `crates/codex-plus-data/` — 数据持久化
-- `docs/` — 本 fork 的设计文档、调研、计划
+- `docs/` — 项目的设计文档、调研、计划
 
 ## 关键代码位置
 
@@ -39,7 +39,7 @@
 ## 编码规范
 
 - 对话用中文，代码可用英文，注释尽量中文
-- 保持上游代码风格统一（Rust 标准、React+TS）
+- 保持现有代码风格统一（Rust 标准、React+TS）
 - 改动隔离 + opt-in，不破坏现有 per-profile 单值行为
 - 不做需求外的操作
 
@@ -59,14 +59,11 @@
 
 ## 测试约定
 
-- 沿用上游 `#[test]` + tempfile 风格（见 `crates/codex-plus-core/tests/relay_config.rs`）
+- 沿用现有 `#[test]` + tempfile 风格（见 `crates/codex-plus-core/tests/relay_config.rs`）
 - 断言读 config.toml 文本，如 `assert!(config.contains("model_catalog_json"))`
 - 改行为要同步改/加对应测试
 
-## 与上游同步
+## 提交与合入
 
-- `upstream` = https://github.com/BigPizzaV3/CodexPlusPlus.git
-- `origin` = 用户自己的 GitHub fork（待创建）
-- feature 分支命名：`codex/per-model-context` 或类似
-- 定期 `git fetch upstream && git rebase upstream/main` 保持同步
-- 目标：全栈完成后向主仓提 PR 合并
+- 默认直接提交并合入 `main`。
+- 仅在用户明确要求时创建 PR。

@@ -565,8 +565,17 @@ async fn github_token() -> Option<String> {
     }
 }
 
-fn git_command(work: &Path, token: Option<&str>) -> Command {
-    let mut command = Command::new("git");
+fn git_command(work: &Path, token: Option<&str>, proxy: Option<&str>) -> Command {
+    git_command_with_binary(Path::new("git"), work, token, proxy)
+}
+
+fn git_command_with_binary(
+    git: &Path,
+    work: &Path,
+    token: Option<&str>,
+    proxy: Option<&str>,
+) -> Command {
+    let mut command = Command::new(git);
     command
         .current_dir(work)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -583,6 +592,14 @@ fn git_command(work: &Path, token: Option<&str>) -> Command {
         .env_remove("GIT_OBJECT_DIRECTORY")
         .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .env_remove("GIT_CONFIG")
+        .env_remove("GIT_TEMPLATE_DIR")
+        .env_remove("GIT_TRACE")
+        .env_remove("GIT_TRACE_CURL")
+        .env_remove("GIT_CURL_VERBOSE")
+        .env_remove("GIT_TRACE2")
+        .env_remove("GIT_TRACE2_EVENT")
+        .env_remove("GIT_TRACE2_PERF")
+        .env("GIT_TRACE_REDACT", "1")
         .env("GIT_LFS_SKIP_SMUDGE", "1")
         .args([
             "-c",
@@ -597,31 +614,296 @@ fn git_command(work: &Path, token: Option<&str>) -> Command {
             "core.hooksPath={}",
             work.join("no-hooks").display()
         ));
+    let mut count = 0;
     if let Some(token) = token {
         // 凭据只传给本次 Git 子进程，不写 Git 配置，也不进入命令行或日志。
         let credentials =
             base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
         command
-            .env("GIT_CONFIG_COUNT", "1")
             .env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
             .env(
                 "GIT_CONFIG_VALUE_0",
                 format!("AUTHORIZATION: basic {credentials}"),
             );
-    } else {
-        command.env("GIT_CONFIG_COUNT", "0");
+        count += 1;
     }
+    if let Some(proxy) = proxy {
+        command
+            .env(format!("GIT_CONFIG_KEY_{count}"), "http.proxy")
+            .env(format!("GIT_CONFIG_VALUE_{count}"), proxy);
+        count += 1;
+    }
+    command.env("GIT_CONFIG_COUNT", count.to_string());
     command
 }
 
-async fn run_git(work: &Path, token: Option<&str>, args: &[&str]) -> anyhow::Result<Vec<u8>> {
-    command_output(
-        git_command(work, token).args(args),
-        64 * 1024,
-        GIT_TIMEOUT,
-        "Git 下载失败，请检查网络与仓库访问权限（完整市场需要 gh auth login）",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitFailure {
+    Missing,
+    Network,
+    Access,
+    LocalPermission,
+    Other,
+}
+
+impl GitFailure {
+    fn message(self, private: bool) -> &'static str {
+        match self {
+            Self::Missing => "未找到 Git，请安装 Git 并重新启动 Codex++",
+            Self::Network => {
+                "Git 网络连接失败，请检查代理、DNS、证书或网络连接；此错误不需要重新登录 gh"
+            }
+            Self::Access if private => {
+                "完整市场仓库访问未授权，请运行 gh auth login 并确认该账号具有仓库访问权限"
+            }
+            Self::Access => {
+                "公开市场仓库访问被拒绝，请检查仓库可用性或网络访问限制；公开市场不需要 gh 登录"
+            }
+            Self::LocalPermission => {
+                "Git 无法读写本地插件缓存或配置，请检查目录权限、磁盘空间及安全软件拦截"
+            }
+            Self::Other => "Git 下载失败，请检查 Git 安装及插件缓存；请勿仅因该错误重新登录 gh",
+        }
+    }
+}
+
+fn classify_git_failure(stderr: &[u8]) -> GitFailure {
+    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    if [
+        "could not create",
+        "unable to create",
+        "cannot create",
+        "no space left",
+    ]
+    .iter()
+    .any(|value| text.contains(value))
+    {
+        return GitFailure::LocalPermission;
+    }
+    if [
+        "authentication failed",
+        "repository not found",
+        "could not read username",
+        "terminal prompts disabled",
+        "returned error: 401",
+        "returned error: 403",
+        "returned error: 404",
+    ]
+    .iter()
+    .any(|value| text.contains(value))
+    {
+        return GitFailure::Access;
+    }
+    if ["permission denied", "access is denied"]
+        .iter()
+        .any(|value| text.contains(value))
+    {
+        return GitFailure::LocalPermission;
+    }
+    if [
+        "could not resolve",
+        "failed to connect",
+        "couldn't connect",
+        "connection timed out",
+        "connection reset",
+        "connection refused",
+        "proxy connect",
+        "proxy authentication",
+        "proxy tunneling",
+        "proxy after connect",
+        "connect tunnel",
+        "http code 407",
+        "returned error: 407",
+        "ssl certificate",
+        "certificate verify",
+        "schannel",
+        "tls",
+        "recv failure",
+        "rpc failed",
+        "http/2",
+        "network is unreachable",
+    ]
+    .iter()
+    .any(|value| text.contains(value))
+    {
+        return GitFailure::Network;
+    }
+    GitFailure::Other
+}
+
+struct GitOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+async fn git_output(
+    command: &mut Command,
+    limit: usize,
+    private: bool,
+) -> anyhow::Result<GitOutput> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(crate::windows_create_no_window());
+    let mut child = command.spawn().map_err(|error| {
+        anyhow::anyhow!(
+            match error.kind() {
+                std::io::ErrorKind::NotFound => GitFailure::Missing,
+                std::io::ErrorKind::PermissionDenied => GitFailure::LocalPermission,
+                _ => GitFailure::Other,
+            }
+            .message(private)
+        )
+    })?;
+    let mut stdout = child.stdout.take().context("无法读取 Git 输出")?;
+    let mut stderr = child.stderr.take().context("无法读取 Git 错误分类")?;
+    tokio::time::timeout(GIT_TIMEOUT, async {
+        let read_stdout = async {
+            let mut bytes = Vec::new();
+            (&mut stdout)
+                .take(limit as u64 + 1)
+                .read_to_end(&mut bytes)
+                .await?;
+            anyhow::ensure!(bytes.len() <= limit, "Git 输出超过大小限制");
+            Ok::<_, anyhow::Error>(bytes)
+        };
+        let read_stderr = async {
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 4096];
+            loop {
+                let count = stderr.read(&mut chunk).await?;
+                if count == 0 {
+                    break;
+                }
+                let retained = count.min((16 * 1024_usize).saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&chunk[..retained]);
+            }
+            Ok::<_, anyhow::Error>(bytes)
+        };
+        let (stdout, stderr) = tokio::try_join!(read_stdout, read_stderr)?;
+        Ok::<_, anyhow::Error>(GitOutput {
+            status: child.wait().await?,
+            stdout,
+            stderr,
+        })
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("Git 下载超时，请检查网络与代理后重试"))?
+}
+
+async fn git_config_proxy(git: &Path, work: &Path, url: &str) -> anyhow::Result<Option<String>> {
+    for scope in ["--global", "--system"] {
+        // config 只读取代理白名单，不执行 hooks、credential helper 或用户脚本。
+        let command = git_command(work, None, None);
+        let mut query = Command::new(git);
+        for (key, value) in command.as_std().get_envs() {
+            // 查询沿用用户的配置来源，安装命令仍隔离 global/system。
+            if key == "GIT_CONFIG_NOSYSTEM" || key == "GIT_CONFIG_GLOBAL" {
+                continue;
+            }
+            match value {
+                Some(value) => {
+                    query.env(key, value);
+                }
+                None => {
+                    query.env_remove(key);
+                }
+            }
+        }
+        query.current_dir(work).args([
+            "config",
+            scope,
+            "--includes",
+            "--null",
+            "--get-urlmatch",
+            "http.proxy",
+            url,
+        ]);
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            git_output(&mut query, 16 * 1024, false),
+        )
+        .await
+        .context("读取 Git 代理设置超时")??;
+        if output.status.success() {
+            let value = std::str::from_utf8(&output.stdout).context("Git 代理配置编码无效")?;
+            let value = value.strip_suffix('\0').unwrap_or(value).to_string();
+            anyhow::ensure!(!value.contains(['\r', '\n', '\0']), "Git 代理配置格式无效");
+            return Ok(Some(value)); // 显式空值表示直连，不能再套用系统代理。
+        }
+        let text = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        if output.status.code() != Some(1)
+            && !(text.contains("unable to read config file") && text.contains("no such file"))
+        {
+            anyhow::bail!("无法读取 Git 代理设置，请检查 Git 配置文件权限或语法");
+        }
+    }
+    Ok(None)
+}
+
+async fn resolve_git_proxy_with(
+    git: &Path,
+    work: &Path,
+    url: &str,
+    has_proxy_env: bool,
+    system_proxy: impl FnOnce() -> Option<String>,
+) -> anyhow::Result<Option<String>> {
+    if has_proxy_env {
+        return Ok(None);
+    }
+    let proxy = git_config_proxy(git, work, url).await?;
+    Ok(proxy.or_else(system_proxy))
+}
+
+async fn resolve_git_proxy(work: &Path, url: &str) -> anyhow::Result<Option<String>> {
+    let has_proxy_env = has_git_proxy_environment(url, |key| std::env::var_os(key));
+    resolve_git_proxy_with(
+        Path::new("git"),
+        work,
+        url,
+        has_proxy_env,
+        crate::proxy::detect_system_proxy,
     )
     .await
+}
+
+fn has_git_proxy_environment(
+    url: &str,
+    value: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> bool {
+    // libcurl 的 HTTPS 请求不使用 HTTP_PROXY；不能因此跳过真正有效的 Git/system 代理。
+    let keys = if url.starts_with("https://") {
+        ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+    } else {
+        ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+    };
+    keys.iter()
+        .any(|key| value(key).is_some_and(|value| !value.is_empty()))
+}
+
+async fn run_git(
+    work: &Path,
+    token: Option<&str>,
+    proxy: Option<&str>,
+    private: bool,
+    args: &[&str],
+) -> anyhow::Result<Vec<u8>> {
+    let output = git_output(
+        git_command(work, token, proxy).args(args),
+        64 * 1024,
+        private,
+    )
+    .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{}",
+        classify_git_failure(&output.stderr).message(private)
+    );
+    Ok(output.stdout)
 }
 
 async fn download_package(
@@ -640,13 +922,24 @@ async fn download_package(
         None
     };
     let token = token.as_deref();
-    run_git(&work, token, &["init", "--quiet"]).await?;
     let url = format!("https://github.com/{}.git", source.repository);
-    run_git(&work, token, &["remote", "add", "origin", &url]).await?;
+    let proxy = resolve_git_proxy(&work, &url).await?;
+    let proxy = proxy.as_deref();
+    run_git(&work, token, proxy, source.private, &["init", "--quiet"]).await?;
+    run_git(
+        &work,
+        token,
+        proxy,
+        source.private,
+        &["remote", "add", "origin", &url],
+    )
+    .await?;
     // 先取固定 revision 的树元数据，blob:none 保证没有整库插件文件下载。
     run_git(
         &work,
         token,
+        proxy,
+        source.private,
         &[
             "fetch",
             "--quiet",
@@ -658,33 +951,55 @@ async fn download_package(
     )
     .await?;
     let tree_spec = format!("{}:{}", index.revision, plugin.path);
-    let tree = run_git(&work, token, &["rev-parse", &tree_spec]).await?;
+    let tree = run_git(
+        &work,
+        token,
+        proxy,
+        source.private,
+        &["rev-parse", &tree_spec],
+    )
+    .await?;
     if !String::from_utf8_lossy(&tree)
         .trim()
         .eq_ignore_ascii_case(&plugin.tree)
     {
         bail!("插件目录校验失败，仓库内容与索引不一致");
     }
-    let files = command_output(
-        git_command(&work, token).args(["ls-tree", "-r", "-z", &plugin.tree]),
+    let files = git_output(
+        git_command(&work, token, proxy).args(["ls-tree", "-r", "-z", &plugin.tree]),
         16 * 1024 * 1024,
-        GIT_TIMEOUT,
-        "无法读取插件 Git 文件清单",
+        source.private,
     )
     .await?;
-    validate_git_files(&files)?;
-    run_git(&work, token, &["sparse-checkout", "init", "--no-cone"]).await?;
+    anyhow::ensure!(
+        files.status.success(),
+        "{}",
+        classify_git_failure(&files.stderr).message(source.private)
+    );
+    validate_git_files(&files.stdout)?;
+    run_git(
+        &work,
+        token,
+        proxy,
+        source.private,
+        &["sparse-checkout", "init", "--no-cone"],
+    )
+    .await?;
     // 非 cone 模式避免顺便检出根目录和祖先目录的其他文件。
     let pattern = format!("/{}/", plugin.path);
     run_git(
         &work,
         token,
+        proxy,
+        source.private,
         &["sparse-checkout", "set", "--no-cone", "--", &pattern],
     )
     .await?;
     run_git(
         &work,
         token,
+        proxy,
+        source.private,
         &["checkout", "--quiet", "--detach", &index.revision],
     )
     .await?;
@@ -1525,6 +1840,233 @@ pub async fn native_request(home: &Path, method: &str, params: Value) -> anyhow:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_proxy_and_credentials_are_ephemeral_while_hooks_and_templates_stay_isolated() {
+        let temp = tempfile::tempdir().unwrap();
+        let command = git_command(
+            temp.path(),
+            Some("fixture-token"),
+            Some("http://fixture:proxy-secret@127.0.0.1:7890"),
+        );
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|value| value == "init.templateDir="));
+        assert!(
+            args.iter()
+                .any(|value| value.starts_with("core.hooksPath="))
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|value| value.contains("fixture-token") || value.contains("proxy-secret"))
+        );
+        let env = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(env["GIT_CONFIG_NOSYSTEM"].as_deref(), Some("1"));
+        assert_eq!(env["GIT_CONFIG_COUNT"].as_deref(), Some("2"));
+        assert_eq!(
+            env["GIT_CONFIG_KEY_0"].as_deref(),
+            Some("http.https://github.com/.extraheader")
+        );
+        assert_eq!(env["GIT_CONFIG_KEY_1"].as_deref(), Some("http.proxy"));
+        assert!(
+            env["GIT_CONFIG_VALUE_0"]
+                .as_deref()
+                .unwrap()
+                .starts_with("AUTHORIZATION: basic ")
+        );
+        assert_eq!(env["GIT_TRACE_CURL"], None);
+        assert_eq!(env["GIT_CONFIG_PARAMETERS"], None);
+        assert_eq!(env["GIT_TEMPLATE_DIR"], None);
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ] {
+            assert!(
+                !env.contains_key(key),
+                "existing network environment must be inherited"
+            );
+        }
+        assert!(!temp.path().join(".gitconfig").exists());
+    }
+
+    #[test]
+    fn git_failure_messages_classify_reasons_without_echoing_credentials_or_misleading_public_auth()
+    {
+        for (stderr, kind) in [
+            (
+                "fatal: unable to access https://fixture-secret@github.com/repo: Could not resolve proxy: proxy-secret",
+                GitFailure::Network,
+            ),
+            (
+                "fatal: Authentication failed for https://fixture-secret@github.com/repo",
+                GitFailure::Access,
+            ),
+            (
+                "fatal: could not create work tree dir '/cache/proxy-plugin': Permission denied fixture-secret",
+                GitFailure::LocalPermission,
+            ),
+        ] {
+            assert_eq!(classify_git_failure(stderr.as_bytes()), kind);
+            for private in [false, true] {
+                assert!(!kind.message(private).contains("fixture-secret"));
+                assert!(!kind.message(private).contains("proxy-secret"));
+            }
+        }
+        assert!(!GitFailure::Access.message(false).contains("gh auth login"));
+        assert!(!GitFailure::Network.message(true).contains("gh auth login"));
+        assert!(GitFailure::Access.message(true).contains("gh auth login"));
+    }
+
+    #[cfg(unix)]
+    fn fake_git(temp: &tempfile::TempDir, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp.path().join("fake-git");
+        fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_proxy_lookup_reads_only_proxy_and_respects_environment_explicit_direct_and_system_fallback()
+     {
+        let temp = tempfile::tempdir().unwrap();
+        let url = "https://github.com/BigPizzaV3/CodexPlusPlusPluginCache.git";
+        let git = fake_git(
+            &temp,
+            r#"
+[ "$1" = config ] && [ "$3" = --includes ] && [ "$4" = --null ] && [ "$5" = --get-urlmatch ] && [ "$6" = http.proxy ] || exit 9
+if [ "$2" = --global ]; then printf 'http://127.0.0.1:7890\000'; exit 0; fi
+exit 1
+"#,
+        );
+        assert_eq!(
+            resolve_git_proxy_with(&git, temp.path(), url, false, || panic!(
+                "global proxy should win"
+            ))
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        let http_only = |key: &str| (key == "HTTP_PROXY").then(|| "http://127.0.0.1:7999".into());
+        assert!(!has_git_proxy_environment(url, http_only));
+        assert!(has_git_proxy_environment("http://github.com/", http_only));
+        assert_eq!(
+            resolve_git_proxy_with(
+                &git,
+                temp.path(),
+                url,
+                has_git_proxy_environment(url, http_only),
+                || panic!("HTTPS Git proxy should still be read")
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        let git = fake_git(
+            &temp,
+            "if [ \"$2\" = --global ]; then exit 1; fi; printf 'http://127.0.0.1:7891\\000'",
+        );
+        assert_eq!(
+            resolve_git_proxy_with(&git, temp.path(), url, false, || panic!(
+                "system Git proxy should win"
+            ))
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("http://127.0.0.1:7891")
+        );
+        let missing_git = temp.path().join("missing-git");
+        assert!(
+            resolve_git_proxy_with(&missing_git, temp.path(), url, true, || panic!(
+                "environment proxy should win"
+            ))
+            .await
+            .unwrap()
+            .is_none()
+        );
+        let git = fake_git(&temp, "printf '\\000'; exit 0");
+        assert_eq!(
+            resolve_git_proxy_with(&git, temp.path(), url, false, || panic!(
+                "explicit empty proxy means direct"
+            ))
+            .await
+            .unwrap(),
+            Some(String::new())
+        );
+        let git = fake_git(&temp, "exit 1");
+        assert_eq!(
+            resolve_git_proxy_with(&git, temp.path(), url, false, || Some(
+                "http://127.0.0.1:8888".into()
+            ))
+            .await
+            .unwrap()
+            .as_deref(),
+            Some("http://127.0.0.1:8888")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_process_failures_preserve_only_fixed_diagnostics_and_missing_git_is_explicit() {
+        let temp = tempfile::tempdir().unwrap();
+        let git = fake_git(
+            &temp,
+            "printf 'fatal: Could not resolve proxy: fixture-secret proxy-secret' >&2; exit 128",
+        );
+        let output = git_output(
+            git_command_with_binary(&git, temp.path(), None, Some("http://127.0.0.1:7890"))
+                .arg("fetch"),
+            64,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(!output.status.success());
+        let message = classify_git_failure(&output.stderr).message(false);
+        assert_eq!(classify_git_failure(&output.stderr), GitFailure::Network);
+        assert!(!message.contains("fixture-secret") && !message.contains("proxy-secret"));
+        let error = git_output(
+            &mut Command::new(temp.path().join("missing-git")),
+            64,
+            false,
+        )
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(error.contains("未找到 Git"));
+        assert!(!error.contains("gh auth login"));
+        let git = fake_git(
+            &temp,
+            "printf 'fatal: Could not resolve proxy\\n' >&2; i=0; while [ \"$i\" -lt 6000 ]; do printf 'proxy-secret' >&2; i=$((i + 1)); done; printf 'partial'; exit 128",
+        );
+        let output = git_output(&mut Command::new(git), 64, false).await.unwrap();
+        assert_eq!(output.stdout, b"partial");
+        assert_eq!(output.stderr.len(), 16 * 1024);
+        assert_eq!(classify_git_failure(&output.stderr), GitFailure::Network);
+    }
 
     fn entry() -> PluginEntry {
         PluginEntry {

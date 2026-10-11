@@ -22,6 +22,11 @@ if (shareId) {
 }
 
 function setupComposer() {
+  form.hidden = true;
+  setNotice("会话分享已移除；请在本机 Codex++ 中管理会话。", "error");
+  return;
+
+  /* Legacy composer kept below so existing encrypted links remain readable. */
   content.addEventListener("input", () => {
     counter.textContent = `${content.value.length.toLocaleString()} / 900,000`;
   });
@@ -89,7 +94,6 @@ async function showShare(id) {
   const viewContent = document.querySelector("[data-view-content]");
   const viewMeta = document.querySelector("[data-view-meta]");
   const viewNotice = document.querySelector("[data-view-notice]");
-  const importButton = document.querySelector("[data-import-session]");
 
   try {
     const keyValue = new URLSearchParams(location.hash.slice(1)).get("k");
@@ -105,13 +109,9 @@ async function showShare(id) {
       if (parsed?.kind === "codex-rollout" && typeof parsed.content === "string") {
         sharedSession = parsed;
         viewContent.textContent = rolloutToMarkdown(parsed.content, parsed.title);
-        importButton.hidden = false;
-        importButton.addEventListener("click", importSharedSession, { once: true });
       } else if (parsed?.kind === "codex-session" && Array.isArray(parsed.messages)) {
         sharedSession = parsed;
         viewContent.textContent = sessionToMarkdown(parsed);
-        importButton.hidden = false;
-        importButton.addEventListener("click", importSharedSession, { once: true });
       } else {
         viewContent.textContent = plaintext;
       }
@@ -153,16 +153,9 @@ function rolloutToMarkdown(content, title) {
 }
 
 async function importSharedSession() {
-  if (!sharedSession) return;
-  try {
-    const viewNotice = document.querySelector("[data-view-notice]");
-    viewNotice.textContent = "正在打开 Codex++ 管理工具，请在管理工具中确认导入。";
-    viewNotice.dataset.type = "success";
-    const protocolUrl = `codexplusplus://session?url=${encodeURIComponent(location.href)}`;
-    window.location.assign(protocolUrl);
-  } catch {
-    const viewNotice = document.querySelector("[data-view-notice]");
-    viewNotice.textContent = "无法打开 Codex++ 管理工具，请复制当前链接到管理工具导入。";
+  const viewNotice = document.querySelector("[data-view-notice]");
+  if (viewNotice) {
+    viewNotice.textContent = "Codex++ 会话导入已移除，请使用本地会话管理。";
     viewNotice.dataset.type = "error";
   }
 }

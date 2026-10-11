@@ -201,7 +201,6 @@
     // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
     refreshCodexPlusRailNavigation();
     installCodexPlusPageNavigationCloseHandler();
-    installSessionShareImportListener();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
     updateThreadScrollHandlers();
@@ -571,6 +570,18 @@
     return hasRename || hasOtherSessionAction;
   }
 
+  function isNativeSessionRenameMenuItem(candidate) {
+    if (!(candidate instanceof HTMLElement) || !visibleElement(candidate)) return false;
+    const text = normalizedElementText(candidate);
+    const label = candidate.getAttribute("aria-label") || "";
+    const testid = candidate.getAttribute("data-testid") || "";
+    // Codex 26.1007 changed the visible label from the bare "重命名"/
+    // "Rename" to a longer localized label. Match the native semantic
+    // affordance while excluding Codex++'s own auto-rename entry.
+    if (/自动重命名当前会话|auto.?rename current session/i.test(`${text} ${label}`)) return false;
+    return /重命名|rename/i.test(`${text} ${label} ${testid}`);
+  }
+
   function rememberSessionActionTrigger(event) {
     const trigger = event.target?.closest?.('button[aria-label="聊天操作"], button[aria-label="Chat actions"]');
     if (trigger) lastSessionActionTrigger = trigger;
@@ -734,14 +745,14 @@
       return sessionCopyMenuScopes()
         .filter((menu) => visibleElement(menu) && looksLikeSessionActionMenu(menu))
         .flatMap((menu) => [...menu.querySelectorAll('[role="menuitem"]')])
-        .find((candidate) => /^(重命名|Rename)$/i.test(normalizedElementText(candidate))) || null;
+        .find(isNativeSessionRenameMenuItem) || null;
     }, 1200);
     if (!renameItem) {
       trigger.click();
       renameItem = await waitForSessionElement(() => {
         return [...document.querySelectorAll('[role="menuitem"]')]
           .filter(visibleElement)
-          .find((candidate) => /^(重命名|Rename)$/i.test(normalizedElementText(candidate))) || null;
+          .find(isNativeSessionRenameMenuItem) || null;
       }, 1200);
     }
     if (!(renameItem instanceof HTMLElement)) {
@@ -890,7 +901,6 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     installCodexServiceTierBadge();
-    installSessionShareButton();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }

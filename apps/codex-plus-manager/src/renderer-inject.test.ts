@@ -199,29 +199,10 @@ describe("renderer injection header compatibility", () => {
     assert.doesNotMatch(renderer, /\n\s*refreshSessionCopyMenuItems\(\);/);
   });
 
-  it("adds an encrypted session sharing button to the active Codex conversation", async () => {
+  it("does not install a session sharing button after sharing is retired", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-
-    assert.match(renderer, /sessionShareButtonClass\s*=\s*"codex-session-share-button"/);
-    assert.match(renderer, /function installSessionShareButton\(\)/);
-    assert.match(renderer, /function sessionShareMarkdown\(\)/);
-    assert.match(renderer, /crypto\.subtle\.generateKey\(\{ name: "AES-GCM", length: 256 \}/);
-    assert.match(renderer, /https:\/\/share\.codexpp\.cc/);
-    assert.match(renderer, /postJson\("\/share\/create", payload\)/);
-    assert.match(renderer, /postJson\("\/session\/export"/);
-    assert.match(renderer, /postJson\("\/session\/import"/);
-    assert.match(renderer, /codex-rollout/);
-    assert.match(renderer, /function sessionImportMarkdown\(session\)/);
-    assert.match(renderer, /codexpp-import-session/);
-    assert.match(renderer, /nativeShare\?\.closest\?\.\("\.ms-auto"\)/);
-    assert.match(renderer, /function sessionSharePlacement\(\)/);
-    assert.match(renderer, /sessionShare: "codexAppSessionShare"/);
-    assert.match(renderer, /#k=\$\{encrypted\.key\}/);
-    assert.match(renderer, /navigator\.clipboard\.writeText\(shareUrl\)/);
-    assert.match(renderer, /data-testid\*=\"message\"/);
-    assert.match(renderer, /function sessionActionTrigger\(row\)/);
-    assert.match(renderer, /const sessionMenuEnabled = codexPlusBackendSettings\.enhancementsEnabled !== false/);
-    assert.doesNotMatch(renderer, /window\.location\.(?:href|assign)\s*=\s*[^;]*markdown/);
+    assert.doesNotMatch(renderer, /\n\s*installSessionShareButton\(\);/);
+    assert.doesNotMatch(renderer, /\n\s*installSessionShareImportListener\(\);/);
   });
 
   it("automatically renames a session through the native title suggestion", async () => {
@@ -233,6 +214,15 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /button\.classList\.contains\("text-info"\)/);
     assert.match(renderer, /\^\(保存\|Save\)\$/);
     assert.match(renderer, /Codex 未能生成新名称/);
+  });
+
+  it("accepts localized native rename labels introduced by newer Codex builds", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function isNativeSessionRenameMenuItem\(candidate\)/);
+    assert.match(renderer, /data-testid/);
+    assert.match(renderer, /自动重命名当前会话\|auto\.\?rename current session/);
+    assert.match(renderer, /\.find\(isNativeSessionRenameMenuItem\)/);
   });
 
   it("removes the legacy Codex++ top-bar entry", async () => {

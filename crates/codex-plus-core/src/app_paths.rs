@@ -760,6 +760,7 @@ fn has_codex_plus_plus_marker(path: &Path) -> bool {
     // CFBundleExecutable（CodexPlusPlus / CodexPlusPlusManager），与安装根里的
     // 二进制名不同，因此两条都列。
     const MARKERS: &[&str] = &[
+        "codex-plus-plus.exe",
         "codex-plus-plus-manager.exe",
         "uninstall.exe",
         "codex-plus-plus-manager",
@@ -1590,6 +1591,22 @@ mod macos_discovery_tests {
         std::fs::create_dir_all(&manager).unwrap();
         std::fs::write(manager.join("codex-plus-plus-manager.exe"), "").unwrap();
         assert!(describe_codex_app_dir_rejection(&manager).contains("Codex++"));
+    }
+
+    #[test]
+    fn unified_app_is_rejected_as_official_codex_even_with_a_codex_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let windows_app = temp.path().join("Codex++");
+        std::fs::create_dir(&windows_app).unwrap();
+        std::fs::write(windows_app.join("codex-plus-plus.exe"), "app").unwrap();
+        std::fs::write(windows_app.join("Codex.exe"), "official-looking").unwrap();
+        assert!(super::normalize_codex_app_path(&windows_app).is_none());
+
+        let macos_app = temp.path().join("Codex++.app");
+        let macos = macos_app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("CodexPlusPlus"), "app").unwrap();
+        assert!(super::normalize_codex_app_path(&macos_app).is_none());
     }
 
     #[test]

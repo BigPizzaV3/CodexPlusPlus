@@ -33,7 +33,6 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-        if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -68,7 +67,6 @@
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
     renderCodexPlusMenu();
     scan();
   }

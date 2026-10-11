@@ -57,7 +57,7 @@
     },
     {
       "name": "80-session-share.js",
-      "description": "会话分享、项目区、toast、工作区路径归一",
+      "description": "会话运行时工具；分享入口已撤出管理器扫描",
       "lines": 1458
     },
     {

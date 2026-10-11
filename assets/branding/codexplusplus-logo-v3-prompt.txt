@@ -1,0 +1,23 @@
+CodexPlusPlus Logo v3
+生成方式：内置 image_gen 工具
+
+初始生成提示词：
+
+Use case: logo-brand.
+Asset type: a single alternative desktop app icon for CodexPlusPlus, an independent AI coding companion app.
+Primary request: create a fresh premium monogram logo direction using "C++", distinct from a blue square with white >++.
+Scene/backdrop: genuinely transparent outside a centered warm-white rounded-square tile with extremely subtle cool-white surface shading. Tile fills about 88% of a square canvas, with balanced transparent margins.
+Subject: a bold geometric cobalt-to-violet C-shaped monogram, with exactly two small but boldly drawn equal plus signs arranged horizontally inside the opening of the C on the right. The C has a thick rounded geometric stroke, like an open ring, not a typing font. Two plus signs have equal arms and matching thickness. All three parts form a single optically balanced compact logo with generous negative space. Blue-to-violet is the project's existing brand palette.
+Style/medium: restrained modern vector-like logo geometry, clean silhouette, no outlines, crisp edges. Mostly flat symbol with a very subtle blue-violet gradient. High contrast against white tile. Readable at 32 pixels.
+Composition/framing: straight-on, centered square 1024x1024 output. Single finished icon only, no presentation sheet, no multiple variants.
+Text (verbatim): "C++" expressed as geometric logo forms, no other letters or words.
+Constraints: actual transparent exterior; no OpenAI knot or official Codex mark, no cloud, no circuit board, no mascot, no decorative sparkles, no watermark, no captions, no mockup, no perspective. Keep the C and two plus signs distinct and easy to read.
+
+最终背景清理提示词：
+
+Use case: precise-object-edit.
+Edit target: the provided CodexPlusPlus white rounded-square C++ app icon.
+Primary request: clean the outer background and edge artifacts. Replace all transparent exterior with a solid uniform very pale cool-white background (#f4f6fb) covering the full square canvas. Remove every stray white fragment, fleck, and jagged cutout artifact outside the tile. The white rounded-square tile should have a perfectly smooth clean silhouette against the slightly cooler near-white background, with no shadow.
+Invariants: preserve the blue-to-violet C monogram and the two blue-violet plus signs exactly, keeping their positions, proportions, colors, stroke thickness, spacing and crisp vector-like style. Preserve the tile size, corner radius and central white surface. Change only the exterior background and clean the tile boundary.
+Constraints: fully opaque image, no transparency, no extra symbols or details, no text or watermark, no glow, no new border, no mockup. Single finished square icon.
+
