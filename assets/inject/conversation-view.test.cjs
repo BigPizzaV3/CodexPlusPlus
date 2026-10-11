@@ -50,7 +50,7 @@ class Element {
 function fixture() {
   const root = new Element("body");
   const document = {
-    body: root, activeElement: null,
+    body: root, documentElement: root, activeElement: null,
     querySelector: selector => root.querySelector(selector),
     querySelectorAll: selector => root.querySelectorAll(selector),
   };
@@ -203,5 +203,21 @@ for (const hasScroller of [false, true]) {
   assert.equal(api.state.contentEl, null);
   assert.equal(content.style.width, "75%"); assert.equal(content.style.maxWidth, "600px");
   assert.equal(api.state.elements.size, 0);
+}
+// 对齐只观察宿主容器，不能观察自己会写 width/left 的正文/作曲器节点：
+// 观察被写入的节点会让 ResizeObserver 在每次写入后重新回调（启动时表现为一直转圈）。
+{
+  const { root, api } = fixture();
+  const scroll = root.append(new Element("div", "thread-scroll-container"));
+  const layout = scroll.append(new Element("div", "h-full flex"));
+  const content = layout.append(new Element("div", "", { "data-thread-user-message-navigation-content": "" }));
+  const observed = [];
+  api.state.ro = { observe: (el) => observed.push(el) };
+  api.resolve();
+  assert.ok(observed.includes(root), "documentElement 需要被观察");
+  assert.ok(observed.includes(scroll), "会话滚动容器作为宿主需要被观察");
+  assert.ok(!observed.includes(content), "正文节点不能交给 ResizeObserver");
+  assert.ok(!observed.includes(layout), "正文的布局父节点不能交给 ResizeObserver");
+  assert.ok(!observed.includes(content.parentElement), "正文父节点不能交给 ResizeObserver");
 }
 console.log("conversation view scope and inherited width regressions passed");

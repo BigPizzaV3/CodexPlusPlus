@@ -434,6 +434,7 @@
     runtimeStarted: false,
     moObserved: false,
     targetsReported: false,
+    resizeHandler: null,
     observed: new WeakSet(),
     elements: new Set(),
   };
@@ -948,10 +949,18 @@
     return rect.left + rect.width / 2;
   }
 
+  // 只观察会话宿主容器，不观察自己会改 width/left 的正文/作曲器节点。
+  // 观察被写入的节点会让 ResizeObserver 在每次写入后再次回调，形成自喂对齐循环——
+  // 启动阶段足以把主线程占满，表现为一直停在加载图标。
   function conversationViewObserveIfNeeded(el) {
     if (!el || !conversationViewState.ro || conversationViewState.observed.has(el)) return;
     conversationViewState.observed.add(el);
     conversationViewState.ro.observe(el);
+  }
+
+  function conversationViewObserveHosts() {
+    [document.documentElement, document.body, conversationViewScrollContainer()]
+      .forEach(conversationViewObserveIfNeeded);
   }
 
   function conversationViewResolveTargets() {
@@ -963,24 +972,10 @@
       if (previous && previous !== next) {
         conversationViewRestoreElement(previous);
         conversationViewState.elements.delete(previous);
-        [previous, previous.parentElement, previous.parentElement?.parentElement].forEach((el) => {
-          if (!el) return;
-          conversationViewState.ro?.unobserve?.(el);
-          conversationViewState.observed.delete(el);
-        });
       }
       conversationViewState[key] = next;
     }
-    [
-      document.documentElement,
-      document.body,
-      conversationViewState.contentEl,
-      conversationViewState.contentEl?.parentElement,
-      conversationViewState.contentEl?.parentElement?.parentElement,
-      conversationViewState.composerEl,
-      conversationViewState.composerEl?.parentElement,
-      conversationViewState.composerEl?.parentElement?.parentElement,
-    ].forEach(conversationViewObserveIfNeeded);
+    conversationViewObserveHosts();
   }
 
   function conversationViewAlignNow() {
@@ -1047,10 +1042,18 @@
 
   function scheduleConversationViewAlign(frames = 16) {
     conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
-    if (conversationViewState.rafId) return;
+    if (conversationViewState.rafId || conversationViewState.settling) return;
     const tick = () => {
       conversationViewState.rafId = 0;
-      conversationViewAlignNow();
+      conversationViewState.settling = true;
+      try {
+        conversationViewAlignNow();
+      } catch (error) {
+        conversationViewState.settleFramesLeft = 0;
+        sendCodexPlusDiagnostic("conversation_view_align_failed", { message: String(error?.message || error) });
+      } finally {
+        conversationViewState.settling = false;
+      }
       conversationViewState.settleFramesLeft -= 1;
       if (conversationViewState.settleFramesLeft > 0) {
         conversationViewState.rafId = requestAnimationFrame(tick);
@@ -1071,6 +1074,11 @@
     conversationViewState.moObserved = false;
     conversationViewState.runtimeStarted = false;
     conversationViewState.observed = new WeakSet();
+
+    if (conversationViewState.resizeHandler) {
+      window.removeEventListener("resize", conversationViewState.resizeHandler);
+      conversationViewState.resizeHandler = null;
+    }
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();
     conversationViewState.contentEl = null;

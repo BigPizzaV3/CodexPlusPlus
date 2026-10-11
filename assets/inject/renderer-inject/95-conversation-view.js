@@ -1,7 +1,8 @@
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
-    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    // 大面积 class 变化只做一轮短对齐，避免每次变更都排满 16 帧。
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign(4));
     if (document.body && !conversationViewState.moObserved) {
       conversationViewState.mo.observe(document.body, {
         childList: true,
@@ -11,6 +12,12 @@
       });
       conversationViewState.moObserved = true;
     }
+    // 被写入 width/left 的节点不再交给 ResizeObserver；窗口尺寸变化单独监听一次。
+    if (!conversationViewState.resizeHandler) {
+      conversationViewState.resizeHandler = () => scheduleConversationViewAlign();
+    }
+    window.removeEventListener("resize", conversationViewState.resizeHandler);
+    window.addEventListener("resize", conversationViewState.resizeHandler);
     conversationViewState.runtimeStarted = true;
   }
 
