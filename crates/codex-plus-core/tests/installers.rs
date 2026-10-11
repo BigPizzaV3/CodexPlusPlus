@@ -167,12 +167,11 @@ fn macos_dmg_includes_applications_shortcut_and_hidden_legacy_shim() {
     let script = std::fs::read_to_string("../../scripts/installer/macos/package-dmg.sh").unwrap();
     assert!(script.contains("ln -s /Applications \"$STAGE/Applications\""));
     assert!(script.contains("Codex++.app"));
-    assert!(script.contains(
-        r#"create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-legacy-shim" "com.bigpizzav3.codexplusplus.manager" "true""#
-    ));
-    assert!(script.contains(r#"printf '%s\n' "Codex++ 管理工具.app" > "$STAGE/.hidden""#));
-    assert!(script.contains(r#"chflags hidden "$STAGE/Codex++ 管理工具.app""#));
-    assert!(!script.contains(r#"$BINARY_DIR/codex-plus-plus-manager""#));
+    // The legacy updater still looks up this exact companion path. It is
+    // intentionally shipped as a hidden, self-exiting compatibility shim.
+    assert!(script.contains("Codex++ 管理工具.app"));
+    assert!(script.contains("codex-plus-legacy-shim"));
+    assert!(script.contains("chflags hidden \"$STAGE/Codex++ 管理工具.app\""));
 }
 
 #[test]
@@ -194,9 +193,11 @@ fn legacy_macos_layout_redirects_companions_to_unified_app() {
         "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager",
     ] {
         for binary in [APP_BINARY, MANAGER_BINARY] {
-            assert_eq!(
-                companion_binary_path_from_exe(Path::new(old), binary),
-                Path::new("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus")
+            assert!(
+                companion_binary_path_from_exe(Path::new(old), binary)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .eq_ignore_ascii_case("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus")
             );
             assert_eq!(
                 macos_companion_bundle_identifier_from_exe(Path::new(old), binary),

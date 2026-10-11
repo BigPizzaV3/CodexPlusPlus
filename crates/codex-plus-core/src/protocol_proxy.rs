@@ -339,6 +339,45 @@ impl UnsupportedEncryptedAgentContent {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct UnsupportedNativeWebSearch;
+
+impl std::fmt::Display for UnsupportedNativeWebSearch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unsupported_native_web_search: Chat 路由不执行服务端原生搜索，请使用客户端搜索工具或支持原生搜索的 Responses 上游")
+    }
+}
+
+impl std::error::Error for UnsupportedNativeWebSearch {}
+
+impl UnsupportedNativeWebSearch {
+    pub(crate) fn response_body(&self) -> Value {
+        json!({"error": {
+            "type": "invalid_request_error", "code": "unsupported_native_web_search",
+            "param": "tool_choice", "message": self.to_string()
+        }})
+    }
+}
+
+fn remove_unsupported_native_search(body: &mut Value) -> anyhow::Result<()> {
+    let choice = body.get("tool_choice");
+    if choice.and_then(|choice| choice.get("type")).and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "web_search" | "web_search_preview")) {
+        return Err(UnsupportedNativeWebSearch.into());
+    }
+    let required = choice.and_then(Value::as_str) == Some("required");
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        let before = tools.len();
+        // 同名 function/custom 和命名空间工具由客户端执行，必须保留。
+        tools.retain(|tool| !matches!(tool.get("type").and_then(Value::as_str),
+            Some("web_search" | "web_search_preview")));
+        if before != tools.len() && required && tools.is_empty() {
+            return Err(UnsupportedNativeWebSearch.into());
+        }
+    }
+    Ok(())
+}
+
 fn input_has_encrypted_agent_content(input: &Value) -> bool {
     fn item_has_encrypted_content(item: &Value) -> bool {
         item.get("type").and_then(Value::as_str) == Some("encrypted_content")
@@ -365,6 +404,7 @@ pub fn responses_to_chat_completions_with_options(
     mut body: Value,
     standard: bool,
 ) -> anyhow::Result<Value> {
+    remove_unsupported_native_search(&mut body)?;
     expand_local_compaction_history(&mut body);
     if input_has_native_compaction(&body) {
         return Err(NativeCompactionUnsupported::history().into());
@@ -546,7 +586,7 @@ fn chat_completion_to_response_with_context(
     if invalid_web_search {
         response["error"] = json!({
             "type": "invalid_upstream_tool_call",
-            "message": "上游返回了没有查询参数的 web_search 调用，未执行搜索"
+            "message": "Chat 上游返回了未执行的原生 web_search 调用，请使用客户端搜索工具"
         });
     }
 
@@ -3680,7 +3720,7 @@ impl ChatSseState {
             let mut response = self.base_response("failed", self.completed_output_items());
             response["error"] = json!({
                 "type": "invalid_upstream_tool_call",
-                "message": "上游返回了没有查询参数的 web_search 调用，未执行搜索"
+                "message": "Chat 上游返回了未执行的原生 web_search 调用，请使用客户端搜索工具"
             });
             copy_response_request_fields(&mut response, self.original_request.as_ref());
             push_sse(
@@ -6345,7 +6385,7 @@ fn response_tool_call_item(
         return json!({
             "id": web_search_item_id(call_id),
             "type": "web_search_call",
-            "status": "completed",
+            "status": "failed",
             "call_id": call_id,
             "action": web_search_action_from_arguments(arguments)
         });
@@ -6396,14 +6436,16 @@ fn web_search_item_id(call_id: &str) -> String {
 /// 把上游 web_search 工具调用的 arguments 映射成客户端 action 结构。
 ///
 /// 客户端 rollout 里的形态是 `{"type":"search","query":…,"queries":[…]}` 或
-/// `{"type":"open_page","url":…}`。上游各家字段名不一（query / queries / url），
+/// `{"type":"open_page","url":…}`。上游各家字段名不一（input / query /
+/// queries / url），
 /// 这里按存在性择一，都取不到就退化成 `{"type":"search"}`，让客户端自己判空。
 fn web_search_action_from_arguments(arguments: &str) -> Value {
     let parsed = responses_arguments_to_chat_parse(arguments);
     let query = parsed
         .get("query")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
+        .or_else(|| parsed.get("input").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty());
     let url = parsed
         .get("url")
         .and_then(Value::as_str)
@@ -6462,10 +6504,6 @@ fn web_search_action_has_target(action: &Value) -> bool {
 
 fn invalid_web_search_output_item(item: &Value) -> bool {
     item.get("type").and_then(Value::as_str) == Some("web_search_call")
-        && item.get("status").and_then(Value::as_str) == Some("completed")
-        && !item
-            .get("action")
-            .is_some_and(web_search_action_has_target)
 }
 
 fn tool_call_item_id(call_id: &str, name: &str, tool_context: &CodexToolContext) -> String {
@@ -7425,7 +7463,8 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str, s
         ChatReasoningStyle::DeepSeek
         | ChatReasoningStyle::LowHigh
         | ChatReasoningStyle::Default
-            if supports_reasoning_effort(model) =>
+            if supports_reasoning_effort(model)
+                || (standard && model.to_ascii_lowercase().contains("gemini")) =>
         {
             result["reasoning_effort"] = json!(mapped);
         }
@@ -7552,11 +7591,8 @@ fn supports_reasoning_effort(model: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_digit() && ch >= '5')
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::DeepSeek
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::LowHigh
-        // Gemini gateways commonly expose the OpenAI-compatible
-        // `reasoning_effort` field even though the model is not named like
-        // GPT/o-series. Keep this opt-in to Gemini IDs so unrelated Chat
-        // providers do not receive an unsupported field.
-        || model.to_ascii_lowercase().contains("gemini")
+        // #2464 已验证的网关模型；其它 Gemini 由供应商的标准协议开关显式启用。
+        || model.eq_ignore_ascii_case("gemini-3.8-flash")
 }
 
 fn is_openai_o_series(model: &str) -> bool {
@@ -7573,9 +7609,56 @@ mod response_compatibility_tests {
     use super::*;
 
     #[test]
+    fn chat_search_filter_preserves_client_tools_and_rejects_forced_native_search() {
+        let native = json!({"type":"web_search"});
+        for client in [
+            json!({"type":"function", "name":"web_search", "parameters":{"type":"object"}}),
+            json!({"type":"custom", "name":"web_search"}),
+            json!({"type":"tool_search", "execution":"client"}),
+            json!({"type":"namespace", "name":"search", "tools":[]}),
+        ] {
+            let mut body = json!({"tools":[native.clone(),client.clone()],"tool_choice":"required"});
+            remove_unsupported_native_search(&mut body).unwrap();
+            assert_eq!(body["tools"], json!([client]));
+        }
+        for choice in [json!("required"), json!({"type":"web_search"})] {
+            let mut body = json!({"tools":[native.clone()],"tool_choice":choice});
+            assert!(remove_unsupported_native_search(&mut body).unwrap_err().is::<UnsupportedNativeWebSearch>());
+        }
+        let mut automatic = json!({"tools":[native],"tool_choice":"auto"});
+        remove_unsupported_native_search(&mut automatic).unwrap();
+        assert_eq!(automatic["tools"], json!([]));
+    }
+
+    #[test]
+    fn native_search_with_query_is_still_not_executed_by_chat_converter() {
+        let request = json!({"tools":[{"type":"web_search"}]});
+        let response = chat_completion_to_response_with_request(json!({
+            "choices":[{"message":{"tool_calls":[{"id":"call_search", "function":{
+                "name":"web_search", "arguments":"{\"query\":\"Codex\"}"
+            }}]},"finish_reason":"tool_calls"}]
+        }), &request).unwrap();
+        assert_eq!(response["status"], "failed");
+        assert_eq!(response["output"][0]["status"], "failed");
+    }
+
+    #[test]
+    fn gemini_reasoning_conversion_respects_standard_protocol_opt_in() {
+        for standard in [false, true] {
+            let body = responses_to_chat_completions_with_options(json!({
+                "model":"gemini-3.8-flash", "input":"hi", "reasoning":{"effort":"high"}
+            }), standard).unwrap();
+            assert_eq!(body["reasoning_effort"], "high");
+        }
+        let request = json!({"model":"google/gemini-other", "input":"hi", "reasoning":{"effort":"high"}});
+        assert!(responses_to_chat_completions(request.clone()).unwrap().get("reasoning_effort").is_none());
+        assert_eq!(responses_to_chat_completions_with_options(request, true).unwrap()["reasoning_effort"], "high");
+    }
+
+    #[test]
     fn gemini_models_receive_reasoning_effort() {
         assert!(supports_reasoning_effort("gemini-3.8-flash"));
-        assert!(supports_reasoning_effort("google/gemini-2.5-pro"));
+        assert!(!supports_reasoning_effort("google/gemini-2.5-pro"));
         assert!(!supports_reasoning_effort("glm-5.3"));
     }
 
@@ -7644,6 +7727,9 @@ mod response_compatibility_tests {
         assert!(!web_search_action_has_target(&json!({ "type": "search" })));
         assert!(web_search_action_has_target(
             &json!({ "type": "search", "query": "Codex" })
+        ));
+        assert!(web_search_action_has_target(
+            &web_search_action_from_arguments(r#"{"input":"Codex"}"#)
         ));
         assert!(web_search_action_has_target(
             &json!({ "type": "open_page", "url": "https://example.com" })
