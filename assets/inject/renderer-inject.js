@@ -15506,8 +15506,8 @@
         ].join(";");
         document.body.appendChild(node);
       }
-      node.textContent = `Codex 多开 · ${label}`;
-      node.setAttribute("aria-label", `当前 Codex 多开身份：${label}`);
+      node.textContent = `Codex++ 多开 · ${label}`;
+      node.setAttribute("aria-label", `当前 Codex++ 多开身份：${label}`);
       return true;
     };
     if (mount()) return;
