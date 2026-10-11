@@ -216,6 +216,15 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /Codex 未能生成新名称/);
   });
 
+  it("accepts localized native rename labels introduced by newer Codex builds", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function isNativeSessionRenameMenuItem\(candidate\)/);
+    assert.match(renderer, /data-testid/);
+    assert.match(renderer, /自动重命名当前会话\|auto\.\?rename current session/);
+    assert.match(renderer, /\.find\(isNativeSessionRenameMenuItem\)/);
+  });
+
   it("removes the legacy Codex++ top-bar entry", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 

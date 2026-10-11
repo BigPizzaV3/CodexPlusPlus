@@ -528,15 +528,27 @@ fn chat_completion_to_response_with_context(
         tool_context,
     ));
 
+    let invalid_web_search = output.iter().any(invalid_web_search_output_item);
     let mut response = json!({
         "id": response_id,
         "object": "response",
         "created_at": body.get("created").and_then(Value::as_u64).unwrap_or(0),
-        "status": response_status(choice.get("finish_reason").and_then(Value::as_str)),
+        "status": if invalid_web_search {
+            "failed"
+        } else {
+            response_status(choice.get("finish_reason").and_then(Value::as_str))
+        },
         "model": body.get("model").and_then(Value::as_str).unwrap_or(""),
         "output": output,
         "usage": chat_usage_to_responses_usage(body.get("usage"))
     });
+
+    if invalid_web_search {
+        response["error"] = json!({
+            "type": "invalid_upstream_tool_call",
+            "message": "上游返回了没有查询参数的 web_search 调用，未执行搜索"
+        });
+    }
 
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
         response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
@@ -3660,6 +3672,29 @@ impl ChatSseState {
         self.finalize_text_into(output);
         self.finalize_tools_into(output);
 
+        if self
+            .output_items
+            .iter()
+            .any(|(_, item)| invalid_web_search_output_item(item))
+        {
+            let mut response = self.base_response("failed", self.completed_output_items());
+            response["error"] = json!({
+                "type": "invalid_upstream_tool_call",
+                "message": "上游返回了没有查询参数的 web_search 调用，未执行搜索"
+            });
+            copy_response_request_fields(&mut response, self.original_request.as_ref());
+            push_sse(
+                output,
+                "response.failed",
+                json!({
+                    "type": "response.failed",
+                    "response": response
+                }),
+            );
+            self.completed = true;
+            return;
+        }
+
         let status = response_status(self.finish_reason.as_deref());
         let mut response = self.base_response(status, self.completed_output_items());
         if status == "incomplete" {
@@ -6404,6 +6439,35 @@ fn web_search_action_from_arguments(arguments: &str) -> Value {
     }
 }
 
+fn web_search_action_has_target(action: &Value) -> bool {
+    action
+        .get("query")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        || action
+            .get("queries")
+            .and_then(Value::as_array)
+            .is_some_and(|queries| {
+                queries.iter().any(|query| {
+                    query
+                        .as_str()
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+            })
+        || action
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn invalid_web_search_output_item(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("web_search_call")
+        && item.get("status").and_then(Value::as_str) == Some("completed")
+        && !item
+            .get("action")
+            .is_some_and(web_search_action_has_target)
+}
+
 fn tool_call_item_id(call_id: &str, name: &str, tool_context: &CodexToolContext) -> String {
     if tool_context.is_builtin_web_search_proxy(name) {
         return web_search_item_id(call_id);
@@ -7488,6 +7552,11 @@ fn supports_reasoning_effort(model: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_digit() && ch >= '5')
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::DeepSeek
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::LowHigh
+        // Gemini gateways commonly expose the OpenAI-compatible
+        // `reasoning_effort` field even though the model is not named like
+        // GPT/o-series. Keep this opt-in to Gemini IDs so unrelated Chat
+        // providers do not receive an unsupported field.
+        || model.to_ascii_lowercase().contains("gemini")
 }
 
 fn is_openai_o_series(model: &str) -> bool {
@@ -7497,6 +7566,89 @@ fn is_openai_o_series(model: &str) -> bool {
             .as_bytes()
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod response_compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn gemini_models_receive_reasoning_effort() {
+        assert!(supports_reasoning_effort("gemini-3.8-flash"));
+        assert!(supports_reasoning_effort("google/gemini-2.5-pro"));
+        assert!(!supports_reasoning_effort("glm-5.3"));
+    }
+
+    #[test]
+    fn empty_web_search_call_is_failed_in_non_stream_response() {
+        let request = json!({
+            "model": "gemini-3.8-flash",
+            "tools": [{ "type": "web_search" }]
+        });
+        let upstream = json!({
+            "id": "chatcmpl-search",
+            "model": "gemini-3.8-flash",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_search",
+                        "type": "function",
+                        "function": { "name": "web_search", "arguments": "{}" }
+                    ]
+                }
+            }]
+        });
+
+        let response = chat_completion_to_response_with_request(upstream, &request).unwrap();
+        assert_eq!(response.get("status").and_then(Value::as_str), Some("failed"));
+        assert_eq!(
+            response
+                .pointer("/error/type")
+                .and_then(Value::as_str),
+            Some("invalid_upstream_tool_call")
+        );
+    }
+
+    #[test]
+    fn empty_web_search_call_is_failed_in_stream_response() {
+        let request = json!({
+            "model": "gemini-3.8-flash",
+            "tools": [{ "type": "web_search" }]
+        });
+        let chunk = json!({
+            "id": "chatcmpl-search",
+            "model": "gemini-3.8-flash",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_search",
+                        "function": { "name": "web_search", "arguments": "{}" }
+                    }]
+                }
+            }]
+        });
+        let mut state = ChatSseState::with_request(&request);
+        let mut stream = String::new();
+        state.handle_chat_chunk_into(&chunk, &mut stream);
+        state.finalize_into(&mut stream);
+        assert!(stream.contains("response.failed"));
+        assert!(!stream.contains("response.completed"));
+    }
+
+    #[test]
+    fn web_search_action_requires_query_or_url() {
+        assert!(!web_search_action_has_target(&json!({ "type": "search" })));
+        assert!(web_search_action_has_target(
+            &json!({ "type": "search", "query": "Codex" })
+        ));
+        assert!(web_search_action_has_target(
+            &json!({ "type": "open_page", "url": "https://example.com" })
+        ));
+    }
 }
 
 /// 供应商自定义请求头必须真正写进发往上游的请求（issue #1685）。
