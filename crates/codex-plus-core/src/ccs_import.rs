@@ -173,6 +173,7 @@ pub fn relay_profile_from_ccs(
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
         web_search_history_compat: false,
+        stabilize_prompt_prefix: false,
     }
 }
 

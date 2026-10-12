@@ -251,7 +251,7 @@ async fn web_search_history_proxy_declares_only_for_standard_responses() {
             );
             assert!(headers.starts_with(&format!("POST {path} HTTP/1.1")));
         } else {
-            let expected = responses_to_chat_completions_with_options(request, false).unwrap();
+            let expected = responses_to_chat_completions_with_options(request, false, false).unwrap();
             assert_eq!(sent, expected, "Chat conversion must remain unchanged");
             assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
         }
@@ -395,6 +395,7 @@ fn chat_conversion_rejects_encrypted_agent_content_without_echoing_payload() {
             let error = responses_to_chat_completions_with_options(
                 json!({"model":"custom-model","input":input}),
                 standard,
+                false,
             )
             .expect_err("加密 agent 内容必须明确拒绝，不能静默丢弃或视为明文");
             let diagnostic = format!("{error:#}");
@@ -1822,10 +1823,10 @@ fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
 fn kimi_k3_standard_protocol_avoids_adaptive_and_preserves_opt_in_vendor_behavior() {
     for model in ["kimi-k3", "k3-256k"] {
         let request = json!({"model":model,"reasoning":{"effort":"xhigh"},"input":"hello"});
-        let standard = responses_to_chat_completions_with_options(request.clone(), true).unwrap();
+        let standard = responses_to_chat_completions_with_options(request.clone(), true, false).unwrap();
         assert!(standard.get("thinking").is_none());
         assert!(standard.get("reasoning_effort").is_none());
-        let vendor = responses_to_chat_completions_with_options(request, false).unwrap();
+        let vendor = responses_to_chat_completions_with_options(request, false, false).unwrap();
         assert_eq!(vendor["thinking"]["type"], "adaptive");
         assert_eq!(vendor["reasoning_effort"], "max");
         assert_eq!(standard["messages"], vendor["messages"]);
@@ -1845,6 +1846,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(minimax.get("reasoning_split").is_none());
@@ -1859,6 +1861,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(glm.get("thinking").is_none());
@@ -1871,6 +1874,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(qwen.get("enable_thinking").is_none());
@@ -1883,6 +1887,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert!(openrouter.get("reasoning").is_none());
@@ -1896,6 +1901,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert_eq!(deepseek["reasoning_effort"], "xhigh");
@@ -1908,6 +1914,7 @@ fn responses_request_standard_protocol_strips_vendor_reasoning_dialects() {
             "input": "hi"
         }),
         true,
+        false,
     )
     .unwrap();
     assert_eq!(gpt5["reasoning_effort"], "high");
@@ -7030,4 +7037,800 @@ async fn native_compaction_preserves_protocol_and_opaque_state() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 「prompt 前缀稳定层」（mediafix4）测试。
+// 变换为 opt-in（RelayProfile.stabilize_prompt_prefix，默认关=转发行为逐字节
+// 不变）；开启时剥离 image_resize_notice、system 头部块进入规范序。
+// ---------------------------------------------------------------------------
+
+fn injection_block(name: &str, body: &str) -> String {
+    format!("<{name}>\n{body}\n</{name}>")
+}
+
+fn resize_notice_block(body: &str) -> String {
+    injection_block("image_resize_notice", body)
+}
+
+fn developer_messages(chunks: &[String]) -> Vec<Value> {
+    chunks
+        .iter()
+        .map(|chunk| {
+            json!({
+                "type": "message",
+                "role": "developer",
+                "content": [{ "type": "input_text", "text": chunk }],
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn prefix_stabilizer_strips_resize_notice_from_every_role_and_leaves_no_empty_message() {
+    let notice = resize_notice_block(
+        "Image 1 of 1 in the preceding user message was resized from 1206x2622 to 942x2048 pixels.",
+    );
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "root system",
+        "input": [
+            { "type": "message", "role": "user", "content": "first" },
+            // 纯 notice 的 system（developer）消息：应整条删除，不能折叠成空 system
+            { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": notice.clone() }] },
+            { "type": "function_call", "call_id": "call_a", "name": "shell", "arguments": "{}" },
+            { "type": "function_call_output", "call_id": "call_a", "output": "done" },
+            // 夹心在 tool 结果之间的 user 消息：删除 notice 后仅保留前后文本
+            { "type": "message", "role": "user", "content": format!("prelude\n{notice}\ncoda") },
+            // 非成对残片（开始标签+上半残体 / 下半残体+结束标签）：应连同残片整体移除
+            { "type": "message", "role": "user", "content": "<image_resize_notice>\nbody fragment 1206x2622 upper" },
+            { "type": "message", "role": "user", "content": "lower half 942x2048 pixels\n</image_resize_notice>" },
+        ],
+    });
+
+    let stabilized = responses_to_chat_completions_with_options(body.clone(), false, true).unwrap();
+    let rendered = serde_json::to_string(&stabilized["messages"]).unwrap();
+    assert!(
+        !rendered.contains("resized from 1206x2622"),
+        "完整 notice 块必须被剥离：{rendered}"
+    );
+
+    let messages = stabilized["messages"].as_array().unwrap();
+    let system_messages: Vec<&Value> = messages
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .collect();
+    assert_eq!(
+        system_messages.len(),
+        1,
+        "纯 notice 的 system 消息应被整条删除，头部只留非空 system：{rendered}"
+    );
+    assert_eq!(system_messages[0]["content"], "root system");
+
+    for message in messages.iter() {
+        let blank = match &message["content"] {
+            // 带 tool_calls/reasoning 的骨架消息 content 为空是既有正常形态
+            Value::String(text) => {
+                text.trim().is_empty()
+                    && message.get("tool_calls").is_none()
+                    && message.get("reasoning_content").is_none()
+            },
+            Value::Array(parts) => parts.is_empty(),
+            _ => false,
+        };
+        assert!(!blank, "剥离后不得留下空消息：{message}");
+    }
+
+    let mixed = messages
+        .iter()
+        .find(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("prelude"))
+        })
+        .expect("夹心 user 消息应保留 notice 前后的文本");
+    // 夹心轮是请求末轮时会带轮次标记，标记外的正文必须完整保留。
+    assert_eq!(
+        mixed["content"],
+        "<current_user_turn>\nprelude\n\ncoda\n</current_user_turn>\n"
+    );
+
+    let joined = messages
+        .iter()
+        .map(|message| message["content"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("|");
+    assert!(
+        !joined.contains("image_resize_notice"),
+        "孤儿标签不得出现在任何消息里：{joined}"
+    );
+    assert!(
+        !joined.contains("body fragment 1206x2622 upper") && !joined.contains("lower half 942x2048 pixels"),
+        "残片正文必须随孤儿标签一并移除：{joined}"
+    );
+
+    // 开关关闭时 notice 原样保留、位于原位（即与现行为一致）
+    let plain = responses_to_chat_completions_with_options(body, false, false).unwrap();
+    let plain_rendered = serde_json::to_string(&plain["messages"]).unwrap();
+    assert!(
+        plain_rendered.contains("resized from 1206x2622 to 942x2048 pixels."),
+        "默认关闭时必须保留 notice 原文：{plain_rendered}"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_orders_system_blocks_identically_for_any_arrival_order() {
+    let apps = injection_block("apps_instructions", "apps body");
+    let collab = injection_block("collaboration_mode", "collab body");
+    let multi = injection_block("multi_agent_mode", "multi body");
+    let fresh = injection_block("fresh_unknown_block", "fresh body");
+
+    let make_body = |chunks: Vec<String>| {
+        json!({
+            "model": "MiniMax-M2.7",
+            "instructions": "core instructions text",
+            "input": developer_messages(&chunks),
+        })
+    };
+
+    let first = make_body(vec![multi.clone(), collab.clone(), apps.clone(), fresh.clone()]);
+    // 第二种变体：换到达顺序，并跨消息拆分/合并，改变块的到达边界
+    let second = make_body(vec![format!("{apps}\n\n{fresh}"), multi.clone(), collab.clone()]);
+
+    let a = responses_to_chat_completions_with_options(first.clone(), false, true).unwrap();
+    let b = responses_to_chat_completions_with_options(second, false, true).unwrap();
+    assert_eq!(
+        serde_json::to_string(&a["messages"]).unwrap(),
+        serde_json::to_string(&b["messages"]).unwrap(),
+        "同块集合任意到达顺序，变换输出必须逐字节相等"
+    );
+    // 规范序：普通文本段在前（到达序），具名块按块名字典序钉在块尾
+    let expected = format!("core instructions text\n\n{apps}\n\n{collab}\n\n{fresh}\n\n{multi}");
+    assert_eq!(a["messages"][0]["content"].as_str().unwrap(), expected);
+
+    // 旧行为（关闭开关）严格按到达序拼接，块随插入位置轮轮平移
+    let old = responses_to_chat_completions_with_options(first.clone(), false, false).unwrap();
+    let old_expected = format!("core instructions text\n\n{multi}\n\n{collab}\n\n{apps}\n\n{fresh}");
+    assert_eq!(old["messages"][0]["content"].as_str().unwrap(), old_expected);
+    let old_shuffled =
+        responses_to_chat_completions_with_options(make_body(vec![apps, multi, collab, fresh]), false, false)
+            .unwrap();
+    assert_ne!(
+        old["messages"][0], old_shuffled["messages"][0],
+        "关闭开关时输出必须对到达顺序敏感（反证稳定层生效）"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_transformation_is_idempotent() {
+    let apps = injection_block("apps_instructions", "apps body");
+    let collab = injection_block("collaboration_mode", "collab body");
+    let notice = resize_notice_block("resized from 100x200 to 50x100 pixels.");
+    let chunks = vec![collab.clone(), format!("{notice}\n\n{apps}")];
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": developer_messages(&chunks),
+    });
+
+    let first = responses_to_chat_completions_with_options(body.clone(), false, true).unwrap();
+    let system_once = first["messages"][0]["content"].as_str().unwrap();
+    // 规范序：core 在前，之后按块名字典序
+    assert_eq!(system_once, format!("core\n\n{apps}\n\n{collab}"));
+
+    // 幂等：把第一轮输出当新一轮输入再变换，逐字节不变
+    let mut round2 = body.clone();
+    round2["instructions"] = json!(system_once);
+    round2["input"] = json!([]);
+    let second = responses_to_chat_completions_with_options(round2, false, true).unwrap();
+    assert_eq!(second["messages"][0]["content"].as_str().unwrap(), system_once);
+}
+
+#[test]
+fn prefix_stabilizer_disabled_output_matches_snapshot_and_wrapper_defaults() {
+    // 「默认关」快照：开关关闭时的转发 messages 逐字节快照。
+    // 该快照固化了现行为（notice 原文保留、developer 注入块按到达序平移插入、
+    // tool_call 规范化形态），稳定层若意外改变关闭路径会立刻打破快照。
+    let notice = resize_notice_block("resized from 1206x2622 to 942x2048 pixels.");
+    let collab = injection_block("collaboration_mode", "mode body");
+    let mut input = vec![
+        json!({ "type": "message", "role": "user", "content": "hello" }),
+        json!({ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "hi" }] }),
+        json!({ "type": "function_call", "call_id": "call_a", "name": "shell", "arguments": "{}" }),
+        json!({ "type": "function_call_output", "call_id": "call_a", "output": "done" }),
+        json!({ "type": "message", "role": "user", "content": format!("pre\n{notice}\npost") }),
+    ];
+    // developer 注入块插在 tool 结果之后：固化夹心形态在关闭路径下的现状
+    input.extend(developer_messages(&[collab]));
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "root system",
+        "input": input,
+    });
+    let snapshot = r#"[{"content":"root system\n\n<collaboration_mode>\nmode body\n</collaboration_mode>","role":"system"},{"content":"hello","role":"user"},{"content":"hi","role":"assistant","tool_calls":[{"function":{"arguments":"{}","name":"shell"},"id":"call_a","type":"function"}]},{"content":"done","role":"tool","tool_call_id":"call_a"},{"content":"pre\n<image_resize_notice>\nresized from 1206x2622 to 942x2048 pixels.\n</image_resize_notice>\npost","role":"user"}]"#;
+    let disabled = responses_to_chat_completions_with_options(body.clone(), false, false).unwrap();
+    let rendered = serde_json::to_string(&disabled["messages"]).unwrap();
+    assert_eq!(rendered, snapshot, "关闭开关的输出与快照不再一致（现行为被改变）");
+
+    // 公开入口（等价于现网默认路径）与显式关闭必须完全一致
+    let wrapper = responses_to_chat_completions(body).unwrap();
+    assert_eq!(
+        serde_json::to_string(&wrapper["messages"]).unwrap(),
+        rendered,
+        "默认入口与显式关闭输出必须逐字节一致"
+    );
+}
+
+#[tokio::test]
+async fn prefix_stabilizer_setting_flows_from_profile_to_upstream_body() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let response = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 43\r\n\r\n{\"id\":\"r1\",\"object\":\"response\",\"output\":[]}";
+    let make_settings = |stabilize: bool, upstream: String| BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "relay-stab".to_string(),
+            name: "Stab".to_string(),
+            base_url: upstream.clone(),
+            upstream_base_url: upstream,
+            protocol: RelayProtocol::ChatCompletions,
+            relay_mode: RelayMode::PureApi,
+            no_auth: true,
+            stabilize_prompt_prefix: stabilize,
+            ..RelayProfile::default()
+        }],
+        active_relay_id: "relay-stab".to_string(),
+        ..BackendSettings::default()
+    };
+    let request = json!({
+        "model": "test-model",
+        "instructions": "core",
+        "input": developer_messages(&[
+            resize_notice_block("resized on"),
+            injection_block("collaboration_mode", "mode body"),
+        ]),
+    })
+    .to_string();
+
+    let on = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let on_addr = on.local_addr().unwrap();
+    let off = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let off_addr = off.local_addr().unwrap();
+    let on_server = tokio::spawn(capture_request_and_respond_once(on, response));
+    let off_server = tokio::spawn(capture_request_and_respond_once(off, response));
+
+    let on_result = open_responses_proxy_request_with_settings(
+        &request,
+        make_settings(true, format!("http://{on_addr}/v1")),
+    )
+    .await
+    .unwrap();
+    on_result.response.expect("上游响应").bytes().await.unwrap();
+    let off_result = open_responses_proxy_request_with_settings(
+        &request,
+        make_settings(false, format!("http://{off_addr}/v1")),
+    )
+    .await
+    .unwrap();
+    off_result.response.expect("上游响应").bytes().await.unwrap();
+
+    let on_raw = on_server.await.unwrap();
+    let off_raw = off_server.await.unwrap();
+    assert!(
+        !on_raw.contains("image_resize_notice"),
+        "开关开启时发往上游的 body 不得含 notice：{on_raw}"
+    );
+    assert!(on_raw.contains("collaboration_mode"), "具名注入块必须保留：{on_raw}");
+    assert!(
+        off_raw.contains("image_resize_notice"),
+        "开关关闭时必须保持现行为（notice 透传）：{off_raw}"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_unpaired_fragments_do_not_diverge_prefix() {
+    // 根因回归：非成对 notice 残片随轮次以不同长度/后缀重写进历史前缀区时，
+    // 两次请求的归一化输出必须逐字节一致，且上游看不到任何残片文本。
+    let open_head = concat!("<", "image_resize_notice", ">\nbody fragment ");
+    let close_tail = concat!("\n</image_resize_notice>");
+    let make_body = |frag: &str, tail: &str| {
+        json!({
+            "model": "MiniMax-M2.7",
+            "instructions": "root system",
+            "input": [
+                { "type": "message", "role": "user", "content": "first" },
+                { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": format!("{frag}{tail}") }] },
+                { "type": "message", "role": "user", "content": format!("next {tail}") },
+            ],
+        })
+    };
+    let a = responses_to_chat_completions_with_options(
+        make_body(&format!("{open_head}1206x2622 upper"), "alpha"),
+        false,
+        true,
+    )
+    .unwrap();
+    let b = responses_to_chat_completions_with_options(
+        make_body(&format!("{open_head}800x600 mid"), "beta"),
+        false,
+        true,
+    )
+    .unwrap();
+    // 公共前缀（system 头部 + 已发生的历史消息）必须逐字节一致；
+    // 当前轮新增的 user 消息允许不同，属预期追加而非分叉。
+    let common_prefix = |v: &serde_json::Value| {
+        let messages = v["messages"].as_array().unwrap();
+        serde_json::to_string(&messages[..messages.len() - 1]).unwrap()
+    };
+    assert_eq!(
+        common_prefix(&a),
+        common_prefix(&b),
+        "非成对残片轮必须与另一残片轮产出逐字节一致的公共前缀"
+    );
+    let rendered = serde_json::to_string(&a["messages"]).unwrap();
+    assert!(!rendered.contains("image_resize_notice"), "上游不得看到残片：{rendered}");
+    assert!(!rendered.contains("1206x2622"), "残片正文不得进入上游：{rendered}");
+    // 残片消息被整体清除后，历史只剩两条 user 消息与头部 system
+    let messages = a["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "残片消息应整条删除：{rendered}");
+    // 另一轮里的 close_tail 孤儿结束标签同样不得泄漏
+    let c = responses_to_chat_completions_with_options(
+        json!({
+            "model": "MiniMax-M2.7",
+            "instructions": "root system",
+            "input": [
+                { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": format!("orphan body{close_tail}") }] },
+                { "type": "message", "role": "user", "content": "keep" },
+            ],
+        }),
+        false,
+        true,
+    )
+    .unwrap();
+    let c_rendered = serde_json::to_string(&c["messages"]).unwrap();
+    assert!(
+        !c_rendered.contains("image_resize_notice") && !c_rendered.contains("orphan body"),
+        "孤儿结束标签轮同样必须归零：{c_rendered}"
+    );
+    assert_eq!(c["messages"].as_array().unwrap().len(), 2, "纯残片 developer 消息应整条删除");
+}
+
+// ---------------------------------------------------------------------------
+// 易变重注入具名块「同名去重、保留最后实例（dedup-last）」测试。
+// 根因（SYS_STEP_FORENSICS.md）：codex 客户端累积重注入
+// codex_apps_client_time_context 时区锚块（单实例 271B，wire 步进 +273B），
+// 历史不去重，每次步进首轮全历史 fork。稳定层在规范序之上做同名折叠，
+// 保留到达序最后一个实例，块体零改写。
+// ---------------------------------------------------------------------------
+
+/// 时区锚块原文：与客户端实际注入逐字节同构（无任何敏感字段）。
+fn time_context_block(date: &str) -> String {
+    format!(
+        "<codex_apps_client_time_context><timezone>Asia/Shanghai</timezone>\n<current_date>{date}</current_date>\nUse this client time context for user-facing dates, times, and schedules instead of the execution host\'s timezone and current date.</codex_apps_client_time_context>"
+    )
+}
+
+/// 走稳定层变换，返回头部 system 消息文本。
+fn stabilized_system(chunks: &[String]) -> String {
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core instructions text",
+        "input": developer_messages(chunks),
+    });
+    let stabilized = responses_to_chat_completions_with_options(body, false, true).unwrap();
+    stabilized["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn prefix_stabilizer_time_context_same_name_instances_collapse_to_one() {
+    let t = time_context_block("2026-10-10");
+    let single = stabilized_system(&[t.clone()]);
+    assert_eq!(single, format!("core instructions text\n\n{t}"), "单实例场景必须原样保留块体");
+    // 同一消息内同名两份：合并后与单实例逐字节相等
+    let twice_same_chunk = stabilized_system(&[format!("{t}\n\n{t}")]);
+    assert_eq!(twice_same_chunk, single, "同一消息内同名实例必须合并为一份且逐字节相等");
+    // 跨消息两份：同样与单实例逐字节相等
+    let twice_two_chunks = stabilized_system(&[t.clone(), t.clone()]);
+    assert_eq!(twice_two_chunks, single, "跨消息同名实例必须合并为一份且逐字节相等");
+}
+
+#[test]
+fn prefix_stabilizer_time_context_keeps_last_arrived_instance() {
+    let d10 = time_context_block("2026-10-10");
+    let d11 = time_context_block("2026-10-11");
+    let out = stabilized_system(&[d10.clone(), d11.clone()]);
+    assert_eq!(
+        out,
+        format!("core instructions text\n\n{d11}"),
+        "同名内容不同时保留到达序最后一份（时间语义取最新），块体零改写"
+    );
+    // 契约以到达序为准：最后一份是旧的则保留旧的（现网到达序即时间序，旧实例恒在前）
+    let out_rev = stabilized_system(&[d11.clone(), d10.clone()]);
+    assert_eq!(out_rev, format!("core instructions text\n\n{d10}"), "dedup-last 以到达序为准");
+}
+
+#[test]
+fn prefix_stabilizer_time_context_permutation_of_same_content_is_stable() {
+    let t = time_context_block("2026-10-10");
+    let apps = injection_block("apps_instructions", "apps body");
+    let collab = injection_block("collaboration_mode", "collab body");
+    let first = stabilized_system(&[t.clone(), collab.clone(), apps.clone(), t.clone()]);
+    let second = stabilized_system(&[format!("{apps}\n\n{t}"), t.clone(), collab.clone()]);
+    assert_eq!(first, second, "同名实例内容全等时，任意到达排列输出必须逐字节一致");
+    assert_eq!(
+        first,
+        format!("core instructions text\n\n{apps}\n\n{t}\n\n{collab}"),
+        "规范序：apps_instructions < codex_apps_client_time_context < collaboration_mode，折叠后保留块区自然位置"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_time_context_dedup_is_idempotent() {
+    let d10 = time_context_block("2026-10-10");
+    let d11 = time_context_block("2026-10-11");
+    // 现网到达序即时间序：旧实例在前、最新在后，折叠保留最新
+    let first = stabilized_system(&[d10.clone(), d10.clone(), d11.clone()]);
+    assert_eq!(first, format!("core instructions text\n\n{d11}"));
+    // 输出再切块再排序：第一轮输出回填 instructions、无新增输入，必须逐字节不变
+    let round2 = json!({ "model": "MiniMax-M2.7", "instructions": first, "input": [] });
+    let second = responses_to_chat_completions_with_options(round2, false, true).unwrap();
+    assert_eq!(
+        second["messages"][0]["content"].as_str().unwrap(),
+        first,
+        "幂等契约被破坏：对输出再变换不再逐字节相等"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_unregistered_repeat_blocks_keep_every_instance() {
+    // 未注册名单的相似块名（前缀相近但不相等）与未知重复块：逐实例保留、零改写
+    let similar_1 = injection_block("codex_apps_client_time_context_extra", "instance one body");
+    let similar_2 = injection_block("codex_apps_client_time_context_extra", "instance two body");
+    let unknown = injection_block("legacy_env_context", "legacy instance");
+    let out = stabilized_system(&[similar_1.clone(), unknown.clone(), similar_2.clone(), unknown.clone()]);
+    assert_eq!(
+        out,
+        format!("core instructions text\n\n{similar_1}\n\n{similar_2}\n\n{unknown}\n\n{unknown}"),
+        "名单外同名块必须逐实例保留且零改写（opt-in 边界不破）"
+    );
+}
+
+// —— turn_aborted 状态块摘除（2026-10-11 探针基线实锤的重启分叉毒源）——
+
+fn turn_aborted_body(with_block: bool) -> Value {
+    let aborted = "<turn_aborted>\nThe previous turn was interrupted on purpose. Any running unified exec processes may still be running in the background.\n</turn_aborted>";
+    let developer = if with_block {
+        format!("tools doc\n\n{aborted}")
+    } else {
+        "tools doc".to_string()
+    };
+    json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core instructions text",
+        "input": [
+            {"role": "developer", "content": developer},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second question"},
+        ],
+    })
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_moved_before_last_user_message() {
+    let out = responses_to_chat_completions_with_options(turn_aborted_body(true), false, true).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let head = messages[0]["content"].as_str().unwrap();
+    assert!(!head.contains("<turn_aborted>"), "system 头部不得残留 turn_aborted 块");
+    let last_user = messages
+        .iter()
+        .rposition(|m| m["role"].as_str() == Some("user"))
+        .expect("必须存在 user 消息");
+    assert_eq!(
+        messages[last_user - 1]["content"].as_str().unwrap(),
+        turn_aborted_body(true)["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .split("\n\n")
+            .nth(1)
+            .unwrap()
+            .trim_end(),
+        "块必须原样搬到最后一条 user 消息之前"
+    );
+    assert_eq!(
+        messages[last_user]["content"].as_str().unwrap(),
+        "<current_user_turn>\nsecond question\n</current_user_turn>\n",
+        "末轮同时带轮次标记（turn_aborted 块仍在标记外、其之前）"
+    );
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_appearance_keeps_system_head_pure_append() {
+    // 核心不变式：块出现与否不得改变 system 头部字节（重启/中断轮不再前缀分叉）
+    let without = responses_to_chat_completions_with_options(turn_aborted_body(false), false, true).unwrap();
+    let with = responses_to_chat_completions_with_options(turn_aborted_body(true), false, true).unwrap();
+    assert_eq!(
+        without["messages"][0]["content"], with["messages"][0]["content"],
+        "turn_aborted 注入/撤除不得扰动 system 头部字节"
+    );
+    // 摘除块后两条消息序列前缀一致（with 仅多出搬移的块，落在瞬态区）
+    let head_without = serde_json::to_string(&without["messages"][0]).unwrap();
+    let head_with = serde_json::to_string(&with["messages"][0]).unwrap();
+    assert_eq!(head_without, head_with);
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_malformed_block_left_untouched() {
+    // 只见开标签的残缺块：保守放弃，system 不动
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core instructions text",
+        "input": [
+            {"role": "developer", "content": "tools doc\n\n<turn_aborted> dangling without close"},
+            {"role": "user", "content": "q"},
+        ],
+    });
+    let out = responses_to_chat_completions_with_options(body, false, true).unwrap();
+    let head = out["messages"][0]["content"].as_str().unwrap();
+    assert!(head.contains("<turn_aborted>"), "残缺块必须原样保留，宁留分叉不腐蚀 system");
+}
+
+#[test]
+fn prefix_stabilizer_turn_aborted_stays_when_stabilizer_disabled() {
+    // opt-in 边界：开关关闭时行为与旧版逐字节一致（块留在 system）
+    let out = responses_to_chat_completions_with_options(turn_aborted_body(true), false, false).unwrap();
+    let rendered = serde_json::to_string(&out["messages"]).unwrap();
+    assert!(rendered.contains("<turn_aborted>"), "关开关不得改动任何字节");
+}
+
+// —— web_search_call 历史回放（多 Agent 会话重复搜索/空 FINAL 的根治）——
+
+fn web_search_input(action: Value) -> Vec<Value> {
+    vec![
+        json!({"role": "user", "content": "帮我调研麦当劳设计语言"}),
+        json!({"type": "web_search_call", "id": "ws_call_1", "status": "completed", "action": action}),
+        json!({"role": "user", "content": "继续"}),
+    ]
+}
+
+#[test]
+fn web_search_call_history_preserves_query_and_sources_when_present() {
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": web_search_input(json!({
+            "type": "search",
+            "query": "mcdonald design language",
+            "sources": [{"url": "https://example.com/a", "title": "A"}]
+        })),
+    });
+    let out = responses_to_chat_completions(body).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let call = messages
+        .iter()
+        .find(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
+        .expect("web_search 调用必须回放为 assistant tool_calls");
+    let fn_name = call["tool_calls"][0]["function"]["name"].as_str().unwrap();
+    assert_eq!(fn_name, "web_search");
+    let args = call["tool_calls"][0]["function"]["arguments"].as_str().unwrap();
+    assert!(args.contains("mcdonald design language"), "query 必须透传给模型");
+    let tool_msg = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("必须回放 tool 结果消息");
+    assert_eq!(tool_msg["tool_call_id"].as_str().unwrap(), "ws_call_1");
+    assert!(tool_msg["content"].as_str().unwrap().contains("example.com"), "sources 必须透传");
+}
+
+#[test]
+fn web_search_call_history_stripped_by_client_informs_model_instead_of_vanishing() {
+    // 2026-10-11 实锤形态：codex 客户端把 query/results 剥离，只留 completed 标记。
+    // 旧行为：整项静默丢弃 → 模型失忆重搜（3 轮 8 次）。新行为：如实告知。
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": web_search_input(json!({"type": "search"})),
+    });
+    let out = responses_to_chat_completions(body).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let tool_msg = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("剥离形态也必须留下回放痕迹，不得整项消失");
+    let text = tool_msg["content"].as_str().unwrap();
+    assert!(text.contains("completed") && text.contains("Do not repeat"), "必须告知状态并劝阻重复搜索");
+    // 配对完整性：tool 消息必须紧跟在带同 id tool_calls 的 assistant 之后
+    let idx_tool = messages.iter().position(|m| m["role"] == "tool").unwrap();
+    let assistant = &messages[idx_tool - 1];
+    assert_eq!(assistant["role"].as_str().unwrap(), "assistant");
+    assert_eq!(assistant["tool_calls"][0]["id"].as_str().unwrap(), "ws_call_1");
+}
+
+#[test]
+fn web_search_call_history_idempotent_second_conversion_stable() {
+    // 同一历史二次请求：回放消息为转换层产物，不进入客户端历史，字节必稳
+    let body = json!({
+        "model": "MiniMax-M2.7",
+        "instructions": "core",
+        "input": web_search_input(json!({"type": "search"})),
+    });
+    let first = serde_json::to_string(&responses_to_chat_completions(body.clone()).unwrap()["messages"]).unwrap();
+    let second = serde_json::to_string(&responses_to_chat_completions(body).unwrap()["messages"]).unwrap();
+    assert_eq!(first, second, "转换层输出必须确定");
+}
+
+// —— 轮次标记（串线根治：上下文重建时旧问题被回放成最新指令）——
+
+fn current_turn_body(last_text: &str) -> Value {
+    json!({
+        "model": "test-model",
+        "instructions": "core",
+        "input": [
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "old stale question from days ago" } ] },
+            { "type": "message", "role": "assistant", "content": [
+                { "type": "output_text", "text": "old answer" } ] },
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": last_text } ] }
+        ]
+    })
+}
+
+#[test]
+fn current_turn_mark_wraps_only_last_user_message() {
+    let out = responses_to_chat_completions_with_options(current_turn_body("answer this now"), false, true).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let users: Vec<&Value> = messages.iter().filter(|m| m["role"] == "assistant" || m["role"] == "user").collect();
+    let first_user = messages.iter().find(|m| m["role"] == "user").unwrap();
+    assert_eq!(
+        first_user["content"].as_str().unwrap(),
+        "old stale question from days ago",
+        "历史 user 消息必须逐字节不变（前缀缓存依赖）"
+    );
+    let last = &messages[users.len() - 1 + messages.iter().filter(|m| m["role"] == "system").count()];
+    let marked = last["content"].as_str().unwrap();
+    assert!(marked.starts_with("<current_user_turn>\n"), "末轮必须带开标签: {marked}");
+    assert!(marked.contains("answer this now"));
+    assert!(marked.ends_with("</current_user_turn>\n"), "末轮必须带闭标签: {marked}");
+}
+
+#[test]
+fn current_turn_mark_idempotent_across_replay() {
+    // 第一轮输出（含标记）作为历史回放 + 新增末轮：第二轮输出里旧轮必须解包回原文，
+    // 且同一历史在两次请求里字节一致。
+    let first = responses_to_chat_completions_with_options(current_turn_body("question one"), false, true).unwrap();
+    let first_messages = first["messages"].as_array().unwrap();
+    let mut replay: Vec<Value> = first_messages
+        .iter()
+        .filter(|m| {
+            let role = m["role"].as_str().unwrap();
+            role == "user" || role == "assistant"
+        })
+        .map(|m| {
+            let content = m["content"].as_str().unwrap();
+            let part_type = if m["role"] == "user" { "input_text" } else { "output_text" };
+            json!({ "type": "message", "role": m["role"], "content": [
+                { "type": part_type, "text": content } ] })
+        })
+        .collect();
+    replay.push(json!({ "type": "message", "role": "user", "content": [
+        { "type": "input_text", "text": "question two" } ] }));
+    let second = responses_to_chat_completions_with_options(
+        json!({ "model": "test-model", "instructions": "core", "input": replay }),
+        false,
+        true,
+    )
+    .unwrap();
+    let second_messages = second["messages"].as_array().unwrap();
+    let old_user = second_messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .next()
+        .unwrap();
+    assert_eq!(
+        old_user["content"].as_str().unwrap(),
+        "old stale question from days ago",
+        "标记解包后历史首轮字节必须回到原始形态"
+    );
+    let marked_users: Vec<&Value> = second_messages
+        .iter()
+        .filter(|m| {
+            m["role"] == "user"
+                && m["content"]
+                    .as_str()
+                    .map(|t| t.contains("<current_user_turn>"))
+                    .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(marked_users.len(), 1, "任意时刻只允许末轮 user 带标记");
+    assert!(marked_users[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("question two"));
+}
+
+#[test]
+fn current_turn_mark_wraps_first_text_part_of_array_content() {
+    // 截图轮：末轮 content 是多段数组（文本+图片），标记只能进首个文本段，图片段不动。
+    let body = json!({
+        "model": "test-model",
+        "instructions": "core",
+        "input": [
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "check this screenshot" },
+                { "type": "input_image", "image_url": "data:image/png;base64,AAAA" } ] }
+        ]
+    });
+    let out = responses_to_chat_completions_with_options(body, false, true).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let last = messages.iter().rev().find(|m| m["role"] == "user").unwrap();
+    let parts = last["content"].as_array().unwrap();
+    assert!(parts[0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("<current_user_turn>\n"));
+    assert_eq!(parts[1]["type"].as_str().unwrap(), "image_url", "图片段不得被动");
+}
+
+#[test]
+fn current_turn_mark_absent_when_stabilizer_off() {
+    // opt-in 语义：开关关闭时转发行为逐字节不变。
+    let out = responses_to_chat_completions(current_turn_body("answer this now")).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let last = messages.iter().rev().find(|m| m["role"] == "user").unwrap();
+    assert_eq!(last["content"].as_str().unwrap(), "answer this now");
+}
+
+#[test]
+fn current_turn_mark_skipped_when_request_ends_with_tool_result() {
+    // 维护者 P1：等待工具结果后的继续请求里，最后一条 user 是历史旧问题；
+    // 无条件回钉会把旧问题误导成「当前问题」。此类请求只解包、不钉定。
+    let body = json!({
+        "input": [
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "the historical question" } ] },
+            { "type": "function_call", "name": "shell", "call_id": "call_p1" },
+            { "type": "function_call_output", "call_id": "call_p1", "output": "tool says ok" }
+        ]
+    });
+    let out = responses_to_chat_completions_with_options(body, false, true).unwrap();
+    let messages = out["messages"].as_array().unwrap();
+    let users: Vec<&Value> = messages.iter().filter(|m| m["role"] == "user").collect();
+    assert_eq!(users.len(), 1);
+    assert_eq!(
+        users[0]["content"].as_str().unwrap(),
+        "the historical question",
+        "非 user 收尾时最后一条 user 必须原文透传，不得回钉轮次标记"
+    );
+    assert!(
+        !out.to_string().contains("<current_user_turn>"),
+        "非 user 收尾的请求不得出现轮次标记"
+    );
+}
+
+#[test]
+fn stabilizer_keeps_chunk_body_whitespace_verbatim() {
+    // 维护者 P2：规范序只规范块间分隔，不得裁剪块体自身首尾空白
+    //（「非易变内容逐字节不变」的 opt-in 契约）。
+    let body = json!({
+        "instructions": "  padded root system  ",
+        "input": [
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "hi" } ] }
+        ]
+    });
+    let out = responses_to_chat_completions_with_options(body, false, true).unwrap();
+    let system = out["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "system")
+        .unwrap();
+    let content = system["content"].as_str().unwrap();
+    assert!(
+        content.starts_with("  padded") && content.ends_with("system  "),
+        "块体首尾空白必须原样透传: {content:?}"
+    );
 }

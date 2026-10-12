@@ -389,12 +389,13 @@ fn input_has_encrypted_agent_content(input: &Value) -> bool {
 }
 
 pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
-    responses_to_chat_completions_with_options(body, false)
+    responses_to_chat_completions_with_options(body, false, false)
 }
 
 pub fn responses_to_chat_completions_with_options(
     mut body: Value,
     standard: bool,
+    stabilize_prompt_prefix: bool,
 ) -> anyhow::Result<Value> {
     remove_unsupported_native_search(&mut body)?;
     expand_local_compaction_history(&mut body);
@@ -426,6 +427,13 @@ pub fn responses_to_chat_completions_with_options(
     if let Some(input) = body.get("input") {
         append_responses_input(input, &mut messages);
     }
+    // 「prompt 前缀稳定层」（opt-in，默认关）：先把轮变的 resize notice 从所有角色
+    // 的文本里剥离，避免它插进历史早段；后面的 collapse 改走规范序拼接。
+    if stabilize_prompt_prefix {
+        strip_image_resize_notice_blocks(&mut messages);
+        // 历史轮附件样板归一（opt-in）：客户端附件轮重写历史样板被归一为常量。
+        normalize_attachment_boilerplate(&mut messages);
+    }
     // 必须在 enforce_tool_call_pairing 之前：配对一旦被错误摘除就无法恢复。
     relocate_interleaved_non_tool_messages(&mut messages);
     enforce_tool_call_pairing(&mut messages);
@@ -438,7 +446,15 @@ pub fn responses_to_chat_completions_with_options(
     normalize_chat_messages(&mut messages);
     let model = body.get("model").and_then(Value::as_str).unwrap_or("");
     normalize_image_data_urls_for_model(&mut messages, model);
-    let messages = collapse_system_messages_to_head(messages);
+    let mut messages = collapse_system_messages_to_head(messages, stabilize_prompt_prefix);
+    if stabilize_prompt_prefix {
+        relocate_turn_aborted_blocks(&mut messages);
+    }
+    if stabilize_prompt_prefix {
+        // 轮次标记：把「本轮要回答的指令」显式钉在最后一条 user 消息上，
+        // 根治上下文重建（切模型/压缩）时旧问题被回放成最新指令的串线问题。
+        mark_current_user_turn(&mut messages);
+    }
     result["messages"] = json!(messages);
     if let Some(value) = body.get("max_output_tokens") {
         if is_openai_o_series(model) {
@@ -2842,6 +2858,20 @@ pub fn ensure_web_search_tool_for_history(request_json: &mut Value) -> bool {
     true
 }
 
+/// 前缀对齐诊断事件（命名沿用 prefix_stabilizer_* 风格）。
+fn log_compaction_align(report: &crate::compaction_align::CompactionAlignReport) {
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.prefix_stabilizer_compaction_appended",
+        json!({
+            "instances": report.instances,
+            "moved": report.moved,
+            "appended": report.appended,
+            "toolsBackfilled": report.tools_backfilled,
+            "skippedMixed": report.skipped_mixed,
+        }),
+    );
+}
+
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     mut request_json: Value,
@@ -2866,17 +2896,63 @@ async fn upstream_request_parts(
         }
     }
     let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
+    if synthetic_compaction && relay.stabilize_prompt_prefix {
+        // 稳定层：压缩轮自带 tools:[]，转换层会丢掉折叠历史 tool 项的 schema，
+        // 全历史重构、前缀全弃。rewrite 已在上方公共块完成且对 ChatCompletions 恒执行
+        // （preserve_native_request 要求 Responses 协议），这里只做 tools 字节回填
+        //（缓存按 prompt_cache_key 取回，与 rewrite 顺序无关）+ 前缀对齐：
+        // 把客户端塞进 system 区的指令复制件搬走。
+        if let Some(tools) = crate::compaction_tools::preserved_tools(&request_json) {
+            request_json["tools"] = tools;
+        }
+        if let Some((aligned, report)) =
+            crate::compaction_align::align_compaction_request(&request_json)
+        {
+            log_compaction_align(&report);
+            request_json = aligned;
+        }
+    } else if relay.stabilize_prompt_prefix {
+        // 514-msg 流式压缩路径（codex++ 自动压缩）：既不走 /responses/compact
+        // 也不带 compaction_trigger，compact 判定落空；由前缀对齐按指令签名检出，
+        // 做「末尾唯一 user 指令 + tools 字节回填」。检出即跳过 remember_tools，
+        // 杜绝把压缩轮的 tools=[] 毒化进回填缓存；未检出才是普通轮，照常记录。
+        let aligned = if relay.protocol == RelayProtocol::ChatCompletions {
+            crate::compaction_align::align_compaction_request(&request_json)
+        } else {
+            None
+        };
+        match aligned {
+            Some((aligned, report)) => {
+                log_compaction_align(&report);
+                request_json = aligned;
+            }
+            None => crate::compaction_tools::remember_tools(&request_json),
+        }
+    }
     if let Some(model) = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         request_json["model"] = json!(model);
     }
+    // 探针用 key 需在 request_json 被转换层 move 之前取出。
+    let probe_key = if relay.protocol == RelayProtocol::ChatCompletions
+        && relay.stabilize_prompt_prefix
+        && !compact
+    {
+        request_json
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    } else {
+        None
+    };
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
             relay.standard_openai_protocol,
+            relay.stabilize_prompt_prefix,
         )?,
     };
     if relay.protocol == RelayProtocol::Responses {
@@ -2890,6 +2966,28 @@ async fn upstream_request_parts(
             );
         }
         normalize_responses_item_ids(&mut body);
+    }
+
+    // 前缀分叉探针（opt-in）：普通轮观察「system 块序列 + tools」前缀，
+    // 字节突变即 dump 分叉点（重启首轮重放取证用）；压缩轮前缀本就有意
+    // 重写，跳过观察以免噪声。
+    if relay.protocol == RelayProtocol::ChatCompletions && relay.stabilize_prompt_prefix && !compact {
+        if let Some(report) = crate::prefix_divergence::observe(probe_key.as_deref(), &body) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                if matches!(report.kind, crate::prefix_divergence::DivergenceKind::Baseline) {
+                    "protocol_proxy.prefix_stabilizer_prefix_baseline"
+                } else {
+                    "protocol_proxy.prefix_stabilizer_prefix_divergence"
+                },
+                json!({
+                    "oldLen": report.old_len,
+                    "newLen": report.new_len,
+                    "firstDiff": report.first_diff,
+                    "oldSnip": report.old_snip,
+                    "newSnip": report.new_snip,
+                }),
+            );
+        }
     }
 
     // Image handling (per-model): send-as-is / strip / VLM analysis
@@ -4516,6 +4614,43 @@ fn append_responses_item(
                 }
             }));
         }
+        Some("web_search_call") => {
+            // codex 的 web_search 由客户端执行，item 是「调用+结果」合体形态。
+            // 此前该 item 没有 content 字段，回放时整项被 `_` 兜底静默丢弃：
+            // 模型既看不到自己搜过、也看不到结果，导致重复搜索与轮次失联
+            // （2026-10-11 多 Agent 会话实锤：3 轮 8 次重复搜索、两轮空 FINAL）。
+            // 回放为 assistant 调用 + tool 结果消息：query/sources 存在则透传，
+            // 被客户端剥离时如实告知状态，杜绝模型失忆重搜。
+            let call_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            if call_id.is_empty() {
+                return;
+            }
+            let action = item.get("action").cloned().unwrap_or_else(|| json!({}));
+            let query = action
+                .get("query")
+                .and_then(Value::as_str)
+                .or_else(|| action.get("input").and_then(Value::as_str))
+                .unwrap_or("");
+            let arguments = serde_json::to_string(&json!({ "input": query }))
+                .unwrap_or_else(|_| "{\"input\":\"\"}".to_string());
+            seen_tool_call_ids.insert(call_id.to_string());
+            pending_tool_calls.push(json!({
+                "id": call_id,
+                "type": "function",
+                "function": { "name": "web_search", "arguments": arguments }
+            }));
+            flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
+            let status = item.get("status").and_then(Value::as_str).unwrap_or("completed");
+            let content = match action.get("sources").or_else(|| action.get("results")) {
+                Some(sources) if !sources.is_null() => {
+                    serde_json::to_string(sources).unwrap_or_else(|_| format!("Web search ({status}) results: {sources}"))
+                }
+                _ => format!(
+                    "Web search ({status}) was performed; its query and results were not preserved in this history. Do not repeat it; continue with the available context."
+                ),
+            };
+            messages.push(json!({ "role": "tool", "tool_call_id": call_id, "content": content }));
+        }
         Some("tool_search_call") => {
             // Codex 的 tool_search 是客户端执行的代理工具，历史回放时按
             // function tool_call 形态映射进 chat 消息流。
@@ -5044,7 +5179,758 @@ fn system_message_text(content: Option<&Value>) -> String {
     }
 }
 
-fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
+/// 「prompt 前缀稳定层」（mediafix4）易变注入块名单。
+///
+/// 取证（MEDIAFIX3_TURN_BOUNDARY.md 第五节）确认：下列块随会话状态整段出现/消失，
+/// 到达顺序轮轮漂移——混进折叠后的 system 头部块后，上游 token 前缀会在块区分叉，
+/// 导致每轮全量重算。排序时把它们钉在块尾（按名字典序），保证新出现的注入块
+/// 永远追加在 system 区最尾，历史前缀不被平移。
+/// 名单保守：只收取证确认轮变的块；其余具名块（如 AGENTS、skills_instructions）
+/// 不参与重排，一旦出现即保持到达位置。
+/// `image_resize_notice` 已被剥离步骤删尽，保留在名单中仅作为非成对残留路径的兜底。
+const VOLATILE_INJECTION_BLOCK_NAMES: &[&str] = &[
+    "apps_instructions",
+    "collaboration_mode",
+    "image_resize_notice",
+    "multi_agent_mode",
+    "recommended_plugins",
+];
+
+const IMAGE_RESIZE_NOTICE_OPEN: &str = "<image_resize_notice>";
+const IMAGE_RESIZE_NOTICE_CLOSE: &str = "</image_resize_notice>";
+
+/// 从所有角色（system/user/tool，developer 此前已映射为 system）的消息文本中
+/// 剥离 `<image_resize_notice>…</image_resize_notice>` 块及其残片。
+///
+/// 消息被块整体消耗时整条删除（不留空消息）；非成对残留（孤儿标签连同其
+/// 残片）一并移除并记 debug 日志——残片属易变内容，按普通文本留在前缀里
+/// 会让后续轮次的前缀字节级分叉。
+/// 变换幂等：第二次运行零命中，不会改写已清洁的消息。
+fn strip_image_resize_notice_blocks(messages: &mut Vec<Value>) {
+    let mut unpaired = false;
+    messages.retain_mut(|message| {
+        // 带 tool_calls 的结构消息不允许因剥离被删（会破坏配对协议）。
+        let has_tool_calls = message.get("tool_calls").is_some();
+        let Some(content) = message.get_mut("content") else {
+            return true;
+        };
+        match content {
+            Value::String(text) => {
+                let (cleaned, removed, has_unpaired) = strip_notice_blocks_in_text(text);
+                unpaired = unpaired || has_unpaired;
+                if !removed {
+                    return true;
+                }
+                *text = cleaned;
+                // retain 返回 false 才整条删除：无结构负载的纯 notice 消息删除；
+                // 带 tool_calls 的骨架消息保留，内容已清空。
+                !text.is_empty() || has_tool_calls
+            }
+            Value::Array(parts) => {
+                let mut removed_any = false;
+                for part in parts.iter_mut() {
+                    // 只处理带 text 字段的 part；image_url 等形态不受影响。
+                    let Some(Value::String(text)) = part.get_mut("text") else {
+                        continue;
+                    };
+                    let (cleaned, removed, has_unpaired) = strip_notice_blocks_in_text(text);
+                    unpaired = unpaired || has_unpaired;
+                    if !removed {
+                        continue;
+                    }
+                    removed_any = true;
+                    *text = cleaned;
+                }
+                if !removed_any {
+                    return true;
+                }
+                parts.retain(|part| match part.get("text") {
+                    Some(Value::String(text)) => !text.is_empty(),
+                    _ => true,
+                });
+                if parts.is_empty() && !has_tool_calls {
+                    return false;
+                }
+                true
+            }
+            _ => true,
+        }
+    });
+    if unpaired {
+        // 非成对残片已随本步骤归零；只记 debug 日志，不影响转发。
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.prefix_stabilizer_unpaired_notice_stripped",
+            json!({
+                "note": "存在非成对的 image_resize_notice 标记，孤儿标签连同残片已按契约移除",
+                "volatileBlocks": VOLATILE_INJECTION_BLOCK_NAMES,
+            }),
+        );
+    }
+}
+
+/// 从单段文本剥离 notice 相关内容，返回（清洁后文本, 是否删除过内容, 是否存在非成对标记）。
+///
+/// 三态契约（前缀字节级稳定优先于残片原文保全，仅在 opt-in 开关开启时生效）：
+/// - 完整块（开始标签后随结束标签）：整块删除；
+/// - 孤儿结束标签（先于任何开始标签出现）：文本段开头到该标签（含）视为残片，整体删除；
+/// - 孤儿开始标签（其后无配对结束标签）：该标签（含）到文本段结尾视为残片，整体删除。
+/// 上游客户端把 notice 以整块或「开始标签+上半残体」「下半残体+结束标签」的跨字段
+/// 拆分形态注入历史早段，且轮轮重写；残片只要进入前缀就必然漂移。删除范围只由
+/// 标签位置决定、与内容无关，因此变换确定且幂等。前提：轮变内容只出现在 notice
+/// 标签内部；若客户端日后把用户原文并入残片，删除会一并吞掉该部分，属契约内代价。
+/// 未删除任何内容时返回的清洁文本无意义，调用方凭 removed=false 保持原文逐字节不变。
+fn strip_notice_blocks_in_text(text: &str) -> (String, bool, bool) {
+    let mut segments: Vec<&str> = Vec::new();
+    let mut rest = text;
+    let mut removed = false;
+    let mut unpaired = false;
+    loop {
+        let open_at = rest.find(IMAGE_RESIZE_NOTICE_OPEN);
+        let close_at = rest.find(IMAGE_RESIZE_NOTICE_CLOSE);
+        let first_is_open = match (open_at, close_at) {
+            (None, None) => {
+                segments.push(rest);
+                break;
+            }
+            (Some(open), Some(close)) if close < open => false,
+            (Some(_), Some(_)) => true,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+        };
+        if first_is_open {
+            let open = open_at.unwrap();
+            match close_at {
+                Some(close) if close > open => {
+                    // 完整块：保留块前文本，跳过块体
+                    removed = true;
+                    segments.push(&rest[..open]);
+                    rest = &rest[close + IMAGE_RESIZE_NOTICE_CLOSE.len()..];
+                }
+                _ => {
+                    // 孤儿开始标签：该标签（含）到文本段结尾整体视为残片删除
+                    unpaired = true;
+                    removed = true;
+                    segments.push(&rest[..open]);
+                    break;
+                }
+            }
+        } else {
+            // 孤儿结束标签（含「结束先于开始」形态）：文本段开头到该标签（含）删除
+            let close = close_at.unwrap();
+            unpaired = true;
+            removed = true;
+            rest = &rest[close + IMAGE_RESIZE_NOTICE_CLOSE.len()..];
+        }
+    }
+    if !removed {
+        return (String::new(), false, unpaired);
+    }
+    // 删块后的空白残迹整理：非空段之间用空行拼接，不留空段。
+    let cleaned = segments
+        .iter()
+        .map(|segment| segment.trim())
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (cleaned, true, unpaired)
+}
+
+/// 把 system 文本切成顶层块序列：（块名, 块体）；块名为 None 表示普通文本段。
+// ———— 图片附件轮「前缀塌陷」根治层（opt-in，随 stabilize_prompt_prefix 生效）————
+//
+// 取证（PREFIX_DRIFT_FORENSICS.md）定案的两个漂移源与对应变换：
+// 1. `normalize_attachment_boilerplate`：客户端在用户图片附件轮**重渲染历史带图
+//    user 消息**，附件样板一次性增长（新增 `Image attachment: true`、
+//    `Distinguish instructions...` 等行）并固化。新旧两种形态都归一为同一常量
+//    占位前缀，客户端的重写被归一层消化，token 前缀不再分叉。
+// 2. open_page 系块内容归一：`codex_apps_open_page_instructions` /
+//    `external_codex_apps_open_page` 块随开页状态重写或重复注入（+273B 形态），
+//    在块区统一替换为常量空体块并去重；裸文本形态先按签名包成具名块。
+// 3. 易变重注入块同名去重：客户端累积重注入 `codex_apps_client_time_context`
+//    等具名锚块（时区块单实例 271B，每实例步进 +273B），同名只保留到达序
+//    最后一个实例（dedup-last），内容零改写，保留块区字典序的自然位置，
+//    不进「内容钉死为常量」的钉尾区。
+// 以上变换都确定、幂等；不含签名/名单块的消息与文本逐字节不变。
+
+/// 内容轮变的具名块名单：块体随会话状态（打开的 Page 等）改写或重复注入，
+/// 归一为常量空体块并同名去重。块名保留在块区（字典序位置不变），只有体被钉死。
+const VOLATILE_CONTENT_BLOCK_NAMES: &[&str] =
+    &["codex_apps_open_page_instructions", "external_codex_apps_open_page"];
+
+/// 易变同名重注入块名单：客户端累积式重注入（时区锚块约每 2 小时一次），
+/// 块体语义有效、零改写；同名只保留到达序**最后一个实例**（时间语义取最新），
+/// 块位置仍由块名字典序决定。实例数 >1 时经诊断日志记一条，供线上核查注入频率。
+const DEDUP_LAST_BLOCK_NAMES: &[&str] = &["codex_apps_client_time_context"];
+
+/// 已知可能以「裸文本段」形态出现的易变注入签名：（行首签名, 包裹用的块名）。
+/// 包裹后进入块区，再被名单归一；只收取证确认过的开头句，保守防误吞。
+const BARE_VOLATILE_INJECTION_SIGNATURES: &[(&str, &str)] = &[
+    (
+        "The codex_apps_open_page_instructions context records",
+        "codex_apps_open_page_instructions",
+    ),
+    (
+        "The codex_apps_open_page context records",
+        "codex_apps_open_page_instructions",
+    ),
+];
+
+/// 把裸文本形态的易变注入段（签名行 + 随后连续非空行 = 一段）包成具名块。
+/// 幂等：包裹后的块体在后续归一中被替换为空体，不再含签名；带标签的原文行
+/// 以 `<` 开头，不会命中行首签名，不会被二次包裹。无签名时借用原文零拷贝。
+fn wrap_bare_volatile_injections(text: &str) -> std::borrow::Cow<'_, str> {
+    if !BARE_VOLATILE_INJECTION_SIGNATURES
+        .iter()
+        .any(|(signature, _)| text.contains(signature))
+    {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some((_, block_name)) = BARE_VOLATILE_INJECTION_SIGNATURES
+            .iter()
+            .find(|(signature, _)| line.trim_start().starts_with(signature))
+        else {
+            out_lines.push(line.to_string());
+            continue;
+        };
+        let mut paragraph = vec![line.to_string()];
+        while let Some(next) = lines.peek() {
+            if next.trim().is_empty() {
+                break;
+            }
+            paragraph.push(lines.next().unwrap_or_default().to_string());
+        }
+        out_lines.push(format!("<{block_name}>\n{}\n</{block_name}>", paragraph.join("\n")));
+    }
+    std::borrow::Cow::Owned(out_lines.join("\n"))
+}
+
+/// 名单块的归一形态：同名块恒为该常量（split 的块体带标签，这里连标签一起重建）。
+fn normalize_volatile_block(name: Option<&str>, block: &str) -> String {
+    match name {
+        // 名单块：块体（含标签）整体替换为常量；同名块排序后内容全等，便于去重。
+        Some(name) if VOLATILE_CONTENT_BLOCK_NAMES.contains(&name) => {
+            format!("<{name}>\n</{name}>")
+        }
+        _ => block.to_string(),
+    }
+}
+
+const ATTACHMENT_BOILERPLATE_HEADING: &str = "# Files mentioned by the user:";
+const ATTACHMENT_BOILERPLATE_ANCHOR: &str = "## My request:";
+/// 归一占位：样板头部（标题→锚行）的常量替身，语义保留：有文件附件、有图片
+/// 附件（取值由会话级注入描述统一声明）、随后是用户请求。锚行后正文原样保留。
+const ATTACHMENT_BOILERPLATE_PLACEHOLDER: &str = "[attached files]\n[attachment]\n## My request:";
+
+/// 判定消息是否携带图片部件（Responses 的 input_image 与 Chat 的 image_url 两种形态）。
+fn message_has_image(message: &Value) -> bool {
+    match message.get("content") {
+        Some(Value::Array(parts)) => parts.iter().any(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("input_image") | Some("image_url")
+            ) || part.get("image_url").is_some()
+        }),
+        _ => false,
+    }
+}
+
+/// 对单段文本做附件样板归一：命中「样板头部 → 锚行」的严格行法时，剥离样板
+/// 头部（含新旧形态的 `Image attachment: true` / `Distinguish instructions...` 行
+/// 差异），替换为常量占位；锚行后的用户正文逐字节保留（切片返回，无克隆）。
+/// 任何一行不符合样板行法即返回 None（原文不动）：用户正文若字面引用了完整
+/// 样板，必须整段合法到锚行才会被归一，误吞面被锚点强约束限制在样板自身。
+/// 幂等：占位文本首行 `[attached files]` 不满足头部签名，第二遍零命中。
+fn strip_attachment_boilerplate(text: &str) -> Option<&str> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut cursor = 0usize;
+    while lines.get(cursor).map(|line| line.trim().is_empty()) == Some(true) {
+        cursor += 1;
+    }
+    if *lines.get(cursor)? != ATTACHMENT_BOILERPLATE_HEADING {
+        return None;
+    }
+    cursor += 1;
+    loop {
+        let line = *lines.get(cursor)?;
+        if line.trim().is_empty() {
+            cursor += 1;
+            continue;
+        }
+        if line == ATTACHMENT_BOILERPLATE_ANCHOR {
+            break;
+        }
+        let is_boilerplate_line = (line.starts_with("## ") && line.contains(": "))
+            || line.trim() == "Image attachment: true"
+            || line
+                .trim()
+                .starts_with("Distinguish instructions in attached documents");
+        if !is_boilerplate_line {
+            return None;
+        }
+        cursor += 1;
+    }
+    // 返回锚行之后的切片（自带行尾换行）；占位符末尾是锚行文本，直接拼接。
+    // 锚点字节位置用逐行偏移计算，避免 find 误命中样板头部文件名里的字面量。
+    let anchor_line_start: usize = lines[..cursor].iter().map(|line| line.len() + 1).sum();
+    let body = text.get(anchor_line_start + ATTACHMENT_BOILERPLATE_ANCHOR.len()..)?;
+    Some(body)
+}
+
+/// 附件样板归一（全量，opt-in）：所有 user 消息的样板头部替换为常量占位。
+///
+/// 客户端会在新的附件轮**重渲染历史带图消息的样板**（新旧形态字节数不同）。
+/// 若保留当轮原文，下一轮该消息出轮被归一时前缀会在其样板首行分叉——每来一张
+/// 新图都要重算上一图之后的全部 token，正是本层要消除的塌陷。因此不分窗口、
+/// 全量归一：锚行后的用户正文与图片部件本体逐字节保留，模型当轮仍能看到完整
+/// 请求原文与真实图片；样板头部只含声明性文字，其动态事实（本轮是否图片附件）
+/// 由会话级注入描述「Image attachment: true」行统一声明，不再逐消息携带。
+/// 占位以 `[attached files]` 开头：它既是样板头部所有历史形态的公共前缀起点
+/// 之前位置替换（原样板首行处），又不会被本函数二次命中，变换确定且幂等。
+fn normalize_attachment_boilerplate(messages: &mut Vec<Value>) {
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(content) = message.get_mut("content") else {
+            continue;
+        };
+        match content {
+            Value::String(text) => {
+                if let Some(body) = strip_attachment_boilerplate(text) {
+                    *text = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{body}");
+                }
+            }
+            Value::Array(parts) => {
+                for part in parts.iter_mut() {
+                    let Some(Value::String(text)) = part.get_mut("text") else {
+                        continue;
+                    };
+                    if let Some(body) = strip_attachment_boilerplate(text) {
+                        *text = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{body}");
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+
+///
+/// 只识别顶层不嵌套的 XML 风格块（标签名以字母开头，仅含字母/数字/下划线/连字符）；
+/// 开始标签出现但后续缺配对结束、或结束标签乱序时，剩余内容整体降级为普通文本段。
+/// 输入不含任何块形态时返回逐字节等于原文的单元素。
+fn split_system_top_level_blocks(text: &str) -> Vec<(Option<&str>, &str)> {
+    let mut blocks: Vec<(Option<&str>, &str)> = Vec::new();
+    let mut plain_start = 0usize;
+    let mut cursor = 0usize;
+    let bytes = text.as_bytes();
+    // 全扫描：任意位置的「<name>…完整闭合…</name>」都视为顶层块（只认首个
+    // 闭合、不处理嵌套）；其余字节一律留在普通文本段，逐字节不变。
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'<' {
+            cursor += 1;
+            continue;
+        }
+        let Some((name, body_start)) = open_tag_at(text, cursor) else {
+            cursor += 1;
+            continue;
+        };
+        // find_close_tag 返回结束标签 `>` 之后的偏移；找不到配对该处按普通文本继续扫
+        let Some(block_end) = find_close_tag(text, body_start, name) else {
+            cursor += 1;
+            continue;
+        };
+        if plain_start < cursor {
+            blocks.push((None, &text[plain_start..cursor]));
+        }
+        blocks.push((Some(name), &text[cursor..block_end]));
+        cursor = block_end;
+        plain_start = block_end;
+    }
+    if blocks.is_empty() {
+        return vec![(None, text)];
+    }
+    if plain_start < text.len() {
+        blocks.push((None, &text[plain_start..]));
+    }
+    blocks
+}
+
+fn is_block_name_char(value: u8) -> bool {
+    value.is_ascii_alphanumeric() || value == b'_' || value == b'-'
+}
+
+/// 识别 at 处的 `<name>`（或 `<name >`）开始标签，返回（块名, 块体起始偏移）。
+/// 块名须以字母开头、仅含字母/数字/下划线/连字符；带属性、自闭合形态一律视为非块，
+/// 保持原文逐字节不变。
+fn open_tag_at(text: &str, at: usize) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    if bytes.get(at) != Some(&b'<') {
+        return None;
+    }
+    let start = at + 1;
+    if !bytes.get(start)?.is_ascii_alphabetic() {
+        return None;
+    }
+    let mut index = start;
+    while index < bytes.len() && is_block_name_char(bytes[index]) {
+        index += 1;
+    }
+    let name_end = index;
+    while matches!(bytes.get(index), Some(b' ') | Some(b'\t')) {
+        index += 1;
+    }
+    if bytes.get(index) != Some(&b'>') {
+        return None;
+    }
+    Some((&text[start..name_end], index + 1))
+}
+
+/// 从 from 起搜索 `</name>`（名前名后允许空白）。
+/// 返回结束标签 `>` 之后的字节偏移；扫到结尾仍无配对则返回 None，调用方据此降级。
+fn find_close_tag(text: &str, from: usize, name: &str) -> Option<usize> {
+    let mut search = from;
+    loop {
+        let found = text.get(search..)?.find("</")? + search;
+        let bytes = text.as_bytes();
+        let mut index = found + 2;
+        while matches!(bytes.get(index), Some(b' ') | Some(b'\t')) {
+            index += 1;
+        }
+        let name_start = index;
+        while index < bytes.len() && is_block_name_char(bytes[index]) {
+            index += 1;
+        }
+        if &text[name_start..index] != name {
+            // 名字不匹配的结束标签或非标签文本：跳过已扫部分继续找
+            search = index.max(found + 2);
+            continue;
+        }
+        while matches!(bytes.get(index), Some(b' ') | Some(b'\t')) {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b'>') {
+            return Some(index + 1);
+        }
+        search = index.max(found + 2);
+    }
+}
+
+/// 块的排序权重：普通文本段取 (0, 空名) 保持到达相对序在前；具名块取 (1, 块名)，
+/// 易变名单与未知名同档，统一按块名字典序钉在块尾。
+/// 名单的语义是「取证确认轮变、靠本层规范序兜底的块」：具名 XML 块无论是否在
+/// 名单内都会被规范重排；名单是取证文档与后续扩展点（新增轮变块只需加名单）。
+fn block_sort_rank(name: Option<&str>) -> (u8, &str) {
+    match name {
+        None => (0, ""),
+        Some(name) => (1, name),
+    }
+}
+
+/// 稳定重排 system 头部块（「prompt 前缀稳定层」的规范序部分）。
+///
+/// 把每个到达 chunk 切成顶层块后按全局规则重排：普通文本段保持到达相对序在前；
+/// 具名块进块区按名字典序（名单内与未知名同档）。排序只依赖块名与到达相对序，
+/// 不依赖到达位置：同一块集合任意排列输入，输出逐字节一致（确定性）；
+/// 对输出再切块再排序，块序列不变（幂等）。
+///
+/// 易变重注入同名块（`DEDUP_LAST_BLOCK_NAMES`）在规范序后做「同名去重、保留
+/// 最后一个实例」：内容全等时仍满足置换不变；内容不同（日期翻转）按到达序
+/// 取最新，属每日至多一次的可控变化。块体逐字节保留客户端原文。
+///
+/// 已知限制（写入产物报告）：文本段按全局到达序在前，若已出现的历史文本段在
+/// 后续轮次整体缺失，其后的文本段会前移导致局部分叉；已定案的轮变源中 notice
+/// 走剥离、其余均为具名块，不受此影响。
+fn order_system_chunks_stably(chunks: &[String]) -> String {
+    // rank 里的块名拷进拥有类型，避免借用生命周期复杂化；排序成本与正确性无关。
+    let mut parts: Vec<((u8, String), String)> = Vec::new();
+    for chunk in chunks {
+        // 裸文本形态的易变注入先包成具名块，再进统一切块与归一。
+        let wrapped = wrap_bare_volatile_injections(chunk);
+        for (name, block) in split_system_top_level_blocks(&wrapped) {
+            // 名单块体归一为常量：内容轮变/重复注入都不再进入 token 前缀。
+            let block = normalize_volatile_block(name, block);
+            let (kind, name_part) = block_sort_rank(name);
+            parts.push(((kind, name_part.to_string()), block));
+        }
+    }
+    // sort_by_key 是稳定排序：rank 相同的块（文本段/重复同名块）保持到达相对序
+    parts.sort_by_key(|part| part.0.clone());
+    // dedup-last 预扫描：统计易变重注入块的实例数；同名块规范序下必然相邻，
+    // 只放行最后一个实例；实例数 >1 记一条诊断事件供线上核查注入频率。
+    let mut dedup_last: Vec<(&str, usize, usize)> = Vec::new();
+    for ((kind, name_part), _) in parts.iter() {
+        if *kind == 1 && DEDUP_LAST_BLOCK_NAMES.contains(&name_part.as_str()) {
+            match dedup_last
+                .iter_mut()
+                .find(|(name, ..)| *name == name_part.as_str())
+            {
+                Some(entry) => entry.1 += 1,
+                None => dedup_last.push((name_part.as_str(), 1, 0)),
+            }
+        }
+    }
+    for (name, instances, _) in dedup_last.iter() {
+        if *instances > 1 {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.prefix_stabilizer_dedup_last_folded",
+                json!({ "blockName": name, "instances": instances }),
+            );
+        }
+    }
+    // 常量块同名去重：只保留第一个，消除重复注入造成的块区平移。
+    let mut constant_seen: Vec<&str> = Vec::new();
+    // 切分结果是否含具名块：决定文本段空白是「块间分隔」（可归一）还是
+    // 「块体本身」（透传），见下方 push 循语义。
+    let has_named_blocks = parts.iter().any(|((kind, _), _)| *kind == 1);
+    let mut out: Vec<&str> = Vec::with_capacity(parts.len());
+    for ((kind, name_part), text) in parts.iter() {
+        if *kind == 1
+            && VOLATILE_CONTENT_BLOCK_NAMES.contains(&name_part.as_str())
+        {
+            if constant_seen.contains(&name_part.as_str()) {
+                continue;
+            }
+            constant_seen.push(name_part.as_str());
+        }
+        if *kind == 1 && DEDUP_LAST_BLOCK_NAMES.contains(&name_part.as_str()) {
+            // 只放行到达序最后一个实例，之前的同名实例折叠；块体本身零改写。
+            if let Some(entry) = dedup_last
+                .iter_mut()
+                .find(|(name, ..)| *name == name_part.as_str())
+            {
+                entry.2 += 1;
+                if entry.2 < entry.1 {
+                    continue;
+                }
+            }
+        }
+        // 块体原文透传（维护者 P2：裁剪块体首尾空白违背「非易变内容逐字节
+        // 不变」的 opt-in 契约）；纯空白块仍跳过，本块只消分隔噪声。
+        // 语义分桶（维护者 P2）：切分结果含具名块时，文本段首尾空白属
+        // 「块间分隔」，归一不伤内容且保幂等；整段只有纯文本时，空白就是
+        // 块体本身，逐字节透传。具名块的尖括号标签同理属结构，两端参与
+        // 分隔归一、标签内内容零改写。
+        let text = if has_named_blocks { text.trim() } else { text };
+        if text.trim().is_empty() {
+            continue;
+        }
+        out.push(text);
+    }
+    out.join("\n\n")
+}
+
+
+/// 「prompt 前缀稳定层」（opt-in）：客户端把 `<turn_aborted>` 状态块注入
+/// system 区尾部（2026-10-11 探针基线实锤：sys 尾部 @50259，重启重放时
+/// 块的出现的/消失让 sys 字节 +223~347B，前缀在历史最前端分叉，重启首轮
+/// 全历史冷算）。块的语义是「紧邻下一轮的一次性提示」，正确归宿是瞬态区：
+/// 这里把它从头部 system 合并文本中摘除，改挂到最后一条 user 消息之前。
+/// 转换产物不进客户端历史，下一轮客户端再注入时再摘，sys 头部字节恒稳，
+/// 前缀恢复纯追加。无块时零改写，与旧行为逐字节一致。
+fn relocate_turn_aborted_blocks(messages: &mut Vec<Value>) {
+    const OPEN: &str = "<turn_aborted>";
+    const CLOSE: &str = "</turn_aborted>";
+    let Some(head) = messages.first_mut() else { return };
+    if head.get("role").and_then(Value::as_str) != Some("system") {
+        return;
+    }
+    let Some(Value::String(content)) = head.get("content") else { return };
+    if !content.contains(OPEN) {
+        return;
+    }
+    let content = content.clone();
+    if !content.contains(OPEN) {
+        return;
+    }
+    let mut stripped = String::with_capacity(content.len());
+    let mut blocks: Vec<String> = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(open_rel) = content[cursor..].find(OPEN) {
+        let open = cursor + open_rel;
+        stripped.push_str(&content[cursor..open]);
+        match content[open..].find(CLOSE) {
+            Some(close_rel) => {
+                let end = open + close_rel + CLOSE.len();
+                blocks.push(content[open..end].to_string());
+                cursor = end;
+            }
+            None => {
+                // 残缺块（只见开标签）：整段保守放弃，不改 system。
+                stripped.push_str(&content[open..]);
+                cursor = content.len();
+            }
+        }
+    }
+    if cursor < content.len() {
+        stripped.push_str(&content[cursor..]);
+    }
+    if blocks.is_empty() {
+        return;
+    }
+    // 残缺回退判定：stripped 只剩空白说明块外正文为空，宁留原状。
+    if stripped.trim().is_empty() {
+        return;
+    }
+    if let Some(Value::String(target)) = head.get_mut("content") {
+        *target = stripped.trim_end().to_string();
+    } else {
+        return;
+    }
+    let block_messages: Vec<Value> = blocks
+        .into_iter()
+        .map(|block| json!({ "role": "system", "content": block }))
+        .collect();
+    // 插到最后一条 user 消息之前；没有 user 消息则挂在 system 之后。
+    let insert_at = messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .unwrap_or(1)
+        .max(1);
+    messages.splice(insert_at..insert_at, block_messages);
+}
+
+const CURRENT_TURN_OPEN: &str = "<current_user_turn>";
+const CURRENT_TURN_CLOSE: &str = "</current_user_turn>";
+
+/// 轮次标记（opt-in，随 stabilize_prompt_prefix 生效）：上下文重建（切模型/
+/// 压缩/换手）时，已闭环的旧问题可能被回放成「历史里最后一条指令」，模型无法
+/// 从文本层分辨新旧，于是出现回答几天前旧问题的串线。这里把「本轮要回答的
+/// 指令」显式钉在最后一条 user 消息上：固定文本、无计数，历史里早已解包的
+/// 消息逐字节不变，新增 token 只落在本来就要重算的消息流末尾，不碰前缀缓存。
+fn mark_current_user_turn(messages: &mut Vec<Value>) {
+    // 幂等：历史回放时上一轮的标记会随原文回到请求里，先全量解包再重新钉，
+    // 保证同一历史消息在任意请求里的字节一致（前缀缓存依赖这一点）。
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(Value::as_str) == Some("user") {
+            unwrap_current_turn_mark(message);
+        }
+    }
+    // 只在请求确实以 user 输入收尾时才钉标记（维护者 P1）：等待工具结果后的
+    // 继续请求末尾是 tool/assistant 角色，此时最后一条 user 是历史旧问题，
+    // 钉上会把历史问题误导成「当前问题」。非 user 收尾：解包已完成，直接返回。
+    match messages
+        .last()
+        .and_then(|message| message.get("role").and_then(Value::as_str))
+    {
+        Some("user") => wrap_current_turn_mark(messages.last_mut().unwrap()),
+        _ => return,
+    }
+}
+
+/// 从 user 消息文本里剥离轮次标记。只作用于首轮文本段：包装只会碰首轮文本段，
+/// 解包同样只碰它；中段出现同款文本属构造输入，保守不动。
+fn unwrap_current_turn_mark(message: &mut Value) {
+    match message.get_mut("content") {
+        Some(Value::String(text)) => *text = strip_current_turn_pair(text),
+        Some(Value::Array(parts)) => {
+            let first_index = parts
+                .iter()
+                .position(|part| part.get("type").and_then(Value::as_str) == Some("text"));
+            let Some(first_index) = first_index else { return };
+            let text_count = parts
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .count();
+            let texts: Vec<String> = parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str).map(str::to_string))
+                .collect();
+            // 多 text 段是历史拼接形态（旧轮原文+空行+末轮原文）：先合并再解包，
+            // 保持与单段形态一致的字节语义。
+            let merged = if text_count > 1 {
+                Some(texts.join("\n\n"))
+            } else {
+                texts.first().cloned()
+            };
+            let Some(merged) = merged else { return };
+            let stripped = strip_current_turn_pair(&merged);
+            if let Some(Value::String(text)) = parts[first_index].get_mut("text") {
+                *text = stripped;
+            }
+            if text_count > 1 {
+                let mut seen = 0usize;
+                for part in parts
+                    .iter_mut()
+                    .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                {
+                    seen += 1;
+                    if seen > 1 {
+                        if let Some(Value::String(text)) = part.get_mut("text") {
+                            *text = String::new();
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strip_current_turn_pair(text: &str) -> String {
+    let Some(start) = text.find(CURRENT_TURN_OPEN) else {
+        return text.to_string();
+    };
+    let Some(end_rel) = text[start..].find(CURRENT_TURN_CLOSE) else {
+        return text.to_string();
+    };
+    let inner = &text[start + CURRENT_TURN_OPEN.len()..start + end_rel];
+    let head = text[..start].trim_end_matches('\n');
+    let tail = text[start + end_rel + CURRENT_TURN_CLOSE.len()..].trim_start_matches('\n');
+    format!("{}{}{}", head, inner.trim_start_matches('\n'), tail)
+}
+
+/// 把轮次标记钉进 user 消息的首个文本段；没有文本段（纯图片轮）则在头部新建一段。
+fn wrap_current_turn_mark(message: &mut Value) {
+    let marked = |text: &str| {
+        if text.trim().is_empty() {
+            text.to_string()
+        } else {
+            format!(
+                "{}\n{}\n{}\n",
+                CURRENT_TURN_OPEN,
+                text.trim_end(),
+                CURRENT_TURN_CLOSE
+            )
+        }
+    };
+    match message.get_mut("content") {
+        Some(Value::String(text)) => {
+            let next = marked(text);
+            *text = next;
+        }
+        Some(Value::Array(parts)) => {
+            if let Some(first) = parts
+                .iter_mut()
+                .find(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            {
+                if let Some(Value::String(text)) = first.get_mut("text") {
+                    let next = marked(text);
+                    *text = next;
+                }
+            } else {
+                parts.insert(0, json!({ "type": "text", "text": marked("") }));
+                // marked("") 为空时（无文本段的空轮）不新建，下面回收。
+                if parts
+                    .first()
+                    .and_then(|part| part.get("text").and_then(Value::as_str))
+                    .map(str::is_empty)
+                    .unwrap_or(false)
+                {
+                    parts.remove(0);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collapse_system_messages_to_head(messages: Vec<Value>, stabilize: bool) -> Vec<Value> {
     let mut system_chunks = Vec::new();
     let mut rest = Vec::with_capacity(messages.len());
 
@@ -5061,10 +5947,13 @@ fn collapse_system_messages_to_head(messages: Vec<Value>) -> Vec<Value> {
 
     let mut output = Vec::with_capacity(rest.len() + usize::from(!system_chunks.is_empty()));
     if !system_chunks.is_empty() {
-        output.push(json!({
-            "role": "system",
-            "content": system_chunks.join("\n\n")
-        }));
+        // 前缀稳定层开启时改走规范序拼接；关闭时与历史行为逐字节一致。
+        let content = if stabilize {
+            order_system_chunks_stably(&system_chunks)
+        } else {
+            system_chunks.join("\n\n")
+        };
+        output.push(json!({ "role": "system", "content": content }));
     }
     output.extend(rest);
     output
@@ -7390,6 +8279,7 @@ mod response_compatibility_tests {
                     "model":"gemini-3.8-flash", "input":"hi", "reasoning":{"effort":"high"}
                 }),
                 standard,
+                false,
             )
             .unwrap();
             assert_eq!(body["reasoning_effort"], "high");
@@ -7403,7 +8293,7 @@ mod response_compatibility_tests {
                 .is_none()
         );
         assert_eq!(
-            responses_to_chat_completions_with_options(request, true).unwrap()["reasoning_effort"],
+            responses_to_chat_completions_with_options(request, true, false).unwrap()["reasoning_effort"],
             "high"
         );
     }
@@ -7570,4 +8460,177 @@ mod compaction_probe_body_limit_tests {
             .unwrap_err();
         assert!(error.to_string().contains("上游响应体超过"));
     }
+}
+
+#[cfg(test)]
+mod prefix_stabilizer_tests {
+    use super::*;
+
+    const NOTICE_TEXT: &str =
+        "Image 1 of 1 in the preceding user message was resized from 1206x2622 to 942x2048 pixels.";
+
+    const NOTICE_TEXT_OPEN: &str = "<image_resize_notice>\nImage 1 of 1 in the preceding user message was resized from 1206x2622 to 942x2048 pixels.";
+
+    fn notice() -> String {
+        format!("<image_resize_notice>\n{NOTICE_TEXT}\n</image_resize_notice>")
+    }
+
+    #[test]
+    fn strip_removes_notice_from_string_and_part_content() {
+        let mut messages = vec![
+            json!({ "role": "system", "content": notice() }),
+            json!({ "role": "system", "content": [{ "type": "text", "text": notice() }] }),
+            json!({ "role": "tool", "tool_call_id": "call_a", "content": notice() }),
+            json!({ "role": "user", "content": "keep" }),
+        ];
+        strip_image_resize_notice_blocks(&mut messages);
+        assert_eq!(messages.len(), 1, "整条 notice 消息必须被删除：{messages:?}");
+        assert_eq!(messages[0]["content"], "keep");
+    }
+
+    #[test]
+    fn strip_removes_dangling_markers_and_is_idempotent() {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": format!("pre\n{}\npost\n<image_resize_notice> dangling", notice()),
+        })];
+        strip_image_resize_notice_blocks(&mut messages);
+        let once = messages.clone();
+        strip_image_resize_notice_blocks(&mut messages);
+        assert_eq!(messages, once, "变换必须幂等");
+        let text = messages[0]["content"].as_str().unwrap();
+        assert!(text.contains("pre"));
+        assert!(text.contains("post"));
+        assert!(
+            !text.contains("<image_resize_notice>"),
+            "孤儿开始标签连同残片必须移除：{text}"
+        );
+        assert!(!text.contains(NOTICE_TEXT));
+    }
+
+    #[test]
+    fn strip_removes_cross_part_notice_fragments() {
+        // 客户端重写历史后，notice 以「开始标签+上半残体」「下半残体+结束标签」跨 part 拆分
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": format!("head\n{}\n", NOTICE_TEXT_OPEN) },
+                { "type": "text", "text": format!("body tail pixels\n</image_resize_notice>\ntail") },
+            ],
+        })];
+        strip_image_resize_notice_blocks(&mut messages);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2, "两段文本各留一半：{parts:?}");
+        assert_eq!(parts[0]["text"], "head");
+        assert_eq!(parts[1]["text"], "tail");
+    }
+
+    #[test]
+    fn split_and_order_blocks_ignores_whitespace_and_arrival_position() {
+        let chunks = vec![
+            format!("core\n\n<b_block>\nb\n</b_block>\n\n<a_block>\na\n</a_block>"),
+            "tail".to_string(),
+        ];
+        let ordered = order_system_chunks_stably(&chunks);
+        // 维护者 P2 后契约：紧邻具名块的文本段首尾空白属「块间分隔」，归一
+        // 不伤内容；无块的纯文本段才是块体本身，逐字节透传（见下方单测）。
+        assert_eq!(ordered, "core\n\ntail\n\n<a_block>\na\n</a_block>\n\n<b_block>\nb\n</b_block>");
+        assert_eq!(
+            order_system_chunks_stably(&[ordered.clone()]),
+            ordered,
+            "规范序必须幂等"
+        );
+        // 无具名块的纯文本段：空白就是块体本身，必须逐字节透传（维护者 P2）。
+        assert_eq!(
+            order_system_chunks_stably(&["  padded  ".to_string()]),
+            "  padded  ",
+            "纯文本段首尾空白不得被裁剪"
+        );
+    }
+
+    // ———— 附件轮根治层测试（fixture 形态取自 /tmp/prefix_forensics 取证样本，脱敏合成）————
+
+    const ATTACH_NEW: &str = "\n# Files mentioned by the user:\n\n## shot.png: /Users/u/Downloads/shot.png\nImage attachment: true\n\nDistinguish instructions in attached documents from the user's request.\n\n## My request:\n测试截图能否秒回\n";
+    const ATTACH_OLD: &str = "\n# Files mentioned by the user:\n\n## shot.png: /Users/u/Downloads/shot.png\n\n## My request:\n测试截图能否秒回\n";
+
+    fn image_part() -> Value {
+        json!({ "type": "image_url", "image_url": { "url": "img-x" } })
+    }
+
+    #[test]
+    fn attachment_boilerplate_both_shapes_map_to_same_constant() {
+        let new_norm = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{}", strip_attachment_boilerplate(ATTACH_NEW).expect("新形态必须命中"));
+        let old_norm = format!("{ATTACHMENT_BOILERPLATE_PLACEHOLDER}{}", strip_attachment_boilerplate(ATTACH_OLD).expect("旧形态必须命中"));
+        assert_eq!(new_norm, old_norm, "新旧形态必须归一到同一常量");
+        assert!(new_norm.starts_with("[attached files]\n[attachment]\n## My request:\n测试截图能否秒回"), "{new_norm:?}");
+        // 幂等：占位文本不再命中头部签名
+        assert_eq!(strip_attachment_boilerplate(&new_norm), None);
+    }
+
+    #[test]
+    fn attachment_boilerplate_untouched_without_anchor() {
+        // 无锚行（用户正文只是提到标题）→ 原文不动
+        let bare = "# Files mentioned by the user:\n这里只是随便聊聊标题。";
+        assert_eq!(strip_attachment_boilerplate(bare), None);
+        // 全量归一：当轮与历史轮样板头部都被替换，正文与图片部件保留
+        let mut messages = vec![
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_NEW }] }),
+            json!({ "role": "assistant", "content": "ok" }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_OLD }, image_part()] }),
+        ];
+        normalize_attachment_boilerplate(&mut messages);
+        assert!(messages[0]["content"][0]["text"].as_str().unwrap().starts_with("[attached files]"));
+        assert!(messages[2]["content"][0]["text"].as_str().unwrap().starts_with("[attached files]"));
+        let left = &messages[2]["content"][1];
+        assert_eq!(left, &image_part(), "图片部件必须原样保留");
+    }
+
+    #[test]
+    fn image_part_self_equality_smoke() {
+        // 三步探针：直接 assert / 局部绑定 assert / 原始布尔
+        let a = image_part();
+        let b = image_part().clone();
+        assert_eq!(a, b, "step2 局部绑定");
+        assert_eq!(image_part(), image_part().clone(), "step3 直接调用");
+        assert!(a == b, "step1");
+    }
+
+    #[test]
+    fn attachment_turn_rewrite_divergence_eliminated_end_to_end() {
+        // 门 b：复现 22:46 形态。open_page 声明块此前就在 system 前缀中（null 值），
+        // 塌陷轮块内容被重写（page_id 出值）且历史带图 user 消息的样板被客户端
+        // 重渲染增长（旧形态 → 新形态）。经稳定层后公共前缀必须跨过图片之前的
+        // 全部历史（旧实现分别在样板首行与块体内分叉）。
+        let sys_null = "BASE SYSTEM\n\n<codex_apps_open_page_instructions>The codex_apps_open_page context records the Page. page_id=null</codex_apps_open_page_instructions>";
+        let sys_rewrite = "BASE SYSTEM\n\n<codex_apps_open_page_instructions>The codex_apps_open_page context records the Page. page_id=live-77\nextra volatile line</codex_apps_open_page_instructions>";
+        let mut a_msgs = vec![
+            json!({ "role": "system", "content": sys_null }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_OLD }, image_part()] }),
+            json!({ "role": "assistant", "content": "第一轮答复" }),
+        ];
+        let mut b_msgs = vec![
+            json!({ "role": "system", "content": sys_rewrite }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": ATTACH_NEW }, image_part()] }),
+            json!({ "role": "assistant", "content": "第一轮答复" }),
+            json!({ "role": "user", "content": "新问题" }),
+        ];
+        normalize_attachment_boilerplate(&mut a_msgs);
+        normalize_attachment_boilerplate(&mut b_msgs);
+        let a = collapse_system_messages_to_head(a_msgs, true);
+        let b = collapse_system_messages_to_head(b_msgs, true);
+        let a_json = serde_json::to_string(&a).unwrap();
+        let b_json = serde_json::to_string(&b).unwrap();
+        let common = a_json
+            .bytes()
+            .zip(b_json.bytes())
+            .take_while(|(x, y)| x == y)
+            .count();
+        // a 的全部消息必须完整落在公共前缀内（分叉只允许在 a 的收尾边界之后）
+        let boundary = a_json.rfind("第一轮答复").expect("fixture 缺陷") + "第一轮答复".len();
+        assert!(common >= boundary, "公共前缀 {common} 必须跨过历史图片轮边界 {boundary}（旧版在此分叉）");
+        // 且分叉点必须在图片 data URL 之后
+        let image_at = a_json.find("img-x").expect("fixture 缺陷");
+        assert!(common > image_at, "分叉不得发生在图片之前：common={common}, image_at={image_at}");
+    }
+
 }

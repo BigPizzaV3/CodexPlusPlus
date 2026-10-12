@@ -1912,6 +1912,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            stabilize_prompt_prefix: false,
         }],
         active_relay_id: "relay-chat".to_string(),
         ..BackendSettings::default()

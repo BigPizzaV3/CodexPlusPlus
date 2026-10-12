@@ -122,6 +122,15 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub standard_openai_protocol: bool,
+    /// 「prompt 前缀稳定层」开关：剥离 image_resize_notice、规范化 system
+    /// 头部注入块顺序。默认关=转发行为逐字节不变。
+    /// 前端 UI 暂未接入，设置解析/序列化先保持完整。
+    #[serde(
+        rename = "stabilizePromptPrefix",
+        default,
+        skip_serializing_if = "is_false"
+    )]
+    pub stabilize_prompt_prefix: bool,
     #[serde(
         rename = "webSearchHistoryCompat",
         default,
@@ -266,6 +275,7 @@ impl Default for RelayProfile {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            stabilize_prompt_prefix: false,
         }
     }
 }
@@ -873,6 +883,7 @@ impl BackendSettings {
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
                 web_search_history_compat: false,
+                stabilize_prompt_prefix: false,
             };
         }
 
@@ -930,6 +941,7 @@ impl BackendSettings {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            stabilize_prompt_prefix: false,
         }
     }
 
@@ -4137,6 +4149,35 @@ experimental_bearer_token = "sk-existing""#
             };
             assert_eq!(profile.web_search_history_compat_enabled(), expected);
         }
+
+    }
+
+    #[test]
+    fn relay_profile_stabilize_prompt_prefix_defaults_off_for_legacy_profiles() {
+        // 旧 profile 没有该字段：反序列化后默认关（行为逐字节不变）。
+        let mut enabled = RelayProfile::default();
+        enabled.stabilize_prompt_prefix = true;
+        let mut legacy = serde_json::to_value(&enabled).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("stabilizePromptPrefix");
+        let profile: RelayProfile = serde_json::from_value(legacy).unwrap();
+        assert!(!profile.stabilize_prompt_prefix);
+    }
+
+    #[test]
+    fn relay_profile_stabilize_prompt_prefix_round_trip() {
+        // 关闭时导出不写该字段（与 standardOpenaiProtocol 同一策略）；开启后能完整读回。
+        let value = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(value.get("stabilizePromptPrefix").is_none());
+
+        let mut enabled = RelayProfile::default();
+        enabled.stabilize_prompt_prefix = true;
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["stabilizePromptPrefix"], json!(true));
+        let round_tripped: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(round_tripped.stabilize_prompt_prefix);
     }
     // 自动接管的两个设置字段必须走既有 settings.json 链路持久化：
     // 守护线程在另一个线程里读同一个文件，写不进就等于开关无效。
