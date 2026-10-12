@@ -49,9 +49,16 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | WeChat connection | QR login connects personal WeChat to local Codex sessions; each WeChat contact maps to a separate session, with an allowed-user list |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, API-key dictation, conversation width and scroll restore, service-tier controls, Goals, next-step suggestions, skin management, and image overlay |
 | Development workflow | Project move and thread IDs |
+| Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; running instances are listed together and can be restarted or stopped individually |
 | Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
+
+**Codex multi-launch** starts one isolated Codex instance per provider identity. Each instance keeps its own config, sessions, and user data directory, so a single Responses or Chat Completions provider can run side by side with others without sharing sessions. The running main Codex and multi-launch instances are listed together and can be restarted or stopped individually.
+
+<p align="center">
+  <img src="docs/images/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances with restart and stop actions" width="100%">
+</p>
 
 Enable the optional Codex usage widget under Codex Enhancements → General → Widgets and pets. It includes the original character, modular bubble editor, sound library and waveform trimming, character/image/audio management, edge snapping and alerts. View session and local usage, observed subscription windows and costs estimated from configured prices, or connect provider balance and quota templates. See the [widget guide](docs/whale-widget.md) and [feature verification](docs/whale-parity.md).
 

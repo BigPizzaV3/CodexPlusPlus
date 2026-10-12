@@ -153,6 +153,12 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通
       用量挂件、可更换的桌宠角色、任务状态和预算提醒，搭配皮肤与自定义图片，让界面更有自己的风格。
     </td>
   </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <h3>🧵 Codex 多开</h3>
+      为每个供应商身份启动相互隔离的 Codex 实例：独立配置、会话和用户数据目录，可与其他单一供应商同时运行；运行中的实例集中列出，可单独重启或结束。
+    </td>
+  </tr>
 </table>
 
 另外，微信连接支持扫码连接本机 Codex，每个联系人映射到独立会话，并可配置允许访问的微信用户。
@@ -171,6 +177,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通
 </p>
 
 </details>
+
+### 同一台电脑，多个 Codex 互不打扰
+
+「Codex多开」为每个供应商身份启动相互隔离的 Codex 实例：每个实例使用独立的配置、会话和用户数据目录，可与其它单一 Responses / Chat Completions 供应商同时运行。运行中的主 Codex 与多开实例集中在列表里，可单独重启或结束，不影响彼此会话。
+
+<p align="center">
+  <img src="docs/images/codex-multi-launch.png" alt="Codex 多开：列出运行中的 DeepSeek 与 Zhipu GLM 实例，可单独重启或结束" width="100%">
+</p>
 
 ### 让拓展适应你的工作流
 
