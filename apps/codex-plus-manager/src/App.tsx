@@ -190,6 +190,12 @@ import {
 } from "./dream-skin";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
+import {
+  multiLaunchInstanceLabel as formatMultiLaunchInstanceLabel,
+  multiLaunchInstanceRunning,
+  multiLaunchInstanceStatus,
+  type MultiLaunchInstance,
+} from "./multi-launch-model";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
@@ -267,6 +273,10 @@ type MultiLaunchResult = CommandResult<{
   sqliteHome?: string;
   userDataDir?: string;
   appPath?: string;
+}>;
+
+type MultiLaunchInstancesResult = CommandResult<{
+  instances: MultiLaunchInstance[];
 }>;
 
 type BackendSettings = WhaleBalanceSettings & {
@@ -1205,6 +1215,10 @@ export function App() {
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
   const [multiLaunchPending, setMultiLaunchPending] = useState<string | null>(null);
+  const [multiLaunchInstances, setMultiLaunchInstances] = useState<MultiLaunchInstance[]>([]);
+  const [multiLaunchInstancesLoading, setMultiLaunchInstancesLoading] = useState(false);
+  const [multiLaunchActionPending, setMultiLaunchActionPending] = useState<string | null>(null);
+  const multiLaunchInstancesRequestRef = useRef(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   // 左侧 Agent 切换栏的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
@@ -2049,6 +2063,7 @@ export function App() {
       await refreshEnvConflicts(true);
       await refreshCcsProviders(true);
     }
+    if (next === "multiLaunch") await refreshMultiLaunchInstances(true);
     if (next === "relayEnvironment") await refreshRelayEnvironment(true);
     if (next === "grok") await refreshSettings(true);
     if (next === "sessions") {
@@ -2122,8 +2137,56 @@ export function App() {
         request: { profileId: profile.id },
       }));
       if (result) showNotice(t("Codex多开"), result.message, result.status);
+      await refreshMultiLaunchInstances(true);
     } finally {
       setMultiLaunchPending(null);
+    }
+  };
+
+  const refreshMultiLaunchInstances = async (silent = true) => {
+    if (multiLaunchInstancesRequestRef.current) return null;
+    multiLaunchInstancesRequestRef.current = true;
+    if (!silent) setMultiLaunchInstancesLoading(true);
+    try {
+      const result = await run(() => call<MultiLaunchInstancesResult>("list_codex_multi_instances"));
+      if (result) {
+        setMultiLaunchInstances(Array.isArray(result.instances) ? result.instances.filter(multiLaunchInstanceRunning) : []);
+        if (!silent && !isSuccessStatus(result.status)) showNotice(t("当前运行实例"), result.message, result.status);
+      }
+      return result;
+    } finally {
+      multiLaunchInstancesRequestRef.current = false;
+      if (!silent) setMultiLaunchInstancesLoading(false);
+    }
+  };
+
+  const restartMultiLaunchInstance = async (instance: MultiLaunchInstance) => {
+    if (multiLaunchActionPending) return;
+    setMultiLaunchActionPending(instance.instanceId);
+    try {
+      const result = await run(() => call<MultiLaunchResult>("restart_codex_multi_instance", {
+        request: { instanceId: instance.instanceId },
+      }));
+      if (result) showNotice(t("重启 Codex 实例"), result.message, result.status);
+      await refreshMultiLaunchInstances(true);
+    } finally {
+      setMultiLaunchActionPending(null);
+    }
+  };
+
+  const stopMultiLaunchInstance = async (instance: MultiLaunchInstance) => {
+    if (multiLaunchActionPending) return;
+    const name = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
+    if (!window.confirm(tf("确定结束“{0}”吗？", [name]))) return;
+    setMultiLaunchActionPending(instance.instanceId);
+    try {
+      const result = await run(() => call<CommandResult<{ instanceId?: string }>>("stop_codex_multi_instance", {
+        request: { instanceId: instance.instanceId },
+      }));
+      if (result) showNotice(t("结束 Codex 实例"), result.message, result.status);
+      await refreshMultiLaunchInstances(true);
+    } finally {
+      setMultiLaunchActionPending(null);
     }
   };
 
@@ -3023,6 +3086,21 @@ export function App() {
   }, [route]);
 
   useEffect(() => {
+    if (route !== "multiLaunch") return;
+    let disposed = false;
+    const refresh = () => {
+      if (disposed) return;
+      void refreshMultiLaunchInstances(true);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 3_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [route]);
+
+  useEffect(() => {
     if (route !== "enhance" || !pendingEnhancementSection) return;
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
@@ -3207,6 +3285,12 @@ export function App() {
       launch,
       launchMultiInstance,
       multiLaunchPending,
+      multiLaunchInstances,
+      multiLaunchInstancesLoading,
+      multiLaunchActionPending,
+      refreshMultiLaunchInstances,
+      restartMultiLaunchInstance,
+      stopMultiLaunchInstance,
       restart,
       installEntrypoints,
       uninstallEntrypoints,
@@ -3397,7 +3481,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
@@ -3700,6 +3784,12 @@ type Actions = {
   launch: () => Promise<void>;
   launchMultiInstance: (profile: RelayProfile) => Promise<void>;
   multiLaunchPending: string | null;
+  multiLaunchInstances: MultiLaunchInstance[];
+  multiLaunchInstancesLoading: boolean;
+  multiLaunchActionPending: string | null;
+  refreshMultiLaunchInstances: (silent?: boolean) => Promise<MultiLaunchInstancesResult | null>;
+  restartMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
+  stopMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
   restart: (syncActiveRelay?: boolean) => Promise<boolean>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
@@ -4797,6 +4887,76 @@ function CodexMultiLaunchScreen({
         )}
       />
       <div className="mg-content">
+        <Panel className="relay-management-panel multi-launch-running-panel">
+          <CardHeader>
+            <div className="multi-launch-running-header">
+              <div>
+                <CardTitle>{t("当前运行实例")}</CardTitle>
+                <CardDescription>{t("这里列出主 Codex 和已经启动的多开实例，可单独重启或结束。")}</CardDescription>
+              </div>
+              <Button
+                disabled={actions.multiLaunchInstancesLoading}
+                onClick={() => void actions.refreshMultiLaunchInstances(false)}
+                variant="secondary"
+                size="sm"
+              >
+                <RefreshCw className={`h-4 w-4 ${actions.multiLaunchInstancesLoading ? "animate-spin" : ""}`} />
+                {t("刷新")}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {actions.multiLaunchInstances.length ? (
+              <div className="multi-launch-instance-list">
+                {actions.multiLaunchInstances.map((instance) => {
+                  const status = multiLaunchInstanceStatus(instance);
+                  const running = multiLaunchInstanceRunning(instance);
+                  const pending = actions.multiLaunchActionPending === instance.instanceId;
+                  const label = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
+                  const detail = [
+                    instance.isMain ? t("主进程") : instance.instanceId,
+                    typeof instance.pid === "number" ? `PID ${instance.pid}` : "",
+                    typeof instance.debugPort === "number" ? `CDP ${instance.debugPort}` : "",
+                    typeof instance.helperPort === "number" ? `API ${instance.helperPort}` : "",
+                  ].filter(Boolean).join(" · ");
+                  return (
+                    <div className="multi-launch-instance-card" data-instance-id={instance.instanceId} key={instance.instanceId}>
+                      <span className="relay-index" title={label}>{providerInitial(label)}</span>
+                      <span className="relay-summary">
+                        <strong>{label}</strong>
+                        <small>{detail || t("未提供进程详情")}</small>
+                      </span>
+                      <UiBadge className={`multi-launch-instance-status ${statusClass(status)}`} variant="secondary">{statusLabel(status)}</UiBadge>
+                      <span className="relay-card-actions">
+                        <Button
+                          disabled={pending}
+                          onClick={() => void actions.restartMultiLaunchInstance(instance)}
+                          size="sm"
+                          title={t("重启此 Codex 实例")}
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                          {pending ? t("处理中") : t("重启")}
+                        </Button>
+                        <Button
+                          disabled={!running || pending}
+                          onClick={() => void actions.stopMultiLaunchInstance(instance)}
+                          size="sm"
+                          title={running ? t("结束此 Codex 实例") : t("实例当前未运行")}
+                          variant="secondary"
+                        >
+                          <PowerOff className="h-4 w-4" />
+                          {t("结束")}
+                        </Button>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty">{actions.multiLaunchInstancesLoading ? t("正在读取运行实例…") : t("当前没有已发现的 Codex 实例。")}</div>
+            )}
+          </CardContent>
+        </Panel>
         <Panel className="relay-management-panel">
           <CardHeader>
             <CardTitle>{t("选择供应商身份启动 Codex")}</CardTitle>

@@ -1007,6 +1007,55 @@ body {
   pointer-events: auto;
 }
 
+.multi-launch-running-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.multi-launch-instance-list {
+  display: grid;
+  gap: 8px;
+}
+
+.multi-launch-instance-card {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  padding: 11px 12px;
+}
+
+.multi-launch-instance-card .relay-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.multi-launch-instance-card .multi-launch-instance-status {
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .multi-launch-running-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .multi-launch-instance-card {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .multi-launch-instance-card > .multi-launch-instance-status,
+  .multi-launch-instance-card > .relay-card-actions {
+    grid-column: 2;
+  }
+}
+
 .relay-profile-card:hover .relay-card-actions,
 .relay-profile-card:focus-within .relay-card-actions {
   opacity: 1;
