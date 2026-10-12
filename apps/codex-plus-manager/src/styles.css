@@ -5628,7 +5628,7 @@ input[type="range"]:disabled {
 .relay-model-row {
   display: grid;
   min-width: 0;
-  grid-template-columns: 32px minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(110px, 0.6fr) minmax(180px, 1fr) 40px 40px;
+  grid-template-columns: 32px minmax(190px, 1.7fr) minmax(96px, 0.72fr) minmax(84px, 0.6fr) minmax(150px, 1fr) 40px 40px;
   align-items: center;
   gap: 8px;
   min-height: var(--relay-control-height);
