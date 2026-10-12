@@ -63,6 +63,17 @@
 - 断言读 config.toml 文本，如 `assert!(config.contains("model_catalog_json"))`
 - 改行为要同步改/加对应测试
 
+## 改完即构建启动（硬性要求）
+
+每次改动完成、测试通过后，必须构建并启动本地实例，供用户在应用里实测：
+
+1. 前端 `npm run vite:build`（在 `apps/codex-plus-manager`）
+2. `cargo build --release -p codex-plus-manager`
+3. 把 `target/release/codex-plus-plus` 装入本地 `.app`（如 `dist/local-build-*/Codex++.app/Contents/MacOS/CodexPlusPlus`），
+   `codesign --force --deep --sign - <app>` 后 `open`，确认进程与 `manager.start` 日志正常
+
+不要在只跑完测试就交付；构建启动属于交付的一部分。
+
 ## 提交与合入
 
 - 默认直接提交并合入 `main`。
