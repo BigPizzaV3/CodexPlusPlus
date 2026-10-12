@@ -1926,134 +1926,6 @@ body {
   padding: 14px;
 }
 
-/* 渠道保护默认折叠：details 复用 .relay-config-section 的外观，
-   summary 直接当区块标题用。 */
-details.relay-config-section > summary.relay-config-section-head {
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: center;
-  cursor: pointer;
-  list-style: none;
-}
-
-details.relay-config-section > summary.relay-config-section-head::-webkit-details-marker {
-  display: none;
-}
-
-details.relay-config-section > summary.relay-config-section-head::after {
-  content: "\25BE";
-  flex-shrink: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-  transition: transform var(--motion-fast) var(--motion-ease);
-}
-
-details.relay-config-section[open] > summary.relay-config-section-head::after {
-  transform: rotate(180deg);
-}
-
-details.relay-channel-protection > summary.relay-config-section-head::after {
-  content: none;
-}
-
-details.relay-channel-protection > summary.relay-config-section-head > div:first-child {
-  gap: 6px;
-}
-
-details.relay-channel-protection[open] > summary .relay-advanced-chevron {
-  transform: rotate(0deg);
-}
-
-/* 开关和对应参数放在同一卡片内；关闭开关时仍保留字段的编辑能力。 */
-.relay-channel-protection .relay-protection-body {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  min-width: 0;
-  padding-top: 0;
-}
-
-.relay-protection-option {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-  min-width: 0;
-  border: 1px solid hsl(var(--border) / 0.8);
-  border-radius: var(--radius-md);
-  background: hsl(var(--card) / 0.7);
-  padding: 14px;
-}
-
-.relay-protection-option .relay-protection-toggle,
-.relay-protection-option .relay-protection-toggle:hover {
-  min-height: 24px;
-  gap: 12px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
-  margin: 0;
-  box-shadow: none;
-}
-
-.relay-protection-toggle strong {
-  grid-column: 1;
-  grid-row: 1;
-  min-width: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.5;
-}
-
-.relay-protection-description,
-.relay-protection-note {
-  margin: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.relay-protection-description {
-  margin-top: -5px;
-}
-
-.relay-protection-note {
-  border-top: 1px solid hsl(var(--border) / 0.7);
-  padding-top: 10px;
-}
-
-.relay-protection-option > .field,
-.relay-protection-option .channel-status-editor {
-  min-width: 0;
-}
-
-.relay-protection-option input[type="number"] {
-  width: min(100%, 220px);
-}
-
-.relay-protection-option .channel-status-list {
-  align-items: center;
-  min-height: 0;
-  gap: 6px;
-}
-
-.relay-protection-option .channel-status-list:empty {
-  display: none;
-}
-
-.relay-protection-option .channel-status-chip {
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 4px 9px;
-  font-size: 12px;
-}
-
-.relay-protection-option .channel-status-chip:focus-visible {
-  outline: 2px solid hsl(var(--ring));
-  outline-offset: 2px;
-}
-
 /* 通用配置默认折叠为一行文字：summary 复用 .relay-file-head 的排版，
    展开后才显示提取按钮与编辑器。 */
 details.relay-common-config-panel > summary.relay-common-config-summary {
@@ -7209,12 +7081,6 @@ select {
   }
 }
 
-@container relay-editor (max-width: 700px) {
-  .relay-channel-protection .relay-protection-body {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* 模型表保持「一行一个模型」：字段压缩到最小宽度，容器更窄时横向滚动（见
    .relay-model-row-editor）。只有窄到手机宽度（≤560px）才切换成带字段标签的
    多行卡片布局。 */
@@ -9363,32 +9229,6 @@ select {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   line-height: 1.45;
-}
-
-.channel-status-editor {
-  display: grid;
-  gap: 8px;
-}
-
-.channel-status-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-height: 24px;
-}
-
-.channel-status-chip {
-  border: 1px solid hsl(var(--border));
-  border-radius: 6px;
-  background: hsl(var(--muted));
-  color: hsl(var(--foreground));
-  cursor: pointer;
-  font: inherit;
-  padding: 3px 8px;
-}
-
-.channel-status-chip:hover {
-  border-color: hsl(var(--primary));
 }
 
 .settings-content .stepwise-settings-block {

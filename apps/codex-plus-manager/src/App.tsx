@@ -429,10 +429,6 @@ export type RelayProfile = {
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
   webSearchHistoryCompat: boolean;
-  rateLimitCooldownEnabled: boolean;
-  channelQueueEnabled: boolean;
-  channelRequestsPerMinute: number;
-  cooldownErrorStatuses: number[];
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -1146,10 +1142,6 @@ const defaultSettings: BackendSettings = {
       sub2apiMultiplier: "",
       standardOpenaiProtocol: false,
       webSearchHistoryCompat: false,
-      rateLimitCooldownEnabled: false,
-      channelQueueEnabled: false,
-      channelRequestsPerMinute: 20,
-      cooldownErrorStatuses: [429, 500],
     },
   ],
   relayCommonConfigContents: "",
@@ -8453,7 +8445,6 @@ function RelayProfileEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeImportSlug, builtinMatchSlug, metadataImportTarget, importPrefillSource]);
 
-  const [channelStatusInput, setChannelStatusInput] = useState("");
   const modelSlugOriginsRef = useRef(modelWindowRows.map((row) => row.model.trim()));
   useEffect(() => {
     modelSlugOriginsRef.current = modelWindowRows.map((row) => row.model.trim());
@@ -8501,20 +8492,6 @@ function RelayProfileEditor({
       return;
     }
     updateDraft({ relayMode: "pureApi", officialMixApiKey: false });
-  };
-  const addChannelStatuses = () => {
-    const next = channelStatusInput
-      .split(/[,\s]+/)
-      .map(Number)
-      .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599);
-    if (!next.length) return;
-    updateDraft({
-      cooldownErrorStatuses: normalizeCooldownErrorStatuses([
-        ...profile.cooldownErrorStatuses,
-        ...next,
-      ]),
-    });
-    setChannelStatusInput("");
   };
   const modelRoutes = normalizeRelayModelRoutes(profile.modelRoutes);
   const modelRouteTargets = form.relayProfiles.filter(
@@ -9658,92 +9635,6 @@ function RelayProfileEditor({
         ) : null}
       </div>
       <div className="relay-bottom-options">
-        <RelayFold className="relay-config-section relay-channel-protection" defaultOpen sectionId="channel-protection" title={t("渠道保护")}>
-          <p className="relay-fold-description">
-            {t("仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。")}
-          </p>
-          <div className="relay-protection-body">
-            <section className="relay-protection-option">
-              <label className="switch-row compact relay-protection-toggle">
-                <input
-                  checked={profile.rateLimitCooldownEnabled}
-                  onChange={(event) => updateDraft({ rateLimitCooldownEnabled: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <span><strong>{t("启用错误冷却")}</strong></span>
-                <ToggleVisual />
-              </label>
-              <Field label={t("触发冷却的状态码")}>
-                <div className="channel-status-editor">
-                  <div className="channel-status-list">
-                    {profile.cooldownErrorStatuses.map((status) => (
-                      <button
-                        key={status}
-                        className="channel-status-chip"
-                        onClick={() =>
-                          updateDraft({
-                            cooldownErrorStatuses: profile.cooldownErrorStatuses.filter((item) => item !== status),
-                          })
-                        }
-                        type="button"
-                      >
-                        {status} ×
-                      </button>
-                    ))}
-                  </div>
-                  <Input
-                    aria-label={t("输入状态码后回车")}
-                    inputMode="numeric"
-                    placeholder={t("输入状态码后回车")}
-                    value={channelStatusInput}
-                    onChange={(event) => setChannelStatusInput(event.currentTarget.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        addChannelStatuses();
-                      }
-                    }}
-                  />
-                </div>
-                <p className="field-hint">
-                  {t("默认状态码为 429 和 500；删除某个状态码即可停止该状态触发冷却。")}
-                </p>
-              </Field>
-              <p className="relay-protection-note">
-                {t("命中配置的状态码后，当前供应商暂停请求至少 30 秒并自动继续；最多自动重试 3 次，3 次仍失败则返回错误；上游 Retry-After 更长时优先使用上游时间。")}
-              </p>
-            </section>
-            <section className="relay-protection-option">
-              <label className="switch-row compact relay-protection-toggle">
-                <input
-                  checked={profile.channelQueueEnabled}
-                  onChange={(event) => updateDraft({ channelQueueEnabled: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <span><strong>{t("启用同渠道队列")}</strong></span>
-                <ToggleVisual />
-              </label>
-              <p className="relay-protection-description">
-                {t("当前供应商的请求按顺序发送，并按每分钟上限预留请求次数。")}
-              </p>
-              <Field className="relay-protection-rpm" label={t("每分钟请求数")}>
-                <Input
-                  min={1}
-                  max={10000}
-                  type="number"
-                  value={profile.channelRequestsPerMinute}
-                  disabled={!profile.channelQueueEnabled}
-                  onChange={(event) =>
-                    updateDraft({
-                      channelRequestsPerMinute: clampNumber(Number(event.currentTarget.value), 1, 10000),
-                    })
-                  }
-                />
-                <p className="field-hint">{t("请填入供应商提供的最大RPM；仅在同渠道队列开启时生效，下一条请求会等待上一条完整响应结束。")}</p>
-              </Field>
-            </section>
-          </div>
-        </RelayFold>
         <RelayFold className="relay-advanced-block" defaultOpen sectionId="advanced" title={t("更多选项")}>
           <p className="relay-fold-description">
             {t("包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。")}
@@ -12715,10 +12606,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             sub2apiMultiplier: "",
             standardOpenaiProtocol: false,
             webSearchHistoryCompat: false,
-            rateLimitCooldownEnabled: false,
-            channelQueueEnabled: false,
-            channelRequestsPerMinute: 20,
-            cooldownErrorStatuses: [429, 500],
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
@@ -12772,17 +12659,6 @@ function backendSettingsEqual(left: BackendSettings, right: BackendSettings): bo
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function normalizeCooldownErrorStatuses(value: number[] | undefined): number[] {
-  if (!Array.isArray(value)) return [429, 500];
-  return Array.from(
-    new Set(
-      value
-        .map(Number)
-        .filter((status) => Number.isInteger(status) && status >= 100 && status <= 599),
-    ),
-  ).slice(0, 20);
 }
 
 function normalizeStepwiseGenerationMode(value: StepwiseGenerationMode | undefined): StepwiseGenerationMode {
@@ -12843,10 +12719,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         sub2apiMultiplier: "",
         standardOpenaiProtocol: false,
         webSearchHistoryCompat: false,
-        rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
-        channelQueueEnabled: profile.channelQueueEnabled === true,
-        channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
-        cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
       },
       null,
     );
@@ -12885,10 +12757,6 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
-    rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
-    channelQueueEnabled: profile.channelQueueEnabled === true,
-    channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
-    cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
@@ -13905,10 +13773,6 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     modelRoutes: [],
     standardOpenaiProtocol: false,
     webSearchHistoryCompat: false,
-    rateLimitCooldownEnabled: false,
-    channelQueueEnabled: false,
-    channelRequestsPerMinute: 20,
-    cooldownErrorStatuses: [429, 500],
   };
   return withGeneratedRelayFiles(next);
 }
@@ -13954,10 +13818,6 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       modelRoutes: [],
       standardOpenaiProtocol: false,
       webSearchHistoryCompat: false,
-      rateLimitCooldownEnabled: false,
-      channelQueueEnabled: false,
-      channelRequestsPerMinute: 20,
-      cooldownErrorStatuses: [429, 500],
       aggregate: {
         strategy: "failover",
         modelAggregationEnabled: false,

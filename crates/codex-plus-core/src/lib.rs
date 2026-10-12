@@ -6,7 +6,6 @@ pub mod assets;
 pub mod bridge;
 pub mod ccs_import;
 pub mod cdp;
-pub mod channel_protection;
 pub mod claude_localization;
 pub mod codex_app_state;
 pub mod codex_home;

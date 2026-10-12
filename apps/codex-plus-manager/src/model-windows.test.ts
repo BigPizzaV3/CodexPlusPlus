@@ -47,10 +47,6 @@ const _profileTypeCheck: RelayProfile = {
   sub2apiMultiplier: "",
   standardOpenaiProtocol: false,
   webSearchHistoryCompat: false,
-  rateLimitCooldownEnabled: false,
-  channelQueueEnabled: false,
-  channelRequestsPerMinute: 20,
-  cooldownErrorStatuses: [429, 500],
 };
 
 void _profileTypeCheck;

@@ -128,7 +128,6 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
-const MAX_COOLDOWN_RETRIES: usize = 3;
 const MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES: usize = 32 * 1024 * 1024;
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
@@ -148,10 +147,6 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
-
-fn should_retry_after_cooldown(retries: usize) -> bool {
-    retries < MAX_COOLDOWN_RETRIES
-}
 
 /// codex v2 远程压缩请求在 input 末尾携带的控制 item（openai/codex compact_remote_v2）。
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
@@ -617,7 +612,6 @@ pub struct UpstreamProxyResponse {
     /// 响应体已经读完。为 Some 时不要再读 response。
     pub buffered_body: Option<Vec<u8>>,
     pub response: Option<reqwest::Response>,
-    pub(crate) _channel_permit: Option<crate::channel_protection::ChannelPermit>,
 }
 
 /// 客户端会话头白名单；不接受鉴权或任意其他客户端请求头。
@@ -1523,7 +1517,6 @@ fn native_compaction_unsupported_result(
             native_compaction_passthrough: false,
             buffered_body: Some(serde_json::to_vec(&body).unwrap_or_default()),
             response: None,
-            _channel_permit: None,
         })
     } else {
         Err(error)
@@ -1907,7 +1900,6 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     }
                 }))?),
                 response: None,
-                _channel_permit: None,
             });
         }
     };
@@ -1947,97 +1939,362 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     );
     let strict_aggregate_model = aggregate_model.is_some();
     let relay_count = relays.len();
-    let mut cooldown_retries = 0_usize;
-    'request: loop {
-        for (attempt, relay) in relays.iter().cloned().enumerate() {
-            let has_more_candidates = attempt + 1 < relay_count;
-            validate_upstream(&relay)?;
-            // 官方登录成员：用该账号 OAuth 凭据发往 chatgpt.com，而不是 API Key。
-            let official_member =
-                crate::official_login::member_uses_official_login_transport(&relay);
-            let mut official_credential = if official_member {
-                match crate::official_login::resolve_official_credential(&relay, false).await {
-                    Ok(credential) => Some(credential),
-                    Err(error) => {
-                        let _ = crate::diagnostic_log::append_diagnostic_log(
-                            "protocol_proxy.official_login_unavailable",
-                            json!({
-                                "relayId": relay.id,
-                                "relayName": relay.name,
-                                "error": error.to_string()
-                            }),
-                        );
-                        if !strict_aggregate_model {
-                            crate::relay_rotation::record_relay_request_failure(&settings);
-                        }
-                        if has_more_candidates {
-                            continue;
-                        }
-                        return Err(error);
+    for (attempt, relay) in relays.iter().cloned().enumerate() {
+        let has_more_candidates = attempt + 1 < relay_count;
+        validate_upstream(&relay)?;
+        // 官方登录成员：用该账号 OAuth 凭据发往 chatgpt.com，而不是 API Key。
+        let official_member =
+            crate::official_login::member_uses_official_login_transport(&relay);
+        let mut official_credential = if official_member {
+            match crate::official_login::resolve_official_credential(&relay, false).await {
+                Ok(credential) => Some(credential),
+                Err(error) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.official_login_unavailable",
+                        json!({
+                            "relayId": relay.id,
+                            "relayName": relay.name,
+                            "error": error.to_string()
+                        }),
+                    );
+                    if !strict_aggregate_model {
+                        crate::relay_rotation::record_relay_request_failure(&settings);
                     }
+                    if has_more_candidates {
+                        continue;
+                    }
+                    return Err(error);
                 }
-            } else {
-                None
-            };
-            let official_base = official_member.then(crate::official_login::official_base_url);
-            let channel_key = crate::channel_protection::key_for_relay(&relay);
-            let mut channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
-            let model_override = aggregate_model
-                .as_ref()
-                .map(|binding| binding.upstream_model.clone())
-                .or_else(|| aggregate_upstream_model_override(&settings, &relay));
-            let preserve_native_request = relay.protocol == RelayProtocol::Responses
-                && (request_has_compaction_trigger(&request_json)
-                    || is_responses_compact_proxy_path(request_path));
-            let probe_native_compaction = request_has_compaction_trigger(&request_json)
-                && relay.protocol == RelayProtocol::Responses
-                && !is_responses_compact_proxy_path(request_path);
-            let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
-                match upstream_request_parts(
-                    &relay,
-                    request_json.clone(),
-                    request_path,
-                    model_override.as_deref(),
-                    preserve_native_request,
-                    official_base.as_deref(),
-                )
-                .await
-                {
-                    Ok(parts) => parts,
-                    Err(error) => {
-                        drop(channel_permit);
-                        if has_more_candidates
-                            && !strict_aggregate_model
-                            && error.is::<NativeCompactionUnsupported>()
-                        {
-                            crate::relay_rotation::record_relay_request_failure(&settings);
-                            continue;
-                        }
-                        return native_compaction_unsupported_result(error);
+            }
+        } else {
+            None
+        };
+        let official_base = official_member.then(crate::official_login::official_base_url);
+        let model_override = aggregate_model
+            .as_ref()
+            .map(|binding| binding.upstream_model.clone())
+            .or_else(|| aggregate_upstream_model_override(&settings, &relay));
+        let preserve_native_request = relay.protocol == RelayProtocol::Responses
+            && (request_has_compaction_trigger(&request_json)
+                || is_responses_compact_proxy_path(request_path));
+        let probe_native_compaction = request_has_compaction_trigger(&request_json)
+            && relay.protocol == RelayProtocol::Responses
+            && !is_responses_compact_proxy_path(request_path);
+        let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
+            match upstream_request_parts(
+                &relay,
+                request_json.clone(),
+                request_path,
+                model_override.as_deref(),
+                preserve_native_request,
+                official_base.as_deref(),
+            )
+            .await
+            {
+                Ok(parts) => parts,
+                Err(error) => {
+                    if has_more_candidates
+                        && !strict_aggregate_model
+                        && error.is::<NativeCompactionUnsupported>()
+                    {
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                        continue;
                     }
-                };
-            let is_compaction_request = compaction || probe_native_compaction;
-            let header_timeout = response_header_timeout(is_stream);
+                    return native_compaction_unsupported_result(error);
+                }
+            };
+        let is_compaction_request = compaction || probe_native_compaction;
+        let header_timeout = response_header_timeout(is_stream);
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.upstream_request",
+            json!({
+                "relayId": relay.id,
+                "relayName": relay.name,
+                "endpoint": endpoint,
+                "wireApi": wire_api,
+                "stream": is_stream,
+                "attempt": attempt + 1,
+                "candidateCount": relay_count,
+                "headerTimeoutSeconds": header_timeout.as_secs(),
+                "modelRoute": model_route.as_ref().map(|route| json!({
+                    "sourceRelayId": route.source_relay_id,
+                    "sourceModel": route.source_model,
+                    "targetRelayId": route.relay.id,
+                    "upstreamModel": route.upstream_model
+                }))
+            }),
+        );
+        let mut upstream = match send_responses_upstream_request(
+            &relay,
+            &endpoint,
+            &upstream_body,
+            wire_api,
+            is_stream,
+            original_user_agent,
+            beta_features,
+            session_headers,
+            official_credential.as_ref(),
+        )
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.upstream_request_failed",
+                    json!({
+                        "relayId": relay.id,
+                        "relayName": relay.name,
+                        "endpoint": endpoint,
+                        "wireApi": wire_api,
+                        "stream": is_stream,
+                        "attempt": attempt + 1,
+                        "candidateCount": relay_count,
+                        "headerTimeoutSeconds": header_timeout.as_secs(),
+                        "willFailover": has_more_candidates,
+                        "error": error.to_string()
+                    }),
+                );
+                if !strict_aggregate_model {
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                }
+                if has_more_candidates {
+                    continue;
+                }
+                return Err(error).with_context(|| {
+                    format!(
+                        "供应商「{}」请求上游失败，endpoint: {}",
+                        relay.name, endpoint
+                    )
+                });
+            }
+        };
+        let mut status_code = upstream.status().as_u16();
+        let mut content_type = upstream
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        // 官方登录 token 可能在 exp 之前就被撤销：401 时强制刷新并原样重试一次，
+        // 仍失败再走正常的失败切换/返回路径。
+        if status_code == 401 && official_member {
             let _ = crate::diagnostic_log::append_diagnostic_log(
-                "protocol_proxy.upstream_request",
+                "protocol_proxy.official_login_retry",
                 json!({
                     "relayId": relay.id,
                     "relayName": relay.name,
-                    "endpoint": endpoint,
-                    "wireApi": wire_api,
-                    "stream": is_stream,
-                    "attempt": attempt + 1,
-                    "candidateCount": relay_count,
-                    "headerTimeoutSeconds": header_timeout.as_secs(),
-                    "modelRoute": model_route.as_ref().map(|route| json!({
-                        "sourceRelayId": route.source_relay_id,
-                        "sourceModel": route.source_model,
-                        "targetRelayId": route.relay.id,
-                        "upstreamModel": route.upstream_model
-                    }))
+                    "endpoint": endpoint
                 }),
             );
-            let mut upstream = match send_responses_upstream_request(
+            match crate::official_login::resolve_official_credential(&relay, true).await {
+                Ok(credential) => {
+                    official_credential = Some(credential);
+                    match send_responses_upstream_request(
+                        &relay,
+                        &endpoint,
+                        &upstream_body,
+                        wire_api,
+                        is_stream,
+                        original_user_agent,
+                        beta_features,
+                        session_headers,
+                        official_credential.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(retried) => {
+                            upstream = retried;
+                            status_code = upstream.status().as_u16();
+                            content_type = upstream
+                                .headers()
+                                .get(reqwest::header::CONTENT_TYPE)
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or("")
+                                .to_string();
+                        }
+                        Err(error) => {
+                            if !strict_aggregate_model {
+                                crate::relay_rotation::record_relay_request_failure(&settings);
+                            }
+                            if has_more_candidates {
+                                continue;
+                            }
+                            return Err(error).with_context(|| {
+                                format!(
+                                    "供应商「{}」请求上游失败，endpoint: {}",
+                                    relay.name, endpoint
+                                )
+                            });
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.official_login_refresh_failed",
+                        json!({
+                            "relayId": relay.id,
+                            "relayName": relay.name,
+                            "error": error.to_string()
+                        }),
+                    );
+                }
+            }
+        }
+
+        if probe_native_compaction {
+            let success = (200..300).contains(&status_code);
+            let probed = match read_limited_upstream_body(
+                &mut upstream,
+                MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES,
+            )
+            .await
+            {
+                Ok(body) => body.to_vec(),
+                Err(error) => {
+                    return Err(error.into());
+                }
+            };
+            let stream_response = response_body_is_stream(&content_type, &probed);
+
+            if success && upstream_has_terminal_failure(&probed, &content_type) {
+                if !strict_aggregate_model {
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                }
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: stream_response,
+                    content_type,
+                    wire_api,
+                    compaction: false,
+                    native_compaction_passthrough: stream_response,
+                    buffered_body: Some(probed),
+                    response: None,
+                });
+            }
+            if success && stream_response {
+                match upstream_compaction_item_count(&probed, &content_type) {
+                    Some(1) => {
+                        if !strict_aggregate_model {
+                            crate::relay_rotation::record_relay_request_event(
+                                &settings,
+                                RotationEvent::Success,
+                            );
+                        }
+                        return Ok(UpstreamProxyResponse {
+                            status_code,
+                            is_stream: true,
+                            content_type,
+                            wire_api,
+                            compaction: false,
+                            native_compaction_passthrough: true,
+                            buffered_body: Some(probed),
+                            response: None,
+                        });
+                    }
+                    None => {
+                        if !strict_aggregate_model {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                        }
+                        return Ok(UpstreamProxyResponse {
+                            status_code,
+                            is_stream: true,
+                            content_type: "text/event-stream".to_string(),
+                            wire_api,
+                            compaction: false,
+                            native_compaction_passthrough: true,
+                            buffered_body: Some(incomplete_compaction_stream(&probed)),
+                            response: None,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            } else if success
+                && upstream_compaction_item_count(&probed, &content_type) == Some(1)
+            {
+                if !strict_aggregate_model {
+                    crate::relay_rotation::record_relay_request_event(
+                        &settings,
+                        RotationEvent::Success,
+                    );
+                }
+                if !is_stream {
+                    return Ok(UpstreamProxyResponse {
+                        status_code,
+                        is_stream: false,
+                        content_type,
+                        wire_api,
+                        compaction: false,
+                        native_compaction_passthrough: true,
+                        buffered_body: Some(probed),
+                        response: None,
+                    });
+                }
+                if let Some(sse) = render_native_compaction_as_sse(&probed) {
+                    return Ok(UpstreamProxyResponse {
+                        status_code,
+                        is_stream: true,
+                        content_type: "text/event-stream".to_string(),
+                        wire_api,
+                        compaction: false,
+                        native_compaction_passthrough: true,
+                        buffered_body: Some(sse),
+                        response: None,
+                    });
+                }
+            }
+            if !success && !compaction_input_rejected(status_code, &probed) {
+                if !strict_aggregate_model {
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                }
+                if has_more_candidates {
+                    continue;
+                }
+                return Ok(UpstreamProxyResponse {
+                    status_code,
+                    is_stream: false,
+                    content_type,
+                    wire_api,
+                    compaction: false,
+                    native_compaction_passthrough: false,
+                    buffered_body: Some(probed),
+                    response: None,
+                });
+            }
+
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.compaction_fallback",
+                json!({
+                    "relayId": relay.id,
+                    "statusCode": status_code,
+                }),
+            );
+            let fallback = upstream_request_parts(
+                &relay,
+                request_json.clone(),
+                request_path,
+                model_override.as_deref(),
+                false,
+                official_base.as_deref(),
+            )
+            .await;
+            let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
+                Ok(parts) => parts,
+                Err(error) => {
+                    if has_more_candidates
+                        && !strict_aggregate_model
+                        && error.is::<NativeCompactionUnsupported>()
+                    {
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                        continue;
+                    }
+                    return native_compaction_unsupported_result(error);
+                }
+            };
+            endpoint = fallback_endpoint;
+            upstream_body = fallback_body;
+            wire_api = fallback_wire;
+            upstream = match send_responses_upstream_request(
                 &relay,
                 &endpoint,
                 &upstream_body,
@@ -2052,19 +2309,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             {
                 Ok(upstream) => upstream,
                 Err(error) => {
-                    drop(channel_permit);
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "protocol_proxy.upstream_request_failed",
                         json!({
                             "relayId": relay.id,
-                            "relayName": relay.name,
                             "endpoint": endpoint,
-                            "wireApi": wire_api,
-                            "stream": is_stream,
-                            "attempt": attempt + 1,
-                            "candidateCount": relay_count,
-                            "headerTimeoutSeconds": header_timeout.as_secs(),
-                            "willFailover": has_more_candidates,
+                            "compactionFallback": true,
                             "error": error.to_string()
                         }),
                     );
@@ -2082,398 +2332,75 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     });
                 }
             };
-            let mut status_code = upstream.status().as_u16();
-            let mut content_type = upstream
+            status_code = upstream.status().as_u16();
+            content_type = upstream
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("")
                 .to_string();
+        }
 
-            // 官方登录 token 可能在 exp 之前就被撤销：401 时强制刷新并原样重试一次，
-            // 仍失败再走正常的失败切换/返回路径。
-            if status_code == 401 && official_member {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "protocol_proxy.official_login_retry",
-                    json!({
-                        "relayId": relay.id,
-                        "relayName": relay.name,
-                        "endpoint": endpoint
-                    }),
-                );
-                drop(channel_permit);
-                match crate::official_login::resolve_official_credential(&relay, true).await {
-                    Ok(credential) => {
-                        official_credential = Some(credential);
-                        channel_permit =
-                            crate::channel_protection::acquire(&channel_key, &relay).await;
-                        match send_responses_upstream_request(
-                            &relay,
-                            &endpoint,
-                            &upstream_body,
-                            wire_api,
-                            is_stream,
-                            original_user_agent,
-                            beta_features,
-                            session_headers,
-                            official_credential.as_ref(),
-                        )
-                        .await
-                        {
-                            Ok(retried) => {
-                                upstream = retried;
-                                status_code = upstream.status().as_u16();
-                                content_type = upstream
-                                    .headers()
-                                    .get(reqwest::header::CONTENT_TYPE)
-                                    .and_then(|value| value.to_str().ok())
-                                    .unwrap_or("")
-                                    .to_string();
-                            }
-                            Err(error) => {
-                                drop(channel_permit);
-                                if !strict_aggregate_model {
-                                    crate::relay_rotation::record_relay_request_failure(&settings);
-                                }
-                                if has_more_candidates {
-                                    continue;
-                                }
-                                return Err(error).with_context(|| {
-                                    format!(
-                                        "供应商「{}」请求上游失败，endpoint: {}",
-                                        relay.name, endpoint
-                                    )
-                                });
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        let _ = crate::diagnostic_log::append_diagnostic_log(
-                            "protocol_proxy.official_login_refresh_failed",
-                            json!({
-                                "relayId": relay.id,
-                                "relayName": relay.name,
-                                "error": error.to_string()
-                            }),
-                        );
-                        channel_permit =
-                            crate::channel_protection::acquire(&channel_key, &relay).await;
-                    }
-                }
-            }
-
-            if probe_native_compaction {
-                let success = (200..300).contains(&status_code);
-                let retry_after =
-                    crate::channel_protection::retry_after_duration(upstream.headers());
-                if !success {
-                    // 探测不重试摘要，但同通道的后续请求仍须遵守错误冷却。
-                    // 在读取响应体/释放 permit 前记录，避免排队请求抢先通过。
-                    crate::channel_protection::mark_failure(
-                        &channel_key,
-                        &relay,
-                        status_code,
-                        retry_after,
-                    )
-                    .await;
-                }
-                let probed = match read_limited_upstream_body(
-                    &mut upstream,
-                    MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES,
-                )
-                .await
-                {
-                    Ok(body) => body.to_vec(),
-                    Err(error) => {
-                        drop(channel_permit);
-                        return Err(error.into());
-                    }
-                };
-                let stream_response = response_body_is_stream(&content_type, &probed);
-                drop(channel_permit);
-
-                if success && upstream_has_terminal_failure(&probed, &content_type) {
-                    if !strict_aggregate_model {
-                        crate::relay_rotation::record_relay_request_failure(&settings);
-                    }
-                    return Ok(UpstreamProxyResponse {
-                        status_code,
-                        is_stream: stream_response,
-                        content_type,
-                        wire_api,
-                        compaction: false,
-                        native_compaction_passthrough: stream_response,
-                        buffered_body: Some(probed),
-                        response: None,
-                        _channel_permit: None,
-                    });
-                }
-                if success && stream_response {
-                    match upstream_compaction_item_count(&probed, &content_type) {
-                        Some(1) => {
-                            if !strict_aggregate_model {
-                                crate::relay_rotation::record_relay_request_event(
-                                    &settings,
-                                    RotationEvent::Success,
-                                );
-                            }
-                            return Ok(UpstreamProxyResponse {
-                                status_code,
-                                is_stream: true,
-                                content_type,
-                                wire_api,
-                                compaction: false,
-                                native_compaction_passthrough: true,
-                                buffered_body: Some(probed),
-                                response: None,
-                                _channel_permit: None,
-                            });
-                        }
-                        None => {
-                            if !strict_aggregate_model {
-                                crate::relay_rotation::record_relay_request_failure(&settings);
-                            }
-                            return Ok(UpstreamProxyResponse {
-                                status_code,
-                                is_stream: true,
-                                content_type: "text/event-stream".to_string(),
-                                wire_api,
-                                compaction: false,
-                                native_compaction_passthrough: true,
-                                buffered_body: Some(incomplete_compaction_stream(&probed)),
-                                response: None,
-                                _channel_permit: None,
-                            });
-                        }
-                        Some(_) => {}
-                    }
-                } else if success
-                    && upstream_compaction_item_count(&probed, &content_type) == Some(1)
-                {
-                    if !strict_aggregate_model {
-                        crate::relay_rotation::record_relay_request_event(
-                            &settings,
-                            RotationEvent::Success,
-                        );
-                    }
-                    if !is_stream {
-                        return Ok(UpstreamProxyResponse {
-                            status_code,
-                            is_stream: false,
-                            content_type,
-                            wire_api,
-                            compaction: false,
-                            native_compaction_passthrough: true,
-                            buffered_body: Some(probed),
-                            response: None,
-                            _channel_permit: None,
-                        });
-                    }
-                    if let Some(sse) = render_native_compaction_as_sse(&probed) {
-                        return Ok(UpstreamProxyResponse {
-                            status_code,
-                            is_stream: true,
-                            content_type: "text/event-stream".to_string(),
-                            wire_api,
-                            compaction: false,
-                            native_compaction_passthrough: true,
-                            buffered_body: Some(sse),
-                            response: None,
-                            _channel_permit: None,
-                        });
-                    }
-                }
-                if !success && !compaction_input_rejected(status_code, &probed) {
-                    if !strict_aggregate_model {
-                        crate::relay_rotation::record_relay_request_failure(&settings);
-                    }
-                    if has_more_candidates {
-                        continue;
-                    }
-                    return Ok(UpstreamProxyResponse {
-                        status_code,
-                        is_stream: false,
-                        content_type,
-                        wire_api,
-                        compaction: false,
-                        native_compaction_passthrough: false,
-                        buffered_body: Some(probed),
-                        response: None,
-                        _channel_permit: None,
-                    });
-                }
-
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "protocol_proxy.compaction_fallback",
-                    json!({
-                        "relayId": relay.id,
-                        "statusCode": status_code,
-                    }),
-                );
-                let fallback = upstream_request_parts(
-                    &relay,
-                    request_json.clone(),
-                    request_path,
-                    model_override.as_deref(),
-                    false,
-                    official_base.as_deref(),
-                )
-                .await;
-                let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
-                    Ok(parts) => parts,
-                    Err(error) => {
-                        if has_more_candidates
-                            && !strict_aggregate_model
-                            && error.is::<NativeCompactionUnsupported>()
-                        {
-                            crate::relay_rotation::record_relay_request_failure(&settings);
-                            continue;
-                        }
-                        return native_compaction_unsupported_result(error);
-                    }
-                };
-                endpoint = fallback_endpoint;
-                upstream_body = fallback_body;
-                wire_api = fallback_wire;
-                channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
-                upstream = match send_responses_upstream_request(
-                    &relay,
-                    &endpoint,
-                    &upstream_body,
-                    wire_api,
-                    is_stream,
-                    original_user_agent,
-                    beta_features,
-                    session_headers,
-                    official_credential.as_ref(),
-                )
-                .await
-                {
-                    Ok(upstream) => upstream,
-                    Err(error) => {
-                        drop(channel_permit);
-                        let _ = crate::diagnostic_log::append_diagnostic_log(
-                            "protocol_proxy.upstream_request_failed",
-                            json!({
-                                "relayId": relay.id,
-                                "endpoint": endpoint,
-                                "compactionFallback": true,
-                                "error": error.to_string()
-                            }),
-                        );
-                        if !strict_aggregate_model {
-                            crate::relay_rotation::record_relay_request_failure(&settings);
-                        }
-                        if has_more_candidates {
-                            continue;
-                        }
-                        return Err(error).with_context(|| {
-                            format!(
-                                "供应商「{}」请求上游失败，endpoint: {}",
-                                relay.name, endpoint
-                            )
-                        });
-                    }
-                };
-                status_code = upstream.status().as_u16();
-                content_type = upstream
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-            }
-
-            let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "protocol_proxy.upstream_response",
-                json!({
-                    "relayId": relay.id,
-                    "relayName": relay.name,
-                    "endpoint": endpoint,
-                    "wireApi": wire_api,
-                    "stream": is_stream,
-                    "statusCode": status_code,
-                    "attempt": attempt + 1,
-                    "candidateCount": relay_count,
-                    "headerTimeoutSeconds": header_timeout.as_secs(),
-                    "willFailover": has_more_candidates && !(200..300).contains(&status_code)
-                }),
-            );
-            if !strict_aggregate_model {
-                crate::relay_rotation::record_relay_request_event(
-                    &settings,
-                    if (200..300).contains(&status_code) {
-                        RotationEvent::Success
-                    } else {
-                        RotationEvent::Failure
-                    },
-                );
-            }
-            if (200..300).contains(&status_code) || !has_more_candidates {
-                if !(200..300).contains(&status_code) {
-                    let cooldown_started = crate::channel_protection::mark_failure(
-                        &channel_key,
-                        &relay,
-                        status_code,
-                        retry_after,
-                    )
-                    .await;
-                    if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
-                        cooldown_retries = cooldown_retries.saturating_add(1);
-                        drop(channel_permit);
-                        let _ = crate::diagnostic_log::append_diagnostic_log(
-                            "protocol_proxy.channel_cooldown_retry",
-                            json!({
-                                "relayId": relay.id,
-                                "relayName": relay.name,
-                                "statusCode": status_code,
-                                "retryAfterSeconds": retry_after.map(|value| value.as_secs()),
-                                "retry": cooldown_retries
-                            }),
-                        );
-                        continue 'request;
-                    }
-                }
-                // 请求了 SSE 的兼容上游也可能返回 JSON 摘要；让调用方选择 JSON 包装器。
-                let json_compaction = is_compaction_request
-                    && content_type
-                        .split(';')
-                        .next()
-                        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"));
-                return Ok(UpstreamProxyResponse {
-                    status_code,
-                    is_stream: (is_stream && !json_compaction)
-                        || content_type.contains("text/event-stream"),
-                    content_type,
-                    wire_api,
-                    compaction: is_compaction_request,
-                    native_compaction_passthrough: false,
-                    buffered_body: None,
-                    response: Some(upstream),
-                    _channel_permit: Some(channel_permit),
-                });
-            }
-            crate::channel_protection::mark_failure(&channel_key, &relay, status_code, retry_after)
-                .await;
-            drop(channel_permit);
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "protocol_proxy.upstream_failover",
-                json!({
-                    "relayId": relay.id,
-                    "relayName": relay.name,
-                    "endpoint": endpoint,
-                    "wireApi": wire_api,
-                    "stream": is_stream,
-                    "statusCode": status_code,
-                    "attempt": attempt + 1,
-                    "candidateCount": relay_count,
-                    "headerTimeoutSeconds": header_timeout.as_secs()
-                }),
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.upstream_response",
+            json!({
+                "relayId": relay.id,
+                "relayName": relay.name,
+                "endpoint": endpoint,
+                "wireApi": wire_api,
+                "stream": is_stream,
+                "statusCode": status_code,
+                "attempt": attempt + 1,
+                "candidateCount": relay_count,
+                "headerTimeoutSeconds": header_timeout.as_secs(),
+                "willFailover": has_more_candidates && !(200..300).contains(&status_code)
+            }),
+        );
+        if !strict_aggregate_model {
+            crate::relay_rotation::record_relay_request_event(
+                &settings,
+                if (200..300).contains(&status_code) {
+                    RotationEvent::Success
+                } else {
+                    RotationEvent::Failure
+                },
             );
         }
-        anyhow::bail!("未找到可用的聚合供应商成员")
+        if (200..300).contains(&status_code) || !has_more_candidates {
+            // 请求了 SSE 的兼容上游也可能返回 JSON 摘要；让调用方选择 JSON 包装器。
+            let json_compaction = is_compaction_request
+                && content_type
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"));
+            return Ok(UpstreamProxyResponse {
+                status_code,
+                is_stream: (is_stream && !json_compaction)
+                    || content_type.contains("text/event-stream"),
+                content_type,
+                wire_api,
+                compaction: is_compaction_request,
+                native_compaction_passthrough: false,
+                buffered_body: None,
+                response: Some(upstream),
+            });
+        }
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.upstream_failover",
+            json!({
+                "relayId": relay.id,
+                "relayName": relay.name,
+                "endpoint": endpoint,
+                "wireApi": wire_api,
+                "stream": is_stream,
+                "statusCode": status_code,
+                "attempt": attempt + 1,
+                "candidateCount": relay_count,
+                "headerTimeoutSeconds": header_timeout.as_secs()
+            }),
+        );
     }
+    anyhow::bail!("未找到可用的聚合供应商成员")
 }
 
 fn select_model_route(
@@ -2588,7 +2515,6 @@ pub async fn open_models_proxy_request(
         native_compaction_passthrough: false,
         buffered_body: None,
         response: Some(upstream),
-        _channel_permit: None,
     })
 }
 
@@ -2644,7 +2570,6 @@ pub async fn open_audio_transcriptions_proxy_request(
         native_compaction_passthrough: false,
         buffered_body: None,
         response: Some(upstream),
-        _channel_permit: None,
     })
 }
 
@@ -2782,7 +2707,6 @@ async fn open_image_proxy_request(
         native_compaction_passthrough: false,
         buffered_body: None,
         response: Some(upstream),
-        _channel_permit: None,
     })
 }
 
@@ -2815,69 +2739,33 @@ pub async fn open_chat_completions_proxy_request(
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let channel_key = crate::channel_protection::key_for_relay(&relay);
-    let mut cooldown_retries = 0_usize;
-    loop {
-        let channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
-        let request = crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?
-        .post(chat_completions_url(&relay.base_url))
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&request_json);
-        let upstream = match with_relay_auth(request, &relay).send().await {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                drop(channel_permit);
-                return Err(error.into());
-            }
-        };
-        let status_code = upstream.status().as_u16();
-        let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
-        if !(200..300).contains(&status_code) {
-            let cooldown_started = crate::channel_protection::mark_failure(
-                &channel_key,
-                &relay,
-                status_code,
-                retry_after,
-            )
-            .await;
-            if cooldown_started && should_retry_after_cooldown(cooldown_retries) {
-                cooldown_retries = cooldown_retries.saturating_add(1);
-                drop(channel_permit);
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "protocol_proxy.channel_cooldown_retry",
-                    json!({
-                        "relayId": relay.id,
-                        "relayName": relay.name,
-                        "statusCode": status_code,
-                        "retryAfterSeconds": retry_after.map(|value| value.as_secs()),
-                        "retry": cooldown_retries
-                    }),
-                );
-                continue;
-            }
-        }
-        let content_type = upstream
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_string();
 
-        return Ok(UpstreamProxyResponse {
-            status_code,
-            is_stream: is_stream || content_type.contains("text/event-stream"),
-            content_type,
-            wire_api: UpstreamWireApi::ChatCompletions,
-            compaction: false,
-            native_compaction_passthrough: false,
-            buffered_body: None,
-            response: Some(upstream),
-            _channel_permit: Some(channel_permit),
-        });
-    }
+    let request = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?
+    .post(chat_completions_url(&relay.base_url))
+    .header(reqwest::header::CONTENT_TYPE, "application/json")
+    .json(&request_json);
+    let upstream = with_relay_auth(request, &relay).send().await?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        is_stream: is_stream || content_type.contains("text/event-stream"),
+        content_type,
+        wire_api: UpstreamWireApi::ChatCompletions,
+        compaction: false,
+        native_compaction_passthrough: false,
+        buffered_body: None,
+        response: Some(upstream),
+    })
 }
 
 async fn upstream_request_parts(
@@ -8023,20 +7911,6 @@ mod relay_custom_header_tests {
             request.headers().get("authorization").unwrap(),
             "Bearer explicit"
         );
-    }
-}
-
-#[cfg(test)]
-mod channel_cooldown_retry_tests {
-    use super::*;
-
-    #[test]
-    fn cooldown_allows_three_automatic_retries_only() {
-        assert!(should_retry_after_cooldown(0));
-        assert!(should_retry_after_cooldown(1));
-        assert!(should_retry_after_cooldown(2));
-        assert!(!should_retry_after_cooldown(3));
-        assert!(!should_retry_after_cooldown(usize::MAX));
     }
 }
 
