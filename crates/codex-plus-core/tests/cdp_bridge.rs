@@ -695,7 +695,7 @@ fn run_official_usage_status_harness() -> serde_json::Value {
 const scriptPath = {script_path};
 function node() {{
   return {{
-    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}}, toggleAttribute() {{}},
     addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
     closest() {{ return null; }}, getAttribute() {{ return null; }},
     classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
@@ -2649,7 +2649,7 @@ const scriptPath = {script_path};
 const store = new Map();
 function node() {{
   return {{
-    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}}, toggleAttribute() {{}},
     addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
     closest() {{ return null; }},
     classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
@@ -3001,7 +3001,7 @@ fn run_session_ref_contract_harness() -> serde_json::Value {
 const scriptPath = {script_path};
 function node() {{
   return {{
-    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}}, toggleAttribute() {{}},
     addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
     closest() {{ return null; }}, getAttribute() {{ return null; }},
     classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
@@ -3821,6 +3821,7 @@ function node() {{
     remove() {{}},
     setAttribute() {{}},
     removeAttribute() {{}},
+    toggleAttribute() {{}},
     addEventListener() {{}},
     querySelector() {{ return null; }},
     querySelectorAll() {{ return []; }},
