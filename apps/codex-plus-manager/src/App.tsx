@@ -11165,45 +11165,85 @@ function ClaudeLocalizationScreen() {
   };
   const s = status;
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
+  const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
+  const statusText = !s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
+  const steps = [
+    t("从官方应用克隆受管副本，只调整副本的 Electron inspector 开关；macOS 使用受管重签名，Windows 使用独立副本。"),
+    t("把官方 zh-Hans 词表装入副本的 ion-dist；启动器短暂连接本地 inspector，注入页面脚本后关闭端口。"),
+    t("更新失败会保留当前可用副本；构建完成且校验 app.asar 一致后才替换旧副本。"),
+  ];
   return (
     <div className="claude-localization-page">
-      <Panel>
-        <CardHead title={t("Claude Code 汉化") } detail={t("官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。")} />
+      <Panel className="claude-l10n-hero">
         <CardContent>
-          <div className="claude-localization-status-grid">
-            <Metric label={t("官方版本")} value={s?.sourceVersion || t("未检测到")} />
-            <Metric label={t("副本状态")} value={!s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备")} />
-            <Metric label={t("外壳语言")} value={s?.shellLocale || t("未设置")} />
-            <Metric label={t("官方词条")} value={s ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")} />
+          <div className="claude-l10n-hero-head">
+            <div className="claude-l10n-hero-title">
+              <span className="claude-l10n-hero-icon"><Languages className="h-5 w-5" /></span>
+              <div>
+                <strong>{t("Claude Code 汉化")}</strong>
+                <span>{t("官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。")}</span>
+              </div>
+            </div>
+            <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
+              <i aria-hidden="true" />
+              {statusText}
+            </span>
           </div>
-          <div className="hint-line" role="note">
-            {t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}
+          <div className="claude-l10n-stats">
+            <div className="claude-l10n-stat">
+              <span>{t("官方版本")}</span>
+              <strong title={s?.sourceVersion || undefined}>{s?.sourceVersion || t("未检测到")}</strong>
+            </div>
+            <div className="claude-l10n-stat">
+              <span>{t("副本版本")}</span>
+              <strong title={s?.copyVersion || undefined}>{s?.copyVersion || t("未准备")}</strong>
+            </div>
+            <div className="claude-l10n-stat">
+              <span>{t("外壳语言")}</span>
+              <strong>{s?.shellLocale || t("未设置")}</strong>
+            </div>
+            <div className="claude-l10n-stat">
+              <span>{t("官方词条")}</span>
+              <strong>{s ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")}</strong>
+            </div>
+          </div>
+          <div className="claude-l10n-note" role="note">
+            <Info className="h-4 w-4" />
+            <span>{t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
           </div>
           {error ? <div className="inline-error">{error}</div> : null}
-          <Toolbar>
+          <div className="claude-l10n-actions">
             <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
               <PackageOpen className="h-4 w-4" />{busy === "prepare" ? t("准备中…") : t("准备汉化副本")}
             </Button>
             <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")}>
               <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动中文 Claude")}
             </Button>
-            <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
-              <RefreshCw className="h-4 w-4" />{t("检查副本")}
-            </Button>
-            <Button disabled={busy !== null || !s?.shellLocale} onClick={() => void act("restore")} variant="secondary">
-              <RotateCcw className="h-4 w-4" />{t("还原语言")}
-            </Button>
-          </Toolbar>
+            <div className="claude-l10n-actions-secondary">
+              <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
+                <RefreshCw className="h-4 w-4" />{t("检查副本")}
+              </Button>
+              <Button disabled={busy !== null || !s?.shellLocale} onClick={() => void act("restore")} variant="secondary">
+                <RotateCcw className="h-4 w-4" />{t("还原语言")}
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Panel>
-      <Panel>
-        <CardHead title={t("实现方式")} detail={t("安全边界") } />
+      <Panel className="claude-l10n-how">
+        <CardHeader className="panel-head claude-l10n-how-head">
+          <CardTitle>{t("实现方式")}</CardTitle>
+          <UiBadge variant="outline">{t("安全边界")}</UiBadge>
+        </CardHeader>
         <CardContent>
-          <ul className="claude-localization-list">
-            <li>{t("从官方应用克隆受管副本，只调整副本的 Electron inspector 开关；macOS 使用受管重签名，Windows 使用独立副本。")}</li>
-            <li>{t("把官方 zh-Hans 词表装入副本的 ion-dist；启动器短暂连接本地 inspector，注入页面脚本后关闭端口。")}</li>
-            <li>{t("更新失败会保留当前可用副本；构建完成且校验 app.asar 一致后才替换旧副本。")}</li>
-          </ul>
+          <ol className="claude-l10n-steps">
+            {steps.map((step, index) => (
+              <li key={step}>
+                <span className="claude-l10n-step-index">{index + 1}</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
         </CardContent>
       </Panel>
     </div>
