@@ -5,50 +5,302 @@
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
 
-  // 撤下强制语言后的单次迁移：只撤回仍由旧版管理的设置，不干预用户后来选择的语言。
-  async function restoreCodexPlusManagedLocale() {
-    const managedKey = "codexPlus.forceChineseLocale.managed.v1";
-    const reloadKey = "codexPlus.forceChineseLocale.reload.v1";
-    let marker;
-    let managed;
-    try {
-      marker = window.localStorage.getItem(managedKey);
-      if (!marker) return true;
-      managed = JSON.parse(marker);
-      if (!managed || Array.isArray(managed) || typeof managed.appliedLocale !== "string" || !managed.appliedLocale) return false;
-    } catch {
-      return false;
-    }
-    if (window.__codexPlusRetiredLocaleCleanupPromise) return await window.__codexPlusRetiredLocaleCleanupPromise;
-    const restore = async () => {
+  function installCodexPlusForceChineseLocale() {
+    const config = window.__CODEX_PLUS_FORCE_CHINESE_LOCALE__;
+    if (!config) return;
+    const enabled = config.enabled === true;
+    const locale = typeof config.locale === "string" && config.locale ? config.locale : "zh-CN";
+    const installationKey = `2:${enabled ? "on" : "off"}:${locale}`;
+    if (window.__codexPlusForceChineseLocaleInstalled === installationKey) return;
+    window.__codexPlusForceChineseLocaleInstalled = installationKey;
+    const languages = [locale, "zh", "en-US", "en"];
+    const managedLocaleStorageKey = "codexPlus.forceChineseLocale.managed.v1";
+    const localeReloadStorageKey = "codexPlus.forceChineseLocale.reload.v1";
+
+    const readManagedLocale = () => {
       try {
-        const response = await codexStateCall("get-setting", { params: { key: "localeOverride" } });
-        if (!response || !Object.prototype.hasOwnProperty.call(response, "value")) return false;
-        if (window.localStorage.getItem(managedKey) !== marker) return false;
-        if (response.value === managed.appliedLocale) {
-          const previousValue = managed.previousValue ?? null;
-          if (previousValue !== null) {
-            if (typeof previousValue !== "string" || previousValue.length > 64 || previousValue.trim() !== previousValue) return false;
-            if (Intl.getCanonicalLocales(previousValue).length !== 1) return false;
-          }
-          await codexStateCall("set-setting", { params: { key: "localeOverride", value: previousValue } });
-        }
-        if (window.localStorage.getItem(managedKey) !== marker) return false;
-        window.sessionStorage.removeItem(reloadKey);
-        window.localStorage.removeItem(managedKey);
-        return true;
+        const value = JSON.parse(window.localStorage.getItem(managedLocaleStorageKey) || "null");
+        return value && typeof value === "object" ? value : null;
       } catch {
-        // 原生 API 或存储暂时不可用时保留标记，下一次注入继续撤回。
-        return false;
+        return null;
       }
     };
-    const pending = restore();
-    window.__codexPlusRetiredLocaleCleanupPromise = pending;
-    try {
-      return await pending;
-    } finally {
-      if (window.__codexPlusRetiredLocaleCleanupPromise === pending) delete window.__codexPlusRetiredLocaleCleanupPromise;
-    }
+
+    const writeManagedLocale = (value) => {
+      try {
+        if (value) {
+          window.localStorage.setItem(managedLocaleStorageKey, JSON.stringify(value));
+        } else {
+          window.localStorage.removeItem(managedLocaleStorageKey);
+        }
+      } catch {
+      }
+    };
+
+    // 走 codexStateCall（60-plugin-marketplace.js 的能力探测通道）：老版的
+    // electronBridge + vscode://codex/ 自定义消息在 issue #2399 后已不可靠，
+    // state API 会随构建换模块位置，按能力识别才能一直找到。
+    //
+    // 但 state API 的 promise 是永久缓存的，且 asset 加载失败会留下 30 秒冷却
+    // （见 20-menu.js 的 codexAppModuleRetryCooldownMs）。注入发生在 App 的
+    // asset 就绪之前时第一次调用必然失败，而那次失败会被一直记住——所以这里
+    // 必须有界重试，不能像老版等 electronBridge 那样一次不成就算了。
+    const localeSyncRetryDelaysMs = [500, 1500, 3000, 6000, 12000, 20000];
+    const callCodexSettingApiOnce = (method, params) => codexStateCall(method, { params });
+    const callCodexSettingApi = async (method, params) => {
+      let lastError;
+      for (let attempt = 0; attempt <= localeSyncRetryDelaysMs.length; attempt += 1) {
+        try {
+          return await callCodexSettingApiOnce(method, params);
+        } catch (error) {
+          lastError = error;
+          const delay = localeSyncRetryDelaysMs[attempt];
+          if (delay === undefined) break;
+          await new Promise((resolve) => window.setTimeout(resolve, delay));
+        }
+      }
+      throw lastError;
+    };
+    const reloadAfterLocaleChange = (value) => {
+      const marker = JSON.stringify(value);
+      try {
+        if (window.sessionStorage.getItem(localeReloadStorageKey) === marker) return;
+        window.sessionStorage.setItem(localeReloadStorageKey, marker);
+        // 标记写不进去就不要刷新，否则下次加载读不到标记，会再次刷新。
+        if (window.sessionStorage.getItem(localeReloadStorageKey) !== marker) return;
+      } catch {
+        return;
+      }
+      window.location.reload();
+    };
+
+    const clearLocaleReloadMarker = () => {
+      try {
+        window.sessionStorage.removeItem(localeReloadStorageKey);
+      } catch {
+      }
+    };
+
+    const syncOfficialLocaleSetting = async () => {
+      const managed = readManagedLocale();
+      if (!enabled && !managed) return;
+      const response = await callCodexSettingApi("get-setting", { key: "localeOverride" });
+      const currentValue = response?.value ?? null;
+
+      if (enabled) {
+        if (currentValue === locale) {
+          clearLocaleReloadMarker();
+          return;
+        }
+        if (!managed) {
+          writeManagedLocale({ appliedLocale: locale, previousValue: currentValue });
+        }
+        await callCodexSettingApi("set-setting", { key: "localeOverride", value: locale });
+        reloadAfterLocaleChange(locale);
+        return;
+      }
+
+      if (currentValue !== managed.appliedLocale) {
+        writeManagedLocale(null);
+        clearLocaleReloadMarker();
+        return;
+      }
+      const previousValue = managed.previousValue ?? null;
+      await callCodexSettingApi("set-setting", {
+        key: "localeOverride",
+        value: previousValue,
+      });
+      writeManagedLocale(null);
+      reloadAfterLocaleChange(previousValue);
+    };
+
+    syncOfficialLocaleSetting().catch(() => {});
+    if (!enabled) return;
+
+    const defineNavigatorGetter = (name, value) => {
+      try {
+        Object.defineProperty(Navigator.prototype, name, {
+          configurable: true,
+          get: () => value,
+        });
+      } catch {
+        try {
+          Object.defineProperty(navigator, name, {
+            configurable: true,
+            get: () => value,
+          });
+        } catch {
+        }
+      }
+    };
+
+    defineNavigatorGetter("language", locale);
+    defineNavigatorGetter("languages", languages);
+
+    const patchI18nConfig = (dynamicConfig) => {
+      if (!dynamicConfig || typeof dynamicConfig !== "object") return dynamicConfig;
+      const value = dynamicConfig.value && typeof dynamicConfig.value === "object" ? dynamicConfig.value : {};
+      const nextValue = {
+        ...value,
+        enable_i18n: true,
+        locale_source: "SYSTEM",
+      };
+      try {
+        dynamicConfig.value = nextValue;
+      } catch {
+      }
+      if (typeof dynamicConfig.get === "function" && !dynamicConfig.__codexPlusForceChineseLocaleGetPatched) {
+        const originalGet = dynamicConfig.get.bind(dynamicConfig);
+        dynamicConfig.get = (key, fallback) => {
+          if (key === "enable_i18n") return true;
+          if (key === "locale_source") return "SYSTEM";
+          return originalGet(key, fallback);
+        };
+        dynamicConfig.__codexPlusForceChineseLocaleGetPatched = true;
+      }
+      return dynamicConfig;
+    };
+
+    const statsigClients = () => {
+      const root = window.__STATSIG__ || globalThis.__STATSIG__;
+      if (!root || typeof root !== "object") return [];
+      const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+      if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+      return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+    };
+
+    // 语言包的加载 gate 读的是 Layer 而不是 DynamicConfig（issue #2329 根因 a）：
+    // 应用用 useLayer('72216192').get('enable_i18n', false) 取开关，Layer 的 memo
+    // 缓存键恒为 NoValues，于是即使 DynamicConfig 被补成 enable_i18n:true 也不生效。
+    // 这里给 layer 对象补上同样的取值覆盖；__value 是 Statsig 存原始值的字段，
+    // 一并 assign，避免应用直接从 __value 读时绕过 get。
+    const patchI18nLayer = (layer) => {
+      if (!layer || typeof layer !== "object") return layer;
+      const value = layer.__value && typeof layer.__value === "object" ? layer.__value : {};
+      const nextValue = {
+        ...value,
+        enable_i18n: true,
+        locale_source: "SYSTEM",
+      };
+      try {
+        layer.__value = nextValue;
+      } catch {
+      }
+      try {
+        layer.value = nextValue;
+      } catch {
+      }
+      if (typeof layer.get === "function" && !layer.__codexPlusForceChineseLocaleLayerPatched) {
+        const originalGet = layer.get.bind(layer);
+        layer.get = (key, fallback) => {
+          if (key === "enable_i18n") return true;
+          if (key === "locale_source") return "SYSTEM";
+          return originalGet(key, fallback);
+        };
+        layer.__codexPlusForceChineseLocaleLayerPatched = true;
+      }
+      return layer;
+    };
+
+    const patchStatsigClient = (client) => {
+      if (!client || typeof client !== "object") return;
+      if (typeof client.getLayer === "function" && !client.__codexPlusForceChineseLocaleLayerChannelPatched) {
+        const originalGetLayer = client.getLayer.bind(client);
+        client.getLayer = (name, options) => {
+          const result = originalGetLayer(name, options);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerChannelPatched = true;
+      }
+      if (typeof client._getLayerImpl === "function" && !client.__codexPlusForceChineseLocaleLayerImplPatched) {
+        const originalGetLayerImpl = client._getLayerImpl.bind(client);
+        client._getLayerImpl = function (name, ...rest) {
+          const result = originalGetLayerImpl(name, ...rest);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerImplPatched = true;
+      }
+      if (typeof client.getDynamicConfig !== "function") return;
+      if (!client.__codexPlusForceChineseLocalePatched) {
+        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+        client.getDynamicConfig = (name, options) => {
+          const result = originalGetDynamicConfig(name, options);
+          return name === "72216192" ? patchI18nConfig(result) : result;
+        };
+        client.__codexPlusForceChineseLocalePatched = true;
+      }
+      try {
+        patchI18nConfig(client.getDynamicConfig("72216192", { disableExposureLog: true }));
+      } catch {
+      }
+      try {
+        if (typeof client.getLayer === "function") {
+          patchI18nLayer(client.getLayer("72216192", { disableExposureLog: true }));
+        }
+      } catch {
+      }
+    };
+
+    const patchStatsigRoot = (root) => {
+      if (!root || typeof root !== "object" || root.__codexPlusForceChineseLocaleRootPatched) return;
+      root.__codexPlusForceChineseLocaleRootPatched = true;
+      ["firstInstance", "instance"].forEach((key) => {
+        let current;
+        try {
+          current = root[key];
+        } catch {
+          return;
+        }
+        patchStatsigClient(typeof current === "function" && key === "instance" ? current.call(root) : current);
+        try {
+          Object.defineProperty(root, key, {
+            configurable: true,
+            get: () => current,
+            set: (next) => {
+              current = next;
+              patchStatsigClient(typeof next === "function" && key === "instance" ? next.call(root) : next);
+            },
+          });
+        } catch {
+        }
+      });
+    };
+
+    const installStatsigRootSetter = () => {
+      const descriptor = Object.getOwnPropertyDescriptor(window, "__STATSIG__");
+      if (descriptor && descriptor.configurable === false) return;
+      let currentRoot = window.__STATSIG__;
+      patchStatsigRoot(currentRoot);
+      try {
+        Object.defineProperty(window, "__STATSIG__", {
+          configurable: true,
+          get: () => currentRoot,
+          set: (next) => {
+            currentRoot = next;
+            patchStatsigRoot(next);
+            statsigClients().forEach(patchStatsigClient);
+          },
+        });
+      } catch {
+      }
+    };
+
+    const patchStatsigI18nConfig = () => {
+      installStatsigRootSetter();
+      const root = window.__STATSIG__ || globalThis.__STATSIG__;
+      patchStatsigRoot(root);
+      statsigClients().forEach((client) => {
+        if (typeof client.getDynamicConfig !== "function") return;
+        patchStatsigClient(client);
+      });
+    };
+
+    patchStatsigI18nConfig();
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      patchStatsigI18nConfig();
+      if (Date.now() - startedAt > 5000) window.clearInterval(timer);
+    }, 50);
   }
 
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";

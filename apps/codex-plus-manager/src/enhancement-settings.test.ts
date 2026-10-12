@@ -74,7 +74,7 @@ function eventHandlerNodes(component: ts.Node, element: ts.JsxOpeningElement | t
 test("retired enhancements have no settings, navigation or command references in the manager UI", () => {
   const retired = new Set([
     "codexAppZedRemoteOpen", "zedRemoteOpenStrategy", "zedRemoteProjectRegistryEnabled", "zedRemoteSyncToZedSettings",
-    "codexAppUpstreamWorktreeCreate", "codexAppForceChineseLocale", "codexAppNativeMenuLocalization",
+    "codexAppUpstreamWorktreeCreate", "codexAppNativeMenuLocalization",
     "codexAppFastStartup", "快速启动",
     "ZedRemoteScreen", "ZedRemoteProjectSection", "zedRemote", "list_zed_remote_projects", "open_zed_remote", "forget_zed_remote_project",
     "launchMode", "LaunchMode", "ModeSelector", "saveLaunchMode", "setLaunchMode", "patchMode",

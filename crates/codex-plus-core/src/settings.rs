@@ -542,6 +542,10 @@ pub struct BackendSettings {
     pub codex_app_session_share: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
+    // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
+    // 若默认开启等于替他们重新打开一个从没同意过的行为。要开请显式勾选。
+    #[serde(rename = "codexAppForceChineseLocale", default)]
+    pub codex_app_force_chinese_locale: bool,
     #[serde(
         rename = "codexAppTypingEffect",
         default = "default_typing_effect",
@@ -743,6 +747,7 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_session_share: true,
             codex_app_paste_fix: false,
+            codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
@@ -1505,7 +1510,6 @@ impl SettingsStore {
         for key in [
             "launchMode",
             "codexAppFastStartup",
-            "codexAppForceChineseLocale",
             "codexAppZedRemoteOpen",
             "zedRemoteOpenStrategy",
             "zedRemoteProjectRegistryEnabled",
@@ -1678,6 +1682,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppSessionShare");
     merge_bool_setting(target, source, "codexAppPasteFix");
+    merge_bool_setting(target, source, "codexAppForceChineseLocale");
     if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =
         source.get("codexAppTypingEffect").and_then(Value::as_str)
     {
@@ -2400,6 +2405,7 @@ mod tests {
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
+        assert!(!settings.codex_app_force_chinese_locale);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());

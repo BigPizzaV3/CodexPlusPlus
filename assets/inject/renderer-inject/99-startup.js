@@ -59,7 +59,7 @@
     }
   }
 
-  void restoreCodexPlusManagedLocale();
+  installCodexPlusForceChineseLocale();
   installCodexPlusInstanceIdentity();
   runScanStep(installCodexPlusTypingEffects);
   runScanStep(syncCodexPlusWhaleWidget);

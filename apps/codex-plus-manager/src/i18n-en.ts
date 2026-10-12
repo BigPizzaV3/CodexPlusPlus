@@ -1012,6 +1012,8 @@ export const EN_PLAIN: Record<string, string> = {
   "管理控制台入口": "Management console entrypoint",
   "类型": "Type",
   "粘贴修复": "Paste fix",
+  "强制中文界面": "Force Chinese UI",
+  "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。": "Force the built-in zh-CN locale pack in the Codex app so the UI does not fall back to English when Statsig or the VPN is unreachable. Fully applies after restarting Codex.",
   "索引": "Index",
   "纯 API": "Pure API",
   "纯文本模型请配置此项": "Configure this for text-only models",
