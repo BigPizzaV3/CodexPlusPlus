@@ -7729,6 +7729,11 @@ function RelayProfileDetail({
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
+  const [aggregateMode, setAggregateMode] = useState<AggregateMode | null>(() => {
+    if (!isAggregateRelayProfile(profile)) return null;
+    if (!isNew) return profile.aggregate?.modelAggregationEnabled === true ? "model" : "provider";
+    return null;
+  });
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
