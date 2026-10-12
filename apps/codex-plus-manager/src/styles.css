@@ -3181,8 +3181,11 @@ details.relay-fold[open] > .relay-fold-body {
 
 .aggregate-member-models {
   min-width: 0;
-  white-space: pre-line;
-  overflow-wrap: anywhere;
+  /* 一行一个模型，模型名不在中间断行；列宽不够时横向滚动。 */
+  display: block;
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .aggregate-editor[data-aggregate-mode="model"] .aggregate-member-row {

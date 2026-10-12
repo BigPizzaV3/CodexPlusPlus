@@ -8985,8 +8985,8 @@ function RelayProfileEditor({
                 {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
               </p>
             </Field>
-            {showApiFields ? (
-              <section className="relay-config-section relay-field-model-list">
+            {/* 官方登录 profile 同样维护模型列表：按模型聚合与官方模型目录拉取都依赖它。 */}
+            <section className="relay-config-section relay-field-model-list">
                 <div className="relay-config-section-head">
                   <div>
                     <strong>{t("模型列表")}</strong>
@@ -9384,8 +9384,7 @@ function RelayProfileEditor({
                   {t("自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。")}
                   {" "}{t("需要自定义 Fast 白名单时，打开对应模型的配置按钮，设置 Fast（priority）支持并保存此模型与供应商。")}
                 </p>
-              </section>
-            ) : null}
+            </section>
             {showApiFields ? (
               <section className="relay-config-section relay-field-model-routes">
                 <div className="relay-config-section-head">
