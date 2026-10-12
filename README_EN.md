@@ -72,7 +72,7 @@ Each provider can configure Responses or Chat Completions, model lists, a test m
 
 Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
-Enable **Aggregate by model** in an aggregate provider to merge member models into Codex's model list. Entries prefixed with `cpx-<provider-id>/` stay bound to that member, while unprefixed model names continue to use the aggregate strategy. Each member keeps its own model list, context window, and auto-compact settings.
+When creating an aggregate provider, first choose **Aggregate by provider** or **Aggregate by model**. The two modes have separate forms and runtime behavior. Model aggregation merges member models into Codex's model list and binds `cpx-<provider-id>/` entries to that member; provider aggregation uses failover, rotation, and weights. Each member keeps its own model list, context window, and auto-compact settings.
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
 
