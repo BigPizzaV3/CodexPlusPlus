@@ -1,7 +1,8 @@
 use std::io::{Cursor, Write};
 
 use codex_plus_core::dream_skin_library::{
-    load_stored_dream_skin_theme, prepare_dream_skin_activation, save_validated_dream_skin_package,
+    DreamSkinThemeDraft, load_stored_dream_skin_theme, prepare_dream_skin_activation,
+    save_validated_dream_skin_package,
 };
 use codex_plus_core::dream_skin_package::{
     DREAM_SKIN_PACKAGE_CLIENT_VERSION, compile_safe_css, validate_and_read_package,
@@ -202,6 +203,76 @@ fn installed_package_preserves_and_activates_safe_css() {
         std::fs::read(temp.path().join("dream-skin/theme/current.css")).unwrap(),
         css
     );
+}
+
+#[test]
+fn reapplying_active_package_preserves_safe_css() {
+    let temp = tempfile::tempdir().unwrap();
+    let css = br#"[data-ds-part="composer"] { backdrop-filter: blur(20px); }"#;
+    let package =
+        validate_and_read_package(&package_bytes("windows", css, None), "windows").unwrap();
+    save_validated_dream_skin_package(temp.path(), &package).unwrap();
+    let stored = load_stored_dream_skin_theme(temp.path(), "community.theme").unwrap();
+    let activation = prepare_dream_skin_activation(temp.path(), &stored).unwrap();
+    let active = DreamSkinThemeDraft {
+        config: activation.config,
+        image_path: activation.active_image_path,
+        builtin: false,
+    };
+
+    prepare_dream_skin_activation(temp.path(), &active).unwrap();
+    assert_eq!(
+        std::fs::read(temp.path().join("dream-skin/theme/current.css")).unwrap(),
+        css
+    );
+}
+
+#[test]
+fn active_package_recovers_missing_safe_css_from_stored_theme() {
+    let temp = tempfile::tempdir().unwrap();
+    let css = br#"[data-ds-part="composer"] { backdrop-filter: blur(20px); }"#;
+    let package =
+        validate_and_read_package(&package_bytes("windows", css, None), "windows").unwrap();
+    save_validated_dream_skin_package(temp.path(), &package).unwrap();
+    let stored = load_stored_dream_skin_theme(temp.path(), "community.theme").unwrap();
+    let active_image = codex_plus_core::dream_skin::import_dream_skin_image(
+        std::path::Path::new(&stored.image_path),
+        temp.path(),
+    )
+    .unwrap();
+    let active = DreamSkinThemeDraft {
+        config: stored.config,
+        image_path: active_image.to_string_lossy().into_owned(),
+        builtin: false,
+    };
+
+    prepare_dream_skin_activation(temp.path(), &active).unwrap();
+    assert_eq!(
+        std::fs::read(temp.path().join("dream-skin/theme/current.css")).unwrap(),
+        css
+    );
+}
+
+#[test]
+fn switching_to_image_only_theme_clears_previous_safe_css() {
+    let temp = tempfile::tempdir().unwrap();
+    let css = br#"[data-ds-part="composer"] { backdrop-filter: blur(20px); }"#;
+    let package =
+        validate_and_read_package(&package_bytes("windows", css, None), "windows").unwrap();
+    save_validated_dream_skin_package(temp.path(), &package).unwrap();
+    let mut plain = load_stored_dream_skin_theme(temp.path(), "community.theme").unwrap();
+    prepare_dream_skin_activation(temp.path(), &plain).unwrap();
+    let image = temp.path().join("plain.png");
+    std::fs::copy(&plain.image_path, &image).unwrap();
+    plain.config.id = "plain.image".to_string();
+    plain.image_path = image.to_string_lossy().into_owned();
+
+    let activation = prepare_dream_skin_activation(temp.path(), &plain).unwrap();
+    assert!(!temp.path().join("dream-skin/theme/current.css").exists());
+    plain.config = activation.config;
+    plain.image_path = activation.active_image_path;
+    prepare_dream_skin_activation(temp.path(), &plain).unwrap();
+    assert!(!temp.path().join("dream-skin/theme/current.css").exists());
 }
 
 #[test]
