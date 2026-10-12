@@ -50,10 +50,24 @@ impl std::fmt::Display for SelectionError {
                 relay_id,
             } => write!(
                 formatter,
-                "聚合供应商「{aggregate_id}」成员「{relay_id}」缺少 API Base URL 或 Key"
+                "聚合供应商「{aggregate_id}」成员「{relay_id}」缺少可用的 API 配置或官方登录凭据"
             ),
         }
     }
+}
+
+/// 聚合成员可用性：普通 API 成员要求 base_url 与认证齐备；
+/// 官方登录成员要求是纯官方 profile 且快照里带 ChatGPT 登录凭据
+///（token 刷新在请求路径处理）。
+pub(crate) fn member_relay_ready(relay: &RelayProfile) -> bool {
+    if relay.relay_mode == crate::settings::RelayMode::Aggregate {
+        return false;
+    }
+    if crate::official_login::member_uses_official_login_transport(relay) {
+        return true;
+    }
+    !relay.base_url.trim().is_empty()
+        && (!relay.api_key.trim().is_empty() || relay.uses_no_auth())
 }
 
 impl std::error::Error for SelectionError {}
@@ -400,7 +414,7 @@ fn ensure_aggregate_has_members(aggregate: &AggregateRelayProfile) -> Result<(),
     Ok(())
 }
 
-/// 最终选中的普通策略成员严格校验：relay 必须存在且 base_url/api_key 非空
+/// 最终选中的普通策略成员严格校验：relay 必须存在且具备可用凭据
 fn selected_member_relay(
     settings: &BackendSettings,
     aggregate: &AggregateRelayProfile,
@@ -412,9 +426,7 @@ fn selected_member_relay(
             relay_id: relay_id.to_string(),
         }
     })?;
-    if relay.base_url.trim().is_empty()
-        || (relay.api_key.trim().is_empty() && !relay.uses_no_auth())
-    {
+    if !member_relay_ready(&relay) {
         return Err(SelectionError::InvalidMemberRelay {
             aggregate_id: aggregate.id.clone(),
             relay_id: relay_id.to_string(),
@@ -476,7 +488,7 @@ pub fn route_match_outcomes(
     match_route_for_aggregate(settings, &aggregate, model).1
 }
 
-/// 路由目标有效性：属于聚合成员且 relay 存在、base_url/api_key 非空。
+/// 路由目标有效性：属于聚合成员且 relay 存在且具备可用凭据。
 /// 除与 validate_aggregate_members 同标准外，额外要求目标必须在 aggregate.members 内，
 /// 避免路由把请求导向聚合外部的独立 relay
 fn relay_is_available(
@@ -495,10 +507,7 @@ fn relay_is_available(
         .relay_profiles
         .iter()
         .find(|profile| profile.id == relay_id)
-        .map(|profile| {
-            !profile.base_url.trim().is_empty()
-                && (!profile.api_key.trim().is_empty() || profile.uses_no_auth())
-        })
+        .map(member_relay_ready)
         .unwrap_or(false)
 }
 

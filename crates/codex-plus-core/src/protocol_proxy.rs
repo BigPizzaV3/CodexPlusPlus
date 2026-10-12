@@ -1952,6 +1952,34 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         for (attempt, relay) in relays.iter().cloned().enumerate() {
             let has_more_candidates = attempt + 1 < relay_count;
             validate_upstream(&relay)?;
+            // 官方登录成员：用该账号 OAuth 凭据发往 chatgpt.com，而不是 API Key。
+            let official_member =
+                crate::official_login::member_uses_official_login_transport(&relay);
+            let mut official_credential = if official_member {
+                match crate::official_login::resolve_official_credential(&relay, false).await {
+                    Ok(credential) => Some(credential),
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "protocol_proxy.official_login_unavailable",
+                            json!({
+                                "relayId": relay.id,
+                                "relayName": relay.name,
+                                "error": error.to_string()
+                            }),
+                        );
+                        if !strict_aggregate_model {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                        }
+                        if has_more_candidates {
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+            let official_base = official_member.then(crate::official_login::official_base_url);
             let channel_key = crate::channel_protection::key_for_relay(&relay);
             let mut channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
             let model_override = aggregate_model
@@ -1971,6 +1999,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     request_path,
                     model_override.as_deref(),
                     preserve_native_request,
+                    official_base.as_deref(),
                 )
                 .await
                 {
@@ -2017,6 +2046,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 original_user_agent,
                 beta_features,
                 session_headers,
+                official_credential.as_ref(),
             )
             .await
             {
@@ -2059,6 +2089,78 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("")
                 .to_string();
+
+            // 官方登录 token 可能在 exp 之前就被撤销：401 时强制刷新并原样重试一次，
+            // 仍失败再走正常的失败切换/返回路径。
+            if status_code == 401 && official_member {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.official_login_retry",
+                    json!({
+                        "relayId": relay.id,
+                        "relayName": relay.name,
+                        "endpoint": endpoint
+                    }),
+                );
+                drop(channel_permit);
+                match crate::official_login::resolve_official_credential(&relay, true).await {
+                    Ok(credential) => {
+                        official_credential = Some(credential);
+                        channel_permit =
+                            crate::channel_protection::acquire(&channel_key, &relay).await;
+                        match send_responses_upstream_request(
+                            &relay,
+                            &endpoint,
+                            &upstream_body,
+                            wire_api,
+                            is_stream,
+                            original_user_agent,
+                            beta_features,
+                            session_headers,
+                            official_credential.as_ref(),
+                        )
+                        .await
+                        {
+                            Ok(retried) => {
+                                upstream = retried;
+                                status_code = upstream.status().as_u16();
+                                content_type = upstream
+                                    .headers()
+                                    .get(reqwest::header::CONTENT_TYPE)
+                                    .and_then(|value| value.to_str().ok())
+                                    .unwrap_or("")
+                                    .to_string();
+                            }
+                            Err(error) => {
+                                drop(channel_permit);
+                                if !strict_aggregate_model {
+                                    crate::relay_rotation::record_relay_request_failure(&settings);
+                                }
+                                if has_more_candidates {
+                                    continue;
+                                }
+                                return Err(error).with_context(|| {
+                                    format!(
+                                        "供应商「{}」请求上游失败，endpoint: {}",
+                                        relay.name, endpoint
+                                    )
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "protocol_proxy.official_login_refresh_failed",
+                            json!({
+                                "relayId": relay.id,
+                                "relayName": relay.name,
+                                "error": error.to_string()
+                            }),
+                        );
+                        channel_permit =
+                            crate::channel_protection::acquire(&channel_key, &relay).await;
+                    }
+                }
+            }
 
             if probe_native_compaction {
                 let success = (200..300).contains(&status_code);
@@ -2214,6 +2316,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     request_path,
                     model_override.as_deref(),
                     false,
+                    official_base.as_deref(),
                 )
                 .await;
                 let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
@@ -2242,6 +2345,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     original_user_agent,
                     beta_features,
                     session_headers,
+                    official_credential.as_ref(),
                 )
                 .await
                 {
@@ -2435,7 +2539,19 @@ pub async fn open_models_proxy_request(
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     validate_upstream(&relay)?;
 
-    let endpoint = models_url(&relay.base_url);
+    // 官方登录成员没有 base_url：模型列表同样发往 chatgpt.com 后端并带账号身份。
+    let official_member = crate::official_login::member_uses_official_login_transport(&relay);
+    let official_credential = if official_member {
+        Some(crate::official_login::resolve_official_credential(&relay, false).await?)
+    } else {
+        None
+    };
+    let base_url = if official_member {
+        crate::official_login::official_base_url()
+    } else {
+        relay.base_url.clone()
+    };
+    let endpoint = models_url(&base_url);
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "protocol_proxy.models_request",
         json!({
@@ -2450,7 +2566,11 @@ pub async fn open_models_proxy_request(
         original_user_agent,
     ))?
     .get(endpoint);
-    let upstream = send_upstream_request(with_relay_auth(request, &relay)).await?;
+    let request = match &official_credential {
+        Some(credential) => with_official_login_auth(request, &relay, credential),
+        None => with_relay_auth(request, &relay),
+    };
+    let upstream = send_upstream_request(request).await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
@@ -2480,6 +2600,9 @@ pub async fn open_audio_transcriptions_proxy_request(
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     validate_upstream(&relay)?;
+    if crate::official_login::member_uses_official_login_transport(&relay) {
+        anyhow::bail!("音频转写暂不支持官方登录成员「{}」", relay.name);
+    }
     let content_type = content_type.trim();
     if content_type.is_empty() {
         anyhow::bail!("Audio transcriptions 请求缺少 Content-Type");
@@ -2589,6 +2712,9 @@ async fn open_image_proxy_request(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    if crate::official_login::member_uses_official_login_transport(&relay) {
+        anyhow::bail!("图片请求暂不支持官方登录成员「{}」", relay.name);
+    }
     let base_url = if relay.upstream_base_url.trim().is_empty() {
         crate::relay_config::relay_profile_base_url(&relay)
     } else {
@@ -2760,6 +2886,7 @@ async fn upstream_request_parts(
     request_path: &str,
     model_override: Option<&str>,
     preserve_compaction_trigger: bool,
+    official_base: Option<&str>,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi, bool)> {
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
@@ -2852,15 +2979,20 @@ async fn upstream_request_parts(
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
     };
+    // 官方登录成员没有用户填写的 base_url，固定发往 chatgpt.com 后端。
+    let endpoint_base = official_base
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(relay.base_url.trim());
     Ok((
         match relay.protocol {
             // v2 压缩请求走普通 /responses 端点（compaction_trigger 在 input 里）；
             // 显式 legacy compact 保留原端点。
             RelayProtocol::Responses if compact && !is_v2_compaction => {
-                responses_compact_url(&relay.base_url)
+                responses_compact_url(endpoint_base)
             }
-            RelayProtocol::Responses => responses_url(&relay.base_url),
-            RelayProtocol::ChatCompletions => chat_completions_url(&relay.base_url),
+            RelayProtocol::Responses => responses_url(endpoint_base),
+            RelayProtocol::ChatCompletions => chat_completions_url(endpoint_base),
         },
         body,
         wire_api,
@@ -2877,6 +3009,7 @@ async fn send_responses_upstream_request(
     original_user_agent: Option<&str>,
     beta_features: Option<&str>,
     session_headers: ProxySessionHeaders<'_>,
+    official_credential: Option<&crate::official_login::OfficialCredential>,
 ) -> anyhow::Result<reqwest::Response> {
     let mut builder = upstream_request_builder(
         crate::http_client::proxied_client(&effective_user_agent(
@@ -2887,6 +3020,7 @@ async fn send_responses_upstream_request(
         relay,
         is_stream,
         upstream_body,
+        official_credential,
     );
     builder = with_client_session_headers(builder, relay, session_headers);
     if wire_api == UpstreamWireApi::Responses {
@@ -2903,11 +3037,15 @@ fn upstream_request_builder(
     relay: &crate::settings::RelayProfile,
     is_stream: bool,
     upstream_body: &Value,
+    official_credential: Option<&crate::official_login::OfficialCredential>,
 ) -> reqwest::RequestBuilder {
     let mut builder = client
         .post(endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
-    builder = with_relay_auth(builder, relay);
+    builder = match official_credential {
+        Some(credential) => with_official_login_auth(builder, relay, credential),
+        None => with_relay_auth(builder, relay),
+    };
     if is_stream {
         builder = builder
             .header(reqwest::header::ACCEPT, "text/event-stream")
@@ -2917,6 +3055,17 @@ fn upstream_request_builder(
 }
 
 fn validate_upstream(relay: &crate::settings::RelayProfile) -> anyhow::Result<()> {
+    // 纯官方 profile 没有 URL/Key：凭据齐全时走官方登录通道，否则给出可行动的错误。
+    if crate::official_login::is_official_login_profile(relay) && relay.base_url.trim().is_empty()
+    {
+        if crate::official_login::official_login_available(relay) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "官方登录成员「{}」缺少 ChatGPT 登录凭据，请先在管理器中完成或导入官方登录",
+            relay.name
+        );
+    }
     if relay.base_url.trim().is_empty() {
         anyhow::bail!("上游 Base URL 不能为空");
     }
@@ -2932,6 +3081,29 @@ fn with_relay_auth(
 ) -> reqwest::RequestBuilder {
     // 认证（API Key / 无认证）+ 供应商自定义请求头，统一在 relay_headers 里决定优先级。
     crate::relay_headers::apply(request, relay)
+}
+
+/// 官方登录成员的上游认证：OAuth Bearer + `chatgpt-account-id`，
+/// 供应商自定义头照常保留（显式 `Authorization` 除外，官方身份不能被用户头覆盖）。
+fn with_official_login_auth(
+    mut builder: reqwest::RequestBuilder,
+    relay: &crate::settings::RelayProfile,
+    credential: &crate::official_login::OfficialCredential,
+) -> reqwest::RequestBuilder {
+    // originator 是官方后端识别客户端来源的固定头（Codex CLI 同值）。
+    builder = builder
+        .bearer_auth(credential.access_token.trim())
+        .header("originator", "codex_cli_rs");
+    if !credential.account_id.trim().is_empty() {
+        builder = builder.header("chatgpt-account-id", credential.account_id.trim());
+    }
+    let custom_headers: Vec<crate::settings::RelayHeaderKeyValue> = relay
+        .custom_headers
+        .iter()
+        .filter(|header| !header.key.trim().eq_ignore_ascii_case("authorization"))
+        .cloned()
+        .collect();
+    crate::relay_headers::apply_headers(builder, &custom_headers)
 }
 
 fn with_client_session_headers(
@@ -7823,6 +7995,7 @@ mod relay_custom_header_tests {
             relay,
             false,
             &serde_json::json!({ "model": "m" }),
+            None,
         )
         .build()
         .unwrap()

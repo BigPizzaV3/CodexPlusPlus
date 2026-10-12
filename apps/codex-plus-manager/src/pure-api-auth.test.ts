@@ -6,6 +6,7 @@ import ts from "typescript";
 import { modelSlugFromRowName, suffixWindowString } from "./model-metadata.ts";
 import { normalizeRelayModelRoutes } from "./model-routes.ts";
 import { sessionProviderForProtocol } from "./relay-session.ts";
+import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members.ts";
 
 // 执行 App 中实际使用的配置 helper，避免把另一份实现复制进测试。
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
@@ -38,6 +39,7 @@ const context = vm.createContext({
   PROTOCOL_PROXY_BASE_URL: "http://127.0.0.1:57321/v1",
   CHAT_UPSTREAM_BASE_URL_KEY: "codex_plus_chat_base_url",
   normalizeRelayModelRoutes, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
+  aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile,
 });
 vm.runInContext(code, context);
 

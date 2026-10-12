@@ -155,6 +155,7 @@ import {
   type ModelWindowRow,
 } from "./model-windows";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
+import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
@@ -4668,10 +4669,10 @@ function RelayScreen({
     const draft = createAggregateRelayProfile(normalized);
     setDetailProfileId(null);
     setNewProfileDraft(draft);
-    if (!normalizeAggregateConfig(draft.aggregate, aggregateMemberCandidates(normalized, draft.id)).members.length) {
+    if (!normalizeAggregateConfig(draft.aggregate, aggregateMemberCandidates(normalized.relayProfiles, draft.id)).members.length) {
       void actions.showMessage(
         t("创建聚合供应商"),
-        t("已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。"),
+        t("已打开聚合供应商详情；请先添加或完善至少 1 个 API 供应商，或登录一个官方账号，再勾选为成员。"),
         "failed",
       );
     }
@@ -9871,7 +9872,7 @@ function AggregateRelayProfileEditor({
   form: BackendSettings;
   onProfileChange: (value: RelayProfile) => void;
 }) {
-  const candidates = aggregateMemberCandidates(form, profile.id);
+  const candidates = aggregateMemberCandidates(form.relayProfiles, profile.id);
   const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
   const modelMode = aggregate.modelAggregationEnabled === true;
   const memberIds = new Set(aggregate.members.map((member) => member.profileId));
@@ -9987,7 +9988,7 @@ function AggregateRelayProfileEditor({
         <div className="aggregate-members-head">
           <div>
             <strong>{t("成员供应商")}</strong>
-            <span>{t("只能勾选已填写 Base URL / Key 的 API 供应商，聚合供应商不会作为成员。")}</span>
+            <span>{t("可勾选 API 供应商或已完成 ChatGPT 登录的官方账号；聚合供应商不会作为成员。")}</span>
           </div>
           <UiBadge variant="outline">{aggregate.members.length} / {candidates.length}</UiBadge>
         </div>
@@ -10005,11 +10006,20 @@ function AggregateRelayProfileEditor({
                   />
                   <span className="aggregate-member-summary">
                     <strong>{candidate.name || t("未命名供应商")}</strong>
-                    <small>{relayProfileModeLabel(candidate)} · {relayProtocolLabel(candidate.protocol)} · {relayProfileConfigBrief(candidate)}</small>
+                    <small>
+                      {relayProfileModeLabel(candidate)} · {relayProtocolLabel(candidate.protocol)} ·{" "}
+                      {isOfficialLoginMemberProfile(candidate)
+                        ? t("使用已登录的 ChatGPT 账号凭据")
+                        : relayProfileConfigBrief(candidate)}
+                    </small>
                   </span>
                   {modelMode ? (
                     <span className="aggregate-member-models">
-                      {candidate.modelList || candidate.model || t("未填写模型")}
+                      {candidate.modelList
+                        || candidate.model
+                        || (isOfficialLoginMemberProfile(candidate)
+                          ? t("请填写该官方账号的模型列表")
+                          : t("未填写模型"))}
                     </span>
                   ) : (
                     <span className="aggregate-weight-box">
@@ -10028,7 +10038,7 @@ function AggregateRelayProfileEditor({
             })}
           </div>
         ) : (
-          <div className="empty">{t("先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。")}</div>
+          <div className="empty">{t("先添加至少 1 个可用的 API 供应商或官方登录账号，再创建聚合供应商。")}</div>
         )}
       </div>
       {!modelMode ? <div className="aggregate-routes">
@@ -13768,7 +13778,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
 function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `aggregate-${Date.now().toString(36)}`;
   const contextSelection = contextSelectionForAllEntries(settings);
-  const candidates = aggregateMemberCandidates(settings, id);
+  const candidates = aggregateMemberCandidates(settings.relayProfiles, id);
   return normalizeAggregateRelayProfile(
     {
       id,
@@ -13919,7 +13929,7 @@ const aggregateStrategyOptions: Array<{ value: RelayAggregateStrategy; label: st
 ];
 
 function isAggregateRelayProfile(profile: Pick<RelayProfile, "relayMode" | "aggregate">): boolean {
-  return profile.relayMode === "aggregate" || !!profile.aggregate;
+  return isAggregateProfile(profile);
 }
 
 function relayProviderView(profile: RelayProfile): "direct" | "routing" | "aggregate" {
@@ -13930,7 +13940,7 @@ function relayProviderView(profile: RelayProfile): "direct" | "routing" | "aggre
 }
 
 function normalizeAggregateRelayProfile(profile: RelayProfile, settings: BackendSettings | null): RelayProfile {
-  const candidates = settings ? aggregateMemberCandidates(settings, profile.id) : [];
+  const candidates = settings ? aggregateMemberCandidates(settings.relayProfiles, profile.id) : [];
   const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
   return {
     ...profile,
@@ -14000,16 +14010,6 @@ function normalizeAggregateConfig(
   };
 }
 
-function aggregateMemberCandidates(settings: BackendSettings, aggregateId: string): RelayProfile[] {
-  return settings.relayProfiles.filter(
-    (profile) => profile.id !== aggregateId && !isAggregateRelayProfile(profile) && isApiRelayProfile(profile),
-  );
-}
-
-function isApiRelayProfile(profile: RelayProfile): boolean {
-  return Boolean(profile.baseUrl.trim() && profile.apiKey.trim());
-}
-
 function clampAggregateWeight(value: number): number {
   if (!Number.isFinite(value)) return 1;
   return Math.max(1, Math.min(999, Math.round(value)));
@@ -14029,7 +14029,7 @@ function aggregateStrategyHelp(strategy: RelayAggregateStrategy): string {
 function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
   const aggregate = normalizeAggregateConfig(profile.aggregate, []);
   if (aggregate.members.length < 1) {
-    return t("聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。");
+    return t("聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。");
   }
   const issues = validateAggregateRoutes(
     aggregate.routes ?? [],

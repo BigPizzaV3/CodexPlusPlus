@@ -608,8 +608,8 @@ export const EN_PLAIN: Record<string, string> = {
   "修复入口": "Repair entrypoints",
   "修复快捷方式": "Repair shortcuts",
   "健康检查": "Health check",
-  "先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。":
-    "Add at least 1 API provider with a Base URL / Key before creating an aggregate provider.",
+  "先添加至少 1 个可用的 API 供应商或官方登录账号，再创建聚合供应商。":
+    "Add at least 1 usable API provider or signed-in official account before creating an aggregate provider.",
   "免安装版或解包版只需要选择一次，之后从界面启动会自动复用": "Portable or unpacked builds only need to be selected once; launching from the window reuses it afterwards",
   "入口卸载": "Entrypoint uninstall",
   "入口安装": "Entrypoint install",
@@ -715,8 +715,10 @@ export const EN_PLAIN: Record<string, string> = {
     "Keeps only cross-provider config that isn't MCP/Skills/Plugins; tools and plugins are managed on a separate page.",
   "只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]":
     "Fill in only the content under the header, for example:\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]",
-  "只能勾选已填写 Base URL / Key 的 API 供应商，聚合供应商不会作为成员。":
-    "Only API providers with a Base URL / Key can be selected; aggregate providers can't be members.",
+  "可勾选 API 供应商或已完成 ChatGPT 登录的官方账号；聚合供应商不会作为成员。":
+    "API providers or official accounts with a completed ChatGPT login can be selected; aggregate providers can't be members.",
+  "使用已登录的 ChatGPT 账号凭据": "Uses the signed-in ChatGPT account credentials",
+  "请填写该官方账号的模型列表": "Fill in this official account's model list",
   "可更新": "Update available",
   "同一对话保持一个成员，不同对话依次分配。": "Keeps one member per conversation; different conversations are assigned in turn.",
   "同步目标": "Sync target",
@@ -798,8 +800,8 @@ export const EN_PLAIN: Record<string, string> = {
   "已受理": "Accepted",
   "已安装": "Installed",
   "已归档": "Archived",
-  "已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。":
-    "Opened aggregate provider details; first add or complete the Base URL / Key of at least 1 regular API provider, then select it as a member.",
+  "已打开聚合供应商详情；请先添加或完善至少 1 个 API 供应商，或登录一个官方账号，再勾选为成员。":
+    "Opened aggregate provider details; first add or complete at least 1 API provider, or sign in an official account, then select it as a member.",
   "已找到": "Found",
   "已检测": "Detected",
   "已注册": "Registered",
@@ -1065,8 +1067,8 @@ export const EN_PLAIN: Record<string, string> = {
     "Aggregate providers only store member and strategy config drawn from existing API providers; once active, requests rotate through the local protocol proxy.",
   "此聚合会把成员模型合并到 Codex 列表；带供应商前缀的模型固定发送到对应成员，普通模型仍按策略轮转。":
     "This aggregate merges member models into the Codex list; prefixed models stay bound to their member, while plain model names still follow the strategy.",
-  "聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。":
-    "An aggregate provider needs at least 1 selected API provider with a Base URL / Key filled in.",
+  "聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。":
+    "An aggregate provider needs at least 1 usable member (an API provider or a signed-in official account).",
   "聚合策略": "Aggregate strategy",
   "按模型聚合": "Aggregate by model",
   "按供应商聚合": "Aggregate by provider",

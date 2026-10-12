@@ -268,6 +268,56 @@ fn aggregate_members_must_be_api_capable_relay_profiles() {
     );
 }
 
+/// 官方登录成员：快照带 ChatGPT 凭据时参与轮转，选中后原样返回给代理层凭据解析。
+#[test]
+fn aggregate_members_accept_official_login_profiles_with_credentials() {
+    let mut settings = settings(AggregateRelayStrategy::RequestRoundRobin);
+    settings.relay_profiles.push(RelayProfile {
+        id: "official-login".to_string(),
+        name: "官方登录".to_string(),
+        relay_mode: RelayMode::Official,
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"access","refresh_token":"refresh","account_id":"acct-1"}}"#.to_string(),
+        ..RelayProfile::default()
+    });
+    settings.aggregate_relay_profiles[0].members = vec![AggregateRelayMember {
+        relay_id: "official-login".to_string(),
+        weight: 1,
+    }];
+
+    let mut selector = RelayRotationSelector::from_settings(&settings).unwrap();
+    let selected = selector
+        .select(&settings, RotationContext::default())
+        .unwrap();
+    assert_eq!(selected.id, "official-login");
+    assert!(codex_plus_core::official_login::is_official_login_profile(
+        &selected
+    ));
+}
+
+/// 只有 refresh token（access 缺失）也算可用：请求路径会先刷新再发。
+#[test]
+fn official_member_with_refresh_token_only_stays_selectable() {
+    let mut settings = settings(AggregateRelayStrategy::RequestRoundRobin);
+    settings.relay_profiles.push(RelayProfile {
+        id: "official-login".to_string(),
+        name: "官方登录".to_string(),
+        relay_mode: RelayMode::Official,
+        auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"refresh_token":"refresh","account_id":"acct-1"}}"#.to_string(),
+        ..RelayProfile::default()
+    });
+    settings.aggregate_relay_profiles[0].members = vec![AggregateRelayMember {
+        relay_id: "official-login".to_string(),
+        weight: 1,
+    }];
+    settings.aggregate_relay_profiles[0].routes = Vec::new();
+
+    let mut selector = RelayRotationSelector::from_settings(&settings).unwrap();
+    let selected = selector
+        .select(&settings, RotationContext::default())
+        .unwrap();
+    assert_eq!(selected.id, "official-login");
+}
+
 #[test]
 fn aggregate_members_accept_no_auth_pure_api_profiles() {
     let mut settings = settings(AggregateRelayStrategy::RequestRoundRobin);

@@ -4204,6 +4204,230 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
     );
 }
 
+/// 官方登录成员：聚合代理用该账号 OAuth 凭据把请求转发到 chatgpt.com 后端，
+/// 带 OAuth Bearer 与 `chatgpt-account-id`，不能带供应商 API Key。
+#[tokio::test]
+async fn aggregate_official_member_forwards_with_oauth_credentials() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_json_request_once(listener));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+
+    let official_id = "proxy-official-login".to_string();
+    let aggregate_id = "proxy-official-agg".to_string();
+    let settings = BackendSettings {
+        relay_profiles: vec![
+            RelayProfile {
+                id: official_id.clone(),
+                name: "官方登录".to_string(),
+                relay_mode: RelayMode::Official,
+                auth_contents: json!({
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "official-access",
+                        "refresh_token": "official-refresh",
+                        "account_id": "acct-official"
+                    }
+                })
+                .to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: aggregate_id.clone(),
+                name: "aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        active_relay_id: aggregate_id.clone(),
+        active_aggregate_relay_id: aggregate_id.clone(),
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: aggregate_id,
+            name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: official_id,
+                weight: 1,
+            }],
+            routes: Vec::new(),
+        }],
+        ..BackendSettings::default()
+    };
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-sol","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let (headers, body) = server.await.unwrap();
+    let headers_lower = headers.to_ascii_lowercase();
+    assert!(
+        headers.starts_with("POST /backend-api/codex/responses HTTP/1.1"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("authorization: bearer official-access"),
+        "{headers}"
+    );
+    assert!(
+        headers_lower.contains("chatgpt-account-id: acct-official"),
+        "{headers}"
+    );
+    assert!(headers_lower.contains("originator: codex_cli_rs"), "{headers}");
+    assert!(!headers_lower.contains("sk-"), "{headers}");
+    assert_eq!(body["model"], "gpt-5.6-sol");
+}
+
+/// 官方登录 token 被提前撤销：第一次 401 后强制刷新一次并原样重试，
+/// 第二次请求带刷新后的 Bearer；refresh 请求带轮换前的 refresh token。
+#[tokio::test]
+async fn aggregate_official_member_refreshes_and_retries_after_401() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+
+    let upstream = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    let upstream_server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        let (mut first, _) = upstream.accept().await.unwrap();
+        requests.push(read_http_request(&mut first).await);
+        first
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 2\r\ncontent-type: application/json\r\n\r\n{}",
+            )
+            .await
+            .unwrap();
+        drop(first);
+        let (mut second, _) = upstream.accept().await.unwrap();
+        requests.push(read_http_request(&mut second).await);
+        second
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 35\r\ncontent-type: application/json\r\n\r\n{\"id\":\"resp_1\",\"object\":\"response\"}",
+            )
+            .await
+            .unwrap();
+        requests
+    });
+    let token = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let token_addr = token.local_addr().unwrap();
+    let token_server = tokio::spawn(async move {
+        let (mut stream, _) = token.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        let body = r#"{"access_token":"refreshed-access","refresh_token":"refreshed-refresh"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/json\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+
+    let _base_env = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{upstream_addr}/backend-api/codex"),
+    );
+    let _token_env = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_TOKEN_URL",
+        &format!("http://{token_addr}/oauth/token"),
+    );
+
+    let official_id = "proxy-official-401".to_string();
+    let aggregate_id = "proxy-official-401-agg".to_string();
+    let settings = BackendSettings {
+        relay_profiles: vec![
+            RelayProfile {
+                id: official_id.clone(),
+                name: "官方登录".to_string(),
+                relay_mode: RelayMode::Official,
+                auth_contents: json!({
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "official-access",
+                        "refresh_token": "official-refresh",
+                        "account_id": "acct-official"
+                    }
+                })
+                .to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: aggregate_id.clone(),
+                name: "aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        active_relay_id: aggregate_id.clone(),
+        active_aggregate_relay_id: aggregate_id.clone(),
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: aggregate_id,
+            name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: official_id,
+                weight: 1,
+            }],
+            routes: Vec::new(),
+        }],
+        ..BackendSettings::default()
+    };
+
+    let result = open_responses_proxy_request_with_settings(
+        r#"{"model":"gpt-5.6-sol","input":"hi","stream":false}"#,
+        settings,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let requests = upstream_server.await.unwrap();
+    assert!(
+        requests[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer official-access"),
+        "{}",
+        requests[0]
+    );
+    assert!(
+        requests[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer refreshed-access"),
+        "{}",
+        requests[1]
+    );
+    let token_request = token_server.await.unwrap();
+    assert!(
+        token_request.contains("grant_type=refresh_token"),
+        "{token_request}"
+    );
+    assert!(
+        token_request.contains("refresh_token=official-refresh"),
+        "{token_request}"
+    );
+}
+
 #[tokio::test]
 async fn model_route_uses_target_responses_provider_without_mutating_request() {
     let target = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -4614,6 +4838,38 @@ async fn capture_request_and_respond_once(
     let request = String::from_utf8_lossy(&buffer[..read]).to_string();
     stream.write_all(response.as_bytes()).await.unwrap();
     request
+}
+
+/// 从已接受的连接读完整请求（头 + content-length 指定的 body）。
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+    let mut buffer = Vec::new();
+    let mut chunk = [0; 4096];
+    let (header_end, content_length) = loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before headers completed");
+        buffer.extend_from_slice(&chunk[..read]);
+        let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&buffer[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        break (header_end + 4, content_length);
+    };
+    while buffer.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before body completed");
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8_lossy(&buffer).to_string()
 }
 
 async fn capture_json_request_once(
@@ -5328,6 +5584,34 @@ fn write_no_auth_relay_settings(settings_dir: &Path, base_url: &str, protocol: &
 
 struct SettingsPathGuard {
     previous: Option<PathBuf>,
+}
+
+/// 官方登录相关地址的测试覆盖（生产默认 chatgpt.com / auth.openai.com）。
+/// 这些环境变量只影响官方登录成员，测试内串行使用。
+struct EnvVarGuard {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
 }
 
 fn settings_path_test_lock() -> &'static Mutex<()> {

@@ -873,27 +873,34 @@ pub fn apply_pure_api_config_to_home_with_session_provider(
     })
 }
 
-/// 官方登录的接入地址。官方 profile 的 `configContents` 在管理端归一化时会被清空
-/// （App.tsx 里 `relayMode === "official"` 分支写空串），于是 `relay_profile_base_url`
-/// 返回空串、被下面的空值校验直接拒绝 —— 而官方模式下界面根本没有 base_url 输入框，
-/// 用户无处可填（issue #1488）。这里给官方模式兜一个内置地址。
-const OFFICIAL_LOGIN_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
-
 pub async fn test_relay_profile(
     profile: &RelayProfile,
     model: &str,
 ) -> anyhow::Result<RelayProfileTestResult> {
+    // 官方 profile 的 `configContents` 在管理端归一化时会被清空
+    // （App.tsx 里 `relayMode === "official"` 分支写空串），于是 `relay_profile_base_url`
+    // 返回空串、被下面的空值校验直接拒绝 —— 而官方模式下界面根本没有 base_url 输入框，
+    // 用户无处可填（issue #1488）。这里给官方模式兜一个内置地址。
     let mut base_url = relay_profile_base_url(profile);
     if base_url.trim().is_empty()
         && profile.relay_mode == crate::settings::RelayMode::Official
     {
-        base_url = OFFICIAL_LOGIN_BASE_URL.to_string();
+        base_url = crate::official_login::official_base_url();
     }
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
     }
-    let api_key = relay_profile_api_key(profile);
+    // 纯官方登录 profile 没有 API Key，测试请求同样要带该账号的 OAuth access token。
+    let api_key = if crate::official_login::is_official_login_profile(profile)
+        && crate::official_login::official_login_available(profile)
+    {
+        crate::official_login::resolve_official_credential(profile, false)
+            .await?
+            .access_token
+    } else {
+        relay_profile_api_key(profile)
+    };
     let api_key = api_key.trim();
     if api_key.is_empty() && !profile.uses_no_auth() {
         anyhow::bail!("API Key 不能为空");

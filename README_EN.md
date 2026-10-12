@@ -66,13 +66,15 @@ Official login, mixed API, and pure API are stored and switched separately:
 | Official login | Use only the official ChatGPT / Codex account | Removes custom providers and API keys while preserving official login state |
 | Official login + API | Keep official account features and plugins while routing model requests to a compatible API | Stores the key as a provider bearer token, not in pure API `auth.json` |
 | Pure API | Use a custom Base URL and key without an official account | Maintains independent `config.toml` and API-key auth without mixing official credentials |
-| Aggregate provider | Fail over or rotate across ordinary API providers, or bind catalog models to specific members | Supports failover, conversation round-robin, request round-robin, weighted round-robin, and opt-in model aggregation |
+| Aggregate provider | Fail over or rotate across providers, or bind catalog models to specific members | Members can be ordinary API providers or signed-in official accounts; supports failover, conversation round-robin, request round-robin, weighted round-robin, and opt-in model aggregation |
 
 Each provider can configure Responses or Chat Completions, model lists, a test model, User-Agent, context windows, auto-compact limits, and enabled MCP servers, Skills, and Plugins. Chat Completions can be converted locally into the Responses protocol used by Codex.
 
 Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
 When creating an aggregate provider, first choose **Aggregate by provider** or **Aggregate by model**. The two modes have separate forms and runtime behavior. Model aggregation merges member models into Codex's model list and binds `cpx-<provider-id>/` entries to that member; provider aggregation uses failover, rotation, and weights. Each member keeps its own model list, context window, and auto-compact settings.
+
+Members can be ordinary API providers or official accounts with a completed ChatGPT login. For official members the proxy sends requests to the chatgpt.com backend with that account's OAuth credentials, refreshes the access token with its refresh token when needed (writing the rotated tokens back to the provider snapshot), and retries once after a 401. When the same account is also used directly, the live auth.json credentials take precedence so refresh-token rotation cannot invalidate the snapshot.
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
 

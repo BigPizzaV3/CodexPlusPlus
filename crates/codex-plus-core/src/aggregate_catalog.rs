@@ -92,7 +92,8 @@ pub fn resolve_active_model(
         })
 }
 
-/// 生成前和请求前使用相同的成员校验，不能把官方登录或另一个聚合当作 API 成员。
+/// 生成前和请求前使用相同的成员校验：普通 API 成员要 URL/Key 齐备，
+/// 官方登录成员要有 ChatGPT 登录凭据；另一个聚合不能当成员。
 fn member_profiles<'a>(
     settings: &'a BackendSettings,
     aggregate: &AggregateRelayProfile,
@@ -108,17 +109,11 @@ fn member_profiles<'a>(
             .iter()
             .find(|relay| relay.id == member.relay_id)
             .with_context(|| format!("聚合成员供应商不存在：{}", member.relay_id))?;
-        let base_url = if relay.upstream_base_url.trim().is_empty() {
-            relay.base_url.trim()
-        } else {
-            relay.upstream_base_url.trim()
-        };
-        if relay.relay_mode == RelayMode::Aggregate
-            || (relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key)
-            || base_url.is_empty()
-            || (relay.api_key.trim().is_empty() && !relay.uses_no_auth())
-        {
-            anyhow::bail!("聚合成员「{}」需要可用的 API 地址与认证配置", relay.name);
+        if !crate::relay_rotation::member_relay_ready(relay) {
+            anyhow::bail!(
+                "聚合成员「{}」需要可用的 API 地址与认证配置，或完成官方登录",
+                relay.name
+            );
         }
         members.push(relay);
     }
@@ -390,5 +385,54 @@ mod tests {
         assert!(error.to_string().contains("cpx-removed/old-model"));
         let plain_error = resolve_active_model(&settings, "deepseek-chat").unwrap_err();
         assert!(plain_error.to_string().contains("按模型聚合需要选择"));
+    }
+
+    #[test]
+    fn official_login_member_publishes_models_with_member_prefix() {
+        let mut settings = settings();
+        settings.relay_profiles.push(RelayProfile {
+            id: "official".to_string(),
+            name: "官方登录".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            relay_mode: RelayMode::Official,
+            auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"a","refresh_token":"r","account_id":"acct-1"}}"#.to_string(),
+            ..RelayProfile::default()
+        });
+        settings.aggregate_relay_profiles[0]
+            .members
+            .push(AggregateRelayMember {
+                relay_id: "official".to_string(),
+                weight: 1,
+            });
+
+        let bindings = active_model_bindings(&settings).unwrap();
+        assert!(bindings.iter().any(|binding| {
+            binding.catalog_model == "cpx-official/gpt-5.6-sol"
+                && binding.upstream_model == "gpt-5.6-sol"
+                && binding.relay_id == "official"
+        }));
+        assert!(resolve_active_model(&settings, "cpx-official/gpt-5.6-sol")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn official_member_without_login_is_rejected() {
+        let mut settings = settings();
+        settings.relay_profiles.push(RelayProfile {
+            id: "official".to_string(),
+            name: "官方登录".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            relay_mode: RelayMode::Official,
+            ..RelayProfile::default()
+        });
+        settings.aggregate_relay_profiles[0]
+            .members
+            .push(AggregateRelayMember {
+                relay_id: "official".to_string(),
+                weight: 1,
+            });
+        let error = active_model_bindings(&settings).unwrap_err();
+        assert!(error.to_string().contains("官方登录"), "{error}");
     }
 }
