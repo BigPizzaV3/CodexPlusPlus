@@ -8131,10 +8131,10 @@ function RelayProfileDetail({
   const showDoctor = !aggregateProfile && (draft.relayMode !== "official" || draft.officialMixApiKey);
   const detailStatus = aggregateProfile
     ? aggregateModeRequired
-      ? t("先选择聚合方式")
+      ? t("先选择类型")
       : draft.aggregate?.modelAggregationEnabled === true
-        ? t("按模型聚合：模型固定绑定供应商")
-        : t("按供应商聚合：按策略分配请求")
+        ? t("模型聚合：模型固定绑定供应商")
+        : t("故障转移：按策略分配请求")
     : relayProfileEditorStatus(draft, form, isNew);
   return (
     <div className="relay-detail-page" key={profile.id}>
@@ -8160,7 +8160,7 @@ function RelayProfileDetail({
           ) : null}
           {aggregateProfile ? (
             <UiBadge variant="secondary">{aggregateModeRequired ? t("聚合")
-              : draft.aggregate?.modelAggregationEnabled === true ? t("按模型聚合") : t("按供应商聚合")}</UiBadge>
+              : draft.aggregate?.modelAggregationEnabled === true ? t("模型聚合") : t("故障转移")}</UiBadge>
           ) : isNew ? null : (
             <Button
               disabled={!form.relayProfilesEnabled || actions.relaySwitching}
@@ -8174,7 +8174,7 @@ function RelayProfileDetail({
           <Button
             disabled={savingDraft || !!validationError || !!modelRowsError || aggregateModeRequired}
             onClick={() => void saveDraft()}
-            title={aggregateModeRequired ? t("先选择聚合方式") : validationError || modelRowsError || t("保存")}
+            title={aggregateModeRequired ? t("先选择类型") : validationError || modelRowsError || t("保存")}
             type="button"
           >
             <Save className="h-4 w-4" />
@@ -9875,16 +9875,16 @@ function AggregateModeChooser({ onSelect }: { onSelect: (mode: AggregateMode) =>
   return (
     <div className="aggregate-mode-chooser">
       <div className="aggregate-mode-chooser-copy">
-        <h2>{t("先选择聚合方式")}</h2>
-        <p>{t("两种方式配置彼此独立；选择后只显示对应的成员和路由表单。")}</p>
+        <h2>{t("先选择类型")}</h2>
+        <p>{t("故障转移与模型聚合彼此独立；选择后只显示对应的成员和路由表单。")}</p>
       </div>
       <div className="aggregate-mode-choice-grid">
         <button className="mode-option aggregate-mode-choice" onClick={() => onSelect("provider")} type="button">
-          <strong>{t("按供应商聚合")}</strong>
-          <span>{t("多个 API 供应商组成轮转池，支持失败切换、会话轮转、请求轮转和权重。")}</span>
+          <strong>{t("故障转移")}</strong>
+          <span>{t("多个供应商组成请求池，支持失败切换、会话轮转、请求轮转和权重。")}</span>
         </button>
         <button className="mode-option aggregate-mode-choice" onClick={() => onSelect("model")} type="button">
-          <strong>{t("按模型聚合")}</strong>
+          <strong>{t("模型聚合")}</strong>
           <span>{t("把成员模型合并到 Codex 列表，选择模型后固定发送到对应供应商。")}</span>
         </button>
       </div>
@@ -9958,7 +9958,7 @@ function AggregateRelayProfileEditor({
           />
         </Field>
         <Field label={t("聚合方式")}>
-          <UiBadge variant="secondary">{modelMode ? t("按模型聚合") : t("按供应商聚合")}</UiBadge>
+          <UiBadge variant="secondary">{modelMode ? t("模型聚合") : t("故障转移")}</UiBadge>
           <p className="field-hint">{t("此配置的聚合方式固定；需要另一种方式时，请创建新的聚合配置。")}</p>
         </Field>
         {!modelMode ? <Field className="relay-field-test-model" label={t("测试模型")}>
@@ -10009,7 +10009,7 @@ function AggregateRelayProfileEditor({
         </div>
       ) : (
         <div className="aggregate-model-mode-hint">
-          <strong>{t("按模型聚合已启用")}</strong>
+          <strong>{t("模型聚合已启用")}</strong>
           <span>{t("成员模型会生成带供应商前缀的 Codex 模型；本模式不使用轮转策略或通配符路由。")}</span>
         </div>
       )}
@@ -10142,7 +10142,7 @@ function AggregateRelayProfileEditor({
         </>
       ) : (
         <div className="relay-grid compact aggregate-preview">
-          <Metric label={t("模式")} value={t("按模型聚合")} />
+          <Metric label={t("模式")} value={t("模型聚合")} />
           <Metric label={t("成员数量")} value={tf("{0} 个", [aggregate.members.length])} />
           <Metric label={t("模型来源")} value={t("沿用成员供应商模型列表")} />
           <Metric label={t("绑定方式")} value={t("供应商前缀 + 真实模型名")} />
@@ -12848,8 +12848,10 @@ function relayEditorMode(profile: Pick<RelayProfile, "relayMode" | "officialMixA
   return "official";
 }
 
-function relayProfileModeLabel(profile: Pick<RelayProfile, "relayMode" | "officialMixApiKey">): string {
-  if (profile.relayMode === "aggregate") return relayModeLabel(profile.relayMode);
+function relayProfileModeLabel(profile: Pick<RelayProfile, "relayMode" | "officialMixApiKey" | "aggregate">): string {
+  if (profile.relayMode === "aggregate") {
+    return profile.aggregate?.modelAggregationEnabled === true ? t("模型聚合") : t("故障转移");
+  }
   return relayEditorMode(profile) === "mixedApi" ? t("官方登录 + API") : relayModeLabel(profile.relayMode);
 }
 
