@@ -5633,7 +5633,7 @@ input[type="range"]:disabled {
 .relay-model-row {
   display: grid;
   min-width: 0;
-  grid-template-columns: 28px minmax(120px, 1.5fr) minmax(70px, 0.6fr) minmax(62px, 0.5fr) minmax(104px, 0.85fr) minmax(86px, 0.7fr) 32px 32px;
+  grid-template-columns: 28px minmax(108px, 1.4fr) minmax(64px, 0.55fr) minmax(84px, 0.7fr) minmax(104px, 0.9fr) minmax(116px, 1fr) 30px 30px;
   align-items: center;
   gap: 6px;
   min-height: var(--relay-control-height);
@@ -5651,6 +5651,14 @@ input[type="range"]:disabled {
 .relay-model-row input {
   min-width: 0;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+/* 模型行内的下拉收紧内边距与图标间距，把宽度让给文字：
+   避免「90%」只显示成「9…」、「low → ultra」显示成「low → …」。 */
+.relay-model-row .app-select-trigger {
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
 }
 
 .relay-model-cell {
