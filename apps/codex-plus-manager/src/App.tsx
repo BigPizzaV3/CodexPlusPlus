@@ -417,6 +417,7 @@ export type RelayProfile = {
 };
 
 type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
+type AggregateMode = "provider" | "model";
 type RelayAggregateMember = {
   profileId: string;
   weight: number;
@@ -7786,7 +7787,8 @@ function RelayProfileDetail({
     modelVlm: currentModelState.modelVlm,
   }) !== JSON.stringify(persistedModelState);
   const saveDraft = async () => {
-    if (savingDraft || validationError || modelRowsError) return;
+    if (savingDraft || validationError || modelRowsError
+      || (isNew && isAggregateRelayProfile(draft) && aggregateMode === null)) return;
     setSavingDraft(true);
     try {
       const draftWithWindows = draftWithModelRows();
@@ -7847,11 +7849,19 @@ function RelayProfileDetail({
     setDoctorRunning(false);
   };
   const aggregateProfile = isAggregateRelayProfile(draft);
+  const aggregateModeRequired = isNew && aggregateProfile && aggregateMode === null;
+  const selectAggregateMode = (mode: AggregateMode) => {
+    if (!aggregateProfile) return;
+    setAggregateMode(mode);
+    setDraft(aggregateProfileForMode(draft, form, mode));
+  };
   const showDoctor = !aggregateProfile && (draft.relayMode !== "official" || draft.officialMixApiKey);
   const detailStatus = aggregateProfile
-    ? isNew
-      ? t("选择已有供应商作为成员，保存后写入 settings payload")
-      : t("聚合配置只引用已有供应商，不复制 Key 和配置文件")
+    ? aggregateModeRequired
+      ? t("先选择聚合方式")
+      : draft.aggregate?.modelAggregationEnabled === true
+        ? t("按模型聚合：模型固定绑定供应商")
+        : t("按供应商聚合：按策略分配请求")
     : relayProfileEditorStatus(draft, form, isNew);
   return (
     <div className="relay-detail-page" key={profile.id}>
@@ -7876,7 +7886,8 @@ function RelayProfileDetail({
             </Button>
           ) : null}
           {aggregateProfile ? (
-            <UiBadge variant="secondary">{t("聚合")}</UiBadge>
+            <UiBadge variant="secondary">{aggregateModeRequired ? t("聚合")
+              : draft.aggregate?.modelAggregationEnabled === true ? t("按模型聚合") : t("按供应商聚合")}</UiBadge>
           ) : isNew ? null : (
             <Button
               disabled={!form.relayProfilesEnabled || actions.relaySwitching}
@@ -7888,9 +7899,9 @@ function RelayProfileDetail({
             </Button>
           )}
           <Button
-            disabled={savingDraft || !!validationError || !!modelRowsError}
+            disabled={savingDraft || !!validationError || !!modelRowsError || aggregateModeRequired}
             onClick={() => void saveDraft()}
-            title={validationError || modelRowsError || t("保存")}
+            title={aggregateModeRequired ? t("先选择聚合方式") : validationError || modelRowsError || t("保存")}
             type="button"
           >
             <Save className="h-4 w-4" />
@@ -7899,15 +7910,19 @@ function RelayProfileDetail({
         </div>
       </div>
       <div className="relay-detail-body">
-        <RelayProfileEditor
-          profile={draft}
-          form={form}
-          isNew={isNew}
-          onProfileChange={setDraft}
-          actions={actions}
-          modelWindowRows={modelWindowRows}
-          setModelWindowRows={setModelWindowRows}
-        />
+        {aggregateModeRequired ? (
+          <AggregateModeChooser onSelect={selectAggregateMode} />
+        ) : (
+          <RelayProfileEditor
+            profile={draft}
+            form={form}
+            isNew={isNew}
+            onProfileChange={setDraft}
+            actions={actions}
+            modelWindowRows={modelWindowRows}
+            setModelWindowRows={setModelWindowRows}
+          />
+        )}
         {isAggregateRelayProfile(draft) ? null : (
         <RelayFileEditors
           contextProfile={profile}
@@ -9599,6 +9614,27 @@ function VlmTestPanel({
   );
 }
 
+function AggregateModeChooser({ onSelect }: { onSelect: (mode: AggregateMode) => void }) {
+  return (
+    <div className="aggregate-mode-chooser">
+      <div className="aggregate-mode-chooser-copy">
+        <h2>{t("先选择聚合方式")}</h2>
+        <p>{t("两种方式配置彼此独立；选择后只显示对应的成员和路由表单。")}</p>
+      </div>
+      <div className="aggregate-mode-choice-grid">
+        <button className="mode-option aggregate-mode-choice" onClick={() => onSelect("provider")} type="button">
+          <strong>{t("按供应商聚合")}</strong>
+          <span>{t("多个 API 供应商组成轮转池，支持失败切换、会话轮转、请求轮转和权重。")}</span>
+        </button>
+        <button className="mode-option aggregate-mode-choice" onClick={() => onSelect("model")} type="button">
+          <strong>{t("按模型聚合")}</strong>
+          <span>{t("把成员模型合并到 Codex 列表，选择模型后固定发送到对应供应商。")}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AggregateRelayProfileEditor({
   profile,
   form,
@@ -9610,6 +9646,7 @@ function AggregateRelayProfileEditor({
 }) {
   const candidates = aggregateMemberCandidates(form, profile.id);
   const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
+  const modelMode = aggregate.modelAggregationEnabled === true;
   const memberIds = new Set(aggregate.members.map((member) => member.profileId));
   const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const updateAggregate = (nextAggregate: RelayAggregateConfig) => {
@@ -9654,7 +9691,7 @@ function AggregateRelayProfileEditor({
   };
 
   return (
-    <div className="relay-profile-editor aggregate-editor">
+    <div className="relay-profile-editor aggregate-editor" data-aggregate-mode={modelMode ? "model" : "provider"}>
       <div className="relay-fields aggregate-fields">
         <Field className="relay-field-name" label={t("名称")}>
           <Input
@@ -9663,33 +9700,26 @@ function AggregateRelayProfileEditor({
             placeholder={t("例如 主力聚合池")}
           />
         </Field>
-        <Field className="relay-field-test-model" label={t("测试模型")}>
+        <Field label={t("聚合方式")}>
+          <UiBadge variant="secondary">{modelMode ? t("按模型聚合") : t("按供应商聚合")}</UiBadge>
+          <p className="field-hint">{t("此配置的聚合方式固定；需要另一种方式时，请创建新的聚合配置。")}</p>
+        </Field>
+        {!modelMode ? <Field className="relay-field-test-model" label={t("测试模型")}>
           <Input
             value={profile.testModel}
             onChange={(event) => onProfileChange({ ...profile, testModel: event.currentTarget.value })}
             placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
           />
-        </Field>
-        <Field className="aggregate-strategy-field" label={t("聚合策略")}>
-          <AppSelect
-            value={aggregate.strategy}
-            onChange={(value) => updateAggregate({ ...aggregate, strategy: value })}
-            options={aggregateStrategyOptions.map((option) => ({ value: option.value, label: option.label }))}
-          />
-        </Field>
-        <Field className="aggregate-model-aggregation-field" label={t("按模型聚合")}>
-          <label className="toggle-row">
-            <input
-              checked={aggregate.modelAggregationEnabled === true}
-              onChange={(event) => updateAggregate({ ...aggregate, modelAggregationEnabled: event.currentTarget.checked })}
-              type="checkbox"
+        </Field> : null}
+        {!modelMode ? (
+          <Field className="aggregate-strategy-field" label={t("聚合策略")}>
+            <AppSelect
+              value={aggregate.strategy}
+              onChange={(value) => updateAggregate({ ...aggregate, strategy: value })}
+              options={aggregateStrategyOptions.map((option) => ({ value: option.value, label: option.label }))}
             />
-            <span>{t("把成员模型合并到 Codex 模型列表")}</span>
-          </label>
-          <p className="field-hint">
-            {t("开启后，模型会带供应商前缀并固定发送到对应成员；普通模型名仍按聚合策略轮转。")}
-          </p>
-        </Field>
+          </Field>
+        ) : null}
         <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
           <AppSelect
             value={sessionProvider}
@@ -9700,23 +9730,32 @@ function AggregateRelayProfileEditor({
             ]}
           />
           <p className="field-hint">
-            {t("聚合请求仍由本地 Responses 代理轮转成员；OpenAI 身份用于让 ChatGPT Remote 识别会话。")}
+            {modelMode
+              ? t("模型聚合请求仍由本地 Responses 代理转发；OpenAI 身份用于让 ChatGPT Remote 识别会话。")
+              : t("聚合请求仍由本地 Responses 代理轮转成员；OpenAI 身份用于让 ChatGPT Remote 识别会话。")}
           </p>
         </Field>
       </div>
-      <div className="aggregate-strategy-grid">
-        {aggregateStrategyOptions.map((option) => (
-          <button
-            className={`mode-option aggregate-strategy-option ${aggregate.strategy === option.value ? "active" : ""}`}
-            key={option.value}
-            onClick={() => updateAggregate({ ...aggregate, strategy: option.value })}
-            type="button"
-          >
-            <strong>{option.label}</strong>
-            <span>{option.description}</span>
-          </button>
-        ))}
-      </div>
+      {!modelMode ? (
+        <div className="aggregate-strategy-grid">
+          {aggregateStrategyOptions.map((option) => (
+            <button
+              className={`mode-option aggregate-strategy-option ${aggregate.strategy === option.value ? "active" : ""}`}
+              key={option.value}
+              onClick={() => updateAggregate({ ...aggregate, strategy: option.value })}
+              type="button"
+            >
+              <strong>{option.label}</strong>
+              <span>{option.description}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="aggregate-model-mode-hint">
+          <strong>{t("按模型聚合已启用")}</strong>
+          <span>{t("成员模型会生成带供应商前缀的 Codex 模型；本模式不使用轮转策略或通配符路由。")}</span>
+        </div>
+      )}
       <div className="aggregate-members">
         <div className="aggregate-members-head">
           <div>
@@ -9741,16 +9780,22 @@ function AggregateRelayProfileEditor({
                     <strong>{candidate.name || t("未命名供应商")}</strong>
                     <small>{relayModeLabel(candidate.relayMode)} · {relayProtocolLabel(candidate.protocol)} · {relayProfileConfigBrief(candidate)}</small>
                   </span>
-                  <span className="aggregate-weight-box">
-                    <span>{t("权重")}</span>
-                    <Input
-                      disabled={!checked}
-                      min={1}
-                      onChange={(event) => updateWeight(candidate.id, Number.parseInt(event.currentTarget.value, 10))}
-                      type="number"
-                      value={String(member?.weight ?? 1)}
-                    />
-                  </span>
+                  {modelMode ? (
+                    <span className="aggregate-member-models">
+                      {candidate.modelList || candidate.model || t("未填写模型")}
+                    </span>
+                  ) : (
+                    <span className="aggregate-weight-box">
+                      <span>{t("权重")}</span>
+                      <Input
+                        disabled={!checked}
+                        min={1}
+                        onChange={(event) => updateWeight(candidate.id, Number.parseInt(event.currentTarget.value, 10))}
+                        type="number"
+                        value={String(member?.weight ?? 1)}
+                      />
+                    </span>
+                  )}
                 </label>
               );
             })}
@@ -9759,7 +9804,7 @@ function AggregateRelayProfileEditor({
           <div className="empty">{t("先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。")}</div>
         )}
       </div>
-      <div className="aggregate-routes">
+      {!modelMode ? <div className="aggregate-routes">
         <div className="aggregate-routes-head">
           <div>
             <strong>{t("路由规则")}</strong>
@@ -9815,17 +9860,28 @@ function AggregateRelayProfileEditor({
             {t("添加规则")}
           </Button>
         </div>
-      </div>
-      <div className="relay-grid compact aggregate-preview">
-        <Metric label={t("策略")} value={aggregateStrategyLabel(aggregate.strategy)} />
-        <Metric label={t("成员数量")} value={tf("{0} 个", [aggregate.members.length])} />
-        <Metric label={t("总权重")} value={`${totalWeight}`} />
-        <Metric label={t("序列化字段")} value="aggregate.strategy / aggregate.members / aggregate.routes" />
-      </div>
-      <div className="hint-line relay-protocol-hint">
-        <ShieldCheck className="h-4 w-4" />
-        <span>{aggregateStrategyHelp(aggregate.strategy)}</span>
-      </div>
+      </div> : null}
+      {!modelMode ? (
+        <>
+          <div className="relay-grid compact aggregate-preview">
+            <Metric label={t("策略")} value={aggregateStrategyLabel(aggregate.strategy)} />
+            <Metric label={t("成员数量")} value={tf("{0} 个", [aggregate.members.length])} />
+            <Metric label={t("总权重")} value={`${totalWeight}`} />
+            <Metric label={t("序列化字段")} value="aggregate.strategy / aggregate.members / aggregate.routes" />
+          </div>
+          <div className="hint-line relay-protocol-hint">
+            <ShieldCheck className="h-4 w-4" />
+            <span>{aggregateStrategyHelp(aggregate.strategy)}</span>
+          </div>
+        </>
+      ) : (
+        <div className="relay-grid compact aggregate-preview">
+          <Metric label={t("模式")} value={t("按模型聚合")} />
+          <Metric label={t("成员数量")} value={tf("{0} 个", [aggregate.members.length])} />
+          <Metric label={t("模型来源")} value={t("沿用成员供应商模型列表")} />
+          <Metric label={t("绑定方式")} value={t("供应商前缀 + 真实模型名")} />
+        </div>
+      )}
     </div>
   );
 }
@@ -13658,6 +13714,20 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
   };
 }
 
+// 创建时选定类型；重新创建草稿时不沿用另一类的路由、权重或测试模型。
+function aggregateProfileForMode(profile: RelayProfile, settings: BackendSettings, mode: AggregateMode): RelayProfile {
+  return normalizeAggregateRelayProfile({
+    ...profile,
+    testModel: "",
+    aggregate: {
+      strategy: "failover",
+      modelAggregationEnabled: mode === "model",
+      members: (profile.aggregate?.members ?? []).map((member) => ({ profileId: member.profileId, weight: 1 })),
+      routes: [],
+    },
+  }, settings);
+}
+
 function normalizeAggregateConfig(
   aggregate: RelayAggregateConfig | null | undefined,
   candidates: RelayProfile[],
@@ -13674,16 +13744,21 @@ function normalizeAggregateConfig(
     .filter((member) => !candidateIds.size || candidateIds.has(member.profileId))
     .map((member) => {
       seen.add(member.profileId);
-      return { profileId: member.profileId, weight: clampAggregateWeight(member.weight) };
+      return { profileId: member.profileId, weight: modelAggregationEnabled ? 1 : clampAggregateWeight(member.weight) };
     });
-  const routes = (aggregate?.routes ?? [])
+  const routes = modelAggregationEnabled ? [] : (aggregate?.routes ?? [])
     .filter((route) => route.pattern.trim() !== "" || route.profileId.trim() !== "")
     .map((route) => ({
       pattern: route.pattern.trim(),
       profileId: route.profileId,
       priority: clampAggregateRoutePriority(route.priority),
     }));
-  return { strategy, modelAggregationEnabled, members, routes };
+  return {
+    strategy: modelAggregationEnabled ? "failover" : strategy,
+    modelAggregationEnabled,
+    members,
+    routes,
+  };
 }
 
 function aggregateMemberCandidates(settings: BackendSettings, aggregateId: string): RelayProfile[] {

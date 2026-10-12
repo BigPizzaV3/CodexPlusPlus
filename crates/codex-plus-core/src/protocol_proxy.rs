@@ -1889,8 +1889,28 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         .map(str::trim)
         .unwrap_or("")
         .to_string();
-    let aggregate_model =
-        crate::aggregate_catalog::resolve_active_model(&settings, &source_model)?;
+    let aggregate_model = match crate::aggregate_catalog::resolve_active_model(&settings, &source_model) {
+        Ok(binding) => binding,
+        Err(error) => {
+            return Ok(UpstreamProxyResponse {
+                status_code: 400,
+                content_type: "application/json".to_string(),
+                is_stream: false,
+                wire_api: UpstreamWireApi::Responses,
+                compaction: false,
+                native_compaction_passthrough: false,
+                buffered_body: Some(serde_json::to_vec(&json!({
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "aggregate_model_unavailable",
+                        "message": error.to_string()
+                    }
+                }))?),
+                response: None,
+                _channel_permit: None,
+            });
+        }
+    };
     if let Some(binding) = &aggregate_model {
         request_json["model"] = Value::String(binding.upstream_model.clone());
     }

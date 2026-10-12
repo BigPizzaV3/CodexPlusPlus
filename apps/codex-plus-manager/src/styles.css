@@ -2841,6 +2841,57 @@ details.relay-fold[open] > .relay-fold-body {
   min-height: 118px;
 }
 
+.aggregate-mode-chooser {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--secondary) / 0.2);
+}
+
+.aggregate-mode-chooser-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.aggregate-mode-chooser-copy h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.aggregate-mode-chooser-copy p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
+.aggregate-mode-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.aggregate-mode-choice {
+  min-height: 132px;
+}
+
+.aggregate-model-mode-hint {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid hsl(var(--primary) / 0.35);
+  border-radius: 8px;
+  background: hsl(var(--primary) / 0.08);
+}
+
+.aggregate-model-mode-hint span,
+.aggregate-member-models {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .aggregate-members {
   display: grid;
   gap: 10px;
@@ -2905,6 +2956,30 @@ details.relay-fold[open] > .relay-fold-body {
 
 .aggregate-weight-box input {
   min-height: 34px;
+}
+
+.aggregate-member-models {
+  min-width: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.aggregate-editor[data-aggregate-mode="model"] .aggregate-member-row {
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr);
+}
+
+@media (max-width: 760px) {
+  .aggregate-mode-choice-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aggregate-editor[data-aggregate-mode="model"] .aggregate-member-row {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .aggregate-member-models {
+    grid-column: 2;
+  }
 }
 
 .aggregate-routes {

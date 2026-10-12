@@ -1,5 +1,5 @@
 //! 按模型聚合：发布带供应商身份的模型目录，并精确解析到成员与真实模型。
-//! 普通模型名仍使用原有的供应商池策略。
+//! 模型聚合和供应商池策略互斥；未带绑定身份的请求不能进入轮转池。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -74,7 +74,13 @@ pub fn resolve_active_model(
     settings: &BackendSettings,
     catalog_model: &str,
 ) -> anyhow::Result<Option<AggregateModelBinding>> {
+    if catalog_model.trim().is_empty() {
+        return Ok(None);
+    }
     if !is_aggregate_model(catalog_model) {
+        if active_model_aggregation(settings).is_some() {
+            anyhow::bail!("按模型聚合需要选择已绑定供应商的模型，请在 Codex 模型列表中重新选择");
+        }
         return Ok(None);
     }
     active_model_bindings(settings)?
@@ -382,5 +388,7 @@ mod tests {
         let settings = settings();
         let error = resolve_active_model(&settings, "cpx-removed/old-model").unwrap_err();
         assert!(error.to_string().contains("cpx-removed/old-model"));
+        let plain_error = resolve_active_model(&settings, "deepseek-chat").unwrap_err();
+        assert!(plain_error.to_string().contains("按模型聚合需要选择"));
     }
 }
