@@ -3331,6 +3331,25 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
     }
 
     if wire_api == UpstreamWireApi::Responses {
+        let body = if upstream.exec_adapted {
+            let (body, valid) = if is_stream {
+                let mut converter = crate::responses_exec_sse::ExecSseAdapter::new();
+                let mut bytes = match converter.push_bytes(&upstream_body) {
+                    Ok(bytes) => bytes,
+                    Err(_) => converter.fail(),
+                };
+                bytes.extend(converter.finish()?);
+                (bytes, converter.succeeded())
+            } else {
+                crate::responses_exec_transport::adapted_json(&upstream_body)
+            };
+            if let Some(outcome) = upstream.exec_outcome.as_mut() {
+                outcome.finish(valid);
+            }
+            body
+        } else {
+            upstream_body.to_vec()
+        };
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: if upstream_content_type.is_empty() {
@@ -3338,7 +3357,7 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             } else {
                 upstream_content_type
             },
-            body: upstream_body.to_vec(),
+            body,
         });
     }
 

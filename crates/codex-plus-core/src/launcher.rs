@@ -5515,7 +5515,6 @@ mod tests {
                 protocol: crate::settings::RelayProtocol::Responses,
                 relay_mode: crate::settings::RelayMode::PureApi,
                 api_key: "fixture-only".to_string(),
-                channel_queue_enabled: true,
                 ..Default::default()
             }],
             ..Default::default()

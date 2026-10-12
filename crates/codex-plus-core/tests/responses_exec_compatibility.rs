@@ -258,7 +258,7 @@ async fn first_rejected_400_honors_retry_after_before_exec_retry() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let server = MockServer::start().await;
-    let mut settings = TestSettings::new(&server);
+    let settings = TestSettings::new(&server);
     Mock::given(method("POST"))
         .respond_with(move |incoming: &Request| {
             let body = incoming.body_json::<Value>().unwrap();
