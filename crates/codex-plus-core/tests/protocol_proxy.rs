@@ -276,11 +276,11 @@ async fn web_search_history_streaming_compaction_preserves_native_state() {
     let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
     settings.relay_profiles[1].web_search_history_compat = true;
     settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
-    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+    let mut result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
         .await
         .unwrap();
     assert!(!result.compaction);
-    assert_eq!(result.response.text().await.unwrap(), response);
+    assert_eq!(result.read_body().await.unwrap(), response.as_bytes().to_vec());
     let (_, sent) = server.await.unwrap();
     let mut expected = request;
     expected["tools"]
