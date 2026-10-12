@@ -742,6 +742,10 @@ body {
   display: grid;
   gap: 6px;
   min-width: 260px;
+  /* 视口内兜底：菜单改 fixed 定位后也不允许超出窗口，超高时内部滚动。 */
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--popover));
@@ -10093,6 +10097,7 @@ select {
 .provider-aggregate-empty{display:flex;align-items:center;gap:14px;margin:0 0 14px;padding:18px;border:1px dashed hsl(var(--brand-accent)/.45);border-radius:12px;background:hsl(var(--brand-accent)/.05)}
 .provider-aggregate-empty strong{font-size:14px;white-space:nowrap}
 .provider-aggregate-empty span{flex:1;color:hsl(var(--muted-foreground));font-size:13px}
+.provider-aggregate-toolbar{display:flex;justify-content:flex-end;margin:0 0 10px}
 @media(max-width:760px){.provider-view-tabs{width:100%}.provider-view-tabs button{flex:1;justify-content:center}.provider-aggregate-empty{align-items:flex-start;flex-direction:column}}
 
 .claude-localization-page { display: grid; gap: 14px; max-width: 900px; }

@@ -4731,6 +4731,8 @@ function RelayScreen({
   const [providerView, setProviderView] = useState<ProviderViewKind>("direct");
   const [newAggregateMode, setNewAggregateMode] = useState<AggregateMode | null>(null);
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
+  const thirdPartyImportTriggerRef = useRef<HTMLDivElement>(null);
+  const [thirdPartyImportPosition, setThirdPartyImportPosition] = useState<{ top: number; right: number } | null>(null);
   const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
   const [ccsPathSaving, setCcsPathSaving] = useState(false);
   useEffect(() => setCcsDbPathDraft(normalized.ccsDbPath), [normalized.ccsDbPath]);
@@ -4821,9 +4823,31 @@ function RelayScreen({
     }
   }, [detailProfileId, newProfileDraft, normalized.activeRelayId]);
   const openThirdPartyImport = () => {
-    setThirdPartyImportOpen((open) => !open);
+    const next = !thirdPartyImportOpen;
+    if (next) {
+      // 菜单改为 fixed 定位：它原本挂在 .mg-content（overflow:auto）里，
+      // 面板较矮时后半截会被裁掉（ccswitch 导入按钮、刷新列表都看不到）。
+      const rect = thirdPartyImportTriggerRef.current?.getBoundingClientRect();
+      setThirdPartyImportPosition(
+        rect
+          ? { top: Math.round(rect.bottom + 8), right: Math.round(Math.max(12, window.innerWidth - rect.right)) }
+          : null,
+      );
+    }
+    setThirdPartyImportOpen(next);
     if (!ccsProviders) void actions.refreshCcsProviders(true);
   };
+  useEffect(() => {
+    if (!thirdPartyImportOpen) return;
+    const close = () => setThirdPartyImportOpen(false);
+    window.addEventListener("resize", close);
+    // capture 监听内层 .mg-content 的滚动。
+    window.addEventListener("scroll", close, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, { capture: true });
+    };
+  }, [thirdPartyImportOpen]);
   if (detailProfile) {
     return (
       <RelayProfileDetail
@@ -4894,7 +4918,7 @@ function RelayScreen({
             <ToggleVisual />
           </label>
           <div className="relay-add-row">
-            <div className="third-party-import">
+            <div className="third-party-import" ref={thirdPartyImportTriggerRef}>
               <Button
                 onClick={openThirdPartyImport}
                 variant="secondary"
@@ -4903,7 +4927,12 @@ function RelayScreen({
                 {t("从第三方导入")}
               </Button>
               {thirdPartyImportOpen ? (
-                <div className="third-party-import-menu">
+                <div
+                  className="third-party-import-menu"
+                  style={thirdPartyImportPosition
+                    ? { position: "fixed", top: thirdPartyImportPosition.top, right: thirdPartyImportPosition.right }
+                    : undefined}
+                >
                   <label>
                     {t("cc-switch 数据库路径")}
                     <Input value={ccsDbPathDraft} onChange={(event) => setCcsDbPathDraft(event.currentTarget.value)} placeholder={t("留空使用默认路径")} />
@@ -4964,6 +4993,18 @@ function RelayScreen({
               <strong>{t("还没有模型聚合配置")}</strong>
               <span>{t("把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。")}</span>
               <Button onClick={() => createNewAggregateProfile("model")}>{t("创建模型聚合配置")}</Button>
+            </div>
+          ) : null}
+          {(providerView === "failover" || providerView === "modelAggregation") && visibleProfiles.length ? (
+            <div className="provider-aggregate-toolbar">
+              <Button
+                onClick={() => createNewAggregateProfile(providerView === "failover" ? "provider" : "model")}
+                size="sm"
+                variant="secondary"
+              >
+                <Plus className="h-4 w-4" />
+                {providerView === "failover" ? t("新建故障转移") : t("新建模型聚合")}
+              </Button>
             </div>
           ) : null}
           <RelayProfileList
