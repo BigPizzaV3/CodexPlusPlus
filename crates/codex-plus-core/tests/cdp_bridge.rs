@@ -2919,6 +2919,32 @@ fn injection_script_exposes_capacity_auto_retry_control() {
 }
 
 #[test]
+fn injection_script_recovers_a_stalled_codex_boot_shell() {
+    let script = assets::injection_script(57321);
+
+    // 空壳判定依据：有 #root、长不出 <main>、且里头一个字都没有。
+    assert!(script.contains("function bootShellRecoveryStuck"));
+    assert!(script.contains("function bootShellRecoverySettled"));
+    assert!(script.contains("document.querySelector(\"main\")"));
+    assert!(script.contains("root.innerText.trim() === \"\""));
+
+    // 只刷主页面：活动悬浮层 / quick-chat 带 initialRoute，本来就没有 <main>。
+    assert!(script.contains("function bootShellRecoveryAppliesHere"));
+    assert!(script.contains("/[?&]initialRoute=/"));
+    // 宽限要足够长，才能把「启动慢」和「真卡死」分开。
+    assert!(script.contains("bootShellRecoveryGraceMs = 20000"));
+    // 限次靠 sessionStorage + 冷却：写不进去就宁可不刷，避免刷新循环。
+    assert!(script.contains("bootShellRecoveryCooldownMs = 60000"));
+    assert!(script.contains("window.sessionStorage.getItem(bootShellRecoveryStorageKey)"));
+    assert!(script.contains("window.sessionStorage.setItem(bootShellRecoveryStorageKey"));
+    // 触发过要能从 codex-plus.log 复盘。
+    assert!(script.contains("boot_shell_recovery_reload"));
+    assert!(script.contains("window.location.reload();"));
+    // 模块末尾必须真的装上，否则整段是死代码。
+    assert!(script.contains("installBootShellRecovery();"));
+}
+
+#[test]
 fn injection_script_keeps_session_action_buttons_in_pr_style() {
     let script = assets::injection_script(57321);
 

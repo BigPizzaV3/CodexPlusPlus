@@ -66,6 +66,11 @@
       "lines": 305
     },
     {
+      "name": "82-boot-shell-recovery.js",
+      "description": "Codex 启动壳自救：启动画面久不挂载时限次自动刷新",
+      "lines": 86
+    },
+    {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
       "lines": 808
