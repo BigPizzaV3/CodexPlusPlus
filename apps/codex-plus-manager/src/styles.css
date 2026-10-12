@@ -5626,14 +5626,16 @@ input[type="range"]:disabled {
   display: grid;
   min-width: 0;
   gap: 8px;
+  /* 一行一个模型：容器再窄也不改成多行卡片，横向滚动兜底。 */
+  overflow-x: auto;
 }
 
 .relay-model-row {
   display: grid;
   min-width: 0;
-  grid-template-columns: 32px minmax(190px, 1.7fr) minmax(96px, 0.72fr) minmax(84px, 0.6fr) minmax(150px, 1fr) minmax(104px, 0.7fr) 40px 40px;
+  grid-template-columns: 28px minmax(120px, 1.5fr) minmax(70px, 0.6fr) minmax(62px, 0.5fr) minmax(104px, 0.85fr) minmax(86px, 0.7fr) 32px 32px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-height: var(--relay-control-height);
 }
 
@@ -7205,10 +7207,10 @@ select {
   }
 }
 
-/* 模型表按编辑区实际宽度切换，避免侧栏与面板占用宽度后横向溢出。 */
-/* 840px 以上仍能容纳模型名、窗口、压缩、图片方式、思考等级和两个操作按钮，
-   不要过早改成两行卡片；更窄时再切换为带字段标签的移动布局。 */
-@container relay-editor (max-width: 840px) {
+/* 模型表保持「一行一个模型」：字段压缩到最小宽度，容器更窄时横向滚动（见
+   .relay-model-row-editor）。只有窄到手机宽度（≤560px）才切换成带字段标签的
+   多行卡片布局。 */
+@container relay-editor (max-width: 560px) {
   .relay-model-row-head {
     display: none;
   }
