@@ -61,6 +61,11 @@
       "lines": 1458
     },
     {
+      "name": "81-capacity-auto-retry.js",
+      "description": "模型容量错误自动重试：识别容量横幅并按阶梯延迟代点「重试」",
+      "lines": 305
+    },
+    {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
       "lines": 808

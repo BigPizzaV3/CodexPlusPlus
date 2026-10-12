@@ -7,7 +7,7 @@
    */
   function isExtensionUiNode(node) {
     if (!node?.closest) return false;
-    if (node.closest(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .${sessionCopyMenuItemClass}, #codex-plus-menu`)) {
+    if (node.closest(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .${sessionCopyMenuItemClass}, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
       return true;
     }
     return isCodexPlusExtensionNode(node);

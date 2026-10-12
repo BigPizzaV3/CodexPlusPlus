@@ -316,6 +316,15 @@
   const conversationViewMaxAllowedWidth = 4000;
   const conversationViewDefaultWidth = 900;
   const conversationViewLegacyWidthKey = "codexPlus.threadCenter.maxWidth";
+  // 模型容量错误自动重试的次数上下限。放在 prelude 是因为默认设置
+  // （10-style.js 的 defaultCodexPlusSettings）和运行逻辑（81-capacity-auto-retry.js）
+  // 都要用，而后者的 const 在 IIFE 里初始化得更晚。
+  const capacityAutoRetryDefaultMaxAttempts = 15;
+  const capacityAutoRetryMaxAttemptsCeiling = 200;
+  // 默认 0 秒 = 上一轮失败后立刻重试（与手动点击的手感一致），
+  // 运行逻辑里另有 1 秒地板值防热循环。
+  const capacityAutoRetryDefaultIntervalSeconds = 0;
+  const capacityAutoRetryIntervalCeilingSeconds = 600;
   // 已发布的旧类名保留兼容；对应功能不再安装。
   const zedRemoteButtonClass = "codex-zed-remote-button";
   const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";

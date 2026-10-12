@@ -7,6 +7,9 @@
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
     if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+    // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
+    // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
+    if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
   }
@@ -34,6 +37,7 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+        if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
@@ -1227,6 +1231,14 @@
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">容量错误自动重试</div><div class="codex-plus-row-description">模型容量不足时（横幅文案如 “Selected model is at capacity”），自动点「重试」。Codex 原生只会自动重试 4 次，之后只剩手动按钮；开启后由 Codex++ 立刻接管（原生倒计时也一并接管，前 4 次同样不等它），直到成功或达到次数上限。间隔 0 秒表示失败后立刻重试（内部最小 1 秒，避免连发）。</div></div>
+                  <div class="codex-plus-width-control">
+                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-interval="true" min="0" max="${capacityAutoRetryIntervalCeilingSeconds}" step="1" type="number" value="${capacityAutoRetryIntervalSeconds()}" title="重试间隔（秒），0 表示立刻重试" aria-label="重试间隔（秒）">
+                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-max-attempts="true" min="1" max="${capacityAutoRetryMaxAttemptsCeiling}" step="1" type="number" value="${capacityAutoRetryMaxAttempts()}" title="最大自动重试次数" aria-label="最大自动重试次数">
+                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="capacityAutoRetry"><span></span></button>
+                  </div>
+                </div>
+                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
                 </div>
@@ -1388,6 +1400,16 @@
         const width = normalizeConversationViewWidth(widthInput.value);
         widthInput.value = String(width || conversationViewWidth());
         setConversationViewWidth(widthInput.value);
+      }
+      // 次数/间隔输入只在 change（失焦/回车）时提交：input 事件逐字符提交会把
+      // 用户输入 "15" 的过程保存成 1。
+      const attemptsInput = target?.closest("[data-codex-plus-capacity-retry-max-attempts]");
+      if (attemptsInput) {
+        attemptsInput.value = String(setCapacityAutoRetryMaxAttempts(attemptsInput.value));
+      }
+      const intervalInput = target?.closest("[data-codex-plus-capacity-retry-interval]");
+      if (intervalInput) {
+        intervalInput.value = String(setCapacityAutoRetryIntervalSeconds(intervalInput.value));
       }
     }, true);
     overlay.addEventListener("click", (event) => {

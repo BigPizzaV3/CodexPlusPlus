@@ -2890,6 +2890,35 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
 }
 
 #[test]
+fn injection_script_exposes_capacity_auto_retry_control() {
+    let script = assets::injection_script(57321);
+
+    // 开关接线：默认值 → 后端映射 → 中文标签 → 菜单 DOM → 设置面板输入框。
+    assert!(script.contains("capacityAutoRetry: false"));
+    assert!(script.contains("capacityAutoRetry: \"codexAppCapacityAutoRetry\""));
+    assert!(script.contains("容量错误自动重试"));
+    assert!(script.contains("data-codex-plus-setting=\"capacityAutoRetry\""));
+    assert!(script.contains("data-codex-plus-capacity-retry-max-attempts=\"true\""));
+    assert!(script.contains("data-codex-plus-capacity-retry-interval=\"true\""));
+
+    // 运行逻辑：横幅识别只看语义结构（aside + 重试按钮），不绑 Codex 的 hash 类名。
+    assert!(script.contains("function findCapacityAutoRetryBanner"));
+    assert!(script.contains("function capacityAutoRetryTick"));
+    assert!(script.contains("function syncCodexPlusCapacityAutoRetry"));
+    assert!(script.contains("querySelectorAll(\"aside\")"));
+    assert!(script.contains("capacityAutoRetryLabelPattern"));
+    // 原生倒计时在跑时让路，避免和 Codex 自己的自动重试撞车。
+    assert!(script.contains("capacityAutoRetryCountdownPattern"));
+    assert!(script.contains("capacityAutoRetryNativeCountdownRunning"));
+    // 0 秒间隔必须合法（用户要求"失败就立刻重试"），但有 1 秒地板值防热循环。
+    assert!(script.contains("capacityAutoRetryMinIntervalMs = 1000"));
+    assert!(script.contains("capacityAutoRetryDefaultIntervalSeconds = 0"));
+    // 插进 DOM 的浮标必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
+    assert!(script.contains("data-codex-plus-ext\", \"capacity-auto-retry\""));
+    assert!(script.contains("syncCodexPlusCapacityAutoRetry);"));
+}
+
+#[test]
 fn injection_script_keeps_session_action_buttons_in_pr_style() {
     let script = assets::injection_script(57321);
 
