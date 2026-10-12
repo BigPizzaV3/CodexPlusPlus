@@ -1088,6 +1088,7 @@ export const EN_PLAIN: Record<string, string> = {
   "还没有模型聚合配置": "No model aggregation configuration yet",
   "把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。": "Merge member models into the Codex list; a selected model stays bound to its provider.",
   "创建模型聚合配置": "Create model aggregation configuration",
+  "模型固定绑定 · {0} 个成员": "Models stay bound · {0} members",
   "把成员模型合并到 Codex 列表，选择模型后固定发送到对应供应商。": "Merge member models into Codex and bind each selected model to its provider.",
   "聚合方式": "Aggregation mode",
   "此配置的聚合方式固定；需要另一种方式时，请创建新的聚合配置。": "This configuration has a fixed aggregation mode; create another aggregate for the other mode.",

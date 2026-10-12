@@ -12902,6 +12902,10 @@ function maskSecret(value: string): string {
 function relayProfileConfigBrief(profile: RelayProfile): string {
   if (isAggregateRelayProfile(profile)) {
     const aggregate = normalizeAggregateConfig(profile.aggregate, []);
+    // 模型聚合与轮转策略无关，卡片上不显示「失败切换」这类策略文案。
+    if (aggregate.modelAggregationEnabled === true) {
+      return tf("模型固定绑定 · {0} 个成员", [aggregate.members.length]);
+    }
     return tf("{0} · {1} 个成员", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
   }
   if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
