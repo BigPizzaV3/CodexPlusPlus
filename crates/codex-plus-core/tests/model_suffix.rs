@@ -733,6 +733,15 @@ fn builtin_model_metadata_index_covers_all_embedded_entries() {
     let kimi = index.iter().find(|e| e["slug"] == "kimi-k3").unwrap();
     assert_eq!(kimi["source"], "Kimi");
     assert_eq!(kimi["context_window"], 1_048_576);
+    // 「思考等级」列的内置初值随索引一起下发（effort 数组 + 默认档）。
+    let kimi_efforts: Vec<_> = kimi["supported_reasoning_levels"]
+        .as_array()
+        .expect("内置条目带思考等级")
+        .iter()
+        .map(|level| level["effort"].as_str().unwrap())
+        .collect();
+    assert_eq!(kimi_efforts, vec!["low", "high", "max"]);
+    assert_eq!(kimi["default_reasoning_level"], "high");
 }
 
 #[test]

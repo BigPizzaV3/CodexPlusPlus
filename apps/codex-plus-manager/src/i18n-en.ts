@@ -25,6 +25,11 @@ export const EN_PLAIN: Record<string, string> = {
   "检查 Codex++ 入口、Codex 应用和开机启动状态": "Check the Codex++ shortcut, Codex app and login startup status",
 
   "Fast（priority）支持": "Fast (priority) support",
+  "思考等级": "Reasoning levels",
+  "默认等级": "Default level",
+  "未设置时沿用内置默认档位": "Unset: the built-in default levels apply",
+  "当前为内置默认，修改后保存为该模型的自定义思考等级。": "Using the built-in defaults. Changes are saved as custom reasoning levels for this model.",
+  "未设置时沿用内置默认；清空全部档位即恢复内置。": "Unset uses the built-in defaults; clearing every level restores them.",
   "模型配置：元数据与 Fast 支持": "Model settings: metadata and Fast support",
   "继承模型默认能力": "Inherit model defaults",
   "明确支持 priority": "Supports priority",

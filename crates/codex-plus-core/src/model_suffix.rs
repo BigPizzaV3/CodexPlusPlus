@@ -582,6 +582,10 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
                 .get("context_window")
                 .or_else(|| entry.get("max_context_window")),
             "auto_compact_token_limit": entry.get("auto_compact_token_limit"),
+            // 模型列表「思考等级」列的初值：内置声明直接展示（用户覆盖写进
+            // 自己的 model_metadata，不经这里）。
+            "supported_reasoning_levels": entry.get("supported_reasoning_levels"),
+            "default_reasoning_level": entry.get("default_reasoning_level"),
         }));
     };
     for slug in candidate_slugs {

@@ -154,6 +154,13 @@ import {
   type ModelWindowRowsValidationIssue,
   type ModelWindowRow,
 } from "./model-windows";
+import {
+  formatReasoningLevelsLabel,
+  normalizeReasoningLevels,
+  REASONING_LEVELS,
+  resolveModelReasoningLevels,
+  setModelReasoningLevelsForSlug,
+} from "./model-reasoning";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
@@ -3776,6 +3783,107 @@ export function App() {
           onConfirm={() => void confirmPendingDreamSkinCommunity()}
           onDismiss={() => void dismissPendingDreamSkinCommunity()}
         />
+      ) : null}
+    </div>
+  );
+}
+
+// 模型行「思考等级」列：多选档位 + 默认档。选择直接写回该模型的
+// supported_reasoning_levels，不下发本地草稿，面板与「模型配置」JSON 共用一份数据。
+function ModelReasoningLevelsCell({
+  levels,
+  inherited,
+  defaultLevel,
+  onChange,
+}: {
+  levels: string[];
+  /// true = 当前值来自内置声明而非该模型的自定义配置。
+  inherited: boolean;
+  defaultLevel: string | null;
+  onChange: (levels: string[], defaultLevel: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const label = formatReasoningLevelsLabel(levels);
+  const toggleLevel = (level: string) => {
+    const picked = levels.includes(level)
+      ? levels.filter((item) => item !== level)
+      : [...levels, level];
+    const next = normalizeReasoningLevels(picked);
+    // 默认档必须落在选中集合里，取消勾选时一起清掉。
+    onChange(next, defaultLevel && next.includes(defaultLevel) ? defaultLevel : null);
+  };
+  const triggerTip = levels.length
+    ? `${levels.join(", ")}${defaultLevel ? ` · ${t("默认等级")}: ${defaultLevel}` : ""}`
+    : t("未设置时沿用内置默认档位");
+  return (
+    <div
+      className={`app-select relay-reasoning ${open ? "open" : ""} ${inherited ? "inherited" : ""}`.trim()}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="app-select-trigger"
+        onClick={() => setOpen((current) => !current)}
+        title={triggerTip}
+        type="button"
+      >
+        <span className={label ? "" : "relay-reasoning-empty"}>{label || t("未设置")}</span>
+        <ChevronDown className="h-4 w-4" />
+      </button>
+      {open ? (
+        <div
+          aria-multiselectable="true"
+          className="app-select-menu relay-reasoning-menu"
+          role="listbox"
+        >
+          {REASONING_LEVELS.map((level) => {
+            const selected = levels.includes(level);
+            return (
+              <button
+                aria-selected={selected}
+                className={`app-select-option ${selected ? "selected" : ""}`.trim()}
+                key={level}
+                onClick={() => toggleLevel(level)}
+                onMouseDown={(event) => event.preventDefault()}
+                role="option"
+                type="button"
+              >
+                {selected ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
+                <span>{level}</span>
+              </button>
+            );
+          })}
+          <div className="relay-reasoning-default">
+            <span>{t("默认等级")}</span>
+            <div className="relay-reasoning-chips">
+              <button
+                className={defaultLevel ? "" : "selected"}
+                onClick={() => onChange(levels, null)}
+                type="button"
+              >
+                {t("自动")}
+              </button>
+              {levels.map((level) => (
+                <button
+                  className={defaultLevel === level ? "selected" : ""}
+                  key={level}
+                  onClick={() => onChange(levels, level)}
+                  type="button"
+                >
+                  {level}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="relay-reasoning-hint">
+            {inherited
+              ? t("当前为内置默认，修改后保存为该模型的自定义思考等级。")
+              : t("未设置时沿用内置默认；清空全部档位即恢复内置。")}
+          </p>
+        </div>
       ) : null}
     </div>
   );
@@ -8219,6 +8327,14 @@ function RelayFold({ title, children, className = "", bodyClassName = "", issue,
   );
 }
 
+// 模型行级内置元数据索引：窗口/压缩用于回填，「思考等级」列用作内置初值。
+type BuiltinMetadataIndexEntry = {
+  source: string;
+  context_window: unknown;
+  auto_compact_token_limit: unknown;
+  supported_reasoning_levels?: unknown;
+};
+
 function RelayProfileEditor({
   profile,
   form,
@@ -8244,7 +8360,7 @@ function RelayProfileEditor({
   const [builtinMatchSlug, setBuiltinMatchSlug] = useState("");
   const [builtinQueryState, setBuiltinQueryState] = useState<BuiltinMetadataQueryState | null>(null);
   const [importPrefillSource, setImportPrefillSource] = useState<"builtin" | "existing" | null>(null);
-  const [builtinIndex, setBuiltinIndex] = useState<Map<string, { source: string; context_window: unknown; auto_compact_token_limit: unknown }>>(new Map());
+  const [builtinIndex, setBuiltinIndex] = useState<Map<string, BuiltinMetadataIndexEntry>>(new Map());
   const modelSensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 8 },
@@ -8267,11 +8383,16 @@ function RelayProfileEditor({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const result = await queryBuiltinCommand<{ entries: Array<{ slug: string; source: string; context_window: unknown; auto_compact_token_limit: unknown }> }>("builtin_model_metadata_index");
+      const result = await queryBuiltinCommand<{ entries: Array<BuiltinMetadataIndexEntry & { slug: string }> }>("builtin_model_metadata_index");
       if (cancelled || !result?.entries) return;
-      const map = new Map<string, { source: string; context_window: unknown; auto_compact_token_limit: unknown }>();
+      const map = new Map<string, BuiltinMetadataIndexEntry>();
       for (const entry of result.entries) {
-        map.set(modelMetadataKey(entry.slug), { source: entry.source, context_window: entry.context_window, auto_compact_token_limit: entry.auto_compact_token_limit });
+        map.set(modelMetadataKey(entry.slug), {
+          source: entry.source,
+          context_window: entry.context_window,
+          auto_compact_token_limit: entry.auto_compact_token_limit,
+          supported_reasoning_levels: entry.supported_reasoning_levels,
+        });
       }
       setBuiltinIndex(map);
     })();
@@ -8923,6 +9044,7 @@ function RelayProfileEditor({
                     <span>{t("上下文窗口")}</span>
                     <span>{t("自动压缩")}</span>
                     <span>{t("图片处理方式")}</span>
+                    <span>{t("思考等级")}</span>
                     <span>{t("模型配置")}</span>
                     <span aria-hidden="true" />
                   </div>
@@ -8941,10 +9063,17 @@ function RelayProfileEditor({
                         // 改名时面板整体卸载、blur 后重挂抢焦点。
                         const importing = metadataImportTarget?.index === index;
                         // 配置可能还挂在「改名尚未提交」的旧 key 下，按行解析而不是按实时名硬查。
-                        const imported = resolveModelMetadataRowKey(importedModelMetadata, {
+                        const rowMetadataKey = resolveModelMetadataRowKey(importedModelMetadata, {
                           current: slug,
                           origin: modelSlugOriginsRef.current[index],
-                        }) !== null;
+                        });
+                        const imported = rowMetadataKey !== null;
+                        // 思考等级列：自定义声明优先，其次内置初值；写回沿用到
+                        // 改名前尚未提交的 key，blur 迁移时不会丢这次编辑。
+                        const reasoning = resolveModelReasoningLevels(
+                          rowMetadataKey ? importedModelMetadata[rowMetadataKey] : undefined,
+                          builtinIndex.get(modelMetadataKey(slug))?.supported_reasoning_levels,
+                        );
                         // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
                         // 面板关闭时不创建导入控件，避免用一个面板级状态为所有行派生按钮状态。
                         const importControls = importing
@@ -9069,6 +9198,22 @@ function RelayProfileEditor({
                                 { value: "vlm", label: t("视觉辅助分析"), title: t("图片先由视觉辅助模型(Qwen)转成文字描述,纯文本模型也能\"看图\"") },
                               ]}
                               title={vlmUnsupportedProtocol ? t("VLM 仅支持 Chat Completions 协议和聚合模式") : t("多模态模型（支持图片输入的模型）请保持 send-as-is。")}
+                            />
+                          </div>
+                          <div className="relay-model-cell relay-model-cell-reasoning">
+                            <span className="relay-model-cell-label">{t("思考等级")}</span>
+                            <ModelReasoningLevelsCell
+                              levels={reasoning.levels}
+                              inherited={!reasoning.overridden}
+                              defaultLevel={reasoning.defaultLevel}
+                              onChange={(levels, defaultLevel) => commitModelMetadata(
+                                setModelReasoningLevelsForSlug(
+                                  profile.modelMetadata,
+                                  rowMetadataKey ?? slug,
+                                  levels,
+                                  defaultLevel,
+                                ),
+                              )}
                             />
                           </div>
                           <Button
