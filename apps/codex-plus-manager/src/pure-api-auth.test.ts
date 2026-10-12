@@ -21,6 +21,7 @@ const names = new Set([
   "setTomlSectionBoolKey", "setTomlSectionStringKey", "setTomlSectionRawKey", "removeTomlSectionKey",
   "tomlString", "ensureTrailingNewline", "joinTomlSections", "splitTomlRootAndTables",
   "normalizeRelaySessionProvider", "relaySessionProviderFromConfig", "relaySessionProvider",
+  "relayEditorMode",
   "isAggregateRelayProfile",
   "tomlQuotedValue", "tomlDottedKeyPath", "tomlKeyPathName", "codexProviderSectionName",
   "tomlKeyAssignment", "tomlInlineComment",
@@ -125,6 +126,13 @@ test("official mixed API still uses explicit provider auth while preserving OAut
   assert.match(generated.configContents, /experimental_bearer_token = "fixture-provider-key"/);
   assert.equal(JSON.parse(generated.authContents).tokens.access_token, "fixture-oauth");
   assert.doesNotMatch(generated.configContents, /fixture-oauth/);
+});
+
+test("provider editor exposes official, mixed API, and pure API as one mode choice", () => {
+  assert.equal(context.relayEditorMode({ relayMode: "official", officialMixApiKey: false }), "official");
+  assert.equal(context.relayEditorMode({ relayMode: "official", officialMixApiKey: true }), "mixedApi");
+  assert.equal(context.relayEditorMode({ relayMode: "mixedApi", officialMixApiKey: false }), "mixedApi");
+  assert.equal(context.relayEditorMode({ relayMode: "pureApi", officialMixApiKey: false }), "pureApi");
 });
 
 const tableCases = [

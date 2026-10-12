@@ -487,6 +487,7 @@ type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_m
 type StepwiseGenerationMode = "auto" | "manual";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 type RelaySessionProvider = "custom" | "openai";
+type RelayEditorMode = "official" | "mixedApi" | "pureApi";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
@@ -4973,7 +4974,7 @@ function CodexMultiLaunchScreen({
                     <span className="relay-index" title={profile.name || t("未命名供应商")}>{providerInitial(profile.name)}</span>
                     <span className="relay-summary">
                       <strong>{profile.name || t("未命名供应商")}</strong>
-                      <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+                      <small>{relayProfileModeLabel(profile)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
                     </span>
                     <span className="relay-card-actions">
                       <Button
@@ -7707,7 +7708,7 @@ function SortableRelayProfileCard({
       </span>
       <span className="relay-summary">
         <strong>{profile.name || t("未命名供应商")}</strong>
-        <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+        <small>{relayProfileModeLabel(profile)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
       </span>
       <span className="relay-card-actions">
         <Button
@@ -8361,11 +8362,23 @@ function RelayProfileEditor({
     );
   }
 
-  const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  const editorMode = relayEditorMode(profile);
+  const showApiFields = editorMode !== "official";
   const sessionProvider = relaySessionProvider(profile);
   const canUseOpenAiSessionProvider = profile.relayMode !== "official" || profile.officialMixApiKey;
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
+  };
+  const selectEditorMode = (mode: RelayEditorMode) => {
+    if (mode === "official") {
+      updateDraft({ relayMode: "official", officialMixApiKey: false });
+      return;
+    }
+    if (mode === "mixedApi") {
+      updateDraft({ relayMode: "official", officialMixApiKey: true });
+      return;
+    }
+    updateDraft({ relayMode: "pureApi", officialMixApiKey: false });
   };
   const addChannelStatuses = () => {
     const next = channelStatusInput
@@ -8722,7 +8735,10 @@ function RelayProfileEditor({
       <div className="relay-fields">
         <section className="relay-config-section relay-basic-section">
           <div className="relay-config-section-head">
-            <strong>{t("基础设置")}</strong>
+            <div>
+              <strong>{t("基础设置")}</strong>
+              <span>{t("先选择接入方式，相关字段会立即显示在这里。")}</span>
+            </div>
           </div>
           <div className="relay-basic-fields">
             <Field className="relay-field-name" label={t("名称")}>
@@ -8731,55 +8747,104 @@ function RelayProfileEditor({
                 onChange={(event) => updateDraft({ name: event.currentTarget.value })}
               />
             </Field>
-            <Field className="relay-field-mode" label={t("接入模式")}>
-              <AppSelect
-                value={profile.relayMode}
-                onChange={(relayMode) => {
-                  updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
-                }}
-                options={[
-                  { value: "official", label: t("官方登录") },
-                  { value: "pureApi", label: t("纯 API") },
-                ]}
-              />
-            </Field>
+          </div>
+          <div className="relay-mode-block">
+            <div className="relay-mode-block-head">
+              <div>
+                <strong>{t("接入方式")}</strong>
+                <span>{t("官方登录 + API 会保留官方账号，同时使用下方 API 连接；不需要再到其他面板勾选。")}</span>
+              </div>
+            </div>
+            <div className="relay-mode-options" role="radiogroup" aria-label={t("接入方式")}>
+              {([
+                {
+                  mode: "official" as const,
+                  icon: ShieldCheck,
+                  title: t("官方登录"),
+                  description: t("使用 ChatGPT 官方账号，不写入 API 凭据。"),
+                },
+                {
+                  mode: "mixedApi" as const,
+                  icon: Cable,
+                  title: t("官方登录 + API"),
+                  description: t("保留官方登录，同时使用 API Base URL 与 Key。"),
+                },
+                {
+                  mode: "pureApi" as const,
+                  icon: KeyRound,
+                  title: t("纯 API"),
+                  description: t("只使用 API 凭据，不依赖官方登录。"),
+                },
+              ]).map(({ mode, icon: Icon, title, description }) => (
+                <button
+                  aria-checked={editorMode === mode}
+                  className={`relay-mode-option ${editorMode === mode ? "active" : ""}`}
+                  key={mode}
+                  onClick={() => selectEditorMode(mode)}
+                  role="radio"
+                  type="button"
+                >
+                  <span className="relay-mode-option-icon"><Icon className="h-4 w-4" /></span>
+                  <span className="relay-mode-option-copy">
+                    <strong>{title}</strong>
+                    <small>{description}</small>
+                  </span>
+                  <span className="relay-mode-option-indicator" aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+            {showApiFields ? (
+              <div className="relay-inline-connection">
+                <div className="relay-inline-connection-head">
+                  <div>
+                    <strong>{t("API 连接")}</strong>
+                    <span>
+                      {editorMode === "mixedApi"
+                        ? t("官方账号负责登录与会话，API 连接负责实际请求。")
+                        : t("保存后会把这组凭据用于当前供应商的请求。")}
+                    </span>
+                  </div>
+                  <UiBadge variant={profile.baseUrl.trim() && profile.apiKey.trim() ? "secondary" : "outline"}>
+                    {profile.baseUrl.trim() && profile.apiKey.trim() ? t("已填写") : t("待填写")}
+                  </UiBadge>
+                </div>
+                <div className="relay-api-fields">
+                  <Field className="relay-field-base-url" label="Base URL">
+                    <Input
+                      value={profile.baseUrl}
+                      onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
+                      placeholder={t("填写供应商的 Base URL")}
+                    />
+                  </Field>
+                  <Field className="relay-field-key" label="API Key">
+                    <Input
+                      type="password"
+                      value={profile.apiKey}
+                      onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
+                      placeholder={t("输入供应商的 API Key")}
+                    />
+                  </Field>
+                  <Field className="relay-field-protocol" label={t("上游协议")}>
+                    <AppSelect
+                      ariaLabel={t("上游协议")}
+                      value={profile.protocol}
+                      onChange={(protocol) => updateDraft({ protocol })}
+                      options={[
+                        { value: "responses", label: "Responses API" },
+                        { value: "chatCompletions", label: "Chat Completions" },
+                      ]}
+                    />
+                  </Field>
+                </div>
+              </div>
+            ) : (
+              <div className="relay-mode-note">
+                <ShieldCheck className="h-4 w-4" />
+                <span>{t("当前使用官方账号登录；切换到“官方登录 + API”或“纯 API”后，API 连接字段会在这里展开。")}</span>
+              </div>
+            )}
           </div>
         </section>
-        {showApiFields ? (
-          <section className="relay-config-section relay-connection-section">
-            <div className="relay-config-section-head">
-              <strong>{t("连接设置")}</strong>
-            </div>
-            <div className="relay-api-fields">
-              <Field className="relay-field-base-url" label="Base URL">
-                <Input
-                  value={profile.baseUrl}
-                  onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
-                  placeholder={t("填写中转服务 Base URL")}
-                />
-              </Field>
-              <Field className="relay-field-key" label="Key">
-                <Input
-                  type="password"
-                  value={profile.apiKey}
-                  onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
-                  placeholder={t("输入中转服务的 API Key")}
-                />
-              </Field>
-              <Field className="relay-field-protocol" label={t("上游协议")}>
-                <AppSelect
-                  ariaLabel={t("上游协议")}
-                  value={profile.protocol}
-                  onChange={(protocol) => updateDraft({ protocol })}
-                  options={[
-                    { value: "responses", label: "Responses API" },
-                    { value: "chatCompletions", label: "Chat Completions" },
-                  ]}
-                />
-              </Field>
-            </div>
-          </section>
-        ) : null}
         <RelayFold
           className="relay-config-section relay-model-settings"
           sectionId="models"
@@ -9287,25 +9352,15 @@ function RelayProfileEditor({
             ) : null}
           </div>
         </RelayFold>
-        <RelayFold
-          className="relay-config-section relay-request-settings"
-          sectionId="requests"
-          issue={customHeadersError || relaySessionProviderValidation(profile)}
-          title={t("请求设置")}
-        >
+        {showApiFields ? (
+          <RelayFold
+            className="relay-config-section relay-request-settings"
+            defaultOpen
+            sectionId="requests"
+            issue={customHeadersError || relaySessionProviderValidation(profile)}
+            title={t("请求设置")}
+          >
           <div className="relay-options-grid">
-            {profile.relayMode === "official" ? (
-              <Field className="relay-field-official-key" label="API Key">
-                <label className="inline-check">
-                  <input
-                    checked={profile.officialMixApiKey}
-                    onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
-                    type="checkbox"
-                  />
-                  <span>{t("混入 API KEY")}</span>
-                </label>
-              </Field>
-            ) : null}
             {showApiFields ? (
               <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
                 <AppSelect
@@ -9460,10 +9515,11 @@ function RelayProfileEditor({
               <span>{relayProfileModeHelp(profile)}</span>
             </div>
           </div>
-        </RelayFold>
+          </RelayFold>
+        ) : null}
       </div>
       <div className="relay-bottom-options">
-        <RelayFold className="relay-config-section relay-channel-protection" sectionId="channel-protection" title={t("渠道保护")}>
+        <RelayFold className="relay-config-section relay-channel-protection" defaultOpen sectionId="channel-protection" title={t("渠道保护")}>
           <p className="relay-fold-description">
             {t("仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。")}
           </p>
@@ -9549,7 +9605,7 @@ function RelayProfileEditor({
             </section>
           </div>
         </RelayFold>
-        <RelayFold className="relay-advanced-block" sectionId="advanced" title={t("更多选项")}>
+        <RelayFold className="relay-advanced-block" defaultOpen sectionId="advanced" title={t("更多选项")}>
           <p className="relay-fold-description">
             {t("包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。")}
           </p>
@@ -9949,7 +10005,7 @@ function AggregateRelayProfileEditor({
                   />
                   <span className="aggregate-member-summary">
                     <strong>{candidate.name || t("未命名供应商")}</strong>
-                    <small>{relayModeLabel(candidate.relayMode)} · {relayProtocolLabel(candidate.protocol)} · {relayProfileConfigBrief(candidate)}</small>
+                    <small>{relayProfileModeLabel(candidate)} · {relayProtocolLabel(candidate.protocol)} · {relayProfileConfigBrief(candidate)}</small>
                   </span>
                   {modelMode ? (
                     <span className="aggregate-member-models">
@@ -10433,6 +10489,7 @@ function RelayFileEditors({
       <RelayFold
         bodyClassName="relay-common-config-body"
         className="relay-file-panel relay-common-config-panel"
+        defaultOpen
         sectionId="common-config"
         title={t("通用配置文件")}
       >
@@ -10475,7 +10532,7 @@ function RelayFileEditors({
             onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
           />
       </RelayFold>
-      <RelayFold className="relay-file-panel relay-auth-preview" sectionId="auth-preview" title="auth.json">
+      <RelayFold className="relay-file-panel relay-auth-preview" defaultOpen sectionId="auth-preview" title="auth.json">
         <p className="relay-fold-description">
           {isActive
             ? profile.relayMode === "pureApi"
@@ -12769,6 +12826,17 @@ function relayModeLabel(mode: RelayMode): string {
   return t("官方登录");
 }
 
+function relayEditorMode(profile: Pick<RelayProfile, "relayMode" | "officialMixApiKey">): RelayEditorMode {
+  if (profile.relayMode === "pureApi") return "pureApi";
+  if (profile.relayMode === "mixedApi" || profile.officialMixApiKey) return "mixedApi";
+  return "official";
+}
+
+function relayProfileModeLabel(profile: Pick<RelayProfile, "relayMode" | "officialMixApiKey">): string {
+  if (profile.relayMode === "aggregate") return relayModeLabel(profile.relayMode);
+  return relayEditorMode(profile) === "mixedApi" ? t("官方登录 + API") : relayModeLabel(profile.relayMode);
+}
+
 function providerImportWireApiLabel(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (normalized === "chat" || normalized === "chat_completions" || normalized === "chat-completions") {
@@ -12780,7 +12848,7 @@ function providerImportWireApiLabel(value: string): string {
 function providerImportRelayModeLabel(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (normalized === "official") return t("官方登录");
-  if (normalized === "mixedapi" || normalized === "mixed-api" || normalized === "mixed_api") return t("混入 API");
+  if (normalized === "mixedapi" || normalized === "mixed-api" || normalized === "mixed_api") return t("官方登录 + API");
   if (normalized === "aggregate") return t("聚合供应商");
   return t("纯 API");
 }

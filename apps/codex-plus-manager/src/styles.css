@@ -1225,6 +1225,178 @@ body {
   grid-column: 1 / -1;
 }
 
+.relay-basic-fields > .relay-field-name {
+  grid-column: 1 / -1;
+  max-width: 620px;
+}
+
+/* 接入方式、凭据和协议放在同一张卡片里，避免用户在表单上下跳转。 */
+.relay-basic-section {
+  gap: 14px;
+}
+
+.relay-mode-block {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  min-width: 0;
+  border-top: 1px solid hsl(var(--border) / 0.7);
+  padding-top: 14px;
+}
+
+.relay-mode-block-head,
+.relay-inline-connection-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.relay-mode-block-head > div,
+.relay-inline-connection-head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.relay-mode-block-head strong,
+.relay-inline-connection-head strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.relay-mode-block-head span,
+.relay-inline-connection-head span {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.relay-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.relay-mode-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 86px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-md);
+  background: hsl(var(--surface-sunken) / 0.34);
+  color: hsl(var(--foreground));
+  padding: 12px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-ease);
+}
+
+.relay-mode-option:hover {
+  border-color: hsl(var(--brand-accent) / 0.55);
+  background: hsl(var(--brand-accent) / 0.06);
+  transform: translateY(-1px);
+}
+
+.relay-mode-option:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.relay-mode-option.active {
+  border-color: hsl(var(--brand-accent) / 0.72);
+  background: linear-gradient(135deg, hsl(var(--brand-accent) / 0.13), hsl(var(--brand-accent-2) / 0.07));
+  box-shadow: inset 0 0 0 1px hsl(var(--brand-accent) / 0.14);
+}
+
+.relay-mode-option-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid hsl(var(--brand-accent) / 0.3);
+  border-radius: 8px;
+  background: hsl(var(--brand-accent) / 0.08);
+  color: hsl(var(--brand-accent));
+}
+
+.relay-mode-option-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.relay-mode-option-copy strong {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.relay-mode-option-copy small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.relay-mode-option-indicator {
+  align-self: start;
+  width: 10px;
+  height: 10px;
+  margin-top: 3px;
+  border: 1px solid hsl(var(--muted-foreground) / 0.55);
+  border-radius: 50%;
+}
+
+.relay-mode-option.active .relay-mode-option-indicator {
+  border: 3px solid hsl(var(--brand-accent));
+  background: hsl(var(--card));
+}
+
+.relay-inline-connection {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid hsl(var(--brand-accent) / 0.28);
+  border-radius: var(--radius-md);
+  background: hsl(var(--brand-accent) / 0.045);
+  padding: 12px;
+}
+
+.relay-inline-connection .relay-api-fields {
+  padding: 0;
+  animation: none;
+}
+
+.relay-mode-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid hsl(var(--border) / 0.75);
+  border-radius: var(--radius-md);
+  background: hsl(var(--surface-sunken) / 0.42);
+  padding: 10px 12px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.relay-mode-note svg {
+  flex: none;
+  margin-top: 1px;
+  color: hsl(var(--brand-accent));
+}
+
 .relay-connection-section {
   grid-column: 1 / -1;
 }
@@ -6942,6 +7114,10 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .relay-mode-options {
+    grid-template-columns: 1fr;
+  }
+
   .relay-config-section-head {
     align-items: stretch;
     flex-direction: column;
@@ -7021,6 +7197,10 @@ select {
   .relay-api-fields,
   .relay-advanced-fields,
   .relay-vlm-section {
+    grid-template-columns: 1fr;
+  }
+
+  .relay-mode-options {
     grid-template-columns: 1fr;
   }
 
