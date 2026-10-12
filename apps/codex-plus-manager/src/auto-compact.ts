@@ -1,5 +1,21 @@
 export const DEFAULT_AUTO_COMPACT_PERCENT = "90%";
 
+/** 自动压缩下拉的预设档位（保存时空值即 90% 默认，因此不提供“未设置”项）。 */
+export const AUTO_COMPACT_PRESETS = ["50%", "60%", "70%", "75%", "80%", "85%", "90%", "95%"];
+
+/**
+ * 自动压缩百分比的下拉选项：预设档位 + 当前自定义值。
+ * 旧数据里的非预设值（如 87.5%）会作为一项保留，避免换成组件后被静默改写。
+ */
+export function autoCompactOptions(current: string): string[] {
+  const normalized = normalizeAutoCompactPercent(current) || DEFAULT_AUTO_COMPACT_PERCENT;
+  const options = [...AUTO_COMPACT_PRESETS];
+  if (!options.includes(normalized)) {
+    options.push(normalized);
+  }
+  return options;
+}
+
 /** 校验用户输入的自动压缩比例；空值由 Codex++ 保存为明确的 90% 默认值。 */
 export function isValidAutoCompactPercent(value: string): boolean {
   const trimmed = value.trim();

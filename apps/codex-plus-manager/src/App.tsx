@@ -90,7 +90,7 @@ import { PluginMarketScreen } from "./PluginMarketScreen";
 import { McpPage, PageHeader } from "./ManagementPages";
 import { SkillsPage, SessionPage } from "./ManagementExtra";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
-import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
+import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
 import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceProtocol, type WhaleBalanceSettings } from "./whale-settings";
 import {
   applyDictationPreset,
@@ -9149,22 +9149,19 @@ function RelayProfileEditor({
                           </div>
                           <div className="relay-model-cell relay-model-cell-compact">
                             <span className="relay-model-cell-label">{t("自动压缩")}</span>
-                            <Input
-                              aria-label={t("自动压缩")}
-                              value={row.autoCompact}
-                              onChange={(event) => {
-                                const autoCompact = normalizeAutoCompactEditing(
-                                  event.currentTarget.value,
-                                  row.autoCompact,
-                                );
-                                updateModelWindowRow(index, { autoCompact });
+                            <AppSelect
+                              ariaLabel={t("自动压缩")}
+                              className="text-xs"
+                              value={normalizeAutoCompactPercent(row.autoCompact) || DEFAULT_AUTO_COMPACT_PERCENT}
+                              onChange={(value) => {
+                                updateModelWindowRow(index, { autoCompact: value });
                                 // 导入面板尚未粘贴 JSON 时，只编辑模型行；不要把空文档同步失败显示成错误。
                                 if (!importing || !metadataImportDocument.trim() || !metadataImportPreview) return;
                                 const synchronized = synchronizeModelMetadataDocumentLimitsPreview(
                                   metadataImportDocument,
                                   slug,
                                   row.window,
-                                  autoCompact,
+                                  value,
                                 );
                                 if (!synchronized) {
                                   setMetadataImportPreview(null);
@@ -9175,12 +9172,8 @@ function RelayProfileEditor({
                                 setMetadataImportPreview(synchronized.preview);
                                 setMetadataImportError("");
                               }}
-                              onBlur={(event) => {
-                                const normalized = normalizeAutoCompactPercent(event.currentTarget.value);
-                                const effective = normalized || DEFAULT_AUTO_COMPACT_PERCENT;
-                                if (effective !== row.autoCompact) updateModelWindowRow(index, { autoCompact: effective });
-                              }}
-                              placeholder="90%"
+                              options={autoCompactOptions(row.autoCompact).map((value) => ({ value, label: value }))}
+                              title={t("自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。")}
                             />
                           </div>
                           <div className="relay-model-cell relay-model-cell-image">
