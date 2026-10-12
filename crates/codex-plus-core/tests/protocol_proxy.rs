@@ -189,7 +189,20 @@ async fn web_search_history_proxy_declares_only_for_standard_responses() {
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(capture_json_request_once(listener));
+        let response_body = if trigger {
+            json!({
+                "id": "resp_native_compaction",
+                "object": "response",
+                "output": [{"type": "compaction", "id": "cmp_test", "encrypted_content": "opaque"}]
+            })
+        } else {
+            json!({"id": "resp_model_route", "object": "response"})
+        };
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            response_body.to_string(),
+        ));
         let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
         settings.relay_profiles[1].protocol = protocol;
         settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
