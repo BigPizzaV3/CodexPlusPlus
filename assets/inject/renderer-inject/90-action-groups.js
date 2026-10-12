@@ -1,8 +1,7 @@
-  function syncActionGroupsLayout() {
-    sessionRows().forEach((row) => {
-      const group = actionGroupFromRow(row);
-      if (group) syncActionGroupLayout(row, group);
-    });
+  function syncActionGroupsLayout(force = false) {
+    syncActionGroupLayouts(sessionRows().map(row => ({
+      row, group: actionGroupFromRow(row),
+    })), force);
   }
 
   function removeActionGroups(row) {
