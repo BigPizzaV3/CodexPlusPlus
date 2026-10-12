@@ -3613,10 +3613,25 @@ export function App() {
           {route === "context" ? (
             <McpPage
               entries={[...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "mcp"), ...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "plugin")]}
-              onSave={async (kind, id, body) => Boolean(await actions.upsertContextEntry(settingsForm, kind, id, body))}
-              onDelete={async (entry) => Boolean(await actions.deleteContextEntry(settingsForm, entry.kind, entry.id))}
+              onSave={async (kind, id, body) => {
+                const next = await actions.upsertContextEntry(settingsForm, kind, id, body);
+                if (!next) return false;
+                const synced = await actions.syncLiveContextEntries(next, true);
+                return Boolean(synced && isSuccessStatus(synced.status));
+              }}
+              onDelete={async (entry) => {
+                const next = await actions.deleteContextEntry(settingsForm, entry.kind, entry.id);
+                if (!next) return false;
+                const synced = await actions.syncLiveContextEntries(next, true);
+                return Boolean(synced && isSuccessStatus(synced.status));
+              }}
               onRefresh={async () => { await actions.refreshLiveContextEntries(); await actions.refreshRelayFiles(); }}
-              onImport={async (json) => Boolean(await actions.importMcpServersJson(settingsForm, json))}
+              onImport={async (json) => {
+                const next = await actions.importMcpServersJson(settingsForm, json);
+                if (!next) return false;
+                const synced = await actions.syncLiveContextEntries(next, true);
+                return Boolean(synced && isSuccessStatus(synced.status));
+              }}
               notify={actions.showMessage}
             />
           ) : null}
