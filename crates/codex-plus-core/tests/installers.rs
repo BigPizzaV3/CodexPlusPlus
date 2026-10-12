@@ -90,6 +90,57 @@ fn installer_name_helpers_and_legacy_constants_keep_api_compatibility() {
 }
 
 #[test]
+fn windows_workflows_verify_nsis_and_support_both_program_files_directories() {
+    for workflow in ["pr-build.yml", "release-assets.yml"] {
+        let text = std::fs::read_to_string(format!("../../.github/workflows/{workflow}"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let install = text
+            .split_once("      - name: Install NSIS\n")
+            .unwrap()
+            .1
+            .split("      - name:")
+            .next()
+            .unwrap();
+        let build = text
+            .split_once("      - name: Build Windows installer\n")
+            .unwrap()
+            .1
+            .split("      - name:")
+            .next()
+            .unwrap();
+        for step in [install, build] {
+            assert!(step.contains("shell: pwsh"), "{workflow}");
+            assert!(
+                step.contains(r"${env:ProgramFiles(x86)}\NSIS\makensis.exe"),
+                "{workflow}"
+            );
+            assert!(
+                step.contains(r"$env:ProgramFiles\NSIS\makensis.exe"),
+                "{workflow}"
+            );
+            assert!(step.contains("Get-Command makensis.exe"), "{workflow}");
+            assert!(
+                step.contains("Test-Path -LiteralPath $_ -PathType Leaf"),
+                "{workflow}"
+            );
+            assert!(step.contains("if (-not $makensis) {"), "{workflow}");
+        }
+        assert!(install.contains("& $makensis /VERSION"), "{workflow}");
+        assert!(
+            install.contains("if ($LASTEXITCODE -eq 0) { break }"),
+            "{workflow}"
+        );
+        assert!(install.contains("$attempt -le 3"), "{workflow}");
+        assert!(
+            build.contains("if ($LASTEXITCODE -ne 0) { throw"),
+            "{workflow}"
+        );
+        assert!(build.contains("} finally {"), "{workflow}");
+    }
+}
+
+#[test]
 fn windows_installer_writes_the_same_uninstall_key_as_the_runtime() {
     let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi").unwrap();
     assert!(nsi.contains(r"Uninstall\CodexPlusPlus"));
