@@ -11167,11 +11167,6 @@ function ClaudeLocalizationScreen() {
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = !s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
-  const steps = [
-    t("从官方应用克隆受管副本，只调整副本的 Electron inspector 开关；macOS 使用受管重签名，Windows 使用独立副本。"),
-    t("把官方 zh-Hans 词表装入副本的 ion-dist；启动器短暂连接本地 inspector，注入页面脚本后关闭端口。"),
-    t("更新失败会保留当前可用副本；构建完成且校验 app.asar 一致后才替换旧副本。"),
-  ];
   return (
     <div className="claude-localization-page">
       <Panel className="claude-l10n-hero">
@@ -11181,7 +11176,7 @@ function ClaudeLocalizationScreen() {
               <span className="claude-l10n-hero-icon"><Languages className="h-5 w-5" /></span>
               <div>
                 <strong>{t("Claude Code 汉化")}</strong>
-                <span>{t("官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。")}</span>
+                <span className="claude-l10n-hero-subtitle">{t("官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。")}</span>
               </div>
             </div>
             <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
@@ -11228,22 +11223,6 @@ function ClaudeLocalizationScreen() {
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Panel>
-      <Panel className="claude-l10n-how">
-        <CardHeader className="panel-head claude-l10n-how-head">
-          <CardTitle>{t("实现方式")}</CardTitle>
-          <UiBadge variant="outline">{t("安全边界")}</UiBadge>
-        </CardHeader>
-        <CardContent>
-          <ol className="claude-l10n-steps">
-            {steps.map((step, index) => (
-              <li key={step}>
-                <span className="claude-l10n-step-index">{index + 1}</span>
-                <span>{step}</span>
-              </li>
-            ))}
-          </ol>
         </CardContent>
       </Panel>
     </div>
