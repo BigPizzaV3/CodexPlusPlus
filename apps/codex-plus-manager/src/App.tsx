@@ -20,6 +20,7 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowRightLeft,
   Bell,
   Blocks,
   Cable,
@@ -1011,7 +1012,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "enhance", label: t("Codex增强"), icon: Hammer, tool: "codex" },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette, tool: "codex" },
   { id: "userScripts", label: t("拓展"), icon: FileCode2, tool: "codex" },
-  { id: "pluginMarket", label: t("CodeX 插件市场"), icon: Store, tool: "codex" },
+  { id: "pluginMarket", label: t("Codex 插件市场"), icon: Store, tool: "codex" },
   { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
   { id: "agentCache", label: t("AI Agent 缓存清理"), icon: Trash2 },
@@ -4727,7 +4728,8 @@ function RelayScreen({
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
-  const [providerView, setProviderView] = useState<"direct" | "routing" | "aggregate">("direct");
+  const [providerView, setProviderView] = useState<ProviderViewKind>("direct");
+  const [newAggregateMode, setNewAggregateMode] = useState<AggregateMode | null>(null);
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
   const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
   const [ccsPathSaving, setCcsPathSaving] = useState(false);
@@ -4765,10 +4767,11 @@ function RelayScreen({
   const saveRelaySettings = async (next: BackendSettings) => {
     return actions.saveSettingsValue(next, true);
   };
-  const createNewAggregateProfile = () => {
-    const draft = createAggregateRelayProfile(normalized);
+  const createNewAggregateProfile = (mode: AggregateMode) => {
+    const draft = aggregateProfileForMode(createAggregateRelayProfile(normalized), normalized, mode);
     setDetailProfileId(null);
     setNewProfileDraft(draft);
+    setNewAggregateMode(mode);
     if (!normalizeAggregateConfig(draft.aggregate, aggregateMemberCandidates(normalized.relayProfiles, draft.id)).members.length) {
       void actions.showMessage(
         t("创建聚合供应商"),
@@ -4828,13 +4831,16 @@ function RelayScreen({
         relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
         form={normalized}
         isNew={isNewProfile}
+        initialAggregateMode={isNewProfile ? newAggregateMode : null}
         onBack={() => {
           setNewProfileDraft(null);
+          setNewAggregateMode(null);
           setDetailProfileId(null);
         }}
         onFormChange={saveRelaySettings}
         onSaved={() => {
           setNewProfileDraft(null);
+          setNewAggregateMode(null);
           setDetailProfileId(null);
         }}
         actions={actions}
@@ -4849,6 +4855,7 @@ function RelayScreen({
         onBack={() => setProviderCatalogOpen(false)}
         onSelect={(profile) => {
           setNewProfileDraft(profile);
+          setNewAggregateMode(null);
           setProviderCatalogOpen(false);
         }}
       />
@@ -4936,16 +4943,27 @@ function RelayScreen({
               <GitBranch className="h-4 w-4" />
               <span>{t("需协议转换")}</span>
             </button>
-            <button aria-selected={providerView === "aggregate"} className={providerView === "aggregate" ? "active" : ""} onClick={() => setProviderView("aggregate")} role="tab" type="button">
+            <button aria-selected={providerView === "failover"} className={providerView === "failover" ? "active" : ""} onClick={() => setProviderView("failover")} role="tab" type="button">
+              <ArrowRightLeft className="h-4 w-4" />
+              <span>{t("故障转移")}</span>
+            </button>
+            <button aria-selected={providerView === "modelAggregation"} className={providerView === "modelAggregation" ? "active" : ""} onClick={() => setProviderView("modelAggregation")} role="tab" type="button">
               <Layers3 className="h-4 w-4" />
-              <span>{t("聚合")}</span>
+              <span>{t("模型聚合")}</span>
             </button>
           </div>
-          {providerView === "aggregate" && !visibleProfiles.length ? (
+          {providerView === "failover" && !visibleProfiles.length ? (
             <div className="provider-aggregate-empty">
-              <strong>{t("还没有聚合供应商")}</strong>
-              <span>{t("切换到聚合配置后，在编辑页选择成员供应商和路由规则。")}</span>
-              <Button onClick={createNewAggregateProfile}>{t("创建聚合配置")}</Button>
+              <strong>{t("还没有故障转移配置")}</strong>
+              <span>{t("在编辑页勾选成员供应商，并选择失败切换、轮转或权重策略。")}</span>
+              <Button onClick={() => createNewAggregateProfile("provider")}>{t("创建故障转移配置")}</Button>
+            </div>
+          ) : null}
+          {providerView === "modelAggregation" && !visibleProfiles.length ? (
+            <div className="provider-aggregate-empty">
+              <strong>{t("还没有模型聚合配置")}</strong>
+              <span>{t("把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。")}</span>
+              <Button onClick={() => createNewAggregateProfile("model")}>{t("创建模型聚合配置")}</Button>
             </div>
           ) : null}
           <RelayProfileList
@@ -7975,6 +7993,7 @@ function RelayProfileDetail({
   relayFiles,
   form,
   isNew = false,
+  initialAggregateMode = null,
   onBack,
   onFormChange,
   onSaved,
@@ -7984,6 +8003,7 @@ function RelayProfileDetail({
   relayFiles: RelayFilesResult | null;
   form: BackendSettings;
   isNew?: boolean;
+  initialAggregateMode?: AggregateMode | null;
   onBack: () => void;
   onFormChange: (value: BackendSettings) => Promise<BackendSettings | null>;
   onSaved?: () => void;
@@ -8000,7 +8020,8 @@ function RelayProfileDetail({
   const [aggregateMode, setAggregateMode] = useState<AggregateMode | null>(() => {
     if (!isAggregateRelayProfile(profile)) return null;
     if (!isNew) return profile.aggregate?.modelAggregationEnabled === true ? "model" : "provider";
-    return null;
+    // 从「故障转移 / 模型聚合」分页进入时类型已确定，不再弹选择器。
+    return initialAggregateMode ?? null;
   });
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
@@ -13932,8 +13953,12 @@ function isAggregateRelayProfile(profile: Pick<RelayProfile, "relayMode" | "aggr
   return isAggregateProfile(profile);
 }
 
-function relayProviderView(profile: RelayProfile): "direct" | "routing" | "aggregate" {
-  if (isAggregateRelayProfile(profile)) return "aggregate";
+type ProviderViewKind = "direct" | "routing" | "failover" | "modelAggregation";
+
+function relayProviderView(profile: RelayProfile): ProviderViewKind {
+  if (isAggregateRelayProfile(profile)) {
+    return profile.aggregate?.modelAggregationEnabled === true ? "modelAggregation" : "failover";
+  }
   return profile.protocol === "chatCompletions" || normalizeRelayModelRoutes(profile.modelRoutes).length
     ? "routing"
     : "direct";
