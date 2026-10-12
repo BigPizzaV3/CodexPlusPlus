@@ -8793,7 +8793,8 @@ function RelayProfileEditor({
     const nextOrigins = modelSlugOriginsRef.current.filter((_, rowIndex) => rowIndex !== index);
     const resolved = resolvePendingModelSlugRenames(nextRows, nextOrigins, profile.modelMetadata);
     modelSlugOriginsRef.current = resolved.origins;
-    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "", autoCompact: "", imageHandling: "" }]);
+    // 删到没有模型就保持空列表，不再补一行空行。
+    setModelWindowRows(nextRows);
     const slugStillPresent = nextRows.some((row) => row.model.trim() === removedSlug)
       || resolved.origins.includes(removedSlug);
     const nextMetadata = removedSlug && !slugStillPresent
@@ -9026,7 +9027,7 @@ function RelayProfileEditor({
                     </Button>
                     <Button
                       disabled={!modelWindowRows.some((row) => row.model.trim())}
-                      onClick={() => setModelWindowRows([{ model: "", window: "", autoCompact: "", imageHandling: "send-as-is" }])}
+                      onClick={() => setModelWindowRows([])}
                       size="sm"
                       title={t("清空模型")}
                       type="button"
@@ -9038,7 +9039,7 @@ function RelayProfileEditor({
                   </div>
                 </div>
                 <div className="relay-model-row-editor">
-                  <div className="relay-model-row relay-model-row-head">
+                  {modelWindowRows.length ? <div className="relay-model-row relay-model-row-head">
                     <span aria-hidden="true" />
                     <span>{t("模型名称")}</span>
                     <span>{t("上下文窗口")}</span>
@@ -9047,7 +9048,7 @@ function RelayProfileEditor({
                     <span>{t("思考等级")}</span>
                     <span>{t("模型配置")}</span>
                     <span aria-hidden="true" />
-                  </div>
+                  </div> : null}
                   <DndContext
                     sensors={modelSensors}
                     collisionDetection={closestCenter}
