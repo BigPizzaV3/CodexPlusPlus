@@ -10094,6 +10094,8 @@ select {
 .provider-view-tabs button:hover{background:hsl(var(--primary)/.12);color:hsl(var(--primary))}
 .provider-view-tabs button.active{background:hsl(var(--primary));color:hsl(var(--primary-foreground));box-shadow:none}
 .provider-view-tabs button.active svg{color:currentColor}
+.provider-view-tabs .provider-view-help{margin-left:-3px;opacity:.62}
+.provider-view-tabs button.active .provider-view-help{opacity:.85}
 .provider-aggregate-empty{display:flex;align-items:center;gap:14px;margin:0 0 14px;padding:18px;border:1px dashed hsl(var(--brand-accent)/.45);border-radius:12px;background:hsl(var(--brand-accent)/.05)}
 .provider-aggregate-empty strong{font-size:14px;white-space:nowrap}
 .provider-aggregate-empty span{flex:1;color:hsl(var(--muted-foreground));font-size:13px}

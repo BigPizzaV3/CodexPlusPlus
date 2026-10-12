@@ -28,6 +28,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Camera,
+  CircleHelp,
   Copy,
   Download,
   Edit3,
@@ -4964,21 +4965,25 @@ function RelayScreen({
             </div>
           </div>
           <div className="provider-view-tabs" role="tablist" aria-label={t("供应商配置模式")}>
-            <button aria-selected={providerView === "direct"} className={providerView === "direct" ? "active" : ""} onClick={() => setProviderView("direct")} role="tab" type="button">
+            <button aria-selected={providerView === "direct"} className={providerView === "direct" ? "active" : ""} onClick={() => setProviderView("direct")} role="tab" title={t("直接访问 Responses API 供应商：只写入 Base URL 与 Key，不做协议转换。")} type="button">
               <Cable className="h-4 w-4" />
               <span>{t("直连")}</span>
+              <CircleHelp className="provider-view-help" size={13} />
             </button>
-            <button aria-selected={providerView === "routing"} className={providerView === "routing" ? "active" : ""} onClick={() => setProviderView("routing")} role="tab" type="button">
+            <button aria-selected={providerView === "routing"} className={providerView === "routing" ? "active" : ""} onClick={() => setProviderView("routing")} role="tab" title={t("供应商只支持 Chat Completions（或配置了模型路由）：由本地协议代理转换后转发。")} type="button">
               <GitBranch className="h-4 w-4" />
               <span>{t("需协议转换")}</span>
+              <CircleHelp className="provider-view-help" size={13} />
             </button>
-            <button aria-selected={providerView === "failover"} className={providerView === "failover" ? "active" : ""} onClick={() => setProviderView("failover")} role="tab" type="button">
+            <button aria-selected={providerView === "failover"} className={providerView === "failover" ? "active" : ""} onClick={() => setProviderView("failover")} role="tab" title={t("多个供应商组成请求池，支持失败切换、会话轮转、请求轮转与权重；成员可以是 API 供应商或官方登录账号。")} type="button">
               <ArrowRightLeft className="h-4 w-4" />
               <span>{t("故障转移")}</span>
+              <CircleHelp className="provider-view-help" size={13} />
             </button>
-            <button aria-selected={providerView === "modelAggregation"} className={providerView === "modelAggregation" ? "active" : ""} onClick={() => setProviderView("modelAggregation")} role="tab" type="button">
+            <button aria-selected={providerView === "modelAggregation"} className={providerView === "modelAggregation" ? "active" : ""} onClick={() => setProviderView("modelAggregation")} role="tab" title={t("把成员模型合并到 Codex 模型列表，带供应商前缀的模型固定发送到对应成员。")} type="button">
               <Layers3 className="h-4 w-4" />
               <span>{t("模型聚合")}</span>
+              <CircleHelp className="provider-view-help" size={13} />
             </button>
           </div>
           {providerView === "failover" && !visibleProfiles.length ? (
