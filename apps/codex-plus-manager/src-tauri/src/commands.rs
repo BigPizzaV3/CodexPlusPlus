@@ -1854,11 +1854,15 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    let restart_message = "Codex 已请求重启，启动任务正在后台运行。".to_string();
+    let mut restart_message = "Codex 已请求重启，启动任务正在后台运行。".to_string();
     match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
         spawn_after_provider_guard_release(provider_guard, request, start_embedded_launcher)
     }) {
-        Ok(()) => {
+        Ok(warnings) => {
+            for warning in warnings {
+                restart_message.push_str("\n\n");
+                restart_message.push_str(&warning);
+            }
             let (debug_port, helper_port, started_at_ms) =
                 accepted_launch_identity(&request, launch_started_at_ms);
             CommandResult {
@@ -1978,10 +1982,11 @@ fn restart_codex_plus_after_stop<F>(
     home: &Path,
     settings: Option<&BackendSettings>,
     spawn: F,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Vec<String>>
 where
     F: FnOnce(&LaunchRequest) -> anyhow::Result<()>,
 {
+    let mut warnings = Vec::new();
     let snapshot = if let Some(settings) = settings {
         let snapshot = RelayLiveSnapshot::capture(home)?;
         if let Err(error) = sync_active_relay_to_home(settings, home) {
@@ -1989,6 +1994,11 @@ where
                 anyhow::bail!("同步当前供应商失败：{error}；回滚 live 配置也失败：{restore_error}");
             }
             return Err(error);
+        }
+        if let Some(warning) =
+            codex_plus_core::aggregate_catalog::subagent_conflict_warning(home, settings)
+        {
+            warnings.push(warning);
         }
         Some(snapshot)
     } else {
@@ -2003,7 +2013,7 @@ where
         }
         return Err(error);
     }
-    Ok(())
+    Ok(warnings)
 }
 
 #[derive(Debug)]
@@ -6698,8 +6708,17 @@ fn apply_aggregate_relay_injection_to_home(
             ) {
                 Ok(result) => {
                     let status = codex_plus_core::relay_config::relay_status_from_home(home);
+                    let mut message =
+                        "聚合供应商配置和模型目录已写入，选中的模型会固定发送到对应成员。"
+                            .to_string();
+                    if let Some(warning) =
+                        codex_plus_core::aggregate_catalog::subagent_conflict_warning(home, &settings)
+                    {
+                        message.push_str("\n\n");
+                        message.push_str(&warning);
+                    }
                     return ok(
-                        "聚合供应商配置和模型目录已写入，选中的模型会固定发送到对应成员。",
+                        &message,
                         relay_payload(status, result.backup_path),
                     );
                 }
@@ -8523,6 +8542,62 @@ base_url = "https://example.invalid/v1"
             auth.get("OPENAI_API_KEY").and_then(|item| item.as_str()),
             Some("codex-plus-aggregate")
         );
+    }
+
+    /// 模型聚合 + `[features] multi_agent_v2` 时，重启同步要带回冲突提示，
+    /// 否则跨供应商子代理会在加密任务上静默失败（issue：feature flag 优先于目录）。
+    #[test]
+    fn model_aggregation_restart_reports_multi_agent_v2_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model = \"old\"\n[features]\nmulti_agent_v2 = true\n",
+        )
+        .unwrap();
+        let settings = BackendSettings {
+            active_relay_id: "aggregate".to_string(),
+            active_aggregate_relay_id: "aggregate".to_string(),
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "deepseek".to_string(),
+                    name: "DeepSeek".to_string(),
+                    model: "deepseek-chat".to_string(),
+                    base_url: "https://deepseek.example/v1".to_string(),
+                    api_key: "sk-test-redacted".to_string(),
+                    relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "aggregate".to_string(),
+                    relay_mode: codex_plus_core::settings::RelayMode::Aggregate,
+                    ..RelayProfile::default()
+                },
+            ],
+            aggregate_relay_profiles: vec![codex_plus_core::settings::AggregateRelayProfile {
+                id: "aggregate".to_string(),
+                name: "Aggregate".to_string(),
+                session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
+                model_aggregation_enabled: true,
+                strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
+                members: vec![codex_plus_core::settings::AggregateRelayMember {
+                    relay_id: "deepseek".to_string(),
+                    weight: 1,
+                }],
+                routes: Vec::new(),
+            }],
+            ..BackendSettings::default()
+        };
+
+        let warnings = restart_codex_plus_after_stop(
+            &launch_request(true),
+            temp.path(),
+            Some(&settings),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("multi_agent_v2"), "{warnings:?}");
     }
 
     #[test]

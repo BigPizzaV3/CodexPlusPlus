@@ -74,26 +74,55 @@ pub fn resolve_active_model(
     settings: &BackendSettings,
     catalog_model: &str,
 ) -> anyhow::Result<Option<AggregateModelBinding>> {
-    if catalog_model.trim().is_empty() {
+    let catalog_model = catalog_model.trim();
+    if catalog_model.is_empty() {
         return Ok(None);
     }
-    if !is_aggregate_model(catalog_model) {
-        if active_model_aggregation(settings).is_some() {
-            anyhow::bail!("按模型聚合需要选择已绑定供应商的模型，请在 Codex 模型列表中重新选择");
+    let Some(aggregate) = active_model_aggregation(settings) else {
+        if is_aggregate_model(catalog_model) {
+            anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}");
         }
         return Ok(None);
+    };
+    if !is_aggregate_model(catalog_model) {
+        anyhow::bail!("按模型聚合需要选择已绑定供应商的模型，请在 Codex 模型列表中重新选择");
     }
-    active_model_bindings(settings)?
-        .into_iter()
-        .find(|item| item.catalog_model == catalog_model)
-        .map(Some)
-        .ok_or_else(|| {
-            anyhow::anyhow!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}")
-        })
+    // 按成员前缀精确归因：缺 Key/URL、官方未登录、成员被删只影响它自己的模型，
+    // 其他成员的模型继续可用。过去任一成员未就绪会让全部聚合请求 400。
+    for member in aggregate_member_availability(settings, &aggregate) {
+        if !catalog_model.starts_with(&member.prefix) {
+            continue;
+        }
+        if let Some(issue) = &member.issue {
+            anyhow::bail!(
+                "聚合成员「{}」当前不可用：{issue}。请修复该成员，或改选其他模型",
+                member.name
+            );
+        }
+        let Some(relay_index) = member.relay_index else {
+            anyhow::bail!("聚合成员「{}」当前不可用：成员供应商不存在", member.name);
+        };
+        let relay = &settings.relay_profiles[relay_index];
+        let upstream_model = profile_catalog_entries(relay)?
+            .into_iter()
+            .find(|entry| aggregate_model_id(&relay.id, &entry.slug) == catalog_model)
+            .map(|entry| entry.slug);
+        return match upstream_model {
+            Some(upstream_model) => Ok(Some(AggregateModelBinding {
+                catalog_model: catalog_model.to_string(),
+                relay_id: relay.id.clone(),
+                upstream_model,
+                relay: relay.clone(),
+            })),
+            None => anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}"),
+        };
+    }
+    anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}")
 }
 
-/// 生成前和请求前使用相同的成员校验：普通 API 成员要 URL/Key 齐备，
+/// 目录生成/应用期的成员校验：普通 API 成员要 URL/Key 齐备，
 /// 官方登录成员要有 ChatGPT 登录凭据；另一个聚合不能当成员。
+/// 请求期由 `resolve_active_model` 按成员前缀各自归因，单个成员失效不连坐其他模型。
 fn member_profiles<'a>(
     settings: &'a BackendSettings,
     aggregate: &AggregateRelayProfile,
@@ -118,6 +147,55 @@ fn member_profiles<'a>(
         members.push(relay);
     }
     Ok(members)
+}
+
+/// 请求路径的成员可用性视图：只保留模型 ID 前缀与不可用原因，避免为解析
+/// 单个模型而遍历和克隆全部成员配置。
+struct MemberAvailability {
+    relay_index: Option<usize>,
+    prefix: String,
+    name: String,
+    issue: Option<String>,
+}
+
+/// 聚合模型 ID 的成员前缀：`cpx-<成员键>/`。键转义与 `aggregate_model_id` 一致，
+/// 所以除本成员外没有其他成员的前缀能命中同一模型 ID。
+fn member_model_prefix(relay_id: &str) -> String {
+    aggregate_model_id(relay_id, "")
+}
+
+fn aggregate_member_availability(
+    settings: &BackendSettings,
+    aggregate: &AggregateRelayProfile,
+) -> Vec<MemberAvailability> {
+    let mut seen = HashSet::new();
+    aggregate
+        .members
+        .iter()
+        .filter(|member| seen.insert(member.relay_id.as_str()))
+        .map(|member| {
+            let Some(relay_index) = settings
+                .relay_profiles
+                .iter()
+                .position(|relay| relay.id == member.relay_id)
+            else {
+                return MemberAvailability {
+                    relay_index: None,
+                    prefix: member_model_prefix(&member.relay_id),
+                    name: member.relay_id.clone(),
+                    issue: Some("成员供应商不存在，请检查成员配置".to_string()),
+                };
+            };
+            let relay = &settings.relay_profiles[relay_index];
+            MemberAvailability {
+                relay_index: Some(relay_index),
+                prefix: member_model_prefix(&relay.id),
+                name: relay.name.clone(),
+                issue: (!crate::relay_rotation::member_relay_ready(relay))
+                    .then(|| "需要可用的 API 地址与认证配置，或完成官方登录".to_string()),
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn profile_catalog_entries(
@@ -289,6 +367,44 @@ fn validate_compact(values: &HashMap<String, String>, field: &str) -> anyhow::Re
     Ok(())
 }
 
+/// codex 对 `features.multi_agent_v2` 的启用判定优先于目录条目的
+/// `multi_agent_version`（openai/codex config schema 原文：
+/// “An enabled `features.multi_agent_v2` setting takes precedence.”）。
+/// 模型聚合把子代理钉在经典工具（v1、明文任务）上以保证跨成员可用，
+/// 这里识别会覆盖该契约的全局开关形态：布尔值以原值为准，
+/// `[features.multi_agent_v2]` 结构化子表出现即视为启用（仅显式 `enabled = false` 视为关闭）。
+pub fn multi_agent_v2_enabled(config_text: &str) -> bool {
+    let Ok(doc) = config_text.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let Some(features) = doc.get("features").and_then(|item| item.as_table_like()) else {
+        return false;
+    };
+    let Some(item) = features.get("multi_agent_v2") else {
+        return false;
+    };
+    if let Some(enabled) = item.as_value().and_then(|value| value.as_bool()) {
+        return enabled;
+    }
+    item.as_table_like().is_some_and(|table| {
+        table
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true)
+    })
+}
+
+/// 模型聚合处于活动状态、且用户用 `[features] multi_agent_v2` 覆盖了经典子代理设置时，
+/// 返回一条可展示给管理器的提示；无冲突或读取失败时返回 None。
+pub fn subagent_conflict_warning(home: &Path, settings: &BackendSettings) -> Option<String> {
+    active_model_aggregation(settings)?;
+    let config_text = std::fs::read_to_string(home.join("config.toml")).ok()?;
+    multi_agent_v2_enabled(&config_text).then(|| {
+        "检测到 config.toml 已启用 [features] multi_agent_v2：它优先于模型聚合目录中的经典子代理设置，跨供应商的子代理任务可能报无法解密。如遇到该问题，请移除或关闭该项，或让子代理与主代理使用同一供应商的模型。"
+            .to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,5 +550,82 @@ mod tests {
             });
         let error = active_model_bindings(&settings).unwrap_err();
         assert!(error.to_string().contains("官方登录"), "{error}");
+    }
+
+    /// 单个成员失效（缺 Key/URL）只影响它自己的模型，其他成员的模型继续可用。
+    #[test]
+    fn unready_member_only_blocks_its_own_models() {
+        let mut settings = settings();
+        settings
+            .relay_profiles
+            .iter_mut()
+            .find(|relay| relay.id == "openai")
+            .unwrap()
+            .api_key = String::new();
+
+        let binding = resolve_active_model(&settings, "cpx-deepseek/deepseek-reasoner")
+            .unwrap()
+            .expect("健康成员的模型应仍然可用");
+        assert_eq!(binding.relay_id, "deepseek");
+        assert_eq!(binding.upstream_model, "deepseek-reasoner");
+
+        let error = resolve_active_model(&settings, "cpx-openai/gpt-5.6-sol").unwrap_err();
+        assert!(error.to_string().contains("当前不可用"), "{error}");
+        assert!(error.to_string().contains("OpenAI API"), "{error}");
+    }
+
+    /// 成员供应商被删除时给出成员级错误，同时不阻塞其他成员。
+    #[test]
+    fn missing_member_reports_member_level_error_without_blocking_others() {
+        let mut settings = settings();
+        settings.aggregate_relay_profiles[0]
+            .members
+            .push(AggregateRelayMember {
+                relay_id: "ghost".to_string(),
+                weight: 1,
+            });
+
+        assert!(resolve_active_model(&settings, "cpx-deepseek/deepseek-reasoner")
+            .unwrap()
+            .is_some());
+
+        let error = resolve_active_model(&settings, "cpx-ghost/some-model").unwrap_err();
+        assert!(error.to_string().contains("ghost"), "{error}");
+        assert!(error.to_string().contains("当前不可用"), "{error}");
+    }
+
+    #[test]
+    fn multi_agent_v2_flag_forms_are_detected() {
+        assert!(multi_agent_v2_enabled("[features]\nmulti_agent_v2 = true\n"));
+        assert!(!multi_agent_v2_enabled("[features]\nmulti_agent_v2 = false\n"));
+        assert!(multi_agent_v2_enabled(
+            "[features.multi_agent_v2]\nmax_concurrent_threads_per_session = 4\n"
+        ));
+        assert!(!multi_agent_v2_enabled(
+            "[features.multi_agent_v2]\nenabled = false\n"
+        ));
+        assert!(!multi_agent_v2_enabled("model = \"gpt-5.6-sol\"\n"));
+        assert!(!multi_agent_v2_enabled("not = [valid"));
+    }
+
+    #[test]
+    fn subagent_conflict_warning_requires_active_model_aggregation_and_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = settings();
+
+        assert!(subagent_conflict_warning(temp.path(), &settings).is_none());
+
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model = \"x\"\n[features]\nmulti_agent_v2 = true\n",
+        )
+        .unwrap();
+        let warning = subagent_conflict_warning(temp.path(), &settings).unwrap();
+        assert!(warning.contains("multi_agent_v2"), "{warning}");
+        assert!(warning.contains("子代理"), "{warning}");
+
+        // 关闭模型聚合（故障转移类型）后不再提示。
+        settings.aggregate_relay_profiles[0].model_aggregation_enabled = false;
+        assert!(subagent_conflict_warning(temp.path(), &settings).is_none());
     }
 }
