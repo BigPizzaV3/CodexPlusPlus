@@ -152,6 +152,46 @@ fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
     )
 }
 
+/// 当前活动供应商在 Codex 模型列表里公布的模型 ID 集合，用于清理历史残留引用
+/// （例如换目录后模型选择器里还留着的 `ccs-xxx/model`）。
+///
+/// - 模型聚合：目录里的全部 `cpx-*`——目录由 Codex++ 生成，这份集合是权威的；
+///   成员未就绪导致目录算不出来时返回空集，调用方据此跳过清理，绝不误删。
+/// - 官方登录且没混用 API Key：模型列表由 Codex 自己决定，返回空集表示「不要清理」。
+/// - 普通 API 供应商：它的 model_list + 当前 model + 模型路由的源模型名，
+///   并同时收下剥掉 `[1M]` 这类窗口后缀的形式，宁可多留不可误删。
+pub fn active_published_model_ids(settings: &crate::settings::BackendSettings) -> HashSet<String> {
+    if crate::aggregate_catalog::active_model_aggregation(settings).is_some() {
+        return crate::aggregate_catalog::active_model_bindings(settings)
+            .map(|bindings| {
+                bindings
+                    .into_iter()
+                    .map(|binding| binding.catalog_model)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    let profile = settings.active_relay_profile();
+    if profile.relay_mode == crate::settings::RelayMode::Official && !profile.official_mix_api_key {
+        return HashSet::new();
+    }
+    let mut ids = HashSet::new();
+    for model in relay_profile_model_ids(&profile) {
+        let (stripped, _) = crate::model_suffix::parse_model_suffix(&model);
+        if !stripped.is_empty() {
+            ids.insert(stripped);
+        }
+        ids.insert(model);
+    }
+    for route in &profile.model_routes {
+        let model = route.model.trim();
+        if !model.is_empty() {
+            ids.insert(model.to_string());
+        }
+    }
+    ids
+}
+
 fn model_ui_metadata_map(models: &[String]) -> Value {
     model_ui_metadata_map_with_overrides(models, "")
 }

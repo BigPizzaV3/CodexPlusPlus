@@ -1,5 +1,9 @@
 //! 按模型聚合：发布带供应商身份的模型目录，并精确解析到成员与真实模型。
 //! 模型聚合和供应商池策略互斥；未带绑定身份的请求不能进入轮转池。
+//!
+//! 例外：请求里的模型名可能来自旧会话、别的目录（如 cc-switch 写下的 `ccs-xxx/model`）
+//! 或 Codex 回合前的自动压缩（用的是上一回合的模型）。这类 ID 没有聚合身份，但成员目录里
+//! 可能有同名上游模型，此时按名字归因到该成员（确定性单播，不轮转），而不是一律 400。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -85,7 +89,14 @@ pub fn resolve_active_model(
         return Ok(None);
     };
     if !is_aggregate_model(catalog_model) {
-        anyhow::bail!("按模型聚合需要选择已绑定供应商的模型，请在 Codex 模型列表中重新选择");
+        // 旧会话恢复的模型、别的目录写下的 `<前缀>/<模型>`、以及回合前自动压缩带的
+        // 「上一回合模型」都会走到这里。能按上游模型名归属到成员就照常放行。
+        if let Some(binding) = resolve_by_upstream_name(settings, &aggregate, catalog_model)? {
+            return Ok(Some(binding));
+        }
+        anyhow::bail!(
+            "按模型聚合需要选择已绑定供应商的模型，请在 Codex 模型列表中重新选择（请求模型：{catalog_model}）"
+        );
     }
     // 按成员前缀精确归因：缺 Key/URL、官方未登录、成员被删只影响它自己的模型，
     // 其他成员的模型继续可用。过去任一成员未就绪会让全部聚合请求 400。
@@ -117,7 +128,78 @@ pub fn resolve_active_model(
             None => anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}"),
         };
     }
+    // 成员前缀没命中：成员 id 变过（目录重建）时旧 ID 会落在这里，再按上游模型名兜底一次。
+    if let Some(binding) = resolve_by_upstream_name(settings, &aggregate, catalog_model)? {
+        return Ok(Some(binding));
+    }
     anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}")
+}
+
+/// 按「上游模型名」在成员目录里归因：`ccs-deepseek/deepseek-flash`、裸名 `deepseek-flash`
+/// 都取最后一段去匹配成员声明的模型。同名模型被多个成员声明时取聚合成员顺序里第一个
+/// **可用**成员——确定性单播，不进轮转池。找不到归属返回 Ok(None)，由调用方给上下文错误。
+fn resolve_by_upstream_name(
+    settings: &BackendSettings,
+    aggregate: &AggregateRelayProfile,
+    requested: &str,
+) -> anyhow::Result<Option<AggregateModelBinding>> {
+    let tail = requested.rsplit('/').next().unwrap_or(requested).trim();
+    if tail.is_empty() {
+        return Ok(None);
+    }
+    // 历史请求可能残留 `[1M]` 这类窗口后缀，先按原文匹配，再退回剥掉后缀的名字。
+    let (stripped, _) = crate::model_suffix::parse_model_suffix(tail);
+    let mut candidates = Vec::new();
+    for member in aggregate_member_availability(settings, aggregate) {
+        let Some(relay_index) = member.relay_index else {
+            continue;
+        };
+        let relay = &settings.relay_profiles[relay_index];
+        let Ok(entries) = profile_catalog_entries(relay) else {
+            continue;
+        };
+        let slug = entries
+            .iter()
+            .map(|entry| entry.slug.as_str())
+            .find(|slug| *slug == tail || (!stripped.is_empty() && *slug == stripped));
+        if let Some(slug) = slug {
+            candidates.push((
+                relay_index,
+                member.name.clone(),
+                member.issue.clone(),
+                slug.to_string(),
+            ));
+        }
+    }
+    let Some(first) = candidates.first() else {
+        return Ok(None);
+    };
+    let (relay_index, name, issue, upstream_model) = candidates
+        .iter()
+        .find(|(_, _, issue, _)| issue.is_none())
+        .unwrap_or(first)
+        .clone();
+    if let Some(issue) = issue {
+        anyhow::bail!("聚合成员「{name}」当前不可用：{issue}。请修复该成员，或改选其他模型");
+    }
+    let relay = &settings.relay_profiles[relay_index];
+    let catalog_model = aggregate_model_id(&relay.id, &upstream_model);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "aggregate.foreign_model_resolved",
+        json!({
+            "requestedModel": requested,
+            "resolvedModel": catalog_model,
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "candidateCount": candidates.len(),
+        }),
+    );
+    Ok(Some(AggregateModelBinding {
+        catalog_model,
+        relay_id: relay.id.clone(),
+        upstream_model,
+        relay: relay.clone(),
+    }))
 }
 
 /// 目录生成/应用期的成员校验：普通 API 成员要 URL/Key 齐备，
@@ -499,8 +581,93 @@ mod tests {
         let settings = settings();
         let error = resolve_active_model(&settings, "cpx-removed/old-model").unwrap_err();
         assert!(error.to_string().contains("cpx-removed/old-model"));
-        let plain_error = resolve_active_model(&settings, "deepseek-chat").unwrap_err();
-        assert!(plain_error.to_string().contains("按模型聚合需要选择"));
+    }
+
+    /// 旧会话/别的目录（cc-switch 的 `ccs-xxx/model`）留下的模型名：成员目录里有同名
+    /// 上游模型时按名字归因，不再一律 400——Codex 回合前的自动压缩用的就是上一回合的模型名。
+    #[test]
+    fn foreign_model_names_resolve_by_member_upstream_name() {
+        let settings = settings();
+        let binding = resolve_active_model(&settings, "ccs-deepseek/deepseek-reasoner")
+            .unwrap()
+            .expect("成员声明了 deepseek-reasoner，应按名字归因");
+        assert_eq!(binding.relay_id, "deepseek");
+        assert_eq!(binding.upstream_model, "deepseek-reasoner");
+        assert_eq!(binding.catalog_model, "cpx-deepseek/deepseek-reasoner");
+
+        let plain = resolve_active_model(&settings, "deepseek-chat")
+            .unwrap()
+            .expect("裸模型名同样按名字归因");
+        assert_eq!(plain.relay_id, "deepseek");
+        assert_eq!(plain.upstream_model, "deepseek-chat");
+
+        // 带窗口后缀的历史模型名也能落回成员声明的那条。
+        let suffixed = resolve_active_model(&settings, "ccs-deepseek/deepseek-reasoner[1M]")
+            .unwrap()
+            .expect("剥掉窗口后缀后应能归因");
+        assert_eq!(suffixed.upstream_model, "deepseek-reasoner");
+    }
+
+    /// 没有任何成员提供这个名字时仍然是 400，并且把请求里的模型名写进错误信息。
+    #[test]
+    fn unknown_foreign_model_still_reports_requested_model() {
+        let settings = settings();
+        let error = resolve_active_model(&settings, "ccs-ghost/nope").unwrap_err();
+        assert!(error.to_string().contains("按模型聚合需要选择"), "{error}");
+        assert!(error.to_string().contains("ccs-ghost/nope"), "{error}");
+    }
+
+    /// 同名模型被多个成员声明：取聚合成员顺序里第一个可用者，不进入轮转池。
+    #[test]
+    fn ambiguous_foreign_model_uses_first_available_member() {
+        let mut settings = settings();
+        settings
+            .relay_profiles
+            .iter_mut()
+            .find(|relay| relay.id == "deepseek")
+            .unwrap()
+            .model_list = "deepseek-reasoner\ngpt-5.6-sol".to_string();
+
+        let binding = resolve_active_model(&settings, "gpt-5.6-sol")
+            .unwrap()
+            .expect("两个成员都声明 gpt-5.6-sol");
+        assert_eq!(binding.relay_id, "deepseek");
+
+        // 第一个匹配成员不可用时，退到下一个同样声明该模型的成员。
+        settings
+            .relay_profiles
+            .iter_mut()
+            .find(|relay| relay.id == "deepseek")
+            .unwrap()
+            .api_key = String::new();
+        let binding = resolve_active_model(&settings, "gpt-5.6-sol")
+            .unwrap()
+            .expect("应退到可用的 openai 成员");
+        assert_eq!(binding.relay_id, "openai");
+    }
+
+    /// 活动目录发布的模型 ID：聚合是 `cpx-*`，普通供应商是它自己的目录条目加路由源模型名。
+    #[test]
+    fn active_published_model_ids_follow_active_provider() {
+        let settings = settings();
+        let ids = crate::model_catalog::active_published_model_ids(&settings);
+        assert!(ids.contains("cpx-deepseek/deepseek-reasoner"));
+        assert!(ids.contains("cpx-openai/gpt-5.6-sol"));
+        assert!(!ids.contains("deepseek-reasoner"));
+
+        let mut single = settings.clone();
+        single.active_aggregate_relay_id = String::new();
+        single.active_relay_id = "deepseek".to_string();
+        single.aggregate_relay_profiles.clear();
+        single.relay_profiles[0].model_routes = vec![crate::settings::RelayModelRoute {
+            model: "ccs-deepseek/deepseek-flash".to_string(),
+            target_relay_id: "openai".to_string(),
+            target_model: String::new(),
+        }];
+        let ids = crate::model_catalog::active_published_model_ids(&single);
+        assert!(ids.contains("deepseek-chat"));
+        assert!(ids.contains("deepseek-reasoner"));
+        assert!(ids.contains("ccs-deepseek/deepseek-flash"));
     }
 
     #[test]

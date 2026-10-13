@@ -742,6 +742,13 @@ where
         }
 
         timeline.mark("launch_codex", 70);
+        // 启动 Codex 之前清一遍选择器残留：换过目录（如 cc-switch → Codex++ 聚合）之后，
+        // 「最近使用」里会留着上一个目录的模型 ID，用户点到就是必然 400 的模型。
+        crate::codex_app_state::prune_stale_model_references_after_switch_nonfatal(
+            &home,
+            &settings,
+            "launcher.before_launch_codex",
+        );
         let launch = hooks
             .launch_codex(&app_dir, debug_port, &settings, &settings.codex_extra_args)
             .await?;

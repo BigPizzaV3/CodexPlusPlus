@@ -32,6 +32,9 @@ const SAFE_TOP_LEVEL_KEYS: &[&str] = &[
     "electron-main-window-bounds",
 ];
 
+/// Codex 输入框模型选择器的「最近使用」（持久化在 atom state 里，只留最近 3 条）。
+const COMPOSER_RECENT_MODELS_KEY: &str = "composer-recent-model-configurations-v1";
+
 const SAFE_ATOM_KEYS: &[&str] = &[
     "default-service-tier",
     "avatar-overlay-mascot-width-px",
@@ -157,6 +160,86 @@ pub fn sync_app_state_after_provider_switch_nonfatal(home: &Path, source: &str) 
         Err(error) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "codex_app_state.sync_failed",
+                json!({
+                    "source": source,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+/// 切换供应商/聚合（或启动 Codex）后清掉模型选择器里的失效残留。
+/// `valid_models` 是当前活动供应商公布的模型 ID 集合；为空时什么都不做——
+/// 算不出目录时宁可留着，也不能把用户的「最近使用」误删。
+pub fn prune_stale_recent_model_configurations(
+    home: &Path,
+    valid_models: &HashSet<String>,
+) -> anyhow::Result<usize> {
+    if valid_models.is_empty() {
+        return Ok(0);
+    }
+    let Some(mut state) = load_global_state(home)? else {
+        return Ok(0);
+    };
+    let original = Value::Object(state.clone());
+    let Some(entries) = state
+        .get_mut("electron-persisted-atom-state")
+        .and_then(Value::as_object_mut)
+        .and_then(|atom| atom.get_mut(COMPOSER_RECENT_MODELS_KEY))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(0);
+    };
+    let before = entries.len();
+    entries.retain(|entry| match entry.get("model").and_then(Value::as_str) {
+        Some(model) => valid_models.contains(model.trim()),
+        // 结构不认识就原样保留，不替 Codex 做决定。
+        None => true,
+    });
+    let removed = before - entries.len();
+    if removed == 0 {
+        return Ok(0);
+    }
+
+    let next = Value::Object(state);
+    create_backup(home, &original)?;
+    let text = serde_json::to_string_pretty(&next)?;
+    let state_path = state_path(home);
+    crate::settings::atomic_write(&state_path, text.as_bytes())?;
+    if let Some(parent) = state_path.parent() {
+        let _ =
+            crate::settings::atomic_write(&parent.join(GLOBAL_STATE_BACKUP_FILE), text.as_bytes());
+    }
+    Ok(removed)
+}
+
+/// 切换/启动流程调用的非致命包装：按当前活动供应商公布的模型集合清理残留引用，
+/// 并把结果写进诊断日志。任何失败都只记录，不阻断切换或启动。
+pub fn prune_stale_model_references_after_switch_nonfatal(
+    home: &Path,
+    settings: &crate::settings::BackendSettings,
+    source: &str,
+) {
+    let valid_models = crate::model_catalog::active_published_model_ids(settings);
+    if valid_models.is_empty() {
+        return;
+    }
+    match prune_stale_recent_model_configurations(home, &valid_models) {
+        Ok(0) => {}
+        Ok(removed) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.pruned_stale_models",
+                json!({
+                    "source": source,
+                    "removed": removed,
+                    "publishedModelCount": valid_models.len(),
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.prune_stale_models_failed",
                 json!({
                     "source": source,
                     "error": error.to_string(),
