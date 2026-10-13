@@ -1894,11 +1894,6 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
-            rate_limit_cooldown_enabled: false,
-            channel_queue_enabled: false,
-            channel_requests_per_minute:
-                codex_plus_core::settings::default_channel_requests_per_minute(),
-            cooldown_error_statuses: codex_plus_core::settings::default_cooldown_error_statuses(),
         }],
         active_relay_id: "relay-chat".to_string(),
         ..BackendSettings::default()

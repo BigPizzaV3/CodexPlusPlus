@@ -74,7 +74,7 @@ function eventHandlerNodes(component: ts.Node, element: ts.JsxOpeningElement | t
 test("retired enhancements have no settings, navigation or command references in the manager UI", () => {
   const retired = new Set([
     "codexAppZedRemoteOpen", "zedRemoteOpenStrategy", "zedRemoteProjectRegistryEnabled", "zedRemoteSyncToZedSettings",
-    "codexAppUpstreamWorktreeCreate", "codexAppForceChineseLocale", "codexAppNativeMenuLocalization",
+    "codexAppUpstreamWorktreeCreate", "codexAppNativeMenuLocalization",
     "codexAppFastStartup", "快速启动",
     "ZedRemoteScreen", "ZedRemoteProjectSection", "zedRemote", "list_zed_remote_projects", "open_zed_remote", "forget_zed_remote_project",
     "launchMode", "LaunchMode", "ModeSelector", "saveLaunchMode", "setLaunchMode", "patchMode",
@@ -108,6 +108,7 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   const whaleWidget = fieldControl(petGroup.parent, "form.codexAppWhaleWidgetEnabled");
   assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
     && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(whaleWidget)), "the Codex usage widget must be available on every platform");
+  assert.ok(fieldControl(petGroup.parent, "form.codexAppActivityOverlayRight"), "the native activity overlay mirror belongs with the pet layout settings");
 
   const visibleEnglish = descendants(app).filter((node) => ts.isStringLiteral(node)
     || ts.isNoSubstitutionTemplateLiteral(node) || ts.isJsxText(node)).filter((node) => /Stepwise/.test(node.getText(app)));

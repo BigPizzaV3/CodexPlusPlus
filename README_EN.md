@@ -49,9 +49,16 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | WeChat connection | QR login connects personal WeChat to local Codex sessions; each WeChat contact maps to a separate session, with an allowed-user list |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, API-key dictation, conversation width and scroll restore, service-tier controls, Goals, next-step suggestions, skin management, and image overlay |
 | Development workflow | Project move and thread IDs |
+| Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; running instances are listed together and can be restarted or stopped individually |
 | Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
+
+**Codex multi-launch** starts one isolated Codex instance per provider identity. Each instance keeps its own config, sessions, and user data directory, so a single Responses or Chat Completions provider can run side by side with others without sharing sessions. The running main Codex and multi-launch instances are listed together and can be restarted or stopped individually.
+
+<p align="center">
+  <img src="docs/images/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances with restart and stop actions" width="100%">
+</p>
 
 Enable the optional Codex usage widget under Codex Enhancements → General → Widgets and pets. It includes the original character, modular bubble editor, sound library and waveform trimming, character/image/audio management, edge snapping and alerts. View session and local usage, observed subscription windows and costs estimated from configured prices, or connect provider balance and quota templates. See the [widget guide](docs/whale-widget.md) and [feature verification](docs/whale-parity.md).
 
@@ -66,11 +73,15 @@ Official login, mixed API, and pure API are stored and switched separately:
 | Official login | Use only the official ChatGPT / Codex account | Removes custom providers and API keys while preserving official login state |
 | Official login + API | Keep official account features and plugins while routing model requests to a compatible API | Stores the key as a provider bearer token, not in pure API `auth.json` |
 | Pure API | Use a custom Base URL and key without an official account | Maintains independent `config.toml` and API-key auth without mixing official credentials |
-| Aggregate provider | Route across multiple ordinary API providers | Supports failover, conversation round-robin, request round-robin, and weighted round-robin |
+| Aggregate provider | Two types: Failover (fail over or rotate across providers) and Model aggregation (bind catalog models to specific members) | Members can be ordinary API providers or signed-in official accounts; Failover supports failover, conversation round-robin, request round-robin, and weighted round-robin |
 
 Each provider can configure Responses or Chat Completions, model lists, a test model, User-Agent, context windows, auto-compact limits, and enabled MCP servers, Skills, and Plugins. Chat Completions can be converted locally into the Responses protocol used by Codex.
 
 Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
+
+When creating an aggregate provider, first choose **Failover** or **Model aggregation**. The two types have separate forms and runtime behavior. Model aggregation merges member models into Codex's model list and binds `cpx-<provider-id>/` entries to that member; Failover uses failover, rotation, and weights. Each member keeps its own model list, context window, and auto-compact settings.
+
+Members can be ordinary API providers or official accounts with a completed ChatGPT login. For official members the proxy sends requests to the chatgpt.com backend with that account's OAuth credentials, refreshes the access token with its refresh token when needed (writing the rotated tokens back to the provider snapshot), and retries once after a 401. When the same account is also used directly, the live auth.json credentials take precedence so refresh-token rotation cannot invalidate the snapshot.
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
 

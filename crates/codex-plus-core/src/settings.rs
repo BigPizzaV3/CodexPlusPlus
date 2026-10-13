@@ -127,20 +127,6 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub web_search_history_compat: bool,
-    #[serde(rename = "rateLimitCooldownEnabled", default)]
-    pub rate_limit_cooldown_enabled: bool,
-    #[serde(rename = "channelQueueEnabled", default)]
-    pub channel_queue_enabled: bool,
-    #[serde(
-        rename = "channelRequestsPerMinute",
-        default = "default_channel_requests_per_minute"
-    )]
-    pub channel_requests_per_minute: u32,
-    #[serde(
-        rename = "cooldownErrorStatuses",
-        default = "default_cooldown_error_statuses"
-    )]
-    pub cooldown_error_statuses: Vec<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -227,6 +213,9 @@ pub struct AggregateRelayProfile {
     pub name: String,
     #[serde(default)]
     pub session_provider: RelaySessionProvider,
+    /// 将成员模型合并到 Codex 模型目录，并按模型 ID 固定绑定成员。
+    #[serde(rename = "modelAggregationEnabled", default)]
+    pub model_aggregation_enabled: bool,
     #[serde(default)]
     pub strategy: AggregateRelayStrategy,
     #[serde(default)]
@@ -271,10 +260,6 @@ impl Default for RelayProfile {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
-            rate_limit_cooldown_enabled: false,
-            channel_queue_enabled: false,
-            channel_requests_per_minute: default_channel_requests_per_minute(),
-            cooldown_error_statuses: default_cooldown_error_statuses(),
         }
     }
 }
@@ -489,6 +474,14 @@ impl Default for DictationSettings {
 impl DictationSettings {
     pub fn normalize(&mut self) {
         self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        // 兼容早期 SenseVoice 设置：旧版保存预设时可能只写入了
+        // `local://sensevoice`，没有保存 provider 字段。加载时恢复 provider，
+        // 否则离线标记会被语音服务按 HTTP(S) URL 校验并报错。
+        if self.provider == DictationProvider::Api
+            && self.base_url.eq_ignore_ascii_case("local://sensevoice")
+        {
+            self.provider = DictationProvider::SenseVoice;
+        }
         self.api_key = self.api_key.trim().to_string();
         self.api_key_env = self.api_key_env.trim().to_string();
         self.model = self.model.trim().to_string();
@@ -531,6 +524,10 @@ pub struct BackendSettings {
     pub codex_app_session_share: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
+    // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
+    // 若默认开启等于替他们重新打开一个从没同意过的行为。要开请显式勾选。
+    #[serde(rename = "codexAppForceChineseLocale", default)]
+    pub codex_app_force_chinese_locale: bool,
     #[serde(
         rename = "codexAppTypingEffect",
         default = "default_typing_effect",
@@ -551,6 +548,10 @@ pub struct BackendSettings {
     pub codex_app_service_tier_controls: bool,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
     pub codex_app_pet_real_mouse_look: bool,
+    #[serde(rename = "codexAppActivityOverlayRight", default)]
+    pub codex_app_activity_overlay_right: bool,
+    #[serde(rename = "codexAppCapacityAutoRetry", default)]
+    pub codex_app_capacity_auto_retry: bool,
     #[serde(rename = "codexAppWhaleWidgetEnabled", default)]
     pub codex_app_whale_widget_enabled: bool,
     #[serde(
@@ -730,6 +731,7 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_session_share: true,
             codex_app_paste_fix: false,
+            codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
@@ -738,6 +740,8 @@ impl Default for BackendSettings {
             codex_app_native_browser_require_identification: false,
             codex_app_service_tier_controls: false,
             codex_app_pet_real_mouse_look: false,
+            codex_app_activity_overlay_right: false,
+            codex_app_capacity_auto_retry: false,
             codex_app_whale_widget_enabled: false,
             codex_app_whale_balance_protocol: default_whale_balance_protocol(),
             codex_app_whale_balance_path: String::new(),
@@ -841,10 +845,6 @@ impl BackendSettings {
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
                 web_search_history_compat: false,
-                rate_limit_cooldown_enabled: false,
-                channel_queue_enabled: false,
-                channel_requests_per_minute: default_channel_requests_per_minute(),
-                cooldown_error_statuses: default_cooldown_error_statuses(),
             };
         }
 
@@ -902,10 +902,6 @@ impl BackendSettings {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
-            rate_limit_cooldown_enabled: false,
-            channel_queue_enabled: false,
-            channel_requests_per_minute: default_channel_requests_per_minute(),
-            cooldown_error_statuses: default_cooldown_error_statuses(),
         }
     }
 
@@ -1199,30 +1195,6 @@ pub fn default_relay_test_model() -> String {
     "gpt-5.4-mini".to_string()
 }
 
-pub fn default_channel_requests_per_minute() -> u32 {
-    20
-}
-
-pub fn default_cooldown_error_statuses() -> Vec<u16> {
-    vec![429, 500]
-}
-
-pub fn normalize_channel_requests_per_minute(value: u32) -> u32 {
-    value.clamp(1, 10_000)
-}
-
-pub fn normalize_channel_cooldown_statuses(value: &[u16]) -> Vec<u16> {
-    let mut statuses = value
-        .iter()
-        .copied()
-        .filter(|status| (100..=599).contains(status))
-        .collect::<Vec<_>>();
-    statuses.sort_unstable();
-    statuses.dedup();
-    statuses.truncate(20);
-    statuses
-}
-
 pub fn default_relay_profiles() -> Vec<RelayProfile> {
     vec![RelayProfile::default()]
 }
@@ -1491,7 +1463,6 @@ impl SettingsStore {
         for key in [
             "launchMode",
             "codexAppFastStartup",
-            "codexAppForceChineseLocale",
             "codexAppZedRemoteOpen",
             "zedRemoteOpenStrategy",
             "zedRemoteProjectRegistryEnabled",
@@ -1609,7 +1580,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             .cloned()
             .unwrap_or_default();
         merge_bool_setting(&mut dictation, patch, "enabled");
-        for key in ["baseUrl", "apiKey", "apiKeyEnv", "model", "language"] {
+        for key in ["provider", "baseUrl", "apiKey", "apiKeyEnv", "model", "language"] {
             if let Some(value) = patch.get(key).and_then(Value::as_str) {
                 dictation.insert(key.to_string(), Value::String(value.trim().to_string()));
             }
@@ -1664,6 +1635,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppSessionShare");
     merge_bool_setting(target, source, "codexAppPasteFix");
+    merge_bool_setting(target, source, "codexAppForceChineseLocale");
     if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =
         source.get("codexAppTypingEffect").and_then(Value::as_str)
     {
@@ -1679,6 +1651,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
+    merge_bool_setting(target, source, "codexAppActivityOverlayRight");
+    merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
     merge_bool_setting(target, source, "codexAppWhaleWidgetEnabled");
     if let Some(value @ ("auto" | "custom" | "off")) =
         source.get("codexAppWhaleBalanceProtocol").and_then(Value::as_str)
@@ -2190,12 +2164,6 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
-    for profile in &mut settings.relay_profiles {
-        profile.channel_requests_per_minute =
-            normalize_channel_requests_per_minute(profile.channel_requests_per_minute);
-        profile.cooldown_error_statuses =
-            normalize_channel_cooldown_statuses(&profile.cooldown_error_statuses);
-    }
     // 扁平字段始终是 Codex 的唯一事实来源，这里把它镜像进 tools.codex；
     // 其它工具的分片原样保留。放在函数末尾，所有 load / save / update 路径
     // 都会经过，两边不会漂移。
@@ -2385,6 +2353,7 @@ mod tests {
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
+        assert!(!settings.codex_app_force_chinese_locale);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
@@ -2394,17 +2363,6 @@ mod tests {
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
-        let default_profile = &settings.relay_profiles[0];
-        assert!(!default_profile.rate_limit_cooldown_enabled);
-        assert!(!default_profile.channel_queue_enabled);
-        assert_eq!(
-            default_profile.channel_requests_per_minute,
-            default_channel_requests_per_minute()
-        );
-        assert_eq!(
-            default_profile.cooldown_error_statuses,
-            default_cooldown_error_statuses()
-        );
         assert!(!settings.codex_app_stepwise_enabled);
         assert_eq!(settings.codex_app_stepwise_generation_mode, "auto");
         assert!(!settings.codex_app_answer_outline_enabled);
@@ -2428,67 +2386,6 @@ mod tests {
         );
         assert!(settings.weixin_connect_token.is_empty());
         assert_eq!(settings.weixin_connect_sandbox, "read-only");
-    }
-
-    #[test]
-    fn channel_protection_settings_are_normalized() {
-        let settings = BackendSettings {
-            relay_profiles: vec![RelayProfile {
-                channel_requests_per_minute: 0,
-                cooldown_error_statuses: vec![500, 429, 429, 99, 600],
-                ..RelayProfile::default()
-            }],
-            ..BackendSettings::default()
-        };
-
-        let normalized = normalize_settings_config_sections(settings);
-
-        assert_eq!(normalized.relay_profiles[0].channel_requests_per_minute, 1);
-        assert_eq!(
-            normalized.relay_profiles[0].cooldown_error_statuses,
-            vec![429, 500]
-        );
-    }
-
-    #[test]
-    fn channel_protection_settings_round_trip_independently_per_profile() {
-        let settings = BackendSettings {
-            relay_profiles: vec![
-                RelayProfile {
-                    id: "relay-a".to_string(),
-                    rate_limit_cooldown_enabled: true,
-                    channel_queue_enabled: true,
-                    channel_requests_per_minute: 24,
-                    cooldown_error_statuses: vec![429],
-                    ..RelayProfile::default()
-                },
-                RelayProfile {
-                    id: "relay-b".to_string(),
-                    rate_limit_cooldown_enabled: false,
-                    channel_queue_enabled: true,
-                    channel_requests_per_minute: 90,
-                    cooldown_error_statuses: vec![500, 503],
-                    ..RelayProfile::default()
-                },
-            ],
-            ..BackendSettings::default()
-        };
-
-        let serialized = serde_json::to_value(&settings).unwrap();
-        let restored: BackendSettings = serde_json::from_value(serialized).unwrap();
-        let normalized = normalize_settings_config_sections(restored);
-
-        let first = &normalized.relay_profiles[0];
-        assert!(first.rate_limit_cooldown_enabled);
-        assert!(first.channel_queue_enabled);
-        assert_eq!(first.channel_requests_per_minute, 24);
-        assert_eq!(first.cooldown_error_statuses, vec![429]);
-
-        let second = &normalized.relay_profiles[1];
-        assert!(!second.rate_limit_cooldown_enabled);
-        assert!(second.channel_queue_enabled);
-        assert_eq!(second.channel_requests_per_minute, 90);
-        assert_eq!(second.cooldown_error_statuses, vec![500, 503]);
     }
 
     #[test]
@@ -3366,6 +3263,7 @@ experimental_bearer_token = "sk-existing""#
                 id: "agg".to_string(),
                 name: "聚合".to_string(),
                 session_provider: RelaySessionProvider::Openai,
+                model_aggregation_enabled: true,
                 strategy: AggregateRelayStrategy::WeightedRoundRobin,
                 members: vec![
                     AggregateRelayMember {
@@ -3399,6 +3297,7 @@ experimental_bearer_token = "sk-existing""#
             active_aggregate.session_provider,
             RelaySessionProvider::Openai
         );
+        assert!(active_aggregate.model_aggregation_enabled);
         assert_eq!(
             loaded.active_relay_session_provider(),
             RelaySessionProvider::Openai
@@ -3724,6 +3623,34 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
+    fn settings_update_persists_dictation_provider_and_migrates_legacy_sensevoice_marker() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let mut legacy = serde_json::to_value(BackendSettings::default()).unwrap();
+        legacy["dictation"]["enabled"] = json!(true);
+        legacy["dictation"]["baseUrl"] = json!("local://sensevoice");
+        legacy["dictation"]["model"] = json!("SenseVoiceSmall (INT8)");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.dictation.provider, DictationProvider::SenseVoice);
+
+        let updated = store
+            .update(json!({
+                "dictation": {
+                    "provider": "sensevoice",
+                    "baseUrl": "local://sensevoice",
+                    "enabled": true
+                }
+            }))
+            .unwrap();
+        assert_eq!(updated.dictation.provider, DictationProvider::SenseVoice);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["dictation"]["provider"], "sensevoice");
+    }
+
+    #[test]
     fn settings_store_update_persists_relay_profiles_and_active_profile() {
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
@@ -3865,6 +3792,7 @@ experimental_bearer_token = "sk-existing""#
                     {
                         "id": "agg",
                         "name": "聚合",
+                        "modelAggregationEnabled": true,
                         "strategy": "weightedRoundRobin",
                         "members": [
                             { "relayId": "relay-a", "weight": 1 },
@@ -3883,6 +3811,7 @@ experimental_bearer_token = "sk-existing""#
             active_aggregate.strategy,
             AggregateRelayStrategy::WeightedRoundRobin
         );
+        assert!(active_aggregate.model_aggregation_enabled);
         assert_eq!(active_aggregate.members.len(), 2);
         assert_eq!(active_aggregate.members[1].relay_id, "relay-b");
         assert_eq!(active_aggregate.members[1].weight, 4);

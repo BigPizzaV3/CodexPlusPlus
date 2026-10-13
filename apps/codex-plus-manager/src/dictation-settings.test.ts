@@ -39,6 +39,17 @@ test("partial settings load with defaults and configured fields survive serializ
   assert.equal(input.baseUrl, " https://asr.example/v1/ ");
 });
 
+test("legacy SenseVoice marker restores the local provider", () => {
+  const restored = normalizeDictationSettings({
+    enabled: true,
+    baseUrl: " LOCAL://SENSEVOICE/ ",
+    model: "SenseVoiceSmall (INT8)",
+  });
+  assert.equal(restored.provider, "sensevoice");
+  assert.equal(dictationPreset(restored), "sensevoice");
+  assert.equal(dictationSettingsIssue(restored), null);
+});
+
 test("presets select independent speech endpoints while custom preserves its configuration", () => {
   const configured = {
     ...defaultDictationSettings(), apiKey: "test-speech-key", apiKeyEnv: "SPEECH_API_KEY", language: "en", timeoutSeconds: 60,

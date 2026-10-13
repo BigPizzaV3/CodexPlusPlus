@@ -282,8 +282,8 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     assert!(app_tsx.contains("function relayProfileSwitchCommand"));
     assert!(app_tsx.contains("return \"apply_pure_api_injection\""));
     assert!(app_tsx.contains("return \"apply_relay_injection\""));
-    assert!(app_tsx.contains("const createNewAggregateProfile = () =>"));
-    assert!(app_tsx.contains("onClick={createNewAggregateProfile}"));
+    assert!(app_tsx.contains("const createNewAggregateProfile = (mode: AggregateMode)"));
+    assert!(app_tsx.contains("onClick={() => createNewAggregateProfile("));
     assert!(app_tsx.contains("已打开聚合供应商详情"));
     assert!(app_tsx.contains(
         "buildRelayConfigToml(profile, { includeBearerToken: !profile.noAuth, requiresOpenAiAuth: false })"

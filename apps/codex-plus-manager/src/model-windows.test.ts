@@ -47,10 +47,6 @@ const _profileTypeCheck: RelayProfile = {
   sub2apiMultiplier: "",
   standardOpenaiProtocol: false,
   webSearchHistoryCompat: false,
-  rateLimitCooldownEnabled: false,
-  channelQueueEnabled: false,
-  channelRequestsPerMinute: 20,
-  cooldownErrorStatuses: [429, 500],
 };
 
 void _profileTypeCheck;
@@ -145,6 +141,11 @@ describe("model-windows helpers", () => {
     );
   });
 
+  it("modelWindowRowsFromProfile 没有模型时返回空列表，不补空行", () => {
+    assert.deepStrictEqual(modelWindowRowsFromProfile("", "{}"), []);
+    assert.deepStrictEqual(modelWindowRowsFromProfile("  \n \n", "{}", "{}", "{}"), []);
+  });
+
   it("serializeModelWindowRows 从行控件生成 modelList、modelWindows 和 modelVlm", () => {
     assert.deepStrictEqual(
       serializeModelWindowRows([
@@ -192,6 +193,17 @@ describe("model-windows helpers", () => {
         { model: "deepseek-v4-flash", window: "1M", autoCompact: "90%", imageHandling: "vlm" },
         { model: "deepseek-v4-pro", window: "", autoCompact: "", imageHandling: "vlm" },
       ],
+    );
+  });
+
+  it("mergeModelWindowRows 双方都没有模型时返回空列表，不补空行", () => {
+    assert.deepStrictEqual(mergeModelWindowRows([], []), []);
+    assert.deepStrictEqual(
+      mergeModelWindowRows(
+        [{ model: "   ", window: "", autoCompact: "", imageHandling: "send-as-is" }],
+        [],
+      ),
+      [],
     );
   });
 

@@ -120,7 +120,9 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
 }
 function enabledBody(body: string, enabled: boolean) {
   // enabled 是根字段，必须放在第一个子表之前，不能落进 env / headers。
-  return `enabled = ${enabled}\n${body.replace(/^enabled\s*=\s*(?:true|false)\s*\n?/m, "")}`;
+  // 旧版/外部配置可能用 disabled 表示停用，切换时一并移除，避免旧值覆盖新状态。
+  const withoutState = body.replace(/^\s*(?:enabled|disabled)\s*=\s*(?:true|false)\s*(?:#.*)?\r?\n?/gim, "");
+  return `enabled = ${enabled}\n${withoutState}`;
 }
 function mcpSummary(body: string) {
   return body.split("\n").filter((line) => /^(command|args|url)\s*=/.test(line)).join(" · ") || t("自定义配置");

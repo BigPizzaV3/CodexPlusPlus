@@ -6,6 +6,7 @@ import ts from "typescript";
 import { modelSlugFromRowName, suffixWindowString } from "./model-metadata.ts";
 import { normalizeRelayModelRoutes } from "./model-routes.ts";
 import { sessionProviderForProtocol } from "./relay-session.ts";
+import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members.ts";
 
 // 执行 App 中实际使用的配置 helper，避免把另一份实现复制进测试。
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
@@ -21,6 +22,7 @@ const names = new Set([
   "setTomlSectionBoolKey", "setTomlSectionStringKey", "setTomlSectionRawKey", "removeTomlSectionKey",
   "tomlString", "ensureTrailingNewline", "joinTomlSections", "splitTomlRootAndTables",
   "normalizeRelaySessionProvider", "relaySessionProviderFromConfig", "relaySessionProvider",
+  "relayEditorMode",
   "isAggregateRelayProfile",
   "tomlQuotedValue", "tomlDottedKeyPath", "tomlKeyPathName", "codexProviderSectionName",
   "tomlKeyAssignment", "tomlInlineComment",
@@ -37,6 +39,7 @@ const context = vm.createContext({
   PROTOCOL_PROXY_BASE_URL: "http://127.0.0.1:57321/v1",
   CHAT_UPSTREAM_BASE_URL_KEY: "codex_plus_chat_base_url",
   normalizeRelayModelRoutes, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
+  aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile,
 });
 vm.runInContext(code, context);
 
@@ -125,6 +128,13 @@ test("official mixed API still uses explicit provider auth while preserving OAut
   assert.match(generated.configContents, /experimental_bearer_token = "fixture-provider-key"/);
   assert.equal(JSON.parse(generated.authContents).tokens.access_token, "fixture-oauth");
   assert.doesNotMatch(generated.configContents, /fixture-oauth/);
+});
+
+test("provider editor exposes official, mixed API, and pure API as one mode choice", () => {
+  assert.equal(context.relayEditorMode({ relayMode: "official", officialMixApiKey: false }), "official");
+  assert.equal(context.relayEditorMode({ relayMode: "official", officialMixApiKey: true }), "mixedApi");
+  assert.equal(context.relayEditorMode({ relayMode: "mixedApi", officialMixApiKey: false }), "mixedApi");
+  assert.equal(context.relayEditorMode({ relayMode: "pureApi", officialMixApiKey: false }), "pureApi");
 });
 
 const tableCases = [

@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 use crate::settings::{
-    BackendSettings, RelayMode, RelayProfile, RelayProtocol, RelaySessionProvider,
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, RelaySessionProvider, SettingsStore,
 };
 
 const RELAY_PROVIDER: &str = "custom";
@@ -700,6 +700,23 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     profile: &RelayProfile,
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+        home,
+        profile,
+        common_config_contents,
+        crate::protocol_proxy::protocol_proxy_port(),
+    )
+}
+
+/// 与 [`apply_relay_profile_to_home_with_switch_rules`] 相同，但允许调用方指定
+/// 协议代理端口。多开实例各自运行一个 helper，必须在写入 config.toml 时使用
+/// 实例自己的端口，不能先写默认 57321 再依赖启动器补救。
+pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+    proxy_port: u16,
+) -> anyhow::Result<RelayApplyResult> {
     if profile.relay_mode == RelayMode::Official && !profile.official_mix_api_key {
         return apply_official_profile_to_home(home, profile, common_config_contents);
     }
@@ -710,7 +727,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     } else {
         String::new()
     };
-    let profile_config = complete_relay_profile_config(profile)?;
+    let profile_config = complete_relay_profile_config_with_proxy_port(profile, proxy_port)?;
     let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
     let config_with_common =
         preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
@@ -856,27 +873,34 @@ pub fn apply_pure_api_config_to_home_with_session_provider(
     })
 }
 
-/// 官方登录的接入地址。官方 profile 的 `configContents` 在管理端归一化时会被清空
-/// （App.tsx 里 `relayMode === "official"` 分支写空串），于是 `relay_profile_base_url`
-/// 返回空串、被下面的空值校验直接拒绝 —— 而官方模式下界面根本没有 base_url 输入框，
-/// 用户无处可填（issue #1488）。这里给官方模式兜一个内置地址。
-const OFFICIAL_LOGIN_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
-
 pub async fn test_relay_profile(
     profile: &RelayProfile,
     model: &str,
 ) -> anyhow::Result<RelayProfileTestResult> {
+    // 官方 profile 的 `configContents` 在管理端归一化时会被清空
+    // （App.tsx 里 `relayMode === "official"` 分支写空串），于是 `relay_profile_base_url`
+    // 返回空串、被下面的空值校验直接拒绝 —— 而官方模式下界面根本没有 base_url 输入框，
+    // 用户无处可填（issue #1488）。这里给官方模式兜一个内置地址。
     let mut base_url = relay_profile_base_url(profile);
     if base_url.trim().is_empty()
         && profile.relay_mode == crate::settings::RelayMode::Official
     {
-        base_url = OFFICIAL_LOGIN_BASE_URL.to_string();
+        base_url = crate::official_login::official_base_url();
     }
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
     }
-    let api_key = relay_profile_api_key(profile);
+    // 纯官方登录 profile 没有 API Key，测试请求同样要带该账号的 OAuth access token。
+    let api_key = if crate::official_login::is_official_login_profile(profile)
+        && crate::official_login::official_login_available(profile)
+    {
+        crate::official_login::resolve_official_credential(profile, false)
+            .await?
+            .access_token
+    } else {
+        relay_profile_api_key(profile)
+    };
     let api_key = api_key.trim();
     if api_key.is_empty() && !profile.uses_no_auth() {
         anyhow::bail!("API Key 不能为空");
@@ -2852,6 +2876,27 @@ fn apply_model_catalog_to_config_with_live_policy(
         sanitize_catalog_filename(&profile.id)
     );
     let mut config_text = config_text.to_string();
+    if let Some(catalog_json) = crate::aggregate_catalog::build_catalog_for_profile(profile)? {
+        let catalog_path = home.join(&catalog_relative);
+        if let Some(parent) = catalog_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
+        let mut doc = parse_toml_document(&config_text)?;
+        if root_key_string(&config_text, "model").is_none()
+            && let Ok(catalog) = serde_json::from_str::<Value>(&catalog_json)
+            && let Some(default_model) = catalog
+                .get("models")
+                .and_then(Value::as_array)
+                .and_then(|models| models.first())
+                .and_then(|model| model.get("slug"))
+                .and_then(Value::as_str)
+        {
+            doc["model"] = toml_edit::value(default_model);
+        }
+        doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+        return Ok(normalize_optional_toml(doc));
+    }
     let mut model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
     validate_model_windows(&model_windows)?;
     let model_list = if profile.model_list.contains('[') {
@@ -3085,7 +3130,7 @@ fn validate_model_auto_compact(model_auto_compact: &HashMap<String, String>) -> 
     Ok(())
 }
 
-fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
+pub(crate) fn parse_model_metadata_map(metadata_json: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
     if metadata_json.trim().is_empty() {
         return Ok(serde_json::Map::new());
     }
@@ -3324,7 +3369,7 @@ mod managed_catalog_predicate_tests {
     }
 }
 
-fn apply_model_metadata_overrides(
+pub(crate) fn apply_model_metadata_overrides(
     catalog_json: &str,
     override_map: &serde_json::Map<String, Value>,
 ) -> anyhow::Result<String> {
@@ -4370,8 +4415,31 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 }
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
+    complete_relay_profile_config_with_proxy_port(
+        profile,
+        crate::protocol_proxy::protocol_proxy_port(),
+    )
+}
+
+fn complete_relay_profile_config_with_proxy_port(
+    profile: &RelayProfile,
+    proxy_port: u16,
+) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
-    let session_provider_id = active_session_provider_id(&doc);
+    let session_provider_id = if profile.relay_mode == RelayMode::Aggregate {
+        SettingsStore::default()
+            .load()
+            .ok()
+            .and_then(|settings| {
+                settings
+                    .active_aggregate_relay_profile()
+                    .filter(|aggregate| aggregate.model_aggregation_enabled)
+            })
+            .map(|aggregate| aggregate.session_provider.as_str().to_string())
+            .unwrap_or_else(|| active_session_provider_id(&doc))
+    } else {
+        active_session_provider_id(&doc)
+    };
     let uses_openai_provider = session_provider_id == "openai";
     if uses_openai_provider && profile.protocol != RelayProtocol::Responses {
         anyhow::bail!("OpenAI 会话身份仅支持 Responses API");
@@ -4475,15 +4543,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
         || profile.uses_no_auth()
         || profile.web_search_history_compat_enabled()
     {
-        crate::protocol_proxy::local_responses_proxy_base_url(
-            crate::protocol_proxy::protocol_proxy_port(),
-        )
+        crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {
-        codex_base_url_for_protocol(
-            base_url.trim(),
-            profile.protocol,
-            crate::protocol_proxy::protocol_proxy_port(),
-        )
+        codex_base_url_for_protocol(base_url.trim(), profile.protocol, proxy_port)
     };
     if !provider_base_url.trim().is_empty() {
         provider["base_url"] = toml_edit::value(provider_base_url.trim());

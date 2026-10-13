@@ -50,4 +50,11 @@ test("GrooRoute preset uses the configured sponsor endpoint", () => {
   assert.equal(preset.model, "gpt-5.5");
   assert.equal(preset.apiKeyUrl, "https://grooroute.com/register?aff=2B3KJR5SRNTX");
 });
+
+test("RunAPI preset uses the current v1 Base URL", () => {
+  const preset = PRESETS.find((candidate) => candidate.id === "runapi");
+  assert.ok(preset);
+  assert.equal(preset.baseUrl, "https://runapi.host/v1");
+  assert.equal(preset.protocol, "responses");
+});
 });

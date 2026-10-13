@@ -25,6 +25,11 @@ export const EN_PLAIN: Record<string, string> = {
   "检查 Codex++ 入口、Codex 应用和开机启动状态": "Check the Codex++ shortcut, Codex app and login startup status",
 
   "Fast（priority）支持": "Fast (priority) support",
+  "思考等级": "Reasoning levels",
+  "默认等级": "Default level",
+  "未设置时沿用内置默认档位": "Unset: the built-in default levels apply",
+  "当前为内置默认，修改后保存为该模型的自定义思考等级。": "Using the built-in defaults. Changes are saved as custom reasoning levels for this model.",
+  "未设置时沿用内置默认；清空全部档位即恢复内置。": "Unset uses the built-in defaults; clearing every level restores them.",
   "模型配置：元数据与 Fast 支持": "Model settings: metadata and Fast support",
   "继承模型默认能力": "Inherit model defaults",
   "明确支持 priority": "Supports priority",
@@ -52,7 +57,7 @@ export const EN_PLAIN: Record<string, string> = {
   "请填写余额字段路径，例如 data.balance 或 data.accounts[0].balance。": "Enter a balance field path, such as data.balance or data.accounts[0].balance.",
   "币种请使用三位代码，例如 USD 或 CNY。": "Use a three-letter currency code, such as USD or CNY.",
   "金额倍率必须是大于 0 且不超过 1e12 的有限数值。": "Amount scale must be a finite number greater than 0 and no larger than 1e12.",
-  "CodeX 插件市场": "CodeX Plugin Market",
+  "Codex 插件市场": "Codex Plugin Market",
   "检索插件，按需下载并安装到 Codex": "Search plugins and download only the ones you install into Codex",
   "先加载插件清单，点击安装时仅下载所选插件。": "Load the catalog first, then download only the selected plugin when you install it.",
   "无法加载插件市场。": "Unable to load the plugin market.",
@@ -608,8 +613,8 @@ export const EN_PLAIN: Record<string, string> = {
   "修复入口": "Repair entrypoints",
   "修复快捷方式": "Repair shortcuts",
   "健康检查": "Health check",
-  "先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。":
-    "Add at least 1 API provider with a Base URL / Key before creating an aggregate provider.",
+  "先添加至少 1 个可用的 API 供应商或官方登录账号，再创建聚合供应商。":
+    "Add at least 1 usable API provider or signed-in official account before creating an aggregate provider.",
   "免安装版或解包版只需要选择一次，之后从界面启动会自动复用": "Portable or unpacked builds only need to be selected once; launching from the window reuses it afterwards",
   "入口卸载": "Entrypoint uninstall",
   "入口安装": "Entrypoint install",
@@ -715,8 +720,10 @@ export const EN_PLAIN: Record<string, string> = {
     "Keeps only cross-provider config that isn't MCP/Skills/Plugins; tools and plugins are managed on a separate page.",
   "只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]":
     "Fill in only the content under the header, for example:\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]",
-  "只能勾选已填写 Base URL / Key 的 API 供应商，聚合供应商不会作为成员。":
-    "Only API providers with a Base URL / Key can be selected; aggregate providers can't be members.",
+  "可勾选 API 供应商或已完成 ChatGPT 登录的官方账号；聚合供应商不会作为成员。":
+    "API providers or official accounts with a completed ChatGPT login can be selected; aggregate providers can't be members.",
+  "使用已登录的 ChatGPT 账号凭据": "Uses the signed-in ChatGPT account credentials",
+  "请填写该官方账号的模型列表": "Fill in this official account's model list",
   "可更新": "Update available",
   "同一对话保持一个成员，不同对话依次分配。": "Keeps one member per conversation; different conversations are assigned in turn.",
   "同步目标": "Sync target",
@@ -744,6 +751,22 @@ export const EN_PLAIN: Record<string, string> = {
   "在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。":
     "Show a short ID and UUIDv7 creation time before session titles in the sidebar to help locate past sessions.",
   "基础设置": "Basic settings",
+  "先选择接入方式，相关字段会立即显示在这里。": "Choose an access mode first; the related fields appear here immediately.",
+  "官方登录 + API": "Official login + API",
+  "官方登录 + API 会保留官方账号，同时使用下方 API 连接；不需要再到其他面板勾选。":
+    "Official login + API keeps the official account and uses the API connection below; there is no extra checkbox in another panel.",
+  "使用 ChatGPT 官方账号，不写入 API 凭据。": "Use the official ChatGPT account without writing API credentials.",
+  "保留官方登录，同时使用 API Base URL 与 Key。": "Keep official login while using an API Base URL and key.",
+  "只使用 API 凭据，不依赖官方登录。": "Use API credentials without relying on official login.",
+  "API 连接": "API connection",
+  "官方账号负责登录与会话，API 连接负责实际请求。": "The official account handles login and sessions; the API connection handles requests.",
+  "保存后会把这组凭据用于当前供应商的请求。": "These credentials will be used for this provider's requests after saving.",
+  "已填写": "Filled",
+  "待填写": "Needs input",
+  "填写供应商的 Base URL": "Enter the provider's Base URL",
+  "输入供应商的 API Key": "Enter the provider's API key",
+  "当前使用官方账号登录；切换到“官方登录 + API”或“纯 API”后，API 连接字段会在这里展开。":
+    "This provider uses the official account; switch to “Official login + API” or “API only” to expand the API connection fields here.",
   "填写中转服务 Base URL": "Enter the relay service Base URL",
   "复制": "Copy",
   "复制失败": "Copy failed",
@@ -782,8 +805,8 @@ export const EN_PLAIN: Record<string, string> = {
   "已受理": "Accepted",
   "已安装": "Installed",
   "已归档": "Archived",
-  "已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。":
-    "Opened aggregate provider details; first add or complete the Base URL / Key of at least 1 regular API provider, then select it as a member.",
+  "已打开聚合供应商详情；请先添加或完善至少 1 个 API 供应商，或登录一个官方账号，再勾选为成员。":
+    "Opened aggregate provider details; first add or complete at least 1 API provider, or sign in an official account, then select it as a member.",
   "已找到": "Found",
   "已检测": "Detected",
   "已注册": "Registered",
@@ -826,6 +849,7 @@ export const EN_PLAIN: Record<string, string> = {
   "当前还没有填写混入 API 的 Base URL / Key。": "The mixed-in API Base URL / Key hasn't been filled in yet.",
   "当前进程": "Current process",
   "当前配置 provider": "Currently configured provider",
+  "接入方式": "Access method",
   "快捷方式修复": "Shortcut repair",
   "快捷方式写入系统实际桌面位置，不使用写死桌面路径": "Shortcuts are written to the system's actual desktop location, not a hardcoded desktop path",
   "总权重": "Total weight",
@@ -1012,6 +1036,10 @@ export const EN_PLAIN: Record<string, string> = {
   "管理控制台入口": "Management console entrypoint",
   "类型": "Type",
   "粘贴修复": "Paste fix",
+  "强制中文界面": "Force Chinese UI",
+  "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。": "Force the built-in zh-CN locale pack in the Codex app so the UI does not fall back to English when Statsig or the VPN is unreachable. Fully applies after restarting Codex.",
+  "容量错误自动重试": "Auto-retry on capacity errors",
+  "模型容量不足（Selected model is at capacity）时自动点「重试」。Codex 原生只会自动重试 4 次且带 10/30/120/300 秒倒计时，之后只剩手动按钮；开启后由 Codex++ 立刻接管，原生倒计时也不等。间隔与次数上限在 Codex 应用内的 Codex++ 设置里调整。": "Automatically clicks Retry when the selected model is at capacity. Codex only auto-retries four times on its own, spaced by a 10/30/120/300 second countdown, and then leaves a manual button; when enabled, Codex++ takes over immediately without waiting for that countdown. Adjust the interval and attempt limit in the Codex++ settings inside the Codex app.",
   "索引": "Index",
   "纯 API": "Pure API",
   "纯文本模型请配置此项": "Configure this for text-only models",
@@ -1042,9 +1070,44 @@ export const EN_PLAIN: Record<string, string> = {
   "聚合供应商会在真实对话中轮转成员，请测试成员供应商": "Aggregate providers rotate members in real conversations; test the member providers instead",
   "聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。":
     "Aggregate providers only store member and strategy config drawn from existing API providers; once active, requests rotate through the local protocol proxy.",
-  "聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。":
-    "An aggregate provider needs at least 1 selected API provider with a Base URL / Key filled in.",
+  "此聚合会把成员模型合并到 Codex 列表；带供应商前缀的模型固定发送到对应成员，普通模型仍按策略轮转。":
+    "This aggregate merges member models into the Codex list; prefixed models stay bound to their member, while plain model names still follow the strategy.",
+  "聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。":
+    "An aggregate provider needs at least 1 usable member (an API provider or a signed-in official account).",
   "聚合策略": "Aggregate strategy",
+  "故障转移": "Failover",
+  "模型聚合": "Model aggregation",
+  "先选择类型": "Choose a type first",
+  "故障转移与模型聚合彼此独立；选择后只显示对应的成员和路由表单。": "Failover and model aggregation are independent; only the matching member and routing form appears after selection.",
+  "多个供应商组成请求池，支持失败切换、会话轮转、请求轮转和权重。": "Pool providers for failover, conversation rotation, request rotation and weights.",
+  "故障转移：按策略分配请求": "Failover: requests are distributed by strategy",
+  "模型聚合：模型固定绑定供应商": "Model aggregation: models stay bound to their provider",
+  "还没有故障转移配置": "No failover configuration yet",
+  "在编辑页勾选成员供应商，并选择失败切换、轮转或权重策略。": "Select member providers in the editor and choose failover, rotation, or weighted distribution.",
+  "创建故障转移配置": "Create failover configuration",
+  "还没有模型聚合配置": "No model aggregation configuration yet",
+  "把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。": "Merge member models into the Codex list; a selected model stays bound to its provider.",
+  "创建模型聚合配置": "Create model aggregation configuration",
+  "新建故障转移": "New failover",
+  "新建模型聚合": "New model aggregation",
+  "直接访问 Responses API 供应商：只写入 Base URL 与 Key，不做协议转换。": "Talk to Responses API providers directly; only the Base URL and key are written locally, with no protocol conversion.",
+  "供应商只支持 Chat Completions（或配置了模型路由）：由本地协议代理转换后转发。": "Providers that only speak Chat Completions (or have model routes): the local protocol proxy converts and forwards requests.",
+  "多个供应商组成请求池，支持失败切换、会话轮转、请求轮转与权重；成员可以是 API 供应商或官方登录账号。": "A request pool of multiple providers with failover, per-conversation rotation, per-request rotation, and weights; members can be API providers or signed-in official accounts.",
+  "把成员模型合并到 Codex 模型列表，带供应商前缀的模型固定发送到对应成员。": "Merge member models into the Codex model list; provider-prefixed models stay bound to their member.",
+  "副本版本": "Copy version",
+  "模型固定绑定 · {0} 个成员": "Models stay bound · {0} members",
+  "把成员模型合并到 Codex 列表，选择模型后固定发送到对应供应商。": "Merge member models into Codex and bind each selected model to its provider.",
+  "聚合方式": "Aggregation mode",
+  "此配置的聚合方式固定；需要另一种方式时，请创建新的聚合配置。": "This configuration has a fixed aggregation mode; create another aggregate for the other mode.",
+  "模型聚合已启用": "Model aggregation enabled",
+  "成员模型会生成带供应商前缀的 Codex 模型；本模式不使用轮转策略或通配符路由。": "Member models get provider-prefixed Codex IDs; this mode does not use rotation or wildcard routes.",
+  "模型来源": "Model source",
+  "沿用成员供应商模型列表": "Member provider model lists",
+  "绑定方式": "Binding",
+  "供应商前缀 + 真实模型名": "Provider prefix + upstream model",
+  "把成员模型合并到 Codex 模型列表": "Merge member models into the Codex model list",
+  "开启后，模型会带供应商前缀并固定发送到对应成员；普通模型名仍按聚合策略轮转。":
+    "Enabled models get a provider prefix and stay bound to that member; plain model names still rotate by strategy.",
   "聚合配置只引用已有供应商，不复制 Key 和配置文件": "Aggregate config only references existing providers; it doesn't copy keys or config files",
   "该路由的目标供应商不可用或未选择，请重新选择或删除该规则。": "Route target provider is unavailable or unselected; pick one or delete this rule.",
   "路由规则": "Route rules",
@@ -1345,21 +1408,6 @@ export const EN_PLAIN: Record<string, string> = {
     "Custom headers apply to the connection test, the model list and proxied requests alike.",
   "Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。":
     "Transport headers such as Host and Content-Length are managed by the proxy and cannot be overridden. When Authorization is set here it takes precedence and the API key is not injected.",
-  "渠道保护": "Channel protection",
-  "仅作用于当前供应商；可降低共享渠道触发 429、500 或 RPM 限制的概率。":
-    "Applies only to the current provider; helps reduce the chance of hitting shared-channel 429, 500, or RPM limits.",
-  "启用错误冷却": "Enable error cooldown",
-  "命中配置的状态码后，当前供应商暂停请求至少 30 秒并自动继续；最多自动重试 3 次，3 次仍失败则返回错误；上游 Retry-After 更长时优先使用上游时间。":
-    "After one of the configured status codes is hit, requests for this provider pause for at least 30 seconds and then continue automatically; retry up to 3 times, return the error if all 3 retries fail; a longer upstream Retry-After takes precedence.",
-  "启用同渠道队列": "Enable per-provider queue",
-  "当前供应商的请求按顺序发送，并按每分钟上限预留请求次数。":
-    "Requests for this provider are sent in order, reserving capacity under the per-minute limit.",
-  "每分钟请求数": "Requests per minute",
-  "请填入供应商提供的最大RPM": "Enter the maximum RPM provided by the provider",
-  "触发冷却的状态码": "Cooldown-triggering status codes",
-  "输入状态码后回车": "Enter a status code and press Enter",
-  "默认状态码为 429 和 500；删除某个状态码即可停止该状态触发冷却。":
-    "The default status codes are 429 and 500; remove a status code to stop it from triggering cooldown.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.

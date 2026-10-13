@@ -35,10 +35,17 @@ export function normalizeDictationSettings(value: Partial<DictationSettings> | u
   const defaults = defaultDictationSettings();
   const text = (entry: unknown, fallback = "") => typeof entry === "string" ? entry.trim() : fallback;
   const timeout = value?.timeoutSeconds;
+  const baseUrl = text(value?.baseUrl, defaults.baseUrl).replace(/\/+$/, "");
+  // 早期版本保存 SenseVoice 预设时遗漏了 provider 字段，只留下了
+  // `local://sensevoice` 标记。读配置时把这个旧格式恢复成离线 provider，
+  // 避免它被当成远程 HTTP 转写服务校验。
+  const provider = value?.provider === "sensevoice" || baseUrl.toLowerCase() === "local://sensevoice"
+    ? "sensevoice"
+    : "api";
   return {
     enabled: value?.enabled === true,
-    provider: value?.provider === "sensevoice" ? "sensevoice" : "api",
-    baseUrl: text(value?.baseUrl, defaults.baseUrl).replace(/\/+$/, ""),
+    provider,
+    baseUrl,
     apiKey: text(value?.apiKey),
     apiKeyEnv: text(value?.apiKeyEnv),
     model: text(value?.model, defaults.model),

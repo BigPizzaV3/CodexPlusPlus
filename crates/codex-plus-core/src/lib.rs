@@ -1,11 +1,11 @@
 pub mod ads;
+pub mod aggregate_catalog;
 pub mod agent_cache;
 pub mod app_paths;
 pub mod assets;
 pub mod bridge;
 pub mod ccs_import;
 pub mod cdp;
-pub mod channel_protection;
 pub mod claude_localization;
 pub mod codex_app_state;
 pub mod codex_home;
@@ -32,6 +32,7 @@ pub mod model_suffix;
 pub mod models;
 pub mod native_browser;
 pub mod native_browser_connection;
+pub mod official_login;
 pub mod paths;
 pub mod ports;
 // 独立插件市场按需下载安装，不调用原生授权安装流程。

@@ -101,7 +101,7 @@ function fixture(layout = "sidebar") {
       id: kind === "rail" ? "codex-plus-rail-plugin-market" : "codex-plus-sidebar-plugin-market",
       "data-codex-plus-ext": "builtin-plugin-market",
     }));
-    wrapper.appendChild(new Element("button", { "aria-label": "CodeX 插件市场" }));
+    wrapper.appendChild(new Element("button", { "aria-label": "Codex 插件市场" }));
     return wrapper;
   };
   return { document, nav, context, calls, install, fallback, native, legacy };

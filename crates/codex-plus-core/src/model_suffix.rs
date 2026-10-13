@@ -582,6 +582,10 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
                 .get("context_window")
                 .or_else(|| entry.get("max_context_window")),
             "auto_compact_token_limit": entry.get("auto_compact_token_limit"),
+            // 模型列表「思考等级」列的初值：内置声明直接展示（用户覆盖写进
+            // 自己的 model_metadata，不经这里）。
+            "supported_reasoning_levels": entry.get("supported_reasoning_levels"),
+            "default_reasoning_level": entry.get("default_reasoning_level"),
         }));
     };
     for slug in candidate_slugs {
@@ -687,6 +691,19 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             if !has_model_metadata {
                 model["additional_speed_tiers"] = json!([]);
                 model["service_tiers"] = json!([]);
+            }
+            // Codex Beta 26.727 起每个 model entry 都必须带 base_instructions，
+            // 否则整份 model_catalog_json 解析失败并连带 config.toml 拒载（#2492）。
+            // bundled 模板首条（gpt-5.5）没有该字段，clone 后按 Codex 自身的
+            // legacy 序列化规则补齐：镜像条目里的 instructions_template。
+            if model.get("base_instructions").is_none_or(Value::is_null) {
+                let mirrored = model
+                    .get("model_messages")
+                    .and_then(|messages| messages.get("instructions_template"))
+                    .filter(|value| value.is_string())
+                    .cloned()
+                    .unwrap_or_else(|| json!(""));
+                model["base_instructions"] = mirrored;
             }
             model["availability_nux"] = Value::Null;
             model["upgrade"] = Value::Null;

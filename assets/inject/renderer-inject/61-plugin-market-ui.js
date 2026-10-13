@@ -225,8 +225,8 @@
     applyCodexPlusTheme(overlay);
     applyCodexPlusZoom(overlay);
     const state = codexPlusPluginMarketState;
-    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="CodeX 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
-      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">CodeX 插件市场</div></div>
+    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="Codex 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
+      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">Codex 插件市场</div></div>
       <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-plugin-market-panel" data-codex-plugin-market-panel="true">
         <p class="codex-plus-plugin-intro">检索插件目录，选中后下载并安装。目录浏览仅获取索引，插件文件按需下载。</p>
         <div class="codex-plus-plugin-toolbar">

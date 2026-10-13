@@ -613,7 +613,9 @@ fn spawn_models_server_with_response(status: u16, body: String) -> ModelsServer 
     let handle = thread::spawn(move || {
         let started = std::time::Instant::now();
         let mut requests = Vec::new();
-        while requests.is_empty() && started.elapsed() < std::time::Duration::from_secs(2) {
+        // 接受窗口留足时间：并行跑测试或机器负载高时，客户端连接可能晚到，
+        // 2 秒窗口会造成「connection refused」偶发失败（CI/本地实测）。
+        while requests.is_empty() && started.elapsed() < std::time::Duration::from_secs(30) {
             let Ok((mut stream, _)) = listener.accept() else {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 continue;
@@ -621,7 +623,7 @@ fn spawn_models_server_with_response(status: u16, body: String) -> ModelsServer 
             let mut buffer = [0u8; 4096];
             let mut read = 0;
             let read_started = std::time::Instant::now();
-            while read == 0 && read_started.elapsed() < std::time::Duration::from_secs(2) {
+            while read == 0 && read_started.elapsed() < std::time::Duration::from_secs(10) {
                 match stream.read(&mut buffer) {
                     Ok(0) => std::thread::sleep(std::time::Duration::from_millis(10)),
                     Ok(bytes) => read = bytes,

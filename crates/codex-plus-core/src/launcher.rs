@@ -1027,7 +1027,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
         let launch_extra_args = normalize_codex_extra_args(extra_args);
-        if cfg!(windows) {
+        let isolated_multi_instance = std::env::var_os("CODEX_PLUS_MULTI_INSTANCE")
+            .is_some_and(|value| value == "1");
+        if cfg!(windows) && !isolated_multi_instance {
             // AUMID 解析留在调用点：它要查系统里的 Store 注册表（#2140），是有副作用
             // 的一步；下面的构造函数只做纯拼接。解析不出来（目录名像包、但系统里没
             // 这个包）就不再走打包激活，继续往下按路径启动——与既有回退路径一致。
@@ -1106,7 +1108,9 @@ impl LaunchHooks for DefaultLaunchHooks {
             }
         }
 
-        if app_dir.extension().and_then(|value| value.to_str()) == Some("app") {
+        if app_dir.extension().and_then(|value| value.to_str()) == Some("app")
+            && !isolated_multi_instance
+        {
             let launch_action = select_macos_debug_launch_action(
                 is_macos_app_running(app_dir).await,
                 crate::cdp::endpoint_available(debug_port),
@@ -1326,10 +1330,21 @@ impl LaunchHooks for DefaultLaunchHooks {
         }
         // Another Codex process must not keep this launcher holding the native
         // browser monitor. Directly owned processes and this debug port can.
-        while owned_launcher_target_alive(
-            launcher_owned_process_alive(launch, debug_port),
-            crate::cdp::endpoint_available(debug_port),
-        ) {
+        //
+        // 单次探测失败不足以判定退出：macOS 的 `ps` 采样和 `/json` 探测都会在
+        // 进程换代/监听重建的空档里瞬断，而这里一旦返回就会关掉 helper，让写死在
+        // config.toml 里的 57321 失去对端（见 PackagedExitGrace 的注释）。
+        // 传入 Some(...) 包一层，是因为该宽限在 Windows 那条路径上把「进程身份
+        // 未知」表示为 None，语义是回落到 cdp_available。
+        let mut exit_grace = PackagedExitGrace::default();
+        loop {
+            let target_alive = owned_launcher_target_alive(
+                launcher_owned_process_alive(launch, debug_port),
+                crate::cdp::endpoint_available(debug_port),
+            );
+            if !exit_grace.keep_waiting(Some(target_alive), false, std::time::Instant::now()) {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
         Ok(())
@@ -3146,14 +3161,25 @@ async fn validated_codex_browser_id(debug_port: u16) -> Option<String> {
     crate::cdp::browser_identity(debug_port).await.ok()?.browser_id().ok()
 }
 
-#[cfg(any(windows, test))]
+/// 目标「探不到」时的宽限：连续不足 3 次探测失败、或距首次失败不足 10 秒，
+/// 都仍继续等待。
+///
+/// 起初只给 Windows 打包版用（AUMID 返回的中转进程会让探测闪断）。macOS 的
+/// 退出判定原先对单次失败零容忍，代价是：`ps` 恰好在进程换代空档里采样、
+/// 或者 `/json` 因监听重建短暂拒连，都会被判成「Codex 已退出」，而
+/// `wait_for_codex_exit` 一旦返回就会 `shutdown_helper`——57321 随之关闭，
+/// 可 Codex 还开着。此时 `config.toml` 里写死的
+/// `base_url = "http://127.0.0.1:57321/v1"` 就没了对端，页面停在启动壳上、
+/// 注入层还在但什么都发不出去。所以 macOS 的退出等待也走同一套宽限。
+///
+/// 「同端口的新实例不能为旧 launcher 续命」这条约束仍然成立：宽限是有限次的，
+/// 真退出只是晚约 10 秒被发现。
 #[derive(Default)]
 struct PackagedExitGrace {
     missing_since: Option<std::time::Instant>,
     missed_probes: u32,
 }
 
-#[cfg(any(windows, test))]
 impl PackagedExitGrace {
     fn keep_waiting(
         &mut self,
@@ -4085,6 +4111,49 @@ mod tests {
     #[test]
     fn owned_launcher_waits_for_its_codex_process_when_cdp_is_unavailable() {
         assert!(owned_launcher_target_alive(true, false));
+    }
+
+    /// macOS 退出等待的回归护栏：一次探测瞬断不能判成「Codex 已退出」。
+    ///
+    /// 这里决定的是 `wait_for_codex_exit` 何时返回，而它一返回就会
+    /// `shutdown_helper`——57321 关闭后，写死在 config.toml 里的 base_url
+    /// 失去对端，页面停在启动壳上。所以「一次失败仍继续等」必须是硬保证。
+    #[test]
+    fn exit_wait_survives_a_single_transient_probe_miss() {
+        let now = std::time::Instant::now();
+        let mut grace = PackagedExitGrace::default();
+        // 探到目标：正常续命。
+        assert!(grace.keep_waiting(Some(true), false, now));
+        // 瞬断一次：仍在等待。
+        assert!(grace.keep_waiting(Some(false), false, now + std::time::Duration::from_secs(2)));
+        // 恢复：计数复位，之后再有瞬断也照样给宽限。
+        assert!(grace.keep_waiting(Some(true), false, now + std::time::Duration::from_secs(4)));
+        assert!(grace.keep_waiting(Some(false), false, now + std::time::Duration::from_secs(6)));
+    }
+
+    /// 与上一条互补：真退出必须被有限次探测判出，不能因为宽限而永久续命。
+    ///
+    /// 宽限条件是「不足 3 次探测失败 **或** 距首次失败不足 10 秒」，两者取宽，
+    /// 所以持续探不到时约 10 秒才结束等待——晚一点，但一定会结束。
+    #[test]
+    fn exit_wait_still_ends_after_sustained_misses() {
+        let now = std::time::Instant::now();
+        let mut grace = PackagedExitGrace::default();
+        assert!(grace.keep_waiting(Some(false), false, now));
+        assert!(grace.keep_waiting(Some(false), false, now + std::time::Duration::from_secs(2)));
+        // 4 秒：探测次数已超，但仍在 10 秒窗口内，继续等。
+        assert!(grace.keep_waiting(Some(false), false, now + std::time::Duration::from_secs(4)));
+        // 越过 10 秒窗口：结束等待。
+        assert!(!grace.keep_waiting(Some(false), false, now + std::time::Duration::from_secs(12)));
+    }
+
+    /// cdp_available 仍要能独立续命：进程身份没捕获到时靠它兜底。
+    #[test]
+    fn exit_wait_keeps_alive_on_cdp_alone() {
+        let now = std::time::Instant::now();
+        let mut grace = PackagedExitGrace::default();
+        assert!(grace.keep_waiting(None, true, now));
+        assert!(grace.keep_waiting(None, true, now + std::time::Duration::from_secs(60)));
     }
 
     #[test]

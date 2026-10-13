@@ -5,50 +5,302 @@
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
 
-  // 撤下强制语言后的单次迁移：只撤回仍由旧版管理的设置，不干预用户后来选择的语言。
-  async function restoreCodexPlusManagedLocale() {
-    const managedKey = "codexPlus.forceChineseLocale.managed.v1";
-    const reloadKey = "codexPlus.forceChineseLocale.reload.v1";
-    let marker;
-    let managed;
-    try {
-      marker = window.localStorage.getItem(managedKey);
-      if (!marker) return true;
-      managed = JSON.parse(marker);
-      if (!managed || Array.isArray(managed) || typeof managed.appliedLocale !== "string" || !managed.appliedLocale) return false;
-    } catch {
-      return false;
-    }
-    if (window.__codexPlusRetiredLocaleCleanupPromise) return await window.__codexPlusRetiredLocaleCleanupPromise;
-    const restore = async () => {
+  function installCodexPlusForceChineseLocale() {
+    const config = window.__CODEX_PLUS_FORCE_CHINESE_LOCALE__;
+    if (!config) return;
+    const enabled = config.enabled === true;
+    const locale = typeof config.locale === "string" && config.locale ? config.locale : "zh-CN";
+    const installationKey = `2:${enabled ? "on" : "off"}:${locale}`;
+    if (window.__codexPlusForceChineseLocaleInstalled === installationKey) return;
+    window.__codexPlusForceChineseLocaleInstalled = installationKey;
+    const languages = [locale, "zh", "en-US", "en"];
+    const managedLocaleStorageKey = "codexPlus.forceChineseLocale.managed.v1";
+    const localeReloadStorageKey = "codexPlus.forceChineseLocale.reload.v1";
+
+    const readManagedLocale = () => {
       try {
-        const response = await codexStateCall("get-setting", { params: { key: "localeOverride" } });
-        if (!response || !Object.prototype.hasOwnProperty.call(response, "value")) return false;
-        if (window.localStorage.getItem(managedKey) !== marker) return false;
-        if (response.value === managed.appliedLocale) {
-          const previousValue = managed.previousValue ?? null;
-          if (previousValue !== null) {
-            if (typeof previousValue !== "string" || previousValue.length > 64 || previousValue.trim() !== previousValue) return false;
-            if (Intl.getCanonicalLocales(previousValue).length !== 1) return false;
-          }
-          await codexStateCall("set-setting", { params: { key: "localeOverride", value: previousValue } });
-        }
-        if (window.localStorage.getItem(managedKey) !== marker) return false;
-        window.sessionStorage.removeItem(reloadKey);
-        window.localStorage.removeItem(managedKey);
-        return true;
+        const value = JSON.parse(window.localStorage.getItem(managedLocaleStorageKey) || "null");
+        return value && typeof value === "object" ? value : null;
       } catch {
-        // 原生 API 或存储暂时不可用时保留标记，下一次注入继续撤回。
-        return false;
+        return null;
       }
     };
-    const pending = restore();
-    window.__codexPlusRetiredLocaleCleanupPromise = pending;
-    try {
-      return await pending;
-    } finally {
-      if (window.__codexPlusRetiredLocaleCleanupPromise === pending) delete window.__codexPlusRetiredLocaleCleanupPromise;
-    }
+
+    const writeManagedLocale = (value) => {
+      try {
+        if (value) {
+          window.localStorage.setItem(managedLocaleStorageKey, JSON.stringify(value));
+        } else {
+          window.localStorage.removeItem(managedLocaleStorageKey);
+        }
+      } catch {
+      }
+    };
+
+    // 走 codexStateCall（60-plugin-marketplace.js 的能力探测通道）：老版的
+    // electronBridge + vscode://codex/ 自定义消息在 issue #2399 后已不可靠，
+    // state API 会随构建换模块位置，按能力识别才能一直找到。
+    //
+    // 但 state API 的 promise 是永久缓存的，且 asset 加载失败会留下 30 秒冷却
+    // （见 20-menu.js 的 codexAppModuleRetryCooldownMs）。注入发生在 App 的
+    // asset 就绪之前时第一次调用必然失败，而那次失败会被一直记住——所以这里
+    // 必须有界重试，不能像老版等 electronBridge 那样一次不成就算了。
+    const localeSyncRetryDelaysMs = [500, 1500, 3000, 6000, 12000, 20000];
+    const callCodexSettingApiOnce = (method, params) => codexStateCall(method, { params });
+    const callCodexSettingApi = async (method, params) => {
+      let lastError;
+      for (let attempt = 0; attempt <= localeSyncRetryDelaysMs.length; attempt += 1) {
+        try {
+          return await callCodexSettingApiOnce(method, params);
+        } catch (error) {
+          lastError = error;
+          const delay = localeSyncRetryDelaysMs[attempt];
+          if (delay === undefined) break;
+          await new Promise((resolve) => window.setTimeout(resolve, delay));
+        }
+      }
+      throw lastError;
+    };
+    const reloadAfterLocaleChange = (value) => {
+      const marker = JSON.stringify(value);
+      try {
+        if (window.sessionStorage.getItem(localeReloadStorageKey) === marker) return;
+        window.sessionStorage.setItem(localeReloadStorageKey, marker);
+        // 标记写不进去就不要刷新，否则下次加载读不到标记，会再次刷新。
+        if (window.sessionStorage.getItem(localeReloadStorageKey) !== marker) return;
+      } catch {
+        return;
+      }
+      window.location.reload();
+    };
+
+    const clearLocaleReloadMarker = () => {
+      try {
+        window.sessionStorage.removeItem(localeReloadStorageKey);
+      } catch {
+      }
+    };
+
+    const syncOfficialLocaleSetting = async () => {
+      const managed = readManagedLocale();
+      if (!enabled && !managed) return;
+      const response = await callCodexSettingApi("get-setting", { key: "localeOverride" });
+      const currentValue = response?.value ?? null;
+
+      if (enabled) {
+        if (currentValue === locale) {
+          clearLocaleReloadMarker();
+          return;
+        }
+        if (!managed) {
+          writeManagedLocale({ appliedLocale: locale, previousValue: currentValue });
+        }
+        await callCodexSettingApi("set-setting", { key: "localeOverride", value: locale });
+        reloadAfterLocaleChange(locale);
+        return;
+      }
+
+      if (currentValue !== managed.appliedLocale) {
+        writeManagedLocale(null);
+        clearLocaleReloadMarker();
+        return;
+      }
+      const previousValue = managed.previousValue ?? null;
+      await callCodexSettingApi("set-setting", {
+        key: "localeOverride",
+        value: previousValue,
+      });
+      writeManagedLocale(null);
+      reloadAfterLocaleChange(previousValue);
+    };
+
+    syncOfficialLocaleSetting().catch(() => {});
+    if (!enabled) return;
+
+    const defineNavigatorGetter = (name, value) => {
+      try {
+        Object.defineProperty(Navigator.prototype, name, {
+          configurable: true,
+          get: () => value,
+        });
+      } catch {
+        try {
+          Object.defineProperty(navigator, name, {
+            configurable: true,
+            get: () => value,
+          });
+        } catch {
+        }
+      }
+    };
+
+    defineNavigatorGetter("language", locale);
+    defineNavigatorGetter("languages", languages);
+
+    const patchI18nConfig = (dynamicConfig) => {
+      if (!dynamicConfig || typeof dynamicConfig !== "object") return dynamicConfig;
+      const value = dynamicConfig.value && typeof dynamicConfig.value === "object" ? dynamicConfig.value : {};
+      const nextValue = {
+        ...value,
+        enable_i18n: true,
+        locale_source: "SYSTEM",
+      };
+      try {
+        dynamicConfig.value = nextValue;
+      } catch {
+      }
+      if (typeof dynamicConfig.get === "function" && !dynamicConfig.__codexPlusForceChineseLocaleGetPatched) {
+        const originalGet = dynamicConfig.get.bind(dynamicConfig);
+        dynamicConfig.get = (key, fallback) => {
+          if (key === "enable_i18n") return true;
+          if (key === "locale_source") return "SYSTEM";
+          return originalGet(key, fallback);
+        };
+        dynamicConfig.__codexPlusForceChineseLocaleGetPatched = true;
+      }
+      return dynamicConfig;
+    };
+
+    const statsigClients = () => {
+      const root = window.__STATSIG__ || globalThis.__STATSIG__;
+      if (!root || typeof root !== "object") return [];
+      const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+      if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+      return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+    };
+
+    // 语言包的加载 gate 读的是 Layer 而不是 DynamicConfig（issue #2329 根因 a）：
+    // 应用用 useLayer('72216192').get('enable_i18n', false) 取开关，Layer 的 memo
+    // 缓存键恒为 NoValues，于是即使 DynamicConfig 被补成 enable_i18n:true 也不生效。
+    // 这里给 layer 对象补上同样的取值覆盖；__value 是 Statsig 存原始值的字段，
+    // 一并 assign，避免应用直接从 __value 读时绕过 get。
+    const patchI18nLayer = (layer) => {
+      if (!layer || typeof layer !== "object") return layer;
+      const value = layer.__value && typeof layer.__value === "object" ? layer.__value : {};
+      const nextValue = {
+        ...value,
+        enable_i18n: true,
+        locale_source: "SYSTEM",
+      };
+      try {
+        layer.__value = nextValue;
+      } catch {
+      }
+      try {
+        layer.value = nextValue;
+      } catch {
+      }
+      if (typeof layer.get === "function" && !layer.__codexPlusForceChineseLocaleLayerPatched) {
+        const originalGet = layer.get.bind(layer);
+        layer.get = (key, fallback) => {
+          if (key === "enable_i18n") return true;
+          if (key === "locale_source") return "SYSTEM";
+          return originalGet(key, fallback);
+        };
+        layer.__codexPlusForceChineseLocaleLayerPatched = true;
+      }
+      return layer;
+    };
+
+    const patchStatsigClient = (client) => {
+      if (!client || typeof client !== "object") return;
+      if (typeof client.getLayer === "function" && !client.__codexPlusForceChineseLocaleLayerChannelPatched) {
+        const originalGetLayer = client.getLayer.bind(client);
+        client.getLayer = (name, options) => {
+          const result = originalGetLayer(name, options);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerChannelPatched = true;
+      }
+      if (typeof client._getLayerImpl === "function" && !client.__codexPlusForceChineseLocaleLayerImplPatched) {
+        const originalGetLayerImpl = client._getLayerImpl.bind(client);
+        client._getLayerImpl = function (name, ...rest) {
+          const result = originalGetLayerImpl(name, ...rest);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerImplPatched = true;
+      }
+      if (typeof client.getDynamicConfig !== "function") return;
+      if (!client.__codexPlusForceChineseLocalePatched) {
+        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+        client.getDynamicConfig = (name, options) => {
+          const result = originalGetDynamicConfig(name, options);
+          return name === "72216192" ? patchI18nConfig(result) : result;
+        };
+        client.__codexPlusForceChineseLocalePatched = true;
+      }
+      try {
+        patchI18nConfig(client.getDynamicConfig("72216192", { disableExposureLog: true }));
+      } catch {
+      }
+      try {
+        if (typeof client.getLayer === "function") {
+          patchI18nLayer(client.getLayer("72216192", { disableExposureLog: true }));
+        }
+      } catch {
+      }
+    };
+
+    const patchStatsigRoot = (root) => {
+      if (!root || typeof root !== "object" || root.__codexPlusForceChineseLocaleRootPatched) return;
+      root.__codexPlusForceChineseLocaleRootPatched = true;
+      ["firstInstance", "instance"].forEach((key) => {
+        let current;
+        try {
+          current = root[key];
+        } catch {
+          return;
+        }
+        patchStatsigClient(typeof current === "function" && key === "instance" ? current.call(root) : current);
+        try {
+          Object.defineProperty(root, key, {
+            configurable: true,
+            get: () => current,
+            set: (next) => {
+              current = next;
+              patchStatsigClient(typeof next === "function" && key === "instance" ? next.call(root) : next);
+            },
+          });
+        } catch {
+        }
+      });
+    };
+
+    const installStatsigRootSetter = () => {
+      const descriptor = Object.getOwnPropertyDescriptor(window, "__STATSIG__");
+      if (descriptor && descriptor.configurable === false) return;
+      let currentRoot = window.__STATSIG__;
+      patchStatsigRoot(currentRoot);
+      try {
+        Object.defineProperty(window, "__STATSIG__", {
+          configurable: true,
+          get: () => currentRoot,
+          set: (next) => {
+            currentRoot = next;
+            patchStatsigRoot(next);
+            statsigClients().forEach(patchStatsigClient);
+          },
+        });
+      } catch {
+      }
+    };
+
+    const patchStatsigI18nConfig = () => {
+      installStatsigRootSetter();
+      const root = window.__STATSIG__ || globalThis.__STATSIG__;
+      patchStatsigRoot(root);
+      statsigClients().forEach((client) => {
+        if (typeof client.getDynamicConfig !== "function") return;
+        patchStatsigClient(client);
+      });
+    };
+
+    patchStatsigI18nConfig();
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      patchStatsigI18nConfig();
+      if (Date.now() - startedAt > 5000) window.clearInterval(timer);
+    }, 50);
   }
 
   const helperBase = window.__CODEX_SESSION_DELETE_HELPER__ || "http://127.0.0.1:57321";
@@ -64,6 +316,15 @@
   const conversationViewMaxAllowedWidth = 4000;
   const conversationViewDefaultWidth = 900;
   const conversationViewLegacyWidthKey = "codexPlus.threadCenter.maxWidth";
+  // 模型容量错误自动重试的次数上下限。放在 prelude 是因为默认设置
+  // （10-style.js 的 defaultCodexPlusSettings）和运行逻辑（81-capacity-auto-retry.js）
+  // 都要用，而后者的 const 在 IIFE 里初始化得更晚。
+  const capacityAutoRetryDefaultMaxAttempts = 15;
+  const capacityAutoRetryMaxAttemptsCeiling = 200;
+  // 默认 0 秒 = 上一轮失败后立刻重试（与手动点击的手感一致），
+  // 运行逻辑里另有 1 秒地板值防热循环。
+  const capacityAutoRetryDefaultIntervalSeconds = 0;
+  const capacityAutoRetryIntervalCeilingSeconds = 600;
   // 已发布的旧类名保留兼容；对应功能不再安装。
   const zedRemoteButtonClass = "codex-zed-remote-button";
   const zedRemoteOpenInMenuItemClass = "codex-zed-open-in-menu-item";
@@ -151,25 +412,25 @@
 
   function installCodexPlusImageOverlay() {
     const config = window.__CODEX_PLUS_IMAGE_OVERLAY__ || {};
-    const canQueryById = typeof document?.getElementById === "function";
-    const existing = canQueryById ? document.getElementById(codexPlusImageOverlayId) : null;
-    const source = config.dataUrl || "";
-    if (!config.enabled || !source) {
-      if (window.__codexPlusImageOverlayBlobUrl) {
-        URL.revokeObjectURL(window.__codexPlusImageOverlayBlobUrl);
-        window.__codexPlusImageOverlayBlobUrl = "";
-      }
-      if (existing) existing.remove();
-      return;
-    }
-    const root = document?.documentElement;
-    if (!root || typeof document?.createElement !== "function") {
-      return;
-    }
-    const opacity = Math.min(1, Math.max(0.01, Number(config.opacity) || 0.35));
+    const source = typeof config.dataUrl === "string" ? config.dataUrl : "";
+    const cached = window.__codexPlusImageOverlayResource;
+    const configuredOpacity = Number(config.opacity);
+    const opacity = Number.isFinite(configuredOpacity)
+      ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
-      ? config.fitMode
-      : "fit";
+      ? config.fitMode : "fit";
+    const reuse = !!(config.enabled && source && cached?.version === 29 && cached.ready && cached.source === source);
+    if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
+      document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
+    window.__codexPlusImageOverlayGeometryCleanup?.();
+    window.__codexPlusImageOverlayGeometryCleanup = null;
+    window.__codexPlusImageOverlayCleanup?.(reuse);
+    window.__codexPlusImageOverlayCleanup = null;
+    document.getElementById(codexPlusImageOverlayId)?.remove();
+    const root = document.documentElement;
+    window.__codexPlusImageOverlayReady = Promise.resolve(false);
+    if (!config.enabled || !source || !root) return;
+
     const fitStyles = {
       fill: { size: "cover", position: "center center", repeat: "no-repeat" },
       fit: { size: "contain", position: "center center", repeat: "no-repeat" },
@@ -177,39 +438,1274 @@
       tile: { size: "auto", position: "left top", repeat: "repeat" },
       center: { size: "auto", position: "center center", repeat: "no-repeat" },
     }[fitMode];
-    const overlay = existing?.tagName === "DIV" ? existing : document.createElement("div");
-    if (existing && existing !== overlay) existing.remove();
+    const viewerSelector = [
+      '[role="dialog"]:has([data-testid="image-preview-dismiss-area"])',
+      '[data-testid="image-preview-editor"]',
+      '[data-testid="image-preview-dismiss-area"]',
+      '.codex-dialog-overlay[class*="_imageOverlay_"]',
+      '.codex-dialog:has([data-image-preview-toolbar])',
+      '.codex-dialog:has([data-image-preview-composer])',
+      "[data-browser-sidebar-webview]",
+      "[data-browser-sidebar-toolbar]",
+    ].join(", ");
+    const toolbarSelector = "[data-browser-sidebar-toolbar]";
+    const browserSelector = `[data-browser-sidebar-webview], ${toolbarSelector}`;
+    const sidebarSelector = "aside.app-shell-left-panel, [data-app-action-sidebar-scroll], nav[data-app-navigation-rail]";
+    const sidebarRowSelector = "[data-app-action-sidebar-thread-row], [data-app-action-sidebar-project-row]";
+    const pageSelector = ".codex-plus-page-overlay";
+    const timelineSelector = "[data-app-action-timeline-scroll], .thread-scroll-container";
+    const reviewHeaderSelector = '[class~="group/turn-diff-header"]';
+    const rightPanelSelector = '[data-app-shell-focus-area="right-panel"]';
+    const inactivePanel = node => node.closest?.(
+      `${rightPanelSelector}[inert], ${rightPanelSelector}[aria-hidden="true"]`);
+    const mediaSelector = `img, video, canvas, ${viewerSelector}, ${reviewHeaderSelector}`;
+    const nativeRangeSelector = 'input[type="range"], [role="slider"]';
+    const composerSelector = '[class*="_ComposerLayoutRoot_"]';
+    const headerSelector = '[data-app-shell-header-layout], [data-sticky][class*="_shell_"], .sticky.z-30.bg-surface';
+    const editorSelector = '[contenteditable="true"], .ProseMirror';
+    const composerOverlaySelector = "[data-composer-overlay-floating-ui]";
+    const diffPreviewSelector = '[data-testid="diff-preview-scroll"]';
+    const controlSelector = 'button, [role="button"], input, textarea, select, a';
+    const mediaAttribute = "data-codex-plus-image-native";
+    const scopeAttribute = "data-codex-plus-image-scope";
+    const containmentAttribute = "data-codex-plus-image-contain";
+    const browserPortalAttribute = "data-codex-plus-image-browser-portal";
+    const popupMaterialAttribute = "data-codex-plus-image-popup-material";
+    const popupBoundaryAttribute = "data-codex-plus-image-popup-boundary";
+    const controlAttribute = "data-codex-plus-image-control";
+    const paintAttribute = "data-codex-plus-image-paint";
+    const topControlAttribute = "data-codex-plus-image-top-control";
+    const footerAttribute = "data-codex-plus-image-footer-gutter";
+    const footerSelector = "[data-thread-scroll-footer]";
+    const topControlSelector = [
+      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]',
+      "[data-radix-popper-content-wrapper]", '[data-slot="popover-content"]', "[popover]", composerOverlaySelector,
+    ].join(", ");
+    // Extensions keep their own layers; their full-page shell is the one wallpaper surface.
+    const owned = node => !!node?.closest?.('[data-codex-plus-ext]') && !node.matches(pageSelector);
+    const wallpaperLayer = 1000;
+    const overlay = document.createElement("div");
     overlay.id = codexPlusImageOverlayId;
     overlay.setAttribute("aria-hidden", "true");
+    overlay.setAttribute("data-codex-plus-ext", "image-overlay");
     Object.assign(overlay.style, {
-      position: "fixed",
-      inset: "0",
-      width: "100vw",
-      height: "100vh",
-      backgroundImage: `url("${source.replace(/"/g, "%22")}")`,
-      backgroundSize: fitStyles.size,
-      backgroundPosition: fitStyles.position,
-      backgroundRepeat: fitStyles.repeat,
-      opacity: String(opacity),
-      pointerEvents: "none",
-      zIndex: "2147483646",
-      userSelect: "none",
+      position: "fixed", inset: "0", width: "100vw", height: "100vh",
+      opacity: String(opacity), pointerEvents: "none", zIndex: String(wallpaperLayer),
+      userSelect: "none", backgroundSize: fitStyles.size,
+      backgroundPosition: fitStyles.position, backgroundRepeat: fitStyles.repeat,
+      transition: "none", animation: "none",
     });
-    if (!overlay.parentElement) root.appendChild(overlay);
-    sendCodexPlusDiagnostic("image_overlay_installed", {
-      opacity,
-      fitMode,
-      sourceKind: source.startsWith("data:") ? "data-uri" : "unknown",
+    const style = document.createElement("style");
+    style.setAttribute("data-codex-plus-ext", "image-overlay");
+    const nativeRules = `
+      [${scopeAttribute}] { isolation:auto!important;z-index:auto!important;will-change:auto!important; }
+      [${browserPortalAttribute}] { z-index:${wallpaperLayer + 1}!important; }
+      [${scopeAttribute}^="identity"] { transform:none!important; }
+      [${scopeAttribute}="identity-flow"] { position:relative!important; }
+      [${containmentAttribute}] { contain:none!important; }
+      [${containmentAttribute}^="flow"] { position:relative!important; }
+      [${containmentAttribute}$="-clip"] { overflow:clip!important; }
+      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"])) { z-index:${wallpaperLayer}!important; }
+      [${mediaAttribute}="flow"], [${mediaAttribute}="island-flow"] { position:relative!important; }
+      [${mediaAttribute}="viewer"] { z-index:${wallpaperLayer + 3}!important; }
+      [${mediaAttribute}="footer"] { z-index:${wallpaperLayer + 1}!important; }
+      [${mediaAttribute}^="header"] { z-index:${wallpaperLayer + 1}!important; }
+      [${mediaAttribute}="header-flow"] { position:relative!important; }
+      ${composerSelector} .top-full [data-composer-placement="home"].bg-background-composer-action-bar { background:none!important; }
+      [${mediaAttribute}="page"], [${mediaAttribute}="composer"] { isolation:isolate!important; }
+      [${mediaAttribute}="composer"]:not([${mediaAttribute}="footer"] *) { z-index:${wallpaperLayer + 1}!important; }
+      [${mediaAttribute}^="toolbar"] { background:none!important;box-shadow:none!important;filter:none!important;backdrop-filter:none!important; }
+      [${mediaAttribute}="toolbar-flow"] { position:relative!important; }
+      ${timelineSelector} { overscroll-behavior-y:none!important; }
+      [${popupMaterialAttribute}] { background-image:none!important;filter:none!important;backdrop-filter:none!important; }
+      [${paintAttribute}] { isolation:isolate!important; }
+      [${paintAttribute}]:not([${paintAttribute}^="before-"], [${paintAttribute}^="background-"])::after, [${paintAttribute}^="before-"]::before {
+        content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+        corner-shape:inherit;z-index:-1;opacity:${opacity};
+        background-size:${fitStyles.size};background-position:${fitStyles.position};
+        background-repeat:${fitStyles.repeat};background-attachment:fixed;
+      }
+      [${controlAttribute}] { z-index:${wallpaperLayer}!important; }
+      [${topControlAttribute}] { z-index:${wallpaperLayer + 2}!important; }
+      [${topControlAttribute}="flow"] { position:relative!important; }
+    `;
+    const ns = "http://www.w3.org/2000/svg";
+    const svgNode = (tag, attributes = {}) => {
+      const node = document.createElementNS(ns, tag);
+      for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+      return node;
+    };
+    const svg = svgNode("svg", { width: 0, height: 0, "aria-hidden": "true", "data-codex-plus-ext": "image-overlay" });
+    Object.assign(svg.style, { position: "fixed", width: "0", height: "0", pointerEvents: "none" });
+    const defs = svgNode("defs");
+    svg.appendChild(defs);
+    let resource = reuse ? cached : null;
+    let disposed = false;
+    let raf = 0;
+    let nextControl = 0;
+    let nextSource = 0;
+    let previewVisible = false;
+    let sidebarScrollUntil = 0;
+    let finishReady;
+    const image = new Image();
+    const records = new Map();
+    const scopes = new Map();
+    const browserPortals = new Map();
+    const controls = new Map();
+    const popups = new Map();
+    const visibleMedia = new Set();
+    const visibleControls = new Set();
+    const activeControls = new Set();
+    const paintedNodes = new Set();
+    const viewers = new Set();
+    const scopeKeys = new Map();
+    const footers = new Map();
+    const themeInputs = new Map();
+    let geometryDirty = true;
+    const originalAttributes = new Map();
+    const stats = { frames: 0, rectReads: 0, styleReads: 0, queries: 0, maskWrites: 0, layerWrites: 0 };
+    window.__codexPlusImageOverlayStats = stats;
+    window.__codexPlusImageOverlayReady = new Promise(resolve => { finishReady = resolve; });
+    const mark = (node, name, value) => {
+      let attributes = originalAttributes.get(node);
+      if (!attributes) originalAttributes.set(node, attributes = new Map());
+      if (!attributes.has(name)) attributes.set(name, node.getAttribute(name));
+      if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+    };
+    const unmark = (node, name) => {
+      const attributes = originalAttributes.get(node);
+      if (!attributes?.has(name)) return;
+      const previous = attributes.get(name);
+      if (previous === null) node.removeAttribute(name);
+      else node.setAttribute(name, previous);
+      attributes.delete(name);
+      if (!attributes.size) originalAttributes.delete(node);
+    };
+    const computed = (node, pseudo) => { stats.styleReads++; return getComputedStyle(node, pseudo); };
+    const bounds = node => { stats.rectReads++; return node.getBoundingClientRect(); };
+    const queryAll = (node, selector) => { stats.queries++; return node.querySelectorAll(selector); };
+    const scopeKey = node => [node.getAttribute("class"), ...[
+      "position", "z-index", "isolation", "contain", "transform", "translate", "scale", "rotate",
+      "will-change", "overflow", "overflow-x", "overflow-y", "animation", "transition",
+    ].map(name => node.style.getPropertyValue(name))].join("|");
+    const themeKey = node => [
+      [...node.classList].filter(name => node !== root ||
+        !/^_(?:active|opening|closing)_[a-zA-Z0-9]+_\d+$/.test(name)).sort().join(" "),
+      [...node.style].filter(name => node !== root || name !== "--image-preview-thumbnail-radius")
+        .sort().map(name => `${name}:${node.style.getPropertyValue(name)}:${node.style.getPropertyPriority(name)}`).join(";"),
+    ].join("|");
+    const viewerKey = node => [node.hidden, node.getAttribute("class"), node.getAttribute("role"),
+      node.getAttribute("data-testid"),
+      node.style.display, node.style.visibility, node.style.contentVisibility].join("|");
+    const release = record => {
+      if (record.browserPortal) {
+        const count = browserPortals.get(record.browserPortal) - 1;
+        if (count) browserPortals.set(record.browserPortal, count);
+        else {
+          browserPortals.delete(record.browserPortal);
+          unmark(record.browserPortal, browserPortalAttribute);
+        }
+      }
+      for (const ancestor of record.ancestors) {
+        const count = scopes.get(ancestor) - 1;
+        if (count) scopes.set(ancestor, count);
+        else {
+          scopes.delete(ancestor);
+          scopeKeys.delete(ancestor);
+          unmark(ancestor, scopeAttribute);
+          unmark(ancestor, containmentAttribute);
+        }
+      }
+    };
+    const refreshScope = node => {
+      unmark(node, scopeAttribute);
+      unmark(node, containmentAttribute);
+      const originalStyle = computed(node);
+      if (originalStyle.contain.includes("paint")) {
+        const flow = originalStyle.position === "static" ? "flow" : "positioned";
+        const clip = originalStyle.overflowX === "visible" && originalStyle.overflowY === "visible" ? "-clip" : "";
+        mark(node, containmentAttribute, flow + clip);
+      }
+      const transform = originalStyle.transform;
+      const identity = transform !== "none" && new DOMMatrix(transform).isIdentity &&
+        !node.getAnimations().some(animation => animation.playState === "running");
+      mark(node, scopeAttribute, identity ? originalStyle.position === "static" ? "identity-flow" : "identity" : "stack");
+      scopeKeys.set(node, scopeKey(node));
+    };
+    const nativeKind = node => node.matches(reviewHeaderSelector) ? "review" :
+      node.matches(toolbarSelector) ? computed(node).position === "static" ? "toolbar-flow" : "toolbar" :
+      node.matches(pageSelector) ? "page" : node.matches(composerSelector) ? "composer" :
+      node.matches(headerSelector) ? computed(node).position === "static" ? "header-flow" : "header" :
+      node.matches(footerSelector) ? "footer" :
+      node.matches(viewerSelector) && !node.matches("[data-browser-sidebar-webview]") ? "viewer" :
+      records.get(node)?.mediaIsland ? computed(node).position === "static" ? "island-flow" : "island" :
+      computed(node).position === "static" ? "flow" : "positioned";
+    const add = node => {
+      if (owned(node) || inactivePanel(node) || node.closest(editorSelector)) return;
+      const previous = records.get(node);
+      if (!node.matches(viewerSelector) && node.closest(viewerSelector) ||
+        !node.matches(reviewHeaderSelector) && node.closest(reviewHeaderSelector)) {
+        if (previous) removeMedia(node, previous);
+        return;
+      }
+      const nativeBoundary = node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
+      if (nativeBoundary && !node.matches(`${composerSelector}, ${headerSelector}`)) {
+        if (previous) removeMedia(node, previous);
+        return;
+      }
+      if (node.matches("img, video, canvas")) {
+        let host = node;
+        // Keep an icon's badges and overlapping logo stack in native DOM order.
+        for (let parent = node.parentElement; parent && parent !== document.body && !owned(parent) &&
+          !parent.matches(`${topControlSelector}, ${controlSelector}`) && !parent.textContent.trim(); parent = parent.parentElement) {
+          const children = [...parent.children];
+          const sameBox = parent.offsetWidth > 0 && parent.offsetWidth === host.offsetWidth && parent.offsetHeight === host.offsetHeight;
+          const stack = children.length > 1 && children.every(child => child.matches("img,svg") || child.querySelector("img,svg")) &&
+            ["flex", "inline-flex"].includes(computed(parent).display) &&
+            parent.offsetWidth <= children.reduce((sum, child) => sum + child.offsetWidth, 0) &&
+            parent.offsetHeight <= Math.max(...children.map(child => child.offsetHeight));
+          if (!sameBox && !stack) break;
+          host = parent;
+        }
+        if (host !== node) {
+          if (previous) removeMedia(node, previous);
+          removeWithin(records, host, removeMedia, false);
+          removeWithin(controls, host, removeControl);
+          add(host);
+          const record = records.get(host);
+          if (record) {
+            record.mediaIsland = true;
+            unmark(host, mediaAttribute);
+            mark(host, mediaAttribute, nativeKind(host));
+          }
+          return;
+        }
+      }
+      let browserPortal = node.matches(browserSelector) ? node.closest("[data-embedded-frame-host-root]") : null;
+      if (node.matches(browserSelector)) {
+        for (let parent = node.parentElement; !browserPortal && parent && parent !== root; parent = parent.parentElement) {
+          const paint = computed(parent);
+          if (paint.position === "fixed" && paint.pointerEvents === "none") { browserPortal = parent; break; }
+        }
+      }
+      const ancestors = [];
+      for (let parent = nativeBoundary || node.matches(reviewHeaderSelector) ||
+        node.matches(viewerSelector) && !node.matches(browserSelector)
+        ? null : browserPortal ? browserPortal.parentElement : node.parentElement; parent && parent !== root && !parent.matches(pageSelector) &&
+          parent !== nativeBoundary; parent = parent.parentElement) {
+        ancestors.push(parent);
+      }
+      if (previous?.parent === node.parentElement && previous.browserPortal === browserPortal && previous.nativeBoundary === nativeBoundary &&
+        previous.ancestors.length === ancestors.length &&
+        ancestors.every((parent, index) => previous.ancestors[index] === parent)) return;
+      if (previous) release(previous);
+      for (const parent of ancestors) {
+        const count = scopes.get(parent) || 0;
+        scopes.set(parent, count + 1);
+        if (!count) refreshScope(parent);
+      }
+      if (browserPortal) {
+        browserPortals.set(browserPortal, (browserPortals.get(browserPortal) || 0) + 1);
+        mark(browserPortal, browserPortalAttribute, "");
+      }
+      records.set(node, { ...previous, parent: node.parentElement, ancestors, browserPortal, nativeBoundary, box: null });
+      unmark(node, mediaAttribute);
+      mark(node, mediaAttribute, nativeKind(node));
+      if (node.getAttribute(mediaAttribute) === "viewer") {
+        viewers.add(node);
+        records.get(node).viewerKey = viewerKey(node);
+      } else viewers.delete(node);
+      if (nativeBoundary || node.matches(`${browserSelector}, ${reviewHeaderSelector}, ${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`)) {
+        intersectionObserver.unobserve(node);
+        visibleMedia.delete(node);
+      } else if (!previous || previous.nativeBoundary) intersectionObserver.observe(node);
+      stats.layerWrites++;
+    };
+    const addControl = (node, origin = null) => {
+      if (owned(node) || inactivePanel(node) || node.closest(reviewHeaderSelector) ||
+        node.matches(nativeRangeSelector) || node.closest(browserSelector) ||
+        node.closest(sidebarSelector) || node.closest(pageSelector) || node.closest(viewerSelector) ||
+        node.closest(topControlSelector) || node.closest(`[${popupBoundaryAttribute}]`) ||
+        node.closest(`${composerSelector}, ${footerSelector}, ${editorSelector}, [${mediaAttribute}^="island"], ${headerSelector}`)) {
+        const previous = controls.get(node);
+        if (previous) removeControl(node, previous);
+        return;
+      }
+      let record = controls.get(node);
+      if (!record) {
+        record = { id: ++nextControl, origin, box: null, paintDirty: false,
+          filter: null, backdrop: null, rule: "", key: "", backdropKey: "" };
+        controls.set(node, record);
+        intersectionObserver.observe(node);
+        resizeObserver.observe(node);
+      }
+      return record;
+    };
+    const controlSurface = node => {
+      let surface = node;
+      for (let parent = node.parentElement; parent && parent !== root && !scopes.has(parent); parent = parent.parentElement) {
+        if (parent.querySelector(mediaSelector)) break;
+        const paint = computed(parent);
+        if (paint.zIndex !== "auto" || paint.transform !== "none" ||
+          paint.filter !== "none" || paint.backdropFilter !== "none" ||
+          paint.isolation === "isolate" || Number(paint.opacity) < 1)
+          surface = parent;
+      }
+      return surface;
+    };
+    const nativeSurfacePaint = surface => ({ id: ++nextControl, surface,
+      pseudo: ["after", "before"].find(pseudo => ["none", "normal"].includes(computed(surface, `::${pseudo}`).content)) });
+    const registerPaint = (node, paint = records.get(node).paint || nativeSurfacePaint(node)) => {
+      const previous = records.get(node).paint;
+      if (previous && previous.surface !== paint.surface) unmark(previous.surface, paintAttribute);
+      records.get(node).paint = paint;
+      if (node.matches(headerSelector)) {
+        unmark(paint.surface, paintAttribute);
+        const id = `background-${paint.id}`;
+        // Paint only existing opaque backing, including native top-edge extensions.
+        // Transparent headers already see the single global wallpaper underneath.
+        records.get(node).wallRule = ["", "::before", "::after"].map(pseudo => {
+          const native = computed(paint.surface, pseudo || undefined);
+          const color = native.backgroundColor;
+          if (color === "transparent" || color.startsWith("rgba(") || color.includes("/") || native.backgroundImage !== "none") return "";
+          const tint = `color-mix(in srgb, ${color} ${(1 - opacity) * 100}%, transparent)`;
+          return `[${paintAttribute}="${id}"]${pseudo}{background-image:linear-gradient(${tint},${tint}),url(${JSON.stringify(resource.imageSource)})!important;background-size:auto,${fitStyles.size}!important;background-position:0 0,${fitStyles.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:fixed!important;}`;
+        }).join("\n");
+        mark(paint.surface, paintAttribute, id);
+        paintedNodes.add(node);
+        writeRules();
+        return;
+      }
+      // Leave a surface's two native pseudo-elements intact when both are used.
+      if (!paint.pseudo) {
+        unmark(paint.surface, paintAttribute);
+        paintedNodes.delete(node);
+        records.get(node).wallRule = "";
+        writeRules();
+        return;
+      }
+      const id = (paint.pseudo === "before" ? "before-" : "") + paint.id;
+      records.get(node).wallRule = `[${paintAttribute}="${id}"]::${paint.pseudo}{background-image:url(${JSON.stringify(resource.imageSource)});}`;
+      mark(paint.surface, paintAttribute, id);
+      paintedNodes.add(node);
+      writeRules();
+    };
+    const removeWithin = (registry, tree, remove, includeRoot = true) => {
+      for (const [node, record] of registry)
+        if ((includeRoot || node !== tree) && tree.contains(node)) remove(node, record);
+    };
+    const popupBackgroundKey = node => Array.from(node.style)
+      .filter(name => name.startsWith("background") || name === "color")
+      .sort().map(name => `${name}:${node.style.getPropertyValue(name)}:${node.style.getPropertyPriority(name)}`).join(";");
+    const addComposer = node => {
+      if (owned(node) || inactivePanel(node) || node.closest(viewerSelector)) return;
+      // Paint below the native children. Never annotate editor-owned node views.
+      const surface = node.matches('[data-composer-utility-bar-variant="home"]')
+        ? node.querySelector('[class*="_ComposerLayoutBody_"]') || node : node;
+      let surfacePaint = records.get(node)?.paint;
+      if (!surfacePaint) {
+        unmark(node, mediaAttribute);
+        surfacePaint = nativeSurfacePaint(surface);
+      }
+      add(node);
+      registerPaint(node, surfacePaint);
+    };
+    const addPopupSurface = (boundary, surface) => {
+      if (owned(surface) || inactivePanel(surface) || surface.closest(reviewHeaderSelector) ||
+        surface.closest(viewerSelector) || surface.closest(pageSelector)) return;
+      const previous = popups.get(surface);
+      if (previous?.boundary === boundary) return;
+      if (previous) removePopup(surface, previous);
+      removeWithin(controls, boundary, removeControl);
+      const paint = computed(surface);
+      const record = { boundary, owner: surface.closest(composerOverlaySelector) || boundary,
+        id: ++nextControl, backgroundKey: popupBackgroundKey(surface),
+        nativeBackground: paint.backgroundColor,
+        className: surface.getAttribute("class"), rule: "" };
+      // Only the background is translucent; native contents and positioning stay intact.
+      record.rule = `[${popupMaterialAttribute}="${record.id}"]{background-color:color-mix(in srgb, ${paint.backgroundColor} ${(1 - opacity) * 100}%, transparent)!important;}`;
+      popups.set(surface, record);
+      mark(boundary, popupBoundaryAttribute, "");
+      mark(boundary, topControlAttribute, computed(boundary).position === "static" ? "flow" : "positioned");
+      mark(surface, popupMaterialAttribute, String(record.id));
+      queryAll(boundary, mediaSelector).forEach(add);
+      writeRules();
+    };
+    const refreshPopupTheme = () => {
+      for (const [surface, popup] of popups) {
+        unmark(surface, popupMaterialAttribute);
+        const background = computed(surface).backgroundColor;
+        mark(surface, popupMaterialAttribute, String(popup.id));
+        if (background === popup.nativeBackground) continue;
+        popup.nativeBackground = background;
+        popup.rule = `[${popupMaterialAttribute}="${popup.id}"]{background-color:color-mix(in srgb, ${background} ${(1 - opacity) * 100}%, transparent)!important;}`;
+      }
+      writeRules();
+    };
+    const addDiffPreview = scroll => {
+      const surface = scroll.parentElement;
+      const tooltip = scroll.closest('[class~="group/diff-preview"]');
+      if (!surface || !tooltip || owned(scroll)) return;
+      addPopupSurface(tooltip.closest("[data-radix-popper-content-wrapper]") || tooltip, surface);
+    };
+    const addNativePopup = node => {
+      if (owned(node) || node.closest(viewerSelector) || node.closest(pageSelector)) return;
+      const composerOverlay = node.matches(composerOverlaySelector);
+      const parent = node.parentElement;
+      // The roleless composer menu uses a translated positioning wrapper.
+      const boundary = composerOverlay && parent?.childElementCount === 1 &&
+        ["fixed", "absolute"].includes(computed(parent).position)
+        ? parent : node.closest("[data-radix-popper-content-wrapper]") || node;
+      if (popups.has(boundary)) return;
+      if (node === boundary && [...popups.values()].some(popup => popup.boundary === boundary)) return;
+      const surface = composerOverlay ? node.firstElementChild :
+        node.matches("[data-radix-popper-content-wrapper]") &&
+        computed(node).backgroundColor === "rgba(0, 0, 0, 0)"
+        ? node.querySelector(topControlSelector) : node;
+      if (!surface) return;
+      addPopupSurface(boundary, surface);
+    };
+    const isPopupSurface = surface => surface.matches(topControlSelector) ||
+      surface.closest(`[class~="group/diff-preview"], ${composerOverlaySelector}`);
+    const removePopup = (surface, record) => {
+      popups.delete(surface);
+      unmark(surface, popupMaterialAttribute);
+      if (![...popups.values()].some(other => other.boundary === record.boundary)) {
+        unmark(record.boundary, popupBoundaryAttribute);
+        unmark(record.boundary, topControlAttribute);
+      }
+    };
+    const addPage = node => {
+      removeWithin(popups, node, removePopup);
+      removeWithin(controls, node, removeControl);
+      removeWithin(records, node, removeMedia, false);
+      add(node);
+      registerPaint(node);
+    };
+    const addHeader = node => {
+      if (owned(node) || inactivePanel(node) || node.closest(`${viewerSelector}, ${editorSelector}`)) return;
+      removeWithin(controls, node, removeControl);
+      removeWithin(records, node, removeMedia, false);
+      add(node);
+      registerPaint(node);
+    };
+    const updateFooter = (footer, record) => {
+      const scroller = record.scroller;
+      const parent = footer.offsetParent;
+      if (!parent) return false;
+      let left = 0, right = 0;
+      // The native footer is absolute in the outer frame, not in the scroller.
+      if (parent !== scroller) {
+        const scrollBox = bounds(scroller), parentBox = bounds(parent);
+        const scale = parentBox.width / (parent.offsetWidth || parentBox.width);
+        const scrollScale = scrollBox.width / (scroller.offsetWidth || scrollBox.width);
+        const origin = parentBox.left + parent.clientLeft * scale;
+        left = Math.max(0, (scrollBox.left + scroller.clientLeft * scrollScale - origin) / scale);
+        right = Math.max(0, parent.clientWidth - left - scroller.clientWidth * scrollScale / scale);
+      }
+      const rule = `[${footerAttribute}="${record.id}"]{left:${left}px!important;right:${right}px!important;}`;
+      if (record.rule === rule) return false;
+      record.rule = rule;
+      return true;
+    };
+    const removeFooter = (footer, record) => {
+      footers.delete(footer);
+      unmark(footer, footerAttribute);
+      if (![...footers.values()].some(other => other.scroller === record.scroller) &&
+        !records.has(record.scroller) && !controls.has(record.scroller)) resizeObserver.unobserve(record.scroller);
+    };
+    const addFooter = footer => {
+      if (owned(footer) || inactivePanel(footer) || footer.closest(reviewHeaderSelector)) return;
+      add(footer);
+      const surface = footer.querySelector(':scope > [aria-hidden="true"]');
+      if (surface && records.get(footer)?.paint?.surface !== surface) registerPaint(footer, nativeSurfacePaint(surface));
+      const scroller = footer.closest(timelineSelector);
+      if (!scroller) return;
+      const previous = footers.get(footer);
+      if (previous?.scroller === scroller) {
+        if (updateFooter(footer, previous)) writeRules();
+        return;
+      }
+      if (previous) removeFooter(footer, previous);
+      const paint = computed(footer);
+      // Only the full-width native footer can cover the scrollbar gutter.
+      if (!["absolute", "fixed"].includes(paint.position) ||
+        paint.left !== "0px" || paint.right !== "0px") return;
+      const record = { id: ++nextControl, scroller, rule: "" };
+      footers.set(footer, record);
+      mark(footer, footerAttribute, String(record.id));
+      updateFooter(footer, record);
+      resizeObserver.observe(scroller);
+      writeRules();
+    };
+    const addReviewHeader = node => {
+      removeWithin(popups, node, removePopup);
+      removeWithin(controls, node, removeControl);
+      removeWithin(records, node, removeMedia, false);
+      add(node);
+    };
+    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, footerSelector, headerSelector,
+      diffPreviewSelector, topControlSelector].join(", ");
+    const visit = node => {
+      if (node?.nodeType !== 1 || !node.isConnected || owned(node) || inactivePanel(node) ||
+        node.closest(editorSelector)) return;
+      if (node.matches(browserSelector)) { add(node); return; }
+      if (node.closest(browserSelector)) return;
+      const targets = [node, ...(node.childElementCount ? queryAll(node, discoverySelector) : [])]
+        .filter(target => !inactivePanel(target));
+      // Establish native boundaries before registering their media descendants.
+      for (const target of targets) if (target.matches(pageSelector)) addPage(target);
+      for (const target of targets) if (target.matches(footerSelector)) addFooter(target);
+      for (const target of targets) if (target.matches(composerSelector)) addComposer(target);
+      for (const target of targets) if (target.matches(headerSelector)) addHeader(target);
+      for (const target of targets) if (target.matches(reviewHeaderSelector)) addReviewHeader(target);
+      for (const target of targets) {
+        if (target.matches(diffPreviewSelector)) addDiffPreview(target);
+        if (target.matches(topControlSelector)) addNativePopup(target);
+      }
+      for (const target of targets) {
+        if (target.matches(mediaSelector)) add(target);
+        if (target.matches(controlSelector)) addControl(target);
+      }
+      const popup = node.closest(topControlSelector);
+      if (popup && popup !== node) {
+        if (popup.matches(viewerSelector)) add(popup);
+        else addNativePopup(popup);
+      }
+      if (node.parentElement?.matches(footerSelector)) addFooter(node.parentElement);
+    };
+    const intersectionObserver = new IntersectionObserver(entries => {
+      let changed = false;
+      const regions = new Set();
+      for (const entry of entries) {
+        if (inactivePanel(entry.target)) continue;
+        if (records.has(entry.target)) {
+          if (records.get(entry.target).nativeBoundary || entry.target.matches(browserSelector) || entry.target.matches(reviewHeaderSelector)) {
+            visibleMedia.delete(entry.target);
+            continue;
+          }
+          records.get(entry.target).box = null;
+          if (entry.isIntersecting) visibleMedia.add(entry.target);
+          else visibleMedia.delete(entry.target);
+          const region = entry.target.closest(`${timelineSelector}, ${composerSelector}, ${sidebarSelector}`);
+          if (region) regions.add(region);
+        }
+        if (controls.has(entry.target)) {
+          controls.get(entry.target).box = null;
+          if (entry.isIntersecting) visibleControls.add(entry.target);
+          else visibleControls.delete(entry.target);
+        }
+        changed ||= records.has(entry.target) || controls.has(entry.target);
+      }
+      for (const region of regions) invalidateRegion(region, false);
+      if (changed && !previewVisible) schedule();
     });
+    const resizeObserver = new ResizeObserver(entries => {
+      let changed = false;
+      for (const { target } of entries) {
+        for (const [footer, record] of footers)
+          if (record.scroller === target && updateFooter(footer, record)) writeRules();
+        const control = controls.get(target);
+        if (control) control.box = null;
+        const record = records.get(target);
+        if (record) record.box = null;
+        changed ||= !!(control || record);
+      }
+      if (changed && !previewVisible) schedule();
+    });
+    const removeControl = (node, control) => {
+      control.filter?.remove();
+      control.backdrop?.remove();
+      unmark(node, controlAttribute);
+      unmark(node, topControlAttribute);
+      if (!records.has(node)) {
+        intersectionObserver.unobserve(node);
+        resizeObserver.unobserve(node);
+      }
+      visibleControls.delete(node);
+      activeControls.delete(node);
+      controls.delete(node);
+      stats.layerWrites++;
+    };
+    const removeMedia = (node, record) => {
+      release(record);
+      record.paint?.filter?.remove();
+      unmark(node, mediaAttribute);
+      unmark(record.paint?.surface || node, paintAttribute);
+      if (!controls.has(node)) {
+        intersectionObserver.unobserve(node);
+        resizeObserver.unobserve(node);
+      }
+      visibleMedia.delete(node);
+      viewers.delete(node);
+      paintedNodes.delete(node);
+      records.delete(node);
+      stats.layerWrites++;
+    };
+    const prune = () => {
+      for (const [footer, record] of footers) {
+        if (footer.isConnected && !inactivePanel(footer) && !footer.closest(reviewHeaderSelector) &&
+          record.scroller.isConnected && record.scroller.contains(footer)) continue;
+        removeFooter(footer, record);
+      }
+      for (const [surface, popup] of popups) {
+        if (surface.isConnected && !inactivePanel(surface) && !surface.closest(reviewHeaderSelector) &&
+          popup.boundary.isConnected && popup.boundary.contains(surface) &&
+          !surface.closest(viewerSelector) && !surface.closest(pageSelector) &&
+          isPopupSurface(surface)) continue;
+        removePopup(surface, popup);
+      }
+      for (const [node, record] of records) {
+        if (node.isConnected && !inactivePanel(node) &&
+          (node.matches(viewerSelector) || !node.closest(viewerSelector)) &&
+          (node.matches(reviewHeaderSelector) || !node.closest(reviewHeaderSelector)) &&
+          (node.matches(mediaSelector) || node.matches(`${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`) ||
+            record.mediaIsland && node.querySelector("img, video, canvas"))) {
+          if (record.nativeBoundary &&
+            !record.nativeBoundary.matches(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], ${pageSelector}, ${footerSelector}, ${composerSelector}, ${headerSelector}`)) add(node);
+          continue;
+        }
+        removeMedia(node, record);
+        if (node.isConnected && !node.closest(viewerSelector)) visit(node);
+      }
+      for (const [node, control] of controls) {
+        if (node.isConnected && !inactivePanel(node) && !node.closest(reviewHeaderSelector) &&
+          !node.closest(viewerSelector) && (node.matches(controlSelector) ||
+          control.origin?.isConnected && node.contains(control.origin))) continue;
+        removeControl(node, control);
+      }
+    };
+    const retireTree = tree => {
+      removeWithin(popups, tree, removePopup);
+      removeWithin(controls, tree, removeControl);
+      removeWithin(records, tree, removeMedia);
+      removeWithin(footers, tree, removeFooter);
+    };
+    const mutationObserver = new MutationObserver(mutations => {
+      let changed = false;
+      let pruneNeeded = false;
+      const added = new Set();
+      const attributes = new Set();
+      const semanticAttributes = new Set();
+      const panels = new Set();
+      const movedInactive = new Set();
+      for (const mutation of mutations) {
+        if (owned(mutation.target) || mutation.target.closest?.(editorSelector)) continue;
+        if (mutation.type === "childList") {
+          for (const node of mutation.removedNodes)
+            if (node.nodeType === 1 && node.isConnected && inactivePanel(node)) movedInactive.add(node);
+        }
+        if (mutation.type === "attributes" && mutation.target.matches(rightPanelSelector) &&
+          ["inert", "aria-hidden", "data-app-shell-focus-area"].includes(mutation.attributeName)) {
+          panels.add(mutation.target);
+          continue;
+        }
+        if (inactivePanel(mutation.target)) continue;
+        if (mutation.type === "attributes" && mutation.attributeName === "data-composer-overlay-floating-ui") {
+          for (const [surface, popup] of popups)
+            if (popup.owner === mutation.target) removePopup(surface, popup);
+          added.add(mutation.target);
+          changed = true;
+          pruneNeeded = true;
+          continue;
+        }
+        if (mutation.type === "childList") {
+          if (mutation.target.closest?.(browserSelector)) continue;
+          const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+          if (!nodes.some(node => node.nodeType === 1 && !owned(node))) continue;
+          pruneNeeded = true;
+          for (const node of mutation.addedNodes)
+            if (node.nodeType === 1 && node.isConnected && !owned(node)) added.add(node);
+          if ([...mutation.removedNodes].some(node =>
+            node.nodeType === 1 && !owned(node) && (node.matches(`[${mediaAttribute}],[${controlAttribute}],[${footerAttribute}]`) ||
+              node.querySelector(`[${mediaAttribute}],[${controlAttribute}],[${popupMaterialAttribute}],[${footerAttribute}]`) ||
+              node.matches(`[${popupMaterialAttribute}]`)))) changed = true;
+        } else {
+          attributes.add(mutation.target);
+          if (mutation.attributeName !== "style") semanticAttributes.add(mutation.target);
+        }
+      }
+      const before = stats.layerWrites;
+      const count = records.size + controls.size + popups.size;
+      for (const tree of movedInactive) { retireTree(tree); changed = true; }
+      for (const panel of panels) {
+        if (inactivePanel(panel)) retireTree(panel);
+        else visit(panel);
+        changed = true;
+      }
+      for (const node of added) {
+        let parent = node.parentElement;
+        while (parent && !added.has(parent)) parent = parent.parentElement;
+        if (!parent) visit(node);
+      }
+      changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
+      for (const node of attributes) {
+        if (!node.isConnected || inactivePanel(node)) continue;
+        if (node.closest?.(browserSelector) && !node.matches(browserSelector)) continue;
+        // Native hosts and painted surfaces own their animated geometry.
+        if (node.matches(`${browserSelector}, ${headerSelector}`) && records.has(node) && !semanticAttributes.has(node)) continue;
+        if (node === root || node === document.body) {
+          const key = themeKey(node);
+          if (themeInputs.get(node) !== key) {
+            themeInputs.set(node, key);
+            refreshPopupTheme();
+            for (const surface of paintedNodes) if (surface.matches(headerSelector)) registerPaint(surface);
+          }
+        }
+        if (viewers.has(node)) {
+          const record = records.get(node);
+          if (!node.matches(viewerSelector)) {
+            removeMedia(node, record);
+            visit(node);
+            changed = true;
+            pruneNeeded = true;
+            continue;
+          }
+          const key = viewerKey(node);
+          if (record.viewerKey === key) continue;
+          record.viewerKey = key;
+          changed ||= isPreviewOpen() !== previewVisible;
+          continue;
+        } else if (node.closest(viewerSelector) && !node.matches(browserSelector)) continue;
+        if ([...viewers].some(viewer => node.contains(viewer)))
+          changed ||= isPreviewOpen() !== previewVisible;
+        pruneNeeded ||= semanticAttributes.has(node);
+        if (node.matches(pageSelector) && !records.get(node)?.paint) visit(node);
+        if (node.matches(headerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addHeader(node); changed = true; }
+        if (node.matches(reviewHeaderSelector)) { addReviewHeader(node); continue; }
+        const popup = popups.get(node);
+        if (popup && !node.closest(viewerSelector) && !node.closest(pageSelector) &&
+          isPopupSurface(node)) {
+          const key = popupBackgroundKey(node);
+          const className = node.getAttribute("class");
+          if (key !== popup.backgroundKey || className !== popup.className) {
+            const boundary = popup.boundary;
+            removePopup(node, popup);
+            addPopupSurface(boundary, node);
+            changed = true;
+          }
+          continue;
+        }
+        if (popup) { removePopup(node, popup); visit(node); changed = true; }
+        if (node.matches(topControlSelector)) {
+          const count = popups.size;
+          addNativePopup(node);
+          changed ||= popups.size !== count;
+        }
+        if (node.closest(`[${popupBoundaryAttribute}]`) && !records.has(node) && !scopes.has(node)) continue;
+        if (previewVisible) {
+          continue;
+        }
+        if (footers.has(node) || node.matches(footerSelector)) {
+          const footer = footers.get(node);
+          if (footer) removeFooter(node, footer);
+          if (node.matches(footerSelector)) addFooter(node);
+          if (footer) writeRules();
+        }
+        if (records.has(node)) {
+          records.get(node).box = null;
+          unmark(node, mediaAttribute);
+          add(node);
+          if (!records.has(node)) { changed = true; continue; }
+          mark(node, mediaAttribute, nativeKind(node));
+          if (records.get(node).nativeBoundary) continue;
+        } else {
+          if (node.matches(mediaSelector)) add(node);
+          if (node.matches(controlSelector)) addControl(node);
+          if (!scopes.has(node) && !controls.has(node) && !records.has(node)) continue;
+        }
+        if (scopes.has(node)) {
+          if (scopeKeys.get(node) !== scopeKey(node)) {
+            refreshScope(node);
+            geometryDirty = true;
+            pruneNeeded = true;
+            changed = true;
+          } else changed = invalidateRegion(node.closest(sidebarSelector) ? document.body : node, false) || changed;
+          if (!records.has(node) && !controls.has(node)) continue;
+        }
+        const control = controls.get(node);
+        if (control) { control.box = null; control.surface = null; control.candidate = undefined; }
+        if (control) control.paintDirty = true;
+        changed = true;
+      }
+      changed ||= stats.layerWrites !== before;
+      if (pruneNeeded && [...viewers].some(node => !node.isConnected || !node.matches(viewerSelector)))
+        changed = true;
+      if (changed) {
+        if (pruneNeeded) prune();
+        if (isPreviewOpen() !== previewVisible) {
+          if (raf) cancelAnimationFrame(raf);
+          render();
+        } else schedule();
+      }
+    });
+    const isPreviewOpen = () => [...viewers].some(node =>
+      node.isConnected && node.matches(viewerSelector) && node.checkVisibility({ checkVisibilityCSS: true }));
+    const inViewport = box => box.width > 0 && box.height > 0 && box.right > 0 &&
+      box.bottom > 0 && box.left < innerWidth && box.top < innerHeight;
+    const overlap = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const wallpaperInput = (box, sx, sy) => {
+      const width = innerWidth / sx, height = innerHeight / sy;
+      if (fitMode === "tile") {
+        const key = `${innerWidth}|${innerHeight}`;
+        if (resource.tileInputKey !== key) {
+          if (resource.tileInputUrl) URL.revokeObjectURL(resource.tileInputUrl);
+          const tiled = svgNode("svg", { width: innerWidth, height: innerHeight });
+          const pattern = svgNode("pattern", { id: "wall", patternUnits: "userSpaceOnUse",
+            width: resource.width, height: resource.height });
+          pattern.appendChild(svgNode("image", { href: source, width: resource.width, height: resource.height }));
+          const patterns = svgNode("defs");
+          patterns.appendChild(pattern);
+          tiled.append(patterns, svgNode("rect", { width: innerWidth, height: innerHeight, fill: "url(#wall)" }));
+          resource.tileInputUrl = URL.createObjectURL(new Blob(
+            [new XMLSerializer().serializeToString(tiled)], { type: "image/svg+xml" }));
+          resource.tileInputKey = key;
+        }
+        return { href: resource.tileInputUrl, x: -box.x / sx, y: -box.y / sy,
+          width, height, preserveAspectRatio: "none", result: "wall" };
+      }
+      let x = -box.x / sx, y = -box.y / sy, w = width, h = height;
+      let aspect = fitMode === "fill" ? "xMidYMid slice" : fitMode === "fit" ? "xMidYMid meet" : "none";
+      if (fitMode === "center") {
+        w = resource.width / sx;
+        h = resource.height / sy;
+        x += (width - w) / 2;
+        y += (height - h) / 2;
+      }
+      return { href: resource.imageSource, x, y, width: w, height: h, preserveAspectRatio: aspect, result: "wall" };
+    };
+    const backdropInput = (item, box, sx, sy, index) => {
+      const target = item.node, paint = computed(target), mediaBox = item.box;
+      const x = (mediaBox.x - box.x) / sx, y = (mediaBox.y - box.y) / sy;
+      const width = mediaBox.width / sx, height = mediaBox.height / sy;
+      const input = `media-${index}`, shape = `shape-${index}`;
+      const clipped = `clipped-${index}`, painted = `painted-${index}`;
+      const primitives = [];
+      if (target instanceof HTMLImageElement && target.complete && target.naturalWidth) {
+        const sourceUrl = target.currentSrc || target.src;
+        const mediaRecord = records.get(target);
+        if (mediaRecord.sourceUrl !== sourceUrl || mediaRecord.sourceWidth !== target.naturalWidth ||
+          mediaRecord.sourceHeight !== target.naturalHeight) {
+          mediaRecord.sourceUrl = sourceUrl;
+          mediaRecord.sourceWidth = target.naturalWidth;
+          mediaRecord.sourceHeight = target.naturalHeight;
+          mediaRecord.inputRevision = ++nextSource;
+          mediaRecord.inputSource = sourceUrl;
+          if (sourceUrl.startsWith("data:image/")) {
+            const sourceSvg = svgNode("svg", { width: target.naturalWidth, height: target.naturalHeight });
+            sourceSvg.appendChild(svgNode("image", { href: sourceUrl,
+              width: target.naturalWidth, height: target.naturalHeight, preserveAspectRatio: "none" }));
+            mediaRecord.inputSource = "data:" + "image/svg+xml;charset=utf-8," +
+              encodeURIComponent(new XMLSerializer().serializeToString(sourceSvg));
+          }
+        }
+        let w = width, h = height, left = x, top = y;
+        const mediaScaleX = mediaBox.width / (target.offsetWidth || mediaBox.width);
+        const mediaScaleY = mediaBox.height / (target.offsetHeight || mediaBox.height);
+        const naturalWidth = target.naturalWidth * mediaScaleX / sx;
+        const naturalHeight = target.naturalHeight * mediaScaleY / sy;
+        const fit = paint.objectFit;
+        if (fit !== "fill") {
+          let scale = fit === "cover" ? Math.max(width / naturalWidth, height / naturalHeight)
+            : fit === "none" ? 1 : Math.min(width / naturalWidth, height / naturalHeight);
+          if (fit === "scale-down") scale = Math.min(1, scale);
+          w = naturalWidth * scale;
+          h = naturalHeight * scale;
+          const positions = paint.objectPosition.split(/\s+/);
+          const offset = (value, available) => value?.endsWith("%")
+            ? available * parseFloat(value) / 100 : parseFloat(value) || 0;
+          left += offset(positions[0], width - w);
+          top += offset(positions[1] || positions[0], height - h);
+        }
+        primitives.push(["feImage", { href: mediaRecord.inputSource,
+          x: left, y: top, width: w, height: h, preserveAspectRatio: "none", result: input }]);
+      } else {
+        // Opaque live surfaces use the existing backdrop pixels, never a capture.
+        primitives.push(["feComposite", { in: "SourceGraphic", in2: "SourceGraphic",
+          operator: "in", result: input }]);
+      }
+      const radius = paint.borderTopLeftRadius.split(/\s+/);
+      const length = (value, size, scale) => value?.endsWith("%")
+        ? size * parseFloat(value) / 100 : (parseFloat(value) || 0) / scale;
+      const rx = Math.min(width / 2, length(radius[0], width, sx));
+      const ry = Math.min(height / 2, length(radius[1] || radius[0], height, sy));
+      const clip = `<svg xmlns="${ns}" width="${width}" height="${height}"><rect width="${width}" height="${height}" rx="${rx}" ry="${ry}" fill="white"/></svg>`;
+      primitives.push(
+        ["feImage", { href: `data:image/svg+xml,${encodeURIComponent(clip)}`,
+          x, y, width, height, preserveAspectRatio: "none", result: shape }],
+        ["feComposite", { in: input, in2: shape, operator: "in", result: clipped }],
+      );
+      if (Number(paint.opacity) !== 1) primitives.push(["feColorMatrix", {
+        in: clipped, type: "matrix", values: `1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 ${paint.opacity} 0`, result: painted,
+      }]);
+      return { primitives, input: Number(paint.opacity) === 1 ? clipped : painted, key: [x, y, width, height,
+        records.get(target).inputRevision || 0, paint.objectFit,
+        paint.objectPosition, paint.borderTopLeftRadius, paint.opacity].join("|") };
+    };
+    const restoreBackdrop = (record, box, sx, sy, mediaBoxes) => {
+      if (record.nativeBackdrop === "none" || opacity === 1) return "";
+      const padding = (record.nativeBackdrop.match(/[\d.]+px/g) || [])
+        .reduce((sum, value) => sum + parseFloat(value) * 3, 0);
+      const area = { left: box.left - padding * sx, right: box.right + padding * sx,
+        top: box.top - padding * sy, bottom: box.bottom + padding * sy };
+      const inputs = mediaBoxes.filter(item => overlap(area, item.box))
+        .map((item, index) => backdropInput(item, box, sx, sy, index));
+      const key = [box.x, box.y, box.width, box.height, sx, sy, innerWidth, innerHeight,
+        record.nativeBackdrop, ...inputs.map(input => input.key)].join("|");
+      const id = `${codexPlusImageOverlayId}-backdrop-${record.id}`;
+      if (!record.backdrop) {
+        record.backdrop = svgNode("filter", { id, filterUnits: "userSpaceOnUse", "color-interpolation-filters": "sRGB" });
+        defs.appendChild(record.backdrop);
+      }
+      if (key !== record.backdropKey) {
+        record.backdropKey = key;
+        const primitives = [svgNode("feImage", wallpaperInput(box, sx, sy))];
+        let compensation = "wall";
+        for (const [index, { primitives: sourcePrimitives, input }] of inputs.entries()) {
+          const next = `compensation-${index}`;
+          primitives.push(...sourcePrimitives.map(([tag, attributes]) => svgNode(tag, attributes)),
+            svgNode("feComposite", { in: compensation, in2: input, operator: "out", result: "wallOutside" }),
+            svgNode("feComposite", { in: input, in2: "wall", operator: "in", result: "mediaInside" }),
+            svgNode("feComposite", { in: "wallOutside", in2: "mediaInside", operator: "arithmetic",
+              k2: 1, k3: 1, result: next }),
+          );
+          compensation = next;
+        }
+        // Premultiplied subtraction also restores alpha. Unpremultiplication
+        // recovers the original backdrop without a divide or a backing layer.
+        primitives.push(
+          svgNode("feComposite", { in: "SourceGraphic", in2: compensation, operator: "arithmetic",
+            k2: 1, k3: -opacity, result: "restored" }),
+          svgNode("feColorMatrix", { in: "restored", type: "matrix",
+            values: "1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1" }),
+        );
+        record.backdrop.setAttribute("x", String(-padding));
+        record.backdrop.setAttribute("y", String(-padding));
+        record.backdrop.setAttribute("width", String(box.width / sx + padding * 2));
+        record.backdrop.setAttribute("height", String(box.height / sy + padding * 2));
+        record.backdrop.replaceChildren(...primitives);
+      }
+      return `backdrop-filter:url("#${id}") ${record.nativeBackdrop}!important;`;
+    };
+    const activateTint = (record, node) => {
+      mark(node, controlAttribute, String(record.id));
+      if (node.matches(topControlSelector) || node.closest(topControlSelector) || node.querySelector(topControlSelector))
+        mark(node, topControlAttribute, "");
+      else unmark(node, topControlAttribute);
+    };
+    const createTint = (record, node, box, nativeFilter, mediaBoxes) => {
+      const sx = box.width / (node.offsetWidth || box.width);
+      const sy = box.height / (node.offsetHeight || box.height);
+      const backdropRule = restoreBackdrop(record, box, sx, sy, mediaBoxes);
+      const key = [box.x, box.y, box.width, box.height, innerWidth, innerHeight, sx, sy,
+        nativeFilter, record.nativePosition, record.nativeShadow, record.nativeBackdrop, record.backdropKey].join("|");
+      if (record.key === key) {
+        if (!record.rule && record.cachedRule) {
+          record.rule = record.cachedRule;
+          activateTint(record, node);
+          stats.layerWrites++;
+        }
+        return;
+      }
+      record.key = key;
+      const id = `${codexPlusImageOverlayId}-control-${record.id}`;
+      if (!record.filter) {
+        record.filter = svgNode("filter", { id, filterUnits: "userSpaceOnUse", "color-interpolation-filters": "sRGB" });
+        defs.appendChild(record.filter);
+        record.filter.append(
+          svgNode("feImage", wallpaperInput(box, sx, sy)),
+          svgNode("feColorMatrix", { in: "wall", type: "matrix",
+            values: `1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 ${opacity} 0`, result: "tint" }),
+          svgNode("feComposite", { in: "SourceGraphic", in2: "tint", operator: "out", result: "ordinary" }),
+          svgNode("feComposite", { in: "tint", in2: "SourceAlpha", operator: "in", result: "wallInk" }),
+          svgNode("feComposite", { in: "ordinary", in2: "wallInk", operator: "arithmetic", k2: 1, k3: 1 }),
+        );
+      } else {
+        const input = record.filter.firstElementChild;
+        for (const [name, value] of Object.entries(wallpaperInput(box, sx, sy)))
+          if (input.getAttribute(name) !== String(value)) input.setAttribute(name, String(value));
+      }
+      let padding = 0;
+      for (const shadow of record.nativeShadow.replace(/\([^)]*\)/g, "").split(",")) {
+        if (shadow.includes("inset")) continue;
+        const [dx = 0, dy = 0, blur = 0, spread = 0] = (shadow.match(/-?[\d.]+px/g) || []).map(parseFloat);
+        padding = Math.max(padding, Math.max(Math.abs(dx), Math.abs(dy)) + blur * 2 + Math.abs(spread));
+      }
+      padding += (nativeFilter.match(/-?[\d.]+px/g) || []).reduce((sum, value) => sum + Math.abs(parseFloat(value)) * 3, 0);
+      for (const [name, value] of Object.entries({ x: -padding, y: -padding,
+        width: box.width / sx + padding * 2, height: box.height / sy + padding * 2 }))
+        if (record.filter.getAttribute(name) !== String(value)) record.filter.setAttribute(name, String(value));
+      // Tint the control's own ink, preserving alpha. This composes once over
+      // an already-tinted backdrop; it does not create a media backing region.
+      record.rule = `[${controlAttribute}="${record.id}"]{${record.nativePosition === "static" ? "position:relative!important;" : ""}${backdropRule}filter:${nativeFilter === "none" ? "" : `${nativeFilter} `}url("#${id}")!important;}`;
+      record.cachedRule = record.rule;
+      activateTint(record, node);
+      stats.layerWrites++;
+    };
+    let lastRules = null;
+    let rulesQueued = false;
+    const writeRules = () => {
+      if (rulesQueued || disposed) return;
+      rulesQueued = true;
+      // Commit once per mutation batch, before the browser paints.
+      queueMicrotask(() => { rulesQueued = false; if (!disposed) flushRules(); });
+    };
+    const flushRules = () => {
+      const rules = nativeRules + [...footers.values()].map(record => record.rule).join("\n") +
+        [...paintedNodes].map(node => records.get(node))
+        .map(record => record.wallRule).join("\n") +
+        [...activeControls].map(node => controls.get(node).rule).concat([...popups.values()].map(record => record.rule))
+          .filter(Boolean).join("\n");
+      if (rules !== lastRules) { style.textContent = rules; lastRules = rules; }
+    };
+    const render = () => {
+      raf = 0;
+      if (disposed || document.hidden) return;
+      stats.frames++;
+      previewVisible = isPreviewOpen();
+      if (previewVisible) return;
+      const media = [...visibleMedia].filter(node => node.isConnected && !records.get(node)?.nativeBoundary &&
+        !inactivePanel(node) &&
+        !node.matches(composerSelector) && !node.matches(browserSelector) && !node.matches(reviewHeaderSelector) &&
+        node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+      const mediaBoxes = new Map();
+      const mediaGroups = new Map();
+      const measureMedia = composer => {
+        if (mediaGroups.has(composer)) return mediaGroups.get(composer);
+        const group = media.filter(target => !composer || composer.contains(target)).map(target => {
+        if (!mediaBoxes.has(target)) {
+          const item = records.get(target);
+          mediaBoxes.set(target, { node: target, box: !geometryDirty && item.box ? item.box : (item.box = bounds(target)) });
+        }
+        return mediaBoxes.get(target);
+        }).filter(item => inViewport(item.box));
+        mediaGroups.set(composer, group);
+        return group;
+      };
+      const candidates = new Set([...visibleControls, ...activeControls]);
+      for (const node of candidates) {
+        const record = controls.get(node);
+        if (!record) continue;
+        const composer = node.closest(composerSelector);
+        let active = !inactivePanel(node) && visibleControls.has(node) && !node.closest(viewerSelector) &&
+          !node.parentElement?.closest(`[${controlAttribute}]`) &&
+          !records.has(node) && !node.querySelector(mediaSelector) &&
+          node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) &&
+          (composer
+            ? media.some(target => composer.contains(target) && !node.contains(target))
+            : media.length);
+        const current = record.rule;
+        if (active) {
+          if (record.candidate === undefined) {
+            const surface = controlSurface(node);
+            record.surface = surface;
+            const paint = computed(surface);
+            record.candidate = paint.position === "absolute" || paint.position === "fixed" ||
+              paint.zIndex !== "auto";
+          }
+          active = record.candidate;
+        }
+        if (active) {
+          const box = !geometryDirty && record.box ? record.box : (record.box = bounds(node));
+          active = inViewport(box);
+          if (active) {
+            active = measureMedia(composer).some(item =>
+              !node.contains(item.node) && overlap(box, item.box));
+            if (active) {
+              if (record.surface && !record.surface.contains(node)) record.surface = null;
+              const surface = record.surface ||= controlSurface(node);
+              if (surface !== node) {
+                if (addControl(surface, node)) {
+                  visibleControls.add(surface);
+                  candidates.add(surface);
+                }
+                active = false;
+              }
+            }
+            if (active) {
+              let originalStyle = null;
+              if (!current || record.paintDirty) {
+                if (current) unmark(node, controlAttribute);
+                originalStyle = computed(node);
+                if (current) mark(node, controlAttribute, String(record.id));
+                record.paintDirty = false;
+              }
+              const baseFilter = originalStyle?.filter || record.nativeFilter;
+              if (originalStyle) {
+                record.nativePosition = originalStyle.position;
+                record.nativeShadow = originalStyle.boxShadow;
+                record.nativeBackdrop = originalStyle.backdropFilter;
+              }
+              record.nativeFilter = baseFilter;
+              createTint(record, node, box, baseFilter,
+                record.nativeBackdrop === "none" ? [] : measureMedia(composer));
+            }
+          }
+        }
+        if (!active && current) {
+          record.rule = "";
+          unmark(node, controlAttribute);
+          unmark(node, topControlAttribute);
+          stats.layerWrites++;
+        }
+        if (record.rule) activeControls.add(node);
+        else activeControls.delete(node);
+      }
+      writeRules();
+      geometryDirty = false;
+    };
+    function schedule(geometry = false) {
+      geometryDirty ||= geometry === true;
+      if (!disposed && !document.hidden && !raf) raf = requestAnimationFrame(render);
+    }
+    const onControlMotionEnd = event => {
+      const node = event.target?.closest?.(`[${controlAttribute}]`);
+      const control = controls.get(node);
+      if (!control?.rule) return;
+      control.paintDirty = true;
+      control.box = null;
+      schedule();
+    };
+    const onScroll = event => {
+      if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
+      if (previewVisible) return;
+      const target = event.target;
+      if (!target || target === document || target === document.documentElement ||
+        target === document.body || target === document.scrollingElement) {
+        if (activeControls.size) schedule(true);
+        else invalidateRegion(document.body, false);
+        return;
+      }
+      if (target.closest?.(browserSelector)) return;
+      invalidateRegion(target, activeControls.size > 0);
+    };
+    const invalidateRegion = (target, redraw = true) => {
+      let changed = false;
+      for (const node of new Set([...visibleMedia, ...visibleControls, ...activeControls])) {
+        if (!target.contains?.(node)) continue;
+        const record = records.get(node);
+        const control = controls.get(node);
+        if (record) record.box = null;
+        if (control) control.box = null;
+        changed = true;
+      }
+      if (changed && redraw) schedule();
+      return changed;
+    };
+    const onSidebarWheel = event => {
+      if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
+    };
+    const onSidebarHover = event => {
+      if (performance.now() >= sidebarScrollUntil || event.buttons || event.pointerType === "touch") return;
+      if (event.target?.closest?.(sidebarRowSelector)?.closest(sidebarSelector))
+        event.stopImmediatePropagation();
+    };
+    const events = [
+      [document, "visibilitychange", () => {
+        if (document.hidden) {
+          if (raf) cancelAnimationFrame(raf);
+          raf = 0;
+        } else schedule(true);
+      }, false],
+      [document, "scroll", onScroll, true],
+      [document, "wheel", onSidebarWheel, true],
+      [document, "pointerover", onSidebarHover, true],
+      [document, "pointermove", onSidebarHover, true],
+      [document, "mouseover", onSidebarHover, true],
+      [document, "mousemove", onSidebarHover, true],
+      [document, "pointerdown", () => { sidebarScrollUntil = 0; }, true],
+      [window, "resize", () => schedule(true), false],
+      [document, "load", event => {
+        const record = records.get(event.target);
+        if (!record || record.nativeBoundary || event.target.matches(browserSelector)) return;
+        const region = event.target.closest(`${timelineSelector}, ${composerSelector}, ${sidebarSelector}`);
+        if (region) invalidateRegion(region);
+        else schedule(true);
+      }, true],
+      [document, "toggle", schedule, true],
+      [document, "transitionend", onControlMotionEnd, true],
+      [document, "animationend", onControlMotionEnd, true],
+    ];
+    window.__codexPlusImageOverlayCleanup = (keepResource = false) => {
+      if (disposed) return;
+      disposed = true;
+      if (raf) cancelAnimationFrame(raf);
+      mutationObserver.disconnect();
+      resizeObserver.disconnect();
+      intersectionObserver.disconnect();
+      for (const [target, event, handler, capture] of events) target.removeEventListener(event, handler, capture);
+      for (const [node, attributes] of [...originalAttributes])
+        for (const name of [...attributes.keys()]) unmark(node, name);
+      overlay.remove();
+      style.remove();
+      svg.remove();
+      image.onload = null;
+      image.onerror = null;
+      for (const collection of [records, scopes, browserPortals, controls, popups, visibleMedia,
+        visibleControls, activeControls, paintedNodes, viewers, scopeKeys, footers, themeInputs]) collection.clear();
+      finishReady(false);
+      if (!keepResource && resource) {
+        if (resource.blobUrl) URL.revokeObjectURL(resource.blobUrl);
+        if (resource.tileInputUrl) URL.revokeObjectURL(resource.tileInputUrl);
+        if (window.__codexPlusImageOverlayResource === resource) window.__codexPlusImageOverlayResource = null;
+        if (window.__codexPlusImageOverlayBlobUrl === resource.blobUrl) window.__codexPlusImageOverlayBlobUrl = "";
+      }
+    };
+    const install = () => {
+      if (disposed) return;
+      resource.ready = true;
+      resource.opacity = opacity;
+      resource.fitMode = fitMode;
+      resource.width ||= image.naturalWidth;
+      resource.height ||= image.naturalHeight;
+      overlay.style.backgroundImage = `url(${JSON.stringify(resource.imageSource)})`;
+      style.textContent = nativeRules;
+      root.append(style, svg);
+      root.insertBefore(overlay, document.body || root.firstChild);
+      visit(root);
+      themeInputs.set(root, themeKey(root));
+      if (document.body) themeInputs.set(document.body, themeKey(document.body));
+      mutationObserver.observe(root, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement"] });
+      for (const [target, event, handler, capture] of events)
+        target.addEventListener(event, handler, { capture, passive: true });
+      render();
+      finishReady(true);
+      sendCodexPlusDiagnostic("image_overlay_installed", { opacity, fitMode, sourceKind: source.startsWith("data:") ? "data-uri" : "unknown" });
+    };
+    if (resource) install();
+    else {
+      let blobUrl = "";
+      const data = source.match(/^data:([^;,]+);base64,([\s\S]*)$/);
+      if (data) {
+        const decoded = atob(data[2]);
+        const bytes = new Uint8Array(decoded.length);
+        for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
+        blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
+      }
+      resource = { version: 29, source, blobUrl, imageSource: blobUrl || source };
+      window.__codexPlusImageOverlayResource = resource;
+      window.__codexPlusImageOverlayBlobUrl = blobUrl;
+      image.onload = install;
+      image.onerror = () => { if (!disposed) window.__codexPlusImageOverlayCleanup?.(); };
+      image.src = resource.imageSource;
+    }
   }
 
   function scheduleCodexPlusImageOverlay() {
+    window.__codexPlusImageOverlayReadyCleanup?.();
+    window.__codexPlusImageOverlayReadyCleanup = null;
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", installCodexPlusImageOverlay, { once: true });
+      const onReady = () => {
+        window.__codexPlusImageOverlayReadyCleanup = null;
+        installCodexPlusImageOverlay();
+      };
+      document.addEventListener("DOMContentLoaded", onReady, { once: true });
+      window.__codexPlusImageOverlayReadyCleanup = () =>
+        document.removeEventListener("DOMContentLoaded", onReady);
       return;
     }
     installCodexPlusImageOverlay();
-    setTimeout(installCodexPlusImageOverlay, 250);
   }
 
   scheduleCodexPlusImageOverlay();
@@ -2294,7 +3790,12 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    // capacityAutoRetry* 必须写成字面量：多个测试（typing-effects-settings、whale-widget、
+    // session-share-runtime…）把 defaultCodexPlusSettings 切片到不带 prelude 的沙箱里执行，
+    // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
+    // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
+    // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2310,8 +3811,10 @@
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
     petRealMouseLook: "codexAppPetRealMouseLook",
+    activityOverlayRight: "codexAppActivityOverlayRight",
     stepwise: "codexAppStepwiseEnabled",
     answerOutline: "codexAppAnswerOutlineEnabled",
+    capacityAutoRetry: "codexAppCapacityAutoRetry",
     pasteFix: "codexAppPasteFix",
     typingEffect: "codexAppTypingEffect",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
@@ -2350,8 +3853,12 @@
         nativeMenuPlacement: false,
         serviceTierControls: false,
         petRealMouseLook: false,
+        activityOverlayRight: false,
         stepwise: false,
         answerOutline: false,
+        capacityAutoRetry: false,
+        capacityAutoRetryMaxAttempts: 15,
+        capacityAutoRetryIntervalSeconds: 0,
         dreamSkinEnabled: false,
         dreamSkinPaused: false,
         dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {},
@@ -3118,6 +4625,8 @@
         if (key === "stepwise" || key === "answerOutline") {
           Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
         }
+        // 容量错误自动重试：开关落库后立即启停轮询，不必等下一次心跳。
+        if (key === "capacityAutoRetry") syncCodexPlusCapacityAutoRetry();
       }).catch(() => {
         void loadBackendSettings();
       });
@@ -4823,6 +6332,10 @@
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
     if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+    // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
+    // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
+    if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
   }
 
@@ -4849,6 +6362,8 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+        if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -4863,11 +6378,13 @@
     const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
     codexPlusBackendSettingsLoaded = true;
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     refreshCodexPlusBackendToggles();
     try {
       const settings = await postJson("/settings/set", { [key]: value });
       if (seq === codexPlusBackendSettingsSeq) {
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
       }
     } finally {
       refreshCodexPlusBackendToggles();
@@ -4875,6 +6392,7 @@
   }
 
   function refreshCodexPlusBackendToggles() {
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
@@ -5602,7 +7120,8 @@
     if (button) {
       const on = Boolean(active) && entry === "home";
       button.dataset.active = String(on);
-      button.setAttribute("aria-current", on ? "page" : "false");
+      if (on) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
     }
     [
       [codexPlusRailNavId, "home"],
@@ -5613,7 +7132,8 @@
       if (!railButton) return;
       const on = Boolean(active) && entry === name;
       railButton.dataset.active = String(on);
-      railButton.setAttribute("aria-current", on ? "page" : "false");
+      if (on) railButton.setAttribute("aria-current", "page");
+      else railButton.removeAttribute("aria-current");
       // 原生 rail 按钮的选中色由 data-selected 驱动（且需无 data-suppress-active-style）。
       if (on) railButton.setAttribute("data-selected", "");
       else railButton.removeAttribute("data-selected");
@@ -5647,6 +7167,7 @@
     if (!overlay?.classList?.contains(codexPlusPageClass)) return;
     const sidebar = document.querySelector("aside.app-shell-left-panel");
     const rect = sidebar?.getBoundingClientRect?.();
+    const main = document.querySelector("main");
     const rail = document.querySelector(codexPlusRailSelector);
     const railRect = rail?.getBoundingClientRect?.();
     // 新版：页面要顶替原生侧边栏——从图标栏右边界起铺满，把宽面板整个盖住，
@@ -5704,6 +7225,29 @@
       0;
     const layoutRadius = zoom === 1 ? radius : radius / zoom;
     overlay.style.setProperty("--codex-plus-page-radius", `${layoutRadius}px`);
+    if (window.__codexPlusPageLayoutObserver &&
+        (window.__codexPlusPageLayoutTargets?.main !== main ||
+         window.__codexPlusPageLayoutTargets?.sidebar !== sidebar ||
+         window.__codexPlusPageLayoutTargets?.rail !== rail)) {
+      window.__codexPlusPageLayoutObserver.disconnect();
+      for (const target of new Set([main, sidebar, rail])) {
+        if (target) window.__codexPlusPageLayoutObserver.observe(target);
+      }
+      window.__codexPlusPageLayoutTargets = { main, sidebar, rail };
+    }
+  }
+
+  function observeCodexPlusPageLayout(overlay) {
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    const reposition = () => {
+      if (overlay.isConnected) positionCodexPlusPage(overlay);
+    };
+    window.__codexPlusPageLayoutObserver = new ResizeObserver(reposition);
+    window.__codexPlusPageLayoutTargets = {};
+    window.__codexPlusPageResizeHandler = reposition;
+    window.addEventListener("resize", reposition);
+    positionCodexPlusPage(overlay);
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -5957,7 +7501,7 @@
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
-    closeCodexPlusTypingEffectDropdown();
+    closeCodexPlusPage();
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
@@ -6036,6 +7580,14 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">悬浮球 · 回答大纲</div><div class="codex-plus-row-description">整理回答结构。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">容量错误自动重试</div><div class="codex-plus-row-description">模型容量不足时（横幅文案如 “Selected model is at capacity”），自动点「重试」。Codex 原生只会自动重试 4 次，之后只剩手动按钮；开启后由 Codex++ 立刻接管（原生倒计时也一并接管，前 4 次同样不等它），直到成功或达到次数上限。间隔 0 秒表示失败后立刻重试（内部最小 1 秒，避免连发）。</div></div>
+                  <div class="codex-plus-width-control">
+                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-interval="true" min="0" max="${capacityAutoRetryIntervalCeilingSeconds}" step="1" type="number" value="${capacityAutoRetryIntervalSeconds()}" title="重试间隔（秒），0 表示立刻重试" aria-label="重试间隔（秒）">
+                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-max-attempts="true" min="1" max="${capacityAutoRetryMaxAttemptsCeiling}" step="1" type="number" value="${capacityAutoRetryMaxAttempts()}" title="最大自动重试次数" aria-label="最大自动重试次数">
+                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="capacityAutoRetry"><span></span></button>
+                  </div>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
@@ -6199,6 +7751,16 @@
         const width = normalizeConversationViewWidth(widthInput.value);
         widthInput.value = String(width || conversationViewWidth());
         setConversationViewWidth(widthInput.value);
+      }
+      // 次数/间隔输入只在 change（失焦/回车）时提交：input 事件逐字符提交会把
+      // 用户输入 "15" 的过程保存成 1。
+      const attemptsInput = target?.closest("[data-codex-plus-capacity-retry-max-attempts]");
+      if (attemptsInput) {
+        attemptsInput.value = String(setCapacityAutoRetryMaxAttempts(attemptsInput.value));
+      }
+      const intervalInput = target?.closest("[data-codex-plus-capacity-retry-interval]");
+      if (intervalInput) {
+        intervalInput.value = String(setCapacityAutoRetryIntervalSeconds(intervalInput.value));
       }
     }, true);
     overlay.addEventListener("click", (event) => {
@@ -6376,13 +7938,9 @@
     overlay.addEventListener("error", handleExtensionIconError, true);
     document.body.appendChild(overlay);
     if (pageMode) {
-      positionCodexPlusPage(overlay);
+      observeCodexPlusPageLayout(overlay);
       // 必须在 selectCodexPlusTab 之前建好两栏，否则刷新左面板时找不到容器。
       installCodexPlusPageLayout(overlay, initialTab);
-      if (!window.__codexPlusPageResizeHandler) {
-        window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
-        window.addEventListener("resize", window.__codexPlusPageResizeHandler);
-      }
     }
     if (!codexPlusAdsLoaded) fetchCodexPlusAds();
     selectCodexPlusTab(initialTab);
@@ -6413,6 +7971,11 @@
 
   function closeCodexPlusPage() {
     closeCodexPlusTypingEffectDropdown();
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageResizeHandler = null;
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutObserver = null;
+    window.__codexPlusPageLayoutTargets = null;
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
   }
@@ -8940,8 +10503,8 @@
     applyCodexPlusTheme(overlay);
     applyCodexPlusZoom(overlay);
     const state = codexPlusPluginMarketState;
-    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="CodeX 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
-      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">CodeX 插件市场</div></div>
+    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="Codex 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
+      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">Codex 插件市场</div></div>
       <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-plugin-market-panel" data-codex-plugin-market-panel="true">
         <p class="codex-plus-plugin-intro">检索插件目录，选中后下载并安装。目录浏览仅获取索引，插件文件按需下载。</p>
         <div class="codex-plus-plugin-toolbar">
@@ -9089,7 +10652,7 @@
       throw failure;
     }
     if (!result || typeof result !== "object" || result.status === "failed") {
-      const error = new Error(result?.message || "CodeX 插件市场请求失败");
+      const error = new Error(result?.message || "Codex 插件市场请求失败");
       error.timeout = result?.timeout === true || /timeout|timed out|超时/i.test(error.message);
       throw error;
     }
@@ -9107,7 +10670,7 @@
     }
     const entry = { at: now, value: null, promise: null };
     const promise = codexPlusPluginNativeBackend(operation.method, operation.params).then((result) => {
-      if (!Array.isArray(result.marketplaces)) throw new Error("CodeX 插件市场列表格式错误");
+      if (!Array.isArray(result.marketplaces)) throw new Error("Codex 插件市场列表格式错误");
       codexPlusPluginNativeRemember(result);
       entry.value = result;
       entry.at = Date.now();
@@ -9154,7 +10717,7 @@
     } catch (error) {
       // 自定义市场暂时离线时保留原生列表，不能把系统插件清空。
       const fallbackPath = codexPlusIsWindowsPlatform ? "C:\\codex-plus-plugin-market" : "/codex-plus-plugin-market";
-      return codexPlusPluginNativeMerge(original, { marketplaceLoadErrors: [{ marketplacePath: fallbackPath, message: error?.message || "CodeX 插件市场暂时不可用" }] }, operation.method);
+      return codexPlusPluginNativeMerge(original, { marketplaceLoadErrors: [{ marketplacePath: fallbackPath, message: error?.message || "Codex 插件市场暂时不可用" }] }, operation.method);
     }
   }
 
@@ -9165,7 +10728,7 @@
   }
 
   async function codexPlusPluginNativeManaged(operation, source) {
-    if (!codexPlusPluginNativeLocal(operation)) throw new Error("CodeX 插件市场目前仅支持本机安装，请切换到本机。");
+    if (!codexPlusPluginNativeLocal(operation)) throw new Error("Codex 插件市场目前仅支持本机安装，请切换到本机。");
     if (operation.method === "read-plugin") {
       const result = await codexPlusPluginNativeBackend(operation.method, operation.params, source);
       const summary = result?.plugin?.summary;
@@ -11198,50 +12761,503 @@
   }
 
   function syncActionGroupLayout(row, group) {
-    if (!row || !group) return;
-    if (group.dataset.codexActionLayoutStable === "true") return;
-    const rowRect = row.getBoundingClientRect();
-    const nativeButtons = nativeActionButtonsFromRow(row);
-    const leftmostNative = nativeButtons
-      .map((button) => button.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .sort((a, b) => a.left - b.left)[0];
-    const gap = 8;
-    const fallbackRight = 28;
-    const right = leftmostNative
-      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
-      : fallbackRight;
-    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
-    const titleNode = row.querySelector(selectors.threadTitle);
-    const titleRect = titleNode?.getBoundingClientRect();
-    const titleLeft = titleRect?.left || rowRect.left + 40;
-    let effectiveRight = right;
-    group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
-    if (leftmostNative) {
-      const nativeStyle = getComputedStyle(nativeButtons.find((button) => button.getBoundingClientRect().left === leftmostNative.left) || nativeButtons[0]);
-      group.style.setProperty("--codex-session-action-color", nativeStyle.color);
-      group.style.setProperty("--codex-session-action-hover-color", nativeStyle.color);
-      group.style.setProperty("--codex-session-action-hover-background", nativeStyle.backgroundColor);
-      const groupRight = group.getBoundingClientRect().right;
-      const targetRight = leftmostNative.left - 2;
-      if (Number.isFinite(groupRight) && Number.isFinite(targetRight)) {
+    syncActionGroupLayouts([{ row, group }]);
+  }
+
+  function syncActionGroupLayouts(entries, force = false) {
+    // Batch each measurement phase across rows. A per-row write/read cycle
+    // repeatedly lays out the app and delays the first resized background frame.
+    const layouts = entries.filter(({ row, group }) =>
+      row && group && (force || group.dataset.codexActionLayoutStable !== "true"))
+      .map(({ row, group }) => {
+        const rowRect = row.getBoundingClientRect();
+        const nativeButtons = nativeActionButtonsFromRow(row);
+        const native = nativeButtons.map(button => ({ button, rect: button.getBoundingClientRect() }))
+          .filter(({ rect }) => rect.width > 0 && rect.height > 0)
+          .sort((a, b) => a.rect.left - b.rect.left)[0];
+        const nativeStyle = native && getComputedStyle(native.button);
+        const right = native ? Math.max(28, Math.round(rowRect.right - native.rect.left + 8)) : 28;
+        const titleLeft = row.querySelector(selectors.threadTitle)?.getBoundingClientRect().left || rowRect.left + 40;
         const renderScale = row.offsetWidth > 0 ? rowRect.width / row.offsetWidth : 1;
-        effectiveRight = Math.max(0, right + (groupRight - targetRight) / Math.max(0.1, renderScale));
-        group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
+        return { row, group, native, right, effectiveRight: right, titleLeft, renderScale,
+          groupWidth: Math.ceil(group.getBoundingClientRect().width || 96),
+          color: nativeStyle?.color, background: nativeStyle?.backgroundColor };
+      });
+    for (const layout of layouts) {
+      const { group, right, native, color, background } = layout;
+      group.style.setProperty("--codex-session-actions-right", `${right}px`);
+      if (native) {
+        group.style.setProperty("--codex-session-action-color", color);
+        group.style.setProperty("--codex-session-action-hover-color", color);
+        group.style.setProperty("--codex-session-action-hover-background", background);
       }
     }
-    const renderScale = row.offsetWidth > 0 ? rowRect.width / row.offsetWidth : 1;
-    const finalGroupLeft = group.getBoundingClientRect().left;
-    const titleMaxWidth = Math.max(24, (finalGroupLeft - titleLeft - 8) / Math.max(0.1, renderScale));
-    row.style.setProperty("--codex-session-title-mask", `${effectiveRight + groupWidth + 12}px`);
-    row.style.setProperty("--codex-session-title-max-width", `${titleMaxWidth}px`);
-    group.dataset.codexActionLayoutStable = "true";
+    for (const layout of layouts) {
+      if (!layout.native) continue;
+      const groupRight = layout.group.getBoundingClientRect().right;
+      const targetRight = layout.native.rect.left - 2;
+      if (Number.isFinite(groupRight) && Number.isFinite(targetRight)) {
+        layout.effectiveRight = Math.max(0, layout.right +
+          (groupRight - targetRight) / Math.max(0.1, layout.renderScale));
+      }
+    }
+    for (const { group, native, effectiveRight } of layouts) {
+      if (native) group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
+    }
+    for (const layout of layouts) {
+      const finalGroupLeft = layout.group.getBoundingClientRect().left;
+      layout.titleMaxWidth = Math.max(24,
+        (finalGroupLeft - layout.titleLeft - 8) / Math.max(0.1, layout.renderScale));
+    }
+    for (const { row, group, effectiveRight, groupWidth, titleMaxWidth } of layouts) {
+      row.style.setProperty("--codex-session-title-mask", `${effectiveRight + groupWidth + 12}px`);
+      row.style.setProperty("--codex-session-title-max-width", `${titleMaxWidth}px`);
+      group.dataset.codexActionLayoutStable = "true";
+    }
   }
-  function syncActionGroupsLayout() {
-    sessionRows().forEach((row) => {
-      const group = actionGroupFromRow(row);
-      if (group) syncActionGroupLayout(row, group);
+  /**
+   * 模型容量错误自动重试。
+   *
+   * 背景（本功能要解决的问题）：
+   *   Codex 应用把「模型容量不足」的失败轮次渲染成一条带「重试」按钮的横幅，
+   *   文案由服务端下发（例如 Selected model is at capacity. Please try a different
+   *   model.）。应用本身自带自动重试（app-primary 的 yGe + SGe），但有两个门槛：
+   *     1. 需要特性开关 2899820207 打开；
+   *     2. 需要 SGe 选出的 retryDelaySeconds 非空。
+   *   而 SGe 的延迟阶梯是 `vL = [10, 30, 120, 300]`，循环守卫 `i < vL.length`
+   *   让计数最多到 4：第 5 次连续容量失败时返回 null，倒计时和自动重试同时消失，
+   *   只剩一个必须手点的「重试」按钮。用户看到的现象就是「重试很多次之后就不再
+   *   自动重试了」。
+   *
+   *   本分片补上的就是这一段：横幅还在、原生又不再自动重试时，替用户点按钮。
+   *   节奏默认与手动点击一致——上一轮失败后立刻重试（0 秒间隔，内部有 1 秒地板值
+   *   防热循环），间隔和次数上限都可以在 Codex++ 设置里改。
+   *
+   *   原生那 4 档阶梯（10/30/120/300 秒）不是我们复刻的对象，也不等待：倒计时显示
+   *   「10 秒后重试」时本功能同样在下一秒就把按钮点掉，等于把原生那 4 次也压成 0 秒。
+   *   倒计时只用来在浮标上标注「已接管原生倒计时」。代价是原生定时器到点后可能再触发
+   *   一次它自己的重试：两条路径走的是同一个处理函数（yGe 里的 Fv(...)），进入前都会
+   *   检查 thread 是否 ready、是否已在重试中，所以重复触发最多被 Codex 自己拒一次。
+   *
+   * 选择器策略（刻意不依赖 Codex 的 hash 类名，只依赖语义结构）：
+   *   1. 横幅是 <aside>——Callout 组件的根元素（app-initial 里的 qR），源码已确认
+   *      所有变体都以 <aside> 收尾；
+   *   2. 只有 errorInfo === 'serverOverloaded' 且最后一轮 failed 时才渲染重试按钮
+   *      （app-primary 的 hGe → vGe），所以「aside 里出现重试按钮」本身就等价于
+   *      「模型容量错误」，不需要匹配服务端文案——中转站/聚合模型的文案各不相同，
+   *      按文案匹配一定漏；
+   *   3. 按钮文案来自 localConversation.serverOverloaded.retry（重试 / Retry），
+   *      倒计时变体是 localConversation.serverOverloaded.retryCountdown
+   *      （{seconds} 秒后重试 / Retry in {seconds}s）。
+   */
+  const capacityAutoRetryChipId = "codex-plus-capacity-auto-retry";
+  const capacityAutoRetryIdlePollMs = 2000;
+  const capacityAutoRetryWaitingPollMs = 1000;
+  const capacityAutoRetryAbsenceTicksBeforeReset = 3;
+  // 默认「上一轮失败后立刻重试」：用户观察到的原生行为就是 0s 就重试。
+  // 但 0 间隔会变成热循环（一轮失败→立刻再点→立刻再失败），所以内部留 1 秒地板值，
+  // 既保持「点了就重试」的手感，又不会把请求打成连发。想要退避就在设置里把间隔调大。
+  const capacityAutoRetryMinIntervalMs = 1000;
+  const capacityAutoRetryCountdownPattern = /(?:\d+\s*(?:秒|s|S)\s*后\s*(?:重试|再试)|Retry\s+in\s+\d+\s*s)/;
+  const capacityAutoRetryLabelPattern = /^(?:重试|再试一次|重新尝试|Retry|Try again)$/;
+  const capacityAutoRetryState = {
+    timer: null,
+    attempts: 0,
+    nextAttemptAt: 0,
+    absenceTicks: 0,
+    nativeCountdown: false,
+    exhausted: false,
+    userPaused: false,
+    note: "",
+  };
+
+  function capacityAutoRetrySettings() {
+    try {
+      return codexPlusSettings() || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function capacityAutoRetryEnabled() {
+    return capacityAutoRetrySettings().capacityAutoRetry === true;
+  }
+
+  function capacityAutoRetryMaxAttempts() {
+    return normalizeCapacityAutoRetryMaxAttempts(capacityAutoRetrySettings().capacityAutoRetryMaxAttempts);
+  }
+
+  function normalizeCapacityAutoRetryMaxAttempts(value) {
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return capacityAutoRetryDefaultMaxAttempts;
+    return Math.min(capacityAutoRetryMaxAttemptsCeiling, Math.max(1, Math.round(raw)));
+  }
+
+  function normalizeCapacityAutoRetryIntervalSeconds(value) {
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return capacityAutoRetryDefaultIntervalSeconds;
+    return Math.min(capacityAutoRetryIntervalCeilingSeconds, Math.max(0, Math.round(raw)));
+  }
+
+  function capacityAutoRetryIntervalSeconds() {
+    return normalizeCapacityAutoRetryIntervalSeconds(capacityAutoRetrySettings().capacityAutoRetryIntervalSeconds);
+  }
+
+  function setCapacityAutoRetryMaxAttempts(value) {
+    const next = normalizeCapacityAutoRetryMaxAttempts(value);
+    setCodexPlusSetting("capacityAutoRetryMaxAttempts", next);
+    return next;
+  }
+
+  function setCapacityAutoRetryIntervalSeconds(value) {
+    const next = normalizeCapacityAutoRetryIntervalSeconds(value);
+    setCodexPlusSetting("capacityAutoRetryIntervalSeconds", next);
+    return next;
+  }
+
+  /**
+   * 两次重试之间的等待时间。
+   *
+   * 间隔设 0 表示「立刻重试」，但仍然套 1 秒地板值：按钮在重试请求期间本来就是
+   * disabled，真正的热循环风险来自「点完发现没生效又马上再点」，所以下限必须是
+   * 一个能容纳一次请求往返的值。
+   */
+  function capacityAutoRetryWaitMs() {
+    return Math.max(capacityAutoRetryMinIntervalMs, capacityAutoRetryIntervalSeconds() * 1000);
+  }
+
+  /**
+   * 找一个当前可点的容量错误重试按钮。
+   *
+   * 从后往前找：历史轮次的横幅没有重试按钮（vGe 在没有 retryTurnId 时只渲染文案），
+   * 只有最新那一条才有，但反向遍历同时也避开了「旧横幅先被点到」的可能。
+   */
+  function findCapacityAutoRetryBanner() {
+    const roots = [];
+    const main = document.querySelector("main");
+    if (main) roots.push(main);
+    roots.push(document.body);
+    for (const root of roots) {
+      if (!root) continue;
+      const asides = root.querySelectorAll("aside");
+      for (let index = asides.length - 1; index >= 0; index -= 1) {
+        const aside = asides[index];
+        // 对话框/菜单里的 aside 不是对话横幅，别误点。
+        if (aside.closest?.('[role="dialog"], [role="menu"], [aria-modal="true"]')) continue;
+        const button = Array.from(aside.querySelectorAll("button"))
+          .find((node) => capacityAutoRetryLabelPattern.test((node.textContent || "").trim()));
+        if (button) return { aside, button };
+      }
+    }
+    return null;
+  }
+
+  function capacityAutoRetryNativeCountdownRunning(aside) {
+    return capacityAutoRetryCountdownPattern.test(aside.textContent || "");
+  }
+
+  function capacityAutoRetryChip() {
+    let chip = document.getElementById(capacityAutoRetryChipId);
+    if (chip) return chip;
+    if (!document.body) return null;
+    chip = document.createElement("div");
+    chip.id = capacityAutoRetryChipId;
+    // 归属标记：扫描调度器据此忽略我们自己插入的节点，避免自喂扫描循环（issue #1960）。
+    chip.setAttribute("data-codex-plus-ext", "capacity-auto-retry");
+    chip.setAttribute("role", "status");
+    chip.style.cssText = [
+      "position:fixed",
+      "z-index:2147483600",
+      "inset-inline-end:24px",
+      "bottom:148px",
+      "display:none",
+      "align-items:center",
+      "gap:8px",
+      "max-width:min(60vw,420px)",
+      "padding:6px 10px",
+      "border:1px solid color-mix(in srgb,currentColor 22%,transparent)",
+      "border-radius:999px",
+      "background:color-mix(in srgb,var(--color-token-bg-primary,#202020) 92%,transparent)",
+      "color:var(--color-token-text-secondary,rgba(210,210,220,.9))",
+      "font:12px/16px ui-sans-serif,system-ui,-apple-system,'PingFang SC',sans-serif",
+      "box-shadow:0 4px 16px rgba(0,0,0,.28)",
+      "user-select:none",
+    ].join(";");
+    const text = document.createElement("span");
+    text.setAttribute("data-codex-plus-capacity-retry-text", "true");
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.setAttribute("data-codex-plus-capacity-retry-resume", "true");
+    resume.textContent = "继续";
+    resume.style.cssText = "display:none;cursor:pointer;color:inherit;background:transparent;border:0;font:inherit;text-decoration:underline;padding:0";
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.setAttribute("data-codex-plus-capacity-retry-stop", "true");
+    stop.textContent = "停止";
+    stop.style.cssText = "display:none;cursor:pointer;color:inherit;background:transparent;border:0;font:inherit;text-decoration:underline;padding:0";
+    resume.addEventListener("click", () => {
+      capacityAutoRetryState.userPaused = false;
+      capacityAutoRetryState.exhausted = false;
+      capacityAutoRetryState.attempts = 0;
+      capacityAutoRetryState.nextAttemptAt = 0;
+      capacityAutoRetryTick();
     });
+    stop.addEventListener("click", () => {
+      capacityAutoRetryState.userPaused = true;
+      capacityAutoRetryState.nextAttemptAt = 0;
+      capacityAutoRetryRenderChip();
+    });
+    // 用 appendChild 而不是 append(...)：cdp_bridge.rs 的 Node 注入 harness 里
+    // 元素 stub 只实现了 appendChild，用 append 会在那里直接崩。
+    for (const child of [text, resume, stop]) chip.appendChild(child);
+    document.body.appendChild(chip);
+    return chip;
+  }
+
+  /**
+   * 刷新状态浮标。
+   *
+   * `mode` 为空字符串表示本轮已结束——直接隐藏，不留常驻节点。
+   */
+  function capacityAutoRetryRenderChip(mode, detail) {
+    const chip = capacityAutoRetryChip();
+    if (!chip) return;
+    if (!mode) {
+      chip.style.display = "none";
+      return;
+    }
+    const text = chip.querySelector("[data-codex-plus-capacity-retry-text]");
+    const resume = chip.querySelector("[data-codex-plus-capacity-retry-resume]");
+    const stop = chip.querySelector("[data-codex-plus-capacity-retry-stop]");
+    // 取不到子节点说明浮标被 Codex 的重渲染搬走了；这种情况下宁可只更新容器，
+    // 也不要抛错中断整条重试链（注入层任何未捕获异常都会记进 scan 失败列表）。
+    if (!text || !resume || !stop) {
+      chip.style.display = "inline-flex";
+      return;
+    }
+    const max = capacityAutoRetryMaxAttempts();
+    const remaining = capacityAutoRetryState.nextAttemptAt > Date.now()
+      ? Math.max(0, Math.ceil((capacityAutoRetryState.nextAttemptAt - Date.now()) / 1000))
+      : 0;
+    let label = "";
+    if (mode === "paused") {
+      label = `自动重试已暂停（已试 ${capacityAutoRetryState.attempts}/${max} 次）`;
+    } else if (mode === "exhausted") {
+      label = `自动重试已达上限 ${max} 次`;
+    } else if (mode === "waiting") {
+      label = `模型容量不足 · 自动重试第 ${Math.min(capacityAutoRetryState.attempts + 1, max)}/${max} 次${remaining > 0 ? ` · ${remaining} 秒后` : ""}${capacityAutoRetryState.nativeCountdown ? " · 已接管原生倒计时" : ""}`;
+    } else {
+      label = detail || "模型容量不足 · 自动重试中";
+    }
+    text.textContent = label;
+    resume.style.display = mode === "paused" || mode === "exhausted" ? "inline" : "none";
+    stop.style.display = mode === "paused" || mode === "exhausted" ? "none" : "inline";
+    chip.style.display = "inline-flex";
+  }
+
+  function capacityAutoRetrySchedule(delayMs) {
+    clearTimeout(capacityAutoRetryState.timer);
+    capacityAutoRetryState.timer = window.setTimeout(capacityAutoRetryTick, Math.max(200, delayMs));
+  }
+
+  function capacityAutoRetryResetRun() {
+    capacityAutoRetryState.attempts = 0;
+    capacityAutoRetryState.nextAttemptAt = 0;
+    capacityAutoRetryState.exhausted = false;
+    capacityAutoRetryState.userPaused = false;
+  }
+
+  function capacityAutoRetryTick() {
+    capacityAutoRetryState.timer = null;
+    if (!capacityAutoRetryEnabled()) {
+      capacityAutoRetryResetRun();
+      capacityAutoRetryState.absenceTicks = 0;
+      capacityAutoRetryRenderChip("");
+      return;
+    }
+    const banner = findCapacityAutoRetryBanner();
+    if (!banner) {
+      // 横幅消失 = 本轮容量错误结束（重试成功、或用户换了模型/新开了对话）。
+      // 不立刻清零：点击到新横幅渲染之间会有短暂空档，按 tick 数确认后再复位。
+      capacityAutoRetryState.absenceTicks += 1;
+      if (capacityAutoRetryState.absenceTicks >= capacityAutoRetryAbsenceTicksBeforeReset) {
+        capacityAutoRetryResetRun();
+        capacityAutoRetryRenderChip("");
+      }
+      capacityAutoRetrySchedule(capacityAutoRetryIdlePollMs);
+      return;
+    }
+    capacityAutoRetryState.absenceTicks = 0;
+    // 原生倒计时（10/30/120/300 秒）在跑时也照样立刻接管——用户要的是「每次都是 0 秒
+    // 就重试」，不是等原生那套阶梯。这里只把它记下来显示在浮标上，让用户知道
+    // Codex 自己也排了一次重试。代价是原生定时器到点后可能再触发一次它自己的重试：
+    // 两条路径走同一个处理函数、同一道 ready/重试中守卫，最多被 Codex 自己拒一次。
+    capacityAutoRetryState.nativeCountdown = capacityAutoRetryNativeCountdownRunning(banner.aside);
+    if (capacityAutoRetryState.userPaused) {
+      capacityAutoRetryRenderChip("paused");
+      capacityAutoRetrySchedule(capacityAutoRetryIdlePollMs);
+      return;
+    }
+    if (capacityAutoRetryState.exhausted) {
+      capacityAutoRetryRenderChip("exhausted");
+      capacityAutoRetrySchedule(capacityAutoRetryIdlePollMs * 2);
+      return;
+    }
+    if (banner.button.disabled) {
+      // 重试请求在途（yGe 的 isRetrying 会禁用按钮），等它结束。
+      capacityAutoRetryRenderChip("waiting");
+      capacityAutoRetrySchedule(capacityAutoRetryIdlePollMs);
+      return;
+    }
+    const max = capacityAutoRetryMaxAttempts();
+    if (capacityAutoRetryState.attempts >= max) {
+      capacityAutoRetryState.exhausted = true;
+      // showToast 在 80-session-share.js；切片沙箱里可能没有它，缺了就静默跳过。
+      if (typeof showToast === "function") {
+        showToast(`自动重试已达上限 ${max} 次，仍未抢到模型容量；可点浮标上的「继续」再试。`, { type: "warn" });
+      }
+      capacityAutoRetryRenderChip("exhausted");
+      capacityAutoRetrySchedule(capacityAutoRetryIdlePollMs * 2);
+      return;
+    }
+    const now = Date.now();
+    if (now < capacityAutoRetryState.nextAttemptAt) {
+      capacityAutoRetryRenderChip("waiting");
+      capacityAutoRetrySchedule(Math.min(capacityAutoRetryWaitingPollMs, capacityAutoRetryState.nextAttemptAt - now));
+      return;
+    }
+    // 到点了：点按钮。Codex 的按钮是 React onClick，根容器上的委托监听会收到
+    // 冒泡事件，所以原生 click() 与真实点击等价。
+    try {
+      banner.button.click();
+    } catch {
+      // 点击抛错不该打断循环，等下一轮再试。
+    }
+    capacityAutoRetryState.attempts += 1;
+    capacityAutoRetryState.nextAttemptAt = Date.now() + capacityAutoRetryWaitMs();
+    capacityAutoRetryRenderChip("waiting");
+    capacityAutoRetrySchedule(capacityAutoRetryWaitingPollMs);
+  }
+
+  /**
+   * 按当前设置启停自动重试。
+   *
+   * 幂等：开启时确保有一个定时器在跑，关闭时清干净（含浮标），可以随时重复调用。
+   */
+  function syncCodexPlusCapacityAutoRetry() {
+    if (!capacityAutoRetryEnabled()) {
+      clearTimeout(capacityAutoRetryState.timer);
+      capacityAutoRetryState.timer = null;
+      capacityAutoRetryResetRun();
+      capacityAutoRetryState.absenceTicks = 0;
+      capacityAutoRetryRenderChip("");
+      return;
+    }
+    if (capacityAutoRetryState.timer) return;
+    capacityAutoRetrySchedule(capacityAutoRetryIdlePollMs);
+  }
+
+  // 诊断/联调入口：出问题时可在控制台直接看状态或强制走一轮。
+  window.__codexPlusCapacityAutoRetry = {
+    state: capacityAutoRetryState,
+    tick: capacityAutoRetryTick,
+    sync: syncCodexPlusCapacityAutoRetry,
+    find: findCapacityAutoRetryBanner,
+    intervalSeconds: capacityAutoRetryIntervalSeconds,
+    maxAttempts: capacityAutoRetryMaxAttempts,
+  };
+
+  syncCodexPlusCapacityAutoRetry();
+  /**
+   * Codex 启动壳自救。
+   *
+   * 现象（本机实测，2026-10-12）：Codex 的原生启动画面有时会一直停住——DOM 里
+   * 只剩 splash 容器（`div.flex.items-center.justify-center.relative.size-full`），
+   * `#root` 的 innerText 始终为空、`<main>` 始终不出现；而注入层一切正常
+   * （`window.codexPlus` 已挂载、设置浮标在位、零异常），启动器侧
+   * `latest-status.json` 也一直是 `running` / `progress:100`。
+   * 也就是说宿主没有任何信号能发现「页面没渲染出来」，用户只能自己按刷新。
+   * 实测手动 reload 一次即恢复。
+   *
+   * 这里把「手动刷新」这一下自动化，并严格限次：
+   *   - 只认空壳：`#root` 存在、innerText 为空、且没有 `<main>`。正常的启动画面
+   *     渲染几秒内就会长出 `<main>`，所以宽限期足够长即可区分「慢」与「卡死」。
+   *   - 只在主页面做。带 `initialRoute=` 的活动悬浮层与 quick-chat 是独立页面，
+   *     它们本来就没有 `<main>`，刷新只会丢上下文。
+   *   - 每次加载最多刷一次，且与上次刷新间隔不足冷却时间就不再刷；
+   *     写不进 sessionStorage 时宁可不刷，避免退化成刷新循环。
+   */
+  const bootShellRecoveryStorageKey = "codexPlus.bootShellRecoveryAt";
+  const bootShellRecoveryGraceMs = 20000;
+  const bootShellRecoveryCooldownMs = 60000;
+  const bootShellRecoveryPollMs = 1000;
+
+  // 带 initialRoute 的是活动悬浮层 / quick-chat 等独立页面，它们本来就没有
+  // <main>，刷它们只会丢上下文，必须跳过。
+  function bootShellRecoveryAppliesHere() {
+    return !/[?&]initialRoute=/.test(window.location.search);
+  }
+
+  // 页面是否已经「有东西」了：挂上 <main>，或 #root 里渲染出了任何文字。
+  function bootShellRecoverySettled() {
+    if (document.querySelector("main")) return true;
+    const root = document.getElementById("root");
+    if (!root) return false;
+    return root.innerText.trim() !== "";
+  }
+
+  function bootShellRecoveryStuck() {
+    const root = document.getElementById("root");
+    if (!root) return false;
+    if (document.querySelector("main")) return false;
+    return root.innerText.trim() === "";
+  }
+
+  function bootShellRecoveryMayReload() {
+    try {
+      const last = Number(window.sessionStorage.getItem(bootShellRecoveryStorageKey)) || 0;
+      return Date.now() - last >= bootShellRecoveryCooldownMs;
+    } catch {
+      // 记不下时间就无法限次，宁可不刷。
+      return false;
+    }
+  }
+
+  /**
+   * 起一个不常驻的看门定时器：页面正常渲染就收工，空壳超时才限次刷新一次。
+   * 只在模块末尾调一次。
+   */
+  function installBootShellRecovery() {
+    if (!bootShellRecoveryAppliesHere()) return;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      if (bootShellRecoverySettled()) {
+        window.clearInterval(timer);
+        return;
+      }
+      if (Date.now() - startedAt < bootShellRecoveryGraceMs) return;
+      window.clearInterval(timer);
+      if (!bootShellRecoveryStuck() || !bootShellRecoveryMayReload()) return;
+      try {
+        window.sessionStorage.setItem(bootShellRecoveryStorageKey, String(Date.now()));
+      } catch {
+        return;
+      }
+      // 记一条诊断，事后能从 codex-plus.log 确认它真的触发过、卡了多久。
+      if (typeof sendCodexPlusDiagnostic === "function") {
+        sendCodexPlusDiagnostic("boot_shell_recovery_reload", {
+          waitedMs: Date.now() - startedAt,
+        });
+      }
+      window.location.reload();
+    }, bootShellRecoveryPollMs);
+  }
+
+  installBootShellRecovery();
+  function syncActionGroupsLayout(force = false) {
+    syncActionGroupLayouts(sessionRows().map(row => ({
+      row, group: actionGroupFromRow(row),
+    })), force);
   }
 
   function removeActionGroups(row) {
@@ -12639,6 +14655,7 @@
    * 同一套外壳 + 自定义内容，所以单独走一遍，但外壳结构与类名完全对齐。
    */
   function openCodexPlusModalForExtension(id, definition) {
+    closeCodexPlusPage();
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
@@ -12659,13 +14676,10 @@
       </div>
     `;
     document.body.appendChild(overlay);
-    positionCodexPlusPage(overlay);
+    observeCodexPlusPageLayout(overlay);
     // 拓展入口不在内置的三个 id 里，setCodexPlusSidebarNavActive 认不出来，
     // 所以自己点亮该入口，再调一次 sync 让原生选中态被压下去。
     setCodexPlusExtensionNavActive(id);
-    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
-    window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(overlay);
-    window.addEventListener("resize", window.__codexPlusPageResizeHandler);
     // 与内置页面一致：点图标栏上的任何原生按钮就关掉这个覆盖层。
     //
     // 注意必须连拓展自己的入口一起排除：拓展入口 id 是动态生成的，不在那三个内置
@@ -12734,6 +14748,10 @@
       } catch {}
     }
     window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageResizeHandler = null;
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutObserver = null;
+    window.__codexPlusPageLayoutTargets = null;
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
   }
@@ -14732,9 +16750,13 @@
   }
 
   function scan() {
+    if (document.hidden) {
+      window.__codexSessionDeleteScanPending = true;
+      return;
+    }
     void installDictationSupportPatch();
     runScanStep(scanLightweight);
-    requestAnimationFrame(() => runScanStep(scanDeferred));
+    scheduleDeferredScan();
   }
   // 完整上游引擎的词法宿主：不替换页面全局 API；挂件关闭时释放所有副作用。
   const codexPlusWhaleFullStoragePrefix = "codexPlus.whale.full.v1.";
@@ -15333,6 +17355,14 @@
     dispose() { codexPlusWhaleStop(); codexPlusWhaleState.disposed = true; },
     get state() { return codexPlusWhaleState.runtime?.state || null; },
   };
+  window.__codexPlusScanScheduleCleanup?.();
+  clearTimeout(window.__codexSessionDeleteScanTimer);
+  cancelAnimationFrame(window.__codexSessionDeleteDeferredRaf);
+  window.__codexSessionDeleteScanTimer = null;
+  window.__codexSessionDeleteDeferredRaf = 0;
+  window.__codexSessionDeleteScanPending = false;
+  window.__codexSessionDeleteDeferredPending = false;
+
   /**
    * 这个节点是不是 Codex++ 自己（或拓展）的 UI。
    *
@@ -15342,7 +17372,7 @@
    */
   function isExtensionUiNode(node) {
     if (!node?.closest) return false;
-    if (node.closest(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .${sessionCopyMenuItemClass}, #codex-plus-menu`)) {
+    if (node.closest(`[data-codex-plus-ext], .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
       return true;
     }
     return isCodexPlusExtensionNode(node);
@@ -15373,8 +17403,7 @@
     if (node.nodeType !== 1) return false;
     if (isExtensionUiNode(node)) return false;
     const relevantSelector = scanRelevantSelector();
-    return !!node.matches?.(relevantSelector) ||
-      !!node.closest?.(relevantSelector) ||
+    return !!node.closest?.(relevantSelector) ||
       nodeOrAncestorLooksLikeCodexUserBubble(node);
   }
 
@@ -15410,19 +17439,58 @@
   }
 
   function runScheduledScan() {
-    window.__codexSessionDeleteScanPending = false;
     clearTimeout(window.__codexSessionDeleteScanTimer);
     window.__codexSessionDeleteScanTimer = null;
+    if (document.hidden) {
+      window.__codexSessionDeleteScanPending = true;
+      return;
+    }
+    window.__codexSessionDeleteScanPending = false;
     scan();
+  }
+
+  function scheduleDeferredScan() {
+    window.__codexSessionDeleteDeferredPending = true;
+    if (document.hidden || window.__codexSessionDeleteDeferredRaf) return;
+    window.__codexSessionDeleteDeferredRaf = requestAnimationFrame(() => {
+      window.__codexSessionDeleteDeferredRaf = 0;
+      if (document.hidden) return;
+      window.__codexSessionDeleteDeferredPending = false;
+      runScanStep(scanDeferred);
+    });
   }
 
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
-    if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
+    if (!shouldScheduleScan(mutations)) return;
     window.__codexSessionDeleteScanPending = true;
+    if (document.hidden) return;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
   }
+
+  const onScanVisibilityChange = () => {
+    if (document.hidden) {
+      clearTimeout(window.__codexSessionDeleteScanTimer);
+      window.__codexSessionDeleteScanTimer = null;
+      cancelAnimationFrame(window.__codexSessionDeleteDeferredRaf);
+      window.__codexSessionDeleteDeferredRaf = 0;
+      return;
+    }
+    // Hidden mutations describe one current DOM, not a history to replay.
+    if (window.__codexSessionDeleteScanPending) {
+      clearTimeout(window.__codexSessionDeleteScanTimer);
+      window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 0);
+    } else if (window.__codexSessionDeleteDeferredPending) scheduleDeferredScan();
+  };
+  document.addEventListener("visibilitychange", onScanVisibilityChange);
+  window.__codexPlusScanScheduleCleanup = () => {
+    document.removeEventListener("visibilitychange", onScanVisibilityChange);
+    clearTimeout(window.__codexSessionDeleteScanTimer);
+    cancelAnimationFrame(window.__codexSessionDeleteDeferredRaf);
+    window.__codexSessionDeleteScanPending = false;
+    window.__codexSessionDeleteDeferredPending = false;
+  };
 
   /**
    * 侧边栏入口的启动补扫。
@@ -15461,18 +17529,130 @@
   syncOfficialUsagePolicy();
   scheduleSidebarNavStartupRetry();
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
-  void restoreCodexPlusManagedLocale();
+  // Optional right-side layout for Codex's native message navigation rail.
+  // The native page recreates the rail and preview card during navigation, so
+  // this uses stable data attributes instead of retaining DOM node references.
+  (() => {
+    const styleId = "codex-plus-avatar-overlay-layout-style";
+    const root = document.documentElement;
+    const enabledAttribute = "data-codex-plus-activity-overlay-right";
+
+    function installStyle() {
+      const existing = document.getElementById(styleId);
+      if (existing) return;
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.dataset.codexPlusExt = "builtin-avatar-overlay-layout";
+      style.textContent = `
+        /* The native rail is mounted inside an absolute nav with left-3. */
+        html[${enabledAttribute}="true"] nav:has([data-thread-user-message-navigation-rail-list]) {
+          left: auto !important;
+          right: max(12px, env(safe-area-inset-right, 0px)) !important;
+        }
+
+        /* Native marker lines grow from their left edge. Once the rail is on
+           the right, the same level indicator must grow toward the left. */
+        html[${enabledAttribute}="true"] [data-thread-user-message-navigation-rail-list] [data-thread-user-message-navigation-item-id] > span > span > span {
+          transform-origin: 100% 50% !important;
+        }
+
+        /* Floating preview cards are positioned by Radix beside the old left
+           rail. Use the individual translate property so Floating UI's own
+           transform stays intact while the card moves to the opposite side. */
+        html[${enabledAttribute}="true"] [data-radix-popper-content-wrapper]:has([data-thread-user-message-navigation-tooltip-preview]) {
+          translate: calc(-100% - 8px) 0 !important;
+        }
+      `;
+      document.head?.appendChild(style);
+    }
+
+    function sync() {
+      installStyle();
+      const enabled = typeof codexPlusSettings === "function"
+        && codexPlusSettings().activityOverlayRight === true;
+      root.toggleAttribute(enabledAttribute, enabled);
+      root.setAttribute(enabledAttribute, String(enabled));
+    }
+
+    installStyle();
+    sync();
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__ = sync;
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      sync();
+      if (++attempts >= 60 && codexPlusBackendSettingsLoaded) window.clearInterval(timer);
+    }, 250);
+  })();
+  /**
+   * 多开实例身份提示。
+   *
+   * 启动器会在独立 Codex 实例的 renderer 注入前设置
+   * `window.__CODEX_PLUS_INSTANCE_LABEL__`（或兼容用的
+   * `window.__CODEX_PLUS_INSTANCE_ID__`）。普通主实例没有这些值，因此不会
+   * 渲染提示。节点带有扩展归属标记，避免被扫描调度器当成 Codex 原生节点
+   * 触发自喂循环；也不占用公开的 window.codexPlus API 名称。
+   */
+  function installCodexPlusInstanceIdentity() {
+    const raw = window.__CODEX_PLUS_INSTANCE_LABEL__ || window.__CODEX_PLUS_INSTANCE_ID__;
+    const label = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!label) return;
+    const mount = () => {
+      if (!document.body) return false;
+      let node = document.getElementById("codex-plus-instance-identity");
+      if (!node) {
+        node = document.createElement("div");
+        node.id = "codex-plus-instance-identity";
+        node.setAttribute("data-codex-plus-ext", "instance-identity");
+        node.setAttribute("role", "status");
+        node.style.cssText = [
+          "position:fixed",
+          "top:8px",
+          "left:50%",
+          "transform:translateX(-50%)",
+          "z-index:2147483600",
+          "pointer-events:none",
+          "user-select:none",
+          "box-sizing:border-box",
+          "max-width:min(80vw,640px)",
+          "overflow:hidden",
+          "text-overflow:ellipsis",
+          "white-space:nowrap",
+          "padding:3px 10px",
+          "border:1px solid color-mix(in srgb,currentColor 22%,transparent)",
+          "border-radius:999px",
+          "background:color-mix(in srgb,var(--color-token-bg-primary,#202020) 88%,transparent)",
+          "color:var(--color-token-text-secondary,rgba(210,210,220,.9))",
+          "font:11px/16px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace",
+          "letter-spacing:.02em",
+          "opacity:.86",
+        ].join(";");
+        document.body.appendChild(node);
+      }
+      node.textContent = `Codex++ 多开 · ${label}`;
+      node.setAttribute("aria-label", `当前 Codex++ 多开身份：${label}`);
+      return true;
+    };
+    if (mount()) return;
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", mount, { once: true });
+    } else {
+      const observer = new MutationObserver(() => {
+        if (mount()) observer.disconnect();
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      setTimeout(() => observer.disconnect(), 10000);
+    }
+  }
+
+  installCodexPlusForceChineseLocale();
+  installCodexPlusInstanceIdentity();
   runScanStep(installCodexPlusTypingEffects);
   runScanStep(syncCodexPlusWhaleWidget);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
     cancelAnimationFrame(codexPlusResizeRafId);
     codexPlusResizeRafId = requestAnimationFrame(() => {
-      sessionRows().forEach((row) => {
-        const group = actionGroupFromRow(row);
-        if (group) delete group.dataset.codexActionLayoutStable;
-      });
-      syncActionGroupsLayout();
+      syncActionGroupsLayout(true);
       runScanStep(refreshConversationView);
     });
   };

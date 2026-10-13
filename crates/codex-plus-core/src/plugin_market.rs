@@ -1224,7 +1224,7 @@ fn market_manifest(home: &Path, source: Source, plugin: &PluginEntry) -> Value {
         "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
         "category": "Productivity",
     })];
-    json!({ "name": plugin_market_name(source, &plugin.id), "interface": { "displayName": format!("CodeX 插件市场 · {}", plugin.display_name) }, "plugins": plugins })
+    json!({ "name": plugin_market_name(source, &plugin.id), "interface": { "displayName": format!("Codex 插件市场 · {}", plugin.display_name) }, "plugins": plugins })
 }
 
 fn commit_install(
@@ -1456,7 +1456,7 @@ fn native_summary(
 fn native_market(home: &Path, source: Source, plugins: Vec<Value>) -> Value {
     json!({
         "name": virtual_market_name(source), "path": virtual_market_path(home, source).to_string_lossy(),
-        "interface": { "displayName": if source.private { "CodeX 插件市场 · 完整库" } else { "CodeX 插件市场 · 公开库" } },
+        "interface": { "displayName": if source.private { "Codex 插件市场 · 完整库" } else { "Codex 插件市场 · 公开库" } },
         "plugins": plugins,
     })
 }
@@ -1507,7 +1507,7 @@ fn managed_source(home: &Path, params: &Value) -> anyhow::Result<Source> {
             return Ok(source);
         }
     }
-    bail!("该请求不属于 CodeX 插件市场")
+    bail!("该请求不属于 Codex 插件市场")
 }
 
 fn managed_entry<'a>(

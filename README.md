@@ -102,6 +102,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通
   </tr>
   <tr>
     <td align="center">
+      <a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8">
+        <img src="docs/images/sponsor-baikewei-ai.jpg" alt="百可为AI" height="80">
+      </a>
+    </td>
+    <td><a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8"><strong>百可为AI</strong></a><br>百可为AI 是面向开发者、团队和 AI 工具用户的一站式大模型 API 服务平台，支持 Claude、OpenAI、Gemini、Codex 等主流模型能力接入。平台提供稳定中转、灵活计费、用量统计、余额管理和多场景 API 调用能力，适合 Claude Code、Codex、AI 生图、自动化脚本和各类智能应用长期使用。新用户注册可领取免费额度，开发者可快速接入、即开即用，让 AI 能力更稳定、更高效、更省心。</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://s.qiniu.com/7zUJri">
         <img src="docs/images/sponsor-qiniu-ai.png" alt="七牛云" width="170">
       </a>
@@ -145,6 +153,12 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通
       用量挂件、可更换的桌宠角色、任务状态和预算提醒，搭配皮肤与自定义图片，让界面更有自己的风格。
     </td>
   </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <h3>🧵 Codex 多开</h3>
+      为每个供应商身份启动相互隔离的 Codex 实例：独立配置、会话和用户数据目录，可与其他单一供应商同时运行；运行中的实例集中列出，可单独重启或结束。
+    </td>
+  </tr>
 </table>
 
 另外，微信连接支持扫码连接本机 Codex，每个联系人映射到独立会话，并可配置允许访问的微信用户。
@@ -163,6 +177,14 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通
 </p>
 
 </details>
+
+### 同一台电脑，多个 Codex 互不打扰
+
+「Codex多开」为每个供应商身份启动相互隔离的 Codex 实例：每个实例使用独立的配置、会话和用户数据目录，可与其它单一 Responses / Chat Completions 供应商同时运行。运行中的主 Codex 与多开实例集中在列表里，可单独重启或结束，不影响彼此会话。
+
+<p align="center">
+  <img src="docs/images/codex-multi-launch.png" alt="Codex 多开：列出运行中的 DeepSeek 与 Zhipu GLM 实例，可单独重启或结束" width="100%">
+</p>
 
 ### 让拓展适应你的工作流
 
@@ -233,9 +255,13 @@ Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」�
 | **官方登录** | 使用 ChatGPT / Codex 官方账号。 |
 | **官方登录 + API** | 保留官方登录状态与插件入口，模型请求始终走配置的兼容 API。 |
 | **纯 API** | 使用自定义 Base URL / Key，无需官方账号。 |
-| **聚合供应商** | 在多个 API 供应商之间故障转移，或按会话、请求、权重轮转。 |
+| **聚合供应商** | 分「故障转移」与「模型聚合」两类：故障转移在多个供应商之间失败切换、按会话/请求/权重轮转；模型聚合按模型把请求固定到指定成员。成员既可以是 API 供应商，也可以是已登录的官方账号。 |
 
 官方登录 + API 模式下，模型请求不消耗官方额度；它没有「先用官方额度，耗尽再切 API」的行为。Chat Completions 供应商可通过本地代理转换为 Codex 使用的 Responses 协议。
+
+创建聚合供应商时先选择「故障转移」或「模型聚合」，两种类型的表单和运行方式彼此独立。模型聚合会把成员模型合并到 Codex 模型列表，带 `cpx-供应商ID/模型名` 前缀的条目固定发送到对应成员；故障转移则使用失败切换、轮转和权重策略。成员的模型列表、上下文窗口和自动压缩设置沿用各自供应商配置。
+
+成员可以是普通 API 供应商，也可以是完成 ChatGPT 登录的官方账号：代理会用该账号的 OAuth 凭据把请求发往 chatgpt.com 后端，access token 过期时自动用 refresh token 刷新并写回供应商快照，请求返回 401 时会强制刷新后重试一次。官方账号同时用于直连时，会优先采用 live auth.json 里的新凭据，避免 refresh token 轮换后失效。
 
 ### 给每个模型设置自己的上下文窗口
 

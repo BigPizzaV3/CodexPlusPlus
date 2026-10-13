@@ -213,6 +213,30 @@ fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
 }
 
 #[test]
+fn build_catalog_json_fills_base_instructions_for_bundled_template_entries() {
+    // #2492：Codex Beta 26.727 起每个 model entry 都必须带 base_instructions，
+    // bundled 模板首条（gpt-5.5）没有该字段，clone 出来的条目必须补齐；
+    // 取值镜像条目自身的 instructions_template（Codex legacy 序列化规则）。
+    let entries = collect_catalog_entries(
+        "codex-plus-unknown-model-for-base-instructions",
+        &HashMap::new(),
+        &HashMap::new(),
+        "",
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let model = &catalog["models"][0];
+    let base = model["base_instructions"]
+        .as_str()
+        .expect("base_instructions 必须存在且为字符串");
+    let template = model["model_messages"]["instructions_template"]
+        .as_str()
+        .expect("bundled 模板条目应带 instructions_template");
+    assert_eq!(base, template);
+    assert!(!base.is_empty());
+}
+
+#[test]
 fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
     let entries = collect_catalog_entries(
         "gpt-5.6-sol\ngpt-5.6-terra\ngpt-5.6-luna",
@@ -733,6 +757,15 @@ fn builtin_model_metadata_index_covers_all_embedded_entries() {
     let kimi = index.iter().find(|e| e["slug"] == "kimi-k3").unwrap();
     assert_eq!(kimi["source"], "Kimi");
     assert_eq!(kimi["context_window"], 1_048_576);
+    // 「思考等级」列的内置初值随索引一起下发（effort 数组 + 默认档）。
+    let kimi_efforts: Vec<_> = kimi["supported_reasoning_levels"]
+        .as_array()
+        .expect("内置条目带思考等级")
+        .iter()
+        .map(|level| level["effort"].as_str().unwrap())
+        .collect();
+    assert_eq!(kimi_efforts, vec!["low", "high", "max"]);
+    assert_eq!(kimi["default_reasoning_level"], "high");
 }
 
 #[test]

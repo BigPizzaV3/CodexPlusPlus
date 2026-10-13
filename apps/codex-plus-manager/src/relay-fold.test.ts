@@ -39,7 +39,7 @@ function fixture(stored = new Map<string, string>(), storageFails = false) {
 
 test("model configuration is open by default while vendor folds use stable identifiers", () => {
   assert.ok(/className="relay-config-section relay-model-settings"[^>]*defaultOpen/.test(source));
-  for (const section of ["models", "requests", "channel-protection", "advanced", "config-preview", "common-config", "auth-preview"]) {
+  for (const section of ["models", "requests", "advanced", "config-preview", "common-config", "auth-preview"]) {
     assert.ok(source.includes(`sectionId="${section}"`), section);
   }
 });

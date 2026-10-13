@@ -7,6 +7,10 @@
     if (loaded) syncOfficialUsagePolicy();
     if (loaded) runScanStep(syncCodexPlusTypingEffects);
     if (loaded && typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+    // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
+    // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
+    if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
   }
 
@@ -33,6 +37,8 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+        if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -47,11 +53,13 @@
     const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
     codexPlusBackendSettingsLoaded = true;
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     refreshCodexPlusBackendToggles();
     try {
       const settings = await postJson("/settings/set", { [key]: value });
       if (seq === codexPlusBackendSettingsSeq) {
         codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+        globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
       }
     } finally {
       refreshCodexPlusBackendToggles();
@@ -59,6 +67,7 @@
   }
 
   function refreshCodexPlusBackendToggles() {
+    globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
@@ -786,7 +795,8 @@
     if (button) {
       const on = Boolean(active) && entry === "home";
       button.dataset.active = String(on);
-      button.setAttribute("aria-current", on ? "page" : "false");
+      if (on) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
     }
     [
       [codexPlusRailNavId, "home"],
@@ -797,7 +807,8 @@
       if (!railButton) return;
       const on = Boolean(active) && entry === name;
       railButton.dataset.active = String(on);
-      railButton.setAttribute("aria-current", on ? "page" : "false");
+      if (on) railButton.setAttribute("aria-current", "page");
+      else railButton.removeAttribute("aria-current");
       // 原生 rail 按钮的选中色由 data-selected 驱动（且需无 data-suppress-active-style）。
       if (on) railButton.setAttribute("data-selected", "");
       else railButton.removeAttribute("data-selected");
@@ -831,6 +842,7 @@
     if (!overlay?.classList?.contains(codexPlusPageClass)) return;
     const sidebar = document.querySelector("aside.app-shell-left-panel");
     const rect = sidebar?.getBoundingClientRect?.();
+    const main = document.querySelector("main");
     const rail = document.querySelector(codexPlusRailSelector);
     const railRect = rail?.getBoundingClientRect?.();
     // 新版：页面要顶替原生侧边栏——从图标栏右边界起铺满，把宽面板整个盖住，
@@ -888,6 +900,29 @@
       0;
     const layoutRadius = zoom === 1 ? radius : radius / zoom;
     overlay.style.setProperty("--codex-plus-page-radius", `${layoutRadius}px`);
+    if (window.__codexPlusPageLayoutObserver &&
+        (window.__codexPlusPageLayoutTargets?.main !== main ||
+         window.__codexPlusPageLayoutTargets?.sidebar !== sidebar ||
+         window.__codexPlusPageLayoutTargets?.rail !== rail)) {
+      window.__codexPlusPageLayoutObserver.disconnect();
+      for (const target of new Set([main, sidebar, rail])) {
+        if (target) window.__codexPlusPageLayoutObserver.observe(target);
+      }
+      window.__codexPlusPageLayoutTargets = { main, sidebar, rail };
+    }
+  }
+
+  function observeCodexPlusPageLayout(overlay) {
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    const reposition = () => {
+      if (overlay.isConnected) positionCodexPlusPage(overlay);
+    };
+    window.__codexPlusPageLayoutObserver = new ResizeObserver(reposition);
+    window.__codexPlusPageLayoutTargets = {};
+    window.__codexPlusPageResizeHandler = reposition;
+    window.addEventListener("resize", reposition);
+    positionCodexPlusPage(overlay);
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -1141,7 +1176,7 @@
   function openCodexPlusModal(options = {}) {
     const pageMode = options.page === true;
     const initialTab = codexPlusModalTab(options.tab);
-    closeCodexPlusTypingEffectDropdown();
+    closeCodexPlusPage();
     document.querySelectorAll(".codex-plus-modal-overlay").forEach((node) => node.remove());
     document.querySelectorAll(`.${codexPlusPageClass}, [data-codex-plus-dialog="true"]`).forEach((node) => node.remove());
     const overlay = document.createElement("div");
@@ -1220,6 +1255,14 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">悬浮球 · 回答大纲</div><div class="codex-plus-row-description">整理回答结构。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">容量错误自动重试</div><div class="codex-plus-row-description">模型容量不足时（横幅文案如 “Selected model is at capacity”），自动点「重试」。Codex 原生只会自动重试 4 次，之后只剩手动按钮；开启后由 Codex++ 立刻接管（原生倒计时也一并接管，前 4 次同样不等它），直到成功或达到次数上限。间隔 0 秒表示失败后立刻重试（内部最小 1 秒，避免连发）。</div></div>
+                  <div class="codex-plus-width-control">
+                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-interval="true" min="0" max="${capacityAutoRetryIntervalCeilingSeconds}" step="1" type="number" value="${capacityAutoRetryIntervalSeconds()}" title="重试间隔（秒），0 表示立刻重试" aria-label="重试间隔（秒）">
+                    <input class="codex-plus-width-input" data-codex-plus-capacity-retry-max-attempts="true" min="1" max="${capacityAutoRetryMaxAttemptsCeiling}" step="1" type="number" value="${capacityAutoRetryMaxAttempts()}" title="最大自动重试次数" aria-label="最大自动重试次数">
+                    <button type="button" class="codex-plus-toggle" data-codex-plus-setting="capacityAutoRetry"><span></span></button>
+                  </div>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
@@ -1383,6 +1426,16 @@
         const width = normalizeConversationViewWidth(widthInput.value);
         widthInput.value = String(width || conversationViewWidth());
         setConversationViewWidth(widthInput.value);
+      }
+      // 次数/间隔输入只在 change（失焦/回车）时提交：input 事件逐字符提交会把
+      // 用户输入 "15" 的过程保存成 1。
+      const attemptsInput = target?.closest("[data-codex-plus-capacity-retry-max-attempts]");
+      if (attemptsInput) {
+        attemptsInput.value = String(setCapacityAutoRetryMaxAttempts(attemptsInput.value));
+      }
+      const intervalInput = target?.closest("[data-codex-plus-capacity-retry-interval]");
+      if (intervalInput) {
+        intervalInput.value = String(setCapacityAutoRetryIntervalSeconds(intervalInput.value));
       }
     }, true);
     overlay.addEventListener("click", (event) => {
@@ -1560,13 +1613,9 @@
     overlay.addEventListener("error", handleExtensionIconError, true);
     document.body.appendChild(overlay);
     if (pageMode) {
-      positionCodexPlusPage(overlay);
+      observeCodexPlusPageLayout(overlay);
       // 必须在 selectCodexPlusTab 之前建好两栏，否则刷新左面板时找不到容器。
       installCodexPlusPageLayout(overlay, initialTab);
-      if (!window.__codexPlusPageResizeHandler) {
-        window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
-        window.addEventListener("resize", window.__codexPlusPageResizeHandler);
-      }
     }
     if (!codexPlusAdsLoaded) fetchCodexPlusAds();
     selectCodexPlusTab(initialTab);
@@ -1597,6 +1646,11 @@
 
   function closeCodexPlusPage() {
     closeCodexPlusTypingEffectDropdown();
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageResizeHandler = null;
+    window.__codexPlusPageLayoutObserver?.disconnect();
+    window.__codexPlusPageLayoutObserver = null;
+    window.__codexPlusPageLayoutTargets = null;
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
   }

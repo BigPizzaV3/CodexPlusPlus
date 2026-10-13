@@ -74,7 +74,7 @@
       throw failure;
     }
     if (!result || typeof result !== "object" || result.status === "failed") {
-      const error = new Error(result?.message || "CodeX 插件市场请求失败");
+      const error = new Error(result?.message || "Codex 插件市场请求失败");
       error.timeout = result?.timeout === true || /timeout|timed out|超时/i.test(error.message);
       throw error;
     }
@@ -92,7 +92,7 @@
     }
     const entry = { at: now, value: null, promise: null };
     const promise = codexPlusPluginNativeBackend(operation.method, operation.params).then((result) => {
-      if (!Array.isArray(result.marketplaces)) throw new Error("CodeX 插件市场列表格式错误");
+      if (!Array.isArray(result.marketplaces)) throw new Error("Codex 插件市场列表格式错误");
       codexPlusPluginNativeRemember(result);
       entry.value = result;
       entry.at = Date.now();
@@ -139,7 +139,7 @@
     } catch (error) {
       // 自定义市场暂时离线时保留原生列表，不能把系统插件清空。
       const fallbackPath = codexPlusIsWindowsPlatform ? "C:\\codex-plus-plugin-market" : "/codex-plus-plugin-market";
-      return codexPlusPluginNativeMerge(original, { marketplaceLoadErrors: [{ marketplacePath: fallbackPath, message: error?.message || "CodeX 插件市场暂时不可用" }] }, operation.method);
+      return codexPlusPluginNativeMerge(original, { marketplaceLoadErrors: [{ marketplacePath: fallbackPath, message: error?.message || "Codex 插件市场暂时不可用" }] }, operation.method);
     }
   }
 
@@ -150,7 +150,7 @@
   }
 
   async function codexPlusPluginNativeManaged(operation, source) {
-    if (!codexPlusPluginNativeLocal(operation)) throw new Error("CodeX 插件市场目前仅支持本机安装，请切换到本机。");
+    if (!codexPlusPluginNativeLocal(operation)) throw new Error("Codex 插件市场目前仅支持本机安装，请切换到本机。");
     if (operation.method === "read-plugin") {
       const result = await codexPlusPluginNativeBackend(operation.method, operation.params, source);
       const summary = result?.plugin?.summary;

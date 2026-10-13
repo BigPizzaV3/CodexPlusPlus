@@ -10,7 +10,7 @@ use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::relay_environment::RelayEnvironmentReport;
 use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{
-    BackendSettings, RelayProfile, RelaySessionProvider, SettingsStore,
+    BackendSettings, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
 };
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
@@ -483,6 +483,72 @@ pub struct LaunchRequest {
     pub sync_active_relay: bool,
 }
 
+/// 启动一个与管理器当前实例完全隔离的 Codex Desktop 实例。
+///
+/// 这个入口故意不复用 `launch_codex_plus`：后者只管理默认 CODEX_HOME，且
+/// launcher/helper 的生命周期是单例。多开实例通过隐藏 worker 进程复用完整的
+/// Codex++ launcher/injection 链，并给每个供应商分配独立的 CODEX_HOME、SQLite、
+/// Electron user-data-dir 和 CDP/helper 端口。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiLaunchRequest {
+    /// 前端当前设置快照。省略时读取磁盘上的设置；API key 等不可序列化字段
+    /// 会从磁盘中同 id 的 profile 补回。
+    #[serde(default)]
+    pub settings: Option<BackendSettings>,
+    #[serde(default)]
+    pub profile_id: String,
+    /// 同一身份再次点击会复用这个目录，默认使用 profile id。
+    #[serde(default)]
+    pub instance_id: String,
+    #[serde(default)]
+    pub app_path: String,
+    /// 为 0 时按 instance id 选择一个可用端口。
+    #[serde(default)]
+    pub debug_port: u16,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiWorkerOptions {
+    pub app_path: String,
+    pub debug_port: u16,
+    pub helper_port: u16,
+}
+
+/// 一个已经由「Codex 多开」创建过的实例。记录文件放在实例自己的隔离目录，
+/// 因此管理器重启后仍然可以找回它，不依赖当前进程内存。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiInstance {
+    pub instance_id: String,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub pid: Option<u32>,
+    pub debug_port: u16,
+    pub helper_port: u16,
+    pub status: String,
+    pub running: bool,
+    pub started_at_ms: u64,
+    pub is_main: bool,
+    pub app_path: Option<String>,
+    pub codex_home: Option<String>,
+    pub sqlite_home: Option<String>,
+    pub user_data_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiInstancesPayload {
+    pub instances: Vec<CodexMultiInstance>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiInstanceRequest {
+    pub instance_id: String,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogRequest {
@@ -865,6 +931,770 @@ pub async fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 }
 
 #[tauri::command]
+pub async fn launch_codex_multi_instance(request: CodexMultiLaunchRequest) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        launch_codex_multi_instance_blocking(request)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(&format!("启动 Codex 多开实例失败：{error}"), json!({})),
+    }
+}
+
+fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> CommandResult<Value> {
+    let stored_settings = match SettingsStore::default().load() {
+        Ok(settings) => settings,
+        Err(error) => return failed(&format!("读取供应商设置失败：{error}"), json!({})),
+    };
+    let mut settings = request
+        .settings
+        .clone()
+        .unwrap_or_else(|| stored_settings.clone());
+    let profile_id = if request.profile_id.trim().is_empty() {
+        settings.active_relay_id.clone()
+    } else {
+        request.profile_id.trim().to_string()
+    };
+    let Some(profile_index) = settings
+        .relay_profiles
+        .iter()
+        .position(|profile| profile.id == profile_id)
+    else {
+        return failed(
+            &format!("供应商身份不存在：{profile_id}"),
+            json!({ "profileId": profile_id }),
+        );
+    };
+    // 前端序列化 BackendSettings 时会省略 api_key；使用磁盘中的同一 profile
+    // 补回密钥，避免把未持久化的空 key 写入多开实例。
+    if let Some(saved_profile) = stored_settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+    {
+        let profile = &mut settings.relay_profiles[profile_index];
+        if profile.api_key.trim().is_empty() {
+            profile.api_key = saved_profile.api_key.clone();
+        }
+        if profile.auth_contents.trim().is_empty() {
+            profile.auth_contents = saved_profile.auth_contents.clone();
+        }
+    }
+    let profile = settings.relay_profiles[profile_index].clone();
+    if profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate {
+        return failed(
+            "Codex 多开暂不支持需要共享本地聚合代理的供应商，请选择纯 API 或官方身份。",
+            json!({ "profileId": profile_id }),
+        );
+    }
+    if profile.has_model_routes() {
+        return failed(
+            "Codex 多开暂不支持模型路由，请选择单一上游供应商。",
+            json!({ "profileId": profile_id }),
+        );
+    }
+
+    let instance_id = if request.instance_id.trim().is_empty() {
+        profile_id.clone()
+    } else {
+        request.instance_id.trim().to_string()
+    };
+    let slug = multi_instance_slug(&instance_id);
+    let root = multi_instance_root(&slug);
+    if let Ok(existing) = load_multi_instance_manifest(&root)
+        && multi_instance_is_running(&existing)
+    {
+        return ok(
+            "Codex 多开实例已经在运行。",
+            json!({
+                "instanceId": existing.instance_id,
+                "profileId": existing.profile_id,
+                "pid": existing.pid,
+                "debugPort": existing.debug_port,
+                "helperPort": existing.helper_port,
+                "codexHome": existing.codex_home,
+                "sqliteHome": existing.sqlite_home,
+                "userDataDir": existing.user_data_dir,
+                "appPath": existing.app_path
+            }),
+        );
+    }
+    // 先分配端口，再生成 config.toml。Chat Completions 通过实例专属协议代理
+    // 转换，配置里的本地 base_url 必须与这个 helper 端口一致。
+    let debug_port = select_multi_instance_port(request.debug_port, &instance_id);
+    let helper_port = select_multi_instance_port(
+        debug_port.saturating_add(1),
+        &format!("{instance_id}-helper"),
+    );
+    let codex_home = root.join("codex-home");
+    let sqlite_home = root.join("sqlite-home");
+    let user_data_dir = multi_instance_user_data_dir(&slug);
+    if let Err(error) = std::fs::create_dir_all(&codex_home)
+        .and_then(|_| std::fs::create_dir_all(&sqlite_home))
+        .and_then(|_| std::fs::create_dir_all(&user_data_dir))
+    {
+        return failed(
+            &format!("创建 Codex 多开隔离目录失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+
+    // 官方 profile 通常没有 authContents；复制一次当前默认 CODEX_HOME 的登录态，
+    // 用户也可以在新窗口中重新登录。纯 API 实例不复制官方 auth，避免两个身份
+    // 重新混在一起。永远不覆盖实例已有 auth.json。
+    let default_home = codex_plus_core::relay_config::default_codex_home_dir();
+    let instance_auth = codex_home.join("auth.json");
+    if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+        && !instance_auth.exists()
+    {
+        let default_auth = default_home.join("auth.json");
+        if let Ok(contents) = std::fs::read(&default_auth) {
+            let _ = codex_plus_core::settings::atomic_write(&instance_auth, &contents);
+        }
+    }
+    let common_config = if settings.relay_profiles_enabled {
+        settings.relay_common_config_contents.as_str()
+    } else {
+        ""
+    };
+    if let Err(error) =
+        codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+            &codex_home,
+            &profile,
+            common_config,
+            helper_port,
+        )
+    {
+        return failed(
+            &format!("应用供应商到多开实例失败：{error}"),
+            json!({
+                "profileId": profile_id,
+                "codexHome": codex_home.to_string_lossy()
+            }),
+        );
+    }
+    if let Err(error) = absolutize_multi_instance_model_catalog(&codex_home) {
+        return failed(
+            &format!("修正多开实例 model_catalog_json 路径失败：{error}"),
+            json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
+        );
+    }
+    if let Err(error) = remove_invalid_multi_instance_mcp_servers(&codex_home) {
+        return failed(
+            &format!("清理多开实例无效 MCP 配置失败：{error}"),
+            json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
+        );
+    }
+    if let Err(error) = seed_multi_instance_onboarding_state(&codex_home) {
+        return failed(
+            &format!("写入多开实例首次启动状态失败：{error}"),
+            json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
+        );
+    }
+
+    let app_dir = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+        (!request.app_path.trim().is_empty()).then(|| Path::new(request.app_path.trim())),
+        Some(settings.codex_app_path.as_str()),
+    );
+    let Some(app_dir) = app_dir else {
+        return failed("未找到 Codex Desktop，请先设置应用路径。", json!({}));
+    };
+    let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
+    if !executable.is_file() {
+        return failed(
+            &format!("Codex 可执行文件不存在：{}", executable.display()),
+            json!({ "appPath": app_dir.to_string_lossy() }),
+        );
+    }
+    let launcher_guard_port = select_multi_instance_port(0, &format!("{instance_id}-guard"));
+    let worker_home = root.join("worker-home");
+    let worker_state_dir = worker_home.join(".codex-session-delete");
+    if let Err(error) = std::fs::create_dir_all(&worker_state_dir) {
+        return failed(
+            &format!("创建多开 launcher 状态目录失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+    let worker_settings_path = worker_state_dir.join("settings.json");
+    let mut worker_settings = settings.clone();
+    worker_settings.codex_app_path = app_dir.to_string_lossy().to_string();
+    worker_settings.active_relay_id = profile.id.clone();
+    worker_settings.relay_profiles = vec![profile.clone()];
+    worker_settings.aggregate_relay_profiles.clear();
+    worker_settings.active_aggregate_relay_id.clear();
+    worker_settings.provider_sync_enabled = false;
+    // Chat Completions（例如 Zhipu GLM）需要 launcher 启动实例自己的协议代理。
+    // 保持 relay_profiles_enabled，让 `ensure_active_protocol_proxy_config_in_home`
+    // 用多开进程的 CODEX_PLUS_PROTOCOL_PROXY_PORT 修正 config.toml 中的本地代理地址；
+    // 否则父进程写入的默认 57321 会让多个实例互相抢同一个代理端口。
+    worker_settings.relay_profiles_enabled =
+        profile.protocol == codex_plus_core::settings::RelayProtocol::ChatCompletions;
+    worker_settings.codex_extra_args = multi_instance_extra_args(&settings.codex_extra_args);
+    worker_settings
+        .codex_extra_args
+        .push(format!("--user-data-dir={}", user_data_dir.display()));
+    if let Err(error) = SettingsStore::new(worker_settings_path).save(&worker_settings) {
+        return failed(
+            &format!("保存多开 launcher 设置失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+    let worker_options_path = root.join("worker-options.json");
+    let worker_options = CodexMultiWorkerOptions {
+        app_path: app_dir.to_string_lossy().to_string(),
+        debug_port,
+        helper_port,
+    };
+    let worker_options_bytes = match serde_json::to_vec_pretty(&worker_options) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return failed(
+                &format!("序列化多开 worker 参数失败：{error}"),
+                json!({ "instanceId": instance_id }),
+            );
+        }
+    };
+    if let Err(error) =
+        codex_plus_core::settings::atomic_write(&worker_options_path, &worker_options_bytes)
+    {
+        return failed(
+            &format!("保存多开 worker 参数失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+    let manager_executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return failed(
+                &format!("定位多开 launcher 可执行文件失败：{error}"),
+                json!({ "instanceId": instance_id }),
+            );
+        }
+    };
+    let shared_config_home = directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(".config"))
+        .unwrap_or_else(|| PathBuf::from(".config"));
+    let mut command = std::process::Command::new(manager_executable);
+    command
+        .arg("--codex-plus-multi-worker")
+        .arg(&worker_options_path)
+        .env("HOME", &worker_home)
+        .env("CODEX_HOME", &codex_home)
+        .env("CODEX_SQLITE_HOME", &sqlite_home)
+        .env("CODEX_PLUS_MULTI_INSTANCE", "1")
+        .env("CODEX_PLUS_INSTANCE_ID", &instance_id)
+        .env("CODEX_PLUS_INSTANCE_LABEL", &profile.name)
+        .env(
+            "CODEX_PLUS_LAUNCHER_GUARD_PORT",
+            launcher_guard_port.to_string(),
+        )
+        .env("CODEX_PLUS_PROTOCOL_PROXY_PORT", helper_port.to_string())
+        .env("XDG_CONFIG_HOME", &shared_config_home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return failed(
+                &format!("启动 Codex 多开实例失败：{error}"),
+                json!({ "executable": executable.to_string_lossy() }),
+            );
+        }
+    };
+    let pid = child.id();
+    let instance = CodexMultiInstance {
+        instance_id: instance_id.clone(),
+        profile_id: profile_id.clone(),
+        profile_name: profile.name.clone(),
+        pid: Some(pid),
+        debug_port,
+        helper_port,
+        status: "starting".to_string(),
+        running: true,
+        started_at_ms: current_timestamp_ms(),
+        is_main: false,
+        app_path: Some(app_dir.to_string_lossy().to_string()),
+        codex_home: Some(codex_home.to_string_lossy().to_string()),
+        sqlite_home: Some(sqlite_home.to_string_lossy().to_string()),
+        user_data_dir: Some(user_data_dir.to_string_lossy().to_string()),
+    };
+    if let Err(error) = save_multi_instance_manifest(&root, &instance) {
+        let _ = terminate_multi_worker(pid, &worker_options_path);
+        return failed(
+            &format!("保存 Codex 多开实例信息失败：{error}"),
+            json!({ "instanceId": instance_id }),
+        );
+    }
+    // Child drop 不会终止 Unix 子进程；Codex Desktop 自己持有生命周期。
+    drop(child);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.multi_instance_started",
+        json!({
+            "instance_id": instance_id,
+            "profile_id": profile_id,
+            "debug_port": debug_port,
+            "helper_port": helper_port,
+            "codex_home": codex_home,
+            "sqlite_home": sqlite_home,
+            "user_data_dir": user_data_dir,
+            "pid": pid
+        }),
+    );
+    ok(
+        "Codex 多开实例已启动。",
+        json!({
+            "instanceId": instance_id,
+            "profileId": profile_id,
+            "pid": pid,
+            "debugPort": debug_port,
+            "homeDir": codex_home.to_string_lossy(),
+            "codexHome": codex_home.to_string_lossy(),
+            "sqliteHome": sqlite_home.to_string_lossy(),
+            "userDataDir": user_data_dir.to_string_lossy(),
+            "appPath": app_dir.to_string_lossy()
+        }),
+    )
+}
+
+#[tauri::command]
+pub async fn list_codex_multi_instances() -> CommandResult<CodexMultiInstancesPayload> {
+    match tauri::async_runtime::spawn_blocking(list_codex_multi_instances_blocking).await {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("读取 Codex 运行实例失败：{error}"),
+            CodexMultiInstancesPayload {
+                instances: Vec::new(),
+            },
+        ),
+    }
+}
+
+fn list_codex_multi_instances_blocking() -> CommandResult<CodexMultiInstancesPayload> {
+    let mut instances = Vec::new();
+    if let Ok(settings) = SettingsStore::default().load()
+        && let Ok(Some(latest)) = StatusStore::default().load_latest()
+    {
+        let debug_port = latest.debug_port.unwrap_or(default_debug_port());
+        let running = codex_plus_core::cdp::endpoint_available(debug_port)
+            || !codex_plus_core::watcher::find_codex_processes_for_debug_port(debug_port)
+                .is_empty();
+        if running {
+            let profile = settings
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == settings.active_relay_id);
+            instances.push(CodexMultiInstance {
+                instance_id: "main".to_string(),
+                profile_id: settings.active_relay_id.clone(),
+                profile_name: profile
+                    .map(|profile| profile.name.clone())
+                    .unwrap_or_else(|| "主进程".to_string()),
+                pid: codex_plus_core::watcher::find_codex_processes_for_debug_port(debug_port)
+                    .first()
+                    .copied(),
+                debug_port,
+                helper_port: latest.helper_port.unwrap_or(default_helper_port()),
+                status: latest.status,
+                running: true,
+                started_at_ms: latest.started_at_ms,
+                is_main: true,
+                app_path: latest.codex_app,
+                codex_home: Some(
+                    codex_plus_core::relay_config::default_codex_home_dir()
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                sqlite_home: None,
+                user_data_dir: None,
+            });
+        }
+    }
+
+    let root = codex_plus_core::paths::default_app_state_dir().join("codex-multi");
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(instance) = load_multi_instance_manifest(&path) else {
+                continue;
+            };
+            let running = multi_instance_is_running(&instance);
+            let mut current = instance;
+            current.running = running;
+            current.status = if running {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            };
+            if !running {
+                current.pid = None;
+            }
+            instances.push(current);
+        }
+    }
+    instances.sort_by(|left, right| {
+        left.is_main
+            .cmp(&right.is_main)
+            .reverse()
+            .then_with(|| left.profile_name.cmp(&right.profile_name))
+    });
+    ok(
+        "Codex 运行实例已加载。",
+        CodexMultiInstancesPayload { instances },
+    )
+}
+
+#[tauri::command]
+pub async fn stop_codex_multi_instance(
+    request: CodexMultiInstanceRequest,
+) -> CommandResult<CodexMultiInstancesPayload> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        stop_codex_multi_instance_blocking(&request.instance_id)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("结束 Codex 多开实例失败：{error}"),
+            CodexMultiInstancesPayload {
+                instances: Vec::new(),
+            },
+        ),
+    }
+}
+
+fn stop_codex_multi_instance_blocking(
+    instance_id: &str,
+) -> CommandResult<CodexMultiInstancesPayload> {
+    if instance_id.trim() == "main" {
+        return failed(
+            "主进程请使用重启 Codex 或退出管理器来结束。",
+            CodexMultiInstancesPayload {
+                instances: Vec::new(),
+            },
+        );
+    }
+    let path = multi_instance_root(&multi_instance_slug(instance_id));
+    let Some(instance) = load_multi_instance_manifest(&path).ok() else {
+        return failed(
+            &format!("运行实例不存在：{instance_id}"),
+            CodexMultiInstancesPayload {
+                instances: Vec::new(),
+            },
+        );
+    };
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(instance.debug_port);
+    if !codex_plus_core::watcher::find_codex_processes_for_debug_port(instance.debug_port)
+        .is_empty()
+    {
+        return failed(
+            "Codex 进程尚未退出，未结束多开实例。",
+            CodexMultiInstancesPayload {
+                instances: Vec::new(),
+            },
+        );
+    }
+    if let Some(pid) = instance.pid {
+        let options_path = path.join("worker-options.json");
+        let _ = terminate_multi_worker(pid, &options_path);
+    }
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.multi_instance_stopped",
+        json!({ "instance_id": instance.instance_id, "debug_port": instance.debug_port }),
+    );
+    list_codex_multi_instances_blocking()
+}
+
+#[tauri::command]
+pub async fn restart_codex_multi_instance(
+    request: CodexMultiInstanceRequest,
+) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        restart_codex_multi_instance_blocking(&request.instance_id)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(&format!("重启 Codex 多开实例失败：{error}"), json!({})),
+    }
+}
+
+fn restart_codex_multi_instance_blocking(instance_id: &str) -> CommandResult<Value> {
+    if instance_id.trim() == "main" {
+        return failed(
+            "主进程请使用顶部的重启 Codex。",
+            json!({ "instanceId": "main" }),
+        );
+    }
+    let path = multi_instance_root(&multi_instance_slug(instance_id));
+    let Some(instance) = load_multi_instance_manifest(&path).ok() else {
+        return failed(
+            &format!("运行实例不存在：{instance_id}"),
+            json!({ "instanceId": instance_id }),
+        );
+    };
+    let stop = stop_codex_multi_instance_blocking(instance_id);
+    if stop.status == "failed" {
+        return failed(&stop.message, json!({ "instanceId": instance_id }));
+    }
+    launch_codex_multi_instance_blocking(CodexMultiLaunchRequest {
+        settings: None,
+        profile_id: instance.profile_id,
+        instance_id: instance.instance_id,
+        app_path: instance.app_path.unwrap_or_default(),
+        debug_port: instance.debug_port,
+    })
+}
+
+fn multi_instance_root(slug: &str) -> PathBuf {
+    codex_plus_core::paths::default_app_state_dir()
+        .join("codex-multi")
+        .join(slug)
+}
+
+fn multi_instance_manifest_path(root: &Path) -> PathBuf {
+    root.join("instance.json")
+}
+
+fn save_multi_instance_manifest(root: &Path, instance: &CodexMultiInstance) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(instance)?;
+    codex_plus_core::settings::atomic_write(&multi_instance_manifest_path(root), &bytes)
+}
+
+fn load_multi_instance_manifest(root: &Path) -> anyhow::Result<CodexMultiInstance> {
+    Ok(serde_json::from_slice(&std::fs::read(
+        multi_instance_manifest_path(root),
+    )?)?)
+}
+
+fn multi_instance_is_running(instance: &CodexMultiInstance) -> bool {
+    codex_plus_core::cdp::endpoint_available(instance.debug_port)
+        || !codex_plus_core::watcher::find_codex_processes_for_debug_port(instance.debug_port)
+            .is_empty()
+}
+
+fn terminate_multi_worker(pid: u32, options_path: &Path) -> anyhow::Result<()> {
+    if pid == std::process::id() || !multi_worker_process_matches(pid, options_path) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        let status = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status()?;
+        anyhow::ensure!(status.success(), "结束多开 worker 失败（pid {pid}）");
+    }
+    #[cfg(windows)]
+    {
+        let pid_arg = pid.to_string();
+        let status = std::process::Command::new("taskkill")
+            .args(["/PID", pid_arg.as_str(), "/T", "/F"])
+            .status()?;
+        anyhow::ensure!(status.success(), "结束多开 worker 失败（pid {pid}）");
+    }
+    Ok(())
+}
+
+fn multi_worker_process_matches(pid: u32, options_path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(output) = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+        else {
+            return false;
+        };
+        let command = String::from_utf8_lossy(&output.stdout);
+        command.contains("--codex-plus-multi-worker")
+            && command.contains(&options_path.to_string_lossy().to_string())
+    }
+    #[cfg(windows)]
+    {
+        let _ = options_path;
+        true
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (pid, options_path);
+        false
+    }
+}
+
+/// Hidden child process used by Codex multi-launch. Its environment is isolated
+/// before this function is called, so the normal launcher can safely use its
+/// existing default-home/settings/helper/bridge code without touching the main
+/// Codex++ instance.
+pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
+    let options: CodexMultiWorkerOptions = serde_json::from_slice(&std::fs::read(options_path)?)?;
+    let launch_options = codex_plus_launcher::LaunchOptions {
+        app_dir: Some(PathBuf::from(options.app_path)),
+        debug_port: options.debug_port,
+        helper_port: options.helper_port,
+        status_store: StatusStore::default(),
+    };
+    codex_plus_launcher::start(launch_options)?;
+    while codex_plus_core::cdp::endpoint_available(options.debug_port) {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    codex_plus_launcher::shutdown()
+}
+
+fn multi_instance_slug(value: &str) -> String {
+    let mut slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "instance".to_string()
+    } else {
+        slug.chars().take(64).collect()
+    }
+}
+
+fn multi_instance_user_data_dir(slug: &str) -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|dirs| {
+            dirs.data_local_dir()
+                .join("CodexPlusPlus")
+                .join("multi")
+                .join(slug)
+        })
+        .unwrap_or_else(|| {
+            codex_plus_core::paths::default_app_state_dir()
+                .join("user-data")
+                .join(slug)
+        })
+}
+
+fn multi_instance_extra_args(args: &[String]) -> Vec<String> {
+    codex_plus_core::settings::normalize_codex_extra_args(args)
+        .into_iter()
+        .filter(|arg| {
+            !arg.starts_with("--remote-debugging-port")
+                && !arg.starts_with("--remote-allow-origins")
+                && !arg.starts_with("--user-data-dir")
+        })
+        .collect()
+}
+
+fn absolutize_multi_instance_model_catalog(home: &Path) -> anyhow::Result<()> {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path)?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let Some(raw_path) = doc
+        .get("model_catalog_json")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let path = PathBuf::from(raw_path);
+    if path.is_absolute() {
+        return Ok(());
+    }
+    let absolute = home.join(path);
+    doc["model_catalog_json"] = toml_edit::value(absolute.to_string_lossy().to_string());
+    codex_plus_core::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    Ok(())
+}
+
+fn seed_multi_instance_onboarding_state(home: &Path) -> anyhow::Result<()> {
+    let path = home.join(".codex-global-state.json");
+    let mut state = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| json!({})),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    let root = state
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!(".codex-global-state.json 不是 JSON 对象"))?;
+    let atoms = root
+        .entry("electron-persisted-atom-state")
+        .or_insert_with(|| json!({}));
+    let atoms = atoms
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("electron-persisted-atom-state 不是 JSON 对象"))?;
+    atoms.insert(
+        "electron:onboarding-projectless-completed".to_string(),
+        Value::Bool(true),
+    );
+    atoms
+        .entry("last_completed_onboarding".to_string())
+        .or_insert_with(|| Value::from(current_timestamp_ms() / 1000));
+    let bytes = serde_json::to_vec_pretty(&state)?;
+    codex_plus_core::settings::atomic_write(&path, &bytes)?;
+    Ok(())
+}
+
+fn remove_invalid_multi_instance_mcp_servers(home: &Path) -> anyhow::Result<()> {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path)?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let Some(servers) = doc
+        .get_mut("mcp_servers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return Ok(());
+    };
+    let invalid = servers
+        .iter()
+        .filter_map(|(id, item)| {
+            let table = item.as_table_like()?;
+            let valid = ["command", "url"].iter().any(|key| {
+                table
+                    .get(*key)
+                    .and_then(toml_edit::Item::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            });
+            (!valid).then_some(id.to_string())
+        })
+        .collect::<Vec<_>>();
+    if invalid.is_empty() {
+        return Ok(());
+    }
+    for id in invalid {
+        servers.remove(&id);
+    }
+    if servers.is_empty() {
+        doc.as_table_mut().remove("mcp_servers");
+    }
+    codex_plus_core::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    Ok(())
+}
+
+fn select_multi_instance_port(requested: u16, instance_id: &str) -> u16 {
+    let base = if requested > 0 {
+        requested
+    } else {
+        let sum = instance_id
+            .bytes()
+            .fold(0u16, |sum, byte| sum.wrapping_add(byte as u16));
+        9300u16.saturating_add(sum % 500)
+    };
+    (0..1000)
+        .map(|offset| base.saturating_add(offset))
+        .find(|port| *port > 0 && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
+        .unwrap_or(base)
+}
+
+#[tauri::command]
 pub async fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     match tauri::async_runtime::spawn_blocking(move || restart_codex_plus_blocking(request)).await {
         Ok(result) => result,
@@ -1233,6 +2063,13 @@ fn sync_active_relay_to_home(
         let aggregate = settings
             .active_aggregate_relay_profile()
             .ok_or_else(|| anyhow::anyhow!("当前聚合供应商配置不完整"))?;
+        if aggregate.model_aggregation_enabled {
+            return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+                home,
+                &relay,
+                &relay_combined_common_config(settings),
+            );
+        }
         return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
@@ -5844,6 +6681,38 @@ fn apply_aggregate_relay_injection_to_home(
     home: &Path,
     session_provider: RelaySessionProvider,
 ) -> CommandResult<RelayPayload> {
+    // 模型聚合需要和普通供应商切换共用 catalog 写盘链路；旧的直接代理
+    // 写入路径保留给未开启模型聚合的旧配置和无 settings 测试调用。
+    if let Ok(settings) = SettingsStore::default().load() {
+        let profile = settings.active_relay_profile();
+        if profile.relay_mode == RelayMode::Aggregate
+            && settings
+                .active_aggregate_relay_profile()
+                .is_some_and(|aggregate| aggregate.model_aggregation_enabled)
+        {
+            let common_config = relay_combined_common_config(&settings);
+            match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+                home,
+                &profile,
+                &common_config,
+            ) {
+                Ok(result) => {
+                    let status = codex_plus_core::relay_config::relay_status_from_home(home);
+                    return ok(
+                        "聚合供应商配置和模型目录已写入，选中的模型会固定发送到对应成员。",
+                        relay_payload(status, result.backup_path),
+                    );
+                }
+                Err(error) => {
+                    let status = codex_plus_core::relay_config::relay_status_from_home(home);
+                    return failed(
+                        &format!("写入聚合供应商配置失败：{error}"),
+                        relay_payload(status, None),
+                    );
+                }
+            }
+        }
+    }
     match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
@@ -7604,6 +8473,7 @@ base_url = "https://example.invalid/v1"
                 id: "aggregate".to_string(),
                 name: "Aggregate".to_string(),
                 session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
+                model_aggregation_enabled: false,
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
                 routes: Vec::new(),
@@ -7636,6 +8506,7 @@ base_url = "https://example.invalid/v1"
                 id: "aggregate".to_string(),
                 name: "Aggregate".to_string(),
                 session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
+                model_aggregation_enabled: false,
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
                 routes: Vec::new(),
@@ -8753,5 +9624,128 @@ model_reasoning_effort = "high"
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("只允许打开 http 或 https 链接"));
+    }
+
+    #[test]
+    fn multi_instance_slug_is_safe_and_bounded() {
+        assert_eq!(
+            multi_instance_slug("Deep/Seek .. profile"),
+            "Deep-Seek-profile"
+        );
+        assert_eq!(multi_instance_slug("///"), "instance");
+        assert!(multi_instance_slug(&"x".repeat(200)).len() <= 64);
+    }
+
+    #[test]
+    fn multi_instance_port_selection_finds_distinct_loopback_ports() {
+        let first = select_multi_instance_port(0, "official");
+        let second = select_multi_instance_port(first.saturating_add(1), "deepseek");
+        assert!(first > 0);
+        assert!(second > 0);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn multi_instance_manifest_roundtrips_runtime_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let instance = CodexMultiInstance {
+            instance_id: "zhipu".to_string(),
+            profile_id: "profile-zhipu".to_string(),
+            profile_name: "Zhipu GLM".to_string(),
+            pid: Some(1234),
+            debug_port: 9456,
+            helper_port: 9457,
+            status: "starting".to_string(),
+            running: true,
+            started_at_ms: 99,
+            is_main: false,
+            app_path: Some("/Applications/Codex.app".to_string()),
+            codex_home: Some("/tmp/codex-home".to_string()),
+            sqlite_home: Some("/tmp/sqlite-home".to_string()),
+            user_data_dir: Some("/tmp/user-data".to_string()),
+        };
+        save_multi_instance_manifest(temp.path(), &instance).unwrap();
+        assert_eq!(
+            load_multi_instance_manifest(temp.path())
+                .unwrap()
+                .profile_name,
+            "Zhipu GLM"
+        );
+        assert_eq!(
+            load_multi_instance_manifest(temp.path())
+                .unwrap()
+                .debug_port,
+            9456
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multi_worker_process_match_requires_worker_marker_and_options_path() {
+        let options = std::env::temp_dir().join("codex-plus-worker-options-test.json");
+        let pid = std::process::id();
+        assert!(!multi_worker_process_matches(pid, &options));
+    }
+
+    #[test]
+    fn multi_instance_catalog_pointer_is_absolute() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("model-catalogs")).unwrap();
+        std::fs::write(
+            temp.path().join("model-catalogs/catalog.json"),
+            "{\"models\":[]}",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "model_catalog_json = \"model-catalogs/catalog.json\"\n",
+        )
+        .unwrap();
+
+        absolutize_multi_instance_model_catalog(temp.path()).unwrap();
+
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+        let pointer = doc["model_catalog_json"].as_str().unwrap();
+        assert!(Path::new(pointer).is_absolute(), "{pointer}");
+        assert!(Path::new(pointer).is_file(), "{pointer}");
+    }
+
+    #[test]
+    fn multi_instance_onboarding_state_is_seeded_without_account_data() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(".codex-global-state.json"),
+            r#"{"electron-persisted-atom-state":{"keep":true}}"#,
+        )
+        .unwrap();
+
+        seed_multi_instance_onboarding_state(temp.path()).unwrap();
+
+        let state: Value = serde_json::from_slice(
+            &std::fs::read(temp.path().join(".codex-global-state.json")).unwrap(),
+        )
+        .unwrap();
+        let atoms = &state["electron-persisted-atom-state"];
+        assert_eq!(atoms["keep"], true);
+        assert_eq!(atoms["electron:onboarding-projectless-completed"], true);
+        assert!(atoms["last_completed_onboarding"].is_number());
+        assert!(state.get("auth").is_none());
+    }
+
+    #[test]
+    fn multi_instance_removes_mcp_entries_without_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "[mcp_servers.stitch.http_headers]\nkey = \"redacted\"\n\n[mcp_servers.node_repl]\ncommand = \"node\"\n",
+        )
+        .unwrap();
+
+        remove_invalid_multi_instance_mcp_servers(temp.path()).unwrap();
+
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert!(!config.contains("stitch"));
+        assert!(config.contains("[mcp_servers.node_repl]"));
     }
 }

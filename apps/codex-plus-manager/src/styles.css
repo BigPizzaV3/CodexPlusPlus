@@ -742,6 +742,10 @@ body {
   display: grid;
   gap: 6px;
   min-width: 260px;
+  /* 视口内兜底：菜单改 fixed 定位后也不允许超出窗口，超高时内部滚动。 */
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--popover));
@@ -998,6 +1002,64 @@ body {
   color: hsl(var(--primary));
 }
 
+.multi-launch-card {
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+}
+
+.multi-launch-card .relay-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.multi-launch-running-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.multi-launch-instance-list {
+  display: grid;
+  gap: 8px;
+}
+
+.multi-launch-instance-card {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  padding: 11px 12px;
+}
+
+.multi-launch-instance-card .relay-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.multi-launch-instance-card .multi-launch-instance-status {
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .multi-launch-running-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .multi-launch-instance-card {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .multi-launch-instance-card > .multi-launch-instance-status,
+  .multi-launch-instance-card > .relay-card-actions {
+    grid-column: 2;
+  }
+}
+
 .relay-profile-card:hover .relay-card-actions,
 .relay-profile-card:focus-within .relay-card-actions {
   opacity: 1;
@@ -1165,6 +1227,178 @@ body {
 
 .relay-basic-fields > .relay-field-config-model {
   grid-column: 1 / -1;
+}
+
+.relay-basic-fields > .relay-field-name {
+  grid-column: 1 / -1;
+  max-width: 620px;
+}
+
+/* 接入方式、凭据和协议放在同一张卡片里，避免用户在表单上下跳转。 */
+.relay-basic-section {
+  gap: 14px;
+}
+
+.relay-mode-block {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  min-width: 0;
+  border-top: 1px solid hsl(var(--border) / 0.7);
+  padding-top: 14px;
+}
+
+.relay-mode-block-head,
+.relay-inline-connection-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.relay-mode-block-head > div,
+.relay-inline-connection-head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.relay-mode-block-head strong,
+.relay-inline-connection-head strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.relay-mode-block-head span,
+.relay-inline-connection-head span {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.relay-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.relay-mode-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 86px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-md);
+  background: hsl(var(--surface-sunken) / 0.34);
+  color: hsl(var(--foreground));
+  padding: 12px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-ease);
+}
+
+.relay-mode-option:hover {
+  border-color: hsl(var(--brand-accent) / 0.55);
+  background: hsl(var(--brand-accent) / 0.06);
+  transform: translateY(-1px);
+}
+
+.relay-mode-option:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.relay-mode-option.active {
+  border-color: hsl(var(--brand-accent) / 0.72);
+  background: linear-gradient(135deg, hsl(var(--brand-accent) / 0.13), hsl(var(--brand-accent-2) / 0.07));
+  box-shadow: inset 0 0 0 1px hsl(var(--brand-accent) / 0.14);
+}
+
+.relay-mode-option-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid hsl(var(--brand-accent) / 0.3);
+  border-radius: 8px;
+  background: hsl(var(--brand-accent) / 0.08);
+  color: hsl(var(--brand-accent));
+}
+
+.relay-mode-option-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.relay-mode-option-copy strong {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.relay-mode-option-copy small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.relay-mode-option-indicator {
+  align-self: start;
+  width: 10px;
+  height: 10px;
+  margin-top: 3px;
+  border: 1px solid hsl(var(--muted-foreground) / 0.55);
+  border-radius: 50%;
+}
+
+.relay-mode-option.active .relay-mode-option-indicator {
+  border: 3px solid hsl(var(--brand-accent));
+  background: hsl(var(--card));
+}
+
+.relay-inline-connection {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid hsl(var(--brand-accent) / 0.28);
+  border-radius: var(--radius-md);
+  background: hsl(var(--brand-accent) / 0.045);
+  padding: 12px;
+}
+
+.relay-inline-connection .relay-api-fields {
+  padding: 0;
+  animation: none;
+}
+
+.relay-mode-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid hsl(var(--border) / 0.75);
+  border-radius: var(--radius-md);
+  background: hsl(var(--surface-sunken) / 0.42);
+  padding: 10px 12px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.relay-mode-note svg {
+  flex: none;
+  margin-top: 1px;
+  color: hsl(var(--brand-accent));
 }
 
 .relay-connection-section {
@@ -1694,134 +1928,6 @@ body {
   border-radius: var(--radius-lg);
   background: hsl(var(--surface-raised) / 0.45);
   padding: 14px;
-}
-
-/* 渠道保护默认折叠：details 复用 .relay-config-section 的外观，
-   summary 直接当区块标题用。 */
-details.relay-config-section > summary.relay-config-section-head {
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: center;
-  cursor: pointer;
-  list-style: none;
-}
-
-details.relay-config-section > summary.relay-config-section-head::-webkit-details-marker {
-  display: none;
-}
-
-details.relay-config-section > summary.relay-config-section-head::after {
-  content: "\25BE";
-  flex-shrink: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-  transition: transform var(--motion-fast) var(--motion-ease);
-}
-
-details.relay-config-section[open] > summary.relay-config-section-head::after {
-  transform: rotate(180deg);
-}
-
-details.relay-channel-protection > summary.relay-config-section-head::after {
-  content: none;
-}
-
-details.relay-channel-protection > summary.relay-config-section-head > div:first-child {
-  gap: 6px;
-}
-
-details.relay-channel-protection[open] > summary .relay-advanced-chevron {
-  transform: rotate(0deg);
-}
-
-/* 开关和对应参数放在同一卡片内；关闭开关时仍保留字段的编辑能力。 */
-.relay-channel-protection .relay-protection-body {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  min-width: 0;
-  padding-top: 0;
-}
-
-.relay-protection-option {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-  min-width: 0;
-  border: 1px solid hsl(var(--border) / 0.8);
-  border-radius: var(--radius-md);
-  background: hsl(var(--card) / 0.7);
-  padding: 14px;
-}
-
-.relay-protection-option .relay-protection-toggle,
-.relay-protection-option .relay-protection-toggle:hover {
-  min-height: 24px;
-  gap: 12px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
-  margin: 0;
-  box-shadow: none;
-}
-
-.relay-protection-toggle strong {
-  grid-column: 1;
-  grid-row: 1;
-  min-width: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.5;
-}
-
-.relay-protection-description,
-.relay-protection-note {
-  margin: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.relay-protection-description {
-  margin-top: -5px;
-}
-
-.relay-protection-note {
-  border-top: 1px solid hsl(var(--border) / 0.7);
-  padding-top: 10px;
-}
-
-.relay-protection-option > .field,
-.relay-protection-option .channel-status-editor {
-  min-width: 0;
-}
-
-.relay-protection-option input[type="number"] {
-  width: min(100%, 220px);
-}
-
-.relay-protection-option .channel-status-list {
-  align-items: center;
-  min-height: 0;
-  gap: 6px;
-}
-
-.relay-protection-option .channel-status-list:empty {
-  display: none;
-}
-
-.relay-protection-option .channel-status-chip {
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 4px 9px;
-  font-size: 12px;
-}
-
-.relay-protection-option .channel-status-chip:focus-visible {
-  outline: 2px solid hsl(var(--ring));
-  outline-offset: 2px;
 }
 
 /* 通用配置默认折叠为一行文字：summary 复用 .relay-file-head 的排版，
@@ -2832,6 +2938,57 @@ details.relay-fold[open] > .relay-fold-body {
   min-height: 118px;
 }
 
+.aggregate-mode-chooser {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--secondary) / 0.2);
+}
+
+.aggregate-mode-chooser-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.aggregate-mode-chooser-copy h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.aggregate-mode-chooser-copy p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
+.aggregate-mode-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.aggregate-mode-choice {
+  min-height: 132px;
+}
+
+.aggregate-model-mode-hint {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid hsl(var(--primary) / 0.35);
+  border-radius: 8px;
+  background: hsl(var(--primary) / 0.08);
+}
+
+.aggregate-model-mode-hint span,
+.aggregate-member-models {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .aggregate-members {
   display: grid;
   gap: 10px;
@@ -2896,6 +3053,33 @@ details.relay-fold[open] > .relay-fold-body {
 
 .aggregate-weight-box input {
   min-height: 34px;
+}
+
+.aggregate-member-models {
+  min-width: 0;
+  /* 一行一个模型，模型名不在中间断行；列宽不够时横向滚动。 */
+  display: block;
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.aggregate-editor[data-aggregate-mode="model"] .aggregate-member-row {
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr);
+}
+
+@media (max-width: 760px) {
+  .aggregate-mode-choice-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aggregate-editor[data-aggregate-mode="model"] .aggregate-member-row {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .aggregate-member-models {
+    grid-column: 2;
+  }
 }
 
 .aggregate-routes {
@@ -5318,14 +5502,16 @@ input[type="range"]:disabled {
   display: grid;
   min-width: 0;
   gap: 8px;
+  /* 一行一个模型：容器再窄也不改成多行卡片，横向滚动兜底。 */
+  overflow-x: auto;
 }
 
 .relay-model-row {
   display: grid;
   min-width: 0;
-  grid-template-columns: 32px minmax(220px, 1.6fr) minmax(130px, 0.7fr) minmax(110px, 0.6fr) minmax(180px, 1fr) 40px 40px;
+  grid-template-columns: 28px minmax(108px, 1.4fr) minmax(64px, 0.55fr) minmax(84px, 0.7fr) minmax(104px, 0.9fr) minmax(116px, 1fr) 30px 30px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-height: var(--relay-control-height);
 }
 
@@ -5343,6 +5529,14 @@ input[type="range"]:disabled {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
+/* 模型行内的下拉收紧内边距与图标间距，把宽度让给文字：
+   避免「90%」只显示成「9…」、「low → ultra」显示成「low → …」。 */
+.relay-model-row .app-select-trigger {
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .relay-model-cell {
   display: grid;
   gap: 5px;
@@ -5358,6 +5552,74 @@ input[type="range"]:disabled {
   color: hsl(var(--muted-foreground));
   font-size: 11.5px;
   line-height: 1.4;
+}
+
+/* 思考等级：多选面板的触发器沿用 app-select 外观，继承内置声明时弱化文字。 */
+.relay-model-cell-reasoning .app-select-trigger,
+.relay-model-cell-reasoning .app-select-option {
+  font-size: 12px;
+}
+
+.relay-reasoning.inherited .app-select-trigger > span:first-child,
+.relay-reasoning .app-select-trigger > span.relay-reasoning-empty {
+  color: hsl(var(--muted-foreground));
+}
+
+.relay-reasoning-menu {
+  right: 0;
+  left: auto;
+  width: 240px;
+  min-width: 240px;
+  max-width: min(240px, calc(100vw - 48px));
+  max-height: 320px;
+}
+
+.relay-reasoning-default {
+  display: grid;
+  gap: 6px;
+  margin-top: 5px;
+  border-top: 1px solid hsl(var(--border) / 0.7);
+  padding: 8px 9px 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.relay-reasoning-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.relay-reasoning-chips button {
+  min-height: 24px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  padding: 0 8px;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.relay-reasoning-chips button:hover {
+  border-color: hsl(var(--brand-accent) / 0.72);
+}
+
+.relay-reasoning-chips button.selected {
+  border-color: hsl(var(--brand-accent));
+  background: hsl(var(--brand-accent) / 0.16);
+  color: hsl(var(--brand-accent));
+}
+
+.relay-reasoning-hint {
+  margin: 4px 0 3px;
+  padding: 0 9px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
 }
 
 .relay-model-drag {
@@ -6809,6 +7071,10 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .relay-mode-options {
+    grid-template-columns: 1fr;
+  }
+
   .relay-config-section-head {
     align-items: stretch;
     flex-direction: column;
@@ -6819,14 +7085,10 @@ select {
   }
 }
 
-@container relay-editor (max-width: 700px) {
-  .relay-channel-protection .relay-protection-body {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* 模型表按编辑区实际宽度切换，避免侧栏与面板占用宽度后横向溢出。 */
-@container relay-editor (max-width: 900px) {
+/* 模型表保持「一行一个模型」：字段压缩到最小宽度，容器更窄时横向滚动（见
+   .relay-model-row-editor）。只有窄到手机宽度（≤560px）才切换成带字段标签的
+   多行卡片布局。 */
+@container relay-editor (max-width: 560px) {
   .relay-model-row-head {
     display: none;
   }
@@ -6865,6 +7127,11 @@ select {
     grid-row: 2;
   }
 
+  .relay-model-cell-reasoning {
+    grid-column: 2 / -1;
+    grid-row: 3;
+  }
+
   .relay-model-row > .relay-model-drag {
     grid-column: 1;
     grid-row: 1;
@@ -6891,6 +7158,10 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .relay-mode-options {
+    grid-template-columns: 1fr;
+  }
+
   .relay-model-row:not(.relay-model-row-head) {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
@@ -6906,6 +7177,11 @@ select {
   .relay-model-cell-image {
     grid-column: 1 / -1;
     grid-row: 3;
+  }
+
+  .relay-model-cell-reasoning {
+    grid-column: 1 / -1;
+    grid-row: 4;
   }
 
   .relay-custom-header-row {
@@ -6950,7 +7226,8 @@ select {
 
   .relay-model-cell-window,
   .relay-model-cell-compact,
-  .relay-model-cell-image {
+  .relay-model-cell-image,
+  .relay-model-cell-reasoning {
     grid-column: 1 / -1;
   }
 
@@ -6960,6 +7237,10 @@ select {
 
   .relay-model-cell-image {
     grid-row: 4;
+  }
+
+  .relay-model-cell-reasoning {
+    grid-row: 5;
   }
 }
 
@@ -8954,32 +9235,6 @@ select {
   line-height: 1.45;
 }
 
-.channel-status-editor {
-  display: grid;
-  gap: 8px;
-}
-
-.channel-status-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-height: 24px;
-}
-
-.channel-status-chip {
-  border: 1px solid hsl(var(--border));
-  border-radius: 6px;
-  background: hsl(var(--muted));
-  color: hsl(var(--foreground));
-  cursor: pointer;
-  font: inherit;
-  padding: 3px 8px;
-}
-
-.channel-status-chip:hover {
-  border-color: hsl(var(--primary));
-}
-
 .settings-content .stepwise-settings-block {
   display: grid;
   gap: 10px;
@@ -9839,13 +10094,65 @@ select {
 .provider-view-tabs button:hover{background:hsl(var(--primary)/.12);color:hsl(var(--primary))}
 .provider-view-tabs button.active{background:hsl(var(--primary));color:hsl(var(--primary-foreground));box-shadow:none}
 .provider-view-tabs button.active svg{color:currentColor}
+.provider-view-tabs .provider-view-help{margin-left:-3px;opacity:.62}
+.provider-view-tabs button.active .provider-view-help{opacity:.85}
 .provider-aggregate-empty{display:flex;align-items:center;gap:14px;margin:0 0 14px;padding:18px;border:1px dashed hsl(var(--brand-accent)/.45);border-radius:12px;background:hsl(var(--brand-accent)/.05)}
 .provider-aggregate-empty strong{font-size:14px;white-space:nowrap}
 .provider-aggregate-empty span{flex:1;color:hsl(var(--muted-foreground));font-size:13px}
+.provider-aggregate-toolbar{display:flex;justify-content:flex-end;margin:0 0 10px}
 @media(max-width:760px){.provider-view-tabs{width:100%}.provider-view-tabs button{flex:1;justify-content:center}.provider-aggregate-empty{align-items:flex-start;flex-direction:column}}
 
-.claude-localization-page { display: grid; gap: 14px; max-width: 900px; }
-.claude-localization-status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.claude-localization-status-grid .metric { min-width: 0; }
-.claude-localization-list { margin: 0; padding-left: 20px; color: var(--muted-foreground); display: grid; gap: 8px; line-height: 1.55; }
-@media (max-width: 760px) { .claude-localization-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.claude-localization-page { display: grid; gap: 14px; max-width: 960px; }
+
+/* 概览卡：标题 + 状态徽标、四项数据卡、提示条与操作区。 */
+.claude-l10n-hero .card-content { display: grid; gap: 24px; padding: 24px 28px; }
+.claude-l10n-hero-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.claude-l10n-hero-title { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.claude-l10n-hero-icon {
+  width: 44px; height: 44px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 13px; color: hsl(var(--primary-foreground));
+  background: linear-gradient(135deg, hsl(var(--brand-accent)), hsl(var(--brand-accent-2)));
+  box-shadow: 0 6px 16px hsl(var(--brand-accent) / 0.25);
+}
+.claude-l10n-hero-title strong { display: block; font-size: 16px; letter-spacing: -0.01em; }
+.claude-l10n-hero-subtitle { display: block; margin-top: 6px; color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.6; }
+
+.claude-l10n-status {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 6px 12px; border: 1px solid hsl(var(--border)); border-radius: 999px;
+  font-size: 12.5px; white-space: nowrap; color: hsl(var(--muted-foreground));
+}
+.claude-l10n-status i { width: 7px; height: 7px; border-radius: 50%; background: hsl(var(--muted-foreground)); }
+.claude-l10n-status-ok { color: hsl(var(--status-success)); border-color: hsl(var(--status-success) / 0.4); background: hsl(var(--status-success) / 0.08); }
+.claude-l10n-status-ok i { background: hsl(var(--status-success)); box-shadow: 0 0 8px hsl(var(--status-success) / 0.6); }
+.claude-l10n-status-warn { color: hsl(var(--status-warning)); border-color: hsl(var(--status-warning) / 0.4); background: hsl(var(--status-warning) / 0.08); }
+.claude-l10n-status-warn i { background: hsl(var(--status-warning)); }
+
+/* 标题区与数据卡、数据卡与说明条之间额外留白：这两段的间距单独拉大。 */
+.claude-l10n-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.claude-l10n-stat {
+  display: grid; gap: 8px; min-width: 0;
+  padding: 16px 18px; border: 1px solid hsl(var(--border)); border-radius: 12px;
+  background: hsl(var(--surface-sunken) / 0.45);
+}
+.claude-l10n-stat span { color: hsl(var(--muted-foreground)); font-size: 12px; }
+.claude-l10n-stat strong { font-size: 15.5px; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.claude-l10n-note {
+  display: flex; align-items: flex-start; gap: 11px;
+  margin-top: 14px;
+  padding: 16px 18px; border: 1px dashed hsl(var(--brand-accent) / 0.4); border-radius: 12px;
+  background: hsl(var(--brand-accent) / 0.05);
+  color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.7;
+}
+.claude-l10n-note svg { flex: none; margin-top: 2px; color: hsl(var(--brand-accent)); }
+
+.claude-l10n-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 20px; border-top: 1px solid hsl(var(--border)); }
+.claude-l10n-actions-secondary { display: inline-flex; gap: 10px; margin-left: auto; }
+
+@media (max-width: 860px) { .claude-l10n-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) {
+  .claude-l10n-hero-head { flex-direction: column; }
+  .claude-l10n-actions-secondary { margin-left: 0; }
+}
