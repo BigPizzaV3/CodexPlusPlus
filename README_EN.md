@@ -90,6 +90,14 @@ When creating an aggregate provider, first choose **Failover** or **Model aggreg
 
 Members can be ordinary API providers or official accounts with a completed ChatGPT login. For official members the proxy sends requests to the chatgpt.com backend with that account's OAuth credentials, refreshes the access token with its refresh token when needed (writing the rotated tokens back to the provider snapshot), and retries once after a 401. When the same account is also used directly, the live auth.json credentials take precedence so refresh-token rotation cannot invalidate the snapshot.
 
+### A model picker that folds by provider
+
+Model aggregation merges several members' models into one catalog. The native model picker now folds them into a collapsible group per provider: headers show the provider name and model count, model names drop the repeated "（provider）" suffix, and the default member's group carries a **Default** badge. An "expand all / collapse all" control sits in the corner, collapse state is remembered per provider, and opening the picker expands just the group holding the current selection (or the default provider when nothing is selected). Single-provider setups keep the untouched native list.
+
+<p align="center">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker folded by provider: Provider 4 group (Default, 7 models) and DeepSeek group (2 models)" width="560">
+</p>
+
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
 
 ## Codex Enhancements

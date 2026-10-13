@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex++ — 让 Codex 更顺手</title>
+<meta name="description" content="Codex++ 是面向 Codex 桌面应用的统一管理工具：供应商与模型、上下文窗口、会话管理、界面增强、拓展与桌宠。给 Codex 桌面应用加一点「++」。">
+<link rel="icon" type="image/png" href="assets/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,800;1,400&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ========== 顶栏 ========== -->
+<header class="site-nav" id="siteNav">
+  <div class="nav-inner">
+    <a class="brand" href="#top" data-nav>
+      <img src="assets/logo.png" alt="Codex++ 标志" class="brand-logo">
+      <span class="brand-name">Codex<b>++</b></span>
+    </a>
+    <nav class="nav-links">
+      <a href="#features" data-nav>功能</a>
+      <a href="#modes" data-nav>接入方式</a>
+      <a href="#showcase" data-nav>实拍</a>
+      <a href="#steps" data-nav>快速上手</a>
+      <a href="#community" data-nav>社区</a>
+      <a href="#download" data-nav>下载</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="nav-version mono" data-site-version>v1.8.0</span>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+      <a class="btn btn-primary btn-sm magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        下载
+      </a>
+      <a class="btn btn-ghost btn-sm" href="en.html" hreflang="en" lang="en">EN</a>
+    </div>
+  </div>
+</header>
+
+<!-- ========== Hero ========== -->
+<section class="hero" id="top">
+  <div class="hero-bg">
+    <img class="hero-photo" src="assets/hero-src.jpg" alt="" aria-hidden="true">
+    <canvas id="nebula" class="hero-canvas" aria-hidden="true"></canvas>
+    <div class="hero-vignette" aria-hidden="true"></div>
+    <div class="hero-grid" aria-hidden="true"></div>
+  </div>
+
+  <div class="hero-inner">
+    <p class="eyebrow reveal"><span class="pulse-dot"></span>YOUR CODEX, UPGRADED — 开源 · 本地 · Rust + Tauri</p>
+    <h1 class="hero-title">
+      <span class="line"><span class="w">让</span> <span class="w">Codex</span></span>
+      <span class="line"><span class="w grad">更顺手</span><span class="w plus">++</span></span>
+    </h1>
+    <p class="hero-sub reveal">统一管理供应商与模型，让会话更好用，也让工作区更像你。<br>不改 <span class="mono">app.asar</span>，不写安装目录，双击打开就能用。</p>
+    <div class="hero-cta reveal">
+      <a class="btn btn-primary btn-lg magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        下载最新版 <span data-site-version>v1.8.0</span>
+      </a>
+      <a class="btn btn-ghost btn-lg magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <dl class="hero-stats reveal">
+      <div class="stat"><dt class="mono" data-count="32114" data-format="wan">0</dt><dd>GitHub Stars</dd></div>
+      <div class="stat"><dt class="mono" data-count="150" data-suffix="+">0</dt><dd>可接入主流模型</dd></div>
+      <div class="stat"><dt class="mono" data-count="1" data-format="m">0</dt><dd>单模型最大上下文窗口</dd></div>
+      <div class="stat"><dt class="mono">0</dt><dd>对官方应用的文件改动</dd></div>
+    </dl>
+  </div>
+
+  <a class="scroll-cue" href="#demo" data-nav aria-label="向下滚动">
+    <span class="cue-ring"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+  </a>
+</section>
+
+<!-- ========== 打字特效现场 ========== -->
+<section class="demo" id="demo">
+  <div class="demo-bg" aria-hidden="true"></div>
+  <div class="section-head">
+    <p class="eyebrow">LIVE DEMO · 光标打字特效</p>
+    <h2>敲下的每个字符，<em>都有回应</em></h2>
+    <p class="section-sub">这不是视频，是跑在你屏幕上的真实特效——Codex++ 同款粒子引擎，在这里先敲一把试试。</p>
+  </div>
+  <div class="composer tilt" id="composer">
+    <div class="composer-bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="composer-title mono">Codex composer · codex++</span>
+    </div>
+    <div class="composer-input" id="composerInput" contenteditable="true" spellcheck="false" data-placeholder="与 Codex 协作，说点什么……"></div>
+    <div class="composer-foot">
+      <span class="chip">＋ 附件</span>
+      <span class="chip chip-warn">⛨ 完全访问</span>
+      <span class="spacer"></span>
+      <span class="chip chip-model">DeepSeek Flash · Max ▾</span>
+      <span class="chip send">↑</span>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 功能矩阵 ========== -->
+<section class="features" id="features">
+  <div class="section-head">
+    <p class="eyebrow">FEATURES · 功能矩阵</p>
+    <h2>一个管理工具，<em>管到底</em></h2>
+    <p class="section-sub">从供应商配置到界面增强，从会话管理到桌宠挂件。所有增强可单独开关，关掉总开关，供应商与启动管理照常可用。</p>
+  </div>
+  <div class="feature-grid">
+    <article class="fcard tilt">
+      <span class="fcard-no mono">01</span>
+      <h3>供应商自由切换</h3>
+      <p>官方登录、官方登录 + API、纯 API 与聚合供应商。故障转移在多个供应商间失败切换，模型聚合按模型固定成员；支持 Responses / Chat Completions 协议转换、模型测试与 Provider Doctor。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">02</span>
+      <h3>每个模型，各有空间</h3>
+      <p>按模型设置上下文窗口与自动压缩阈值，生成独立 <span class="mono">model_catalog_json</span>，Codex 按当前模型识别窗口；支持模型元数据导入，按供应商选择 MCP、Skill 和 Plugin。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">03</span>
+      <h3>会话管理更省心</h3>
+      <p>本地会话扫描、删除与撤销、批量管理、Markdown 导出、Token 历史、项目移动和线程 ID，历史会话想找就找、想删就删。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">04</span>
+      <h3>拓展你的工作区</h3>
+      <p>浏览与管理社区用户脚本，按需添加模型选择、用量统计等能力；另有 MCP、Skill 与 Codex 插件管理，也可以写自己的脚本热重载调试。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">05</span>
+      <h3>输入与阅读，都顺手</h3>
+      <p>语音输入、粘贴修复、会话宽度、滚动位置恢复、下一步建议、回答大纲，还有刚才那一手的光标打字特效。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">06</span>
+      <h3>同一台电脑，多个 Codex</h3>
+      <p>为每个供应商身份启动相互隔离的 Codex 实例：独立配置、会话和用户数据目录，可同时运行，集中列表里单独重启或结束。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">07</span>
+      <h3>用量状态栏</h3>
+      <p>输入框下方实时显示生成速度、缓存命中率与上下文占用；数据取自本机 Codex 会话记录，口径与 Codex 一致，默认开启。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">08</span>
+      <h3>用量可见，也有陪伴</h3>
+      <p>用量挂件与桌宠角色：Token 统计、任务状态与预算提醒，可拖动、缩放、换皮肤与自定义图片，认真工作也有点趣味。</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">09</span>
+      <h3>微信连接</h3>
+      <p>扫码连接本机 Codex，每个联系人映射到独立会话，并可配置允许访问的微信用户。出门在外，也能远程派活。</p>
+    </article>
+  </div>
+</section>
+
+<!-- ========== 供应商接入方式 ========== -->
+<section class="modes" id="modes">
+  <div class="section-head">
+    <p class="eyebrow">PROVIDER MODES · 接入方式</p>
+    <h2>四种接法，<em>随你切换</em></h2>
+    <p class="section-sub">从纯官方账号到多供应商聚合，每种模式独立配置、一键切换；切换时先保存当前配置，再写入目标配置。</p>
+  </div>
+  <div class="seg" role="tablist" aria-label="供应商接入方式">
+    <span class="seg-pill" aria-hidden="true"></span>
+    <button class="seg-btn active" role="tab" aria-selected="true" data-mode="official">官方登录</button>
+    <button class="seg-btn" role="tab" aria-selected="false" data-mode="hybrid">官方登录 + API</button>
+    <button class="seg-btn" role="tab" aria-selected="false" data-mode="api">纯 API</button>
+    <button class="seg-btn" role="tab" aria-selected="false" data-mode="agg">聚合供应商</button>
+  </div>
+  <div class="mode-panel tilt" id="modePanel">
+    <div class="mode-copy">
+      <h3 id="modeTitle">官方登录</h3>
+      <p id="modeDesc">使用 ChatGPT / Codex 官方账号登录，模型请求走官方通道，保持官方应用的完整体验与插件入口。</p>
+      <ul class="mode-points" id="modePoints">
+        <li>ChatGPT / Codex 官方账号登录</li>
+        <li>官方额度与官方插件市场</li>
+        <li>零配置，开箱即用</li>
+      </ul>
+    </div>
+    <div class="mode-route mono" id="modeRoute" aria-label="请求流向示意">
+      <span class="route-node route-you">You</span>
+      <span class="route-link"></span>
+      <span class="route-node">Codex</span>
+      <span class="route-link"></span>
+      <span class="route-node route-hot">OpenAI</span>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 横向实拍 ========== -->
+<section class="showcase" id="showcase">
+  <div class="showcase-pin" id="showcasePin">
+    <div class="section-head">
+      <p class="eyebrow">SHOWCASE · 真实截图</p>
+      <h2>所见，<em>即所得</em></h2>
+      <p class="section-sub">以下全部是 Codex++ 的真实界面。横向滚动，慢慢看。</p>
+    </div>
+    <div class="showcase-track" id="showcaseTrack">
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/manager-enhancements.png" alt="Codex++ 管理工具：集中管理模型、会话、输入体验和挂件设置"></div>
+        <figcaption><b>增强集中管理</b><span>插件与模型、对话与输入、挂件与桌宠，一页开关。</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/codex-multi-launch.png" alt="Codex 多开：列出运行中的 DeepSeek 与 Zhipu GLM 实例"></div>
+        <figcaption><b>Codex 多开</b><span>每个供应商身份一个隔离实例，互不打扰。</span></figcaption>
+      </figure>
+      <figure class="shot shot-narrow tilt">
+        <div class="shot-frame"><img src="assets/model-picker-groups.png" alt="模型选择器按供应商分组折叠：供应商 4 组（默认，7 个模型）与 DeepSeek 组（2 个模型）"></div>
+        <figcaption><b>模型选择器分组</b><span>聚合模型按供应商折叠，表头带数量与「默认」标志。</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具"></div>
+        <figcaption><b>拓展市场</b><span>社区脚本即装即用：用量面板、模型矩阵、提示词优化。</span></figcaption>
+      </figure>
+      <figure class="shot shot-wide tilt">
+        <div class="shot-frame"><img src="assets/usage-statusline.png" alt="输入框下方的用量状态栏：51 tok/s、缓存命中 99.9%、上下文占用 19%"></div>
+        <figcaption><b>用量状态栏</b><span>51 tok/s · 缓存命中 99.9% · 上下文 19%，就在输入框下方。</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame shot-dark"><img src="assets/usage-widget.png" alt="角色用量挂件：气泡显示 Token 统计和运行状态"></div>
+        <figcaption><b>桌宠用量挂件</b><span>今日用量、任务状态、预算提醒，换张图就是你的角色。</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效"></div>
+        <figcaption><b>打字特效</b><span>彩虹粒子、烟花与星光，可随系统「减少动态效果」自动暂停。</span></figcaption>
+      </figure>
+      <div class="shot-end" aria-hidden="true"><span class="mono">FIN · 更多在应用里</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 上下文窗口 ========== -->
+<section class="context" id="context">
+  <div class="section-head">
+    <p class="eyebrow">PER-MODEL CONTEXT · 各模型，各有空间</p>
+    <h2>一行后缀，<em>百万窗口</em></h2>
+    <p class="section-sub">模型列表里写上窗口后缀，Codex++ 生成独立的 <span class="mono">model_catalog_json</span>，让 Codex 按当前模型使用对应窗口。未指定的模型继续沿用供应商级配置。</p>
+  </div>
+  <div class="context-cols">
+    <div class="term tilt" id="term">
+      <div class="term-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="mono term-title">model_list · config</span>
+      </div>
+      <pre class="term-body mono"><code><span class="t-cm"># 在模型列表里直接写窗口后缀</span>
+deepseek-v4-pro<span class="t-hl">[1M]</span>
+claude-opus-5.5<span class="t-hl">[200K]</span>
+your-model<span class="t-hl">[128000]</span>
+
+<span class="t-cm"># Codex++ 生成 model_catalog_json</span>
+<span class="t-cm"># codex 按当前模型识别各自窗口 ↓</span></code></pre>
+      <div class="term-out mono" id="termOut"><span class="t-ok">✓ catalog 已注入</span> <span class="t-dim">config.toml · model_catalog_json</span></div>
+    </div>
+    <div class="bars">
+      <div class="bar-row" data-pct="20">
+        <span class="bar-label mono">generic-model</span>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="bar-val mono">200K</span>
+      </div>
+      <div class="bar-row" data-pct="40">
+        <span class="bar-label mono">claude-opus-5.5</span>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="bar-val mono">400K</span>
+      </div>
+      <div class="bar-row hot" data-pct="100">
+        <span class="bar-label mono">deepseek-v4-pro</span>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="bar-val mono">1M</span>
+      </div>
+      <p class="bars-note">按模型声明窗口，互不挤占；状态栏的「上下文占用」也按各模型窗口计算。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 快速上手 ========== -->
+<section class="steps" id="steps">
+  <div class="section-head">
+    <p class="eyebrow">GETTING STARTED · 快速上手</p>
+    <h2>三步，<em>开整</em></h2>
+    <p class="section-sub">Codex++ 配合官方 Codex / ChatGPT 桌面应用使用，首次启动前请确认已安装对应的官方应用。</p>
+  </div>
+  <div class="steps-track">
+    <article class="step tilt">
+      <span class="step-no mono">01</span>
+      <h3>下载适合你的安装包</h3>
+      <p>前往 GitHub Releases：Windows 选 <span class="mono">*-windows-x64-setup.exe</span>，macOS（Apple Silicon / Intel）选 <span class="mono">*-macos-universal.dmg</span>，拖入「应用程序」。</p>
+    </article>
+    <span class="step-arrow" aria-hidden="true">→</span>
+    <article class="step tilt">
+      <span class="step-no mono">02</span>
+      <h3>打开 Codex++，完成配置</h3>
+      <p>双击始终打开管理界面：确认官方应用路径，选择供应商模式，按需开启增强功能并保存。API Key 只保存在本机。</p>
+    </article>
+    <span class="step-arrow" aria-hidden="true">→</span>
+    <article class="step tilt">
+      <span class="step-no mono">03</span>
+      <h3>在界面中启动 Codex</h3>
+      <p>点击「启动」，加载已保存的供应商与增强配置并打开官方应用。依赖注入的设置在保存后重启 Codex 生效。</p>
+    </article>
+  </div>
+  <p class="steps-note">所有界面增强均可单独关闭；关闭增强总开关后，供应商与启动管理能力照常可用。</p>
+</section>
+
+<!-- ========== 最新动态 ========== -->
+<section class="whatsnew" id="whatsnew">
+  <div class="section-head">
+    <p class="eyebrow">CHANGELOG · 最新动态</p>
+    <h2>一直在<em>往前跑</em></h2>
+    <p class="section-sub">最近几个版本的更新摘要，完整记录见仓库 CHANGELOG 与 Releases。</p>
+  </div>
+  <div class="rel-list" id="relList">
+    <noscript><p class="rel-empty">启用 JavaScript 查看最近更新摘要。</p></noscript>
+  </div>
+</section>
+
+<!-- ========== 常见问题 ========== -->
+<section class="faq" id="faq">
+  <div class="section-head">
+    <p class="eyebrow">FAQ · 常见问题</p>
+    <h2>先问，<em>先答</em></h2>
+  </div>
+  <div class="faq-list">
+    <details class="faq-item">
+      <summary>启动后，为什么没有 Codex++ 菜单？<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>确认是在 <b>Codex++</b> 界面中点击「启动」打开的官方应用。打开管理工具的「安装维护」与「关于」页面，检查应用路径、启动状态和诊断日志。</p></div>
+    </details>
+    <details class="faq-item">
+      <summary>切换供应商后，请求为什么失败？<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>先在供应商详情中运行模型测试或 Provider Doctor，确认协议、Base URL、Key 与模型匹配。纯 API 和官方登录 + API 使用不同的认证位置，不要手工复制两种模式的 <span class="mono">auth.json</span>。</p></div>
+    </details>
+    <details class="faq-item">
+      <summary>增强功能可以关闭吗？官方应用更新后还能用吗？<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>可以分别关闭，也可以关闭增强总开关。Codex++ 依赖官方桌面应用的页面结构、CDP 和本地数据格式；官方应用更新后，部分功能可能需要跟随适配。修改供应商配置或会话数据前，请保留备份。</p></div>
+    </details>
+    <details class="faq-item">
+      <summary>配置、会话和日志存在哪里？<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>设置了 <span class="mono">CODEX_HOME</span> 时，Codex 主目录以该变量为准；否则使用 <span class="mono">~/.codex</span>。API Key 只保存在本机，提交反馈前请隐藏密钥与认证信息。</p></div>
+    </details>
+  </div>
+</section>
+
+<!-- ========== 社区与赞助 ========== -->
+<section class="community" id="community">
+  <div class="section-head">
+    <p class="eyebrow">COMMUNITY · 社区与支持</p>
+    <h2>一起玩，<em>一起养</em></h2>
+    <p class="section-sub">遇到问题带上系统、Codex++ 版本、复现步骤与已脱敏的日志提 issue；也欢迎分享拓展、主题和使用经验。</p>
+  </div>
+  <div class="comm-grid">
+    <a class="comm-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/issues" target="_blank" rel="noopener">
+      <b>GitHub Issues</b><span>反馈问题与功能建议</span><i>↗</i>
+    </a>
+    <a class="comm-card tilt" href="https://qm.qq.com/q/5h3pxpxg7S" target="_blank" rel="noopener">
+      <b>QQ 交流 4 群</b><span>1127858981</span><i>↗</i>
+    </a>
+    <a class="comm-card tilt" href="https://t.me/CodexPlusPlus" target="_blank" rel="noopener">
+      <b>Telegram 频道</b><span>@CodexPlusPlus</span><i>↗</i>
+    </a>
+    <a class="comm-card tilt" href="https://linux.do" target="_blank" rel="noopener">
+      <b>LINUX DO</b><span>社区讨论</span><i>↗</i>
+    </a>
+  </div>
+  <div class="sponsor-block">
+    <div class="sponsor-head">
+      <h3>感谢赞助商</h3>
+      <p>感谢以下赞助商对项目的支持。服务范围、价格与活动以各平台官网说明为准。</p>
+      <p class="sponsor-meta">
+        <span data-sponsor-status>赞助商列表加载中…</span>
+        <a href="https://github.com/BigPizzaV3/Ad-List" target="_blank" rel="noopener">列表自动更新 · 查看来源 ↗</a>
+      </p>
+    </div>
+    <div id="sponsorTop"></div>
+    <div class="sponsor-grid" id="sponsorGrid"></div>
+    <p class="sponsor-contact">想支持项目或展示品牌？<a href="mailto:1727532@qq.com">联系维护者</a>。</p>
+  </div>
+</section>
+
+<!-- ========== CTA / 下载 ========== -->
+<section class="cta" id="download">
+  <div class="cta-bg">
+    <img class="cta-photo" src="assets/cta-src.jpg" alt="" aria-hidden="true">
+    <canvas id="nebula2" class="hero-canvas" aria-hidden="true"></canvas>
+    <div class="cta-shade" aria-hidden="true"></div>
+  </div>
+  <div class="cta-inner">
+    <h2>你的 Codex，<em>值得这两个加号</em></h2>
+    <p class="cta-sub">免费开源 · AGPL-3.0 · Windows 与 macOS 双平台<br>配置与会话数据都在你自己的电脑上。</p>
+    <div class="dl-cards">
+      <a class="dl-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <b>Windows · x64</b>
+        <span class="mono">*-windows-x64-setup.exe</span>
+        <i>下载 →</i>
+      </a>
+      <a class="dl-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M17.05 12.54c-.03-2.89 2.36-4.27 2.47-4.34-1.35-1.97-3.44-2.24-4.18-2.27-1.78-.18-3.47 1.05-4.37 1.05-.9 0-2.29-1.02-3.77-1-1.94.03-3.72 1.13-4.72 2.86-2.01 3.49-.51 8.66 1.45 11.5.96 1.39 2.1 2.95 3.6 2.89 1.45-.06 2-.93 3.75-.93s2.25.93 3.78.9c1.56-.03 2.55-1.41 3.5-2.81 1.1-1.61 1.55-3.17 1.58-3.25-.04-.02-3.03-1.16-3.09-4.6ZM14.22 4.02c.8-.97 1.34-2.31 1.19-3.65-1.15.05-2.55.77-3.38 1.74-.74.86-1.39 2.23-1.22 3.55 1.29.1 2.6-.65 3.41-1.64Z"/></svg>
+        <b>macOS · Universal</b>
+        <span class="mono">*-macos-universal.dmg</span>
+        <i>下载 →</i>
+      </a>
+    </div>
+    <p class="cta-note">配合官方 Codex / ChatGPT 桌面应用使用；安装后双击打开 Codex++，配置好供应商，从界面里点「启动」。</p>
+  </div>
+</section>
+
+<!-- ========== 页脚 ========== -->
+<footer class="site-footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <img src="assets/logo.png" alt="" class="brand-logo">
+      <div>
+        <b>Codex++</b>
+        <p>给 Codex 桌面应用加一点「++」。<br>AGPL-3.0-only · Rust + Tauri</p>
+      </div>
+    </div>
+    <nav class="footer-links">
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus/blob/main/CHANGELOG.md" target="_blank" rel="noopener">更新日志</a>
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus/issues" target="_blank" rel="noopener">反馈问题</a>
+      <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noopener">Telegram</a>
+      <a href="https://qm.qq.com/q/5h3pxpxg7S" target="_blank" rel="noopener">QQ 群 · 1127858981</a>
+      <a href="en.html" hreflang="en" lang="en">English</a>
+    </nav>
+  </div>
+  <p class="footer-fine">Codex++ 是社区开源项目，与 OpenAI 无隶属关系；截图来自真实界面，桌宠角色素材来源见项目仓库说明。</p>
+</footer>
+
+<!-- 打字特效层 -->
+<canvas id="fx" aria-hidden="true"></canvas>
+
+<script src="assets/three.min.js"></script>
+<script src="assets/gsap.min.js"></script>
+<script src="assets/ScrollTrigger.min.js"></script>
+<script src="js/nebula.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

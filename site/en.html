@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex++ — Make Codex nicer to use</title>
+<meta name="description" content="Codex++ is a unified manager for the Codex desktop app: providers and models, per-model context windows, session management, interface enhancements, extensions and desktop pets.">
+<link rel="icon" type="image/png" href="assets/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,800;1,400&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="site-nav" id="siteNav">
+  <div class="nav-inner">
+    <a class="brand" href="#top" data-nav>
+      <img src="assets/logo.png" alt="Codex++ logo" class="brand-logo">
+      <span class="brand-name">Codex<b>++</b></span>
+    </a>
+    <nav class="nav-links">
+      <a href="#features" data-nav>Features</a>
+      <a href="#modes" data-nav>Modes</a>
+      <a href="#showcase" data-nav>Showcase</a>
+      <a href="#steps" data-nav>Get started</a>
+      <a href="#community" data-nav>Community</a>
+      <a href="#download" data-nav>Download</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="nav-version mono" data-site-version>v1.8.0</span>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+      <a class="btn btn-primary btn-sm magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+      </a>
+      <a class="btn btn-ghost btn-sm" href="index.html" hreflang="zh-CN" lang="zh-CN">中文</a>
+    </div>
+  </div>
+</header>
+
+<section class="hero" id="top">
+  <div class="hero-bg">
+    <img class="hero-photo" src="assets/hero-src.jpg" alt="" aria-hidden="true">
+    <canvas id="nebula" class="hero-canvas" aria-hidden="true"></canvas>
+    <div class="hero-vignette" aria-hidden="true"></div>
+    <div class="hero-grid" aria-hidden="true"></div>
+  </div>
+
+  <div class="hero-inner">
+    <p class="eyebrow reveal"><span class="pulse-dot"></span>YOUR CODEX, UPGRADED — OPEN SOURCE · LOCAL · RUST + TAURI</p>
+    <h1 class="hero-title">
+      <span class="line"><span class="w">Make</span> <span class="w">Codex</span></span>
+      <span class="line"><span class="w grad">nicer</span><span class="w plus">++</span></span>
+    </h1>
+    <p class="hero-sub reveal">Manage providers and models in one place, make conversations easier to use,<br>and shape your workspace around you. No <span class="mono">app.asar</span> patches, nothing written into install dirs.</p>
+    <div class="hero-cta reveal">
+      <a class="btn btn-primary btn-lg magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download <span data-site-version>v1.8.0</span>
+      </a>
+      <a class="btn btn-ghost btn-lg magnetic" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <dl class="hero-stats reveal">
+      <div class="stat"><dt class="mono" data-count="32114" data-format="wan">0</dt><dd>GitHub Stars</dd></div>
+      <div class="stat"><dt class="mono" data-count="150" data-suffix="+">0</dt><dd>Mainstream models</dd></div>
+      <div class="stat"><dt class="mono" data-count="1" data-format="m">0</dt><dd>Max per-model context</dd></div>
+      <div class="stat"><dt class="mono">0</dt><dd>Files patched in the official app</dd></div>
+    </dl>
+  </div>
+
+  <a class="scroll-cue" href="#demo" data-nav aria-label="Scroll down">
+    <span class="cue-ring"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+  </a>
+</section>
+
+<section class="demo" id="demo">
+  <div class="demo-bg" aria-hidden="true"></div>
+  <div class="section-head">
+    <p class="eyebrow">LIVE DEMO · TYPING EFFECTS</p>
+    <h2>Every keystroke <em>answers back</em></h2>
+    <p class="section-sub">Not a video — the real particle engine shipped in Codex++, running on your screen right now. Type something.</p>
+  </div>
+  <div class="composer tilt" id="composer">
+    <div class="composer-bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="composer-title mono">Codex composer · codex++</span>
+    </div>
+    <div class="composer-input" id="composerInput" contenteditable="true" spellcheck="false" data-placeholder="Work with Codex, say something…"></div>
+    <div class="composer-foot">
+      <span class="chip">＋ Attach</span>
+      <span class="chip chip-warn">⛨ Full access</span>
+      <span class="spacer"></span>
+      <span class="chip chip-model">DeepSeek Flash · Max ▾</span>
+      <span class="chip send">↑</span>
+    </div>
+  </div>
+</section>
+
+<section class="features" id="features">
+  <div class="section-head">
+    <p class="eyebrow">FEATURES · THE MATRIX</p>
+    <h2>One manager, <em>top to bottom</em></h2>
+    <p class="section-sub">Every enhancement has its own switch; with the master switch off, provider and launch management keep working.</p>
+  </div>
+  <div class="feature-grid">
+    <article class="fcard tilt">
+      <span class="fcard-no mono">01</span>
+      <h3>Switch providers freely</h3>
+      <p>Official sign-in, official + API, API-only, and aggregates. Failover switches members on errors; model aggregation pins models to members. Responses / Chat Completions conversion, model tests and Provider Doctor included.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">02</span>
+      <h3>Every model, its own space</h3>
+      <p>Set context windows and compaction thresholds per model. Codex++ generates a dedicated <span class="mono">model_catalog_json</span> so Codex reads each model's window. Import model metadata; pick MCP, skills and plugins per provider.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">03</span>
+      <h3>Simpler session management</h3>
+      <p>Local session scanning, delete with undo, batch management, Markdown export, token history, project moves and thread IDs.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">04</span>
+      <h3>Extend your workspace</h3>
+      <p>Browse community user scripts for model selectors, usage stats and more. Manage MCP servers, skills and Codex plugins, or hot-reload your own scripts.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">05</span>
+      <h3>Smoother writing and reading</h3>
+      <p>Voice input, paste fixes, conversation width, scroll restoration, next-step suggestions, answer outlines — and the typing effects you just tried.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">06</span>
+      <h3>Many Codex, one machine</h3>
+      <p>Launch isolated Codex instances per provider identity: separate config, sessions and data directories, running side by side, each restartable on its own.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">07</span>
+      <h3>Usage status line</h3>
+      <p>Live generation speed, cache hit rate and context usage below the composer, read from local Codex session records with matching definitions. On by default.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">08</span>
+      <h3>Usage, with company</h3>
+      <p>Usage widgets and desktop pets: token stats, task status and budget alerts. Drag, resize, reskin, or bring your own character art.</p>
+    </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">09</span>
+      <h3>WeChat connect</h3>
+      <p>Scan a QR code to reach your local Codex. Each contact maps to an isolated session, with an allow-list of WeChat users. Hand off work from anywhere.</p>
+    </article>
+  </div>
+</section>
+
+<section class="modes" id="modes">
+  <div class="section-head">
+    <p class="eyebrow">PROVIDER MODES</p>
+    <h2>Four ways in, <em>your call</em></h2>
+    <p class="section-sub">Each mode is configured independently and switches in one click — the current profile is saved before the target one is written.</p>
+  </div>
+  <div class="seg" role="tablist" aria-label="Provider modes">
+    <span class="seg-pill" aria-hidden="true"></span>
+    <button class="seg-btn active" role="tab" aria-selected="true" data-mode="official">Official</button>
+    <button class="seg-btn" role="tab" aria-selected="false" data-mode="hybrid">Official + API</button>
+    <button class="seg-btn" role="tab" aria-selected="false" data-mode="api">API only</button>
+    <button class="seg-btn" role="tab" aria-selected="false" data-mode="agg">Aggregate</button>
+  </div>
+  <div class="mode-panel tilt" id="modePanel">
+    <div class="mode-copy">
+      <h3 id="modeTitle">Official sign-in</h3>
+      <p id="modeDesc">Use your ChatGPT / Codex account. Requests go through the official channel with the full official experience and plugin entry.</p>
+      <ul class="mode-points" id="modePoints">
+        <li>Sign in with your ChatGPT / Codex account</li>
+        <li>Official quota and plugin marketplace</li>
+        <li>Zero config, works out of the box</li>
+      </ul>
+    </div>
+    <div class="mode-route mono" id="modeRoute" aria-label="Request flow">
+      <span class="route-node route-you">You</span>
+      <span class="route-link"></span>
+      <span class="route-node">Codex</span>
+      <span class="route-link"></span>
+      <span class="route-node route-hot">OpenAI</span>
+    </div>
+  </div>
+</section>
+
+<section class="showcase" id="showcase">
+  <div class="showcase-pin" id="showcasePin">
+    <div class="section-head">
+      <p class="eyebrow">SHOWCASE · REAL UI</p>
+      <h2>What you see <em>is what ships</em></h2>
+      <p class="section-sub">All screenshots below are the real Codex++ interface. Scroll sideways, take your time.</p>
+    </div>
+    <div class="showcase-track" id="showcaseTrack">
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/manager-enhancements.png" alt="Codex++ Manager: models, sessions, input behavior and widget settings in one place"></div>
+        <figcaption><b>Enhancements hub</b><span>Plugins &amp; models, dialogs &amp; input, widgets &amp; pets — one page of switches.</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/codex-multi-launch.png" alt="Codex multi-launch: running DeepSeek and Zhipu GLM instances"></div>
+        <figcaption><b>Multi-launch</b><span>One isolated instance per provider identity, no cross-talk.</span></figcaption>
+      </figure>
+      <figure class="shot shot-narrow tilt">
+        <div class="shot-frame"><img src="assets/model-picker-groups.png" alt="Model picker folded by provider: Provider 4 group (Default, 7 models) and DeepSeek group (2 models)"></div>
+        <figcaption><b>Grouped model picker</b><span>Folded by provider, with counts and a Default badge.</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/extension-market.png" alt="Codex++ extension marketplace: community scripts and workflow tools"></div>
+        <figcaption><b>Extension market</b><span>Install community scripts in one click: usage panels, model matrix, prompt tools.</span></figcaption>
+      </figure>
+      <figure class="shot shot-wide tilt">
+        <div class="shot-frame"><img src="assets/usage-statusline.png" alt="Usage status line: 51 tok/s, 99.9% cache hits, 19% context"></div>
+        <figcaption><b>Usage status line</b><span>51 tok/s · 99.9% cache hits · 19% context, right under the composer.</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame shot-dark"><img src="assets/usage-widget.png" alt="Desktop pet usage widget with token stats bubble"></div>
+        <figcaption><b>Pet widget</b><span>Today's usage, task status and budget alerts — swap in your own character.</span></figcaption>
+      </figure>
+      <figure class="shot tilt">
+        <div class="shot-frame"><img src="assets/typing-effects.png" alt="Rainbow particle typing effects in the Codex composer"></div>
+        <figcaption><b>Typing effects</b><span>Rainbow particles, fireworks and starlight; pause automatically with Reduce Motion.</span></figcaption>
+      </figure>
+      <div class="shot-end" aria-hidden="true"><span class="mono">FIN · MORE IN APP</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="context" id="context">
+  <div class="section-head">
+    <p class="eyebrow">PER-MODEL CONTEXT</p>
+    <h2>One suffix, <em>a million tokens</em></h2>
+    <p class="section-sub">Write a window suffix in the model list and Codex++ generates a dedicated <span class="mono">model_catalog_json</span> so Codex uses the right window per model. Models without a suffix keep provider-level settings.</p>
+  </div>
+  <div class="context-cols">
+    <div class="term tilt" id="term">
+      <div class="term-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="mono term-title">model_list · config</span>
+      </div>
+      <pre class="term-body mono"><code><span class="t-cm"># Write window suffixes right in the model list</span>
+deepseek-v4-pro<span class="t-hl">[1M]</span>
+claude-opus-5.5<span class="t-hl">[200K]</span>
+your-model<span class="t-hl">[128000]</span>
+
+<span class="t-cm"># Codex++ generates model_catalog_json</span>
+<span class="t-cm"># codex reads each model's own window ↓</span></code></pre>
+      <div class="term-out mono" id="termOut"><span class="t-ok">✓ catalog injected</span> <span class="t-dim">config.toml · model_catalog_json</span></div>
+    </div>
+    <div class="bars">
+      <div class="bar-row" data-pct="20">
+        <span class="bar-label mono">generic-model</span>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="bar-val mono">200K</span>
+      </div>
+      <div class="bar-row" data-pct="40">
+        <span class="bar-label mono">claude-opus-5.5</span>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="bar-val mono">400K</span>
+      </div>
+      <div class="bar-row hot" data-pct="100">
+        <span class="bar-label mono">deepseek-v4-pro</span>
+        <div class="bar-track"><div class="bar-fill"></div></div>
+        <span class="bar-val mono">1M</span>
+      </div>
+      <p class="bars-note">Each model declares its own window; the status line's context share follows the same per-model numbers.</p>
+    </div>
+  </div>
+</section>
+
+<section class="steps" id="steps">
+  <div class="section-head">
+    <p class="eyebrow">GETTING STARTED</p>
+    <h2>Three steps, <em>done</em></h2>
+    <p class="section-sub">Codex++ works alongside the official Codex / ChatGPT desktop app — install that first.</p>
+  </div>
+  <div class="steps-track">
+    <article class="step tilt">
+      <span class="step-no mono">01</span>
+      <h3>Grab the installer</h3>
+      <p>From GitHub Releases: Windows picks <span class="mono">*-windows-x64-setup.exe</span>, macOS (Apple Silicon / Intel) picks <span class="mono">*-macos-universal.dmg</span> — drag it into Applications.</p>
+    </article>
+    <span class="step-arrow" aria-hidden="true">→</span>
+    <article class="step tilt">
+      <span class="step-no mono">02</span>
+      <h3>Open Codex++ and configure</h3>
+      <p>Double-click always opens the manager: confirm the official app path, pick a provider mode, toggle enhancements, save. API keys stay on your machine.</p>
+    </article>
+    <span class="step-arrow" aria-hidden="true">→</span>
+    <article class="step tilt">
+      <span class="step-no mono">03</span>
+      <h3>Launch Codex from the manager</h3>
+      <p>Hit "Launch" to load your saved provider and enhancement config into the official app. Injection-based settings apply after a Codex restart.</p>
+    </article>
+  </div>
+  <p class="steps-note">Every enhancement can be toggled individually; with the master switch off, provider and launch management keep working.</p>
+</section>
+
+<section class="whatsnew" id="whatsnew">
+  <div class="section-head">
+    <p class="eyebrow">CHANGELOG</p>
+    <h2>Always <em>moving</em></h2>
+    <p class="section-sub">Highlights from the latest releases — see the repo CHANGELOG and Releases for the full log.</p>
+  </div>
+  <div class="rel-list" id="relList">
+    <noscript><p class="rel-empty">Enable JavaScript to see recent release highlights.</p></noscript>
+  </div>
+</section>
+
+<section class="faq" id="faq">
+  <div class="section-head">
+    <p class="eyebrow">FAQ</p>
+    <h2>Asked, <em>answered</em></h2>
+  </div>
+  <div class="faq-list">
+    <details class="faq-item">
+      <summary>Why is there no Codex++ menu after launch?<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>Make sure you launched the official app from the <b>Codex++</b> manager with the "Launch" button. Check the app path, launch status and diagnostic logs in the manager's Maintenance and About pages.</p></div>
+    </details>
+    <details class="faq-item">
+      <summary>Why do requests fail after switching providers?<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>Run a model test or Provider Doctor in the provider details first: verify protocol, Base URL, key and model. API-only and official+API modes store credentials differently — don't hand-copy <span class="mono">auth.json</span> between them.</p></div>
+    </details>
+    <details class="faq-item">
+      <summary>Can enhancements be disabled? Will they survive official app updates?<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p>Yes — individually or via the master switch. Codex++ depends on the official app's page structure, CDP and local data formats, so some features may need follow-up adaptations after official updates. Back up before changing provider settings or session data.</p></div>
+    </details>
+    <details class="faq-item">
+      <summary>Where are config, sessions and logs stored?<span class="faq-x" aria-hidden="true"></span></summary>
+      <div class="faq-a"><p><span class="mono">CODEX_HOME</span> wins when set; otherwise <span class="mono">~/.codex</span>. API keys never leave your machine — redact secrets before submitting feedback.</p></div>
+    </details>
+  </div>
+</section>
+
+<section class="community" id="community">
+  <div class="section-head">
+    <p class="eyebrow">COMMUNITY &amp; SUPPORT</p>
+    <h2>Built <em>together</em></h2>
+    <p class="section-sub">Open an issue with your OS, Codex++ version, repro steps and redacted logs. Extensions, themes and tips are always welcome.</p>
+  </div>
+  <div class="comm-grid">
+    <a class="comm-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/issues" target="_blank" rel="noopener">
+      <b>GitHub Issues</b><span>Bugs &amp; feature requests</span><i>↗</i>
+    </a>
+    <a class="comm-card tilt" href="https://qm.qq.com/q/5h3pxpxg7S" target="_blank" rel="noopener">
+      <b>QQ Group 4</b><span>1127858981</span><i>↗</i>
+    </a>
+    <a class="comm-card tilt" href="https://t.me/CodexPlusPlus" target="_blank" rel="noopener">
+      <b>Telegram</b><span>@CodexPlusPlus</span><i>↗</i>
+    </a>
+    <a class="comm-card tilt" href="https://linux.do" target="_blank" rel="noopener">
+      <b>LINUX DO</b><span>Community forum</span><i>↗</i>
+    </a>
+  </div>
+  <div class="sponsor-block">
+    <div class="sponsor-head">
+      <h3>Thanks to our sponsors</h3>
+      <p>Refer to each provider's official website for services, prices and offers.</p>
+      <p class="sponsor-meta">
+        <span data-sponsor-status>Loading sponsors…</span>
+        <a href="https://github.com/BigPizzaV3/Ad-List" target="_blank" rel="noopener">Auto-updated list · View source ↗</a>
+      </p>
+    </div>
+    <div id="sponsorTop"></div>
+    <div class="sponsor-grid" id="sponsorGrid"></div>
+    <p class="sponsor-contact">Want to support the project or show your brand? <a href="mailto:1727532@qq.com">Contact the maintainer</a>.</p>
+  </div>
+</section>
+
+<section class="cta" id="download">
+  <div class="cta-bg">
+    <img class="cta-photo" src="assets/cta-src.jpg" alt="" aria-hidden="true">
+    <canvas id="nebula2" class="hero-canvas" aria-hidden="true"></canvas>
+    <div class="cta-shade" aria-hidden="true"></div>
+  </div>
+  <div class="cta-inner">
+    <h2>Your Codex deserves <em>these two pluses</em></h2>
+    <p class="cta-sub">Free &amp; open source · AGPL-3.0 · Windows and macOS<br>Your config and sessions never leave your machine.</p>
+    <div class="dl-cards">
+      <a class="dl-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <b>Windows · x64</b>
+        <span class="mono">*-windows-x64-setup.exe</span>
+        <i>Download →</i>
+      </a>
+      <a class="dl-card tilt" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M17.05 12.54c-.03-2.89 2.36-4.27 2.47-4.34-1.35-1.97-3.44-2.24-4.18-2.27-1.78-.18-3.47 1.05-4.37 1.05-.9 0-2.29-1.02-3.77-1-1.94.03-3.72 1.13-4.72 2.86-2.01 3.49-.51 8.66 1.45 11.5.96 1.39 2.1 2.95 3.6 2.89 1.45-.06 2-.93 3.75-.93s2.25.93 3.78.9c1.56-.03 2.55-1.41 3.5-2.81 1.1-1.61 1.55-3.17 1.58-3.25-.04-.02-3.03-1.16-3.09-4.6ZM14.22 4.02c.8-.97 1.34-2.31 1.19-3.65-1.15.05-2.55.77-3.38 1.74-.74.86-1.39 2.23-1.22 3.55 1.29.1 2.6-.65 3.41-1.64Z"/></svg>
+        <b>macOS · Universal</b>
+        <span class="mono">*-macos-universal.dmg</span>
+        <i>Download →</i>
+      </a>
+    </div>
+    <p class="cta-note">Works with the official Codex / ChatGPT desktop app. Open Codex++, configure a provider, and hit "Launch" in the manager.</p>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <img src="assets/logo.png" alt="" class="brand-logo">
+      <div>
+        <b>Codex++</b>
+        <p>Add a little ++ to the Codex desktop app.<br>AGPL-3.0-only · Rust + Tauri</p>
+      </div>
+    </div>
+    <nav class="footer-links">
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
+      <a href="https://github.com/BigPizzaV3/CodexPlusPlus/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noopener">Telegram</a>
+      <a href="https://qm.qq.com/q/5h3pxpxg7S" target="_blank" rel="noopener">QQ · 1127858981</a>
+      <a href="index.html" hreflang="zh-CN" lang="zh-CN">中文</a>
+    </nav>
+  </div>
+  <p class="footer-fine">Codex++ is a community open-source project, not affiliated with OpenAI. Screenshots are of the real interface; desktop-pet character credits live in the repository.</p>
+</footer>
+
+<canvas id="fx" aria-hidden="true"></canvas>
+
+<script src="assets/three.min.js"></script>
+<script src="assets/gsap.min.js"></script>
+<script src="assets/ScrollTrigger.min.js"></script>
+<script src="js/nebula.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

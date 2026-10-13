@@ -701,6 +701,14 @@ button {
   line-height: 1.9;
 }
 
+.model-picker img {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 42px rgba(24, 28, 36, 0.09);
+}
+
 .community-links {
   display: flex;
   flex-wrap: wrap;
