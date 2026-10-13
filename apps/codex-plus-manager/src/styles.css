@@ -3245,6 +3245,9 @@ details.relay-fold[open] > .relay-fold-body {
 .feature-switch-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 每张卡按自身内容取高：同一行的可展开区块（如「API 余额（可选）」）撑高时，
+     不会再把相邻的功能开关卡一起拉高。 */
+  align-items: start;
   gap: 8px;
   margin: 12px 0;
   min-width: 0;
