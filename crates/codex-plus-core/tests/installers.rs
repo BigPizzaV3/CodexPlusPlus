@@ -163,7 +163,7 @@ fn windows_installer_waits_for_normal_exit_and_cancels_without_writing_apps() {
 }
 
 #[test]
-fn macos_dmg_includes_applications_shortcut_and_hidden_legacy_shim() {
+fn macos_dmg_includes_one_visible_app_and_hidden_legacy_updater() {
     let script = std::fs::read_to_string("../../scripts/installer/macos/package-dmg.sh").unwrap();
     assert!(script.contains("ln -s /Applications \"$STAGE/Applications\""));
     assert!(script.contains("Codex++.app"));
@@ -171,7 +171,21 @@ fn macos_dmg_includes_applications_shortcut_and_hidden_legacy_shim() {
     // intentionally shipped as a hidden, self-exiting compatibility shim.
     assert!(script.contains("Codex++ 管理工具.app"));
     assert!(script.contains("codex-plus-legacy-shim"));
+    let app_commands: Vec<_> = script
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("create_app "))
+        .collect();
+    assert_eq!(
+        app_commands,
+        [
+            r#"create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "false""#,
+            r#"create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-legacy-shim" "com.bigpizzav3.codexplusplus.manager" "true""#,
+        ]
+    );
+    assert!(script.contains("printf '%s\\n' \"Codex++ 管理工具.app\" > \"$STAGE/.hidden\""));
     assert!(script.contains("chflags hidden \"$STAGE/Codex++ 管理工具.app\""));
+    assert!(script.contains("set visible of item \"Codex++ 管理工具.app\" to false"));
 }
 
 #[test]
