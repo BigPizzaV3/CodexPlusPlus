@@ -5,6 +5,10 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "设为当前 Key": "Select this key",
+  "Key 名称": "Key name",
+  "删除 Key": "Delete key",
+  "添加 Key": "Add key",
   "本地服务器状态": "Local server status",
   "调试连接状态": "Debug connection status",
   "当前配置无需本地服务器": "The current configuration does not require a local server",
@@ -1444,6 +1448,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} 的 API Key": "API key for {0}",
   "{0} 个插件": "{0} plugins",
   "{0} / {1} 个插件": "{0} / {1} plugins",
   "查看插件 {0} 的详情": "View details for plugin {0}",

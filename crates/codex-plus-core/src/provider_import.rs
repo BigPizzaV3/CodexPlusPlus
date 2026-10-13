@@ -187,6 +187,12 @@ fn relay_profile_from_request(
         base_url: request.base_url.clone(),
         upstream_base_url: request.base_url.clone(),
         api_key: request.api_key.clone(),
+        api_keys: vec![crate::settings::RelayApiKey {
+            id: "default".to_string(),
+            name: "默认".to_string(),
+            api_key: request.api_key.clone(),
+        }],
+        active_api_key_id: "default".to_string(),
         protocol: relay_protocol(&request.wire_api),
         relay_mode: relay_mode(&request.relay_mode),
         official_mix_api_key: false,

@@ -1297,6 +1297,10 @@ fn backfill_profile_from_text(
                 "实时配置没有可采纳的供应商 API Key；已保留原快照，请显式导入完整 URL 与凭据。"
             );
         }
+        profile.api_keys = vec![crate::settings::RelayApiKey {
+            id: "live-import".into(), name: "导入".into(), api_key: live_key.clone(),
+        }];
+        profile.active_api_key_id = "live-import".into();
         restore_profile_credentials_after_backfill(profile, live_auth, &live_key, live_auth)?;
     } else {
         restore_profile_credentials_after_backfill(
@@ -4397,6 +4401,9 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return "codex-plus-aggregate".to_string();
     }
+    if let Some(selected) = profile.selected_api_key() {
+        return selected.api_key.trim().to_string();
+    }
     if profile.relay_mode == crate::settings::RelayMode::Official {
         return experimental_bearer_token_from_config(&profile.config_contents)
             .ok()
@@ -4565,6 +4572,47 @@ fn complete_relay_profile_config_with_proxy_port(
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    if profile.api_keys.is_empty()
+        && !profile.uses_no_auth()
+        && (profile.relay_mode != crate::settings::RelayMode::Official || profile.official_mix_api_key)
+    {
+        let key = relay_profile_api_key(profile);
+        if !key.is_empty() {
+            profile.api_keys.push(crate::settings::RelayApiKey {
+                id: "default".into(), name: "默认".into(), api_key: key,
+            });
+        }
+    }
+    let mut seen_api_key_ids = HashSet::new();
+    profile.api_keys = profile
+        .api_keys
+        .drain(..)
+        .filter_map(|mut entry| {
+            entry.id = entry.id.trim().to_string();
+            entry.name = entry.name.trim().to_string();
+            if entry.id.is_empty() || !seen_api_key_ids.insert(entry.id.clone()) {
+                return None;
+            }
+            if entry.name.is_empty() {
+                entry.name = "未命名 Key".to_string();
+            }
+            Some(entry)
+        })
+        .collect();
+    if !profile
+        .api_keys
+        .iter()
+        .any(|entry| entry.id == profile.active_api_key_id)
+    {
+        profile.active_api_key_id = profile
+            .api_keys
+            .first()
+            .map(|entry| entry.id.clone())
+            .unwrap_or_default();
+    }
+    if let Some(selected) = profile.selected_api_key() {
+        profile.api_key = selected.api_key.clone();
+    }
     profile.no_auth = profile.relay_mode == crate::settings::RelayMode::PureApi && profile.no_auth;
     if profile.no_auth {
         profile.api_key.clear();

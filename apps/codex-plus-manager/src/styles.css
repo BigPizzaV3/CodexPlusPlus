@@ -1877,6 +1877,60 @@ body {
   grid-column: auto;
 }
 
+.relay-field-key {
+  grid-column: 1 / -1;
+}
+
+.relay-api-key-list {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-api-key-row {
+  display: grid;
+  grid-template-columns: 36px minmax(120px, 0.55fr) minmax(220px, 1.45fr) 36px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: var(--radius-md);
+  background: hsl(var(--surface-raised) / 0.35);
+}
+
+.relay-api-key-row.active {
+  border-color: hsl(var(--brand-accent) / 0.55);
+  background: hsl(var(--brand-accent) / 0.07);
+}
+
+.relay-api-key-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+.relay-api-key-select:hover,
+.relay-api-key-select:focus-visible {
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  outline: none;
+}
+
+.relay-api-key-row.active .relay-api-key-select {
+  color: hsl(var(--brand-accent));
+}
+
+.relay-api-key-add {
+  justify-self: start;
+}
+
 /* 折叠式高级区：整块描边，标题行自带箭头，收起时用一行提示说明里面有什么 */
 .relay-advanced-block {
   grid-column: 1 / -1;
@@ -7001,6 +7055,14 @@ select {
   .relay-config-section-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .relay-api-key-row {
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
+  }
+
+  .relay-api-key-row > input[type="password"] {
+    grid-column: 2 / 4;
   }
 
   .relay-model-list-tools {

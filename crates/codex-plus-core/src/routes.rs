@@ -739,6 +739,23 @@ fn settings_payload_value(
     );
     settings.dictation = crate::dictation::effective_settings(&settings);
     let mut value = serde_json::to_value(settings)?;
+    fn remove_named_keys(value: &mut Value) {
+        match value {
+            Value::Object(object) => {
+                object.remove("apiKeys");
+                for child in object.values_mut() {
+                    remove_named_keys(child);
+                }
+            }
+            Value::Array(array) => {
+                for child in array {
+                    remove_named_keys(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    remove_named_keys(&mut value);
     if let Some(object) = value.as_object_mut() {
         object.remove("codexAppStepwiseApiKey");
         if let Some(dictation) = object.get_mut("dictation").and_then(Value::as_object_mut) {
@@ -790,6 +807,17 @@ mod dictation_privacy_tests {
         assert!(result["dictation"].get("apiKey").is_none());
         assert_eq!(result["dictation"]["apiKeyConfigured"], true);
         assert!(!result.to_string().contains("fake-asr-private-key"));
+    }
+
+    #[test]
+    fn settings_bridge_never_returns_named_key_lists() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles[0].api_keys = vec![crate::settings::RelayApiKey {
+            id: "backup".into(), name: "备用".into(), api_key: "fake-backup-secret".into(),
+        }];
+        let result = settings_payload_value(settings, String::new()).unwrap();
+        assert!(result["relayProfiles"][0].get("apiKeys").is_none());
+        assert!(!result.to_string().contains("fake-backup-secret"));
     }
     #[test]
     fn dictation_settings_bridge_applies_enhancement_switch_without_mutating_settings() {

@@ -174,6 +174,7 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -421,6 +422,8 @@ export type RelayProfile = {
   baseUrl: string;
   upstreamBaseUrl: string;
   apiKey: string;
+  apiKeys?: RelayApiKey[];
+  activeApiKeyId?: string;
   protocol: RelayProtocol;
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;
@@ -8874,6 +8877,11 @@ function RelayProfileEditor({
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
   };
+  const normalizedApiKeys = normalizeRelayApiKeys(profile);
+  const updateApiKeys = (apiKeys: RelayApiKey[], activeApiKeyId = normalizedApiKeys.activeApiKeyId) => {
+    const selected = apiKeys.find((entry) => entry.id === activeApiKeyId) || apiKeys[0];
+    updateDraft({ apiKeys, activeApiKeyId: selected?.id || "", apiKey: selected?.apiKey || "" });
+  };
   const selectEditorMode = (mode: RelayEditorMode) => {
     if (mode === "official") {
       updateDraft({ relayMode: "official", officialMixApiKey: false });
@@ -9318,13 +9326,58 @@ function RelayProfileEditor({
                       placeholder={t("填写供应商的 Base URL")}
                     />
                   </Field>
-                  <Field className="relay-field-key" label="API Key">
-                    <Input
-                      type="password"
-                      value={profile.apiKey}
-                      onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
-                      placeholder={t("输入供应商的 API Key")}
-                    />
+                  <Field className="relay-field-key" label="API Keys">
+                    <div className="relay-api-key-list">
+                      {normalizedApiKeys.apiKeys.map((entry) => {
+                        const active = entry.id === normalizedApiKeys.activeApiKeyId;
+                        return (
+                          <div className={`relay-api-key-row ${active ? "active" : ""}`} key={entry.id}>
+                            <button
+                              aria-label={t("设为当前 Key")}
+                              aria-pressed={active}
+                              className="relay-api-key-select"
+                              onClick={() => updateApiKeys(normalizedApiKeys.apiKeys, entry.id)}
+                              title={t("设为当前 Key")}
+                              type="button"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                            </button>
+                            <Input
+                              aria-label={t("Key 名称")}
+                              value={entry.name}
+                              onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
+                                key.id === entry.id ? { ...key, name: event.currentTarget.value } : key))}
+                            />
+                            <Input
+                              aria-label={tf("{0} 的 API Key", [entry.name])}
+                              type="password"
+                              value={entry.apiKey}
+                              onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
+                                key.id === entry.id ? { ...key, apiKey: event.currentTarget.value } : key))}
+                              placeholder={t("输入供应商的 API Key")}
+                            />
+                            <Button
+                              aria-label={t("删除 Key")}
+                              disabled={normalizedApiKeys.apiKeys.length === 1}
+                              onClick={() => updateApiKeys(normalizedApiKeys.apiKeys.filter((key) => key.id !== entry.id))}
+                              size="icon"
+                              title={t("删除 Key")}
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                      <Button onClick={() => {
+                        const key = createRelayApiKey(normalizedApiKeys.apiKeys);
+                        updateApiKeys([...normalizedApiKeys.apiKeys, key]);
+                      }} size="sm" type="button" variant="secondary">
+                        <Plus className="h-4 w-4" />
+                        {t("添加 Key")}
+                      </Button>
+                    </div>
                   </Field>
                   <Field className="relay-field-protocol" label={t("上游协议")}>
                     <AppSelect
@@ -13224,7 +13277,9 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
   };
-  return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+  const derived = relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+  return derived.noAuth || (derived.relayMode === "official" && !derived.officialMixApiKey)
+    ? derived : relayProfileWithNormalizedApiKeys(derived);
 }
 
 function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {

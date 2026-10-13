@@ -799,7 +799,7 @@ pub async fn fetch_relay_profile_model_ids(
         } else {
             profile.upstream_base_url.trim().to_string()
         },
-        api_key: profile.api_key.trim().to_string(),
+        api_key: crate::relay_config::relay_profile_api_key(profile),
         headers: profile.custom_headers.clone(),
     };
     if source.base_url.is_empty() {
