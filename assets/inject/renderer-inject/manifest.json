@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2800
+      "lines": 2803
     },
     {
       "name": "20-menu.js",
@@ -28,7 +28,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1892
+      "lines": 1898
     },
     {
       "name": "50-navigation.js",
@@ -69,6 +69,11 @@
       "name": "81-capacity-auto-retry.js",
       "description": "模型容量错误自动重试：识别容量横幅并按阶梯延迟代点「重试」",
       "lines": 353
+    },
+    {
+      "name": "82-rate-limit-auto-resume.js",
+      "description": "HTTP 429 自动继续：最新轮次确认、限次及输入框守卫",
+      "lines": 176
     },
     {
       "name": "82-boot-shell-recovery.js",

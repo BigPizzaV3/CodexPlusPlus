@@ -10,6 +10,7 @@
     // typeof 守卫：这两个函数会被 session-share-runtime / typing-effects-settings
     // 之类的用例切片到不带其它分片的沙箱里执行，缺函数时不能直接 ReferenceError。
     if (loaded && typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+    if (loaded && typeof syncCodexPlusRateLimitAutoResume === "function") runScanStep(syncCodexPlusRateLimitAutoResume);
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     return loaded;
   }
@@ -38,6 +39,7 @@
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
         if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
+        if (typeof syncCodexPlusRateLimitAutoResume === "function") runScanStep(syncCodexPlusRateLimitAutoResume);
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
@@ -1264,6 +1266,10 @@
                     <input class="codex-plus-width-input" data-codex-plus-capacity-retry-max-attempts="true" min="1" max="${capacityAutoRetryMaxAttemptsCeiling}" step="1" type="number" value="${capacityAutoRetryMaxAttempts()}" title="最大自动重试次数" aria-label="最大自动重试次数">
                     <button type="button" class="codex-plus-toggle" data-codex-plus-setting="capacityAutoRetry"><span></span></button>
                   </div>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">429 错误自动继续</div><div class="codex-plus-row-description">最新轮次因 HTTP 429 失败且输入框为空时，等待 30 秒后自动点击「继续」。同一失败轮次只点一次，每次打开会话最多 5 次；可点击状态提示停止。</div></div>
+                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="rateLimitAutoResume"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>

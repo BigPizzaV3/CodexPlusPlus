@@ -335,6 +335,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppPetRealMouseLook: boolean;
   codexAppActivityOverlayRight: boolean;
   codexAppCapacityAutoRetry: boolean;
+  codexAppRateLimitAutoResume: boolean;
   codexAppStepwiseEnabled: boolean;
   codexAppAnswerOutlineEnabled: boolean;
   codexAppStepwiseDirectSend: boolean;
@@ -1120,6 +1121,7 @@ const defaultSettings: BackendSettings = {
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
   codexAppCapacityAutoRetry: false,
+  codexAppRateLimitAutoResume: false,
   codexAppStepwiseEnabled: false,
   codexAppAnswerOutlineEnabled: false,
   codexAppStepwiseDirectSend: false,
@@ -5940,6 +5942,7 @@ function EnhanceScreen({
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
                 <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
                 <FeatureToggle title={t("容量错误自动重试")} detail={t("模型容量不足（Selected model is at capacity）时自动点「重试」。Codex 原生只会自动重试 4 次且带 10/30/120/300 秒倒计时，之后只剩手动按钮；开启后由 Codex++ 立刻接管，原生倒计时也不等。间隔与次数上限在 Codex 应用内的 Codex++ 设置里调整。")} checked={form.codexAppCapacityAutoRetry} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppCapacityAutoRetry", value)} />
+                <FeatureToggle title={t("429 错误自动继续")} detail={t("最新轮次因 HTTP 429 失败且输入框为空时，等待 30 秒后自动点击「继续」。同一失败轮次只点一次，每次打开会话最多 5 次；可点击状态提示停止。")} checked={form.codexAppRateLimitAutoResume} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppRateLimitAutoResume", value)} />
                 <div className={`feature-toggle ${!masterEnabled ? "disabled" : ""}`}>
                   <span>
                     <strong>{t("打字特效（彩虹 P）")}</strong>
