@@ -8829,6 +8829,12 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* 可展开的配置块（如「API 余额（可选）」）独占一整行：展开只往下长，
+   不会拉高或顶开同一行里的功能开关卡。 */
+.enhance-feature-groups .feature-switch-grid > .settings-block {
+  grid-column: 1 / -1;
+}
+
 .enhance-feature-groups .feature-toggle,
 .enhance-service-panel .feature-toggle {
   border: 0;
