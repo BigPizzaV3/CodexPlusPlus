@@ -393,8 +393,10 @@ fn chat_conversion_rejects_encrypted_agent_content_without_echoing_payload() {
     ] {
         for standard in [false, true] {
             let error = responses_to_chat_completions_with_options(
-                json!({"model":"custom-model","input":input}), standard,
-            ).expect_err("加密 agent 内容必须明确拒绝，不能静默丢弃或视为明文");
+                json!({"model":"custom-model","input":input}),
+                standard,
+            )
+            .expect_err("加密 agent 内容必须明确拒绝，不能静默丢弃或视为明文");
             let diagnostic = format!("{error:#}");
             assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
             assert!(!diagnostic.contains("private-agent-payload"));
@@ -417,7 +419,8 @@ fn chat_conversion_keeps_plaintext_and_existing_reasoning_compaction_contracts()
             {"type":"function_call_output","call_id":"orphan",
              "output":{"type":"encrypted_content","text":"tool-output-text"}}
         ]
-    })).unwrap();
+    }))
+    .unwrap();
     let messages = converted["messages"].to_string();
     assert!(messages.contains("plaintext-task"));
     assert!(messages.contains("visible-summary"));
@@ -428,7 +431,9 @@ fn chat_conversion_keeps_plaintext_and_existing_reasoning_compaction_contracts()
 
 #[tokio::test]
 async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let upstream = tokio::spawn(async move {
@@ -437,12 +442,18 @@ async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
             _ = stopped => None,
         }
     });
-    let settings = session_header_settings(RelayProtocol::ChatCompletions, format!("http://{address}/v1"));
+    let settings = session_header_settings(
+        RelayProtocol::ChatCompletions,
+        format!("http://{address}/v1"),
+    );
     let result = open_responses_proxy_request_with_settings(
         &json!({"model":"custom-model","stream":false,"input":[
             {"type":"encrypted_content","encrypted_content":"private-agent-payload"}
-        ]}).to_string(), settings,
-    ).await;
+        ]})
+        .to_string(),
+        settings,
+    )
+    .await;
     let _ = stop.send(());
     let request = upstream.await.unwrap();
     assert!(result.is_err(), "必须在发送上游请求前拒绝不支持的加密内容");
@@ -451,7 +462,9 @@ async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
 
 #[tokio::test]
 async fn responses_upstream_preserves_encrypted_agent_content() {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let upstream = tokio::spawn(capture_json_request_once(listener));
     let request = json!({"model":"custom-model","stream":false,"input":[
@@ -459,8 +472,11 @@ async fn responses_upstream_preserves_encrypted_agent_content() {
          "content":[{"type":"encrypted_content","encrypted_content":"opaque-agent-payload"}]},
         {"type":"encrypted_content","encrypted_content":"standalone-opaque-agent-payload"}
     ]});
-    let settings = session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
-    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings).await.unwrap();
+    let settings =
+        session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
     assert_eq!(result.status_code, 200);
     let (_, sent) = upstream.await.unwrap();
     assert_eq!(sent, request);
@@ -3293,7 +3309,7 @@ fn responses_request_maps_codex_custom_and_namespace_tools_to_chat_functions() {
 }
 
 #[test]
-fn responses_request_stream_includes_usage_and_apply_patch_proxy_tools() {
+fn responses_request_stream_includes_usage_and_raw_apply_patch_tool() {
     let converted = responses_to_chat_completions(json!({
         "model": "gpt-5-mini",
         "input": "hi",
@@ -3316,25 +3332,18 @@ fn responses_request_stream_includes_usage_and_apply_patch_proxy_tools() {
         .iter()
         .map(|tool| tool["function"]["name"].as_str().unwrap())
         .collect();
+    assert_eq!(names, vec!["apply_patch"]);
     assert_eq!(
-        names,
-        vec![
-            "apply_patch_add_file",
-            "apply_patch_delete_file",
-            "apply_patch_update_file",
-            "apply_patch_replace_file",
-            "apply_patch_batch"
-        ]
+        converted["tools"][0]["function"]["parameters"]["properties"]["input"]["type"],
+        "string"
     );
-    assert_eq!(
-        converted["tools"][2]["function"]["parameters"]["properties"]["hunks"]["items"]["properties"]
-            ["lines"]["items"]["required"],
-        json!(["op", "text"])
+    assert!(
+        converted["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Original tool definition:")
     );
-    assert_eq!(
-        converted["tool_choice"]["function"]["name"],
-        "apply_patch_batch"
-    );
+    assert_eq!(converted["tool_choice"]["function"]["name"], "apply_patch");
 }
 
 #[test]
@@ -3543,11 +3552,73 @@ fn responses_input_replays_apply_patch_custom_history_as_proxy_tool() {
 
     assert_eq!(
         converted["messages"][0]["tool_calls"][0]["function"]["name"],
-        "apply_patch_add_file"
+        "apply_patch"
     );
     assert_eq!(
         converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
-        "{\"content\":\"# Test\",\"path\":\"docs/test.md\"}"
+        "{\"input\":\"*** Begin Patch\\n*** Add File: docs/test.md\\n+# Test\\n*** End Patch\"}"
+    );
+}
+
+#[test]
+fn responses_input_migrates_legacy_apply_patch_proxy_history() {
+    for legacy_name in [
+        "apply_patch_add_file",
+        "apply_patch_delete_file",
+        "apply_patch_update_file",
+        "apply_patch_replace_file",
+        "apply_patch_batch",
+    ] {
+        let raw_patch = "*** Begin Patch\n*** Add File: docs/test.md\n+# Test\n*** End Patch";
+        let converted = responses_to_chat_completions(json!({
+            "model": "gpt-5-mini",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_legacy_patch",
+                    "name": legacy_name,
+                    "input": raw_patch
+                }
+            ],
+            "tools": [{ "type": "custom", "name": "apply_patch" }]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            converted["messages"][0]["tool_calls"][0]["function"]["name"],
+            "apply_patch"
+        );
+        let arguments = converted["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        let arguments: Value = serde_json::from_str(arguments).unwrap();
+        assert_eq!(arguments["input"], raw_patch);
+    }
+}
+
+#[test]
+fn responses_input_replays_same_path_delete_add_patch_as_apply_patch() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_patch",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** Delete File: docs/test.md\n*** Add File: docs/test.md\n+hello\n*** End Patch"
+            }
+        ],
+        "tools": [{ "type": "custom", "name": "apply_patch" }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["name"],
+        "apply_patch"
+    );
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
+        "{\"input\":\"*** Begin Patch\\n*** Delete File: docs/test.md\\n*** Add File: docs/test.md\\n+hello\\n*** End Patch\"}"
     );
 }
 
@@ -3967,8 +4038,8 @@ fn chat_completion_response_reconstructs_apply_patch_proxy_call() {
                         "id": "call_patch",
                         "type": "function",
                         "function": {
-                            "name": "apply_patch_add_file",
-                            "arguments": "{\"path\":\"README.md\",\"content\":\"hello\"}"
+                            "name": "apply_patch",
+                            "arguments": "{\"input\":\"*** Begin Patch\\n*** Add File: README.md\\n+hello\\n*** End Patch\"}"
                         }
                     }]
                 }
@@ -3990,7 +4061,7 @@ fn chat_completion_response_reconstructs_apply_patch_proxy_call() {
 }
 
 #[test]
-fn chat_completion_response_remaps_string_apply_patch_proxy_tools() {
+fn chat_completion_response_remaps_string_apply_patch_tool() {
     let converted = chat_completion_to_response_with_request(
         json!({
             "id": "chatcmpl_patch_string_tool",
@@ -4004,8 +4075,8 @@ fn chat_completion_response_remaps_string_apply_patch_proxy_tools() {
                         "id": "call_patch",
                         "type": "function",
                         "function": {
-                            "name": "apply_patch_add_file",
-                            "arguments": "{\"path\":\"docs/test.md\",\"content\":\"# Test\\n\"}"
+                            "name": "apply_patch",
+                            "arguments": "{\"input\":\"*** Begin Patch\\n*** Add File: docs/test.md\\n+# Test\\n*** End Patch\"}"
                         }
                     }]
                 }
@@ -4013,7 +4084,7 @@ fn chat_completion_response_remaps_string_apply_patch_proxy_tools() {
         }),
         &json!({
             "model": "gpt-5-mini",
-            "tools": ["apply_patch_add_file", "apply_patch_batch"]
+            "tools": ["apply_patch"]
         }),
     )
     .unwrap();
