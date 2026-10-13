@@ -20,6 +20,8 @@ const LAUNCHER_FORCE_KILL_GRACE_MS: u64 = 2_000;
 pub const WATCHER_RUN_NAME: &str = "CodexPlusPlusWatcher";
 pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "CodexPlusPlusWatcher.lnk";
+/// macOS 开机启动用的 LaunchAgent 标签；plist 文件名即 `<标签>.plist`。
+pub const MACOS_WATCHER_LABEL: &str = "com.bigpizzav3.codexplusplus.watcher";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatcherInstallPlan {
@@ -62,16 +64,109 @@ pub fn disable_watcher() -> std::io::Result<()> {
     disable_watcher_at(&crate::paths::default_app_state_dir())
 }
 
+/// 开关式开机启动：开启时确保「已注册 + 未禁用」，关闭时确保「已注销 + 已禁用」。
+/// 关闭时额外写禁用标记，是为了让「注销失败但仍残留的登记」也不会在下次登录打开界面。
+pub fn set_watcher_enabled(enabled: bool, launcher_path: &Path, debug_port: u16) -> anyhow::Result<()> {
+    if enabled {
+        if !watcher_is_installed() {
+            install_watcher(launcher_path, debug_port)?;
+        }
+        enable_watcher()?;
+    } else {
+        disable_watcher()?;
+        uninstall_watcher()?;
+    }
+    Ok(())
+}
+
+/// LaunchAgent 的 plist 路径：`<home>/Library/LaunchAgents/<label>.plist`。
+pub fn macos_launch_agent_path_at(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("LaunchAgents")
+        .join(format!("{MACOS_WATCHER_LABEL}.plist"))
+}
+
+/// 登录时由 launchd 自动加载的 plist。只登记 `--autostart`，界面照旧要用户自己点启动。
+pub fn macos_launch_agent_plist(launcher_path: &Path) -> String {
+    let executable = xml_escape(&launcher_path.to_string_lossy());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{MACOS_WATCHER_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{executable}</string>
+    <string>--autostart</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+/// 写入 LaunchAgent。写入本身不启动进程：launchd 在下次登录时读取该目录。
+pub fn write_macos_launch_agent_at(home: &Path, launcher_path: &Path) -> std::io::Result<PathBuf> {
+    let path = macos_launch_agent_path_at(home);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, macos_launch_agent_plist(launcher_path))?;
+    Ok(path)
+}
+
+/// 移除 LaunchAgent；本登录会话里已经加载过的任务由 launchd 在注销时回收，
+/// 而 `RunAtLoad` 只触发一次，所以这里不需要再调 launchctl。
+pub fn remove_macos_launch_agent_at(home: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(macos_launch_agent_path_at(home)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn macos_launch_agent_installed_at(home: &Path) -> bool {
+    macos_launch_agent_path_at(home).is_file()
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_launch_agent_path() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| macos_launch_agent_path_at(dirs.home_dir()))
+}
+
 pub fn watcher_is_installed() -> bool {
     #[cfg(windows)]
     {
-        let registered = crate::windows_integration::read_current_user_string_values(WATCHER_RUN_KEY)
-            .unwrap_or_default()
-            .iter()
-            .any(|(name, value)| name == WATCHER_RUN_NAME && value.as_ref().is_some_and(|value| !value.is_empty()));
+        let registered =
+            crate::windows_integration::read_current_user_string_values(WATCHER_RUN_KEY)
+                .unwrap_or_default()
+                .iter()
+                .any(|(name, value)| {
+                    name == WATCHER_RUN_NAME
+                        && value.as_ref().is_some_and(|value| !value.is_empty())
+                });
         registered || startup_shortcut_path().is_some_and(|path| path.is_file())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_launch_agent_path().is_some_and(|path| path.is_file())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }
@@ -87,10 +182,7 @@ pub fn cdp_listening(port: u16) -> bool {
 }
 
 pub fn build_spawn_launcher_command(launcher_path: &str, _debug_port: u16) -> Vec<String> {
-    vec![
-        launcher_path.to_string(),
-        "--autostart".to_string(),
-    ]
+    vec![launcher_path.to_string(), "--autostart".to_string()]
 }
 
 pub fn build_watcher_install_plan(launcher_path: PathBuf, _debug_port: u16) -> WatcherInstallPlan {
@@ -462,6 +554,228 @@ mod process_identity_tests {
     }
 }
 
+/// macOS 上「官方 App 主进程」的精确快照。
+///
+/// 与 [`find_codex_processes`] 的区别（这正是自动接管不能用后者的原因）：
+/// 后者按 bundle id 的「点子标识符」规则匹配，会把包内 `Contents/Resources/`
+/// 下的官方 CLI（`com.openai.codex.cli`，App 运行期一定存在）也算成「Codex 在跑」，
+/// 且宁可漏判也不误判的场合下完全不可用。Windows 侧早有对应排除
+/// （`is_windowsapps_codex_app_process` 要求 `app\` 且非 `app\resources\`），
+/// macOS 侧这里对齐同一思路。
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacosDesktopProcess {
+    pub pid: u32,
+    /// `ps` 的 `lstart`，用作实例代际键（防 PID 复用与换代误伤）。
+    pub lstart: String,
+    /// 主可执行文件的绝对路径。
+    pub executable: String,
+    pub bundle_identifier: Option<String>,
+}
+
+/// 从 `ps -axo pid=,uid=,lstart=,args=` 的快照里挑出官方 App 主进程。
+///
+/// `uid` 为 `None` 时表示「用本进程的 uid」，实现方式是在快照里找到自己的 PID
+/// 取其 uid——这样不必引入 `libc` 之类的平台依赖，也天然排除了其它登录用户的同名进程。
+/// `debug_port` 给了就只保留带该端口的实例（同机可能有多个实例各带各的端口）。
+#[cfg(any(target_os = "macos", test))]
+pub fn macos_desktop_main_processes_from_snapshot<'a>(
+    process_lines: impl IntoIterator<Item = &'a str>,
+    uid: Option<u32>,
+    debug_port: Option<u16>,
+    bundle_identifier: impl Fn(&Path) -> Option<String>,
+) -> Vec<MacosDesktopProcess> {
+    let parsed = process_lines
+        .into_iter()
+        .filter_map(parse_macos_process_line)
+        .collect::<Vec<_>>();
+    let uid = uid.or_else(|| {
+        let own_process_id = std::process::id();
+        parsed
+            .iter()
+            .find(|process| process.pid == own_process_id)
+            .map(|process| process.uid)
+    });
+    let debug_flag = debug_port.map(|port| format!("remote-debugging-port={port}"));
+    let mut processes = Vec::new();
+    for process in parsed {
+        let Some(uid) = uid else {
+            break;
+        };
+        if process.uid != uid {
+            continue;
+        }
+        if !is_macos_codex_desktop_main_with(&process.args, &bundle_identifier) {
+            continue;
+        }
+        if let Some(flag) = &debug_flag
+            && !process.args.contains(flag)
+        {
+            continue;
+        }
+        // 「主包内、不在 Resources 里」：包内 CLI/工具都在 Contents/Resources 下。
+        let executable_end = process.args.find(" -").unwrap_or(process.args.len());
+        let executable = process.args[..executable_end].trim_end();
+        if executable.contains("/Contents/Resources/") {
+            continue;
+        }
+        let Some(app_dir) = executable
+            .rsplit_once(".app/Contents/MacOS/")
+            .map(|(app_dir, _)| PathBuf::from(format!("{app_dir}.app")))
+        else {
+            continue;
+        };
+        processes.push(MacosDesktopProcess {
+            pid: process.pid,
+            lstart: process.lstart,
+            executable: executable.to_string(),
+            bundle_identifier: bundle_identifier(&app_dir),
+        });
+    }
+    processes.sort_by_key(|process| process.pid);
+    processes.dedup_by_key(|process| process.pid);
+    processes
+}
+
+#[cfg(any(target_os = "macos", test))]
+struct MacosProcessLine {
+    pid: u32,
+    uid: u32,
+    lstart: String,
+    args: String,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_process_line(line: &str) -> Option<MacosProcessLine> {
+    let trimmed = line.trim_start();
+    let mut fields = trimmed.split_whitespace();
+    let pid = fields.next()?.parse::<u32>().ok()?;
+    let uid = fields.next()?.parse::<u32>().ok()?;
+    // lstart 固定 5 个字段（星期 月 日 时:分:秒 年），其后才是 args。
+    let lstart = fields.by_ref().take(5).collect::<Vec<_>>().join(" ");
+    let args = fields.collect::<Vec<_>>().join(" ");
+    if lstart.split_whitespace().count() != 5 || args.is_empty() {
+        return None;
+    }
+    Some(MacosProcessLine {
+        pid,
+        uid,
+        lstart,
+        args,
+    })
+}
+
+/// 扫描当前系统上的官方 App 主进程（`debug_port` 为 `None` 时不过滤端口）。
+#[cfg(target_os = "macos")]
+pub fn find_macos_codex_desktop_main_processes(
+    debug_port: Option<u16>,
+) -> Vec<MacosDesktopProcess> {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,uid=,lstart=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    macos_desktop_main_processes_from_snapshot(
+        String::from_utf8_lossy(&output.stdout).lines(),
+        None,
+        debug_port,
+        read_macos_bundle_identifier,
+    )
+}
+
+#[cfg(test)]
+mod desktop_main_process_tests {
+    use super::*;
+
+    const UID: u32 = 501;
+
+    fn snapshot(processes: &[&str]) -> Vec<MacosDesktopProcess> {
+        let identifiers = |app_dir: &Path| match app_dir.to_string_lossy().as_ref() {
+            "/Applications/ChatGPT.app" => Some("com.openai.codex".to_string()),
+            // 包内官方 CLI：bundle id 是 com.openai.codex.cli，会命中点子标识符规则。
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app" => {
+                Some("com.openai.codex.cli".to_string())
+            }
+            _ => None,
+        };
+        macos_desktop_main_processes_from_snapshot(
+            processes.iter().copied(),
+            Some(UID),
+            Some(9229),
+            identifiers,
+        )
+    }
+
+    /// 官方 App 运行期一定有包内 CLI（`codex … app-server`）。它必须被排除，
+    /// 否则「App 是否在运行」永远为真，自动接管与 provider sync 闸门都会失准。
+    #[test]
+    fn packaged_cli_is_not_treated_as_the_desktop_app() {
+        let processes = snapshot(&[
+            "16959 501 Tue Oct 13 13:19:56 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229",
+            "17014 501 Tue Oct 13 13:19:57 2026 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --remote-debugging-port=9229",
+        ]);
+
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].pid, 16959);
+        assert_eq!(
+            processes[0].executable,
+            "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+        );
+    }
+
+    /// renderer / gpu / utility 在 `Contents/Frameworks/.../Helpers/` 下；包内
+    /// `native/`、`cua_node/` 辅助进程不在 `.app/Contents/MacOS/` 里，都要排除。
+    #[test]
+    fn helpers_and_resource_tools_are_excluded() {
+        let processes = snapshot(&[
+            "17001 501 Tue Oct 13 13:19:56 2026 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/155.0/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer --remote-debugging-port=9229",
+            "84919 501 Tue Oct 13 13:20:00 2026 /Applications/ChatGPT.app/Contents/Resources/native/bare-modifier-monitor --key DoubleCommand",
+            "18346 501 Tue Oct 13 13:20:01 2026 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node server.js",
+        ]);
+
+        assert!(processes.is_empty());
+    }
+
+    /// 只有带我们端口的实例才算「已接管的那个」：同机可能有别的端口实例。
+    #[test]
+    fn debug_port_filter_keeps_only_the_matching_instance() {
+        let processes = snapshot(&[
+            "16959 501 Tue Oct 13 13:19:56 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9229",
+            "20001 501 Tue Oct 13 14:00:00 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9231",
+            "20002 501 Tue Oct 13 14:00:01 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+        ]);
+
+        assert_eq!(
+            processes
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
+            vec![16959]
+        );
+    }
+
+    /// 快速用户切换：别的登录用户的同名进程不能被当成本用户的 App。
+    #[test]
+    fn other_users_are_filtered_out_by_uid() {
+        let processes = snapshot(&[
+            "31000 502 Tue Oct 13 13:30:00 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9229",
+        ]);
+
+        assert!(processes.is_empty());
+    }
+
+    /// `lstart` 是代际键的组成部分，解析不能错位（否则「用户重启了 App」判不出来）。
+    #[test]
+    fn incarnation_key_is_parsed_from_lstart() {
+        let processes = snapshot(&[
+            "16959 501 Tue Oct 13 13:19:56 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9229",
+        ]);
+
+        assert_eq!(processes[0].lstart, "Tue Oct 13 13:19:56 2026");
+    }
+}
+
 #[cfg(windows)]
 pub fn process_id_is_running(process_id: u32) -> Option<bool> {
     match inspect_process_instance(process_id) {
@@ -526,9 +840,21 @@ pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn install_watcher(launcher_path: &Path, _debug_port: u16) -> anyhow::Result<()> {
+    if !launcher_path.is_file() {
+        anyhow::bail!("找不到 Codex++ 可执行文件：{}", launcher_path.display());
+    }
+    let home = directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .ok_or_else(|| anyhow::anyhow!("无法定位当前用户主目录"))?;
+    write_macos_launch_agent_at(&home, launcher_path)?;
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn install_watcher(_launcher_path: &Path, _debug_port: u16) -> anyhow::Result<()> {
-    anyhow::bail!("watcher install is only supported on Windows")
+    anyhow::bail!("watcher install is only supported on Windows and macOS")
 }
 
 #[cfg(windows)]
@@ -542,7 +868,16 @@ pub fn uninstall_watcher() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn uninstall_watcher() -> anyhow::Result<()> {
+    let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) else {
+        return Ok(());
+    };
+    remove_macos_launch_agent_at(&home)?;
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn uninstall_watcher() -> anyhow::Result<()> {
     Ok(())
 }
@@ -700,7 +1035,9 @@ impl LauncherExitSnapshot {
     pub fn capture() -> anyhow::Result<Self> {
         let processes = crate::windows_integration::enumerate_processes();
         let ids = filter_killable_launcher_processes(
-            processes.iter().map(|p| (p.process_id, p.parent_process_id, p.exe_file.as_str())),
+            processes
+                .iter()
+                .map(|p| (p.process_id, p.parent_process_id, p.exe_file.as_str())),
             std::process::id(),
         );
         let mut captured = Vec::new();
@@ -711,7 +1048,9 @@ impl LauncherExitSnapshot {
                 anyhow::bail!("Cannot verify launcher process identity: {pid}");
             }
         }
-        Ok(Self { processes: captured })
+        Ok(Self {
+            processes: captured,
+        })
     }
 
     pub fn wait_for_exit_or_force(self, timeout: Duration) -> LauncherExitOutcome {
@@ -846,9 +1185,10 @@ fn launcher_incarnations_still_running(
     captured: &[(u32, u64)],
     mut birth_id: impl FnMut(u32) -> Option<u64>,
 ) -> Vec<u32> {
-    captured.iter().filter_map(|(pid, birth)| {
-        (birth_id(*pid) == Some(*birth)).then_some(*pid)
-    }).collect()
+    captured
+        .iter()
+        .filter_map(|(pid, birth)| (birth_id(*pid) == Some(*birth)).then_some(*pid))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1074,9 +1414,99 @@ pub fn find_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
     find_macos_codex_processes_for_debug_port(debug_port)
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows：只认命令行里带该端口的实例，不再退化成「任意 Codex 在跑都算活」。
+#[cfg(windows)]
+pub fn find_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
+    codex_instance_processes_for_debug_port(debug_port)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn find_codex_processes_for_debug_port(_debug_port: u16) -> Vec<u32> {
     find_codex_processes()
+}
+
+/// Windows：返回确实属于该调试端口的 Codex 进程。
+///
+/// 供调用方在「结束 / 重启」前确认该端口还有活进程：同机多开时主 Codex 与各实例
+/// 各带各的端口（见 `build_codex_arguments`），端口不同就是不同实例。
+#[cfg(windows)]
+pub fn codex_instance_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
+    let processes = crate::windows_integration::enumerate_processes();
+    codex_process_ids_for_debug_port(
+        find_codex_processes_from_snapshot(&processes),
+        debug_port,
+        crate::windows_integration::process_command_line,
+    )
+}
+
+/// 端口过滤的纯逻辑：命令行读不到的候选进程直接排除。
+///
+/// 这里必须「宁漏不误」——调用方会据此结束进程，而退回「任意 Codex 都算」正是要
+/// 修掉的 bug。平台调用（枚举进程、读 PEB 命令行）都通过参数注入，便于在非 Windows
+/// 平台上用替身做单元测试。
+#[cfg(any(windows, test))]
+fn codex_process_ids_for_debug_port(
+    candidates: impl IntoIterator<Item = u32>,
+    debug_port: u16,
+    mut command_line: impl FnMut(u32) -> Option<String>,
+) -> Vec<u32> {
+    let mut ids = candidates
+        .into_iter()
+        .filter(|process_id| {
+            command_line(*process_id).is_some_and(|command_line| {
+                debug_port_from_command_line(&command_line) == Some(debug_port)
+            })
+        })
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// 解析命令行里的 `--remote-debugging-port`，`=` 与空格两种写法都认。
+///
+/// 按整词解析而不是子串匹配：`--remote-debugging-port=9229` 不能被端口 922 命中。
+#[cfg(any(windows, test))]
+fn debug_port_from_command_line(command_line: &str) -> Option<u16> {
+    let mut tokens = command_line
+        .split_whitespace()
+        .map(|token| token.trim_matches('"'));
+    while let Some(token) = tokens.next() {
+        let Some(rest) = token.strip_prefix("--remote-debugging-port") else {
+            continue;
+        };
+        let value = if rest.is_empty() {
+            // `--remote-debugging-port 9229`：值在下一个参数里。
+            match tokens.next() {
+                Some(value) => value,
+                None => continue,
+            }
+        } else {
+            match rest.strip_prefix('=') {
+                Some(value) => value,
+                None => continue,
+            }
+        };
+        if let Ok(port) = value.parse::<u16>() {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// 结束目标的选择逻辑：按端口匹配到的优先；一个都没匹配到且允许退回时才用全局集合。
+///
+/// 抽成纯函数是为了能在 macOS 上测「多开不允许退回、主实例允许退回」这条关键分支
+/// （Windows 分支本身在本机不编译）。
+fn select_stop_targets(
+    port_matched: Vec<u32>,
+    all_codex: impl FnOnce() -> Vec<u32>,
+    allow_global_fallback: bool,
+) -> Vec<u32> {
+    if port_matched.is_empty() && allow_global_fallback {
+        return all_codex();
+    }
+    port_matched
 }
 
 #[cfg(target_os = "macos")]
@@ -1089,9 +1519,178 @@ pub fn stop_codex_processes_for_debug_port_and_wait(debug_port: u16) {
     );
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows：只结束该端口对应的实例，禁止退化成全局 `stop_codex_processes_and_wait()`。
+///
+/// 多开必须用这个语义：同机每个实例各带各的调试端口，按端口过滤才不会误杀。
+#[cfg(windows)]
+pub fn stop_codex_processes_for_debug_port_and_wait(debug_port: u16) {
+    stop_codex_processes_for_debug_port_with_fallback(debug_port, false);
+}
+
+/// Windows：结束指定调试端口的 Codex，允许在「按端口一个都没匹配到」时退回全局结束。
+///
+/// `allow_global_fallback` 只给**单实例**（主 Codex）用：主实例走 AUMID 激活，
+/// 激活出来的进程命令行未必带 `--remote-debugging-port`，而进程扫描读不到命令行时
+/// 按端口过滤会返回空。若这里坚持只按端口，结果会是「一个都不杀 + 上层判定
+/// 端口仍活着 → 硬失败」，重启 Codex 从此停不下来。
+///
+/// 多开**不要**打开这个开关，否则又会退化成「结束一个实例杀掉全部 Codex」。
+#[cfg(windows)]
+pub fn stop_codex_processes_for_debug_port_with_fallback(
+    debug_port: u16,
+    allow_global_fallback: bool,
+) {
+    let process_ids = select_stop_targets(
+        codex_instance_processes_for_debug_port(debug_port),
+        || find_codex_processes(),
+        allow_global_fallback,
+    );
+    terminate_and_wait_for_exit(
+        process_ids,
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn stop_codex_processes_for_debug_port_and_wait(_debug_port: u16) {
     stop_codex_processes_and_wait();
+}
+
+#[cfg(test)]
+mod select_stop_targets_tests {
+    use super::select_stop_targets;
+
+    // 多开：不允许退回全局，否则「结束一个实例」会杀掉全部 Codex（本次修的 P0）。
+    #[test]
+    fn multi_instance_stop_never_falls_back_to_all_codex_processes() {
+        assert_eq!(
+            select_stop_targets(vec![], || vec![1, 2, 3], false),
+            Vec::<u32>::new()
+        );
+        assert_eq!(
+            select_stop_targets(vec![7], || vec![1, 2, 3], false),
+            vec![7]
+        );
+    }
+
+    // 主实例：Windows 上走 AUMID 激活，命令行未必带调试端口，按端口可能一个都匹配不到；
+    // 这时必须退回全局结束，否则「重启 Codex」会卡在「进程尚未退出」。
+    #[test]
+    fn main_instance_stop_falls_back_only_when_nothing_matched() {
+        assert_eq!(
+            select_stop_targets(vec![], || vec![1, 2, 3], true),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            select_stop_targets(vec![7], || vec![1, 2, 3], true),
+            vec![7]
+        );
+    }
+
+    // 退回是惰性的：已匹配到进程时不应该再去枚举全局列表。
+    #[test]
+    fn fallback_enumeration_is_lazy() {
+        let mut called = false;
+        let _ = select_stop_targets(
+            vec![7],
+            || {
+                called = true;
+                vec![1]
+            },
+            true,
+        );
+        assert!(!called);
+    }
+}
+
+#[cfg(test)]
+mod codex_debug_port_filter_tests {
+    use super::{codex_process_ids_for_debug_port, debug_port_from_command_line};
+
+    /// 一个主实例（9229）、一个多开实例（9231）、一个读不到命令行的进程。
+    fn command_line(process_id: u32) -> Option<String> {
+        match process_id {
+            10 => Some(
+                r#""C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.0.0.0_x64__2p2nqsd0c76g0\app\Codex.exe" --remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229"#
+                    .to_string(),
+            ),
+            20 => Some(
+                r#""C:\Program Files\WindowsApps\OpenAI.ChatGPT-Desktop_1.0.0.0_x64__2p2nqsd0c76g0\app\Codex.exe" --remote-debugging-port=9231"#
+                    .to_string(),
+            ),
+            // 权限不足 / PID 已退出：读不到命令行。
+            _ => None,
+        }
+    }
+
+    /// 端口不同就是不同实例：多开实例（9231）不能被算进 9229 的判活结果，
+    /// 反之亦然；否则「结束多开」会连带杀掉主 Codex。
+    #[test]
+    fn only_processes_carrying_the_port_belong_to_that_instance() {
+        assert_eq!(
+            codex_process_ids_for_debug_port([10, 20, 30], 9229, command_line),
+            vec![10]
+        );
+        assert_eq!(
+            codex_process_ids_for_debug_port([10, 20, 30], 9231, command_line),
+            vec![20]
+        );
+    }
+
+    /// 命令行读不到时宁可漏判，也不能退回「任意 Codex 在跑就算活」。
+    #[test]
+    fn unreadable_command_line_is_never_counted_as_a_live_instance() {
+        assert!(
+            codex_process_ids_for_debug_port([30], 9229, command_line).is_empty(),
+            "读不到命令行的进程不能算该端口的实例"
+        );
+        assert!(
+            codex_process_ids_for_debug_port([30, 31], 9229, |_| None).is_empty(),
+            "一个候选都读不到时不能退化成全局判活"
+        );
+    }
+
+    /// 端口必须整词比较：`922` 不能被 `--remote-debugging-port=9229` 命中。
+    #[test]
+    fn port_flag_is_parsed_as_a_whole_token() {
+        assert_eq!(
+            debug_port_from_command_line("Codex.exe --remote-debugging-port=9229"),
+            Some(9229)
+        );
+        assert_eq!(
+            debug_port_from_command_line("Codex.exe --remote-debugging-port 9229"),
+            Some(9229)
+        );
+        assert_eq!(
+            debug_port_from_command_line(r#"Codex.exe "--remote-debugging-port=9231""#),
+            Some(9231)
+        );
+        // `--remote-allow-origins` 里的端口不是调试端口，但同一命令行里的调试端口要认。
+        assert_eq!(
+            debug_port_from_command_line(
+                "--remote-allow-origins=http://127.0.0.1:9229 --remote-debugging-port=9231"
+            ),
+            Some(9231)
+        );
+        assert_eq!(
+            debug_port_from_command_line("--remote-debugging-port"),
+            None
+        );
+        assert_eq!(
+            debug_port_from_command_line("--remote-debugging-port=70000"),
+            None
+        );
+        assert_eq!(
+            debug_port_from_command_line("--remote-debugging-port=abc"),
+            None
+        );
+        assert_eq!(
+            debug_port_from_command_line("Codex.exe --force_high_performance_gpu"),
+            None
+        );
+        assert!(codex_process_ids_for_debug_port([10, 20], 922, command_line).is_empty());
+    }
 }
 
 #[cfg(target_os = "macos")]

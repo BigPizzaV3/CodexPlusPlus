@@ -1,4 +1,4 @@
-﻿Unicode true
+Unicode true
 !include "MUI2.nsh"
 !include "StrFunc.nsh"
 ${Using:StrFunc} StrStr
@@ -131,7 +131,7 @@ Section "Install"
 
   ; 注册 codexplusplus:// 与 dreamskin:// URL 协议（issue #2354）。
   ; 键名与值同 codex-plus-core 的 install::windows::register_url_protocol 保持一致，
-  ; 应用内"安装入口/修复快捷方式"会以相同键幂等覆盖，两边互不冲突。
+  ; 应用内"修复快捷方式"会以相同键幂等覆盖，两边互不冲突。
   WriteRegStr HKCU "Software\Classes\codexplusplus" "" "URL:Codex++ Import Protocol"
   WriteRegStr HKCU "Software\Classes\codexplusplus" "URL Protocol" ""
   WriteRegStr HKCU "Software\Classes\codexplusplus\shell\open\command" "" '"$INSTDIR\codex-plus-plus.exe" "%1"'

@@ -1,3 +1,4 @@
+mod auto_takeover;
 pub mod commands;
 pub mod install;
 mod runtime_health;
@@ -97,6 +98,8 @@ pub fn run() {
             commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window);
             commands::resume_existing_codex_background(app.handle().clone());
+            // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。
+            auto_takeover::start_supervisor();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -189,16 +192,16 @@ pub fn run() {
             commands::upsert_skill_repo,
             commands::delete_skill_repo,
             commands::open_external_url,
-            commands::install_entrypoints,
-            commands::uninstall_entrypoints,
             commands::repair_shortcuts,
             commands::check_update,
             commands::perform_update,
             commands::load_watcher_state,
-            commands::install_watcher,
-            commands::uninstall_watcher,
-            commands::enable_watcher,
-            commands::disable_watcher,
+            commands::set_watcher_enabled,
+            // 自动接管官方 App：前端 invoke 找不到命令时是运行期静默失败，
+            // 没有编译期兜底，所以这三个必须注册在这里（契约测试会守）。
+            commands::load_auto_takeover_state,
+            commands::take_over_codex_now,
+            commands::pause_auto_takeover_for_instance,
             commands::read_latest_logs,
             commands::clear_logs,
             commands::scan_agent_cache,
@@ -245,6 +248,7 @@ pub fn run() {
                     api.prevent_exit();
                     if !SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) {
                         APP_EXITING.store(true, Ordering::SeqCst);
+                        auto_takeover::stop_supervisor();
                         let app = app_handle.clone();
                         tauri::async_runtime::spawn_blocking(move || {
                             if let Err(error) = codex_plus_launcher::shutdown() {

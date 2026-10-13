@@ -1,8 +1,10 @@
 use codex_plus_core::watcher::{
-    build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
-    disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    macos_launcher_process_names, process_id_is_running, process_ids_still_running,
-    should_recover_stale_launcher, watcher_disabled_flag,
+    MACOS_WATCHER_LABEL, build_spawn_launcher_command, build_watcher_install_plan, cdp_listening,
+    codex_process_ids, disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
+    macos_launcher_process_names, macos_launch_agent_installed_at, macos_launch_agent_path_at,
+    macos_launch_agent_plist, process_id_is_running, process_ids_still_running,
+    remove_macos_launch_agent_at, should_recover_stale_launcher, watcher_disabled_flag,
+    write_macos_launch_agent_at,
 };
 
 #[cfg(windows)]
@@ -47,6 +49,50 @@ fn watcher_enable_and_disable_toggle_flag() {
 
     enable_watcher_at(dir.path()).unwrap();
     assert!(!flag.exists());
+}
+
+#[test]
+fn macos_launch_agent_registers_the_gui_at_login() {
+    let home = tempfile::tempdir().unwrap();
+    let launcher = home
+        .path()
+        .join("Codex++.app/Contents/MacOS/CodexPlusPlus");
+    assert!(!macos_launch_agent_installed_at(home.path()));
+
+    let path = write_macos_launch_agent_at(home.path(), &launcher).unwrap();
+
+    assert_eq!(path, macos_launch_agent_path_at(home.path()));
+    assert_eq!(
+        path.file_name().unwrap().to_string_lossy(),
+        format!("{MACOS_WATCHER_LABEL}.plist")
+    );
+    assert!(
+        path.parent()
+            .unwrap()
+            .ends_with(std::path::Path::new("Library").join("LaunchAgents"))
+    );
+    assert!(macos_launch_agent_installed_at(home.path()));
+
+    let plist = std::fs::read_to_string(&path).unwrap();
+    assert!(plist.contains(&format!("<string>{MACOS_WATCHER_LABEL}</string>")));
+    assert!(plist.contains(&launcher.to_string_lossy().to_string()));
+    assert!(plist.contains("<string>--autostart</string>"));
+    assert!(plist.contains("<key>RunAtLoad</key>\n  <true/>"));
+
+    remove_macos_launch_agent_at(home.path()).unwrap();
+    assert!(!macos_launch_agent_installed_at(home.path()));
+    // 重复移除是幂等的：界面关掉开关时不会因为文件已不存在而报错。
+    remove_macos_launch_agent_at(home.path()).unwrap();
+}
+
+#[test]
+fn macos_launch_agent_plist_escapes_the_executable_path() {
+    let plist = macos_launch_agent_plist(std::path::Path::new(
+        "/Applications/A&B <x>.app/Contents/MacOS/CodexPlusPlus",
+    ));
+
+    assert!(plist.contains("/Applications/A&amp;B &lt;x&gt;.app/Contents/MacOS/CodexPlusPlus"));
+    assert!(!plist.contains("A&B <x>"));
 }
 
 #[test]

@@ -33,7 +33,8 @@ use windows::Win32::System::Registry::{
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    PROCESS_TERMINATE, PROCESS_VM_READ, QueryFullProcessImageNameW, TerminateProcess,
+    WaitForSingleObject,
 };
 #[cfg(windows)]
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
@@ -52,10 +53,49 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    HICON, ICON_BIG, ICON_SMALL, SendMessageW, WM_SETICON,
+    HICON, ICON_BIG, ICON_SMALL, PostMessageW, SendMessageW, WM_CLOSE, WM_SETICON,
 };
 #[cfg(windows)]
 use windows::core::{Interface, PCWSTR, PROPVARIANT, PWSTR};
+
+/// 请求归属 `process_id` 的可见主窗口关闭（`WM_CLOSE`）。
+///
+/// 为什么需要它：Windows 上没有 AppleEvent `quit` 的等价物，而
+/// `taskkill /T`（不带 `/F`）对 GUI 应用**不生效**——本机 Windows 11 实测 11 个
+/// ChatGPT 进程一个都没退，静默失败比报错更糟。`/F` 则是 `TerminateProcess`，
+/// 不给应用保存机会。`WM_CLOSE` 才是「像用户点关闭按钮一样」的路径：
+/// Electron 能走完 `before-quit` / `will-quit`，把内存态落盘。
+///
+/// 返回是否成功投递。投递成功不等于应用会退出，调用方仍需轮询确认。
+#[cfg(windows)]
+pub fn request_process_close(process_id: u32) -> bool {
+    let Some(hwnd) = visible_window_for_process(process_id) else {
+        return false;
+    };
+    // SAFETY: hwnd 来自 EnumWindows 且已确认属于该进程；WM_CLOSE 无附加参数。
+    unsafe { PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok()
+}
+
+/// 结束一个进程树。
+///
+/// `force = false` 时**只**走 `WM_CLOSE`（不调用 taskkill）：`taskkill /T` 对 GUI
+/// 应用无效，混在一起只会让「优雅退出」变成静默失败。`force = true` 才用
+/// `taskkill /F /T` 兜底。
+#[cfg(windows)]
+pub fn close_process_tree(process_id: u32, force: bool) -> bool {
+    if !force {
+        return request_process_close(process_id);
+    }
+    let output = std::process::Command::new("taskkill")
+        .args([
+            "/PID",
+            process_id.to_string().as_str(),
+            "/T",
+            "/F",
+        ])
+        .output();
+    matches!(output, Ok(output) if output.status.success())
+}
 
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -385,6 +425,228 @@ pub fn process_birth_id(process_id: u32) -> Option<u64> {
     Some(((creation_time.dwHighDateTime as u64) << 32) | creation_time.dwLowDateTime as u64)
 }
 
+/// 读取指定进程的完整命令行。
+///
+/// Toolhelp 快照只有 exe 名，命令行得走 PEB（`NtQueryInformationProcess` +
+/// `ReadProcessMemory`）。Windows 上多开实例各自带 `--remote-debugging-port=<port>`，
+/// 命令行是区分实例的唯一依据。读不到（权限不足、进程已退出、布局不符）就返回
+/// `None`，由调用方决定漏判策略——这里绝不猜。
+#[cfg(windows)]
+pub fn process_command_line(process_id: u32) -> Option<String> {
+    if process_id == 0 {
+        return None;
+    }
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            process_id,
+        )
+    }
+    .ok()?;
+    if handle.is_invalid() {
+        return None;
+    }
+    let _guard = HandleGuard(handle);
+    let peb = query_peb_base_address(handle)?;
+    // 先按 x64 / ARM64 布局读；32 位（WOW64）进程再退回 32 位布局重试一次。
+    if let Some(command_line) = read_command_line_at(
+        handle,
+        peb,
+        X64_PROCESS_PARAMETERS_OFFSET,
+        X64_COMMAND_LINE_OFFSET,
+        false,
+    ) {
+        return Some(command_line);
+    }
+    let peb32 = query_wow64_peb_address(handle)?;
+    read_command_line_at(
+        handle,
+        peb32,
+        X86_PROCESS_PARAMETERS_OFFSET,
+        X86_COMMAND_LINE_OFFSET,
+        true,
+    )
+}
+
+/// `ProcessBasicInformation` / `ProcessWow64Information`。
+#[cfg(windows)]
+const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
+#[cfg(windows)]
+const PROCESS_WOW64_INFORMATION_CLASS: u32 = 26;
+
+/// PEB 与 `RTL_USER_PROCESS_PARAMETERS` 都是未公开布局，只能按位数写死偏移。
+#[cfg(windows)]
+const X64_PROCESS_PARAMETERS_OFFSET: usize = 0x20;
+#[cfg(windows)]
+const X64_COMMAND_LINE_OFFSET: usize = 0x70;
+#[cfg(windows)]
+const X86_PROCESS_PARAMETERS_OFFSET: usize = 0x10;
+#[cfg(windows)]
+const X86_COMMAND_LINE_OFFSET: usize = 0x40;
+
+/// Windows 命令行上限 32767 个字符；`UNICODE_STRING.length` 是字节数。
+#[cfg(windows)]
+const MAX_COMMAND_LINE_BYTES: usize = 32 * 1024;
+
+/// `PROCESS_BASIC_INFORMATION`。windows crate 里那份定义需要 `Win32_System_Kernel`
+/// feature，而这里只用到 `peb_base_address`，不值得为它扩大 feature 面。
+#[cfg(windows)]
+#[repr(C)]
+#[allow(dead_code)]
+struct ProcessBasicInformation {
+    exit_status: i32,
+    peb_base_address: *mut core::ffi::c_void,
+    affinity_mask: usize,
+    base_priority: i32,
+    unique_process_id: usize,
+    inherited_from_unique_process_id: usize,
+}
+
+/// 远程进程里的 `UNICODE_STRING`：两个长度字段都是字节数。
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RemoteUnicodeString {
+    length: u16,
+    maximum_length: u16,
+    buffer: *const u16,
+}
+
+// `NtQueryInformationProcess` 没有出现在 windows crate 的导出里；按本文件 IP Helper
+// 的既有做法直接声明 NT ABI，不为一项查询扩大 windows crate 的 feature 面。
+#[cfg(windows)]
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtQueryInformationProcess(
+        process_handle: HANDLE,
+        information_class: u32,
+        information: *mut core::ffi::c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn ReadProcessMemory(
+        process_handle: HANDLE,
+        base_address: *const core::ffi::c_void,
+        buffer: *mut core::ffi::c_void,
+        size: usize,
+        bytes_read: *mut usize,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn query_peb_base_address(handle: HANDLE) -> Option<usize> {
+    let mut information: ProcessBasicInformation = unsafe { std::mem::zeroed() };
+    let mut returned = 0_u32;
+    let status = unsafe {
+        NtQueryInformationProcess(
+            handle,
+            PROCESS_BASIC_INFORMATION_CLASS,
+            (&mut information as *mut ProcessBasicInformation).cast(),
+            std::mem::size_of::<ProcessBasicInformation>() as u32,
+            &mut returned,
+        )
+    };
+    (status >= 0 && !information.peb_base_address.is_null())
+        .then_some(information.peb_base_address as usize)
+}
+
+/// 32 位（WOW64）目标进程的 PEB 地址；不是 WOW64 进程时返回 `None`。
+#[cfg(windows)]
+fn query_wow64_peb_address(handle: HANDLE) -> Option<usize> {
+    let mut peb32 = 0_usize;
+    let mut returned = 0_u32;
+    let status = unsafe {
+        NtQueryInformationProcess(
+            handle,
+            PROCESS_WOW64_INFORMATION_CLASS,
+            (&mut peb32 as *mut usize).cast(),
+            std::mem::size_of::<usize>() as u32,
+            &mut returned,
+        )
+    };
+    (status >= 0 && peb32 != 0).then_some(peb32)
+}
+
+#[cfg(windows)]
+fn read_command_line_at(
+    handle: HANDLE,
+    peb: usize,
+    parameters_offset: usize,
+    command_line_offset: usize,
+    pointer_is_32_bit: bool,
+) -> Option<String> {
+    let parameters_address = peb.checked_add(parameters_offset)?;
+    let parameters = if pointer_is_32_bit {
+        read_process_memory::<u32>(handle, parameters_address)? as usize
+    } else {
+        read_process_memory::<usize>(handle, parameters_address)?
+    };
+    if parameters == 0 {
+        return None;
+    }
+    let command_line: RemoteUnicodeString =
+        read_process_memory(handle, parameters.checked_add(command_line_offset)?)?;
+    let length = command_line.length as usize;
+    // 尺寸自检：长度是字节数、必须为偶数，且不超过其容量与 Windows 命令行上限。
+    // 32 位布局误读到 64 位进程时，这里通常就能拦住。
+    if length == 0
+        || length % 2 != 0
+        || length > MAX_COMMAND_LINE_BYTES
+        || length > command_line.maximum_length as usize
+    {
+        return None;
+    }
+    let mut buffer = vec![0_u16; length / 2];
+    let read = read_process_memory_bytes(
+        handle,
+        command_line.buffer as usize,
+        buffer.as_mut_ptr().cast(),
+        length,
+    )?;
+    if read != length {
+        return None;
+    }
+    let command_line = String::from_utf16_lossy(&buffer);
+    (!command_line.trim().is_empty()).then_some(command_line)
+}
+
+#[cfg(windows)]
+fn read_process_memory<T: Copy>(handle: HANDLE, address: usize) -> Option<T> {
+    let mut value = std::mem::MaybeUninit::<T>::uninit();
+    let size = std::mem::size_of::<T>();
+    let read = read_process_memory_bytes(handle, address, value.as_mut_ptr().cast(), size)?;
+    (read == size).then(|| unsafe { value.assume_init() })
+}
+
+#[cfg(windows)]
+fn read_process_memory_bytes(
+    handle: HANDLE,
+    address: usize,
+    buffer: *mut core::ffi::c_void,
+    size: usize,
+) -> Option<usize> {
+    if address == 0 || size == 0 {
+        return None;
+    }
+    let mut bytes_read = 0_usize;
+    let result = unsafe {
+        ReadProcessMemory(
+            handle,
+            address as *const core::ffi::c_void,
+            buffer,
+            size,
+            &mut bytes_read,
+        )
+    };
+    (result != 0).then_some(bytes_read)
+}
+
 /// 持有实际调试端口所属进程的句柄；PID 被复用也不会换成另一个实例。
 #[cfg(windows)]
 pub(crate) struct TrackedWindowsProcess {
@@ -454,8 +716,7 @@ impl TrackedWindowsProcess {
         } else if result == WAIT_TIMEOUT {
             Ok(true)
         } else {
-            Err(std::io::Error::last_os_error())
-                .context("failed to probe tracked Windows process")
+            Err(std::io::Error::last_os_error()).context("failed to probe tracked Windows process")
         }
     }
 }
@@ -540,7 +801,10 @@ pub(crate) fn loopback_listener_process_ids(port: u16) -> anyhow::Result<Vec<u32
 #[cfg(any(windows, test))]
 fn unique_listener_process_id(ids: &[u32]) -> anyhow::Result<Option<u32>> {
     let first = ids.first().copied();
-    anyhow::ensure!(ids.iter().all(|pid| Some(*pid) == first), "ambiguous Windows debug listener owners across address families");
+    anyhow::ensure!(
+        ids.iter().all(|pid| Some(*pid) == first),
+        "ambiguous Windows debug listener owners across address families"
+    );
     Ok(first)
 }
 
@@ -1045,5 +1309,21 @@ mod tests {
         assert!(app_score > ime_score);
         assert_eq!(ime_score, tool_score);
         assert_eq!(auxiliary_app_score, ProcessWindowScore::Fallback);
+    }
+
+    /// 只能在 Windows 上跑：读自身进程命令行（走 PEB）应能看到测试二进制。
+    #[test]
+    fn current_process_command_line_is_read_back_from_the_peb() {
+        let command_line = process_command_line(std::process::id()).expect("读取自身命令行失败");
+        let executable_name = std::env::current_exe()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        assert!(
+            command_line.to_ascii_lowercase().contains(&executable_name),
+            "命令行里应包含自身可执行文件名：{command_line}"
+        );
     }
 }

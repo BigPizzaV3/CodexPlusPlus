@@ -502,6 +502,19 @@ pub struct BackendSettings {
     pub dictation: DictationSettings,
     #[serde(rename = "codexAppPath", default)]
     pub codex_app_path: String,
+    /// 自动接管官方 App：开启后用户自己双击启动官方 App 时由 Codex++ 接管并注入。
+    #[serde(rename = "codexAppAutoTakeover", default)]
+    pub codex_app_auto_takeover: bool,
+    /// 已在运行的官方 App 没有调试端口时、「疑似有人在用」的策略：
+    /// `defer`（默认：先不动，等空闲或用户手动触发）或 `immediate`（立即重启接管）。
+    ///
+    /// 显式写默认值而不是留空串：留空串虽然 `ActivePolicy::parse` 也按 `defer` 处理，
+    /// 但读配置的人（以及前端默认值）会以为「没设置」，两边容易漂移。
+    #[serde(
+        rename = "codexAppAutoTakeoverWhenActive",
+        default = "default_auto_takeover_when_active"
+    )]
+    pub codex_app_auto_takeover_when_active: String,
     #[serde(rename = "codexExtraArgs", default)]
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
@@ -728,6 +741,8 @@ impl Default for BackendSettings {
         Self {
             dictation: DictationSettings::default(),
             codex_app_path: String::new(),
+            codex_app_auto_takeover: false,
+            codex_app_auto_takeover_when_active: default_auto_takeover_when_active(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
             provider_sync_saved_providers: Vec::new(),
@@ -1174,6 +1189,11 @@ pub fn clamp_stepwise_timeout_ms(value: u64) -> u64 {
 
 pub fn default_true() -> bool {
     true
+}
+
+/// 「疑似有人在用」的默认策略：先不动，等空闲或用户手动触发。
+pub fn default_auto_takeover_when_active() -> String {
+    crate::auto_takeover::ActivePolicy::Defer.as_str().to_string()
 }
 
 fn default_whale_balance_protocol() -> String {
@@ -1648,6 +1668,22 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     target.remove("computerUseGuardEnabled");
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
         target.insert("codexAppPath".to_string(), Value::String(value.to_string()));
+    }
+    // 自动接管的开关与策略也走同一份 settings.json；漏掉这两行会让开关「保存了但没生效」。
+    if let Some(value) = source.get("codexAppAutoTakeover").and_then(Value::as_bool) {
+        target.insert(
+            "codexAppAutoTakeover".to_string(),
+            Value::Bool(value),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppAutoTakeoverWhenActive")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppAutoTakeoverWhenActive".to_string(),
+            Value::String(value.to_string()),
+        );
     }
     if let Some(value) = source.get("codexExtraArgs").and_then(Value::as_array) {
         let args = value
@@ -4102,4 +4138,35 @@ experimental_bearer_token = "sk-existing""#
             assert_eq!(profile.web_search_history_compat_enabled(), expected);
         }
     }
+    // 自动接管的两个设置字段必须走既有 settings.json 链路持久化：
+    // 守护线程在另一个线程里读同一个文件，写不进就等于开关无效。
+    #[test]
+    fn auto_takeover_settings_round_trip_through_settings_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+
+        let initial = BackendSettings::default();
+        assert!(!initial.codex_app_auto_takeover);
+        assert_eq!(
+            initial.codex_app_auto_takeover_when_active,
+            default_auto_takeover_when_active()
+        );
+        assert_eq!(initial.codex_app_auto_takeover_when_active, "defer");
+        store.save(&initial).unwrap();
+
+        let updated = store
+            .update(json!({
+                "codexAppAutoTakeover": true,
+                "codexAppAutoTakeoverWhenActive": "immediate"
+            }))
+            .unwrap();
+        assert!(updated.codex_app_auto_takeover);
+        assert_eq!(updated.codex_app_auto_takeover_when_active, "immediate");
+
+        // 重新读盘：字段名必须与前端/守护线程约定的一致（camelCase）。
+        let reloaded = store.load().unwrap();
+        assert!(reloaded.codex_app_auto_takeover);
+        assert_eq!(reloaded.codex_app_auto_takeover_when_active, "immediate");
+    }
+
 }

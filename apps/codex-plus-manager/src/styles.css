@@ -1044,6 +1044,12 @@ body {
   white-space: nowrap;
 }
 
+/* 启动失败时允许换行并高亮，避免失败原因被单行省略号截断。 */
+.multi-launch-instance-card .relay-summary small[data-failed="true"] {
+  color: hsl(var(--destructive, 0 72% 51%));
+  white-space: normal;
+}
+
 @media (max-width: 760px) {
   .multi-launch-running-header {
     align-items: stretch;
@@ -1171,6 +1177,13 @@ body {
   flex: 1;
   gap: 2px;
   min-width: 0;
+}
+
+/* 头部就地显示「为什么存不了」：保存按钮不再禁用，原因要看得见。 */
+.relay-editor-validation {
+  color: hsl(var(--destructive));
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .relay-editor-heading-copy strong {
@@ -1843,6 +1856,11 @@ body {
 
 .aggregate-fields {
   margin-top: 0;
+}
+
+/* 模型聚合模式没有「聚合方式」字段（模式固定，不再展示），名称独占整行。 */
+.aggregate-editor[data-aggregate-mode="model"] .relay-field-name {
+  grid-column: 1 / -1;
 }
 
 .relay-field-name,
@@ -3081,11 +3099,48 @@ details.relay-fold[open] > .relay-fold-body {
 
 .aggregate-member-models {
   min-width: 0;
-  /* 一行一个模型，模型名不在中间断行；列宽不够时横向滚动。 */
-  display: block;
-  white-space: pre;
-  overflow-x: auto;
-  overflow-y: hidden;
+  /* 数量靠左、默认控件靠右：各行的「设为默认」/「默认」都落在同一条右边缘上。
+     完整模型名单放 title，不再撑高卡片（各卡片等高）。 */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  white-space: normal;
+  overflow: hidden;
+}
+
+.aggregate-member-models-count {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「设为默认」是次要动作：做成轻量文字按钮，别和主按钮抢视觉、也别把行撑高。 */
+.aggregate-member-default-action {
+  height: 22px;
+  flex: none;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: hsl(var(--primary));
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.aggregate-member-default-action:hover {
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+}
+
+.aggregate-member-default-badge {
+  flex: none;
+  font-size: 11px;
+}
+
+.aggregate-default-hint {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .aggregate-editor[data-aggregate-mode="model"] .aggregate-member-row {

@@ -1102,6 +1102,7 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1157,6 +1158,7 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1192,6 +1194,7 @@ async fn launch_lifecycle_keeps_js_injection_with_legacy_launch_mode() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1233,6 +1236,7 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1281,6 +1285,7 @@ async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enha
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1334,6 +1339,7 @@ async fn fixed_protocol_proxy_port_waits_for_the_previous_helper_to_release_it()
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1371,6 +1377,7 @@ async fn a_permanently_busy_protocol_proxy_port_reports_what_the_user_should_do(
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1414,6 +1421,7 @@ async fn a_persistently_forbidden_protocol_proxy_port_fails_after_the_wait_with_
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1477,6 +1485,7 @@ async fn a_transient_forbidden_protocol_proxy_port_retries_until_it_can_bind() {
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1519,6 +1528,7 @@ async fn an_unrelated_helper_bind_error_is_reported_as_is() {
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1563,6 +1573,7 @@ async fn a_busy_floating_helper_port_respects_the_platform_retry_budget() {
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1603,6 +1614,7 @@ async fn pending_remote_control_recovery_runs_without_an_official_mix_profile() 
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1646,6 +1658,7 @@ async fn official_mix_responses_profile_keeps_proxy_when_profile_switching_is_di
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1678,6 +1691,7 @@ async fn launch_lifecycle_does_not_apply_relay_profile_before_launching_codex() 
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1708,6 +1722,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1759,6 +1774,7 @@ experimental_bearer_token = "sk-test"
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1786,6 +1802,7 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             debug_port: 9229,
             helper_port: 57321,
             status_store: status_store.clone(),
+            ..Default::default()
         },
         &hooks,
     )
@@ -1830,6 +1847,7 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             debug_port: 9229,
             helper_port: 57321,
             status_store: status_store.clone(),
+            ..Default::default()
         },
         &hooks,
     )
@@ -1906,6 +1924,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             debug_port: 9229,
             helper_port: 58000,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1965,6 +1984,7 @@ async fn launch_starts_helper_when_model_routing_is_enabled() {
             debug_port: 9229,
             helper_port: 58000,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -2015,14 +2035,25 @@ async fn launch_starts_helper_when_web_search_history_compat_is_enabled() {
             debug_port: 9229,
             helper_port: 58000,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
         },
         &hooks,
     )
     .await
     .unwrap();
-    assert!(events.lock().unwrap().contains(&"start-helper:57321".to_string()));
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"start-helper:57321".to_string())
+    );
     handle.wait_for_codex_exit().await.unwrap();
-    assert!(events.lock().unwrap().contains(&"shutdown-helper:57321".to_string()));
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"shutdown-helper:57321".to_string())
+    );
 }
 
 #[tokio::test]
@@ -2050,6 +2081,7 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -2094,6 +2126,7 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -2110,7 +2143,8 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
 }
 
 #[tokio::test]
-async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_helper_until_exit() {
+async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_helper_until_exit()
+{
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2131,27 +2165,59 @@ async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_
             debug_port: 9229,
             helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
         },
         &hooks,
     )
     .await
     .unwrap();
     assert_eq!(
-        events.lock().unwrap().iter().filter(|event| *event == "capture-identity:9229").count(),
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| *event == "capture-identity:9229")
+            .count(),
         1,
     );
-    assert_eq!(handle.status_store.load_latest().unwrap().unwrap().status, "running_degraded");
+    assert_eq!(
+        handle.status_store.load_latest().unwrap().unwrap().status,
+        "running_degraded"
+    );
     let mut waiting = std::pin::pin!(handle.wait_for_codex_exit());
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting).await.is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+            .await
+            .is_err()
+    );
     let current = events.lock().unwrap().clone();
-    let captured = current.iter().position(|event| event == "capture-identity:9229").unwrap();
-    let monitor = current.iter().position(|event| event == "wait-codex").unwrap();
+    let captured = current
+        .iter()
+        .position(|event| event == "capture-identity:9229")
+        .unwrap();
+    let monitor = current
+        .iter()
+        .position(|event| event == "wait-codex")
+        .unwrap();
     assert!(captured < monitor);
-    assert!(!current.iter().any(|event| event.starts_with("shutdown-helper:")));
+    assert!(
+        !current
+            .iter()
+            .any(|event| event.starts_with("shutdown-helper:"))
+    );
     exit.notify_one();
     waiting.await.unwrap();
-    assert!(events.lock().unwrap().iter().any(|event| event == "shutdown-helper:57321"));
-    assert_eq!(handle.status_store.load_latest().unwrap().unwrap().status, "stopped");
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "shutdown-helper:57321")
+    );
+    assert_eq!(
+        handle.status_store.load_latest().unwrap().unwrap().status,
+        "stopped"
+    );
 }
 
 #[tokio::test]
@@ -2291,15 +2357,31 @@ async fn proxy_only_packaged_launch_captures_identity_without_attempting_rendere
     hooks.record_identity_capture = true;
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
-            app_dir: Some(app_dir), debug_port: 9229, helper_port: 57321,
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
-        }, &hooks,
-    ).await.unwrap();
+            ..Default::default()
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
     let current = events.lock().unwrap().clone();
-    assert_eq!(current.iter().filter(|event| *event == "capture-identity:9229").count(), 1);
+    assert_eq!(
+        current
+            .iter()
+            .filter(|event| *event == "capture-identity:9229")
+            .count(),
+        1
+    );
     assert!(!current.iter().any(|event| event.starts_with("inject:")));
     assert!(current.iter().any(|event| event == "start-helper:57321"));
-    assert!(!current.iter().any(|event| event.starts_with("shutdown-helper:")));
+    assert!(
+        !current
+            .iter()
+            .any(|event| event.starts_with("shutdown-helper:"))
+    );
     handle.wait_for_codex_exit().await.unwrap();
 }
 
@@ -2455,6 +2537,7 @@ async fn launch_exit_saves_failed_terminal_state_with_complete_error_chain() {
             debug_port: 9229,
             helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
         },
         &hooks,
     )
@@ -2695,6 +2778,7 @@ impl LaunchHooks for FakeHooks {
         debug_port: u16,
         _settings: &BackendSettings,
         extra_args: &[String],
+        _instance: &codex_plus_core::launcher::LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
         assert!(app_dir.ends_with("Codex.app"));
         let launch_detail = if extra_args.is_empty() {
@@ -2748,14 +2832,18 @@ impl LaunchHooks for FakeHooks {
     ) -> anyhow::Result<()> {
         self.event("wait-codex");
         if self.record_identity_capture {
-            assert!(*self.captured_launch_identity.lock().unwrap(), "monitoring must use the launch identity even after injection failure");
+            assert!(
+                *self.captured_launch_identity.lock().unwrap(),
+                "monitoring must use the launch identity even after injection failure"
+            );
         }
         if let Some(exit) = &self.wait_until_exit {
             exit.notified().await;
         }
         if self.wait_error {
-            return Err(anyhow::anyhow!("native process handle failed")
-                .context("monitoring Codex process"));
+            return Err(
+                anyhow::anyhow!("native process handle failed").context("monitoring Codex process")
+            );
         }
         Ok(())
     }

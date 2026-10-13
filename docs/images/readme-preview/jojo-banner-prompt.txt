@@ -1,0 +1,18 @@
+生成方式：内置 image_gen 工具；工具未提供模型版本选择。
+输入参考图：无。独立生成，未使用原 JOJO Code 图片。
+
+最终版本：jojo-banner-v3.png。小标题仅保留英文 AI API Relay。
+型号文案来源：用户提供并确认，非官网独立核验。
+
+最终编辑提示词：
+Edit the attached newly generated JOJO Code banner. Change only its secondary subtitle text. Replace the Chinese subtitle completely with exactly "AI API Relay". The main wordmark must remain exactly "JOJO Code". The finished image must contain NO Chinese characters anywhere. Preserve the original composition, navy background, blue-violet and emerald abstract J emblem, orbit lines, light accents, dimensions and quality. Clean, high-contrast English sans-serif subtitle typography. No additional text, no claims of official affiliation, no watermarks.
+
+Use case: logo-brand / ads-marketing.
+Create a brand-new polished horizontal brand banner for JOJO Code, an AI API relay service, for a GitHub README sponsor section.
+Do not use any prior image as a reference. Develop an original visual identity.
+Format: wide landscape banner, approximately 3:1 aspect ratio, crisp high-resolution typography.
+Visual direction: premium modern developer infrastructure brand; near-black navy background with restrained blue-violet and emerald light accents, elegant spacious composition, minimal flat geometric emblem suggesting connected routes or a flowing abstract J; no curly braces, no code-bracket icon. The emblem and large wordmark form one strong horizontal logo lockup that stays readable at small size.
+Text verbatim: "JOJO Code" as the dominant large wordmark. A smaller single secondary line must read exactly "AI API 中转服务".
+The typography is the visual focus, high contrast, deliberate kerning, clean sans serif. Give the composition generous safe margins. The small subtitle should be clearly readable but substantially smaller than the brand name.
+Avoid: the phrase "Official Codex++ Relay", any claim of official status, OpenAI or Codex logos, old image composition, mockups, extra slogans, pricing, discounts, statistics, watermarks, busy circuit board patterns, noisy gradients, multiple panels, external device frames.
+The result is the actual flat banner image, not a presentation of it.

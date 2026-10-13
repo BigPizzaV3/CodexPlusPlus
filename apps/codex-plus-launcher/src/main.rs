@@ -63,6 +63,54 @@ struct SessionState {
     status_started_at_ms: u64,
 }
 
+/// 本进程 launcher 会话的只读快照，供自动接管的判据使用。
+///
+/// 为什么需要它：launcher 被当库链接进管理器进程，`launcher_guard_port()` 的文件锁
+/// 在同一进程内自证无效（`try_lock_exclusive` 必然成功），所以「我这边是不是已经有
+/// 一个在管的会话」只能从内存态读，不能从锁或端口反推。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSnapshot {
+    /// 本进程当前是否存在已就绪的 launcher 会话。
+    pub owned: bool,
+    /// 会话是否已就绪（注入流程走完）。
+    pub ready: bool,
+    /// `latest-status.json` 里的状态（`running` / `running_degraded` / …）。
+    pub status: Option<String>,
+    pub debug_port: Option<u16>,
+    /// 该会话的状态代际，用来判断是不是同一次启动。
+    pub started_at_ms: Option<u64>,
+}
+
+/// 会话在运行线程里创建，判据在别的线程读；用一个进程级小结构传递即可，
+/// 不必把 `Arc<Mutex<SessionState>>` 暴露出去。
+static SESSION_PROBE: OnceLock<Mutex<Option<SessionProbe>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct SessionProbe {
+    debug_port: u16,
+    started_at_ms: u64,
+}
+
+fn session_probe_slot() -> &'static Mutex<Option<SessionProbe>> {
+    SESSION_PROBE.get_or_init(|| Mutex::new(None))
+}
+
+fn record_session_probe(options: &LaunchOptions, started_at_ms: u64) {
+    let probe = SessionProbe {
+        debug_port: options.debug_port,
+        started_at_ms,
+    };
+    *session_probe_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(probe);
+}
+
+fn clear_session_probe() {
+    *session_probe_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+}
+
 type SessionRunner = Arc<
     dyn Fn(LaunchOptions, tokio::sync::oneshot::Receiver<()>, StartupReply) -> SessionFuture
         + Send
@@ -315,6 +363,35 @@ pub fn shutdown() -> Result<()> {
     shutdown_worker(current)
 }
 
+/// 读会话快照。纯内存读 + 一次状态文件读，无副作用、不会启动任何东西。
+pub fn session_snapshot() -> SessionSnapshot {
+    let probe = session_probe_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let latest = codex_plus_core::status::StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten();
+    // status 取状态文件：它是「注入是否降级」的唯一来源（running_degraded）。
+    let status = probe
+        .as_ref()
+        .and(latest.as_ref().map(|latest| latest.status.clone()));
+    SessionSnapshot {
+        owned: probe.is_some(),
+        ready: probe.is_some(),
+        status,
+        debug_port: probe
+            .as_ref()
+            .map(|probe| probe.debug_port)
+            .or_else(|| latest.as_ref().and_then(|latest| latest.debug_port)),
+        started_at_ms: probe
+            .as_ref()
+            .map(|probe| probe.started_at_ms)
+            .or_else(|| latest.as_ref().map(|latest| latest.started_at_ms)),
+    }
+}
+
 fn shutdown_worker(current: RuntimeWorker) -> Result<()> {
     let (reply, result) = mpsc::channel();
     let sent = current
@@ -347,6 +424,7 @@ async fn runtime_commands(
                     Some(RuntimeCommand::Start(options, requested_at_ms, attach_only, ready)) => {
                         if session.as_mut().is_some_and(EmbeddedSession::is_finished) {
                             if let Some(previous) = session.take() { let _ = previous.join().await; }
+                            clear_session_probe();
                         }
                         if let Some(current) = &session {
                             let current_options = {
@@ -354,8 +432,10 @@ async fn runtime_commands(
                                 state.ready.then(|| (state.options.clone(), state.status_started_at_ms))
                             };
                             let result = match current_options {
-                                Some(_) if attach_only => Ok(()),
-                                Some((current_options, started_at_ms)) => activate(current_options, started_at_ms).await,
+                                Some((current_options, started_at_ms)) => {
+                                    record_session_probe(&current_options, started_at_ms);
+                                    if attach_only { Ok(()) } else { activate(current_options, started_at_ms).await }
+                                }
                                 None => Err(StartupBusy.into()),
                             };
                             let _ = ready.send(result);
@@ -368,15 +448,18 @@ async fn runtime_commands(
                     }
                     Some(RuntimeCommand::Stop(reply)) => {
                         let result = match session.take() { Some(current) => current.stop().await, None => Ok(()) };
+                        clear_session_probe();
                         let _ = reply.send(result);
                     }
                     Some(RuntimeCommand::Shutdown(reply)) => {
                         let result = match session.take() { Some(current) => current.stop().await, None => Ok(()) };
+                        clear_session_probe();
                         let _ = reply.send(result);
                         break;
                     }
                     None => {
                         if let Some(current) = session.take() { let _ = current.stop().await; }
+                        clear_session_probe();
                         break;
                     }
                 }
@@ -384,7 +467,10 @@ async fn runtime_commands(
             _ = async {
                 if let Some(current) = &mut session { let _ = (&mut current.finished).await; }
                 else { std::future::pending::<()>().await; }
-            } => { if let Some(current) = session.take() { let _ = current.join().await; } }
+            } => {
+                if let Some(current) = session.take() { let _ = current.join().await; }
+                clear_session_probe();
+            }
         }
     }
 }
@@ -839,6 +925,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             options.debug_port,
             &settings,
             &settings.codex_extra_args,
+            &codex_plus_core::launcher::LaunchInstance::from_options(&options),
         )
         .await;
     let process_ids = codex_plus_core::watcher::find_codex_processes();
@@ -1165,6 +1252,7 @@ impl LaunchHooks for LauncherHooks {
         debug_port: u16,
         settings: &codex_plus_core::settings::BackendSettings,
         extra_args: &[String],
+        instance: &codex_plus_core::launcher::LaunchInstance,
     ) -> anyhow::Result<codex_plus_core::launcher::CodexLaunch> {
         if self.attach_only {
             anyhow::ensure!(
@@ -1180,7 +1268,7 @@ impl LaunchHooks for LauncherHooks {
             });
         }
         self.core
-            .launch_codex(app_dir, debug_port, settings, extra_args)
+            .launch_codex(app_dir, debug_port, settings, extra_args, instance)
             .await
     }
 
@@ -1434,7 +1522,6 @@ impl BridgeDataService for LauncherDataService {
         .await
         .map_err(|error| anyhow::anyhow!("Remote Control session recovery task failed: {error}"))?
     }
-
 }
 
 impl LauncherDataService {
@@ -1459,7 +1546,6 @@ impl LauncherDataService {
         .with_allowed_db_paths(allowed_db_paths)
         .with_codex_home(codex_plus_core::codex_sqlite::default_codex_home_dir())
     }
-
 }
 
 struct LauncherRuntimeService {
@@ -1859,7 +1945,10 @@ mod tests {
                 done.take().expect("only one check").send(()).unwrap();
                 std::future::ready(())
             }),
-        ).await.unwrap().unwrap();
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(checks.get(), 1);
     }
 
@@ -1873,7 +1962,8 @@ mod tests {
                 checks.set(checks.get() + 1);
                 std::future::ready(())
             },
-        ).await;
+        )
+        .await;
         assert_eq!(checks.get(), 1);
     }
 
@@ -2028,6 +2118,7 @@ mod tests {
                 port,
                 &codex_plus_core::settings::BackendSettings::default(),
                 &[],
+                &codex_plus_core::launcher::LaunchInstance::default(),
             )
             .await
             .unwrap();
@@ -2059,6 +2150,7 @@ mod tests {
                 port,
                 &codex_plus_core::settings::BackendSettings::default(),
                 &[],
+                &codex_plus_core::launcher::LaunchInstance::default(),
             )
             .await
             .unwrap_err();
@@ -2312,6 +2404,7 @@ mod tests {
             status_store: codex_plus_core::status::StatusStore::new(
                 temp.path().join("latest.json"),
             ),
+            ..LaunchOptions::default()
         };
         let request = LaunchStatus {
             status: "starting".into(),

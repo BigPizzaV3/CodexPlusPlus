@@ -2,6 +2,7 @@
 
 ## 1.7.7 - 2026-10-13
 
+- 新增「自动接管官方 App」（默认关闭，macOS 与 Windows）：你自己双击 / Dock 启动官方 App 时，Codex++ 会自动接管并注入增强，不必再从管理工具点一次启动。官方 App 已在运行且没带调试端口时，会先请它退出再带调试参数重开；已在监听我们端口的实例只做附着，不动你的窗口。带 10 秒启动宽限期（避免重启自己刚拉起的实例）、失败指数退避与「一小时最多 6 次」的防风暴闸门，检测到 Codex 多开实例时跳过，「本次不接管」只跳过当前实例。开关与接管状态在「安装维护」页。Windows 侧经真机实测：应用激活不会把调试参数送达已运行实例，因此同样先结束再带参重开；优雅退出走 WM_CLOSE（`taskkill /T` 不带 `/F` 对 GUI 应用无效），并排除与主进程同名同路径的 renderer / crashpad 子进程。
 - 聚合供应商拆分为两种类型：「故障转移」（多成员共享路由，失败自动切换）与「模型聚合」（按模型固定绑定成员）。供应商列表拆成 直连 / 需协议转换 / 故障转移 / 模型聚合 四个分页，每页带「?」悬浮说明；聚合卡片不再显示轮转策略文案，第三方导入弹层不再被裁断，任一类型下都能继续新建。
 - 聚合供应商支持官方登录成员：已完成 ChatGPT 登录的官方账号可加入聚合。运行时解析供应商快照中的 OAuth tokens，临期用 refresh_token 走 auth.openai.com 刷新（与 Codex CLI 同 client_id），轮换结果写回快照，同账号优先采纳 live auth.json 新凭据，刷新失败加冷却；选中官方成员时转发到 chatgpt.com/backend-api/codex（OAuth Bearer + chatgpt-account-id + originator），401 强制刷新后重试一次，/models 走同一通道。带 URL/Key 的旧 official 模式数据仍按 API 通道，保持兼容。
 - 官方登录供应商支持「从上游获取」模型列表：带 OAuth 凭据请求 chatgpt.com/backend-api/codex/models，兼容 data/models/items 多种数据形状，跳过官方隐藏模型；纯官方 profile 的编辑器放开「模型列表」区块，供按模型聚合发布成员模型与逐模型窗口配置使用。
@@ -19,6 +20,9 @@
   - 启动器在 macOS 上把单次探测失败当成「Codex 已退出」，随即关掉 helper；而 `config.toml` 里的 `base_url` 写死指向该 helper 端口，于是 Codex 还开着、后端却已消失。现在 macOS 与 Windows 一样给宽限（连续 3 次探测失败且不足 10 秒不判退出），真退出只是晚约 10 秒被发现。
   - 渲染侧补上启动壳自救：页面挂载后若 `#root` 一直为空且长不出 `<main>`，等待 20 秒宽限后自动刷新一次。只作用于主页面（带 `initialRoute` 的活动悬浮层与 quick-chat 跳过），用 `sessionStorage` + 60 秒冷却严格限次，触发时记一条诊断便于复盘。
 - 移除「渠道保护」：删除供应商编辑页的错误冷却、同渠道队列与 RPM 预留配置，协议代理不再做渠道排队、限速和错误冷却自动重试；旧 `settings.json` 里的同名字段会被忽略。
+- 移除「安装维护」页的「入口管理」板块：删除「安装入口」「卸载入口」「修复入口」按钮与「卸载时移除 Codex++ 托管数据」勾选项，后端 `install_entrypoints`、`uninstall_entrypoints` 命令一并下线；该页「检查与修复」中的入口状态与「修复快捷方式」保留。
+- 「安装维护」页的状态项改成开关：「开机打开 Codex++」由「设置/移除开机启动 + 启用/禁用」四个按钮合并为一个开关，「自动接管官方 App」的开启/关闭也改由开关控制（原按钮下线）。开关走新的 `set_watcher_enabled` 命令：开启时注册并清除禁用标记，关闭时写入禁用标记并注销。
+- macOS 补上开机启动实现：写入 `~/Library/LaunchAgents/com.bigpizzav3.codexplusplus.watcher.plist`（`RunAtLoad` + `--autostart`，不立即拉起进程），注销时删除该 plist；此前 macOS 上该功能只在 Windows 可用，开关会直接失败。
 - Chat 路由明确拒绝服务端原生搜索（返回 `unsupported_native_web_search`），上游 web_search 调用缺少查询参数时标记失败、不执行空搜索，web_search 参数兼容 `input` 字段。
 - 修复 macOS 更新器在不规范安装路径下的识别（路径按大小写与分隔符归一化）；语音设置兼容早期 SenseVoice 保存（缺 provider 字段时自动恢复离线标记）。
 

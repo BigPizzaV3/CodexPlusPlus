@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::Emitter;
 
-use crate::install::{self, InstallActionResult, InstallOptions};
+use crate::install::{self, InstallActionResult};
 
 // 扫描快照仅驻留后端内存，不接受前端指定磁盘路径，不开放给扩展路由。
 static AGENT_CACHE_PLAN: OnceLock<Mutex<Option<codex_plus_core::agent_cache::CachePlan>>> =
@@ -514,6 +514,15 @@ pub struct CodexMultiWorkerOptions {
     pub app_path: String,
     pub debug_port: u16,
     pub helper_port: u16,
+    /// 实例自己的 Codex++ 状态目录。
+    ///
+    /// 多开隔离原先靠给 worker 换 `HOME`，但这只在 Unix 成立：`directories` 在
+    /// Windows 上用 `SHGetKnownFolderPath(FOLDERID_Profile)`，完全不读 `HOME`，
+    /// 于是 worker 会读写主实例的 `settings.json` / `latest-status.json`，
+    /// 多开专用设置（含 `--user-data-dir`）从未被读取。这里改成 worker 自己以
+    /// 显式路径为准（同时仍设置 `CODEX_PLUS_STATE_DIR` 覆盖子进程）。
+    #[serde(default)]
+    pub state_dir: String,
 }
 
 /// 一个已经由「Codex 多开」创建过的实例。记录文件放在实例自己的隔离目录，
@@ -535,6 +544,29 @@ pub struct CodexMultiInstance {
     pub codex_home: Option<String>,
     pub sqlite_home: Option<String>,
     pub user_data_dir: Option<String>,
+    /// worker 写入的启动结果，用于把「起不来」如实反映到界面。
+    ///
+    /// 旧版 manifest 没有这个字段，`serde(default)` 保证升级后仍能读出来。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_result: Option<CodexMultiLaunchResult>,
+}
+
+/// 多开 worker 的启动结果（落盘在实例目录，父进程按需读取）。
+///
+/// 多开的 worker 是独立进程，stdout/stderr 被丢弃，父进程只能靠这个文件知道
+/// 「实例到底起没起来」，否则界面会在窗口根本没出现时显示「运行中」。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiLaunchResult {
+    /// 成功或失败都写一条；`failed` 表示激活/就绪校验没过。
+    pub status: String,
+    pub message: String,
+    #[serde(default)]
+    pub finished_at_ms: u64,
+    #[serde(default)]
+    pub debug_port: Option<u16>,
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1101,7 +1133,10 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         return failed("未找到 Codex Desktop，请先设置应用路径。", json!({}));
     };
     let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
-    if !executable.is_file() {
+    // Windows 上包内 exe 的 `is_file()` 可能因 WindowsApps 的 ACL 返回假
+    // （仓库在 app_paths.rs 里记录过「常因 ACL 无法枚举」）。目录在就不要误报
+    // 「可执行文件不存在」——真正的结论交给启动后的就绪校验。
+    if !executable.is_file() && !app_dir.is_dir() {
         return failed(
             &format!("Codex 可执行文件不存在：{}", executable.display()),
             json!({ "appPath": app_dir.to_string_lossy() }),
@@ -1145,6 +1180,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         app_path: app_dir.to_string_lossy().to_string(),
         debug_port,
         helper_port,
+        state_dir: worker_state_dir.to_string_lossy().to_string(),
     };
     let worker_options_bytes = match serde_json::to_vec_pretty(&worker_options) {
         Ok(bytes) => bytes,
@@ -1191,6 +1227,10 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         )
         .env("CODEX_PLUS_PROTOCOL_PROXY_PORT", helper_port.to_string())
         .env("XDG_CONFIG_HOME", &shared_config_home)
+        .env(
+            codex_plus_core::paths::STATE_DIR_ENV,
+            worker_state_dir.as_os_str(),
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -1199,6 +1239,8 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         use std::os::windows::process::CommandExt;
         command.creation_flags(codex_plus_core::windows_create_no_window());
     }
+    // 每次启动前清掉上一轮的启动结果，避免旧结果被当成这一次的结论。
+    let _ = std::fs::remove_file(root.join(MULTI_LAUNCH_RESULT_FILE));
     let child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -1217,13 +1259,16 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         debug_port,
         helper_port,
         status: "starting".to_string(),
-        running: true,
+        // 这里只说「worker 已拉起」。真正的可用性由调试端口与启动结果文件决定，
+        // 否则 Windows 上起不来时界面会一直显示「运行中」。
+        running: false,
         started_at_ms: current_timestamp_ms(),
         is_main: false,
         app_path: Some(app_dir.to_string_lossy().to_string()),
         codex_home: Some(codex_home.to_string_lossy().to_string()),
         sqlite_home: Some(sqlite_home.to_string_lossy().to_string()),
         user_data_dir: Some(user_data_dir.to_string_lossy().to_string()),
+        launch_result: None,
     };
     if let Err(error) = save_multi_instance_manifest(&root, &instance) {
         let _ = terminate_multi_worker(pid, &worker_options_path);
@@ -1282,9 +1327,9 @@ fn list_codex_multi_instances_blocking() -> CommandResult<CodexMultiInstancesPay
         && let Ok(Some(latest)) = StatusStore::default().load_latest()
     {
         let debug_port = latest.debug_port.unwrap_or(default_debug_port());
-        let running = codex_plus_core::cdp::endpoint_available(debug_port)
-            || !codex_plus_core::watcher::find_codex_processes_for_debug_port(debug_port)
-                .is_empty();
+        // 主实例同样以端口为准：`find_codex_processes_for_debug_port` 在 Windows 上
+        // 不区分端口，用它会让主实例行在任何 Codex 进程存在时都显示运行中。
+        let running = codex_plus_core::cdp::endpoint_available(debug_port);
         if running {
             let profile = settings
                 .relay_profiles
@@ -1296,9 +1341,7 @@ fn list_codex_multi_instances_blocking() -> CommandResult<CodexMultiInstancesPay
                 profile_name: profile
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "主进程".to_string()),
-                pid: codex_plus_core::watcher::find_codex_processes_for_debug_port(debug_port)
-                    .first()
-                    .copied(),
+                pid: None,
                 debug_port,
                 helper_port: latest.helper_port.unwrap_or(default_helper_port()),
                 status: latest.status,
@@ -1313,6 +1356,7 @@ fn list_codex_multi_instances_blocking() -> CommandResult<CodexMultiInstancesPay
                 ),
                 sqlite_home: None,
                 user_data_dir: None,
+                launch_result: None,
             });
         }
     }
@@ -1326,12 +1370,10 @@ fn list_codex_multi_instances_blocking() -> CommandResult<CodexMultiInstancesPay
             };
             let running = multi_instance_is_running(&instance);
             let mut current = instance;
+            current.launch_result = load_multi_launch_result(&path);
             current.running = running;
-            current.status = if running {
-                "running".to_string()
-            } else {
-                "stopped".to_string()
-            };
+            current.status =
+                multi_instance_status(running, current.launch_result.as_ref()).to_string();
             if !running {
                 current.pid = None;
             }
@@ -1389,17 +1431,47 @@ fn stop_codex_multi_instance_blocking(
             },
         );
     };
-    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(instance.debug_port);
-    if !codex_plus_core::watcher::find_codex_processes_for_debug_port(instance.debug_port)
-        .is_empty()
-    {
-        return failed(
-            "Codex 进程尚未退出，未结束多开实例。",
+    // 先确认这个实例真的在跑，再按它自己的端口结束它。
+    //
+    // 早先是「无条件全局结束 → 再看端口是否还在」，在 Windows 上会一次杀掉
+    // 主 Codex 与其它多开实例（`stop_codex_processes_for_debug_port_and_wait`
+    // 在非 macOS 上退化为全局结束）。现在只在这个实例的调试端口确实有服务时才动手。
+    if !codex_plus_core::cdp::endpoint_available(instance.debug_port) {
+        if let Some(pid) = instance.pid {
+            let options_path = path.join("worker-options.json");
+            let _ = terminate_multi_worker(pid, &options_path);
+        }
+        return ok(
+            "该实例当前未在运行，未结束任何 Codex 进程。",
             CodexMultiInstancesPayload {
                 instances: Vec::new(),
             },
         );
     }
+    // Windows 的判据是「命令行里带这个调试端口」，进程扫描读不到命令行时宁可漏判；
+    // 这里再确认一次该端口确实还有本实例的进程，避免误碰别的 Codex。
+    #[cfg(windows)]
+    if codex_plus_core::watcher::codex_instance_processes_for_debug_port(instance.debug_port)
+        .is_empty()
+    {
+        return ok(
+            "未发现属于该实例的 Codex 进程，未结束任何 Codex。",
+            CodexMultiInstancesPayload {
+                instances: Vec::new(),
+            },
+        );
+    }
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(instance.debug_port);
+    if codex_plus_core::cdp::endpoint_available(instance.debug_port) {
+        return failed(
+            "该实例的调试端口仍可访问，Codex 进程尚未退出，未结束多开实例。",
+            CodexMultiInstancesPayload {
+                instances: Vec::new(),
+            },
+        );
+    }
+    // 实例已结束，清掉上一轮的启动结果，避免下次启动前显示旧的「启动失败」。
+    let _ = std::fs::remove_file(path.join(MULTI_LAUNCH_RESULT_FILE));
     if let Some(pid) = instance.pid {
         let options_path = path.join("worker-options.json");
         let _ = terminate_multi_worker(pid, &options_path);
@@ -1474,9 +1546,26 @@ fn load_multi_instance_manifest(root: &Path) -> anyhow::Result<CodexMultiInstanc
 }
 
 fn multi_instance_is_running(instance: &CodexMultiInstance) -> bool {
+    // 判定只看调试端口是否真的在服务。
+    //
+    // 早先是「端口可用 OR 能找到 Codex 进程」，但后者在 Windows 上会退化成
+    // 「机器上有没有任意一个 Codex 在跑」——只要主实例开着，每个多开清单都会
+    // 被判成运行中；反过来「结束实例」又会杀掉全部 Codex。端口是实例自己的，
+    // 是这里唯一可靠的判据。
     codex_plus_core::cdp::endpoint_available(instance.debug_port)
-        || !codex_plus_core::watcher::find_codex_processes_for_debug_port(instance.debug_port)
-            .is_empty()
+}
+
+/// 列表里显示的状态：能跑就是运行中；跑不起来且 worker 明确报了失败才是失败，
+/// 否则只是没在运行（例如用户自己关掉了窗口）。
+fn multi_instance_status(running: bool, result: Option<&CodexMultiLaunchResult>) -> &'static str {
+    if running {
+        return "running";
+    }
+    match result.map(|result| result.status.as_str()) {
+        Some("failed") => "failed",
+        Some("ready_degraded") => "running_degraded",
+        _ => "stopped",
+    }
 }
 
 fn terminate_multi_worker(pid: u32, options_path: &Path) -> anyhow::Result<()> {
@@ -1493,8 +1582,12 @@ fn terminate_multi_worker(pid: u32, options_path: &Path) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         let pid_arg = pid.to_string();
+        // 不带 `/T`：这里只该结束 worker 自己。
+        // `/T` 会连带杀掉整棵子进程树，而 worker 下面挂着 Codex Desktop；
+        // 一旦 manifest 里的 pid 已被系统回收，就会误杀无关进程树
+        // （Windows 分支没有 unix 那样的命令行校验，见 multi_worker_process_matches）。
         let status = std::process::Command::new("taskkill")
-            .args(["/PID", pid_arg.as_str(), "/T", "/F"])
+            .args(["/PID", pid_arg.as_str(), "/F"])
             .status()?;
         anyhow::ensure!(status.success(), "结束多开 worker 失败（pid {pid}）");
     }
@@ -1530,19 +1623,168 @@ fn multi_worker_process_matches(pid: u32, options_path: &Path) -> bool {
 /// before this function is called, so the normal launcher can safely use its
 /// existing default-home/settings/helper/bridge code without touching the main
 /// Codex++ instance.
+///
+/// 就绪校验（issue：多开在 Windows 上静默失败）：
+/// launcher 的 `start` 只保证「激活流程走完」，不代表 Codex 真的起来了。
+/// 在 Windows 上按路径启动 MSIX 包内 exe 会丢包身份，进程秒退、CDP 端口永不监听，
+/// 而父进程看不到任何失败信号。这里显式确认调试端口可用，并把结论落盘给父进程，
+/// 让界面显示「启动失败」而不是「运行中」。
 pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
     let options: CodexMultiWorkerOptions = serde_json::from_slice(&std::fs::read(options_path)?)?;
+
+    // 状态目录以 worker 自己的 options 为准，并且**不用** `set_var` 改进程环境：
+    // 多开 worker 复用管理器进程，启动时已是多线程，edition 2024 下 `set_var` 属未定义
+    // 行为。早先只靠父进程设置 HOME 来隔离也不成立——Windows 上 `directories` 走
+    // SHGetKnownFolderPath、不读 HOME，worker 会读写主实例的状态文件。
+    let instance_state_dir = PathBuf::from(options.state_dir.trim());
+    // 真正生效的等待端口：父进程注入的 `CODEX_PLUS_PROTOCOL_PROXY_PORT` 优先于 options。
+    let effective_helper_port = std::env::var("CODEX_PLUS_PROTOCOL_PROXY_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .unwrap_or(options.helper_port);
+
+    let result_path = options_path
+        .parent()
+        .map(|root| root.join(MULTI_LAUNCH_RESULT_FILE))
+        .unwrap_or_else(|| PathBuf::from(MULTI_LAUNCH_RESULT_FILE));
+    // 状态文件也显式指向实例目录：`StatusStore::default()` 会解析主实例路径，
+    // worker 只应写自己那份 latest-status.json。
+    let instance_status_store = StatusStore::new(instance_state_dir.join("latest-status.json"));
     let launch_options = codex_plus_launcher::LaunchOptions {
-        app_dir: Some(PathBuf::from(options.app_path)),
+        app_dir: Some(PathBuf::from(&options.app_path)),
         debug_port: options.debug_port,
         helper_port: options.helper_port,
-        status_store: StatusStore::default(),
+        status_store: instance_status_store.clone(),
+        state_dir: Some(instance_state_dir.clone()),
+        codex_home: std::env::var_os("CODEX_HOME").map(PathBuf::from),
+        sqlite_home: std::env::var_os("CODEX_SQLITE_HOME").map(PathBuf::from),
     };
-    codex_plus_launcher::start(launch_options)?;
+    if let Err(error) = codex_plus_launcher::start(launch_options) {
+        let message = format!("{error:#}");
+        let _ = write_multi_launch_result(
+            &result_path,
+            &CodexMultiLaunchResult {
+                status: "failed".to_string(),
+                message: format!("启动 Codex 失败：{message}"),
+                finished_at_ms: current_timestamp_ms(),
+                debug_port: Some(options.debug_port),
+                pid: None,
+            },
+        );
+        // 父进程按启动结果文件与端口探测判断成败，这里不再向上返回错误：
+        // 让 worker 正常退出，避免主进程日志里出现无主的 panic 噪音。
+        return Ok(());
+    }
+
+    let ready = wait_for_multi_instance_ready(options.debug_port, MULTI_LAUNCH_READY_TIMEOUT);
+    let latest = instance_status_store.load_latest().ok().flatten();
+    // 「端口通了」还要看注入结果：launcher 写 `running_degraded` 表示增强脚本没注入成功，
+    // 这时算「实例可用但增强未就绪」，不能谎报成完全就绪。
+    let injection_degraded = latest
+        .as_ref()
+        .is_some_and(|status| status.status == "running_degraded");
+    let message = multi_launch_result_message(ready, options.debug_port, latest.as_ref());
+    let status = if !ready {
+        "failed"
+    } else if injection_degraded {
+        "ready_degraded"
+    } else {
+        "ready"
+    };
+    let _ = write_multi_launch_result(
+        &result_path,
+        &CodexMultiLaunchResult {
+            status: status.to_string(),
+            message,
+            finished_at_ms: current_timestamp_ms(),
+            debug_port: Some(options.debug_port),
+            pid: multi_instance_codex_pid(options.debug_port),
+        },
+    );
+    if !ready {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "manager.multi_instance_not_ready",
+            json!({
+                "instanceId": std::env::var("CODEX_PLUS_INSTANCE_ID").unwrap_or_default(),
+                "debug_port": options.debug_port,
+                "helper_port": effective_helper_port,
+                "app_path": options.app_path,
+                "codex_home": std::env::var("CODEX_HOME").unwrap_or_default(),
+                "waited_ms": MULTI_LAUNCH_READY_TIMEOUT.as_millis() as u64,
+                "status": latest.as_ref().map(|status| status.status.clone()),
+                "phase": latest.as_ref().and_then(|status| status.phase.clone()),
+                "message": latest.as_ref().map(|status| status.message.clone()),
+            }),
+        );
+        // 起不来时不要留下 helper/协议代理占着端口。
+        // 只关掉服务，不 exit 整个进程：worker 就是管理器自己的进程（多开用
+        // `--codex-plus-multi-worker` 复用同一个 exe 并隐藏窗口），exit 会把管理界面一起带走。
+        let _ = codex_plus_launcher::shutdown();
+        return Ok(());
+    }
+
     while codex_plus_core::cdp::endpoint_available(options.debug_port) {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     codex_plus_launcher::shutdown()
+}
+
+/// 多开实例启动结果文件名（与 `worker-options.json` 同目录）。
+pub const MULTI_LAUNCH_RESULT_FILE: &str = "launch-result.json";
+
+/// 等待多开实例的 CDP 端口就绪；窗口已出现但注入失败同样算未就绪。
+pub fn wait_for_multi_instance_ready(debug_port: u16, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if codex_plus_core::cdp::endpoint_available(debug_port) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+pub const MULTI_LAUNCH_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+fn multi_instance_codex_pid(debug_port: u16) -> Option<u32> {
+    codex_plus_core::watcher::find_codex_processes_for_debug_port(debug_port)
+        .first()
+        .copied()
+}
+
+/// 就绪失败时的用户可读文案：区分「端口没起来」与「launcher 已记下失败原因」。
+fn multi_launch_result_message(
+    ready: bool,
+    debug_port: u16,
+    latest: Option<&codex_plus_core::status::LaunchStatus>,
+) -> String {
+    if ready {
+        return "Codex 多开实例已就绪。".to_string();
+    }
+    let detail = latest
+        .map(|status| status.message.trim())
+        .filter(|message| !message.is_empty());
+    match detail {
+        Some(detail) => format!(
+            "Codex 多开实例启动后调试端口 {debug_port} 未就绪（{detail}）。\
+             若 Codex 是 Microsoft Store 安装版，请改用包上下文启动或改用非打包版本。"
+        ),
+        None => format!("Codex 多开实例启动后调试端口 {debug_port} 未就绪，Codex 可能已退出。"),
+    }
+}
+
+fn write_multi_launch_result(path: &Path, result: &CodexMultiLaunchResult) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(result)?;
+    codex_plus_core::settings::atomic_write(path, &bytes)
+}
+
+/// 读取实例的启动结果；文件不存在或不是合法 JSON 时返回 `None`。
+fn load_multi_launch_result(root: &Path) -> Option<CodexMultiLaunchResult> {
+    let contents = std::fs::read_to_string(root.join(MULTI_LAUNCH_RESULT_FILE)).ok()?;
+    serde_json::from_str(&contents).ok()
 }
 
 fn multi_instance_slug(value: &str) -> String {
@@ -1719,6 +1961,61 @@ fn try_acquire_launch_guard() -> Result<LaunchGuard, &'static str> {
         .map_err(|_| "启动或重启正在进行，请等待本次操作完成。")
 }
 
+/// 供自动接管守护线程复用同一把串行锁：它与用户点「启动/重启」必须互斥，
+/// 否则会出现两套 launcher 会话抢同一个官方 App。
+pub fn try_acquire_launch_guard_for_takeover() -> Result<impl Drop, &'static str> {
+    try_acquire_launch_guard()
+}
+
+/// 是否有启动/重启在途（判据用，只读）。
+pub fn launch_in_progress() -> bool {
+    LAUNCH_IN_PROGRESS.load(Ordering::Acquire)
+}
+
+/// 自动接管发起的启动：走与「点启动」完全相同的 launcher 链路。
+///
+/// 与 `start_embedded_launcher` 的唯一区别是入参由守护线程解析，不接受前端传来的
+/// 临时状态。
+pub fn run_auto_takeover_launch(request: LaunchRequest) -> Result<(), String> {
+    if crate::app_is_exiting() {
+        return Err("Codex++ 正在退出，未启动 Codex".to_string());
+    }
+    let launch_options = codex_plus_launcher::LaunchOptions {
+        app_dir: (!request.app_path.trim().is_empty())
+            .then(|| PathBuf::from(request.app_path.trim())),
+        debug_port: request.debug_port,
+        helper_port: request.helper_port,
+        status_store: StatusStore::default(),
+        ..Default::default()
+    };
+    codex_plus_launcher::start(launch_options).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn load_auto_takeover_state() -> CommandResult<crate::auto_takeover::AutoTakeoverPayload> {
+    ok("自动接管状态已加载。", crate::auto_takeover::payload())
+}
+
+#[tauri::command]
+pub fn take_over_codex_now() -> CommandResult<crate::auto_takeover::AutoTakeoverPayload> {
+    match crate::auto_takeover::take_over_now() {
+        Ok(()) => ok("已发起接管。", crate::auto_takeover::payload()),
+        Err(message) => failed(&message, crate::auto_takeover::payload()),
+    }
+}
+
+#[tauri::command]
+pub fn pause_auto_takeover_for_instance() -> CommandResult<crate::auto_takeover::AutoTakeoverPayload>
+{
+    match crate::auto_takeover::pause_until_next_instance() {
+        Ok(()) => ok(
+            "本次不再自动接管，重启官方 App 后恢复。",
+            crate::auto_takeover::payload(),
+        ),
+        Err(message) => failed(&message, crate::auto_takeover::payload()),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum RestartDisposition {
     LaunchOnly,
@@ -1739,10 +2036,11 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Err(message) => return failed(message, json!({})),
     };
     let request = normalize_launch_request(request);
-    // macOS scopes by debug port; other platforms detect all Codex desktop processes.
-    let app_running =
-        !codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port)
-            .is_empty();
+    // 按本实例的调试端口判定是否在跑。
+    // 早先用 `find_codex_processes_for_debug_port`，但它在非 macOS 上返回全部
+    // Codex 进程：Windows 上只要有多开实例在跑，就会把「主 Codex 没开」误判成
+    // 「已运行」，进而走进重启分支去停进程。
+    let app_running = codex_plus_core::cdp::endpoint_available(request.debug_port);
     if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly
     {
         return spawn_codex_plus_launch(request, "Codex 未运行，已按直接启动方式在后台唤起。");
@@ -1787,12 +2085,20 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
         || {
+            // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
+            // 这里允许「按端口没匹配到就退回全局结束」，否则重启会卡在
+            // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
+            #[cfg(windows)]
+            codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(
+                request.debug_port,
+                true,
+            );
+            #[cfg(not(windows))]
             codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
                 request.debug_port,
             );
             anyhow::ensure!(
-                codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port)
-                    .is_empty(),
+                !codex_plus_core::cdp::endpoint_available(request.debug_port),
                 "Codex 进程尚未退出；未启动新实例"
             );
             Ok(())
@@ -2308,6 +2614,7 @@ fn start_embedded_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
         debug_port: request.debug_port,
         helper_port: request.helper_port,
         status_store: StatusStore::default(),
+        ..Default::default()
     })
 }
 
@@ -2336,6 +2643,7 @@ pub fn resume_existing_codex_background(app: tauri::AppHandle) {
                 .and_then(|status| status.helper_port)
                 .unwrap_or_else(default_helper_port),
             status_store: StatusStore::default(),
+            ..Default::default()
         };
         if let Err(error) = codex_plus_launcher::resume_if_running(options) {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -2834,6 +3142,20 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
+    // 保存诊断：供应商模型列表被改小/改大时能直接看出「提交上来的到底是什么」。
+    // 用户反馈过「删掉一行保存后又变回三行」，只有把每次保存的行数记下来才能区分
+    // 「界面没提交改动」和「提交了又被别处覆盖」。
+    log_manager_event(
+        "manager.save_settings",
+        json!({
+            "activeRelayId": settings.active_relay_id,
+            "relayProfiles": settings.relay_profiles.iter().map(|profile| json!({
+                "id": profile.id,
+                "modelCount": profile.model_list.lines().filter(|line| !line.trim().is_empty()).count(),
+                "models": profile.model_list.lines().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        }),
+    );
     let Ok(_guard) = relay_switch_mutex().lock() else {
         return failed(
             "供应商切换锁已损坏，请重启管理器后再试。",
@@ -2871,6 +3193,8 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
             {
                 runtime.codex_path.set(&settings.weixin_connect_codex_path);
             }
+            // 自动接管是常驻行为，保存后立刻生效，不必重启管理器。
+            crate::auto_takeover::apply_enabled(settings.codex_app_auto_takeover);
             settings_payload("设置已保存。", "设置保存后重新读取失败")
         }
         Err(error) => {
@@ -5187,20 +5511,6 @@ pub fn open_external_url(url: String) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub async fn install_entrypoints() -> InstallActionResult {
-    tauri::async_runtime::spawn_blocking(install::install_entrypoints)
-        .await
-        .unwrap_or_else(|error| install_background_failure("安装入口", error))
-}
-
-#[tauri::command]
-pub async fn uninstall_entrypoints(options: InstallOptions) -> InstallActionResult {
-    tauri::async_runtime::spawn_blocking(move || install::uninstall_entrypoints(options))
-        .await
-        .unwrap_or_else(|error| install_background_failure("卸载入口", error))
-}
-
-#[tauri::command]
 pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
@@ -5321,37 +5631,17 @@ pub fn load_watcher_state() -> CommandResult<WatcherPayload> {
     ok("开机启动状态已加载。", watcher_payload())
 }
 
+/// 界面上的「开机打开 Codex++」开关：开启 = 注册并启用，关闭 = 注销并禁用。
 #[tauri::command]
-pub fn install_watcher() -> CommandResult<WatcherPayload> {
+pub fn set_watcher_enabled(enabled: bool) -> CommandResult<WatcherPayload> {
     let launcher_path =
         codex_plus_core::install::companion_binary_path(codex_plus_core::install::SILENT_BINARY);
-    match codex_plus_core::watcher::install_watcher(&launcher_path, default_debug_port()) {
-        Ok(()) => ok("开机启动已设置。", watcher_payload()),
-        Err(error) => failed(&format!("设置开机启动失败：{error}"), watcher_payload()),
-    }
-}
-
-#[tauri::command]
-pub fn uninstall_watcher() -> CommandResult<WatcherPayload> {
-    match codex_plus_core::watcher::uninstall_watcher() {
-        Ok(()) => ok("开机启动已移除。", watcher_payload()),
-        Err(error) => failed(&format!("移除开机启动失败：{error}"), watcher_payload()),
-    }
-}
-
-#[tauri::command]
-pub fn enable_watcher() -> CommandResult<WatcherPayload> {
-    match codex_plus_core::watcher::enable_watcher() {
-        Ok(()) => ok("开机启动已启用。", watcher_payload()),
-        Err(error) => failed(&format!("启用开机启动失败：{error}"), watcher_payload()),
-    }
-}
-
-#[tauri::command]
-pub fn disable_watcher() -> CommandResult<WatcherPayload> {
-    match codex_plus_core::watcher::disable_watcher() {
-        Ok(()) => ok("开机启动已禁用。", watcher_payload()),
-        Err(error) => failed(&format!("禁用开机启动失败：{error}"), watcher_payload()),
+    match codex_plus_core::watcher::set_watcher_enabled(enabled, &launcher_path, default_debug_port())
+    {
+        Ok(()) if enabled => ok("开机启动已开启。", watcher_payload()),
+        Ok(()) => ok("开机启动已关闭。", watcher_payload()),
+        Err(error) if enabled => failed(&format!("开启开机启动失败：{error}"), watcher_payload()),
+        Err(error) => failed(&format!("关闭开机启动失败：{error}"), watcher_payload()),
     }
 }
 
@@ -6712,15 +7002,14 @@ fn apply_aggregate_relay_injection_to_home(
                         "聚合供应商配置和模型目录已写入，选中的模型会固定发送到对应成员。"
                             .to_string();
                     if let Some(warning) =
-                        codex_plus_core::aggregate_catalog::subagent_conflict_warning(home, &settings)
+                        codex_plus_core::aggregate_catalog::subagent_conflict_warning(
+                            home, &settings,
+                        )
                     {
                         message.push_str("\n\n");
                         message.push_str(&warning);
                     }
-                    return ok(
-                        &message,
-                        relay_payload(status, result.backup_path),
-                    );
+                    return ok(&message, relay_payload(status, result.backup_path));
                 }
                 Err(error) => {
                     let status = codex_plus_core::relay_config::relay_status_from_home(home);
@@ -8496,6 +8785,7 @@ base_url = "https://example.invalid/v1"
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
                 routes: Vec::new(),
+                default_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -8529,6 +8819,7 @@ base_url = "https://example.invalid/v1"
                 strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
                 members: Vec::new(),
                 routes: Vec::new(),
+                default_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -8584,6 +8875,7 @@ base_url = "https://example.invalid/v1"
                     weight: 1,
                 }],
                 routes: Vec::new(),
+                default_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -9738,6 +10030,7 @@ model_reasoning_effort = "high"
             codex_home: Some("/tmp/codex-home".to_string()),
             sqlite_home: Some("/tmp/sqlite-home".to_string()),
             user_data_dir: Some("/tmp/user-data".to_string()),
+            launch_result: None,
         };
         save_multi_instance_manifest(temp.path(), &instance).unwrap();
         assert_eq!(
@@ -9752,6 +10045,115 @@ model_reasoning_effort = "high"
                 .debug_port,
             9456
         );
+    }
+
+    // 多开在 Windows 上曾经「窗口没出现、列表却显示运行中」：现在状态由
+    // worker 落盘的启动结果 + 端口判活共同决定，两者都要有测试守住。
+    #[test]
+    fn multi_instance_status_reports_worker_failure_instead_of_running() {
+        let failed = CodexMultiLaunchResult {
+            status: "failed".to_string(),
+            message: "调试端口 9456 未就绪".to_string(),
+            finished_at_ms: 12,
+            debug_port: Some(9456),
+            pid: None,
+        };
+        let ready = CodexMultiLaunchResult {
+            status: "ready".to_string(),
+            message: "Codex 多开实例已就绪。".to_string(),
+            finished_at_ms: 13,
+            debug_port: Some(9456),
+            pid: Some(4321),
+        };
+
+        let degraded = CodexMultiLaunchResult {
+            status: "ready_degraded".to_string(),
+            message: "实例已就绪但增强未注入".to_string(),
+            finished_at_ms: 14,
+            debug_port: Some(9456),
+            pid: Some(4321),
+        };
+
+        assert_eq!(multi_instance_status(true, Some(&failed)), "running");
+        assert_eq!(multi_instance_status(false, Some(&failed)), "failed");
+        // 注入降级要如实显示，不能当成就绪也不能当成失败。
+        assert_eq!(
+            multi_instance_status(false, Some(&degraded)),
+            "running_degraded"
+        );
+        assert_eq!(multi_instance_status(false, Some(&ready)), "stopped");
+        assert_eq!(
+            multi_instance_status(false, Some(&degraded)),
+            "running_degraded"
+        );
+        // 没有结果文件（worker 还没写、或用户自己关了窗口）不算失败。
+        assert_eq!(multi_instance_status(false, None), "stopped");
+    }
+
+    #[test]
+    fn multi_launch_result_roundtrips_through_instance_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = CodexMultiLaunchResult {
+            status: "failed".to_string(),
+            message: "Codex 多开实例启动后调试端口 9456 未就绪，Codex 可能已退出。".to_string(),
+            finished_at_ms: 1234,
+            debug_port: Some(9456),
+            pid: None,
+        };
+
+        assert!(load_multi_launch_result(temp.path()).is_none());
+        write_multi_launch_result(&temp.path().join(MULTI_LAUNCH_RESULT_FILE), &result).unwrap();
+        let loaded = load_multi_launch_result(temp.path()).unwrap();
+        assert_eq!(loaded.status, "failed");
+        assert_eq!(loaded.debug_port, Some(9456));
+        assert_eq!(loaded.message, result.message);
+    }
+
+    #[test]
+    fn multi_launch_result_message_prefers_launcher_failure_detail() {
+        let ready = multi_launch_result_message(true, 9456, None);
+        assert!(ready.contains("已就绪"));
+
+        let without_detail = multi_launch_result_message(false, 9456, None);
+        assert!(without_detail.contains("9456"));
+        assert!(without_detail.contains("可能已退出"));
+
+        let with_detail = multi_launch_result_message(
+            false,
+            9456,
+            Some(&codex_plus_core::status::LaunchStatus {
+                status: "failed".to_string(),
+                message: "该进程没有程序包标识符".to_string(),
+                ..Default::default()
+            }),
+        );
+        assert!(with_detail.contains("该进程没有程序包标识符"));
+        assert!(with_detail.contains("Microsoft Store"));
+    }
+
+    // 旧版 manifest 里没有 launchResult 字段，升级后必须仍能读出来（默认 None）。
+    #[test]
+    fn legacy_multi_instance_manifest_without_launch_result_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = serde_json::json!({
+            "instanceId": "zhipu",
+            "profileId": "profile-zhipu",
+            "profileName": "Zhipu GLM",
+            "pid": 1234,
+            "debugPort": 9456,
+            "helperPort": 9457,
+            "status": "running",
+            "running": true,
+            "startedAtMs": 99,
+            "isMain": false
+        });
+        let bytes = serde_json::to_vec_pretty(&legacy).unwrap();
+        codex_plus_core::settings::atomic_write(&multi_instance_manifest_path(temp.path()), &bytes)
+            .unwrap();
+
+        let instance = load_multi_instance_manifest(temp.path()).unwrap();
+        assert!(instance.launch_result.is_none());
+        assert_eq!(instance.debug_port, 9456);
     }
 
     #[cfg(unix)]

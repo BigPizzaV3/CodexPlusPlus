@@ -209,6 +209,7 @@ import {
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
 import {
+  multiLaunchInstanceFailure,
   multiLaunchInstanceLabel as formatMultiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
@@ -216,6 +217,10 @@ import {
 } from "./multi-launch-model";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
+
+/// 多开启动后轮询「就绪/失败」结论的节奏：worker 最长等 90 秒就绪，这里给到 2 分钟。
+const MULTI_LAUNCH_POLL_INTERVAL_MS = 3000;
+const MULTI_LAUNCH_POLL_TIMEOUT_MS = 120_000;
 const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
 const dreamSkinMacPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png", import.meta.url).href;
 const dreamSkinCompanionDataUrlLimit = 240_000;
@@ -299,6 +304,9 @@ type MultiLaunchInstancesResult = CommandResult<{
 
 type BackendSettings = WhaleBalanceSettings & {
   codexAppPath: string;
+  /** 自动接管官方 App（与 Rust `codex_app_auto_takeover` 对应）。 */
+  codexAppAutoTakeover: boolean;
+  codexAppAutoTakeoverWhenActive: string;
   codexExtraArgs: string[];
   dictation: DictationSettings;
   providerSyncEnabled: boolean;
@@ -859,6 +867,26 @@ type WatcherResult = CommandResult<{
   disabled_flag: string;
 }>;
 
+// 与 Rust 侧 `auto_takeover::AutoTakeoverPayload`（rename_all = "camelCase"）逐字段对齐。
+// 少一个字段的表现是「状态行永远空白」，所以两边要一起改。
+type AutoTakeoverResult = CommandResult<{
+  state: string;
+  enabled: boolean;
+  platformSupported: boolean;
+  activePolicy: string;
+  lastTakeoverAtMs?: number | null;
+  lastReason?: string | null;
+  lastError?: string | null;
+  actualDebugPort?: number | null;
+  appRunning?: boolean | null;
+  sessionOwned: boolean;
+  sessionStatus?: string | null;
+  restartsLastHour: number;
+  restartsTotal: number;
+  pausedInstance?: string | null;
+  running: boolean;
+}>;
+
 type InstallResult = CommandResult<{
   silent_shortcut: { installed: boolean; path: string | null };
   management_shortcut: { installed: boolean; path: string | null };
@@ -1062,6 +1090,8 @@ const globalNavigationRoutes: Route[] = ["recommendations", "agentCache", "about
 const defaultSettings: BackendSettings = {
   ...defaultWhaleBalanceSettings(),
   codexAppPath: "",
+  codexAppAutoTakeover: false,
+  codexAppAutoTakeoverWhenActive: "defer",
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
   providerSyncEnabled: false,
@@ -1258,7 +1288,7 @@ export function App() {
   const [sessionIndexRepairReport, setSessionIndexRepairReport] = useState<SessionIndexRepairReport | null>(null);
   const [sessionIndexRepairReportError, setSessionIndexRepairReportError] = useState<string | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
-  const [removeOwnedData, setRemoveOwnedData] = useState(false);
+  const [autoTakeover, setAutoTakeoverState] = useState<AutoTakeoverResult | null>(null);
   const [relaySwitching, setRelaySwitching] = useState(false);
   const dreamSkinDraftDirty = Boolean(
     savedDreamSkinThemeDraft
@@ -2084,6 +2114,43 @@ export function App() {
     }
   };
 
+  /**
+   * 读取自动接管状态。总开关关闭时不探测：守护线程本来就不工作，
+   * 读到的只会是「未运行」，徒增一次 IPC。
+   */
+  const refreshAutoTakeover = async (silent = false) => {
+    if (settings && !settings.settings.codexAppAutoTakeover) {
+      setAutoTakeoverState(null);
+      return;
+    }
+    const result = await run(() => call<AutoTakeoverResult>("load_auto_takeover_state"));
+    if (result) {
+      setAutoTakeoverState(result);
+      if (!silent) showResultNotice(t("自动接管状态"), result, { silentSuccess: true });
+    }
+  };
+
+  /** 开关必须走既有设置保存链路，才能在设置文件里持久化并被守护线程读到。 */
+  const setAutoTakeover = async (enabled: boolean) => {
+    if (!settings) return;
+    const saved = await saveSettingsValue({ ...settings.settings, codexAppAutoTakeover: enabled }, false);
+    if (!saved) return;
+    setSettings((current) => (current ? { ...current, settings: saved } : current));
+    if (enabled) {
+      await refreshAutoTakeover(true);
+    } else {
+      setAutoTakeoverState(null);
+    }
+  };
+
+  const runAutoTakeoverCommand = async (command: string) => {
+    const result = await run(() => call<AutoTakeoverResult>(command));
+    if (result) {
+      setAutoTakeoverState(result);
+      showResultNotice(t("自动接管"), result, { silentSuccess: false });
+    }
+  };
+
   const navigate = async (next: Route, skipDreamSkinDraftGuard = false) => {
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
@@ -2141,6 +2208,7 @@ export function App() {
     if (next === "maintenance") {
       await refreshOverview(true);
       await refreshWatcher(true);
+      await refreshAutoTakeover(true);
     }
   };
 
@@ -2172,11 +2240,41 @@ export function App() {
       const result = await run(() => call<MultiLaunchResult>("launch_codex_multi_instance", {
         request: { profileId: profile.id },
       }));
-      if (result) showNotice(t("Codex多开"), result.message, result.status);
+      if (!result) return;
+      // 父进程只知道「worker 已拉起」，真正起来没有要等它就绪（最长 90 秒），
+      // 所以这里不直接报成功，改为轮询到有结论再给提示。
+      await refreshMultiLaunchInstances(true);
+      const outcome = await pollMultiLaunchOutcome(profile.id);
+      if (outcome === "ready") {
+        showNotice(t("Codex多开"), t("Codex 多开实例已就绪。"), "ok");
+      } else if (outcome === "failed") {
+        showNotice(t("Codex多开"), t("Codex 实例启动失败，请查看实例列表中的原因。"), "failed");
+      } else {
+        showNotice(t("Codex多开"), result.message, result.status);
+      }
       await refreshMultiLaunchInstances(true);
     } finally {
       setMultiLaunchPending(null);
     }
+  };
+
+  /**
+   * 等待某个多开实例给出结论（就绪 / 失败），最长约 2 分钟。
+   *
+   * worker 是独立进程且 stdout 被丢弃，父进程只能靠 `launch-result.json` 判断成败；
+   * 没有这个轮询的话，Windows 上「点了没窗口」会一直没有任何反馈。
+   */
+  const pollMultiLaunchOutcome = async (instanceId: string): Promise<"ready" | "failed" | "pending"> => {
+    const deadline = Date.now() + MULTI_LAUNCH_POLL_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, MULTI_LAUNCH_POLL_INTERVAL_MS));
+      const result = await refreshMultiLaunchInstances(true);
+      const instance = result?.instances?.find((item) => item.instanceId === instanceId);
+      if (!instance) continue;
+      if (multiLaunchInstanceRunning(instance)) return "ready";
+      if (multiLaunchInstanceFailure(instance)) return "failed";
+    }
+    return "pending";
   };
 
   const refreshMultiLaunchInstances = async (silent = true) => {
@@ -2186,7 +2284,13 @@ export function App() {
     try {
       const result = await run(() => call<MultiLaunchInstancesResult>("list_codex_multi_instances"));
       if (result) {
-        setMultiLaunchInstances(Array.isArray(result.instances) ? result.instances.filter(multiLaunchInstanceRunning) : []);
+        // 失败实例必须留在列表里：多开在 Windows 上起不来时，
+        // 界面要给出「启动失败 + 原因」，只留运行中的会让它彻底消失。
+        setMultiLaunchInstances(
+          Array.isArray(result.instances)
+            ? result.instances.filter((instance) => multiLaunchInstanceRunning(instance) || Boolean(multiLaunchInstanceFailure(instance)))
+            : [],
+        );
         if (!silent && !isSuccessStatus(result.status)) showNotice(t("当前运行实例"), result.message, result.status);
       }
       return result;
@@ -2316,26 +2420,6 @@ export function App() {
     showNotice(title, t(notice.message), notice.status);
   };
 
-  const installEntrypoints = async () => {
-    const result = await run(() => call<InstallResult>("install_entrypoints"));
-    if (result) {
-      showNotice(t("入口安装"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
-
-  const uninstallEntrypoints = async () => {
-    const result = await run(() =>
-      call<InstallResult>("uninstall_entrypoints", {
-        options: { removeOwnedData },
-      }),
-    );
-    if (result) {
-      showNotice(t("入口卸载"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
-
   const repairShortcuts = async () => {
     const result = await run(() => call<InstallResult>("repair_shortcuts"));
     if (result) {
@@ -2344,11 +2428,11 @@ export function App() {
     }
   };
 
-  const watcherAction = async (command: string) => {
-    const result = await run(() => call<WatcherResult>(command));
+  const setWatcherEnabled = async (enabled: boolean) => {
+    const result = await run(() => call<WatcherResult>("set_watcher_enabled", { enabled }));
     if (result) {
       setWatcher(result);
-      showNotice(t("Watcher 操作"), result.message, result.status);
+      showNotice(t("开机打开 Codex++"), result.message, result.status);
     }
   };
 
@@ -3342,8 +3426,6 @@ export function App() {
       restartMultiLaunchInstance,
       stopMultiLaunchInstance,
       restart,
-      installEntrypoints,
-      uninstallEntrypoints,
       repairShortcuts,
       checkUpdate,
       performUpdate,
@@ -3525,13 +3607,14 @@ export function App() {
         await refreshWatcher(true);
         showNotice(t("检查完成"), t("已刷新 Codex 应用、入口和 Watcher 状态。"), "ok");
       },
-      installWatcher: () => watcherAction("install_watcher"),
-      uninstallWatcher: () => watcherAction("uninstall_watcher"),
-      enableWatcher: () => watcherAction("enable_watcher"),
-      disableWatcher: () => watcherAction("disable_watcher"),
+      setWatcherEnabled,
+      setAutoTakeover,
+      refreshAutoTakeover: () => refreshAutoTakeover(false),
+      takeOverNow: () => runAutoTakeoverCommand("take_over_codex_now"),
+      pauseAutoTakeover: () => runAutoTakeoverCommand("pause_auto_takeover_for_instance"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const isManagementScreen = route === "relay" || route === "multiLaunch" || route === "sessions" || route === "context" || route === "skills";
@@ -3742,11 +3825,10 @@ export function App() {
               overview={overview}
               launchPending={launchPending}
               watcher={watcher}
+              autoTakeover={autoTakeover}
               settings={settings}
               launchForm={launchForm}
               onLaunchFormChange={setLaunchForm}
-              removeOwnedData={removeOwnedData}
-              onRemoveOwnedDataChange={setRemoveOwnedData}
               actions={actions}
             />
           ) : null}
@@ -3970,8 +4052,6 @@ type Actions = {
   restartMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
   stopMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
   restart: (syncActiveRelay?: boolean) => Promise<boolean>;
-  installEntrypoints: () => Promise<void>;
-  uninstallEntrypoints: () => Promise<void>;
   repairShortcuts: () => Promise<void>;
   checkUpdate: () => Promise<void>;
   performUpdate: () => Promise<void>;
@@ -4057,10 +4137,11 @@ type Actions = {
   copyLogs: () => Promise<void>;
   copyDiagnostics: () => Promise<void>;
   goLogs: () => Promise<void>;
-  installWatcher: () => Promise<void>;
-  uninstallWatcher: () => Promise<void>;
-  enableWatcher: () => Promise<void>;
-  disableWatcher: () => Promise<void>;
+  setWatcherEnabled: (enabled: boolean) => Promise<void>;
+  setAutoTakeover: (enabled: boolean) => Promise<void>;
+  refreshAutoTakeover: () => Promise<void>;
+  takeOverNow: () => Promise<void>;
+  pauseAutoTakeover: () => Promise<void>;
   toggleTheme: () => void;
   checkHealth: () => Promise<void>;
 };
@@ -5179,18 +5260,21 @@ function CodexMultiLaunchScreen({
                   const running = multiLaunchInstanceRunning(instance);
                   const pending = actions.multiLaunchActionPending === instance.instanceId;
                   const label = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
+                  // 启动失败的原因必须让用户看得见：Windows 上多开曾经完全不吭声。
+                  const failure = multiLaunchInstanceFailure(instance);
                   const detail = [
                     instance.isMain ? t("主进程") : instance.instanceId,
                     typeof instance.pid === "number" ? `PID ${instance.pid}` : "",
                     typeof instance.debugPort === "number" ? `CDP ${instance.debugPort}` : "",
                     typeof instance.helperPort === "number" ? `API ${instance.helperPort}` : "",
+                    failure ? `${t("启动失败")}：${failure}` : "",
                   ].filter(Boolean).join(" · ");
                   return (
                     <div className="multi-launch-instance-card" data-instance-id={instance.instanceId} key={instance.instanceId}>
                       <span className="relay-index" title={label}>{providerInitial(label)}</span>
                       <span className="relay-summary">
                         <strong>{label}</strong>
-                        <small>{detail || t("未提供进程详情")}</small>
+                        <small data-failed={failure ? "true" : undefined}>{detail || t("未提供进程详情")}</small>
                       </span>
                       <UiBadge className={`multi-launch-instance-status ${statusClass(status)}`} variant="secondary">{statusLabel(status)}</UiBadge>
                       <span className="relay-card-actions">
@@ -7510,21 +7594,19 @@ function MaintenanceScreen({
   overview,
   launchPending,
   watcher,
+  autoTakeover,
   settings,
   launchForm,
   onLaunchFormChange,
-  removeOwnedData,
-  onRemoveOwnedDataChange,
   actions,
 }: {
   overview: OverviewResult | null;
   launchPending: boolean;
   watcher: WatcherResult | null;
+  autoTakeover: AutoTakeoverResult | null;
   settings: SettingsResult | null;
   launchForm: { appPath: string; debugPort: string; helperPort: string };
   onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
-  removeOwnedData: boolean;
-  onRemoveOwnedDataChange: (value: boolean) => void;
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
@@ -7537,6 +7619,11 @@ function MaintenanceScreen({
             <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
             <StatusRow title={t("Codex++ 应用入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
             <StatusRow title={t("开机打开 Codex++")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
+            <StatusRow
+              title={t("自动接管官方 App")}
+              status={settings?.settings.codexAppAutoTakeover && autoTakeover?.running ? "ok" : "disabled"}
+              path={autoTakeover?.lastError ?? autoTakeover?.lastReason ?? null}
+            />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
@@ -7545,28 +7632,69 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("入口管理")} detail={t("快捷方式写入系统实际桌面位置，不使用写死桌面路径")} />
+        <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，Codex 仍需点击启动")} />
         <CardContent>
-          <label className="check-row">
-            <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
-            <span>{t("卸载时移除 Codex++ 托管数据")}</span>
+          <label className="switch-row">
+            <input
+              checked={Boolean(watcher?.enabled)}
+              disabled={!watcher}
+              onChange={(event) => void actions.setWatcherEnabled(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("登录时自动打开")}</strong>
+              <small>{t("开启后注册系统登录项，关闭时移除；Codex 仍需你手动点击启动。")}</small>
+            </span>
+            <ToggleVisual />
           </label>
-          <Toolbar>
-            <Button onClick={() => void actions.installEntrypoints()}>{t("安装入口")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallEntrypoints()}>{t("卸载入口")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复入口")}</Button>
-          </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，Codex 仍需点击启动")} />
+        <CardHead title={t("自动接管官方 App")} detail={t("你自己双击启动官方 App 时，Codex++ 自动接管并注入增强")} />
         <CardContent>
-          <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("设置开机启动")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除开机启动")}</Button>
-            <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
-            <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
-          </Toolbar>
+          <label className="switch-row">
+            <input
+              checked={Boolean(settings?.settings.codexAppAutoTakeover)}
+              onChange={(event) => void actions.setAutoTakeover(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("开启自动接管")}</strong>
+              <small>{t("开启后，你自己启动官方 App 时 Codex++ 会自动接管。官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          {settings?.settings.codexAppAutoTakeover ? (
+            <>
+              <div className="status-table">
+                <StatusRow
+                  title={t("接管状态")}
+                  status={autoTakeover?.state === "degraded" ? "failed" : autoTakeover?.running ? "ok" : "disabled"}
+                  path={autoTakeover?.state === "degraded" ? t("已降级") : autoTakeover?.running ? t("监听中") : t("未运行")}
+                />
+                <StatusRow title={t("官方 App")} status={autoTakeover?.appRunning ? "ok" : "disabled"} path={autoTakeover?.appRunning ? t("运行中") : t("未运行")} />
+                <StatusRow
+                  title={t("调试端口")}
+                  status={autoTakeover?.actualDebugPort ? "ok" : "not_checked"}
+                  path={autoTakeover?.actualDebugPort ? String(autoTakeover.actualDebugPort) : null}
+                />
+              </div>
+              {autoTakeover?.pausedInstance ? <p className="hint">{t("本次已跳过自动接管，重启官方 App 后恢复。")}</p> : null}
+              {autoTakeover?.lastError ? <p className="hint">{autoTakeover.lastError}</p> : null}
+              {autoTakeover?.lastTakeoverAtMs ? (
+                <p className="hint">{tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()])}</p>
+              ) : null}
+              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS。")}</p>}
+              <p className="hint">{t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}</p>
+              <Toolbar>
+                <Button variant="secondary" onClick={() => void actions.takeOverNow()}>{t("立即接管")}</Button>
+                <Button variant="secondary" onClick={() => void actions.pauseAutoTakeover()}>{t("本次不接管")}</Button>
+                <Button variant="secondary" onClick={() => void actions.refreshAutoTakeover()}>{t("刷新状态")}</Button>
+              </Toolbar>
+            </>
+          ) : (
+            <p className="hint">{t("仅在 Codex++ 正在运行时生效；建议同时开启上面的「开机打开 Codex++」。")}</p>
+          )}
         </CardContent>
       </Panel>
       <Panel>
@@ -8235,6 +8363,14 @@ function RelayProfileDetail({
   });
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
+  // 只有当前供应商才从 live 文件回填；非当前供应商时不能把 relayFiles 当依赖——
+  // live 文件一变就会重建整份模型行，编辑中的增删被无声撤销（保存后看起来「没生效」）。
+  const liveConfigContents = isActive && profileUsesLiveFiles ? relayFiles?.configContents ?? "" : "";
+  const liveAuthContents = isActive && profileUsesLiveFiles ? relayFiles?.authContents ?? "" : "";
+  // 行编辑守卫：编辑器里还有未保存的模型行改动时，外部变化（元数据、live 文件、别处保存设置
+  // 触发的重渲染）不许把用户的增删覆盖回已保存列表。
+  const unsavedRowEditsRef = useRef(false);
+  const lastDetailProfileIdRef = useRef(profile.id);
   useEffect(() => {
     const useLiveFiles = isActive && profileUsesLiveFiles && relayFiles;
     const liveDraft = isAggregateRelayProfile(profile)
@@ -8253,8 +8389,14 @@ function RelayProfileDetail({
       ? applyRelayProfilePatchToFiles(liveDraft, { apiKey: storedApiKey })
       : liveDraft;
     setDraft(nextDraft);
-    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact));
-  }, [profile.id, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata, profile.modelVlm, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+    const switchedProfile = lastDetailProfileIdRef.current !== profile.id;
+    lastDetailProfileIdRef.current = profile.id;
+    if (switchedProfile || !unsavedRowEditsRef.current) {
+      setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact));
+    }
+    // 依赖里刻意不放 profile.modelMetadata / 原始 relayFiles：元数据改动是本编辑器自己触发的
+    // （删行会清该模型元数据），把它当依赖会让「删行 → 清元数据 → 重建行」把删掉的行加回来。
+  }, [profile.id, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelVlm, profileUsesLiveFiles, isActive, isNew, liveConfigContents, liveAuthContents]);
   const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
   const validationError = relaySessionProviderValidation(draft)
     ?? (isAggregateRelayProfile(draft)
@@ -8290,9 +8432,20 @@ function RelayProfileDetail({
     modelMetadata: currentModelState.modelMetadata,
     modelVlm: currentModelState.modelVlm,
   }) !== JSON.stringify(persistedModelState);
+  // 交给上面的行编辑守卫：有未保存行改动时，外部变化不覆盖模型行。
+  unsavedRowEditsRef.current = hasUnsavedModelChanges;
   const saveDraft = async () => {
-    if (savingDraft || validationError || modelRowsError
-      || (isNew && isAggregateRelayProfile(draft) && aggregateMode === null)) return;
+    if (savingDraft) return;
+    // 配置有误不再静默 return：把原因弹出来（按钮也不再因此禁用，见头部那一行提示）。
+    if (isNew && isAggregateRelayProfile(draft) && aggregateMode === null) {
+      void actions.showMessage(t("保存供应商"), t("先选择聚合类型（模型聚合 / 故障转移）再保存。"), "failed");
+      return;
+    }
+    const blockingIssue = validationError || modelRowsError;
+    if (blockingIssue) {
+      void actions.showMessage(t("保存供应商"), blockingIssue, "failed");
+      return;
+    }
     setSavingDraft(true);
     try {
       const draftWithWindows = draftWithModelRows();
@@ -8380,6 +8533,12 @@ function RelayProfileDetail({
           <div className="relay-editor-heading-copy">
             <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
             <span>{hasUnsavedModelChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</span>
+            {validationError || modelRowsError ? (
+              // 就地写出「为什么存不了」：按钮不再禁用，这里也给人一眼能看到的原因。
+              <span className="relay-editor-validation" role="alert">
+                {validationError || modelRowsError}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="relay-editor-actions">
@@ -8403,7 +8562,8 @@ function RelayProfileDetail({
             </Button>
           )}
           <Button
-            disabled={savingDraft || !!validationError || !!modelRowsError || aggregateModeRequired}
+            // 配置有误时也让人点：点一下把原因弹出来，比一个点不动的按钮清楚。
+            disabled={savingDraft}
             onClick={() => void saveDraft()}
             title={aggregateModeRequired ? t("先选择类型") : validationError || modelRowsError || t("保存")}
             type="button"
@@ -8997,6 +9157,16 @@ function RelayProfileEditor({
   };
   const removeModelWindowRow = (index: number) => {
     const removedSlug = modelWindowRows[index]?.model.trim() || modelSlugOriginsRef.current[index] || "";
+    // 「配置模型」不能被删掉：保存时后端会把 profile.model 合并回 model_list
+    // （relay_config::merge_model_into_model_list），删了也会被加回来、看起来像"保存没生效"。
+    const configuredSlug = parseModelSuffix(profile.model || "").slug.trim();
+    if (removedSlug && configuredSlug && removedSlug === configuredSlug) {
+      void actions.showMessage(
+        t("配置模型不能从列表里删除"),
+        tf("「{0}」是当前「配置模型」：Codex 会始终把它发布在模型列表里，删掉保存后也会被加回来。要减少模型，请先把上方「配置模型」改成要保留的那个，再删这一行。", [removedSlug]),
+      );
+      return;
+    }
     const nextRows = modelWindowRows.filter((_, rowIndex) => rowIndex !== index);
     const nextOrigins = modelSlugOriginsRef.current.filter((_, rowIndex) => rowIndex !== index);
     const resolved = resolvePendingModelSlugRenames(nextRows, nextOrigins, profile.modelMetadata);
@@ -10188,10 +10358,6 @@ function AggregateRelayProfileEditor({
             placeholder={t("例如 主力聚合池")}
           />
         </Field>
-        <Field label={t("聚合方式")}>
-          <UiBadge variant="secondary">{modelMode ? t("模型聚合") : t("故障转移")}</UiBadge>
-          <p className="field-hint">{t("此配置的聚合方式固定；需要另一种方式时，请创建新的聚合配置。")}</p>
-        </Field>
         {!modelMode ? <Field className="relay-field-test-model" label={t("测试模型")}>
           <Input
             value={profile.testModel}
@@ -10241,7 +10407,7 @@ function AggregateRelayProfileEditor({
       ) : (
         <div className="aggregate-model-mode-hint">
           <strong>{t("模型聚合已启用")}</strong>
-          <span>{t("成员模型会生成带供应商前缀的 Codex 模型；本模式不使用轮转策略或通配符路由。")}</span>
+          <span>{t("默认成员的模型以裸名发布、其他成员带 cpx- 前缀；勾选成员后点行尾「设为默认」指定默认供应商。本模式不使用轮转策略或通配符路由。")}</span>
         </div>
       )}
       <div className="aggregate-members">
@@ -10257,6 +10423,13 @@ function AggregateRelayProfileEditor({
             {candidates.map((candidate) => {
               const member = aggregate.members.find((item) => item.profileId === candidate.id);
               const checked = memberIds.has(candidate.id);
+              const isDefaultMember = !!aggregate.defaultRelayId && aggregate.defaultRelayId === candidate.id;
+              // 只显示模型数量 + 行内「设为默认」：整串模型名会把每张卡片撑成不同高度。
+              // 完整名单放 title；「默认」和勾选在同一行，不再需要下方单独的下拉。
+              const memberModelNames = [...new Set([
+                ...candidate.modelList.split(/[\r\n,]+/).map((line) => line.trim()).filter(Boolean),
+                ...(candidate.model.trim() ? [candidate.model.trim()] : []),
+              ])];
               return (
                 <label className={`aggregate-member-row ${checked ? "selected" : ""}`} key={candidate.id}>
                   <input
@@ -10267,9 +10440,6 @@ function AggregateRelayProfileEditor({
                   <span className="aggregate-member-summary">
                     <span className="aggregate-member-title">
                       <strong>{candidate.name || t("未命名供应商")}</strong>
-                      {modelMode && aggregate.defaultRelayId === candidate.id ? (
-                        <UiBadge variant="secondary">{t("默认")}</UiBadge>
-                      ) : null}
                     </span>
                     <small>
                       {relayProfileModeLabel(candidate)} · {relayProtocolLabel(candidate.protocol)} ·{" "}
@@ -10280,11 +10450,37 @@ function AggregateRelayProfileEditor({
                   </span>
                   {modelMode ? (
                     <span className="aggregate-member-models">
-                      {candidate.modelList
-                        || candidate.model
-                        || (isOfficialLoginMemberProfile(candidate)
-                          ? t("请填写该官方账号的模型列表")
-                          : t("未填写模型"))}
+                      <span
+                        className="aggregate-member-models-count"
+                        title={memberModelNames.length ? memberModelNames.join("\n") : undefined}
+                      >
+                        {memberModelNames.length
+                          ? tf("{0} 个模型", [memberModelNames.length])
+                          : (isOfficialLoginMemberProfile(candidate)
+                            ? t("请填写该官方账号的模型列表")
+                            : t("未填写模型"))}
+                      </span>
+                      {checked ? (isDefaultMember ? (
+                        <UiBadge className="aggregate-member-default-badge" variant="secondary">
+                          {t("默认")}
+                        </UiBadge>
+                      ) : (
+                        <Button
+                          className="aggregate-member-default-action"
+                          onClick={(event) => {
+                            // 行本身是 <label>：不拦默认行为会顺带切换勾选状态。
+                            event.preventDefault();
+                            event.stopPropagation();
+                            updateAggregate({ ...aggregate, defaultRelayId: candidate.id });
+                          }}
+                          size="sm"
+                          title={t("不带 cpx- 前缀的请求（旧会话、自动压缩带的模型名）会原样交给它")}
+                          type="button"
+                          variant="ghost"
+                        >
+                          {t("设为默认")}
+                        </Button>
+                      )) : null}
                     </span>
                   ) : (
                     <span className="aggregate-weight-box">
@@ -10306,22 +10502,17 @@ function AggregateRelayProfileEditor({
           <div className="empty">{t("先添加至少 1 个可用的 API 供应商或官方登录账号，再创建聚合供应商。")}</div>
         )}
       </div>
-      {modelMode ? <div className="aggregate-default-provider">
-        <div className="aggregate-members-head">
-          <div>
-            <strong>{t("默认供应商")}</strong>
-            <span>{t("解析不到成员模型的普通请求（旧会话、自动压缩的模型名等）会交给默认供应商，按模型名原样转发；成员模型仍按前缀固定绑定。")}</span>
-          </div>
+      {modelMode ? (
+        <div className="aggregate-default-provider aggregate-default-hint">
+          <span>
+            {aggregate.defaultRelayId
+              ? tf("默认供应商：{0}。不带 cpx- 前缀的请求（旧会话、自动压缩带的模型名等）会原样交给它；带 cpx- 前缀但解析不出来的 ID 一律报错，不回落。", [
+                candidates.find((candidate) => candidate.id === aggregate.defaultRelayId)?.name || aggregate.defaultRelayId,
+              ])
+              : t("还没指定默认供应商：在上方成员行尾点「设为默认」。不带 cpx- 前缀的请求会原样交给它，没设就报错。")}
+          </span>
         </div>
-        <AppSelect
-          onChange={(value) => updateAggregate({ ...aggregate, defaultRelayId: value })}
-          options={[
-            { value: "", label: t("未设置（未匹配到成员的请求会报错）") },
-            ...routeTargetOptions,
-          ]}
-          value={aggregate.defaultRelayId ?? ""}
-        />
-      </div> : null}
+      ) : null}
       {!modelMode ? <div className="aggregate-routes">
         <div className="aggregate-routes-head">
           <div>
@@ -10392,14 +10583,7 @@ function AggregateRelayProfileEditor({
             <span>{aggregateStrategyHelp(aggregate.strategy)}</span>
           </div>
         </>
-      ) : (
-        <div className="relay-grid compact aggregate-preview">
-          <Metric label={t("模式")} value={t("模型聚合")} />
-          <Metric label={t("成员数量")} value={tf("{0} 个", [aggregate.members.length])} />
-          <Metric label={t("模型来源")} value={t("沿用成员供应商模型列表")} />
-          <Metric label={t("绑定方式")} value={t("供应商前缀 + 真实模型名")} />
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -12159,7 +12343,7 @@ function routeSubtitle(route: Route) {
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("普通推荐内容"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
-    maintenance: t("入口安装、修复、开机启动与应用路径"),
+    maintenance: t("入口检查与修复、开机启动与应用路径"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),
   };
@@ -14337,6 +14521,15 @@ function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
   const aggregate = normalizeAggregateConfig(profile.aggregate, []);
   if (aggregate.members.length < 1) {
     return t("聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。");
+  }
+  // 模型聚合必须指定默认供应商（对齐 opencodex / cc-switch：不带前缀的请求只有它能接）。
+  if (aggregate.modelAggregationEnabled === true) {
+    const defaultRelayId = (aggregate.defaultRelayId ?? "").trim();
+    const defaultIsMember = !!defaultRelayId
+      && aggregate.members.some((member) => member.profileId === defaultRelayId);
+    if (!defaultIsMember) {
+      return t("模型聚合必须指定「默认供应商」：在成员列表里点某一行的「设为默认」。不带 cpx- 前缀的请求会原样交给它，没设就报错。");
+    }
   }
   const issues = validateAggregateRoutes(
     aggregate.routes ?? [],

@@ -49,3 +49,32 @@ test("maintenance retains application entrypoint checks and repairs", () => {
   assert.match(screen, /actions\.checkHealth\(\)/);
   assert.match(screen, /actions\.repairShortcuts\(\)/);
 });
+
+test("maintenance no longer offers the removed entrypoint management panel", () => {
+  const screen = functionSource("MaintenanceScreen");
+  assert.doesNotMatch(screen, /入口管理|安装入口|卸载入口|修复入口|卸载时移除 Codex\+\+ 托管数据/);
+  assert.doesNotMatch(screen, /actions\.installEntrypoints|actions\.uninstallEntrypoints|removeOwnedData/);
+  const entry = functionSource("App");
+  assert.doesNotMatch(entry, /install_entrypoints|uninstall_entrypoints|removeOwnedData|installEntrypoints|uninstallEntrypoints/);
+});
+
+test("maintenance drives login startup and auto-takeover with switches", () => {
+  const screen = functionSource("MaintenanceScreen");
+  assert.match(screen, /switch-row/);
+  assert.match(screen, /actions\.setWatcherEnabled\(event\.currentTarget\.checked\)/);
+  assert.match(screen, /actions\.setAutoTakeover\(event\.currentTarget\.checked\)/);
+  // 开关取代了这两组按钮，别再退回去。
+  assert.doesNotMatch(
+    screen,
+    /actions\.(installWatcher|uninstallWatcher|enableWatcher|disableWatcher)|设置开机启动|移除开机启动|关闭自动接管/,
+  );
+});
+
+test("watcher switch command is wired through invoke, handler and backend", () => {
+  const entry = functionSource("App");
+  assert.match(entry, /call<WatcherResult>\("set_watcher_enabled", \{ enabled \}\)/);
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(lib, /commands::set_watcher_enabled,/);
+  const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  assert.match(commands, /pub fn set_watcher_enabled\(enabled: bool\)/);
+});

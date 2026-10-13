@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="54" viewBox="0 0 300 54" fill="none">
+  <title>立即体验 JOJO Code</title>
+  <rect x=".5" y=".5" width="299" height="53" rx="10" fill="#79D358" stroke="#96E078"/>
+  <text x="136" y="33" text-anchor="middle" fill="#14230E" font-family="system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="17" font-weight="700">立即体验 JOJO Code</text>
+  <path d="M254 27H273M267 21L273 27L267 33" stroke="#14230E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
