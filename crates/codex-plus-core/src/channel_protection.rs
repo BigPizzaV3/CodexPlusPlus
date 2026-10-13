@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
@@ -155,8 +155,15 @@ pub async fn mark_failure(
 
 pub fn retry_after_duration(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
-    let seconds = value.parse::<u64>().ok()?;
-    Some(Duration::from_secs(seconds))
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let retry_at = httpdate::parse_http_date(value).ok()?;
+    Some(
+        retry_at
+            .duration_since(SystemTime::now())
+            .unwrap_or_default(),
+    )
 }
 
 #[cfg(test)]
@@ -207,6 +214,30 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, "tomorrow".parse().unwrap());
         assert_eq!(retry_after_duration(&headers), None);
+    }
+
+    #[test]
+    fn retry_after_accepts_http_date() {
+        let mut headers = HeaderMap::new();
+        let retry_at = SystemTime::now() + Duration::from_secs(90);
+        headers.insert(
+            RETRY_AFTER,
+            httpdate::fmt_http_date(retry_at).parse().unwrap(),
+        );
+        let delay = retry_after_duration(&headers).expect("HTTP-date should be accepted");
+        assert!(delay >= Duration::from_secs(89));
+        assert!(delay <= Duration::from_secs(90));
+    }
+
+    #[test]
+    fn retry_after_http_date_in_the_past_is_immediate() {
+        let mut headers = HeaderMap::new();
+        let retry_at = SystemTime::UNIX_EPOCH;
+        headers.insert(
+            RETRY_AFTER,
+            httpdate::fmt_http_date(retry_at).parse().unwrap(),
+        );
+        assert_eq!(retry_after_duration(&headers), Some(Duration::ZERO));
     }
 
     #[tokio::test]
