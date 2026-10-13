@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -1372,11 +1373,44 @@ impl Default for SettingsStore {
     }
 }
 
+thread_local! {
+    /// 设置归一化的重入深度，见 [`SettingsStore::load`]。
+    static SETTINGS_NORMALIZE_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+fn settings_normalize_depth() -> u32 {
+    SETTINGS_NORMALIZE_DEPTH.with(Cell::get)
+}
+
+/// 归一化作用域：只要还在里面，嵌套的 `SettingsStore::load` 就只解析、不再归一化，
+/// 从而打断 `load → normalize → complete_relay_profile_config → load` 的递归。
+struct SettingsNormalizeGuard;
+
+impl SettingsNormalizeGuard {
+    fn enter() -> Self {
+        SETTINGS_NORMALIZE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for SettingsNormalizeGuard {
+    fn drop(&mut self) {
+        SETTINGS_NORMALIZE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 impl SettingsStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
+    /// 读取设置。**嵌套调用只解析、不再归一化**。
+    ///
+    /// 归一化会走到 `complete_relay_profile_config`，它对聚合供应商会回头读全量设置
+    /// （拿聚合的 `session_provider`），而它本身又是在 `normalize_settings_config_sections`
+    /// 里被调用的——不挡就是 `load → 归一化 → load → …` 无限递归，主线程栈溢出、
+    /// 应用启动即崩。触发条件：聚合供应商的 `configContents` 非空（切换供应商时
+    /// `backfill_relay_profile_from_live` 会把 live 配置回填进聚合档案）。
     pub fn load(&self) -> anyhow::Result<BackendSettings> {
         let contents = match self.read_contents()? {
             Some(contents) => contents,
@@ -1393,6 +1427,11 @@ impl SettingsStore {
                 self.path.display()
             )
         })?;
+        if settings_normalize_depth() > 0 {
+            // 外层已经在归一化了：这里再归一化就会递归回本函数。
+            return Ok(parsed);
+        }
+        let _guard = SettingsNormalizeGuard::enter();
         Ok(normalize_settings_config_sections(parsed))
     }
 
