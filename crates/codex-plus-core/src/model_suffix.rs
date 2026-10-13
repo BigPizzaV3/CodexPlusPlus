@@ -389,6 +389,25 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
             .cloned()
             .unwrap_or_else(|| json!([]))
     });
+    // 供应商分组身份（模型聚合在 catalog 条目上写的 `codex_plus_group` /
+    // `codex_plus_group_id`）：这份 UI 元数据是白名单结构，不在这里显式转发就流不到
+    // 前端。只在值是非空字符串时写——单供应商直连的目录没有这两个键，因此不会凭空
+    // 多出一个空分组；空串同样忽略，避免前端渲染出无名表头。
+    for key in ["codex_plus_group", "codex_plus_group_id"] {
+        if let Some(value) = metadata
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            ui[key] = json!(value);
+        }
+    }
+    // `codex_plus_default` 标的是"这个模型属于默认成员"，用于在选择器里给默认供应商
+    // 那一组打标志。只有显式 true 才转发，缺键/false 都不写，保持既有响应形态不变。
+    if metadata.get("codex_plus_default").and_then(Value::as_bool) == Some(true) {
+        ui["codex_plus_default"] = json!(true);
+    }
     if !has_builtin {
         // 单独声明 Fast 不能替原生描述符制造名称、描述或推理默认档。
         for (ui_field, source_field) in [

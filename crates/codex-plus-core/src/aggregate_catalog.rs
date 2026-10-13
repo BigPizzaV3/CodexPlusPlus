@@ -317,6 +317,12 @@ pub fn build_catalog_json(
     for relay in member_profiles(settings, aggregate)? {
         let payload = build_member_catalog(relay)?;
         let is_default_member = !default_relay_id.is_empty() && relay.id.as_str() == default_relay_id;
+        // 分组的展示名：成员没起名字时回落 relay id，避免前端渲染出无名分组表头。
+        let group_name = if relay.name.trim().is_empty() {
+            relay.id.clone()
+        } else {
+            relay.name.trim().to_string()
+        };
         for mut model in payload["models"].as_array().into_iter().flatten().cloned() {
             let upstream = model["slug"].as_str().unwrap_or_default().to_string();
             let display = model["display_name"]
@@ -336,6 +342,16 @@ pub fn build_catalog_json(
                 json!(format!("{display}（{}）", relay.name))
             };
             model["description"] = json!(format!("{upstream} · {}", relay.name));
+            // 供应商分组身份（前端模型选择器按它把连续模型折叠成一组）：
+            // - `codex_plus_group_id` 是权威分组键，用持久化 relay id；成员已按 relay_id
+            //   去重（member_profiles），同一家不会产生两组，同名成员也各自成组；
+            // - `codex_plus_group` 只用于展示，默认成员同样要写，否则它的模型没有归属；
+            // - `codex_plus_default` 标出默认成员：只有前端能据此打「默认」标志。
+            model["codex_plus_group"] = json!(group_name);
+            model["codex_plus_group_id"] = json!(relay.id);
+            if is_default_member {
+                model["codex_plus_default"] = json!(true);
+            }
             model["comp_hash"] = json!("codex-plus-aggregate");
             // 聚合会切换上游；经典子代理任务使用明文，避免跨成员解密失败。
             model["multi_agent_version"] = json!("v1");
@@ -400,6 +416,8 @@ pub fn catalog_summary(
         "model_provider": aggregate.id,
         "codex_model_provider": crate::model_catalog::codex_model_provider_for_relay_profile(home, profile),
         "provider_name": aggregate.name,
+        // 默认成员的 relay id：模型选择器用它给默认那一组打「默认」标志。
+        "codex_plus_default_group_id": aggregate.default_relay_id.trim(),
         "default_model": ids.first().cloned().unwrap_or_default(),
         "models": ids,
         "modelMetadata": metadata,
