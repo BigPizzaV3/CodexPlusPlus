@@ -616,7 +616,7 @@ pub fn builtin_model_metadata_index() -> Vec<Value> {
 }
 /// 构建 codex model_catalog_json 内容。
 ///
-/// 采用 cc-switch 的 template-clone 思路：取 codex 自带 bundled entry 做模板，
+/// 采用 template-clone 思路：取 codex 自带 bundled entry 做模板，
 /// 再覆盖 slug / display_name / description / context_window / max_context_window /
 /// effective_context_window_percent / priority / auto_compact_token_limit 等字段。
 /// 无后缀条目用 fallback_window；fallback 也无时回落 272000（codex 默认）。

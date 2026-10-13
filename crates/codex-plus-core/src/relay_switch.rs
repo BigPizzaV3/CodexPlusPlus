@@ -56,7 +56,7 @@ pub fn switch_relay_profile_in_home(
                 "relay_switch.after",
             );
             // 换供应商/聚合后，Codex 模型选择器里可能还留着上一个目录的模型 ID
-            // （例如 cc-switch 写下的 `ccs-xxx/model`），按新目录清一遍。
+            // （例如别的管理器写下的 `ccs-xxx/model`），按新目录清一遍。
             crate::codex_app_state::prune_stale_model_references_after_switch_nonfatal(
                 home,
                 &selected_settings,

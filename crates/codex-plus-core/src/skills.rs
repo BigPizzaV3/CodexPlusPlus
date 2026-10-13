@@ -5,7 +5,7 @@
 //! `config.toml` 里的 `[skills]` 是一个三字段结构体（bundled / include_instructions /
 //! max_context_tokens），写 `[skills.<id>]` 会被 serde 当未知字段静默丢弃，什么都不会发生。
 //!
-//! 所以这里采用「SSOT + 软链」模型（与 cc-switch 一致）：
+//! 所以这里采用「SSOT + 软链」模型：
 //!
 //! - 安装：下载仓库 zip，只解出目标 skill 子树到 `~/.codex-session-delete/skills/<id>/`
 //! - 启用：`$CODEX_HOME/skills/<id>` 软链到源目录（软链目录 codex 同样能发现）
@@ -100,7 +100,7 @@ impl Default for SkillsState {
 }
 
 /// 首次启动种下的仓库源。第一个是 codex 官方 curated 列表（内置 skill-installer
-/// 用的就是它），后三个与 cc-switch 预置的 `skill_repos` 重合。
+/// 用的就是它），后三个与常见第三方管理工具预置的 `skill_repos` 重合。
 pub fn default_skill_repos() -> Vec<SkillRepo> {
     vec![
         SkillRepo {

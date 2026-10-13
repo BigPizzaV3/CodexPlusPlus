@@ -1072,7 +1072,7 @@ body {
   pointer-events: auto;
 }
 
-/* 标题栏固定 / 中段滚动 / 底部操作栏固定，参考 cc-switch 的编辑页布局 */
+/* 标题栏固定 / 中段滚动 / 底部操作栏固定 */
 .relay-detail-page {
   position: absolute;
   inset: 0;

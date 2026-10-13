@@ -5198,7 +5198,7 @@ async fn aggregate_default_provider_forwards_unbound_model() {
     let (_, body) = default_server.await.unwrap();
     assert_eq!(
         body["model"], "ccs-legacy/gpt-9.9-unknown[1M]",
-        "默认供应商原样转发请求里的 model id（对齐 opencodex：不做去前缀/去后缀的静默改名）"
+        "默认供应商原样转发请求里的 model id（不做去前缀/去后缀的静默改名）"
     );
     other_server.abort();
 }

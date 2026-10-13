@@ -1,4 +1,4 @@
-/** 管理页只对当前搜索范围操作；会话分组与 cc-switch 的项目/时间视图一致。 */
+/** 管理页只对当前搜索范围操作；会话分组提供项目/时间两种视图。 */
 export type ManagedSession = {
   id: string; title: string; cwd: string; modelProvider: string; archived: boolean;
   updatedAtMs: number | null; rolloutPath: string; dbPath: string;
