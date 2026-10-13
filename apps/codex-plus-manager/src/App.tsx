@@ -4846,7 +4846,16 @@ function RelayScreen({
       setProviderView("routing");
     }
   }, [normalized.relayProfiles, providerView]);
-  const listForm = syncLegacyRelayFields({ ...normalized, relayProfiles: visibleProfiles });
+  // 分页过滤只作用于列表展示：活动归属与 legacy 根字段保持完整设置的值。
+  // 修复：过去对过滤后的列表跑 syncLegacyRelayFields，当前供应商不在本分页时
+  // activeRelayId 会被改写成列表第一项（假「使用中」）；卡片切换还会把这份缺成员
+  // 的子集直接提交后端——模型聚合因此报「成员不存在」，普通切换则可能用子集覆盖
+  // settings.json，丢掉其它分页的供应商。
+  const listForm: BackendSettings = { ...normalized, relayProfiles: visibleProfiles };
+  const switchRelayProfileFromList = (profileId: string) => {
+    const next = syncLegacyRelayFields({ ...normalized, activeRelayId: profileId });
+    void actions.switchRelayProfile(next, normalized.activeRelayId);
+  };
   const saveVisibleRelaySettings = async (next: BackendSettings) => {
     const hiddenProfiles = normalized.relayProfiles.filter((profile) => (
       relayProviderView(profile) !== providerView
@@ -5079,6 +5088,7 @@ function RelayScreen({
             form={listForm}
             onEdit={(profileId) => void editRelayProfile(profileId)}
             onFormChange={saveVisibleRelaySettings}
+            onSwitchProfile={switchRelayProfileFromList}
             disabled={actions.relaySwitching}
             actions={actions}
           />
@@ -7891,12 +7901,14 @@ function RelayProfileList({
   form,
   onFormChange,
   onEdit,
+  onSwitchProfile,
   disabled = false,
   actions,
 }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
+  onSwitchProfile: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
 }) {
@@ -7926,6 +7938,7 @@ function RelayProfileList({
               key={profile.id}
               onEdit={onEdit}
               onFormChange={onFormChange}
+              onSwitchProfile={onSwitchProfile}
               disabled={disabled}
               profile={profile}
             />
@@ -7942,6 +7955,7 @@ function SortableRelayProfileCard({
   index,
   onFormChange,
   onEdit,
+  onSwitchProfile,
   disabled = false,
   actions,
 }: {
@@ -7950,6 +7964,7 @@ function SortableRelayProfileCard({
   index: number;
   onFormChange: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
+  onSwitchProfile: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
 }) {
@@ -7996,9 +8011,7 @@ function SortableRelayProfileCard({
           onClick={(event) => {
             event.stopPropagation();
             if (disabled) return;
-            const previousActiveRelayId = form.activeRelayId;
-            const next = syncLegacyRelayFields({ ...form, activeRelayId: profile.id });
-            void actions.switchRelayProfile(next, previousActiveRelayId);
+            onSwitchProfile(profile.id);
           }}
           size="sm"
           title={

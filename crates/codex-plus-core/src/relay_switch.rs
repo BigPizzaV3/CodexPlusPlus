@@ -27,13 +27,16 @@ pub fn switch_relay_profile_in_home(
     }
     // 读不到当前设置时不要用默认值继续：回滚分支会把「仅剩默认供应商」写回磁盘，
     // 这正是供应商列表被清空的成因。读失败直接中止切换，保住原文件。
-    store
+    let saved_settings = store
         .load()
         .context("读取当前供应商设置失败，已中止切换以免覆盖用户配置")?;
     let original_settings_bytes = store
         .snapshot_raw_bytes()
         .context("读取当前供应商原始快照失败，已中止切换")?;
     let live_snapshot = LiveFilesSnapshot::capture(home).context("读取当前 Codex 实时配置失败")?;
+    // 先补回被过滤掉的供应商，再做上一个供应商的回填：回填按 id 在列表里找
+    // 「当前供应商」，子集请求里同样可能缺它（否则会误报「已不在配置列表中」）。
+    restore_missing_saved_profiles(&mut selected_settings, &saved_settings);
     if !previous_active_relay_id.trim().is_empty()
         && previous_active_relay_id != selected_settings.active_relay_id
     {
@@ -73,6 +76,45 @@ pub fn switch_relay_profile_in_home(
             }
             Err(error)
         }
+    }
+}
+
+/// 切换请求必须携带完整 settings。供应商列表页曾按分页过滤后直接把子集提交给切换
+/// （前端缺陷）：模型聚合会因成员不在请求里直接失败（聚合成员供应商不存在），
+/// 一旦成功保存，其它分页的供应商还会从 settings.json 里消失。
+/// 这里按 id 把磁盘上已有、请求里缺失的供应商与聚合配置补回；请求里的同 id 版本优先，
+/// 只兜底缺失项，保证任何调用方都不会把用户配置越切越少。
+fn restore_missing_saved_profiles(selected: &mut BackendSettings, saved: &BackendSettings) {
+    let mut restored_ids: Vec<String> = Vec::new();
+    for profile in &saved.relay_profiles {
+        if !selected
+            .relay_profiles
+            .iter()
+            .any(|item| item.id == profile.id)
+        {
+            selected.relay_profiles.push(profile.clone());
+            restored_ids.push(profile.id.clone());
+        }
+    }
+    for aggregate in &saved.aggregate_relay_profiles {
+        if !selected
+            .aggregate_relay_profiles
+            .iter()
+            .any(|item| item.id == aggregate.id)
+        {
+            selected.aggregate_relay_profiles.push(aggregate.clone());
+            restored_ids.push(format!("aggregate:{}", aggregate.id));
+        }
+    }
+    if !restored_ids.is_empty() {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "relay_switch.restored_missing_profiles",
+            serde_json::json!({
+                "restoredIds": restored_ids,
+                "selectedProfileCount": selected.relay_profiles.len(),
+                "savedProfileCount": saved.relay_profiles.len(),
+            }),
+        );
     }
 }
 
