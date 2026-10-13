@@ -97,4 +97,49 @@ if (require.main === module) {
     vm.runInNewContext(fs.readFileSync(require.resolve("./api-quota-gate.js"), "utf8"), context);
     return context.module.exports;
   }));
+  if (process.argv[2]) {
+    const assert = require("node:assert/strict");
+    const callbacks = new Map();
+    const timers = new Set();
+    const updates = [];
+    const requests = [];
+    const events = {
+      addEventListener(name, callback) { callbacks.set(name, callback); },
+      removeEventListener(name, callback) {
+        assert.equal(callbacks.get(name), callback);
+        callbacks.delete(name);
+      },
+    };
+    let nextTimer = 0;
+    const context = {
+      module: { exports: {} },
+      window: {
+        ...events,
+        codexPlusNativeQuotaSettings(payload) { requests.push(JSON.parse(payload)); },
+        __codexPlusNativeQuotaRuntime: { update(settings) { updates.push(settings); } },
+      },
+      document: { ...events, visibilityState: "visible" },
+      setTimeout() { timers.add(++nextTimer); return nextTimer; },
+      clearTimeout(id) { timers.delete(id); },
+    };
+    vm.runInNewContext(process.argv[2], context);
+    const bootstrap = context.window.__codexPlusNativeQuotaBootstrap;
+    assert.equal(callbacks.size, 3);
+    assert.equal(timers.size, 1);
+    assert.equal(requests.length, 1);
+    bootstrap.dispose();
+    assert.equal(callbacks.size, 0);
+    assert.equal(timers.size, 0);
+    assert.equal(updates.at(-1), null);
+    assert.equal(context.window.__codexPlusNativeQuotaBootstrap, undefined);
+    bootstrap.request();
+    bootstrap.accept(requests[0].sequence, { activeRelayId: "mix" });
+    assert.equal(requests.length, 1);
+    assert.deepEqual(updates, [null]);
+    vm.runInNewContext(process.argv[2], context);
+    assert.equal(requests.length, 2);
+    assert.equal(callbacks.size, 3);
+    context.window.__codexPlusNativeQuotaBootstrap.dispose();
+    console.log("Native quota bootstrap cancellation and reinstallation passed");
+  }
 }

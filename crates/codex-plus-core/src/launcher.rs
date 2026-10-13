@@ -184,7 +184,48 @@ pub struct LaunchHandle {
     pub status_store: StatusStore,
     status_started_at_ms: u64,
     helper_started: bool,
+    isolated_quota_gate: Option<Arc<IsolatedQuotaGateRuntime>>,
     hooks: Arc<dyn LaunchHooks>,
+}
+
+struct IsolatedQuotaGateRuntime {
+    shutdown: tokio::sync::watch::Sender<bool>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl IsolatedQuotaGateRuntime {
+    fn start(debug_port: u16) -> Arc<Self> {
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(crate::bridge::supervise_isolated_api_quota_gate(
+            debug_port, receiver,
+        ));
+        Arc::new(Self {
+            shutdown,
+            task: Mutex::new(Some(task)),
+        })
+    }
+
+    async fn stop(&self) {
+        self.shutdown.send_replace(true);
+        let mut owned_task = self.task.lock().await;
+        if let Some(mut task) = owned_task.take() {
+            // CDP 清理有自己的超时；最后兜底等待并终止任务，不能留下端口重连。
+            if tokio::time::timeout(std::time::Duration::from_secs(4), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
+}
+
+impl Drop for IsolatedQuotaGateRuntime {
+    fn drop(&mut self) {
+        // 最后一个会话 handle 被释放时也必须取消，包括等待 future 被提前丢弃。
+        self.shutdown.send_replace(true);
+    }
 }
 
 impl std::fmt::Debug for LaunchHandle {
@@ -201,11 +242,18 @@ impl std::fmt::Debug for LaunchHandle {
 }
 
 impl LaunchHandle {
+    pub async fn stop_isolated_api_quota_gate(&self) {
+        if let Some(runtime) = &self.isolated_quota_gate {
+            runtime.stop().await;
+        }
+    }
+
     pub async fn wait_for_codex_exit(&self) -> anyhow::Result<()> {
         let result = self
             .hooks
             .wait_for_codex_exit(&self.launch, self.debug_port)
             .await;
+        self.stop_isolated_api_quota_gate().await;
         if self.helper_started {
             self.hooks.shutdown_helper(self.helper_port).await;
         }
@@ -737,10 +785,6 @@ where
             hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
 
-        if !settings.enhancements_enabled {
-            tokio::spawn(crate::bridge::supervise_isolated_api_quota_gate(debug_port));
-        }
-
         if !settings.enhancements_enabled || !injection_degraded {
             timeline.mark("ready", 100);
             let status = launch_status(
@@ -755,6 +799,9 @@ where
             hooks.write_status("running").await;
         }
 
+        // 全部可失败的启动步骤完成后才创建，错误清理路径不会遗留监督任务。
+        let isolated_quota_gate =
+            (!settings.enhancements_enabled).then(|| IsolatedQuotaGateRuntime::start(debug_port));
         Ok(LaunchHandle {
             debug_port,
             helper_port,
@@ -763,6 +810,7 @@ where
             status_store: status_store.clone(),
             status_started_at_ms,
             helper_started,
+            isolated_quota_gate,
             hooks: Arc::clone(&hooks),
         })
     }
@@ -4075,6 +4123,43 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test]
+    async fn isolated_quota_runtime_stops_and_joins_before_restart() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let runtime = IsolatedQuotaGateRuntime::start(listener.local_addr().unwrap().port());
+        let clone = Arc::clone(&runtime);
+        runtime.stop().await;
+        assert!(*runtime.shutdown.borrow());
+        assert!(runtime.task.lock().await.is_none());
+        clone.stop().await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn isolated_quota_runtime_cancels_only_when_last_owner_is_dropped() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let runtime = IsolatedQuotaGateRuntime::start(listener.local_addr().unwrap().port());
+        let mut receiver = runtime.shutdown.subscribe();
+        let task = runtime.task.lock().await.take().unwrap();
+        let clone = Arc::clone(&runtime);
+        drop(runtime);
+        assert!(!*receiver.borrow());
+        drop(clone);
+        let _ = receiver.wait_for(|stop| *stop).await;
+        tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     // 提权分支依赖 issue #2351 的手动复现步骤验收（勾选兼容性「以管理员身份运行」
     // 后应得到指引错误）。这里不断言当前进程的提权状态：GitHub 的 Windows runner
