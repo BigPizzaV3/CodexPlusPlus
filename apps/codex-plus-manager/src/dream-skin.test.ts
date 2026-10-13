@@ -352,6 +352,26 @@ describe("dream skin theme helpers", () => {
     assert.match(css, /\.dream-skin-market-preview\s*\{[^}]*aspect-ratio:\s*16 \/ 9/s);
   });
 
+  it("shows a loading spinner instead of 0 while theme lists are loading", async () => {
+    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+    assert.match(app, /dreamSkinLibraryLoading/);
+    assert.match(app, /dreamSkinMarketLoading/);
+    assert.match(app, /dreamSkinCommunityLoading/);
+    // tab 计数在加载中渲染转圈图标，而不是渲染 0
+    assert.match(app, /libraryPending \? <Loader2[^/]*className="h-3 w-3 animate-spin" \/> : libraryCount/);
+    assert.match(app, /communityPending \? <Loader2[^/]*className="h-3 w-3 animate-spin" \/> : communityCount/);
+    assert.match(app, /marketPending \? <Loader2[^/]*className="h-3 w-3 animate-spin" \/> : marketCount/);
+    assert.doesNotMatch(app, /<span>\{library\?\.themes\.length \?\? 0\}<\/span>/);
+    assert.doesNotMatch(app, /<span>\{community\?\.items\.length \?\? 0\}<\/span>/);
+    assert.doesNotMatch(app, /<span>\{market\?\.themes\.length \?\? 0\}<\/span>/);
+    // 各区块的加载文案也带转圈
+    assert.match(app, /className="dream-skin-loading" role="status"/);
+    assert.match(css, /\.dream-skin-view-tabs button > span\.is-loading/);
+    assert.match(css, /\.dream-skin-loading\s*\{/);
+  });
+
   it("allows the webview to load managed theme images only", async () => {
     const raw = await readFile(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8");
     const config = JSON.parse(raw);

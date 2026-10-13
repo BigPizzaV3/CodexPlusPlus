@@ -46,6 +46,7 @@ import {
   LayoutGrid,
   LayoutDashboard,
   List,
+  Loader2,
   Palette,
   Play,
   MessageCircle,
@@ -1195,6 +1196,9 @@ export function App() {
   const [dreamSkinLibrary, setDreamSkinLibrary] = useState<DreamSkinThemeLibrary | null>(null);
   const [dreamSkinMarket, setDreamSkinMarket] = useState<DreamSkinMarketResult | null>(null);
   const [dreamSkinCommunity, setDreamSkinCommunity] = useState<DreamSkinCommunityResult | null>(null);
+  const [dreamSkinLibraryLoading, setDreamSkinLibraryLoading] = useState(false);
+  const [dreamSkinMarketLoading, setDreamSkinMarketLoading] = useState(false);
+  const [dreamSkinCommunityLoading, setDreamSkinCommunityLoading] = useState(false);
   const [pendingDreamSkinCommunity, setPendingDreamSkinCommunity] = useState("");
   const [selectedDreamSkinTheme, setSelectedDreamSkinTheme] = useState("builtin");
   const [savedDreamSkinThemeDraft, setSavedDreamSkinThemeDraft] = useState<DreamSkinThemeDraft | null>(null);
@@ -1585,46 +1589,61 @@ export function App() {
   };
 
   const refreshDreamSkinLibrary = async (silent = false) => {
-    const result = await run(() => call<DreamSkinThemeLibraryResult>("list_dream_skin_themes"));
-    if (!result) return null;
-    const library: DreamSkinThemeLibrary = {
-      themes: result.themes,
-      activeDraft: result.activeDraft,
-    };
-    setDreamSkinLibrary(library);
-    const active = library.themes.find((item) => item.active) ?? library.themes[0];
-    if (active) {
-      const draft = active.builtin
-        ? { config: defaultDreamSkinTheme(), imagePath: "", builtin: true }
-        : library.activeDraft;
-      setDreamSkinDraftSelection(active.key, draft);
+    setDreamSkinLibraryLoading(true);
+    try {
+      const result = await run(() => call<DreamSkinThemeLibraryResult>("list_dream_skin_themes"));
+      if (!result) return null;
+      const library: DreamSkinThemeLibrary = {
+        themes: result.themes,
+        activeDraft: result.activeDraft,
+      };
+      setDreamSkinLibrary(library);
+      const active = library.themes.find((item) => item.active) ?? library.themes[0];
+      if (active) {
+        const draft = active.builtin
+          ? { config: defaultDreamSkinTheme(), imagePath: "", builtin: true }
+          : library.activeDraft;
+        setDreamSkinDraftSelection(active.key, draft);
+      }
+      if (!silent && !isSuccessStatus(result.status)) {
+        showResultNotice(t("主题库"), result);
+      }
+      return library;
+    } finally {
+      setDreamSkinLibraryLoading(false);
     }
-    if (!silent && !isSuccessStatus(result.status)) {
-      showResultNotice(t("主题库"), result);
-    }
-    return library;
   };
 
   const refreshDreamSkinMarket = async (silent = false) => {
-    const result = await run(() => call<DreamSkinMarketResult>("refresh_dream_skin_market"));
-    if (result) {
-      setDreamSkinMarket(result);
-      if (!silent || !isSuccessStatus(result.status)) {
-        showResultNotice(t("主题市场"), result, { silentSuccess: true });
+    setDreamSkinMarketLoading(true);
+    try {
+      const result = await run(() => call<DreamSkinMarketResult>("refresh_dream_skin_market"));
+      if (result) {
+        setDreamSkinMarket(result);
+        if (!silent || !isSuccessStatus(result.status)) {
+          showResultNotice(t("主题市场"), result, { silentSuccess: true });
+        }
       }
+      return result;
+    } finally {
+      setDreamSkinMarketLoading(false);
     }
-    return result;
   };
 
   const refreshDreamSkinCommunity = async (silent = false) => {
-    const result = await run(() => call<DreamSkinCommunityResult>("refresh_dream_skin_community"));
-    if (result) {
-      setDreamSkinCommunity(result);
-      if (!silent || !isSuccessStatus(result.status)) {
-        showResultNotice(t("DreamSkin 社区"), result, { silentSuccess: true });
+    setDreamSkinCommunityLoading(true);
+    try {
+      const result = await run(() => call<DreamSkinCommunityResult>("refresh_dream_skin_community"));
+      if (result) {
+        setDreamSkinCommunity(result);
+        if (!silent || !isSuccessStatus(result.status)) {
+          showResultNotice(t("DreamSkin 社区"), result, { silentSuccess: true });
+        }
       }
+      return result;
+    } finally {
+      setDreamSkinCommunityLoading(false);
     }
-    return result;
   };
 
   const installDreamSkinCommunityTheme = async (theme: DreamSkinCommunityTheme) => {
@@ -3672,8 +3691,11 @@ export function App() {
               form={settingsForm}
               launchPending={launchPending}
               library={dreamSkinLibrary}
+              libraryLoading={dreamSkinLibraryLoading}
               market={dreamSkinMarket}
+              marketLoading={dreamSkinMarketLoading}
               community={dreamSkinCommunity}
+              communityLoading={dreamSkinCommunityLoading}
               draft={dreamSkinThemeDraft}
               dirty={dreamSkinDraftDirty}
               pendingRestart={pendingDreamSkinRestart}
@@ -5852,8 +5874,11 @@ function DreamSkinScreen({
   form,
   launchPending,
   library,
+  libraryLoading,
   market,
+  marketLoading,
   community,
+  communityLoading,
   draft,
   dirty,
   pendingRestart,
@@ -5867,8 +5892,11 @@ function DreamSkinScreen({
   form: BackendSettings;
   launchPending: boolean;
   library: DreamSkinThemeLibrary | null;
+  libraryLoading: boolean;
   market: DreamSkinMarketResult | null;
+  marketLoading: boolean;
   community: DreamSkinCommunityResult | null;
+  communityLoading: boolean;
   draft: DreamSkinThemeDraft | null;
   dirty: boolean;
   pendingRestart: PendingDreamSkinRestart | null;
@@ -5978,6 +6006,13 @@ function DreamSkinScreen({
   const localThemes = (library?.themes ?? []).filter((item) =>
     !localQuery.trim() || item.name.toLocaleLowerCase().includes(localQuery.trim().toLocaleLowerCase()),
   );
+  // 数据未就绪或正在刷新时，tab 计数显示转圈而不是 0，避免被误读成空列表。
+  const libraryPending = libraryLoading || !library;
+  const marketPending = marketLoading || !market;
+  const communityPending = communityLoading || !community;
+  const libraryCount = library?.themes.length ?? 0;
+  const marketCount = market?.themes.length ?? 0;
+  const communityCount = community?.items.length ?? 0;
   const runtimeChecks = status?.checks ?? [];
   const verificationChecks = verification?.checks ?? [];
 
@@ -6068,7 +6103,9 @@ function DreamSkinScreen({
               >
                 <Palette className="h-4 w-4" />
                 {t("我的主题")}
-                <span>{library?.themes.length ?? 0}</span>
+                <span className={libraryPending ? "is-loading" : ""} title={libraryPending ? t("加载中…") : undefined}>
+                  {libraryPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : libraryCount}
+                </span>
               </button>
               <button
                 aria-selected={themeView === "community"}
@@ -6079,7 +6116,9 @@ function DreamSkinScreen({
               >
                 <Github className="h-4 w-4" />
                 {t("DreamSkin 社区")}
-                <span>{community?.items.length ?? 0}</span>
+                <span className={communityPending ? "is-loading" : ""} title={communityPending ? t("加载中…") : undefined}>
+                  {communityPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : communityCount}
+                </span>
               </button>
               <button
                 aria-selected={themeView === "market"}
@@ -6090,7 +6129,9 @@ function DreamSkinScreen({
               >
                 <Store className="h-4 w-4" />
                 {t("主题市场")}
-                <span>{market?.themes.length ?? 0}</span>
+                <span className={marketPending ? "is-loading" : ""} title={marketPending ? t("加载中…") : undefined}>
+                  {marketPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : marketCount}
+                </span>
               </button>
             </div>
             {themeView === "local" ? (
@@ -6110,6 +6151,7 @@ function DreamSkinScreen({
           {themeView === "community" ? (
             <DreamSkinCommunitySection
               community={community}
+              communityLoading={communityLoading}
               actions={actions}
               onInstalled={() => setThemeView("local")}
             />
@@ -6154,7 +6196,12 @@ function DreamSkinScreen({
                 </div>
               ) : (
                 <div className="empty">
-                  {market?.status === "failed" ? market.message : t("正在加载主题市场…")}
+                  {market?.status === "failed" ? market.message : (
+                    <span className="dream-skin-loading" role="status">
+                      {marketPending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
+                      {t("正在加载主题市场…")}
+                    </span>
+                  )}
                 </div>
               )}
             </section>
@@ -6238,7 +6285,14 @@ function DreamSkinScreen({
                 );
               })}
             </div>
-            {!library ? <p className="empty">{t("正在加载主题库…")}</p> : null}
+            {!library ? (
+              <p className="empty">
+                <span className="dream-skin-loading" role="status">
+                  <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                  {t("正在加载主题库…")}
+                </span>
+              </p>
+            ) : null}
             {library && !localThemes.length ? (
               <div className="dream-skin-local-empty">
                 <Search aria-hidden="true" className="h-5 w-5" />
@@ -6625,10 +6679,12 @@ function DreamSkinMarketCard({
 
 function DreamSkinCommunitySection({
   community,
+  communityLoading,
   actions,
   onInstalled,
 }: {
   community: DreamSkinCommunityResult | null;
+  communityLoading: boolean;
   actions: Actions;
   onInstalled: () => void;
 }) {
@@ -6711,13 +6767,16 @@ function DreamSkinCommunitySection({
         </div>
       ) : (
         <div className="empty">
-          {!community
-            ? t("正在加载 DreamSkin 社区…")
-            : community.status === "failed"
-              ? community.message
-              : query.trim()
-                ? t("没有匹配的社区主题。")
-                : t("DreamSkin 社区暂时没有可用主题。")}
+          {!community || communityLoading ? (
+            <span className="dream-skin-loading" role="status">
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+              {t("正在加载 DreamSkin 社区…")}
+            </span>
+          ) : community.status === "failed"
+            ? community.message
+            : query.trim()
+              ? t("没有匹配的社区主题。")
+              : t("DreamSkin 社区暂时没有可用主题。")}
         </div>
       )}
     </section>

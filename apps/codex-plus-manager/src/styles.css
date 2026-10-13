@@ -7503,6 +7503,18 @@ select {
   text-align: center;
 }
 
+/* 加载中的 tab 计数：显示转圈而不是 0，避免误读为空列表 */
+.dream-skin-view-tabs button > span.is-loading {
+  display: inline-grid;
+  place-items: center;
+}
+
+.dream-skin-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .dream-skin-market {
   display: grid;
   gap: 14px;
