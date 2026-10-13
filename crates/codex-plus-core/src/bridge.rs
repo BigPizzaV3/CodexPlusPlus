@@ -286,6 +286,7 @@ fn native_quota_settings() -> Value {
     };
     let profile = settings.active_relay_profile();
     json!({
+        "codexAppStandaloneQuotaUnlock": settings.codex_app_standalone_quota_unlock,
         "relayProfilesEnabled": settings.relay_profiles_enabled,
         "activeRelayId": profile.id,
         "relayProfiles": [{

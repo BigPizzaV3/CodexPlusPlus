@@ -87,7 +87,8 @@
       rawPayloads: new WeakMap(), pendingPublications: new WeakMap(), rewriteDepth: 0,
     };
     function officialUsagePolicy() {
-      const enabled = permitsExternalApi(currentSettings, "local");
+      const enabled = currentSettings?.codexAppStandaloneQuotaUnlock === true
+        && permitsExternalApi(currentSettings, "local");
       return { official: true, hideAlerts: false, unlockSend: enabled };
     }
     function officialUsagePolicyKey() {

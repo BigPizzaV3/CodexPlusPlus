@@ -3,6 +3,7 @@ function runNativeQuotaTests(createGate) {
     if (!Object.is(actual, expected)) throw new Error(message);
   };
   const mixed = {
+    codexAppStandaloneQuotaUnlock: true,
     relayProfilesEnabled: true, activeRelayId: "mix",
     relayProfiles: [{ id: "mix", relayMode: "official", officialMixApiKey: true }],
   };
@@ -83,6 +84,16 @@ function runNativeQuotaTests(createGate) {
   equal(main.state.data.envelope, "preserve", "response envelope must survive");
   runtime.update(official);
   equal(main.state.data.usage.rate_limit.allowed, false, "wrapped usage response must restore");
+  main.setData(raw);
+  runtime.update(mixed);
+  equal(main.state.data.rate_limit.allowed, true, "explicit standalone opt-in must unlock");
+  runtime.update({ ...mixed, codexAppStandaloneQuotaUnlock: false });
+  equal(main.state.data.rate_limit.allowed, false, "turning the standalone switch off must restore the lock");
+  const legacy = { ...mixed };
+  delete legacy.codexAppStandaloneQuotaUnlock;
+  runtime.update(legacy);
+  main.setData(updated);
+  equal(main.state.data.rate_limit.allowed, false, "missing standalone switch must stay off");
   return "Native quota policy, existing cache, publication, restoration, structural sharing and reinjection passed";
 }
 module.exports = runNativeQuotaTests;

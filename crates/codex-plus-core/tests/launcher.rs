@@ -2155,6 +2155,37 @@ async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_
 }
 
 #[tokio::test]
+async fn standalone_quota_unlock_disabled_does_not_connect_to_cdp() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        codex_app_standalone_quota_unlock: false,
+        provider_sync_enabled: false,
+        ..BackendSettings::default()
+    });
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: listener.local_addr().unwrap().port(),
+            status_store: StatusStore::new(temp.path().join("status.json")),
+            ..LaunchOptions::default()
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    handle.wait_for_codex_exit().await.unwrap();
+}
+
+#[tokio::test]
 async fn isolated_quota_gate_is_not_started_when_status_save_fails() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
@@ -2164,6 +2195,7 @@ async fn isolated_quota_gate_is_not_started_when_status_save_fails() {
         .unwrap();
     let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_settings(BackendSettings {
         enhancements_enabled: false,
+        codex_app_standalone_quota_unlock: true,
         provider_sync_enabled: false,
         ..BackendSettings::default()
     });
@@ -2199,6 +2231,7 @@ async fn isolated_quota_gate_stops_on_exit_monitor_error_and_explicit_restart() 
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut hooks = FakeHooks::new(events).with_settings(BackendSettings {
             enhancements_enabled: false,
+            codex_app_standalone_quota_unlock: true,
             provider_sync_enabled: false,
             ..BackendSettings::default()
         });

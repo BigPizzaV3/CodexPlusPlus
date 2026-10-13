@@ -800,8 +800,8 @@ where
         }
 
         // 全部可失败的启动步骤完成后才创建，错误清理路径不会遗留监督任务。
-        let isolated_quota_gate =
-            (!settings.enhancements_enabled).then(|| IsolatedQuotaGateRuntime::start(debug_port));
+        let isolated_quota_gate = should_start_isolated_quota_gate(&settings)
+            .then(|| IsolatedQuotaGateRuntime::start(debug_port));
         Ok(LaunchHandle {
             debug_port,
             helper_port,
@@ -835,6 +835,10 @@ where
             Err(error)
         }
     }
+}
+
+fn should_start_isolated_quota_gate(settings: &BackendSettings) -> bool {
+    !settings.enhancements_enabled && settings.codex_app_standalone_quota_unlock
 }
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
@@ -4123,6 +4127,21 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn standalone_quota_unlock_is_opt_in_and_does_not_duplicate_full_enhancements() {
+        let mut settings = BackendSettings::default();
+        for enhancements in [false, true] {
+            for standalone in [false, true] {
+                settings.enhancements_enabled = enhancements;
+                settings.codex_app_standalone_quota_unlock = standalone;
+                assert_eq!(
+                    should_start_isolated_quota_gate(&settings),
+                    !enhancements && standalone
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn isolated_quota_runtime_stops_and_joins_before_restart() {
