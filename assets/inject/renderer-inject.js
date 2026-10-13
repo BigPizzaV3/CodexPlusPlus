@@ -9089,7 +9089,10 @@
   const sessionHealthAutoRecheckMs = 5 * 60 * 1000;
   try {
     const saved = JSON.parse(localStorage.getItem(invalidSessionStorageKey) || "[]");
-    if (Array.isArray(saved)) invalidSessionIds = new Set(saved.map(normalizedCodexThreadUuid).filter(Boolean));
+    if (Array.isArray(saved)) {
+      invalidSessionIds = new Set(saved.map(normalizedCodexThreadUuid).filter(Boolean));
+      verifiedInvalidSessionIds = new Set(invalidSessionIds);
+    }
   } catch {}
 
   function updateSessionHealthStatus(message) {

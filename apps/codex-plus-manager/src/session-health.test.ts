@@ -158,10 +158,11 @@ test("检查过程中恢复显示，会使未完成的隐藏结果作废", async
   assert.match(h.status.textContent, /已显示全部/);
 });
 
-test("重启后先复核再应用隐藏，恢复来源出现后重新显示", async () => {
+test("页面重载后立即应用持久化隐藏，恢复来源出现后重新显示", async () => {
   const h = harness({ saved: [lost] });
   h.api.apply();
-  assert.equal(h.rows[0].hidden(), false);
+  assert.equal(h.rows[0].hidden(), true);
+  assert.equal(h.requests.length, 0);
   await h.api.check(true);
   assert.ok(h.requests.every((request) => request.observedOnly));
   assert.equal(h.rows[0].hidden(), true);
