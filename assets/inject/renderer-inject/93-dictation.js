@@ -388,6 +388,40 @@
     return button;
   }
 
+  /**
+   * 空闲态的麦克风图标。
+   *
+   * 之前空闲态是一个带边框的「语音输入」文字按钮，在 composer 底栏里比原生图标按钮宽
+   * 一倍多，把「完全访问」和模型选择器挤得很开。改成和原生同规格的图标按钮，文字降级
+   * 成 aria-label / title。录音、转写这些状态仍然保留文字——那些状态要传达信息，
+   * 光靠图标说不清。
+   */
+  function codexPlusDictationMicIcon() {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("width", "16"); svg.setAttribute("height", "16");
+    svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.4"); svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round"); svg.setAttribute("aria-hidden", "true");
+    ["M8 2.4a2.2 2.2 0 0 1 2.2 2.2v3.4a2.2 2.2 0 0 1-4.4 0V4.6A2.2 2.2 0 0 1 8 2.4Z",
+      "M3.9 7.3a4.1 4.1 0 0 0 8.2 0", "M8 11.4v1.7", "M5.9 13.4h4.2"].forEach((d) => {
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+
+  function codexPlusDictationMicButton(disabled) {
+    const button = codexPlusDictationControl("start", "", disabled);
+    button.className = "codex-plus-dictation-mic";
+    button.setAttribute("aria-label", "语音输入");
+    button.setAttribute("title", "语音输入");
+    button.append(codexPlusDictationMicIcon());
+    return button;
+  }
+
   function renderCodexPlusDictation() {
     const state = codexPlusDictation;
     document.querySelectorAll('[data-codex-plus-ext="builtin-dictation"][data-dictation-controls]').forEach((root) => {
@@ -401,7 +435,7 @@
         return;
       }
       root.dataset.renderKey = key; root.replaceChildren();
-      if (!active) { root.append(codexPlusDictationControl("start", "语音输入", state.phase !== "idle")); return; }
+      if (!active) { root.append(codexPlusDictationMicButton(state.phase !== "idle")); return; }
       const status = document.createElement("span"); status.setAttribute("role", "status");
       if (state.phase === "recording") status.setAttribute("aria-live", "off");
       status.textContent = state.phase === "requesting" ? "正在请求麦克风…"
@@ -481,6 +515,11 @@
       style.textContent = `.codex-plus-dictation-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-inline:6px;font-size:12px;max-width:100%}
         .codex-plus-dictation-controls button{border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;padding:5px 8px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap}
         .codex-plus-dictation-controls button:disabled{opacity:.5;cursor:default}.codex-plus-dictation-controls button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+        /* 颜色取主文字色而不是继承 footer 的弱化文字：图标按钮没有边框和标签，
+           再叠一层弱化会被误读成禁用态。 */
+        .codex-plus-dictation-controls .codex-plus-dictation-mic{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-primary,currentColor);opacity:.9;cursor:pointer}
+        .codex-plus-dictation-controls .codex-plus-dictation-mic:hover{background:color-mix(in srgb,currentColor 12%,transparent);opacity:1}
+        .codex-plus-dictation-controls .codex-plus-dictation-mic:disabled{opacity:.4;cursor:default;background:transparent}
         #codex-plus-dictation-recovery{position:fixed;bottom:24px;right:24px;z-index:2147483000;padding:12px;border-radius:12px;background:var(--background,#252525);color:var(--foreground,#eee);box-shadow:0 4px 24px #0006;max-width:480px}
         #codex-plus-dictation-recovery textarea{width:100%;min-height:80px;color:inherit;background:transparent}`;
       document.head.append(style);

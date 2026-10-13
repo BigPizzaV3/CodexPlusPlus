@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2798
+      "lines": 2800
     },
     {
       "name": "20-menu.js",
@@ -28,7 +28,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1891
+      "lines": 1892
     },
     {
       "name": "50-navigation.js",
@@ -71,6 +71,11 @@
       "lines": 86
     },
     {
+      "name": "83-usage-statusline.js",
+      "description": "输入框下方用量状态栏：生成速度、缓存命中率与上下文占用",
+      "lines": 400
+    },
+    {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
       "lines": 1079
@@ -88,7 +93,7 @@
     {
       "name": "93-dictation.js",
       "description": "独立 ASR 听写入口、录音、取消重试与原生输入框回填",
-      "lines": 544
+      "lines": 583
     },
     {
       "name": "94-typing-effects.js",

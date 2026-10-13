@@ -1280,3 +1280,74 @@ fn thread_usage_history_reads_rollout_token_count_events() {
         })
     );
 }
+
+#[test]
+fn thread_usage_live_reads_only_the_tail_of_the_rollout() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let rollout_path = tmp.path().join("rollout.jsonl");
+    let mut lines = String::new();
+    // 前面垫足够多的无关大行，把早期 token 事件挤出尾部窗口：状态栏只关心最新几条。
+    for index in 0..4000 {
+        lines.push_str(&format!(
+            "{{\"timestamp\":\"2026-06-02T04:00:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"text\":\"{}\"}}}}\n",
+            "x".repeat(200 + index % 7)
+        ));
+    }
+    lines.push_str(concat!(
+        "{\"timestamp\":\"2026-06-02T05:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":5000,\"cached_input_tokens\":1500,\"output_tokens\":500,\"total_tokens\":5500},\"last_token_usage\":{\"input_tokens\":1200,\"cached_input_tokens\":900,\"output_tokens\":120,\"reasoning_output_tokens\":40,\"total_tokens\":1320},\"model_context_window\":258400}}}\n",
+        "{\"timestamp\":\"2026-06-02T05:00:10Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":7000,\"cached_input_tokens\":2500,\"output_tokens\":750,\"total_tokens\":7750},\"last_token_usage\":{\"input_tokens\":2000,\"cached_input_tokens\":1200,\"output_tokens\":250,\"reasoning_output_tokens\":60,\"total_tokens\":2250},\"model_context_window\":258400}}}\n"
+    ));
+    fs::write(&rollout_path, lines).unwrap();
+    create_codex_thread_db(&db_path, &rollout_path);
+    let adapter = SQLiteStorageAdapter::new(&db_path, BackupStore::new(tmp.path().join("backups")));
+
+    let value = adapter.codex_thread_usage_live(&session("local:t1", "Codex Thread"));
+    assert_eq!(value["status"], json!("ok"));
+    assert_eq!(value["session_id"], json!("t1"));
+    assert_eq!(
+        value["rollout_path"],
+        json!(rollout_path.to_string_lossy().to_string())
+    );
+    assert_eq!(
+        value["events"],
+        json!([
+            {
+                "t": "2026-06-02T05:00:00Z",
+                "input_tokens": 1200,
+                "cached_input_tokens": 900,
+                "output_tokens": 120,
+                "reasoning_output_tokens": 40,
+                "total_tokens": 1320,
+                "context_window": 258400,
+                "turn_output_tokens": 500
+            },
+            {
+                "t": "2026-06-02T05:00:10Z",
+                "input_tokens": 2000,
+                "cached_input_tokens": 1200,
+                "output_tokens": 250,
+                "reasoning_output_tokens": 60,
+                "total_tokens": 2250,
+                "context_window": 258400,
+                "turn_output_tokens": 750
+            }
+        ])
+    );
+}
+
+#[test]
+fn thread_usage_live_reports_missing_sessions_without_history_payload() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let rollout_path = tmp.path().join("rollout.jsonl");
+    fs::write(&rollout_path, "").unwrap();
+    create_codex_thread_db(&db_path, &rollout_path);
+    let adapter = SQLiteStorageAdapter::new(&db_path, BackupStore::new(tmp.path().join("backups")));
+
+    let value = adapter.codex_thread_usage_live(&session("local:missing", "Missing"));
+    assert_eq!(value["status"], json!("failed"));
+    assert_eq!(value["session_id"], json!("missing"));
+    assert_eq!(value["events"], json!([]));
+    assert!(value.get("history").is_none());
+}

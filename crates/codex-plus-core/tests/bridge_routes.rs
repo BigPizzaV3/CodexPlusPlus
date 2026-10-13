@@ -69,6 +69,10 @@ async fn bridge_routes_cover_all_current_paths() {
             "/thread-usage-history",
             json!({"session_id": "s1", "title": "First"}),
         ),
+        (
+            "/thread-usage-live",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
         ("/archived-thread", json!({"title": "Archived"})),
     ];
 
@@ -79,6 +83,22 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn thread_usage_live_route_returns_recent_token_events() {
+    // 内置状态栏走的就是这条路由；它必须与 /thread-usage-history 分开，
+    // 因为状态栏按秒级轮询，拿不动全量历史。
+    let result = handle_bridge_request(
+        test_context(),
+        "/thread-usage-live",
+        json!({"session_id": "s1", "title": "First"}),
+    )
+    .await;
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["session_id"], "s1");
+    assert_eq!(result["events"][0]["cached_input_tokens"], json!(900));
+    assert_eq!(result["events"][0]["context_window"], json!(258400));
 }
 
 #[tokio::test]
@@ -1113,6 +1133,7 @@ async fn launch_lifecycle_uses_hook_supplied_bridge_context_for_injection() {
             debug_port: 9229,
             helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
         },
         &hooks,
     )
@@ -1365,6 +1386,25 @@ impl BridgeDataService for FakeData {
         })
     }
 
+    async fn thread_usage_live(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "session_id": session.session_id,
+            "events": [
+                {
+                    "t": "2026-06-02T05:00:00Z",
+                    "input_tokens": 1200,
+                    "cached_input_tokens": 900,
+                    "output_tokens": 120,
+                    "reasoning_output_tokens": 40,
+                    "total_tokens": 1320,
+                    "context_window": 258400,
+                    "turn_output_tokens": 120
+                }
+            ]
+        }))
+    }
+
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({
             "status": "ok",
@@ -1456,6 +1496,7 @@ impl LaunchHooks for ContextHooks {
         _debug_port: u16,
         _settings: &BackendSettings,
         _extra_args: &[String],
+        _instance: &codex_plus_core::launcher::LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
         Ok(CodexLaunch::Process {
             command: vec!["codex".to_string()],

@@ -170,6 +170,11 @@ pub trait BridgeDataService: Send + Sync {
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
+    /// Codex 输入框下方状态栏的轻量用量快照：只给最近的 token 事件，不返回全量历史。
+    /// 内置状态栏专用，不进第三方拓展路由白名单。
+    async fn thread_usage_live(&self, _session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "message": "本机用量快照暂不可用", "events": []}))
+    }
     async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
     }
@@ -308,6 +313,11 @@ pub async fn handle_bridge_request(
         "/thread-usage-history" => {
             ctx.data
                 .thread_usage_history(session_from_payload(&payload))
+                .await
+        }
+        "/thread-usage-live" => {
+            ctx.data
+                .thread_usage_live(session_from_payload(&payload))
                 .await
         }
         // 仅内置挂件使用，不加入第三方拓展路由白名单。

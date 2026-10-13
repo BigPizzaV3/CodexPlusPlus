@@ -313,6 +313,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
+  codexAppUsageStatusLine: boolean;
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
   codexAppTypingEffect: TypingEffect;
@@ -1075,6 +1076,7 @@ const defaultSettings: BackendSettings = {
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
+  codexAppUsageStatusLine: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
   codexAppTypingEffect: "off",
@@ -5595,7 +5597,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
             <Info className="h-4 w-4" />
             <span>{form.dictation.provider === "sensevoice"
               ? t("下载模型并保存配置后，可在 Codex 输入框录音，停止后在本机转写并插入文字。")
-              : t("保存后 Codex 输入框会显示「语音输入」按钮，停止录音后可插入或发送文字。录音会发送到上面填写的服务地址，无需重启。")}</span>
+              : t("保存后 Codex 输入框底部会显示麦克风图标，停止录音后可插入或发送文字。录音会发送到上面填写的服务地址，无需重启。")}</span>
           </div>
         </div>
       </CardContent>
@@ -5874,6 +5876,7 @@ function EnhanceScreen({
                 <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
                 <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
                 <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+                <FeatureToggle title={t("用量状态栏")} detail={t("在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。")} checked={form.codexAppUsageStatusLine} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUsageStatusLine", value)} />
               </FeatureGroup>
               <FeatureGroup title={t("挂件与桌宠")} detail={t("在 Codex 中查看用量，设置自己的角色和互动方式。")}>
                 <FeatureToggle

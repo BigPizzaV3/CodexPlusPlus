@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 pub fn delete_local_from_paths(
@@ -424,68 +424,130 @@ impl SQLiteStorageAdapter {
         SessionRef::new(id, row_title.unwrap_or_else(|| title.to_string())).ok()
     }
 
-    pub fn codex_thread_usage_history(&self, session: &SessionRef) -> serde_json::Value {
+    /// 解析会话对应的 rollout 文件。
+    ///
+    /// `Unavailable` 里已经是可直接返回前端的失败对象：语义是「本地没有这个会话的
+    /// 历史」，不是后端故障，所以不走 anyhow；真正的 IO / SQLite 故障走 Err。
+    fn codex_thread_rollout(&self, session: &SessionRef) -> anyhow::Result<CodexThreadRollout> {
         if !self.db_path.exists() {
-            return json!({
+            return Ok(CodexThreadRollout::Unavailable(json!({
                 "status": "failed",
                 "session_id": session.session_id,
                 "message": self.database_not_found_message(),
-                "history": []
-            });
+            })));
         }
-        let result = (|| -> anyhow::Result<Value> {
-            let db = Connection::open(&self.db_path)?;
-            if schema_kind(&db)? != Some(SchemaKind::CodexThreads)
-                || !has_columns(&db, "threads", &["rollout_path"])?
-            {
-                return Ok(json!({
-                    "status": "failed",
-                    "session_id": session.session_id,
-                    "message": "Unsupported local storage schema",
-                    "history": []
-                }));
-            }
-            let thread_id = normalize_codex_thread_id(&session.session_id);
-            let rollout_path: Option<String> = db
-                .query_row(
-                    "SELECT rollout_path FROM threads WHERE id = ?1",
-                    [&thread_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(rollout_path) = rollout_path.filter(|path| !path.trim().is_empty()) else {
-                return Ok(json!({
-                    "status": "failed",
-                    "session_id": thread_id,
-                    "message": "Thread rollout path is empty",
-                    "history": []
-                }));
-            };
-            let rollout = PathBuf::from(&rollout_path);
-            if !rollout.is_file() {
-                return Ok(json!({
-                    "status": "failed",
-                    "session_id": thread_id,
-                    "message": format!("rollout file not found: {rollout_path}"),
-                    "history": []
-                }));
-            }
-            let history = read_rollout_usage_history(&rollout, &thread_id)?;
-            Ok(json!({
-                "status": "ok",
+        let db = Connection::open(&self.db_path)?;
+        if schema_kind(&db)? != Some(SchemaKind::CodexThreads)
+            || !has_columns(&db, "threads", &["rollout_path"])?
+        {
+            return Ok(CodexThreadRollout::Unavailable(json!({
+                "status": "failed",
+                "session_id": session.session_id,
+                "message": "Unsupported local storage schema",
+            })));
+        }
+        let thread_id = normalize_codex_thread_id(&session.session_id);
+        let rollout_path: Option<String> = db
+            .query_row(
+                "SELECT rollout_path FROM threads WHERE id = ?1",
+                [&thread_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(rollout_path) = rollout_path.filter(|path| !path.trim().is_empty()) else {
+            return Ok(CodexThreadRollout::Unavailable(json!({
+                "status": "failed",
                 "session_id": thread_id,
-                "rollout_path": rollout_path,
-                "history": history,
-            }))
-        })();
-        result.unwrap_or_else(|err| {
-            json!({
+                "message": "Thread rollout path is empty",
+            })));
+        };
+        let rollout = PathBuf::from(&rollout_path);
+        if !rollout.is_file() {
+            return Ok(CodexThreadRollout::Unavailable(json!({
+                "status": "failed",
+                "session_id": thread_id,
+                "message": format!("rollout file not found: {rollout_path}"),
+            })));
+        }
+        Ok(CodexThreadRollout::Ready {
+            thread_id,
+            rollout_path,
+            rollout,
+        })
+    }
+
+    pub fn codex_thread_usage_history(&self, session: &SessionRef) -> serde_json::Value {
+        let with_history = |mut value: Value| {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("history".to_string(), json!([]));
+            }
+            value
+        };
+        match self.codex_thread_rollout(session) {
+            Err(err) => with_history(json!({
                 "status": "failed",
                 "session_id": session.session_id,
                 "message": err.to_string(),
-                "history": []
-            })
-        })
+            })),
+            Ok(CodexThreadRollout::Unavailable(value)) => with_history(value),
+            Ok(CodexThreadRollout::Ready {
+                thread_id,
+                rollout_path,
+                rollout,
+            }) => match read_rollout_usage_history(&rollout, &thread_id) {
+                Ok(history) => json!({
+                    "status": "ok",
+                    "session_id": thread_id,
+                    "rollout_path": rollout_path,
+                    "history": history,
+                }),
+                Err(err) => with_history(json!({
+                    "status": "failed",
+                    "session_id": session.session_id,
+                    "message": err.to_string(),
+                })),
+            },
+        }
+    }
+
+    /// Codex 输入框下方状态栏用的轻量用量快照。
+    ///
+    /// 与 `codex_thread_usage_history` 的关键差别是**只读 rollout 尾部**：状态栏按
+    /// 秒级轮询，而真实会话的 rollout 可以到几百 MB，整读整解析会把 spawn_blocking
+    /// 线程拖住（同一个 adapter 还要服务删除、导出）。尾部窗口拿不到足够事件时按倍数
+    /// 放大，封顶后直接返回已有事件，不做全量兜底。
+    pub fn codex_thread_usage_live(&self, session: &SessionRef) -> serde_json::Value {
+        let with_events = |mut value: Value| {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("events".to_string(), json!([]));
+            }
+            value
+        };
+        match self.codex_thread_rollout(session) {
+            Err(err) => with_events(json!({
+                "status": "failed",
+                "session_id": session.session_id,
+                "message": err.to_string(),
+            })),
+            Ok(CodexThreadRollout::Unavailable(value)) => with_events(value),
+            Ok(CodexThreadRollout::Ready {
+                thread_id,
+                rollout_path,
+                rollout,
+            }) => match read_rollout_usage_tail(&rollout, USAGE_TAIL_EVENT_LIMIT) {
+                Ok(events) => json!({
+                    "status": "ok",
+                    "session_id": thread_id,
+                    "rollout_path": rollout_path,
+                    "events": events,
+                }),
+                Err(err) => with_events(json!({
+                    "status": "failed",
+                    "session_id": session.session_id,
+                    "message": err.to_string(),
+                })),
+            },
+        }
     }
 
     /// 小鲸鱼只接受会话 UUID；路径来自只读数据库或受限会话目录，不接受前端路径。
@@ -954,6 +1016,114 @@ fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::R
     }
 
     Ok(history)
+}
+
+/// `SQLiteStorageAdapter::codex_thread_rollout` 的结果。
+enum CodexThreadRollout {
+    Ready {
+        thread_id: String,
+        rollout_path: String,
+        rollout: PathBuf,
+    },
+    /// 已经可以当作路由返回值的失败对象（本地没有这个会话的历史）。
+    Unavailable(Value),
+}
+
+/// 状态栏尾部读取的初始窗口。
+const USAGE_TAIL_INITIAL_BYTES: u64 = 512 * 1024;
+/// 窗口放大上限：单条工具输出动辄几百 KB，一条就能把整个窗口占满。
+const USAGE_TAIL_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// 返回给渲染侧的 token_count 事件条数上限，够算速度与最近一轮用量即可。
+const USAGE_TAIL_EVENT_LIMIT: usize = 24;
+
+/// 只读 rollout 尾部，取出最近的 `token_count` 事件。
+fn read_rollout_usage_tail(rollout: &Path, limit: usize) -> anyhow::Result<Vec<Value>> {
+    let file = File::open(rollout)?;
+    let len = file.metadata()?.len();
+    let mut window = USAGE_TAIL_INITIAL_BYTES;
+    loop {
+        let start = len.saturating_sub(window);
+        let mut events = Vec::new();
+        read_rollout_usage_window(&file, start, limit, &mut events)?;
+        // 至少两条事件渲染侧才算得出生成速度；不够就放大窗口重读一次。
+        // 到顶或已经从头开始读时不再尝试，避免退化成整文件解析。
+        if events.len() >= 2 || start == 0 || window >= USAGE_TAIL_MAX_BYTES {
+            return Ok(events);
+        }
+        window = (window * 4).min(USAGE_TAIL_MAX_BYTES);
+    }
+}
+
+fn read_rollout_usage_window(
+    file: &File,
+    start: u64,
+    limit: usize,
+    out: &mut Vec<Value>,
+) -> anyhow::Result<()> {
+    let mut handle = file.try_clone()?;
+    handle.seek(SeekFrom::Start(start))?;
+    let mut buffer = Vec::new();
+    handle.read_to_end(&mut buffer)?;
+    // 起始处多半落在行中间；UTF-8 的续字节不会等于 b'\n'，按字节切行不会切坏字符。
+    let text = String::from_utf8_lossy(&buffer);
+    let mut lines = text.split('\n');
+    if start > 0 {
+        lines.next();
+    }
+    for line in lines {
+        let line = line.trim();
+        // 先做子串预筛，避免为每条 response_item 付 serde 解析成本。
+        if line.is_empty() || !line.contains("\"token_count\"") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(event) = rollout_usage_event(&value) {
+            out.push(event);
+        }
+    }
+    if out.len() > limit {
+        out.drain(..out.len() - limit);
+    }
+    Ok(())
+}
+
+fn rollout_usage_event(value: &Value) -> Option<Value> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+        return None;
+    }
+    let info = payload.get("info")?;
+    let last = info.get("last_token_usage")?;
+    let total = info.get("total_token_usage");
+    let field = |source: Option<&Value>, key: &str| {
+        source
+            .and_then(|usage| usage.get(key))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
+    let input_tokens = field(Some(last), "input_tokens");
+    let output_tokens = field(Some(last), "output_tokens");
+    let total_tokens = field(Some(last), "total_tokens");
+    if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 {
+        return None;
+    }
+    Some(json!({
+        "t": value.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
+        // 本次模型调用的用量：上下文占用取 total_tokens / context_window。
+        "input_tokens": input_tokens,
+        "cached_input_tokens": field(Some(last), "cached_input_tokens"),
+        "output_tokens": output_tokens,
+        "reasoning_output_tokens": field(Some(last), "reasoning_output_tokens"),
+        "total_tokens": total_tokens,
+        "context_window": field(Some(info), "model_context_window"),
+        // 本轮累计输出：换轮时它会回落，渲染侧靠这个切段算生成速度。
+        "turn_output_tokens": field(total, "output_tokens"),
+    }))
 }
 
 fn failed_with_undo(

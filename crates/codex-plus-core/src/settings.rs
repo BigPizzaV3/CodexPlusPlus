@@ -530,6 +530,9 @@ pub struct BackendSettings {
     pub codex_app_markdown_export: bool,
     #[serde(rename = "codexAppSessionShare", default = "default_true")]
     pub codex_app_session_share: bool,
+    // 默认开启：纯展示层状态栏，不改变 Codex 的请求内容与本地数据，误开没有副作用。
+    #[serde(rename = "codexAppUsageStatusLine", default = "default_true")]
+    pub codex_app_usage_status_line: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
     // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
@@ -739,6 +742,7 @@ impl Default for BackendSettings {
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_session_share: true,
+            codex_app_usage_status_line: true,
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
@@ -1682,6 +1686,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppSessionShare");
+    merge_bool_setting(target, source, "codexAppUsageStatusLine");
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
     if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =

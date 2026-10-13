@@ -2936,6 +2936,43 @@ fn injection_script_exposes_capacity_auto_retry_control() {
 }
 
 #[test]
+fn injection_script_uses_an_icon_for_idle_dictation() {
+    let script = assets::injection_script(57321);
+
+    // 空闲态是图标按钮：文字按钮在 composer 底栏比原生图标宽一倍多。
+    assert!(script.contains("function codexPlusDictationMicButton"));
+    assert!(script.contains("function codexPlusDictationMicIcon"));
+    assert!(script.contains("codexPlusDictationMicButton(state.phase !== \"idle\")"));
+    // 不再有「空闲态渲染文字按钮」这条路径。
+    assert!(!script.contains("codexPlusDictationControl(\"start\", \"语音输入\""));
+    // 无障碍名称不能丢：图标按钮只能靠 aria-label / title 表达用途。
+    assert!(script.contains("button.setAttribute(\"aria-label\", \"语音输入\")"));
+    assert!(script.contains("button.setAttribute(\"title\", \"语音输入\")"));
+    // 录音/转写这些状态仍然带文字，图标说不清。
+    assert!(script.contains("codexPlusDictationControl(\"insert\", \"停止并插入\")"));
+}
+
+#[test]
+fn injection_script_exposes_the_usage_status_line() {
+    let script = assets::injection_script(57321);
+
+    // 开关接线：默认值 → 后端映射。
+    assert!(script.contains("usageStatusLine: true"));
+    assert!(script.contains("usageStatusLine: \"codexAppUsageStatusLine\""));
+    assert!(script.contains("usageStatusLine: false"));
+
+    // 数据源走尾部快照路由，不能退回按秒整读历史的 /thread-usage-history。
+    assert!(script.contains("postJson(\"/thread-usage-live\""));
+    assert!(script.contains("data-above-composer-conversation-id"));
+    assert!(script.contains("data-composer-surface-variant"));
+    // 插进 DOM 的节点必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
+    assert!(script.contains("data-codex-plus-ext\", \"builtin-usage-statusline\""));
+    assert!(script.contains("registerCodexPlusExtensionSelector"));
+    // 设置面板里的开关要能立刻生效，不用等下一拍轮询。
+    assert!(script.contains("__CODEX_PLUS_USAGE_STATUSLINE_SYNC__"));
+}
+
+#[test]
 fn injection_script_recovers_a_stalled_codex_boot_shell() {
     let script = assets::injection_script(57321);
 

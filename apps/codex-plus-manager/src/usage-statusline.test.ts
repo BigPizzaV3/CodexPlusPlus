@@ -1,0 +1,191 @@
+// 输入框下方用量状态栏：口径与取数的行为回归。
+//
+// cdp_bridge.rs 只守「接线还在不在」，这里把分片里的纯计算函数抠出来放进沙箱真跑，
+// 验证三件在真机上不好复现的事：
+//   1. 生成速度按「同一轮内相邻事件差」算，换轮（turn_output_tokens 回落）要切段，
+//      过短/过长的间隔不能当样本；
+//   2. 缓存命中与上下文占用是 Codex 自己的口径（cached/input、total/context_window），
+//      窗口缺失时不能瞎算成 0%；
+//   3. 会话 id 只认 composer 上的实时标识，新会话草稿（client-new-thread）没有 rollout，
+//      必须当作无会话而不是拿草稿 id 去查。
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import ts from "typescript";
+
+const fragmentDir = path.resolve(import.meta.dirname, "../../../assets/inject/renderer-inject");
+const shardSource = readFileSync(path.join(fragmentDir, "83-usage-statusline.js"), "utf8");
+const shard = ts.createSourceFile("83-usage-statusline.js", shardSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+
+/** 按名字取分片里的顶层声明源码；找不到就直接失败，避免锚点漂移后静默跳过。 */
+function declaration(name: string): string {
+  for (const statement of shard.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement.getText(shard);
+    if (ts.isVariableStatement(statement)) {
+      const hit = statement.declarationList.declarations.some(
+        (item) => ts.isIdentifier(item.name) && item.name.text === name,
+      );
+      if (hit) return statement.getText(shard);
+    }
+  }
+  assert.fail(`分片里找不到 ${name}`);
+}
+
+const sandboxSource = [
+  declaration("codexPlusUsageStaleMs"),
+  declaration("codexPlusUsagePercent"),
+  declaration("codexPlusUsageRate"),
+  declaration("codexPlusUsageSnapshot"),
+  declaration("codexPlusUsageThreadId"),
+  "return { codexPlusUsagePercent, codexPlusUsageRate, codexPlusUsageSnapshot, codexPlusUsageThreadId };",
+].join("\n");
+
+type Sandbox = {
+  codexPlusUsagePercent: (numerator: number, denominator: number) => number | null;
+  codexPlusUsageRate: (events: Array<Record<string, unknown>>) => number | null;
+  codexPlusUsageSnapshot: (events: Array<Record<string, unknown>>) => {
+    speed: number | null;
+    cache: number | null;
+    context: number | null;
+    stale: boolean;
+    modelContextWindow: number;
+  } | null;
+  codexPlusUsageThreadId: (card: unknown) => string;
+};
+
+function sandbox(nowMs: number, documentStub: unknown = { querySelector: () => null }): Sandbox {
+  // 分片用 Date.now() 判新鲜度，注入一个只改 now 的子类，Date.parse 仍走原生实现。
+  class FixedDate extends Date {
+    static now() {
+      return nowMs;
+    }
+  }
+  const factory = new Function("document", "navigator", "Date", sandboxSource);
+  return factory(documentStub, { language: "zh-CN" }, FixedDate) as Sandbox;
+}
+
+function event(secondsFromStart: number, turnOutputTokens: number, extra: Record<string, unknown> = {}) {
+  return {
+    t: new Date(Date.UTC(2026, 5, 2, 5, 0, secondsFromStart)).toISOString(),
+    turn_output_tokens: turnOutputTokens,
+    input_tokens: 1000,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 1000,
+    context_window: 100000,
+    ...extra,
+  };
+}
+
+test("生成速度按同一轮内相邻事件差计算，换轮时切段", () => {
+  const { codexPlusUsageRate } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
+  const events = [
+    event(0, 100),
+    event(10, 600),
+    event(20, 1100),
+    // 新一轮：累计输出回落到 200，前一段不能跨轮相减。
+    event(30, 200),
+    event(40, 700),
+  ];
+  assert.equal(codexPlusUsageRate(events), 500 / 10);
+  assert.equal(codexPlusUsageRate([event(0, 100)]), null, "只有一条事件时算不出速度");
+});
+
+test("过短与过长的间隔都不作为速度样本", () => {
+  const { codexPlusUsageRate } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
+  // 0.2 秒是同一批写入，200 秒说明中间停了很久。
+  assert.equal(codexPlusUsageRate([
+    { ...event(0, 0), t: "2026-06-02T05:00:00.000Z" },
+    { ...event(0, 500), t: "2026-06-02T05:00:00.200Z" },
+  ]), null);
+  assert.equal(codexPlusUsageRate([
+    { ...event(0, 0), t: "2026-06-02T05:00:00.000Z" },
+    { ...event(0, 50000), t: "2026-06-02T05:03:20.000Z" },
+  ]), null);
+});
+
+test("缓存命中与上下文占用按 Codex 的口径取值", () => {
+  const now = Date.UTC(2026, 5, 2, 5, 0, 10);
+  const { codexPlusUsageSnapshot } = sandbox(now);
+  const snapshot = codexPlusUsageSnapshot([
+    event(0, 500, { input_tokens: 200000, cached_input_tokens: 199000, total_tokens: 250000, context_window: 1000000 }),
+  ]);
+  assert.ok(snapshot);
+  assert.equal(Number(snapshot.cache?.toFixed(1)), 99.5);
+  assert.equal(snapshot.context, 25);
+  assert.equal(snapshot.modelContextWindow, 1000000);
+  assert.equal(snapshot.stale, false, "刚写入的事件不算过期");
+
+  // 窗口缺失时上下文占用必须是 null，不能算成 0% 骗人。
+  const noWindow = codexPlusUsageSnapshot([event(0, 1, { context_window: 0 })]);
+  assert.equal(noWindow?.context, null);
+
+  assert.equal(codexPlusUsageSnapshot([]), null);
+});
+
+test("最近一条事件超过阈值后标记为过期", () => {
+  const observed = Date.UTC(2026, 5, 2, 5, 0, 0);
+  const fresh = sandbox(observed + 60_000).codexPlusUsageSnapshot([event(0, 1)]);
+  const stale = sandbox(observed + 130_000).codexPlusUsageSnapshot([event(0, 1)]);
+  assert.equal(fresh?.stale, false);
+  assert.equal(stale?.stale, true);
+});
+
+test("三项目作为一组居中，过期只淡化速度项", () => {
+  // 布局对齐 DSH 那条：三项居中成组，不是两端对齐。
+  // 两端对齐会把「上下文占用」甩到最右边，和速度、缓存拉成两段信息。
+  assert.match(shardSource, /justify-content:center/);
+  assert.doesNotMatch(shardSource, /data-usage="context"\]\{margin-left:auto\}/);
+
+  // 本轮结束后速度是历史读数，但缓存命中与上下文占用仍是当前值，不能一起变灰。
+  const staleRule = shardSource.match(/\[data-stale="true"\][^{]*\{opacity:([^}]*)\}/g) || [];
+  assert.equal(staleRule.length, 1, "只应有一条过期样式");
+  assert.match(staleRule[0], /data-usage="speed"/);
+  // 容器自身不能再挂 opacity：会叠在文字颜色的透明度上，实测掉到 0.36 看不清。
+  assert.doesNotMatch(shardSource, /\[data-stale="true"\]\{/);
+});
+
+test("会话 id 只认 composer 上的实时标识，新会话草稿视为无会话", () => {
+  const card = (composerId: string | null, placement = "thread") => ({
+    closest: () => ({
+      getAttribute: () => placement,
+      querySelector: () => (composerId === null ? null : { getAttribute: () => composerId }),
+    }),
+  });
+  const sidebar = (sidebarId: string | null) => ({
+    querySelector: (selector: string) => {
+      assert.match(selector, /data-app-action-sidebar-thread-selected/);
+      return sidebarId === null ? null : { getAttribute: () => sidebarId };
+    },
+  });
+
+  const { codexPlusUsageThreadId } = sandbox(Date.now(), sidebar(null));
+  assert.equal(
+    codexPlusUsageThreadId(card("local:01a1352f-f8a9-71f2-9ae4-f2de48a74d8d")),
+    "01a1352f-f8a9-71f2-9ae4-f2de48a74d8d",
+    "去掉 local: 前缀后交给宿主",
+  );
+  assert.equal(
+    codexPlusUsageThreadId(card("01a1352f-f8a9-71f2-9ae4-f2de48a74d8d")),
+    "01a1352f-f8a9-71f2-9ae4-f2de48a74d8d",
+    "没有前缀时原样使用",
+  );
+  // thread 里 composer 没带标识时回落侧边栏选中行。
+  assert.equal(
+    sandbox(Date.now(), sidebar("local:01a133b6-fec1-7641-a1d1-f27100cee5b6"))
+      .codexPlusUsageThreadId(card(null)),
+    "01a133b6-fec1-7641-a1d1-f27100cee5b6",
+  );
+  // 首页 composer 是 placement=home，侧边栏这时仍选中着上一个 thread，
+  // 兜底会把上一个会话的读数挂到新会话上，必须拒绝。
+  assert.equal(
+    sandbox(Date.now(), sidebar("local:01a133b6-fec1-7641-a1d1-f27100cee5b6"))
+      .codexPlusUsageThreadId(card(null, "home")),
+    "",
+  );
+  assert.equal(codexPlusUsageThreadId(card("local:client-new-thread:dac7b41a-c092-4147-827e-9010f1ba7600")), "", "新会话草稿没有 rollout");
+  assert.equal(codexPlusUsageThreadId(card("__proto__")), "");
+  assert.equal(codexPlusUsageThreadId(card("short")), "");
+  assert.equal(codexPlusUsageThreadId(undefined), "");
+});

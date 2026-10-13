@@ -368,6 +368,7 @@ function fixture() {
       this.attributes = new Map(); this.dataset = {}; this.textContent = "";
     }
     append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
+    appendChild(node) { this.append(node); return node; }
     remove() {
       if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((node) => node !== this);
       this.parentElement = null;
@@ -406,6 +407,8 @@ function fixture() {
     const documentShim = {
       head, body,
       createElement: (tagName) => new FakeElement(tagName),
+      // 空闲态是 SVG 麦克风图标按钮，假 DOM 也得能建命名空间节点。
+      createElementNS: (_namespace, tagName) => new FakeElement(tagName),
       getElementById: (id) => [...descendants(head), ...descendants(body)].find((element) => element.id === id) || null,
       querySelectorAll: (selector) => [...descendants(head), ...descendants(body)].filter((element) => selectorMatches(element, selector)),
       querySelector(selector) { return documentShim.querySelectorAll(selector)[0] || null; },
@@ -446,7 +449,13 @@ function fixture() {
   assert.equal(mounted.length, 1, "one dictation entry per composer even when two footer candidates match");
   assert.equal(mounted[0].parentElement, home.nodes.footer, "the entry stays on the footer that contains the editor");
   assert.equal(stray.parentElement, null, "stale duplicate injected into the context strip is removed");
-  assert.equal(mounted[0].querySelector("button").textContent, "语音输入");
+  // 空闲态是图标按钮：文字降级到 aria-label / title，按钮里放的是麦克风 SVG。
+  const startButton = mounted[0].querySelector("button");
+  assert.equal(startButton.textContent, "", "空闲态不再渲染文字标签");
+  assert.equal(startButton.getAttribute("aria-label"), "语音输入");
+  assert.equal(startButton.getAttribute("title"), "语音输入");
+  assert.equal(startButton.getAttribute("data-dictation-action"), "start");
+  assert.equal(startButton.children.filter((child) => child.tagName === "SVG").length, 1, "图标按钮里要有且只有一个麦克风 SVG");
   home.context.installDictation();
   assert.equal(home.document.querySelectorAll("[data-dictation-controls]").length, 1, "repeated installs stay idempotent");
 

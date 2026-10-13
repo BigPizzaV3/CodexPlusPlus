@@ -68,6 +68,7 @@
 
   function refreshCodexPlusBackendToggles() {
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
+    globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__?.();
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
