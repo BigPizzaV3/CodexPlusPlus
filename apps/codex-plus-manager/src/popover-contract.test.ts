@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 
-const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-const hookSource = await readFile(new URL("./use-popover-layer.ts", import.meta.url), "utf8");
-const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+// Windows 检出（core.autocrlf）下源码是 CRLF，多行契约断言必须先把换行归一化，
+// 否则同一份代码在 macOS 绿、在 Windows CI 红。
+const readText = async (name: string) =>
+  (await readFile(new URL(name, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+
+const app = await readText("./App.tsx");
+const hookSource = await readText("./use-popover-layer.ts");
+const styles = await readText("./styles.css");
 
 function componentSource(name: string) {
   // 终止行必须是顶格单独一个 }（`}: {` 这种行首是 } 的不算）。
