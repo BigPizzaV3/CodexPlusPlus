@@ -736,6 +736,8 @@ export const EN_PLAIN: Record<string, string> = {
   "启用": "Enable",
   "启用 Codex 图片覆盖层": "Enable Codex image overlay",
   "启用 Codex增强": "Enable Codex enhancements",
+  "独立额度解锁": "Standalone quota unlock",
+  "官方登录 + 混入 API Key": "Official login + mixed API key",
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。":

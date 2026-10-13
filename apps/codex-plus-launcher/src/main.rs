@@ -518,6 +518,7 @@ async fn run_embedded_session(
                 || repair_session_index_automatically(hooks.index_repair_checks_setting()),
             )
             .await;
+            handle.stop_isolated_api_quota_gate().await;
             stopped_by_host = host_stop;
             result
         }
@@ -1818,9 +1819,16 @@ mod tests {
             body.matches("repair_session_index_automatically(").count(),
             1
         );
-        assert!(body.contains(
-            "wait_for_session_exit_or_stop(handle.wait_for_codex_exit(), &mut stop)"
-        ));
+        assert!(
+            body.contains("wait_for_session_exit_or_stop(handle.wait_for_codex_exit(), &mut stop)")
+        );
+        let quota_stop = body
+            .find("handle.stop_isolated_api_quota_gate().await")
+            .unwrap();
+        let helper_stop = body
+            .find("hooks.shutdown_helper(options.helper_port).await")
+            .unwrap();
+        assert!(quota_stop < helper_stop);
         let launch_start = source.find("async fn launcher_session(").unwrap();
         let launch_end = source[launch_start..]
             .find("async fn activate_and_write_running_status(")

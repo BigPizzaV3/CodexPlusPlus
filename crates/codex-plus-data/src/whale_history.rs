@@ -1449,12 +1449,21 @@ mod tests {
         }
         writeln!(append, "{}", context(&now, "model-a", "turn")).unwrap();
         writeln!(append, "{}", tokens(&now, 10, 0, 5)).unwrap();
-        let first = f.query(json!({}));
+        // 固定同一索引，避免并行测试的其他 home 淘汰全局缓存中的续读进度。
+        let home = fs::canonicalize(f.temp.path()).unwrap();
+        let mut index = HistoryIndex::new();
+        let query = Query::parse(&json!({}), Local::now().date_naive()).unwrap();
+        let mut read = || {
+            index.update(&home);
+            let now = Local::now();
+            index.response(&query, now.date_naive(), now.timestamp_millis())
+        };
+        let first = read();
         assert_eq!(first["complete"], false);
         assert_eq!(first["periods"]["all"]["usage"], Value::Null);
         let mut latest = first;
         for _ in 0..5 {
-            latest = f.query(json!({}));
+            latest = read();
             if latest["complete"] == true {
                 break;
             }

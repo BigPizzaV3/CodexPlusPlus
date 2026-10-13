@@ -229,3 +229,17 @@ test("enhancement saving is an explicit permanent top action", () => {
   const firstPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel");
   assert.ok(firstPane && saves[0].pos < firstPane.pos);
 });
+
+test("standalone quota unlock remains editable below the master switch when enhancements are off", () => {
+  const enhance = component("EnhanceScreen");
+  const master = fieldControl(enhance, "form.enhancementsEnabled");
+  const standalone = fieldControl(enhance, "form.codexAppStandaloneQuotaUnlock");
+  assert.equal(attribute(standalone, "disabled"), undefined);
+  assert.equal(isConditional(standalone, enhance), false);
+  assert.ok(master.pos < standalone.pos);
+  const firstPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel");
+  assert.ok(firstPane && standalone.pos < firstPane.pos);
+  const handler = eventHandlerNodes(enhance, standalone, "onChange");
+  assert.ok(handler.some((node) => ts.isCallExpression(node) && node.expression.getText(app) === "onFormChange"));
+  assert.ok(handler.some((node) => ts.isStringLiteral(node) && node.text === "codexAppStandaloneQuotaUnlock"));
+});

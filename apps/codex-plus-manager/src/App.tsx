@@ -300,6 +300,7 @@ type BackendSettings = WhaleBalanceSettings & {
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
+  codexAppStandaloneQuotaUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
@@ -1058,6 +1059,7 @@ const defaultSettings: BackendSettings = {
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
+  codexAppStandaloneQuotaUnlock: false,
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
   codexAppSessionDelete: true,
@@ -5705,18 +5707,32 @@ function EnhanceScreen({
     <div className="settings-page enhance-page">
       <div className="enhance-page-controls" id="enhance-page-controls">
         <div className="enhance-page-toolbar">
-          <label className="switch-row compact enhance-master-switch">
-            <input
-              checked={form.enhancementsEnabled}
-              onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启用 Codex增强")}</strong>
-              <small>{t("关闭后暂停增强功能，服务配置会保留。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
+          <div className="enhance-primary-switches">
+            <label className="switch-row compact enhance-master-switch">
+              <input
+                checked={form.enhancementsEnabled}
+                onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("启用 Codex增强")}</strong>
+                <small>{t("关闭后暂停增强功能，服务配置会保留。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            <label className="switch-row compact enhance-master-switch">
+              <input
+                checked={form.codexAppStandaloneQuotaUnlock}
+                onChange={(event) => setEnhanceFlag("codexAppStandaloneQuotaUnlock", event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("独立额度解锁")}</strong>
+                <small>{t("官方登录 + 混入 API Key")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+          </div>
           <div className="enhance-save-actions">
             <span className={dirty ? "is-dirty" : ""} role="status">{dirty ? t("有未保存修改") : t("已保存")}</span>
             <Button disabled={!dirty} onClick={() => void actions.saveSettings()}>

@@ -2155,6 +2155,127 @@ async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_
 }
 
 #[tokio::test]
+async fn standalone_quota_unlock_disabled_does_not_connect_to_cdp() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        codex_app_standalone_quota_unlock: false,
+        provider_sync_enabled: false,
+        ..BackendSettings::default()
+    });
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: listener.local_addr().unwrap().port(),
+            status_store: StatusStore::new(temp.path().join("status.json")),
+            ..LaunchOptions::default()
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    handle.wait_for_codex_exit().await.unwrap();
+}
+
+#[tokio::test]
+async fn isolated_quota_gate_is_not_started_when_status_save_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        codex_app_standalone_quota_unlock: true,
+        provider_sync_enabled: false,
+        ..BackendSettings::default()
+    });
+    let result = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: listener.local_addr().unwrap().port(),
+            status_store: StatusStore::new(temp.path().join("unwritable/status.json")),
+            ..LaunchOptions::default()
+        },
+        &hooks,
+    );
+    std::fs::write(temp.path().join("unwritable"), "not a directory").unwrap();
+    assert!(result.await.is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept(),)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn isolated_quota_gate_stops_on_exit_monitor_error_and_explicit_restart() {
+    use tokio::io::AsyncReadExt;
+    for (wait_error, explicit_stop) in [(false, false), (true, false), (false, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("Codex.app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let debug_port = listener.local_addr().unwrap().port();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut hooks = FakeHooks::new(events).with_settings(BackendSettings {
+            enhancements_enabled: false,
+            codex_app_standalone_quota_unlock: true,
+            provider_sync_enabled: false,
+            ..BackendSettings::default()
+        });
+        hooks.wait_error = wait_error;
+        let handle = launch_and_inject_with_hooks(
+            LaunchOptions {
+                app_dir: Some(app_dir),
+                debug_port,
+                status_store: StatusStore::new(temp.path().join("latest-status.json")),
+                ..LaunchOptions::default()
+            },
+            &hooks,
+        )
+        .await
+        .unwrap();
+        let (mut stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut buffer = [0; 2048];
+        stream.read(&mut buffer).await.unwrap();
+        if explicit_stop {
+            handle.stop_isolated_api_quota_gate().await;
+        } else {
+            assert_eq!(handle.wait_for_codex_exit().await.is_err(), wait_error);
+        }
+        // 同一端口仍被保留，旧会话不允许再探测或注入它。
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.read(&mut buffer),)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(550), listener.accept(),)
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn proxy_only_packaged_launch_captures_identity_without_attempting_renderer_injection() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");

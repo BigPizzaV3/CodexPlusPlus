@@ -276,6 +276,274 @@ pub async fn add_script_to_new_documents(
         .await
 }
 
+/// 独立模式复用增强模式的 Query 发布逻辑；CDP 只响应设置请求，不轮询页面。
+const NATIVE_QUOTA_SETTINGS_BINDING: &str = "codexPlusNativeQuotaSettings";
+
+fn native_quota_settings() -> Value {
+    // 只传额度策略必需字段，不能把 Key、configContents 或 authContents 放进页面。
+    let Ok(settings) = crate::settings::SettingsStore::default().load() else {
+        return Value::Null;
+    };
+    let profile = settings.active_relay_profile();
+    json!({
+        "codexAppStandaloneQuotaUnlock": settings.codex_app_standalone_quota_unlock,
+        "relayProfilesEnabled": settings.relay_profiles_enabled,
+        "activeRelayId": profile.id,
+        "relayProfiles": [{
+            "id": profile.id,
+            "relayMode": profile.relay_mode,
+            "officialMixApiKey": profile.official_mix_api_key,
+        }],
+    })
+}
+
+fn native_quota_bootstrap_script() -> String {
+    format!(
+        "{}\n{}",
+        crate::assets::api_quota_gate_script(),
+        r#"
+(() => {
+  if (window.__codexPlusNativeQuotaBootstrap) {
+    window.__codexPlusNativeQuotaBootstrap.request();
+    return;
+  }
+  let sequence = 0;
+  let timer = null;
+  let disposed = false;
+  const request = () => state.request();
+  const visible = () => {
+    if (document.visibilityState === "visible") state.request();
+  };
+  const state = {
+    request() {
+      if (disposed) return;
+      const seq = ++sequence;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (seq === sequence) window.__codexPlusApiQuotaGate.installNative(null);
+      }, 5000);
+      try {
+        window.codexPlusNativeQuotaSettings(JSON.stringify({ sequence: seq }));
+      } catch {
+        clearTimeout(timer);
+        window.__codexPlusApiQuotaGate.installNative(null);
+      }
+    },
+    accept(seq, settings) {
+      if (disposed || seq !== sequence) return;
+      clearTimeout(timer);
+      window.__codexPlusApiQuotaGate.installNative(settings);
+    },
+    dispose() {
+      disposed = true;
+      sequence += 1;
+      clearTimeout(timer);
+      window.removeEventListener("focus", request);
+      document.removeEventListener("visibilitychange", visible);
+      document.removeEventListener("DOMContentLoaded", request);
+      window.__codexPlusNativeQuotaRuntime?.update(null);
+      delete window.__codexPlusNativeQuotaBootstrap;
+    },
+  };
+  window.__codexPlusNativeQuotaBootstrap = state;
+  window.addEventListener("focus", request);
+  document.addEventListener("visibilitychange", visible);
+  document.addEventListener("DOMContentLoaded", request, { once: true });
+  state.request();
+})();
+"#,
+    )
+}
+
+pub async fn supervise_isolated_api_quota_gate(
+    debug_port: u16,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut retry_delay = std::time::Duration::from_millis(500);
+    loop {
+        if *shutdown.borrow() || shutdown.has_changed().is_err() {
+            return;
+        }
+        match install_isolated_api_quota_gate_session(debug_port, shutdown.clone()).await {
+            Ok(()) => {
+                retry_delay = std::time::Duration::from_millis(500);
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.native_quota_gate_retry",
+                    json!({ "debug_port": debug_port, "error": error.to_string() }),
+                );
+            }
+        }
+        tokio::select! {
+            biased;
+            _ = shutdown.wait_for(|stop| *stop) => return,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
+        if retry_delay < std::time::Duration::from_secs(5) {
+            retry_delay = retry_delay
+                .saturating_mul(2)
+                .min(std::time::Duration::from_secs(5));
+        }
+    }
+}
+
+async fn install_isolated_api_quota_gate_session(
+    debug_port: u16,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let websocket_url = tokio::select! {
+        biased;
+        _ = shutdown.wait_for(|stop| *stop) => return Ok(()),
+        result = async {
+            let targets = crate::cdp::list_targets(debug_port).await?;
+            let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+            target.web_socket_debugger_url.clone()
+                .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))
+        } => result?,
+    };
+    install_isolated_api_quota_gate_target_url(&websocket_url, shutdown).await
+}
+
+pub async fn install_isolated_api_quota_gate(websocket_url: &str) -> anyhow::Result<()> {
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+    install_isolated_api_quota_gate_target_url(websocket_url, receiver).await
+}
+
+async fn install_isolated_api_quota_gate_target_url(
+    websocket_url: &str,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let socket = tokio::select! {
+        biased;
+        _ = shutdown.wait_for(|stop| *stop) => return Ok(()),
+        result = connect_cdp_websocket(websocket_url) => result?,
+    };
+    let mut session = CdpSession::new(socket);
+    let mut registered_scripts = Vec::new();
+    let mut binding_added = false;
+    let mut pending_registration = None;
+    let result = tokio::select! {
+        biased;
+        _ = shutdown.wait_for(|stop| *stop) => Ok(()),
+        result = async {
+            session.send_command(next_message_id(), "Runtime.enable", json!({})).await?;
+            binding_added = true;
+            session.send_command(
+                next_message_id(), "Runtime.addBinding",
+                json!({ "name": NATIVE_QUOTA_SETTINGS_BINDING }),
+            ).await?;
+            let script = native_quota_bootstrap_script();
+            let registration_id = next_message_id();
+            pending_registration = Some(registration_id);
+            let registration = session.send_command(
+                registration_id, "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": script }),
+            ).await?;
+            let identifier = registration.pointer("/result/identifier")
+                .and_then(Value::as_str)
+                .context("native quota new-document script was not registered")?
+                .to_string();
+            registered_scripts.push(identifier);
+            pending_registration = None;
+            let initialized = session.send_command(
+                next_message_id(), "Runtime.evaluate", runtime_evaluate_params(&script),
+            ).await?;
+            ensure_runtime_evaluate_succeeded(initialized)?;
+            serve_native_quota_settings(&mut session).await
+        } => result,
+    };
+    // 取消只终止工作 future，随后有界清理同一条 CDP 连接，不再探测或绑定新实例。
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        // 取消可能发生在注册已送达、但返回标识尚未收到时；先回收这份回复。
+        if let Some(id) = pending_registration {
+            if let Ok(Ok(reply)) = tokio::time::timeout(
+                Duration::from_millis(500),
+                session.wait_for_id(id, "Page.addScriptToEvaluateOnNewDocument".to_string()),
+            )
+            .await
+            {
+                if let Some(identifier) =
+                    reply.pointer("/result/identifier").and_then(Value::as_str)
+                {
+                    registered_scripts.push(identifier.to_string());
+                }
+            }
+        }
+        session.remove_registered_scripts(&registered_scripts).await;
+        if !registered_scripts.is_empty() {
+            let _ = session
+                .send_command_without_wait(
+                    next_message_id(),
+                    "Runtime.evaluate",
+                    runtime_evaluate_params("window.__codexPlusNativeQuotaBootstrap?.dispose()"),
+                )
+                .await;
+        }
+        if binding_added {
+            let _ = session
+                .send_command_without_wait(
+                    next_message_id(),
+                    "Runtime.removeBinding",
+                    json!({ "name": NATIVE_QUOTA_SETTINGS_BINDING }),
+                )
+                .await;
+        }
+        session.close().await;
+    })
+    .await;
+    result
+}
+
+async fn serve_native_quota_settings<S>(session: &mut CdpSession<S>) -> anyhow::Result<()>
+where
+    S: SinkExt<Message>
+        + StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin
+        + Send,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    loop {
+        // send_command 等待响应时收到的 binding 事件也必须处理。
+        while let Some(event) = session.binding_calls.pop_front() {
+            if event.pointer("/params/name").and_then(Value::as_str)
+                != Some(NATIVE_QUOTA_SETTINGS_BINDING)
+            {
+                continue;
+            }
+            let Some(context_id) = event
+                .pointer("/params/executionContextId")
+                .and_then(Value::as_u64)
+            else {
+                continue;
+            };
+            let Some(payload) = event.pointer("/params/payload").and_then(Value::as_str) else {
+                continue;
+            };
+            let Ok(payload) = serde_json::from_str::<Value>(payload) else {
+                continue;
+            };
+            let Some(sequence) = payload.get("sequence").and_then(Value::as_u64) else {
+                continue;
+            };
+            let expression = format!(
+                "window.__codexPlusNativeQuotaBootstrap?.accept({}, {})",
+                sequence,
+                native_quota_settings(),
+            );
+            let mut params = runtime_evaluate_params(&expression);
+            params["contextId"] = json!(context_id);
+            // 导航可能销毁发起请求的上下文；其下一份文档会重新请求。
+            let _ = session
+                .send_command(next_message_id(), "Runtime.evaluate", params)
+                .await;
+        }
+        if session.next_message().await?.is_none() {
+            return Ok(());
+        }
+    }
+}
+
 /// issue #2177：AppServerRequestClient 在 Codex 26.908+ 被藏进模块闭包且不再导出，
 /// 渲染层扫描无法触达，直接改写 dispatcher 又会撞上不可写的 RPC stub。
 /// 分两段接管：渲染层用纯文本定位算出 sendRequest 的断点坐标并放到
@@ -1322,6 +1590,212 @@ fn extract_string_field(input: &str, field: &str) -> Option<String> {
 
 fn next_message_id() -> u64 {
     NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+#[cfg(test)]
+mod native_quota_lifecycle_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn native_quota_bootstrap_disposal_restores_policy_and_removes_callbacks() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/inject/native-api-quota-gate.test.cjs");
+        let output = std::process::Command::new("node")
+            .arg(path)
+            .arg(native_quota_bootstrap_script())
+            .output()
+            .expect("node is required for renderer tests");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_native_quota_supervisor_does_not_connect() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(true);
+        supervise_isolated_api_quota_gate(listener.local_addr().unwrap().port(), receiver).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+        drop(shutdown);
+    }
+
+    #[tokio::test]
+    async fn native_quota_supervisor_cancels_pending_discovery() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(supervise_isolated_api_quota_gate(
+            listener.local_addr().unwrap().port(),
+            receiver,
+        ));
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 2048];
+        assert!(stream.read(&mut request).await.unwrap() > 0);
+        shutdown.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stream.read(&mut request).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn native_quota_supervisor_cancels_backoff_without_reconnecting() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(supervise_isolated_api_quota_gate(
+            listener.local_addr().unwrap().port(),
+            receiver,
+        ));
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 2048];
+        stream.read(&mut request).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]")
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        shutdown.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(550), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    async fn cancelled_session(cancel_at: &str) -> Vec<String> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let cancel_at = cancel_at.to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut commands = Vec::new();
+            let mut cancelled = false;
+            while let Some(Ok(message)) = socket.next().await {
+                let Message::Text(text) = message else {
+                    if matches!(message, Message::Close(_)) {
+                        break;
+                    }
+                    continue;
+                };
+                let command: Value = serde_json::from_str(&text).unwrap();
+                let method = command["method"].as_str().unwrap();
+                commands.push(method.to_string());
+                if method == cancel_at && !cancelled {
+                    cancelled = true;
+                    shutdown.send_replace(true);
+                    if method != "Page.addScriptToEvaluateOnNewDocument" {
+                        continue;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                let result = if method == "Page.addScriptToEvaluateOnNewDocument" {
+                    json!({ "identifier": "owned-quota-script" })
+                } else {
+                    if method == "Page.removeScriptToEvaluateOnNewDocument" {
+                        assert_eq!(command["params"]["identifier"], "owned-quota-script");
+                    }
+                    if method == "Runtime.removeBinding" {
+                        assert_eq!(command["params"]["name"], NATIVE_QUOTA_SETTINGS_BINDING);
+                    }
+                    json!({})
+                };
+                let reply = json!({ "id": command["id"], "result": result });
+                if cancelled && method != "Page.addScriptToEvaluateOnNewDocument" {
+                    continue;
+                }
+                if socket
+                    .send(Message::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                if cancel_at == "serving" && method == "Runtime.evaluate" && !cancelled {
+                    cancelled = true;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    shutdown.send_replace(true);
+                }
+            }
+            assert!(cancelled);
+            commands
+        });
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            install_isolated_api_quota_gate_target_url(
+                &format!("ws://{address}/devtools/page/quota-lifecycle"),
+                receiver,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_quota_cancellation_during_initialization_closes_session() {
+        assert_eq!(
+            cancelled_session("Runtime.enable").await,
+            ["Runtime.enable"]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_quota_cancellation_recovers_in_flight_registration() {
+        let commands = cancelled_session("Page.addScriptToEvaluateOnNewDocument").await;
+        assert!(commands.contains(&"Page.removeScriptToEvaluateOnNewDocument".to_string()));
+        assert!(commands.contains(&"Runtime.removeBinding".to_string()));
+    }
+
+    #[tokio::test]
+    async fn native_quota_cancellation_removes_registered_script_and_binding() {
+        let commands = cancelled_session("Runtime.evaluate").await;
+        assert_eq!(
+            commands,
+            [
+                "Runtime.enable",
+                "Runtime.addBinding",
+                "Page.addScriptToEvaluateOnNewDocument",
+                "Runtime.evaluate",
+                "Page.removeScriptToEvaluateOnNewDocument",
+                "Runtime.evaluate",
+                "Runtime.removeBinding",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_quota_cancellation_while_serving_removes_script_and_binding() {
+        let commands = cancelled_session("serving").await;
+        assert!(commands.contains(&"Page.removeScriptToEvaluateOnNewDocument".to_string()));
+        assert!(commands.contains(&"Runtime.removeBinding".to_string()));
+    }
 }
 
 #[cfg(test)]
