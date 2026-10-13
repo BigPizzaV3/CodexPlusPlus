@@ -49,10 +49,17 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | WeChat connection | QR login connects personal WeChat to local Codex sessions; each WeChat contact maps to a separate session, with an allowed-user list |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, API-key dictation, conversation width and scroll restore, service-tier controls, Goals, next-step suggestions, skin management, and image overlay |
 | Development workflow | Project move and thread IDs |
+| Usage status line | Live generation speed, cache hit rate, and context usage below the composer, read from local Codex session records; the context share follows the per-model window Codex sees |
 | Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; running instances are listed together and can be restarted or stopped individually |
 | Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
+
+**Usage status line** shows live generation speed, cache hit rate, and context usage below the composer. Values come from the session records Codex writes locally, using the same definitions as Codex: cache hit is `cached_input_tokens / input_tokens`, and context usage compares the latest call's tokens against the per-model window Codex sees from the generated model catalog. It is on by default and can be disabled under Codex Enhancements → General → Usage status line. Speed is throughput measured between adjacent token events, so it includes tool execution time and reads below raw decode speed.
+
+<p align="center">
+  <img src="docs/images/usage-statusline.png" alt="Usage status line below the composer: 51 tok/s, cache hit 99.9%, context usage 19%" width="100%">
+</p>
 
 **Codex multi-launch** starts one isolated Codex instance per provider identity. Each instance keeps its own config, sessions, and user data directory, so a single Responses or Chat Completions provider can run side by side with others without sharing sessions. The running main Codex and multi-launch instances are listed together and can be restarted or stopped individually.
 
