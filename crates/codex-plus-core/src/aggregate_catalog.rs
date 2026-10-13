@@ -305,20 +305,29 @@ pub(crate) fn profile_catalog_entries(
 
 /// 每个成员只构建一次目录，然后修改身份字段；先按真实模型应用元数据，
 /// 避免前缀让 GPT/DeepSeek 的能力匹配失效。
+///
+/// 发布形态对齐 opencodex / cc-switch：**默认成员的模型用裸名发布**（不带前缀的请求本来就
+/// 归它，客户端列表里"选到哪家"一目了然），其他成员仍用 `cpx-<成员id>/<模型>` 绑定身份。
 pub fn build_catalog_json(
     settings: &BackendSettings,
     aggregate: &AggregateRelayProfile,
 ) -> anyhow::Result<String> {
+    let default_relay_id = aggregate.default_relay_id.trim();
     let mut models = Vec::new();
     for relay in member_profiles(settings, aggregate)? {
         let payload = build_member_catalog(relay)?;
+        let is_default_member = !default_relay_id.is_empty() && relay.id.as_str() == default_relay_id;
         for mut model in payload["models"].as_array().into_iter().flatten().cloned() {
             let upstream = model["slug"].as_str().unwrap_or_default().to_string();
             let display = model["display_name"]
                 .as_str()
                 .unwrap_or(&upstream)
                 .to_string();
-            model["slug"] = json!(aggregate_model_id(&relay.id, &upstream));
+            model["slug"] = if is_default_member {
+                json!(upstream)
+            } else {
+                json!(aggregate_model_id(&relay.id, &upstream))
+            };
             model["display_name"] = json!(format!("{display}（{}）", relay.name));
             model["description"] = json!(format!("{upstream} · {}", relay.name));
             model["comp_hash"] = json!("codex-plus-aggregate");
@@ -681,6 +690,38 @@ mod tests {
         assert!(legacy.default_relay_id.is_empty());
     }
 
+
+    /// 默认成员的模型用裸名发布（对齐 opencodex / cc-switch），其他成员仍带 `cpx-` 前缀；
+    /// 裸名请求因此天然落回默认成员，且按原样转发。
+    #[test]
+    fn default_member_publishes_bare_model_names() {
+        let mut settings = settings();
+        settings.aggregate_relay_profiles[0].default_relay_id = "deepseek".to_string();
+        let aggregate = settings.active_aggregate_relay_profile().unwrap();
+        let catalog: Value =
+            serde_json::from_str(&build_catalog_json(&settings, &aggregate).unwrap()).unwrap();
+        let slugs: Vec<&str> = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["slug"].as_str())
+            .collect();
+
+        assert!(slugs.contains(&"deepseek-reasoner"), "默认成员的模型应是裸名：{slugs:?}");
+        assert!(slugs.contains(&"deepseek-chat"), "默认成员的当前模型也应带出来：{slugs:?}");
+        assert!(
+            !slugs.iter().any(|slug| slug.starts_with("cpx-deepseek/")),
+            "默认成员不该再发布带前缀的副本：{slugs:?}"
+        );
+        assert!(slugs.contains(&"cpx-openai/gpt-5.6-sol"), "非默认成员仍带前缀：{slugs:?}");
+
+        // 裸名请求交给默认成员，且原样转发（不去前缀、不剥后缀）。
+        let binding = resolve_active_model(&settings, "deepseek-reasoner")
+            .unwrap()
+            .expect("裸名交给默认供应商");
+        assert_eq!(binding.relay_id, "deepseek");
+        assert_eq!(binding.upstream_model, "deepseek-reasoner");
+    }
 
     /// 活动目录发布的模型 ID：聚合是 `cpx-*`，普通供应商是它自己的目录条目加路由源模型名。
     #[test]
