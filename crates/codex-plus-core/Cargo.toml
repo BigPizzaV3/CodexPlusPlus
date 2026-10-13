@@ -13,6 +13,7 @@ base64.workspace = true
 directories.workspace = true
 futures-util = "0.3"
 http.workspace = true
+httpdate.workspace = true
 fs2.workspace = true
 reqwest.workspace = true
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
@@ -51,3 +52,4 @@ windows = { version = "0.58", features = [
 [dev-dependencies]
 tempfile.workspace = true
 wiremock = "0.6"
+

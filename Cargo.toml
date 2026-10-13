@@ -21,6 +21,7 @@ directories = "6"
 fs2 = "0.4"
 futures-util = "0.3"
 http = "1"
+httpdate = "1"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "rustls-tls-native-roots", "system-proxy"], default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -38,3 +39,4 @@ uuid = { version = "1", features = ["v4"] }
 winresource = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"
+
