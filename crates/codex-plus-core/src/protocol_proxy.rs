@@ -6833,7 +6833,22 @@ fn tool_output_content(output: &Value) -> Value {
 
 fn build_custom_tool_call_history(name: &str, input: &Value) -> (String, String) {
     let input = response_output_text(input);
+    let name = legacy_apply_patch_proxy_name(name).unwrap_or(name);
     (name.to_string(), json!({ "input": input }).to_string())
+}
+
+/// 旧版本曾把 apply_patch 拆成多个结构化代理动作。新请求只声明
+/// `apply_patch`，历史里的旧动作名必须在回放前迁移，避免上游收到
+/// 未声明工具名。
+fn legacy_apply_patch_proxy_name(name: &str) -> Option<&'static str> {
+    match name {
+        "apply_patch_add_file"
+        | "apply_patch_delete_file"
+        | "apply_patch_update_file"
+        | "apply_patch_replace_file"
+        | "apply_patch_batch" => Some("apply_patch"),
+        _ => None,
+    }
 }
 
 fn reconstruct_custom_tool_call_input_with_context(

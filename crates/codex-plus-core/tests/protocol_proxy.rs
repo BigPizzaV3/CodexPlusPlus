@@ -3291,6 +3291,42 @@ fn responses_input_replays_apply_patch_custom_history_as_proxy_tool() {
 }
 
 #[test]
+fn responses_input_migrates_legacy_apply_patch_proxy_history() {
+    for legacy_name in [
+        "apply_patch_add_file",
+        "apply_patch_delete_file",
+        "apply_patch_update_file",
+        "apply_patch_replace_file",
+        "apply_patch_batch",
+    ] {
+        let raw_patch = "*** Begin Patch\n*** Add File: docs/test.md\n+# Test\n*** End Patch";
+        let converted = responses_to_chat_completions(json!({
+            "model": "gpt-5-mini",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_legacy_patch",
+                    "name": legacy_name,
+                    "input": raw_patch
+                }
+            ],
+            "tools": [{ "type": "custom", "name": "apply_patch" }]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            converted["messages"][0]["tool_calls"][0]["function"]["name"],
+            "apply_patch"
+        );
+        let arguments = converted["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        let arguments: Value = serde_json::from_str(arguments).unwrap();
+        assert_eq!(arguments["input"], raw_patch);
+    }
+}
+
+#[test]
 fn responses_input_replays_same_path_delete_add_patch_as_apply_patch() {
     let converted = responses_to_chat_completions(json!({
         "model": "gpt-5-mini",
