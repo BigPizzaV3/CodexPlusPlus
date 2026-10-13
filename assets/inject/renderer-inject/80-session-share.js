@@ -642,42 +642,57 @@
   }
 
   function syncActionGroupLayout(row, group) {
-    if (!row || !group) return;
-    if (group.dataset.codexActionLayoutStable === "true") return;
-    const rowRect = row.getBoundingClientRect();
-    const nativeButtons = nativeActionButtonsFromRow(row);
-    const leftmostNative = nativeButtons
-      .map((button) => button.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .sort((a, b) => a.left - b.left)[0];
-    const gap = 8;
-    const fallbackRight = 28;
-    const right = leftmostNative
-      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
-      : fallbackRight;
-    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
-    const titleNode = row.querySelector(selectors.threadTitle);
-    const titleRect = titleNode?.getBoundingClientRect();
-    const titleLeft = titleRect?.left || rowRect.left + 40;
-    let effectiveRight = right;
-    group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
-    if (leftmostNative) {
-      const nativeStyle = getComputedStyle(nativeButtons.find((button) => button.getBoundingClientRect().left === leftmostNative.left) || nativeButtons[0]);
-      group.style.setProperty("--codex-session-action-color", nativeStyle.color);
-      group.style.setProperty("--codex-session-action-hover-color", nativeStyle.color);
-      group.style.setProperty("--codex-session-action-hover-background", nativeStyle.backgroundColor);
-      const groupRight = group.getBoundingClientRect().right;
-      const targetRight = leftmostNative.left - 2;
-      if (Number.isFinite(groupRight) && Number.isFinite(targetRight)) {
+    syncActionGroupLayouts([{ row, group }]);
+  }
+
+  function syncActionGroupLayouts(entries, force = false) {
+    // Batch each measurement phase across rows. A per-row write/read cycle
+    // repeatedly lays out the app and delays the first resized background frame.
+    const layouts = entries.filter(({ row, group }) =>
+      row && group && (force || group.dataset.codexActionLayoutStable !== "true"))
+      .map(({ row, group }) => {
+        const rowRect = row.getBoundingClientRect();
+        const nativeButtons = nativeActionButtonsFromRow(row);
+        const native = nativeButtons.map(button => ({ button, rect: button.getBoundingClientRect() }))
+          .filter(({ rect }) => rect.width > 0 && rect.height > 0)
+          .sort((a, b) => a.rect.left - b.rect.left)[0];
+        const nativeStyle = native && getComputedStyle(native.button);
+        const right = native ? Math.max(28, Math.round(rowRect.right - native.rect.left + 8)) : 28;
+        const titleLeft = row.querySelector(selectors.threadTitle)?.getBoundingClientRect().left || rowRect.left + 40;
         const renderScale = row.offsetWidth > 0 ? rowRect.width / row.offsetWidth : 1;
-        effectiveRight = Math.max(0, right + (groupRight - targetRight) / Math.max(0.1, renderScale));
-        group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
+        return { row, group, native, right, effectiveRight: right, titleLeft, renderScale,
+          groupWidth: Math.ceil(group.getBoundingClientRect().width || 96),
+          color: nativeStyle?.color, background: nativeStyle?.backgroundColor };
+      });
+    for (const layout of layouts) {
+      const { group, right, native, color, background } = layout;
+      group.style.setProperty("--codex-session-actions-right", `${right}px`);
+      if (native) {
+        group.style.setProperty("--codex-session-action-color", color);
+        group.style.setProperty("--codex-session-action-hover-color", color);
+        group.style.setProperty("--codex-session-action-hover-background", background);
       }
     }
-    const renderScale = row.offsetWidth > 0 ? rowRect.width / row.offsetWidth : 1;
-    const finalGroupLeft = group.getBoundingClientRect().left;
-    const titleMaxWidth = Math.max(24, (finalGroupLeft - titleLeft - 8) / Math.max(0.1, renderScale));
-    row.style.setProperty("--codex-session-title-mask", `${effectiveRight + groupWidth + 12}px`);
-    row.style.setProperty("--codex-session-title-max-width", `${titleMaxWidth}px`);
-    group.dataset.codexActionLayoutStable = "true";
+    for (const layout of layouts) {
+      if (!layout.native) continue;
+      const groupRight = layout.group.getBoundingClientRect().right;
+      const targetRight = layout.native.rect.left - 2;
+      if (Number.isFinite(groupRight) && Number.isFinite(targetRight)) {
+        layout.effectiveRight = Math.max(0, layout.right +
+          (groupRight - targetRight) / Math.max(0.1, layout.renderScale));
+      }
+    }
+    for (const { group, native, effectiveRight } of layouts) {
+      if (native) group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
+    }
+    for (const layout of layouts) {
+      const finalGroupLeft = layout.group.getBoundingClientRect().left;
+      layout.titleMaxWidth = Math.max(24,
+        (finalGroupLeft - layout.titleLeft - 8) / Math.max(0.1, layout.renderScale));
+    }
+    for (const { row, group, effectiveRight, groupWidth, titleMaxWidth } of layouts) {
+      row.style.setProperty("--codex-session-title-mask", `${effectiveRight + groupWidth + 12}px`);
+      row.style.setProperty("--codex-session-title-max-width", `${titleMaxWidth}px`);
+      group.dataset.codexActionLayoutStable = "true";
+    }
   }
