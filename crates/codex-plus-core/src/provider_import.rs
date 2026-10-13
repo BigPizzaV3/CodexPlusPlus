@@ -1,4 +1,4 @@
-use crate::settings::{RelayMode, RelayProfile, RelayProtocol, SettingsStore};
+use crate::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore};
 use anyhow::Context;
 use std::path::Path;
 
@@ -24,6 +24,122 @@ pub struct ProviderImportResult {
     pub imported: bool,
     pub profile_id: String,
     pub profile_name: String,
+}
+
+/// 将本机配置保存为普通供应商；后续读取不覆盖用户对该供应商的修改。
+pub fn initialize_local_config_provider(
+    store: &SettingsStore,
+    home: &Path,
+) -> anyhow::Result<BackendSettings> {
+    let mut settings = store.load()?;
+    if settings.local_config_provider_imported {
+        return Ok(settings);
+    }
+    if !settings
+        .relay_profiles
+        .iter()
+        .any(|profile| matches!(profile.name.as_str(), "系统默认" | "系统默认配置"))
+    {
+        let mut profile = RelayProfile {
+            use_common_config: false,
+            ..RelayProfile::default()
+        };
+        let read_local = |name: &str| -> anyhow::Result<String> {
+            match std::fs::read_to_string(home.join(name)) {
+                Ok(contents) => Ok(contents),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+                Err(error) => Err(error).with_context(|| format!("无法读取本机 {name}")),
+            }
+        };
+        profile.config_contents = read_local("config.toml")?;
+        profile.auth_contents = read_local("auth.json")?;
+        let config: toml::Value = profile
+            .config_contents
+            .parse()
+            .context("本机 config.toml 格式无效")?;
+        let auth: serde_json::Value = if profile.auth_contents.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&profile.auth_contents).context("本机 auth.json 格式无效")?
+        };
+        let provider_id = config
+            .get("model_provider")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("openai");
+        let provider = config
+            .get("model_providers")
+            .and_then(|providers| providers.get(provider_id));
+        let wire_api = provider
+            .and_then(|value| value.get("wire_api"))
+            .and_then(toml::Value::as_str);
+        if matches!(wire_api, Some("chat" | "chat_completions"))
+            || config
+                .get("codex_plus_chat_base_url")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            profile.protocol = RelayProtocol::ChatCompletions;
+        }
+        profile.base_url = crate::relay_config::relay_profile_base_url(&profile);
+        profile.upstream_base_url = profile.base_url.clone();
+        profile.relay_mode = RelayMode::PureApi;
+        profile.api_key = crate::relay_config::relay_profile_api_key(&profile);
+        let api_auth = auth
+            .get("OPENAI_API_KEY")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|key| !key.trim().is_empty());
+        profile.no_auth = !api_auth
+            && profile.api_key.is_empty()
+            && !profile.base_url.is_empty()
+            && provider
+                .and_then(|value| value.get("requires_openai_auth"))
+                .and_then(toml::Value::as_bool)
+                == Some(false);
+        if !api_auth && profile.api_key.is_empty() && !profile.no_auth {
+            profile.relay_mode = RelayMode::Official;
+            profile.official_mix_api_key = !profile.base_url.is_empty();
+        }
+
+        // 本机文件指向工具的协议代理时，复用当前供应商保存的真实上游和凭证。
+        // 直接把代理地址当上游保存，会在再次切换后形成回环。
+        if settings.relay_profiles_enabled
+            && crate::relay_config::responses_proxy_configured_in_home(home)
+        {
+            profile = settings.active_relay_profile();
+            profile.use_common_config = false;
+            crate::relay_config::backfill_relay_profile_from_home_with_common(
+                home,
+                &mut profile,
+                &mut String::new(),
+            )?;
+        } else {
+            crate::relay_config::backfill_relay_profile_from_home_with_common_and_policy(
+                home,
+                &mut profile,
+                &mut String::new(),
+                crate::relay_config::RelayBackfillPolicy::AdoptLiveIdentity,
+            )?;
+        }
+        profile.id = format!("relay-{}", uuid::Uuid::new_v4());
+        profile.name = "系统默认".to_string();
+        profile.model_list = profile.model.clone();
+
+        if settings.relay_profiles == crate::settings::default_relay_profiles() {
+            let legacy = settings.active_relay_profile();
+            if legacy == RelayProfile::default() {
+                settings.relay_profiles.clear();
+            } else {
+                settings.relay_profiles[0] = legacy;
+            }
+        }
+        if settings.relay_profiles.is_empty() {
+            settings.active_relay_id = profile.id.clone();
+        }
+        settings.relay_profiles.insert(0, profile);
+    }
+    settings.local_config_provider_imported = true;
+    store.save(&settings)?;
+    Ok(settings)
 }
 
 pub fn import_provider_from_url(url: &str) -> anyhow::Result<ProviderImportResult> {

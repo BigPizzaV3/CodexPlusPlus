@@ -715,6 +715,9 @@ pub struct BackendSettings {
     pub relay_api_key: String,
     #[serde(rename = "relayProfiles", default = "default_relay_profiles")]
     pub relay_profiles: Vec<RelayProfile>,
+    /// 本机配置只自动导入一次，删除或重命名后不再补回。
+    #[serde(rename = "localConfigProviderImported", default)]
+    pub local_config_provider_imported: bool,
     #[serde(rename = "relayCommonConfigContents", default)]
     pub relay_common_config_contents: String,
     #[serde(rename = "relayContextConfigContents", default)]
@@ -812,6 +815,7 @@ impl Default for BackendSettings {
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
             relay_profiles: default_relay_profiles(),
+            local_config_provider_imported: false,
             relay_common_config_contents: String::new(),
             relay_context_config_contents: String::new(),
             active_relay_id: default_active_relay_id(),

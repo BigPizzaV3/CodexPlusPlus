@@ -3136,7 +3136,30 @@ pub async fn native_browser_status() -> NativeBrowserDiagnostics {
 
 #[tauri::command]
 pub fn load_settings() -> CommandResult<SettingsPayload> {
-    settings_payload("设置已加载。", "设置读取失败")
+    let Ok(_guard) = relay_switch_mutex().lock() else {
+        return failed(
+            "供应商切换锁已损坏，请重启管理器后再试。",
+            fallback_settings_payload(),
+        );
+    };
+    let store = SettingsStore::default();
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match codex_plus_core::provider_import::initialize_local_config_provider(&store, &home) {
+        Ok(settings) => ok(
+            "设置已加载。",
+            SettingsPayload {
+                settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            },
+        ),
+        Err(error) => failed(
+            &format!("读取本机默认供应商失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
 }
 
 #[tauri::command]

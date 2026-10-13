@@ -621,6 +621,9 @@ fn model_list_head(profile: &RelayProfile) -> String {
 /// 后续的目标任务对齐，模型漂移重现。值与当前目标任务模型相等时视为工具
 /// 写入是安全的：apply 每次都会按最新目标模型重新注入，不需要 backfill 保存。
 fn live_model_is_tool_written(home: &Path, profile: &RelayProfile, model: &str) -> bool {
+    if profile.relay_mode == RelayMode::Official && !profile.official_mix_api_key {
+        return false;
+    }
     let model = model.trim();
     if model.is_empty() {
         return false;
