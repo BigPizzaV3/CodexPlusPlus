@@ -78,6 +78,7 @@ import {
 } from "lucide-react";
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
+import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -174,6 +175,7 @@ import {
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
+import { usePopoverLayer } from "./use-popover-layer";
 import { resolveProviderName } from "./provider-name";
 import {
   providerSyncStreamPercent,
@@ -3087,6 +3089,20 @@ export function App() {
     })();
   }, []);
 
+  // 主题卡片的「更多操作」是原生 details 弹层：原生不会因为点了别处就收起，
+  // 会出现多个菜单同时展开。这里统一做外点收起（details 的开关是 DOM 瞬态，不经 React 状态）。
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest("[data-popover-menu]")) return;
+      document.querySelectorAll<HTMLDetailsElement>("details[data-popover-menu][open]").forEach((node) => {
+        node.open = false;
+      });
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
   useEffect(() => {
     let disposed = false;
     let stopListening: (() => void) | undefined;
@@ -3857,12 +3873,18 @@ function ModelReasoningLevelsCell({
   const triggerTip = levels.length
     ? `${levels.join(", ")}${defaultLevel ? ` · ${t("默认等级")}: ${defaultLevel}` : ""}`
     : t("未设置时沿用内置默认档位");
+  const { rootRef, menuRef, menuStyle } = usePopoverLayer({
+    open,
+    onOpenChange: setOpen,
+    align: "end",
+    menuWidth: 240,
+    minWidth: 240,
+    maxHeight: 320,
+  });
   return (
     <div
       className={`app-select relay-reasoning ${open ? "open" : ""} ${inherited ? "inherited" : ""}`.trim()}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
-      }}
+      ref={rootRef}
     >
       <button
         aria-expanded={open}
@@ -3875,11 +3897,13 @@ function ModelReasoningLevelsCell({
         <span className={label ? "" : "relay-reasoning-empty"}>{label || t("未设置")}</span>
         <ChevronDown className="h-4 w-4" />
       </button>
-      {open ? (
+      {open ? createPortal(
         <div
           aria-multiselectable="true"
-          className="app-select-menu relay-reasoning-menu"
+          className="app-select-menu app-select-menu-portal relay-reasoning-menu"
+          ref={menuRef}
           role="listbox"
+          style={menuStyle}
         >
           {REASONING_LEVELS.map((level) => {
             const selected = levels.includes(level);
@@ -3925,7 +3949,8 @@ function ModelReasoningLevelsCell({
               ? t("当前为内置默认，修改后保存为该模型的自定义思考等级。")
               : t("未设置时沿用内置默认；清空全部档位即恢复内置。")}
           </p>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -4050,20 +4075,12 @@ function SearchablePathPicker({
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
   const filteredOptions = useMemo(() => {
     const query = value.trim().toLowerCase();
     return options.filter((option) => !query || option.toLowerCase().includes(query)).slice(0, 30);
   }, [options, value]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [open]);
+  // 外点关闭/滚动跟随/多开约束统一交给 usePopoverLayer；菜单 portal 出去，不被滚动区裁掉。
+  const { rootRef, menuRef, menuStyle } = usePopoverLayer({ open, onOpenChange: setOpen, maxHeight: 280 });
 
   return (
     <div className="weixin-search-picker" ref={rootRef}>
@@ -4086,8 +4103,8 @@ function SearchablePathPicker({
         />
         <ChevronDown className={`weixin-search-input-chevron h-4 w-4${open ? " is-open" : ""}`} />
       </div>
-      {open ? (
-        <div className="weixin-search-menu" role="listbox">
+      {open ? createPortal(
+        <div className="weixin-search-menu weixin-search-menu-portal" ref={menuRef} role="listbox" style={menuStyle}>
           {filteredOptions.length ? filteredOptions.map((option) => (
             <button
               className="weixin-search-option"
@@ -4103,7 +4120,8 @@ function SearchablePathPicker({
           )) : (
             <div className="weixin-search-empty">{t("没有匹配的已有目录，可继续直接输入。")}</div>
           )}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -4121,26 +4139,17 @@ function SearchableSessionPicker({
   const selected = sessions.find((session) => session.id === selectedId) ?? null;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
   const filteredSessions = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return sessions
       .filter((session) => !normalized || [session.title, session.cwd, session.id, session.modelProvider].some((value) => value.toLowerCase().includes(normalized)))
       .slice(0, 30);
   }, [query, sessions]);
+  const { rootRef, menuRef, menuStyle } = usePopoverLayer({ open, onOpenChange: setOpen, maxHeight: 280 });
 
   useEffect(() => {
     if (selected) setQuery(selected.title || selected.id);
   }, [selected]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [open]);
 
   return (
     <div className="weixin-search-picker" ref={rootRef}>
@@ -4164,8 +4173,8 @@ function SearchableSessionPicker({
         />
         <ChevronDown className={`weixin-search-input-chevron h-4 w-4${open ? " is-open" : ""}`} />
       </div>
-      {open ? (
-        <div className="weixin-search-menu weixin-session-menu" role="listbox">
+      {open ? createPortal(
+        <div className="weixin-search-menu weixin-search-menu-portal weixin-session-menu" ref={menuRef} role="listbox" style={menuStyle}>
           {filteredSessions.length ? filteredSessions.map((session) => (
             <button
               aria-selected={session.id === selectedId}
@@ -4185,7 +4194,8 @@ function SearchableSessionPicker({
           )) : (
             <div className="weixin-search-empty">{t("没有匹配的本地会话。")}</div>
           )}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -4907,10 +4917,17 @@ function RelayScreen({
   useEffect(() => {
     if (!thirdPartyImportOpen) return;
     const close = () => setThirdPartyImportOpen(false);
+    // 菜单挂在 .mg-page（overflow:hidden）里，只能自己判定外点，不然点空白处收不起来。
+    const handlePointerDown = (event: PointerEvent) => {
+      if (thirdPartyImportTriggerRef.current?.contains(event.target as Node)) return;
+      close();
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
     window.addEventListener("resize", close);
     // capture 监听内层 .mg-content 的滚动。
     window.addEventListener("scroll", close, { capture: true, passive: true });
     return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
       window.removeEventListener("resize", close);
       window.removeEventListener("scroll", close, { capture: true });
     };
@@ -6285,7 +6302,7 @@ function DreamSkinScreen({
                       {item.modified || cardDirty ? <em>{t("已修改")}</em> : null}
                     </button>
                     {item.kind === "stored" ? (
-                      <details className="dream-skin-theme-menu">
+                      <details className="dream-skin-theme-menu" data-popover-menu="">
                         <summary aria-label={tf("主题操作：{0}", [item.name])} title={t("主题操作")}><MoreHorizontal className="h-4 w-4" /></summary>
                         <div>
                           <button onClick={() => void actions.renameDreamSkinTheme(item)} type="button">
@@ -11952,12 +11969,16 @@ function AppSelect<T extends string>({
     onChange(option.value);
     setOpen(false);
   };
+  const { rootRef, menuRef, menuStyle } = usePopoverLayer({
+    open: open && !disabled,
+    onOpenChange: setOpen,
+    minWidth: 180,
+    maxHeight: 260,
+  });
   return (
     <div
       className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""} ${className}`.trim()}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
-      }}
+      ref={rootRef}
     >
       <button
         aria-expanded={open}
@@ -11971,8 +11992,13 @@ function AppSelect<T extends string>({
         <span>{selected?.label ?? value}</span>
         <ChevronDown className="h-4 w-4" />
       </button>
-      {open && !disabled ? (
-        <div className="app-select-menu" role="listbox">
+      {open && !disabled ? createPortal(
+        <div
+          className={`app-select-menu app-select-menu-portal ${className}`.trim()}
+          ref={menuRef}
+          role="listbox"
+          style={menuStyle}
+        >
           {options.map((option) => (
             <button
               aria-selected={option.value === value}
@@ -11991,7 +12017,8 @@ function AppSelect<T extends string>({
               <span>{option.label}</span>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );

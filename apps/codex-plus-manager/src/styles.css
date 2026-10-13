@@ -2333,7 +2333,8 @@ details.relay-fold[open] > .relay-fold-body {
 }
 
 .app-select.text-xs .app-select-trigger,
-.app-select.text-xs .app-select-option {
+.app-select.text-xs .app-select-option,
+.app-select-menu.text-xs .app-select-option {
   font-size: 12px;
 }
 
@@ -5577,9 +5578,10 @@ input[type="range"]:disabled {
   line-height: 1.4;
 }
 
-/* 思考等级：多选面板的触发器沿用 app-select 外观，继承内置声明时弱化文字。 */
+/* 思考等级：多选面板的触发器沿用 app-select 外观，继承内置声明时弱化文字。
+   菜单 portal 到 body 后已不在单元格里，字体规则改挂菜单自身类名。 */
 .relay-model-cell-reasoning .app-select-trigger,
-.relay-model-cell-reasoning .app-select-option {
+.relay-reasoning-menu .app-select-option {
   font-size: 12px;
 }
 
@@ -5588,13 +5590,20 @@ input[type="range"]:disabled {
   color: hsl(var(--muted-foreground));
 }
 
+/* 定位/宽度/限高改由 usePopoverLayer 内联给出（fixed 到 body，父级 overflow 不再裁剪）。 */
 .relay-reasoning-menu {
-  right: 0;
-  left: auto;
-  width: 240px;
-  min-width: 240px;
+  min-width: 0;
   max-width: min(240px, calc(100vw - 48px));
-  max-height: 320px;
+}
+
+/* portal 弹层：坐标与宽度是内联样式，这里只兜层级、视口边界与最小宽度。
+   放在 .relay-reasoning-menu 之后，确保 min-width: 0 不被它盖回去。 */
+.app-select-menu-portal,
+.weixin-search-menu-portal {
+  position: fixed;
+  z-index: 240;
+  min-width: 0;
+  max-width: calc(100vw - 16px);
 }
 
 .relay-reasoning-default {
