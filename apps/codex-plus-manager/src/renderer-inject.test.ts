@@ -580,7 +580,7 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     const homeEnd = renderer.indexOf("${renderCodexPlusExtensionMenuRows()}", homeStart);
     assert.ok(homeStart >= 0 && homeEnd > homeStart);
     const sections = Array.from(renderer.slice(homeStart, homeEnd).matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)">([\s\S]*?)<\/section>/g));
-    assert.deepEqual(sections.map((match) => match[1]), ["常规", "模型与服务", "对话与输入", "外观与布局", "工具与关于"]);
+    assert.deepEqual(sections.map((match) => match[1]), ["常规", "会话", "模型与服务", "对话与输入", "外观与布局", "工具与关于"]);
     for (const [, title, contents] of sections) {
       assert.ok(contents.includes(`<h2 class="codex-plus-settings-section-title">${title}</h2>`));
       assert.ok(contents.includes('class="codex-plus-settings-card"'));

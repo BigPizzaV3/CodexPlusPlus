@@ -186,6 +186,7 @@
   }
 
   function scanLightweight() {
+    runScanStep(refreshInvalidSessionVisibility);
     installStyle();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();

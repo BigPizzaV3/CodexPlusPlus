@@ -1219,6 +1219,18 @@
                 </div>
               </div>
             </section>
+            <section class="codex-plus-settings-section" aria-label="会话">
+              <h2 class="codex-plus-settings-section-title">会话</h2>
+              <div class="codex-plus-settings-card">
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">失效会话</div><div class="codex-plus-row-description" data-codex-session-health-status role="status"></div></div>
+                  <div class="codex-plus-service-tier-actions">
+                    <button type="button" class="codex-plus-service-tier-button" data-codex-session-health-scan>检查并隐藏</button>
+                    <button type="button" class="codex-plus-service-tier-button" data-codex-session-health-reset>显示全部</button>
+                  </div>
+                </div>
+              </div>
+            </section>
             <section class="codex-plus-settings-section" aria-label="模型与服务">
               <h2 class="codex-plus-settings-section-title">模型与服务</h2>
               <div class="codex-plus-settings-card">
@@ -1444,6 +1456,14 @@
       // 拓展注册的菜单项。放在最前面是因为它的判定完全基于自己的 data 属性，
       // 与下面那些内置分支不会重叠；万一将来重叠，也应当由拓展优先拿到。
       if (handleCodexPlusExtensionMenuClick(target)) return;
+      if (target?.closest("[data-codex-session-health-scan]")) {
+        void checkAndHideInvalidSessions();
+        return;
+      }
+      if (target?.closest("[data-codex-session-health-reset]")) {
+        resetInvalidSessionVisibility();
+        return;
+      }
       const typingEffectTrigger = target?.closest("[data-codex-plus-typing-effect-trigger]");
       if (typingEffectTrigger) {
         const menu = overlay.querySelector("[data-codex-plus-typing-effect-menu]");

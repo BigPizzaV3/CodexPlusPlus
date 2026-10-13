@@ -56,6 +56,7 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"request": {"lastUserMessage": "请继续", "lastAssistantMessage": "已完成"}}),
         ),
         ("/stepwise/test", json!({})),
+        ("/session/health", json!({"threadIds": ["s1"]})),
         (
             "/delete",
             json!({"session_id": "s1", "title": "First", "host_id": "local"}),
@@ -99,6 +100,16 @@ async fn thread_usage_live_route_returns_recent_token_events() {
     assert_eq!(result["session_id"], "s1");
     assert_eq!(result["events"][0]["cached_input_tokens"], json!(900));
     assert_eq!(result["events"][0]["context_window"], json!(258400));
+}
+
+#[tokio::test]
+async fn session_health_route_filters_ids_and_preserves_recheck_mode() {
+    let result = handle_bridge_request(
+        test_context(), "/session/health",
+        json!({"threadIds":["one", 7, "two"], "observedOnly":true}),
+    ).await;
+    assert_eq!(result["missingIds"], json!(["one", "two"]));
+    assert_eq!(result["observedOnly"], true);
 }
 
 #[tokio::test]
@@ -1349,6 +1360,9 @@ impl Default for FakeData {
 
 #[async_trait]
 impl BridgeDataService for FakeData {
+    async fn scan_session_health(&self, observed_ids: Vec<String>, observed_only: bool) -> anyhow::Result<Value> {
+        Ok(json!({"status":"ok", "missingIds":observed_ids, "observedOnly":observed_only}))
+    }
     async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
         Ok(json!({"status":"ok","complete":true,"models":[],"days":[],"records":[]}))
     }

@@ -5565,7 +5565,7 @@ fn catalog_supports_repair(columns: &HashSet<String>) -> bool {
     .all(|column| columns.contains(*column))
 }
 
-fn local_catalog_host_id(db: &Connection) -> anyhow::Result<Option<String>> {
+pub(crate) fn local_catalog_host_id(db: &Connection) -> anyhow::Result<Option<String>> {
     let columns = table_columns(db, "local_thread_catalog_hosts")?;
     if !columns.contains("host_id") {
         return Ok(Some("local".to_string()));

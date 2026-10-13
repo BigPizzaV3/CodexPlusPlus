@@ -1380,6 +1380,19 @@ impl Default for LauncherDataService {
 
 #[async_trait::async_trait]
 impl BridgeDataService for LauncherDataService {
+    async fn scan_session_health(&self, observed_ids: Vec<String>, observed_only: bool) -> anyhow::Result<Value> {
+        let backup_dir = self.backup_dir.clone();
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            let scan = if observed_only {
+                codex_plus_data::session_health::recheck_session_health(&home, &backup_dir, &observed_ids)?
+            } else {
+                codex_plus_data::session_health::scan_session_health(&home, &backup_dir, &observed_ids)?
+            };
+            Ok(json!({"status":"ok", "scanned":scan.scanned, "missingIds":scan.missing_ids}))
+        }).await?
+    }
+
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         // 只读本地 SQLite 的实现不能接收远端/未知来源；同 ID 不代表同一主机。
         session.require_local_delete()?;

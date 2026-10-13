@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2800
+      "lines": 2801
     },
     {
       "name": "20-menu.js",
@@ -28,7 +28,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1892
+      "lines": 1912
     },
     {
       "name": "50-navigation.js",
@@ -38,7 +38,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1874
+      "lines": 2015
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -108,7 +108,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 925
+      "lines": 926
     },
     {
       "name": "96-whale-compat.js",

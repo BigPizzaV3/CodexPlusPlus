@@ -6,6 +6,7 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      [data-codex-invalid-session-hidden="true"] { display: none !important; }
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);

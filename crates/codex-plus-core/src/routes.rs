@@ -163,6 +163,9 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
+    async fn scan_session_health(&self, _observed_ids: Vec<String>, _observed_only: bool) -> anyhow::Result<Value> {
+        anyhow::bail!("当前后端不支持会话检查，请重启新版 Codex++")
+    }
     async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
         Ok(json!({"status":"unavailable","message":"本机用量统计暂不可用"}))
     }
@@ -289,6 +292,12 @@ pub async fn handle_bridge_request(
         }
         "/stepwise/test" => {
             stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
+        "/session/health" => {
+            let ids = payload.get("threadIds").and_then(Value::as_array)
+                .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default();
+            ctx.data.scan_session_health(ids, payload["observedOnly"].as_bool().unwrap_or(false)).await
         }
         "/delete" => {
             let session = session_from_payload(&payload);

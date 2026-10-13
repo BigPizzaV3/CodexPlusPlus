@@ -2,6 +2,7 @@ pub mod backup;
 pub mod markdown;
 pub mod provider_sync;
 pub mod storage;
+pub mod session_health;
 pub mod whale_usage;
 pub mod whale_history;
 mod session_index_scan;
