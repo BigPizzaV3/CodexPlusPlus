@@ -1096,6 +1096,10 @@ export const EN_PLAIN: Record<string, string> = {
   "供应商只支持 Chat Completions（或配置了模型路由）：由本地协议代理转换后转发。": "Providers that only speak Chat Completions (or have model routes): the local protocol proxy converts and forwards requests.",
   "多个供应商组成请求池，支持失败切换、会话轮转、请求轮转与权重；成员可以是 API 供应商或官方登录账号。": "A request pool of multiple providers with failover, per-conversation rotation, per-request rotation, and weights; members can be API providers or signed-in official accounts.",
   "把成员模型合并到 Codex 模型列表，带供应商前缀的模型固定发送到对应成员。": "Merge member models into the Codex model list; provider-prefixed models stay bound to their member.",
+  "默认供应商": "Default provider",
+  "解析不到成员模型的普通请求（旧会话、自动压缩的模型名等）会交给默认供应商，按模型名原样转发；成员模型仍按前缀固定绑定。":
+    "Requests for models that match no member (old sessions, auto-compaction model names, ...) go to the default provider with the model name forwarded as-is; member models stay bound by prefix.",
+  "未设置（未匹配到成员的请求会报错）": "Not set (requests matching no member will error)",
   "副本版本": "Copy version",
   "模型固定绑定 · {0} 个成员": "Models stay bound · {0} members",
   "把成员模型合并到 Codex 列表，选择模型后固定发送到对应供应商。": "Merge member models into Codex and bind each selected model to its provider.",

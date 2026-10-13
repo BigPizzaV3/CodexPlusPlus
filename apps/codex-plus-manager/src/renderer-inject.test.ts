@@ -2444,3 +2444,60 @@ describe("renderer injection conversation view alignment", () => {
     assert.match(body, /targets\.map\(\(el\) => conversationViewAvailableWidth\(el\)\)/);
   });
 });
+
+describe("renderer model reasoning efforts patch", () => {
+  // 补全逻辑只依赖 codexPlusModelMetadata，抽出来单独跑，避免再复制一份实现。
+  function reasoningRuntime(renderer: string, metadata: Record<string, unknown> | null) {
+    const start = renderer.indexOf("function modelReasoningEfforts(");
+    const end = renderer.indexOf("\n  function applyCodexPlusModelMetadata(", start);
+    assert.ok(start >= 0 && end > start, "产物里找不到 modelReasoningEfforts");
+    const source = renderer.slice(start, end);
+    const create = new Function(
+      "codexPlusModelMetadata",
+      `${source}\nreturn modelReasoningEfforts;`,
+    ) as (
+      readMetadata: () => Record<string, unknown> | null,
+    ) => (modelName: string) => Array<{ reasoningEffort: string }>;
+    return create(() => metadata);
+  }
+
+  const threeLevelDeclaration = {
+    supportedReasoningEfforts: [
+      { reasoningEffort: "low", description: "Fast responses with lighter reasoning" },
+      { reasoningEffort: "high", description: "Greater reasoning depth for complex problems" },
+      { reasoningEffort: "max", description: "Maximum reasoning depth for the hardest problems" },
+    ],
+  };
+
+  it("不会给只声明三档的 deepseek 模型补出 ultra", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const efforts = reasoningRuntime(renderer, threeLevelDeclaration)("cpx-relay-mv5bil9a/deepseek-flash");
+
+    assert.deepEqual(
+      efforts.map((entry) => entry.reasoningEffort),
+      ["low", "high", "max"],
+    );
+  });
+
+  it("仍为名单内确认支持 ultra 的模型补 max 与 ultra", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const efforts = reasoningRuntime(renderer, {
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort })),
+    })("gpt-5.6-sol");
+
+    assert.deepEqual(
+      efforts.map((entry) => entry.reasoningEffort),
+      ["low", "medium", "high", "xhigh", "max", "ultra"],
+    );
+  });
+
+  it("没有档位声明时仍回落到完整兜底列表", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const efforts = reasoningRuntime(renderer, null)("deepseek-flash");
+
+    assert.deepEqual(
+      efforts.map((entry) => entry.reasoningEffort),
+      ["low", "medium", "high", "xhigh", "max", "ultra"],
+    );
+  });
+});

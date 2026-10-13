@@ -64,3 +64,15 @@ export function aggregateMemberCandidates<T extends AggregateMemberProfileLike>(
       && (isApiMemberProfile(profile) || isOfficialLoginMemberProfile(profile)),
   );
 }
+
+/**
+ * 默认供应商规范化：只保留仍是当前聚合成员的值，其余（空值、已移出的成员、
+ * 配置漂移）一律清空为「未设置」，由请求期落回原有报错。
+ */
+export function normalizeAggregateDefaultRelayId(
+  value: string | null | undefined,
+  memberIds: ReadonlySet<string>,
+): string {
+  const id = (value ?? "").trim();
+  return id && memberIds.has(id) ? id : "";
+}

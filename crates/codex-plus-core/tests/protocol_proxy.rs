@@ -4602,6 +4602,7 @@ async fn aggregate_official_member_forwards_with_oauth_credentials() {
                 weight: 1,
             }],
             routes: Vec::new(),
+            default_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     };
@@ -4731,6 +4732,7 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
                 weight: 1,
             }],
             routes: Vec::new(),
+            default_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     };
@@ -5162,6 +5164,45 @@ async fn aggregate_prefixed_model_binds_member_and_preserves_upstream_model() {
     second_server.abort();
 }
 
+/// 模型聚合 + 默认供应商：解析不到成员的普通模型名固定发往默认成员，
+/// 上游模型名去掉 `<前缀>/` 与窗口后缀；未设置默认时保持原有 400。
+#[tokio::test]
+async fn aggregate_default_provider_forwards_unbound_model() {
+    let default_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let default_addr = default_listener.local_addr().unwrap();
+    let other_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let other_addr = other_listener.local_addr().unwrap();
+    let default_server = tokio::spawn(capture_json_request_once(default_listener));
+    let other_server = tokio::spawn(respond_once(
+        other_listener,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n",
+    ));
+    let request = r#"{"model":"ccs-legacy/gpt-9.9-unknown[1M]","input":"hi","stream":false}"#;
+    let base = aggregate_proxy_settings(
+        "default-provider",
+        format!("http://{other_addr}/v1"),
+        format!("http://{default_addr}/v1"),
+    );
+
+    let mut without_default = base.clone();
+    without_default.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    let result =
+        open_responses_proxy_request_with_settings(request, without_default).await.unwrap();
+    assert_eq!(result.status_code, 400, "未设置默认供应商时仍是 400");
+
+    let mut settings = base;
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    settings.aggregate_relay_profiles[0].default_relay_id = settings.relay_profiles[1].id.clone();
+    let result = open_responses_proxy_request_with_settings(request, settings).await.unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, body) = default_server.await.unwrap();
+    assert_eq!(
+        body["model"], "gpt-9.9-unknown",
+        "默认供应商应按去前缀、去窗口后缀的模型名转发"
+    );
+    other_server.abort();
+}
+
 async fn respond_once(listener: tokio::net::TcpListener, response: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let mut buffer = [0; 1024];
@@ -5351,6 +5392,7 @@ fn aggregate_proxy_settings(
                 },
             ],
             routes: Vec::new(),
+            default_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     }

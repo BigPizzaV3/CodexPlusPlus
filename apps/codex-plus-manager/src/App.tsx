@@ -165,7 +165,12 @@ import {
   setModelReasoningLevelsForSlug,
 } from "./model-reasoning";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
-import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members";
+import {
+  aggregateMemberCandidates,
+  isAggregateProfile,
+  isOfficialLoginMemberProfile,
+  normalizeAggregateDefaultRelayId,
+} from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
@@ -452,6 +457,8 @@ type RelayAggregateConfig = {
   members: RelayAggregateMember[];
   routes?: RelayAggregateRoute[];
   modelAggregationEnabled?: boolean;
+  /** 默认供应商：解析不到成员的普通模型请求交给该成员转发；空串表示未设置。 */
+  defaultRelayId?: string;
 };
 type AggregateRelayMember = {
   relayId: string;
@@ -465,6 +472,7 @@ type AggregateRelayProfile = {
   strategy: RelayAggregateStrategy;
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
+  defaultRelayId?: string;
 };
 
 type RelayContextSelection = {
@@ -10236,7 +10244,12 @@ function AggregateRelayProfileEditor({
                     type="checkbox"
                   />
                   <span className="aggregate-member-summary">
-                    <strong>{candidate.name || t("未命名供应商")}</strong>
+                    <span className="aggregate-member-title">
+                      <strong>{candidate.name || t("未命名供应商")}</strong>
+                      {modelMode && aggregate.defaultRelayId === candidate.id ? (
+                        <UiBadge variant="secondary">{t("默认")}</UiBadge>
+                      ) : null}
+                    </span>
                     <small>
                       {relayProfileModeLabel(candidate)} · {relayProtocolLabel(candidate.protocol)} ·{" "}
                       {isOfficialLoginMemberProfile(candidate)
@@ -10272,6 +10285,22 @@ function AggregateRelayProfileEditor({
           <div className="empty">{t("先添加至少 1 个可用的 API 供应商或官方登录账号，再创建聚合供应商。")}</div>
         )}
       </div>
+      {modelMode ? <div className="aggregate-default-provider">
+        <div className="aggregate-members-head">
+          <div>
+            <strong>{t("默认供应商")}</strong>
+            <span>{t("解析不到成员模型的普通请求（旧会话、自动压缩的模型名等）会交给默认供应商，按模型名原样转发；成员模型仍按前缀固定绑定。")}</span>
+          </div>
+        </div>
+        <AppSelect
+          onChange={(value) => updateAggregate({ ...aggregate, defaultRelayId: value })}
+          options={[
+            { value: "", label: t("未设置（未匹配到成员的请求会报错）") },
+            ...routeTargetOptions,
+          ]}
+          value={aggregate.defaultRelayId ?? ""}
+        />
+      </div> : null}
       {!modelMode ? <div className="aggregate-routes">
         <div className="aggregate-routes-head">
           <div>
@@ -12997,6 +13026,7 @@ function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: Aggregat
         weight: clampAggregateWeight(member.weight),
       })),
       routes: normalizeAggregateRoutes(aggregate.routes ?? []),
+      defaultRelayId: aggregate.defaultRelayId ?? "",
     },
   };
 }
@@ -13940,6 +13970,7 @@ function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): 
         relayId: route.profileId,
         priority: route.priority,
       })),
+      defaultRelayId: aggregate.defaultRelayId ?? "",
     };
   });
 }
@@ -14049,6 +14080,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
         strategy: "failover",
         modelAggregationEnabled: false,
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
+        defaultRelayId: "",
       },
     },
     settings,
@@ -14194,14 +14226,23 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
 
 // 创建时选定类型；重新创建草稿时不沿用另一类的路由、权重或测试模型。
 function aggregateProfileForMode(profile: RelayProfile, settings: BackendSettings, mode: AggregateMode): RelayProfile {
+  const members = (profile.aggregate?.members ?? []).map((member) => ({ profileId: member.profileId, weight: 1 }));
+  // 模型聚合总要有一个默认供应商（对标 CC Switch）：沿用仍合法的旧值，否则默认第一个成员。
+  const defaultRelayId = mode === "model"
+    ? normalizeAggregateDefaultRelayId(
+        profile.aggregate?.defaultRelayId,
+        new Set(members.map((member) => member.profileId)),
+      ) || members[0]?.profileId || ""
+    : "";
   return normalizeAggregateRelayProfile({
     ...profile,
     testModel: "",
     aggregate: {
       strategy: "failover",
       modelAggregationEnabled: mode === "model",
-      members: (profile.aggregate?.members ?? []).map((member) => ({ profileId: member.profileId, weight: 1 })),
+      members,
       routes: [],
+      defaultRelayId,
     },
   }, settings);
 }
@@ -14231,11 +14272,17 @@ function normalizeAggregateConfig(
       profileId: route.profileId,
       priority: clampAggregateRoutePriority(route.priority),
     }));
+  // 默认供应商必须是当前成员；成员被移出（或值不再合法）时自动清空为「未设置」。
+  const defaultRelayId = normalizeAggregateDefaultRelayId(
+    aggregate?.defaultRelayId,
+    new Set(members.map((member) => member.profileId)),
+  );
   return {
     strategy: modelAggregationEnabled ? "failover" : strategy,
     modelAggregationEnabled,
     members,
     routes,
+    defaultRelayId,
   };
 }
 

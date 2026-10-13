@@ -53,7 +53,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1144
+      "lines": 1146
     },
     {
       "name": "80-session-share.js",

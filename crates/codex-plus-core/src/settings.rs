@@ -222,6 +222,11 @@ pub struct AggregateRelayProfile {
     pub members: Vec<AggregateRelayMember>,
     #[serde(default)]
     pub routes: Vec<AggregateRelayRoute>,
+    /// 默认供应商：解析不到成员的普通模型请求（旧会话/旧目录写下的模型名、
+    /// 回合前自动压缩用的模型名等）交给该聚合成员按请求里的模型名转发。
+    /// 空串表示未设置，此时保持原有的 400 报错行为。
+    #[serde(default)]
+    pub default_relay_id: String,
 }
 
 impl Default for RelayProfile {
@@ -3280,6 +3285,7 @@ experimental_bearer_token = "sk-existing""#
                     },
                 ],
                 routes: Vec::new(),
+                default_relay_id: String::new(),
             }],
             active_aggregate_relay_id: "agg".to_string(),
             ..BackendSettings::default()

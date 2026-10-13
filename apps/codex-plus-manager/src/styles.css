@@ -3020,6 +3020,29 @@ details.relay-fold[open] > .relay-fold-body {
   line-height: 1.35;
 }
 
+.aggregate-member-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aggregate-member-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aggregate-default-provider {
+  display: grid;
+  gap: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--secondary) / 0.22);
+  padding: 12px;
+}
+
 .aggregate-member-list {
   display: grid;
   gap: 8px;

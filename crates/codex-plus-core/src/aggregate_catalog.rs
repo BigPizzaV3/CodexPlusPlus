@@ -90,8 +90,12 @@ pub fn resolve_active_model(
     };
     if !is_aggregate_model(catalog_model) {
         // 旧会话恢复的模型、别的目录写下的 `<前缀>/<模型>`、以及回合前自动压缩带的
-        // 「上一回合模型」都会走到这里。能按上游模型名归属到成员就照常放行。
+        // 「上一回合模型」都会走到这里。能按上游模型名归属到成员就照常放行；
+        // 归不了属且配了默认供应商时，交给默认供应商兜底。
         if let Some(binding) = resolve_by_upstream_name(settings, &aggregate, catalog_model)? {
+            return Ok(Some(binding));
+        }
+        if let Some(binding) = resolve_by_default_provider(settings, &aggregate, catalog_model)? {
             return Ok(Some(binding));
         }
         anyhow::bail!(
@@ -114,22 +118,28 @@ pub fn resolve_active_model(
             anyhow::bail!("聚合成员「{}」当前不可用：成员供应商不存在", member.name);
         };
         let relay = &settings.relay_profiles[relay_index];
-        let upstream_model = profile_catalog_entries(relay)?
+        if let Some(upstream_model) = profile_catalog_entries(relay)?
             .into_iter()
             .find(|entry| aggregate_model_id(&relay.id, &entry.slug) == catalog_model)
-            .map(|entry| entry.slug);
-        return match upstream_model {
-            Some(upstream_model) => Ok(Some(AggregateModelBinding {
+            .map(|entry| entry.slug)
+        {
+            return Ok(Some(AggregateModelBinding {
                 catalog_model: catalog_model.to_string(),
                 relay_id: relay.id.clone(),
                 upstream_model,
                 relay: relay.clone(),
-            })),
-            None => anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}"),
-        };
+            }));
+        }
+        // 成员还在、但已经不提供这个模型（模型被移出列表）：
+        // 交给下面的按名归因与默认供应商兜底。
+        break;
     }
-    // 成员前缀没命中：成员 id 变过（目录重建）时旧 ID 会落在这里，再按上游模型名兜底一次。
+    // 成员前缀没命中或成员已不提供该模型：成员 id 变过（目录重建）时旧 ID 会落在这里，
+    // 先按上游模型名兜底一次，再交给默认供应商。
     if let Some(binding) = resolve_by_upstream_name(settings, &aggregate, catalog_model)? {
+        return Ok(Some(binding));
+    }
+    if let Some(binding) = resolve_by_default_provider(settings, &aggregate, catalog_model)? {
         return Ok(Some(binding));
     }
     anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}")
@@ -200,6 +210,78 @@ fn resolve_by_upstream_name(
         upstream_model,
         relay: relay.clone(),
     }))
+}
+
+/// 默认供应商兜底：请求里的模型名解析不到任何成员（旧会话的裸名、别的目录写下的
+/// `<前缀>/<模型>`、成员被移除后残留的 `cpx-*` 旧 ID）时，交给聚合里指定的默认成员，
+/// 上游模型名取「最后一段 /」去掉窗口后缀后的名字。未设置默认时返回 Ok(None)，
+/// 保持原有报错；默认配置存在但不可用时点名默认供应商，避免请求被静默吞掉。
+fn resolve_by_default_provider(
+    settings: &BackendSettings,
+    aggregate: &AggregateRelayProfile,
+    requested: &str,
+) -> anyhow::Result<Option<AggregateModelBinding>> {
+    let default_relay_id = aggregate.default_relay_id.trim();
+    if default_relay_id.is_empty() {
+        return Ok(None);
+    }
+    // 默认必须是当前成员；配置漂移（成员被移出成员列表）时不接管请求，落回原有报错。
+    if !aggregate
+        .members
+        .iter()
+        .any(|member| member.relay_id == default_relay_id)
+    {
+        return Ok(None);
+    }
+    let Some(relay_index) = settings
+        .relay_profiles
+        .iter()
+        .position(|relay| relay.id == default_relay_id)
+    else {
+        anyhow::bail!(
+            "默认供应商当前不可用：成员供应商不存在（{default_relay_id}），请检查聚合配置"
+        );
+    };
+    let relay = &settings.relay_profiles[relay_index];
+    if !crate::relay_rotation::member_relay_ready(relay) {
+        anyhow::bail!(
+            "默认供应商「{}」当前不可用：需要可用的 API 地址与认证配置，或完成官方登录",
+            relay.name
+        );
+    }
+    let upstream_model =
+        crate::model_suffix::parse_model_suffix(requested.rsplit('/').next().unwrap_or(requested).trim()).0;
+    let upstream_model = if upstream_model.trim().is_empty() {
+        requested.trim().to_string()
+    } else {
+        upstream_model
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "aggregate.default_relay_resolved",
+        json!({
+            "requestedModel": requested,
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "upstreamModel": upstream_model,
+        }),
+    );
+    Ok(Some(AggregateModelBinding {
+        catalog_model: requested.to_string(),
+        relay_id: relay.id.clone(),
+        upstream_model,
+        relay: relay.clone(),
+    }))
+}
+
+/// 默认供应商配置有效（指向当前成员）时，解析不到的模型名都能兜底转发；
+/// 供「最近使用」模型清理判断：此时任何目录外的名字都还有可能被服务，不再按目录清理。
+pub fn default_backs_unbound_models(aggregate: &AggregateRelayProfile) -> bool {
+    let default_relay_id = aggregate.default_relay_id.trim();
+    !default_relay_id.is_empty()
+        && aggregate
+            .members
+            .iter()
+            .any(|member| member.relay_id == default_relay_id)
 }
 
 /// 目录生成/应用期的成员校验：普通 API 成员要 URL/Key 齐备，
@@ -540,6 +622,7 @@ mod tests {
                 },
             ],
             routes: Vec::new(),
+            default_relay_id: String::new(),
         }];
         settings
     }
@@ -617,6 +700,90 @@ mod tests {
         assert!(error.to_string().contains("ccs-ghost/nope"), "{error}");
     }
 
+    /// 配置默认供应商后，解析不到成员的模型名交给默认成员：
+    /// 裸名原样转发；`<前缀>/<模型>` 与 `cpx-*` 旧 ID 去前缀、去窗口后缀后转发。
+    #[test]
+    fn default_provider_serves_unbound_models() {
+        let mut settings = settings();
+        settings.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
+
+        let bare = resolve_active_model(&settings, "gpt-9.9-unknown")
+            .unwrap()
+            .expect("配了默认供应商后应兜底");
+        assert_eq!(bare.relay_id, "openai");
+        assert_eq!(bare.upstream_model, "gpt-9.9-unknown");
+
+        let prefixed = resolve_active_model(&settings, "ccs-ghost/deepseek-flash[1M]")
+            .unwrap()
+            .expect("旧目录前缀 + 窗口后缀应去前缀去后缀后兜底");
+        assert_eq!(prefixed.relay_id, "openai");
+        assert_eq!(prefixed.upstream_model, "deepseek-flash");
+
+        let stale = resolve_active_model(&settings, "cpx-removed/old-model")
+            .unwrap()
+            .expect("成员已被移出聚合的旧 cpx-* ID 应兜底");
+        assert_eq!(stale.relay_id, "openai");
+        assert_eq!(stale.upstream_model, "old-model");
+    }
+
+    /// 按成员声明归因优先于默认供应商；成员前缀命中但成员不可用时仍是成员级报错。
+    #[test]
+    fn member_attribution_and_errors_take_precedence_over_default() {
+        let mut settings = settings();
+        settings.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
+
+        let declared = resolve_active_model(&settings, "deepseek-chat")
+            .unwrap()
+            .expect("成员声明的模型名应归因到成员");
+        assert_eq!(declared.relay_id, "deepseek", "成员声明优先于默认供应商");
+
+        settings
+            .relay_profiles
+            .iter_mut()
+            .find(|relay| relay.id == "deepseek")
+            .unwrap()
+            .api_key = String::new();
+        let error = resolve_active_model(&settings, "cpx-deepseek/deepseek-reasoner").unwrap_err();
+        assert!(error.to_string().contains("当前不可用"), "{error}");
+        assert!(error.to_string().contains("DeepSeek"), "{error}");
+    }
+
+    /// 默认供应商自己不可用时点名默认供应商；默认值已不是成员（配置漂移）时不算数，落回原有 400。
+    #[test]
+    fn unusable_or_drifted_default_reports_clearly() {
+        let mut drifted = settings();
+        drifted.aggregate_relay_profiles[0].default_relay_id = "ghost".to_string();
+        let error = resolve_active_model(&drifted, "gpt-9.9-unknown").unwrap_err();
+        assert!(error.to_string().contains("按模型聚合需要选择"), "{error}");
+
+        let mut unusable = settings();
+        unusable.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
+        unusable
+            .relay_profiles
+            .iter_mut()
+            .find(|relay| relay.id == "openai")
+            .unwrap()
+            .api_key = String::new();
+        let error = resolve_active_model(&unusable, "gpt-9.9-unknown").unwrap_err();
+        assert!(error.to_string().contains("默认供应商"), "{error}");
+        assert!(error.to_string().contains("OpenAI API"), "{error}");
+    }
+
+    /// `defaultRelayId` 按 camelCase 序列化；旧设置没有该字段时按未设置处理。
+    #[test]
+    fn default_relay_id_serializes_camel_case_and_stays_optional() {
+        let mut settings = settings();
+        settings.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
+        let text = serde_json::to_string(&settings.aggregate_relay_profiles[0]).unwrap();
+        assert!(text.contains(r#""defaultRelayId":"openai""#), "{text}");
+
+        let legacy: AggregateRelayProfile = serde_json::from_str(
+            r#"{"id":"agg","name":"聚合","sessionProvider":"custom","modelAggregationEnabled":true,"strategy":"failover","members":[],"routes":[]}"#,
+        )
+        .unwrap();
+        assert!(legacy.default_relay_id.is_empty());
+    }
+
     /// 同名模型被多个成员声明：取聚合成员顺序里第一个可用者，不进入轮转池。
     #[test]
     fn ambiguous_foreign_model_uses_first_available_member() {
@@ -668,6 +835,19 @@ mod tests {
         assert!(ids.contains("deepseek-chat"));
         assert!(ids.contains("deepseek-reasoner"));
         assert!(ids.contains("ccs-deepseek/deepseek-flash"));
+
+        // 配了有效的默认供应商后，任何解析不到的模型名都有兜底，不再按目录清理最近使用。
+        let mut with_default = settings.clone();
+        with_default.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
+        assert!(
+            crate::model_catalog::active_published_model_ids(&with_default).is_empty(),
+            "默认供应商配置有效时不应清理最近使用"
+        );
+        with_default.aggregate_relay_profiles[0].default_relay_id = "not-a-member".to_string();
+        assert!(
+            !crate::model_catalog::active_published_model_ids(&with_default).is_empty(),
+            "默认值已不是成员时仍按目录清理"
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ import {
   authContentsHaveChatgptTokens,
   isApiMemberProfile,
   isOfficialLoginMemberProfile,
+  normalizeAggregateDefaultRelayId,
   type AggregateMemberProfileLike,
 } from "./aggregate-members.ts";
 
@@ -105,5 +106,24 @@ describe("aggregateMemberCandidates", () => {
     assert.strictEqual(isApiMemberProfile(apiMember), true);
     assert.strictEqual(isApiMemberProfile(noKey), false);
     assert.strictEqual(isApiMemberProfile(profile({ id: "blank", baseUrl: "  ", apiKey: " " })), false);
+  });
+});
+
+describe("normalizeAggregateDefaultRelayId", () => {
+  const members = new Set(["api", "official"]);
+
+  it("成员集合内的值原样保留（含 trim）", () => {
+    assert.strictEqual(normalizeAggregateDefaultRelayId("official", members), "official");
+    assert.strictEqual(normalizeAggregateDefaultRelayId("  api  ", members), "api");
+  });
+
+  it("空值/未设置清空为空串", () => {
+    assert.strictEqual(normalizeAggregateDefaultRelayId(undefined, members), "");
+    assert.strictEqual(normalizeAggregateDefaultRelayId(null, members), "");
+    assert.strictEqual(normalizeAggregateDefaultRelayId("   ", members), "");
+  });
+
+  it("成员被移出后默认值不再保留", () => {
+    assert.strictEqual(normalizeAggregateDefaultRelayId("removed", members), "");
   });
 });

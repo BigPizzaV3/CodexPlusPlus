@@ -48,6 +48,7 @@ fn aggregate(strategy: AggregateRelayStrategy) -> AggregateRelayProfile {
             },
         ],
         routes: Vec::new(),
+        default_relay_id: String::new(),
     }
 }
 
@@ -69,6 +70,7 @@ fn aggregate_with_id(id: &str, strategy: AggregateRelayStrategy) -> AggregateRel
             },
         ],
         routes: Vec::new(),
+        default_relay_id: String::new(),
     }
 }
 
@@ -842,6 +844,7 @@ fn aggregate_route_serializes_with_camel_case_fields() {
         strategy: AggregateRelayStrategy::Failover,
         members: Vec::new(),
         routes: vec![route("deepseek-*", "relay-b", 10)],
+        default_relay_id: String::new(),
     };
 
     let serialized = serde_json::to_string(&profile).unwrap();

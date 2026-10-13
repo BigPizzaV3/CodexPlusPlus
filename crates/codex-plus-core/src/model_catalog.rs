@@ -161,7 +161,11 @@ fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
 /// - 普通 API 供应商：它的 model_list + 当前 model + 模型路由的源模型名，
 ///   并同时收下剥掉 `[1M]` 这类窗口后缀的形式，宁可多留不可误删。
 pub fn active_published_model_ids(settings: &crate::settings::BackendSettings) -> HashSet<String> {
-    if crate::aggregate_catalog::active_model_aggregation(settings).is_some() {
+    if let Some(aggregate) = crate::aggregate_catalog::active_model_aggregation(settings) {
+        // 配了默认供应商时，目录外的模型名仍有兜底转发，清「最近使用」会误删可用条目。
+        if crate::aggregate_catalog::default_backs_unbound_models(&aggregate) {
+            return HashSet::new();
+        }
         return crate::aggregate_catalog::active_model_bindings(settings)
             .map(|bindings| {
                 bindings
