@@ -328,7 +328,13 @@ pub fn build_catalog_json(
             } else {
                 json!(aggregate_model_id(&relay.id, &upstream))
             };
-            model["display_name"] = json!(format!("{display}（{}）", relay.name));
+            // 默认成员连显示名也保持裸名：它就是"默认"，再缀「（供应商）」只会让人以为
+            // 还得再挑一次供应商。其他成员保留后缀，避免同名模型分不清是哪一家。
+            model["display_name"] = if is_default_member {
+                json!(display)
+            } else {
+                json!(format!("{display}（{}）", relay.name))
+            };
             model["description"] = json!(format!("{upstream} · {}", relay.name));
             model["comp_hash"] = json!("codex-plus-aggregate");
             // 聚合会切换上游；经典子代理任务使用明文，避免跨成员解密失败。
@@ -714,6 +720,24 @@ mod tests {
             "默认成员不该再发布带前缀的副本：{slugs:?}"
         );
         assert!(slugs.contains(&"cpx-openai/gpt-5.6-sol"), "非默认成员仍带前缀：{slugs:?}");
+
+        // 显示名同样分档：默认成员裸名，其他成员带「（供应商）」后缀。
+        let by_slug: std::collections::HashMap<&str, &str> = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| Some((model["slug"].as_str()?, model["display_name"].as_str()?)))
+            .collect();
+        assert!(
+            !by_slug["deepseek-reasoner"].contains("（"),
+            "默认成员的显示名不该带供应商后缀：{:?}",
+            by_slug["deepseek-reasoner"]
+        );
+        assert!(
+            by_slug["cpx-openai/gpt-5.6-sol"].contains("（OpenAI"),
+            "非默认成员的显示名仍带供应商后缀：{:?}",
+            by_slug["cpx-openai/gpt-5.6-sol"]
+        );
 
         // 裸名请求交给默认成员，且原样转发（不去前缀、不剥后缀）。
         let binding = resolve_active_model(&settings, "deepseek-reasoner")
