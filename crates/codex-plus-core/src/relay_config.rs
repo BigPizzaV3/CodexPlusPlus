@@ -1193,6 +1193,21 @@ pub fn backfill_relay_profile_from_home_with_common_and_policy(
         return Ok(());
     }
     if policy == RelayBackfillPolicy::PreserveIdentity {
+        // cc-switch 等外部管理器与 Codex++ 共用 provider 位（都是 "custom"）时，
+        // live 会整体变成另一套供应商的投影。先做可定位的判定，把"无法区分
+        // 外部接管与手工编辑"的通用拒绝升级成明确的 cc-switch 诊断（issue
+        // #1497 / #783 / #975），再走通用校验。命中时不回填、保留原快照。
+        if live_config_is_foreign_provider(
+            &live_config,
+            &live_auth,
+            &profile.config_contents,
+            &relay_profile_base_url(profile),
+            &relay_profile_api_key(profile),
+        ) {
+            anyhow::bail!(
+                "检测到 cc-switch 等外部工具已接管实时配置：provider 位与本供应商相同，但 base_url 与 API Key 均已更换。已停止回填并保留原快照。请先将当前实时 config.toml / auth.json 显式导入为新供应商，或在该外部工具中切回本供应商后再试。"
+            );
+        }
         validate_backfill_endpoint_identity(profile, &live_config)?;
     } else if !(profile.relay_mode == RelayMode::Official && !profile.official_mix_api_key) {
         if profile.relay_mode == RelayMode::Aggregate {
@@ -1577,6 +1592,60 @@ pub(crate) fn apply_official_profile_to_home(
             configured: status.configured,
         })
     })
+}
+
+/// live config.toml 是否已被 cc-switch 等外部管理器写成**另一个供应商**的投影。
+///
+/// 判定条件（三条同时满足才视为外部接管，尽量不误伤手工编辑）：
+/// 1. live 与本 profile 模板的活跃 provider id 相同——外部工具占用了同一个
+///    provider 位。cc-switch 的默认模板与 Codex++ 的托管位同名（都是
+///    `model_provider = "custom"`），这是双方冲突的根源（issue #1497）；
+/// 2. 双方都带非空 base_url 且不相等——Codex++ 自己的 apply / 切回永远写
+///    模板里的 base_url（协议代理改写有专门的还原分支），不会产生这种差异；
+/// 3. live auth.json 的 OPENAI_API_KEY 与模板 API Key 都非空且不相等——
+///    base_url 与密钥两个身份锚点同时漂移，只可能是另一套供应商写进来的；
+///    协议代理/聚合模式写 live 时复用 profile 自己的 Key，因此不会误伤。
+///
+/// 本判定只用于把「无法区分外部接管与手工编辑」的通用拒绝升级成
+/// 可定位的 cc-switch 诊断（见 `validate_backfill_endpoint_identity` 的调用方）：
+/// 命中时仍然拒绝回填、保留原快照，不会把外部供应商内容固化进本 profile。
+/// 只改 base_url、只换 Key 或换了 provider id（手工编辑的 `manual_a` 形态）
+/// 不满足全部条件，报错文案退回通用版本。
+fn live_config_is_foreign_provider(
+    live_config: &str,
+    live_auth: &str,
+    template_config: &str,
+    template_base_url: &str,
+    template_api_key: &str,
+) -> bool {
+    let (Ok(live_doc), Ok(template_doc)) = (
+        parse_toml_document(live_config),
+        parse_toml_document(template_config),
+    ) else {
+        return false;
+    };
+    let (Some(live_provider_id), Some(template_provider_id)) = (
+        active_provider_id(&live_doc),
+        active_provider_id(&template_doc),
+    ) else {
+        return false;
+    };
+    if live_provider_id != template_provider_id {
+        return false;
+    }
+    let Some(live_base_url) = provider_string_from_config(live_config, "base_url") else {
+        return false;
+    };
+    if template_base_url.trim().is_empty() || live_base_url.trim() == template_base_url.trim() {
+        return false;
+    }
+    let (Some(live_api_key), true) = (
+        codex_auth_api_key(live_auth),
+        !template_api_key.trim().is_empty(),
+    ) else {
+        return false;
+    };
+    live_api_key.trim() != template_api_key.trim()
 }
 
 pub fn extract_common_config_from_config(config_text: &str) -> anyhow::Result<String> {

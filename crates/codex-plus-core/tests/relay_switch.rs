@@ -803,6 +803,140 @@ fn switch_to_aggregate_rejects_corrupt_auth_json() {
     assert_eq!(live, corrupt, "损坏的 auth.json 不能被静默覆盖");
 }
 
+/// 回归（issue #1497 / #783 / #975，cc-switch 共存）：cc-switch 接管 ~/.codex 后，
+/// live config.toml 是它写入的另一套供应商——provider id 与 Codex++ 托管位同名
+/// （双方默认模板都是 "custom"），但 base_url、API Key、模型、catalog 指针全变了。
+/// 此时用户回 Codex++ 切换供应商，切换前的 backfill 不能把这套外部供应商内容
+/// 固化进上一个 Codex++ 供应商，否则用户切回该供应商时上游、密钥、模型全部
+/// 错乱，表现为"切不回模型"。本用例锁定端到端切换链路：拒绝回填、快照与 live
+/// 双双保持原样，并给出可定位的 cc-switch 诊断而非泛泛的"归属不明"。
+#[test]
+fn switch_refuses_backfill_when_cc_switch_took_over_live_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir_all(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let profiles = vec![
+        pure_profile("a", "https://a.example/v1", "sk-a"),
+        pure_profile("b", "https://b.example/v1", "sk-b"),
+    ];
+    store
+        .save(&BackendSettings {
+            active_relay_id: "a".to_string(),
+            relay_profiles: profiles.clone(),
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    // 1) Codex++ 先把供应商 a 写进 live
+    switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "a".to_string(),
+            relay_profiles: profiles.clone(),
+            ..BackendSettings::default()
+        },
+        "",
+    )
+    .unwrap();
+
+    // 2) cc-switch 接管 live：同 provider id "custom"，另一套供应商身份
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "gpt-5.6-sol"
+model_provider = "custom"
+model_catalog_json = "cc-switch-model-catalog.json"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://ccswitch.example/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-ccswitch"}"#,
+    )
+    .unwrap();
+
+    // 3) 用户回 Codex++ 切到供应商 b：必须拒绝回填，并指出是外部工具接管
+    let error = switch_relay_profile_in_home(
+        &store,
+        &home,
+        BackendSettings {
+            active_relay_id: "b".to_string(),
+            relay_profiles: profiles.clone(),
+            ..BackendSettings::default()
+        },
+        "a",
+    )
+    .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("外部工具"),
+        "应当指出 live 已被外部工具接管，而不是泛泛的归属不明：{message}"
+    );
+    assert!(
+        message.contains("显式导入"),
+        "应当给出可照做的下一步（显式导入）：{message}"
+    );
+    assert!(
+        !message.contains("sk-ccswitch"),
+        "错误信息不得回显外部供应商的 Key：{message}"
+    );
+
+    // 4) 供应商 a 不得被 cc-switch 的内容污染
+    let stored = store.load().unwrap();
+    assert_eq!(
+        stored.active_relay_id, "a",
+        "切换被拒绝后不能改写当前供应商"
+    );
+    let a = stored
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "a")
+        .unwrap();
+    assert!(
+        a.config_contents.contains("https://a.example/v1"),
+        "供应商 a 丢失了自己的 base_url：{}",
+        a.config_contents
+    );
+    assert!(
+        !a.config_contents.contains("ccswitch.example"),
+        "供应商 a 被写入 cc-switch 的 base_url：{}",
+        a.config_contents
+    );
+    assert!(
+        !a.config_contents.contains("cc-switch-model-catalog.json"),
+        "供应商 a 被写入 cc-switch 的 catalog 指针：{}",
+        a.config_contents
+    );
+    assert!(
+        a.auth_contents.contains("sk-a"),
+        "供应商 a 的 API Key 不应被 cc-switch 覆盖：{}",
+        a.auth_contents
+    );
+
+    // 5) 切换被拒绝后 live 仍是 cc-switch 的原文，不残留半份写入
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(
+        live.contains("https://ccswitch.example/v1"),
+        "live 不应被改动：{live}"
+    );
+    assert!(
+        live.contains("cc-switch-model-catalog.json"),
+        "live 的 catalog 指针不应被改动：{live}"
+    );
+    let live_auth = std::fs::read_to_string(home.join("auth.json")).unwrap();
+    assert!(
+        live_auth.contains("sk-ccswitch"),
+        "live 的 auth.json 不应被改动：{live_auth}"
+    );
+}
+
 fn pure_profile(id: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),
