@@ -14545,7 +14545,7 @@ function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
   if (aggregate.members.length < 1) {
     return t("聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。");
   }
-  // 模型聚合必须指定默认供应商（对齐 opencodex / cc-switch：不带前缀的请求只有它能接）。
+  // 模型聚合必须指定默认供应商（不带前缀的请求只有它能接）。
   if (aggregate.modelAggregationEnabled === true) {
     const defaultRelayId = (aggregate.defaultRelayId ?? "").trim();
     const defaultIsMember = !!defaultRelayId
