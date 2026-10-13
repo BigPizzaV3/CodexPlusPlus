@@ -28,7 +28,9 @@ async function readShard() {
 }
 
 it("分组折叠分片在 manifest 里排在模型目录之后、并在组装产物里", async () => {
-  const manifest = JSON.parse(await readFile(MANIFEST_URL, "utf8"));
+  const manifest = JSON.parse(await readFile(MANIFEST_URL, "utf8")) as {
+    fragments: Array<{ name: string }>;
+  };
   const names = manifest.fragments.map((fragment) => fragment.name);
   const index = names.indexOf("71-model-picker-groups.js");
   assert.ok(index > 0, "分片必须登记进 manifest.json");

@@ -168,6 +168,7 @@ import {
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import {
   aggregateMemberCandidates,
+  normalizeAggregateMembers,
   isAggregateProfile,
   isOfficialLoginMemberProfile,
   normalizeAggregateDefaultRelayId,
@@ -14148,8 +14149,15 @@ function tomlString(value: string): string {
 }
 
 function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
+  // 先规范化非聚合供应商：聚合成员的"存在性"要用**规范化后仍然在列表里**的那些 id，
+  // 否则同一批 profile 里排在聚合后面的成员会被当成不存在而丢掉（顺序相关的老问题）。
+  const nonAggregate = settings.relayProfiles
+    .filter((profile) => !isAggregateRelayProfile(profile))
+    .map((profile) => deriveRelayProfileFromFiles(profile));
   const relayProfiles = settings.relayProfiles.map((profile) =>
-    isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: settings.relayProfiles }) : deriveRelayProfileFromFiles(profile),
+    isAggregateRelayProfile(profile)
+      ? normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: [...nonAggregate, ...settings.relayProfiles.filter(isAggregateRelayProfile)] })
+      : deriveRelayProfileFromFiles(profile),
   );
   const active = activeRelayProfile({ ...settings, relayProfiles });
   const aggregateRelayProfiles = normalizeAggregateProfilesFromRelayProfiles(relayProfiles);
@@ -14358,9 +14366,13 @@ function removeRelayProfile(settings: BackendSettings, id: string): BackendSetti
           {
             ...profile,
             aggregate: {
-              ...normalizeAggregateConfig(profile.aggregate, []),
-              members: normalizeAggregateConfig(profile.aggregate, []).members.filter((member) => member.profileId !== id),
-              routes: normalizeAggregateConfig(profile.aggregate, []).routes ?? [],
+              ...normalizeAggregateConfig(profile.aggregate, [], new Set(profiles.map((item) => item.id))),
+              // 用户显式删除的这家必须从成员/路由里移除：存在性判定会保留它
+              // （profiles 里已经没有了，其实也会被丢掉），这里再做一次明确的过滤。
+              members: normalizeAggregateConfig(profile.aggregate, [], new Set(profiles.map((item) => item.id)))
+                .members.filter((member) => member.profileId !== id),
+              routes: (normalizeAggregateConfig(profile.aggregate, [], new Set(profiles.map((item) => item.id))).routes ?? [])
+                .filter((route) => route.profileId !== id),
             },
           },
           { ...settings, relayProfiles: profiles },
@@ -14417,7 +14429,9 @@ function relayProviderView(profile: RelayProfile): ProviderViewKind {
 
 function normalizeAggregateRelayProfile(profile: RelayProfile, settings: BackendSettings | null): RelayProfile {
   const candidates = settings ? aggregateMemberCandidates(settings.relayProfiles, profile.id) : [];
-  const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
+  // 传"全部供应商 id"而不是候选：成员的存在性判定不能受"当前是否就绪"影响。
+  const existingProfileIds = settings ? new Set(settings.relayProfiles.map((item) => item.id)) : null;
+  const aggregate = normalizeAggregateConfig(profile.aggregate, candidates, existingProfileIds);
   return {
     ...profile,
     baseUrl: "",
@@ -14465,6 +14479,12 @@ function aggregateProfileForMode(profile: RelayProfile, settings: BackendSetting
 function normalizeAggregateConfig(
   aggregate: RelayAggregateConfig | null | undefined,
   candidates: RelayProfile[],
+  /**
+   * 当前快照里**全部**供应商 id（不只是可勾选候选）。传了才判定成员的存在性；不传
+   * （分页子集、拿不到完整快照）则一律保留成员——宁可留着让用户自己取消勾选，
+   * 也不能替用户删配置。
+   */
+  existingProfileIds: ReadonlySet<string> | null = null,
 ): RelayAggregateConfig {
   const candidateIds = new Set(candidates.map((profile) => profile.id));
   const seen = new Set<string>();
@@ -14473,15 +14493,18 @@ function normalizeAggregateConfig(
       ? aggregate.strategy
       : "failover";
   const modelAggregationEnabled = aggregate?.modelAggregationEnabled === true;
-  const members = (aggregate?.members ?? [])
-    .filter((member) => member.profileId && !seen.has(member.profileId))
-    .filter((member) => !candidateIds.size || candidateIds.has(member.profileId))
+  // 成员去留只看"这家供应商还在不在"：候选集合只决定 UI 能勾选什么，不能用来删掉
+  // 已经在聚合里的成员（供应商编辑中缺 Key 时判定会翻转，见 normalizeAggregateMembers）。
+  const members = normalizeAggregateMembers(aggregate?.members ?? [], existingProfileIds)
     .map((member) => {
       seen.add(member.profileId);
       return { profileId: member.profileId, weight: modelAggregationEnabled ? 1 : clampAggregateWeight(member.weight) };
     });
+  // 路由目标同样只按"供应商还在不在"去留：路由早就配好了，目标一时不就绪（或同一批
+  // settings 里排在聚合后面）不代表用户想删掉这条路由。
   const routes = modelAggregationEnabled ? [] : (aggregate?.routes ?? [])
     .filter((route) => route.pattern.trim() !== "" || route.profileId.trim() !== "")
+    .filter((route) => !existingProfileIds || !route.profileId.trim() || existingProfileIds.has(route.profileId.trim()))
     .map((route) => ({
       pattern: route.pattern.trim(),
       profileId: route.profileId,
