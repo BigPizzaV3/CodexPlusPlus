@@ -328,5 +328,138 @@ function fixture() {
   vm.runInContext(source.slice(source.indexOf("  function renderCodexPlusDictation()"), source.indexOf("  function createCodexPlusDictationControls()")), clock.context);
   clock.context.renderCodexPlusDictation();
   assert.match(label.textContent, /录音 0:0[56]/, "recording timer updates the label while preserving button identity and focus");
+
+  // —— 安装入口去重：新版首页的顶部上下文栏和底部控制行都命中 footer 选择器 ——
+  const selectorMatches = (element, selector) => {
+    for (const branch of selector.split(",")) {
+      let rest = branch.trim();
+      let rejected = false;
+      if (/^[a-zA-Z]/.test(rest)) {
+        const tag = rest.match(/^[a-zA-Z]+/)[0];
+        if (element.tagName !== tag.toUpperCase()) continue;
+        rest = rest.slice(tag.length);
+      }
+      while (rest.includes(":not(")) {
+        const start = rest.indexOf(":not(");
+        let depth = 1, index = start + 5;
+        while (depth > 0 && index < rest.length) { if (rest[index] === "(") depth += 1; else if (rest[index] === ")") depth -= 1; index += 1; }
+        if (selectorMatches(element, rest.slice(start + 5, index - 1))) { rejected = true; break; }
+        rest = rest.slice(0, start) + rest.slice(index);
+      }
+      if (rejected) continue;
+      const parts = rest.match(/\.([\w-]+)|\[[^\]]+\]|:disabled/g) || [];
+      for (const part of parts) {
+        if (part === ":disabled") { if (!element.disabled) { rejected = true; break; } continue; }
+        if (part.startsWith(".")) { if (!String(element.className || "").split(/\s+/).includes(part.slice(1))) { rejected = true; break; } continue; }
+        const body = part.slice(1, -1), equals = body.indexOf("=");
+        if (equals === -1) { if (!element.hasAttribute(body)) { rejected = true; break; } continue; }
+        const name = body.slice(0, equals), value = body.slice(equals + 1).replace(/^"|"$/g, "");
+        if (String(element.getAttribute(name)) !== value) { rejected = true; break; }
+      }
+      if (!rejected) return true;
+    }
+    return false;
+  };
+  class FakeElement {
+    constructor(tagName, className = "") {
+      this.tagName = String(tagName).toUpperCase();
+      this.className = className; this.id = "";
+      this.children = []; this.parentElement = null;
+      this.attributes = new Map(); this.dataset = {}; this.textContent = "";
+    }
+    append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
+    remove() {
+      if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((node) => node !== this);
+      this.parentElement = null;
+    }
+    replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
+    addEventListener() {} removeEventListener() {}
+    datasetKey(name) { return name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase()); }
+    getAttribute(name) {
+      if (name.startsWith("data-")) { const key = this.datasetKey(name); if (key in this.dataset) return String(this.dataset[key]); }
+      return this.attributes.has(name) ? this.attributes.get(name) : null;
+    }
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+      if (name.startsWith("data-")) this.dataset[this.datasetKey(name)] = String(value);
+    }
+    hasAttribute(name) { return this.getAttribute(name) !== null; }
+    contains(node) { for (let element = node; element; element = element.parentElement) if (element === this) return true; return false; }
+    matches(selector) { return selectorMatches(this, selector); }
+    closest(selector) { for (let element = this; element; element = element.parentElement) if (selectorMatches(element, selector)) return element; return null; }
+    querySelectorAll(selector) {
+      const found = [];
+      const walk = (element) => { for (const child of element.children) { if (selectorMatches(child, selector)) found.push(child); walk(child); } };
+      walk(this);
+      return found;
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  }
+  const installContext = (build) => {
+    const head = new FakeElement("head"), body = new FakeElement("body");
+    const descendants = (element) => {
+      const found = [];
+      const walk = (node) => { for (const child of node.children) { found.push(child); walk(child); } };
+      walk(element);
+      return found;
+    };
+    const documentShim = {
+      head, body,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: (id) => [...descendants(head), ...descendants(body)].find((element) => element.id === id) || null,
+      querySelectorAll: (selector) => [...descendants(head), ...descendants(body)].filter((element) => selectorMatches(element, selector)),
+      querySelector(selector) { return documentShim.querySelectorAll(selector)[0] || null; },
+      addEventListener() {}, removeEventListener() {},
+    };
+    const nodes = build(FakeElement);
+    body.append(nodes.root);
+    const context = vm.createContext({
+      window: { location: { href: "app://-/home" }, addEventListener() {}, removeEventListener() {} },
+      document: documentShim, navigator: {}, MediaRecorder: function () {}, HTMLTextAreaElement: function () {},
+      Blob, AbortController, Event, DOMException, crypto: webcrypto, console, btoa, setInterval, clearInterval, setTimeout,
+      requestAnimationFrame: () => {},
+      registerCodexPlusExtensionSelector() {}, visibleElement: () => true, isExtensionUiNode: () => false,
+      codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: { dictation: { enabled: true } },
+      helperBase: "http://127.0.0.1:57321", showToast() {}, loadOptionalCodexAppModule: async () => ({}),
+      postJson: async () => ({ enabled: true, configured: true, helperToken: "test" }),
+    });
+    vm.runInContext(`${source}\n globalThis.installDictation = installCodexPlusDictation;`, context);
+    return { context, document: documentShim, nodes };
+  };
+
+  const home = installContext(() => {
+    const root = new FakeElement("div"); root.setAttribute("data-codex-composer-root", "true");
+    const strip = new FakeElement("div", "composer-footer"); strip.setAttribute("data-composer-footer-responsive", "");
+    const card = new FakeElement("div");
+    const footer = new FakeElement("div", "_ComposerLayoutFooter_boifs_2"); footer.setAttribute("data-composer-footer-responsive", "");
+    const editor = new FakeElement("div", "ProseMirror"); editor.setAttribute("contenteditable", "true");
+    const wrap = new FakeElement("div"); wrap.append(editor);
+    const send = new FakeElement("button"); send.setAttribute("aria-label", "Send");
+    footer.append(wrap, send); card.append(footer); root.append(strip, card);
+    return { root, strip, footer, editor };
+  });
+  const stray = home.document.createElement("div");
+  stray.dataset.codexPlusExt = "builtin-dictation"; stray.dataset.dictationControls = "true";
+  home.nodes.strip.append(stray);
+  home.context.installDictation();
+  const mounted = home.document.querySelectorAll("[data-dictation-controls]");
+  assert.equal(mounted.length, 1, "one dictation entry per composer even when two footer candidates match");
+  assert.equal(mounted[0].parentElement, home.nodes.footer, "the entry stays on the footer that contains the editor");
+  assert.equal(stray.parentElement, null, "stale duplicate injected into the context strip is removed");
+  assert.equal(mounted[0].querySelector("button").textContent, "语音输入");
+  home.context.installDictation();
+  assert.equal(home.document.querySelectorAll("[data-dictation-controls]").length, 1, "repeated installs stay idempotent");
+
+  const legacy = installContext(() => {
+    const root = new FakeElement("div"); root.setAttribute("data-codex-composer-root", "true");
+    const editor = new FakeElement("div", "ProseMirror"); editor.setAttribute("contenteditable", "true");
+    const footer = new FakeElement("div", "composer-footer");
+    root.append(editor, footer);
+    return { root, footer, editor };
+  });
+  legacy.context.installDictation();
+  const legacyMounted = legacy.document.querySelectorAll("[data-dictation-controls]");
+  assert.equal(legacyMounted.length, 1, "footer-only composers keep a single entry");
+  assert.equal(legacyMounted[0].parentElement, legacy.nodes.footer);
   console.log("dictation recording, insertion, cancellation, retry and send contracts passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

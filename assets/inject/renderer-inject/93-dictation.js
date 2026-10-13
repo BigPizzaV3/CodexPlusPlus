@@ -457,6 +457,18 @@
     return root;
   }
 
+  function codexPlusDictationFooterScore(footer, editor) {
+    let score = footer.contains(editor) ? 4 : 0;
+    const send = codexPlusDictationSendButton(editor);
+    if (send && footer.contains(send)) score += 2;
+    return score;
+  }
+
+  function codexPlusDictationFooterControls(footer) {
+    const node = footer.querySelector('[data-dictation-controls]');
+    return node && node.closest(".composer-footer, [data-composer-footer-responsive]") === footer ? node : null;
+  }
+
   function installCodexPlusDictation() {
     if (!codexPlusDictationEnabled()) {
       if (codexPlusDictation.phase !== "idle" || codexPlusDictation.pendingSend) cancelCodexPlusDictation();
@@ -473,16 +485,35 @@
         #codex-plus-dictation-recovery textarea{width:100%;min-height:80px;color:inherit;background:transparent}`;
       document.head.append(style);
     }
+    // 同一输入框可能同时命中多个 footer（例如新版首页的顶部上下文栏和底部
+    // 控制行都带 data-composer-footer-responsive），一个输入框只挂一个入口，
+    // 否则会出现两个「语音输入」。优先挂在包含输入框的 footer 上，其次是
+    // 包含发送按钮的；同分时取文档中更靠后的（更内层）候选项。
+    const candidates = [];
     document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]").forEach((footer) => {
       if (!visibleElement(footer) || isExtensionUiNode(footer)) return;
       const scope = codexPlusDictationScope(footer);
       const editor = scope && codexPlusDictationEditor(scope);
       if (!editor) return;
-      let controls = footer.querySelector('[data-dictation-controls]');
-      if (!controls) { controls = createCodexPlusDictationControls(); footer.append(controls); }
-      const target = editor.dataset.codexPlusDictationTarget || editor.closest('[data-codex-plus-dictation-root]')?.dataset.codexPlusDictationRoot || "";
-      if (controls.dataset.dictationTarget !== target) { controls.dataset.dictationTarget = target; delete controls.dataset.renderKey; }
+      candidates.push({ footer, editor, score: codexPlusDictationFooterScore(footer, editor) });
     });
+    const hosts = new Map();
+    for (const item of candidates) {
+      const current = hosts.get(item.editor);
+      if (!current || item.score >= current.score) hosts.set(item.editor, item);
+    }
+    const hostFooters = new Set([...hosts.values()].map((item) => item.footer));
+    document.querySelectorAll('[data-codex-plus-ext="builtin-dictation"][data-dictation-controls]').forEach((node) => {
+      if (node.dataset.floating === "true") return;
+      const owner = node.closest(".composer-footer, [data-composer-footer-responsive]");
+      if (owner && !hostFooters.has(owner)) node.remove();
+    });
+    for (const item of hosts.values()) {
+      let controls = codexPlusDictationFooterControls(item.footer);
+      if (!controls) { controls = createCodexPlusDictationControls(); item.footer.append(controls); }
+      const target = item.editor.dataset.codexPlusDictationTarget || item.editor.closest('[data-codex-plus-dictation-root]')?.dataset.codexPlusDictationRoot || "";
+      if (controls.dataset.dictationTarget !== target) { controls.dataset.dictationTarget = target; delete controls.dataset.renderKey; }
+    }
     renderCodexPlusDictation();
   }
 
