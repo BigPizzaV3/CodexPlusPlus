@@ -1,9 +1,11 @@
 //! 按模型聚合：发布带供应商身份的模型目录，并精确解析到成员与真实模型。
 //! 模型聚合和供应商池策略互斥；未带绑定身份的请求不能进入轮转池。
 //!
-//! 例外：请求里的模型名可能来自旧会话、别的目录（如 cc-switch 写下的 `ccs-xxx/model`）
-//! 或 Codex 回合前的自动压缩（用的是上一回合的模型）。这类 ID 没有聚合身份，但成员目录里
-//! 可能有同名上游模型，此时按名字归因到该成员（确定性单播，不轮转），而不是一律 400。
+//! 解析规则对齐 opencodex / cc-switch 的聚合模式：
+//! - `cpx-<成员>/<模型>` 按成员前缀精确归因；解析不出来（成员被移除、模型被移出列表、
+//!   成员 id 变过）一律报错，不按模型名改派、不落到默认供应商；
+//! - 不带 `cpx-` 前缀的请求（旧会话裸名、别的目录写下的 `<前缀>/<模型>`、回合前自动压缩
+//!   带的上一回合模型名）交给聚合的「默认供应商」，按请求里的 id 原样转发；没设默认就报错。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -89,17 +91,14 @@ pub fn resolve_active_model(
         return Ok(None);
     };
     if !is_aggregate_model(catalog_model) {
-        // 旧会话恢复的模型、别的目录写下的 `<前缀>/<模型>`、以及回合前自动压缩带的
-        // 「上一回合模型」都会走到这里。能按上游模型名归属到成员就照常放行；
-        // 归不了属且配了默认供应商时，交给默认供应商兜底。
-        if let Some(binding) = resolve_by_upstream_name(settings, &aggregate, catalog_model)? {
-            return Ok(Some(binding));
-        }
+        // 不带前缀的请求一律交给「默认供应商」，且按请求里的 id 原样转发。
+        // 对齐 opencodex / cc-switch 的聚合规则：解析不出来就硬报错，不做按模型名的静默改派
+        // ——改派会把请求花到用户没选的那家，用户看不出来（cc-switch `mode/stack.rs` 同款理由）。
         if let Some(binding) = resolve_by_default_provider(settings, &aggregate, catalog_model)? {
             return Ok(Some(binding));
         }
         anyhow::bail!(
-            "按模型聚合需要选择已绑定供应商的模型，请在 Codex 模型列表中重新选择（请求模型：{catalog_model}）"
+            "模型「{catalog_model}」不是聚合模型，且聚合没有可用的默认供应商：请在 Codex 模型列表里选择 cpx- 开头的模型，或到聚合供应商里把一家成员设为「默认供应商」"
         );
     }
     // 按成员前缀精确归因：缺 Key/URL、官方未登录、成员被删只影响它自己的模型，
@@ -130,92 +129,19 @@ pub fn resolve_active_model(
                 relay: relay.clone(),
             }));
         }
-        // 成员还在、但已经不提供这个模型（模型被移出列表）：
-        // 交给下面的按名归因与默认供应商兜底。
-        break;
+        // 成员还在、但已经不提供这个模型（模型被移出列表）：按 cc-switch 的规则硬报错，
+        // 不改派给别的成员、也不落到默认供应商——那等于替用户换了供应商。
+        anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}");
     }
-    // 成员前缀没命中或成员已不提供该模型：成员 id 变过（目录重建）时旧 ID 会落在这里，
-    // 先按上游模型名兜底一次，再交给默认供应商。
-    if let Some(binding) = resolve_by_upstream_name(settings, &aggregate, catalog_model)? {
-        return Ok(Some(binding));
-    }
-    if let Some(binding) = resolve_by_default_provider(settings, &aggregate, catalog_model)? {
-        return Ok(Some(binding));
-    }
+    // 带 `cpx-` 前缀但没有任何成员前缀命中：成员 id 变过（目录重建）等残留 ID。
+    // 同样硬报错，不按模型名改派、不交默认供应商（默认供应商只接不带前缀的请求）。
     anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}")
 }
 
-/// 按「上游模型名」在成员目录里归因：`ccs-deepseek/deepseek-flash`、裸名 `deepseek-flash`
-/// 都取最后一段去匹配成员声明的模型。同名模型被多个成员声明时取聚合成员顺序里第一个
-/// **可用**成员——确定性单播，不进轮转池。找不到归属返回 Ok(None)，由调用方给上下文错误。
-fn resolve_by_upstream_name(
-    settings: &BackendSettings,
-    aggregate: &AggregateRelayProfile,
-    requested: &str,
-) -> anyhow::Result<Option<AggregateModelBinding>> {
-    let tail = requested.rsplit('/').next().unwrap_or(requested).trim();
-    if tail.is_empty() {
-        return Ok(None);
-    }
-    // 历史请求可能残留 `[1M]` 这类窗口后缀，先按原文匹配，再退回剥掉后缀的名字。
-    let (stripped, _) = crate::model_suffix::parse_model_suffix(tail);
-    let mut candidates = Vec::new();
-    for member in aggregate_member_availability(settings, aggregate) {
-        let Some(relay_index) = member.relay_index else {
-            continue;
-        };
-        let relay = &settings.relay_profiles[relay_index];
-        let Ok(entries) = profile_catalog_entries(relay) else {
-            continue;
-        };
-        let slug = entries
-            .iter()
-            .map(|entry| entry.slug.as_str())
-            .find(|slug| *slug == tail || (!stripped.is_empty() && *slug == stripped));
-        if let Some(slug) = slug {
-            candidates.push((
-                relay_index,
-                member.name.clone(),
-                member.issue.clone(),
-                slug.to_string(),
-            ));
-        }
-    }
-    let Some(first) = candidates.first() else {
-        return Ok(None);
-    };
-    let (relay_index, name, issue, upstream_model) = candidates
-        .iter()
-        .find(|(_, _, issue, _)| issue.is_none())
-        .unwrap_or(first)
-        .clone();
-    if let Some(issue) = issue {
-        anyhow::bail!("聚合成员「{name}」当前不可用：{issue}。请修复该成员，或改选其他模型");
-    }
-    let relay = &settings.relay_profiles[relay_index];
-    let catalog_model = aggregate_model_id(&relay.id, &upstream_model);
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "aggregate.foreign_model_resolved",
-        json!({
-            "requestedModel": requested,
-            "resolvedModel": catalog_model,
-            "relayId": relay.id,
-            "relayName": relay.name,
-            "candidateCount": candidates.len(),
-        }),
-    );
-    Ok(Some(AggregateModelBinding {
-        catalog_model,
-        relay_id: relay.id.clone(),
-        upstream_model,
-        relay: relay.clone(),
-    }))
-}
-
-/// 默认供应商兜底：请求里的模型名解析不到任何成员（旧会话的裸名、别的目录写下的
-/// `<前缀>/<模型>`、成员被移除后残留的 `cpx-*` 旧 ID）时，交给聚合里指定的默认成员，
-/// 上游模型名取「最后一段 /」去掉窗口后缀后的名字。未设置默认时返回 Ok(None)，
-/// 保持原有报错；默认配置存在但不可用时点名默认供应商，避免请求被静默吞掉。
+/// 默认供应商：承接所有**不带 `cpx-` 前缀**的请求（旧会话的裸名、别的目录写下的
+/// `<前缀>/<模型>`、回合前自动压缩带的上一回合模型名），按请求里的 id **原样**转发。
+/// 未设置默认时返回 Ok(None)，由调用方给出可操作的报错；默认配置存在但不可用时
+/// 点名默认供应商，避免请求被静默吞掉。
 fn resolve_by_default_provider(
     settings: &BackendSettings,
     aggregate: &AggregateRelayProfile,
@@ -249,13 +175,9 @@ fn resolve_by_default_provider(
             relay.name
         );
     }
-    let upstream_model =
-        crate::model_suffix::parse_model_suffix(requested.rsplit('/').next().unwrap_or(requested).trim()).0;
-    let upstream_model = if upstream_model.trim().is_empty() {
-        requested.trim().to_string()
-    } else {
-        upstream_model
-    };
+    // 原样转发请求里的 id（对齐 opencodex：走 `defaultProvider` 时保留请求的 model id）。
+    // 不去前缀、不剥窗口后缀：静默改名会让用户看不出请求被换成了别家的哪个模型。
+    let upstream_model = requested.trim().to_string();
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "aggregate.default_relay_resolved",
         json!({
@@ -666,76 +588,50 @@ mod tests {
         assert!(error.to_string().contains("cpx-removed/old-model"));
     }
 
-    /// 旧会话/别的目录（cc-switch 的 `ccs-xxx/model`）留下的模型名：成员目录里有同名
-    /// 上游模型时按名字归因，不再一律 400——Codex 回合前的自动压缩用的就是上一回合的模型名。
+    /// 不带 `cpx-` 前缀的请求不再按模型名改派：没设默认供应商就报错，并把请求的模型名带上。
     #[test]
-    fn foreign_model_names_resolve_by_member_upstream_name() {
-        let settings = settings();
-        let binding = resolve_active_model(&settings, "ccs-deepseek/deepseek-reasoner")
-            .unwrap()
-            .expect("成员声明了 deepseek-reasoner，应按名字归因");
-        assert_eq!(binding.relay_id, "deepseek");
-        assert_eq!(binding.upstream_model, "deepseek-reasoner");
-        assert_eq!(binding.catalog_model, "cpx-deepseek/deepseek-reasoner");
-
-        let plain = resolve_active_model(&settings, "deepseek-chat")
-            .unwrap()
-            .expect("裸模型名同样按名字归因");
-        assert_eq!(plain.relay_id, "deepseek");
-        assert_eq!(plain.upstream_model, "deepseek-chat");
-
-        // 带窗口后缀的历史模型名也能落回成员声明的那条。
-        let suffixed = resolve_active_model(&settings, "ccs-deepseek/deepseek-reasoner[1M]")
-            .unwrap()
-            .expect("剥掉窗口后缀后应能归因");
-        assert_eq!(suffixed.upstream_model, "deepseek-reasoner");
-    }
-
-    /// 没有任何成员提供这个名字时仍然是 400，并且把请求里的模型名写进错误信息。
-    #[test]
-    fn unknown_foreign_model_still_reports_requested_model() {
+    fn unbound_model_names_are_rejected_without_a_default_provider() {
         let settings = settings();
         let error = resolve_active_model(&settings, "ccs-ghost/nope").unwrap_err();
-        assert!(error.to_string().contains("按模型聚合需要选择"), "{error}");
+        assert!(error.to_string().contains("不是聚合模型"), "{error}");
         assert!(error.to_string().contains("ccs-ghost/nope"), "{error}");
+        assert!(error.to_string().contains("默认供应商"), "{error}");
+
+        // 成员确实声明过这个名字也不改派：聚合只认带前缀的绑定 ID。
+        let error = resolve_active_model(&settings, "deepseek-chat").unwrap_err();
+        assert!(error.to_string().contains("deepseek-chat"), "{error}");
     }
 
-    /// 配置默认供应商后，解析不到成员的模型名交给默认成员：
-    /// 裸名原样转发；`<前缀>/<模型>` 与 `cpx-*` 旧 ID 去前缀、去窗口后缀后转发。
+    /// 不带前缀的请求全部交给默认供应商，且**原样**转发请求里的 id（opencodex 语义）。
+    /// 带 `cpx-` 前缀的残留 ID 不走默认供应商，硬报错（cc-switch 语义）。
     #[test]
-    fn default_provider_serves_unbound_models() {
+    fn default_provider_serves_unbound_models_verbatim() {
         let mut settings = settings();
         settings.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
 
         let bare = resolve_active_model(&settings, "gpt-9.9-unknown")
             .unwrap()
-            .expect("配了默认供应商后应兜底");
+            .expect("配了默认供应商后，不带前缀的请求交给它");
         assert_eq!(bare.relay_id, "openai");
         assert_eq!(bare.upstream_model, "gpt-9.9-unknown");
 
+        // 别的目录（cc-switch 的 `ccs-xxx/model`）留下的名字也原样转发，不改名成 deepseek-flash。
         let prefixed = resolve_active_model(&settings, "ccs-ghost/deepseek-flash[1M]")
             .unwrap()
-            .expect("旧目录前缀 + 窗口后缀应去前缀去后缀后兜底");
+            .expect("不带 cpx- 前缀 → 交给默认供应商");
         assert_eq!(prefixed.relay_id, "openai");
-        assert_eq!(prefixed.upstream_model, "deepseek-flash");
+        assert_eq!(prefixed.upstream_model, "ccs-ghost/deepseek-flash[1M]");
 
-        let stale = resolve_active_model(&settings, "cpx-removed/old-model")
-            .unwrap()
-            .expect("成员已被移出聚合的旧 cpx-* ID 应兜底");
-        assert_eq!(stale.relay_id, "openai");
-        assert_eq!(stale.upstream_model, "old-model");
+        // 旧聚合 ID 属于「带前缀但解析不出来」：不回落，直接报错。
+        let stale = resolve_active_model(&settings, "cpx-removed/old-model").unwrap_err();
+        assert!(stale.to_string().contains("cpx-removed/old-model"), "{stale}");
     }
 
-    /// 按成员声明归因优先于默认供应商；成员前缀命中但成员不可用时仍是成员级报错。
+    /// 成员前缀命中但成员不可用时是成员级报错，不会被默认供应商接管。
     #[test]
     fn member_attribution_and_errors_take_precedence_over_default() {
         let mut settings = settings();
         settings.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
-
-        let declared = resolve_active_model(&settings, "deepseek-chat")
-            .unwrap()
-            .expect("成员声明的模型名应归因到成员");
-        assert_eq!(declared.relay_id, "deepseek", "成员声明优先于默认供应商");
 
         settings
             .relay_profiles
@@ -754,7 +650,8 @@ mod tests {
         let mut drifted = settings();
         drifted.aggregate_relay_profiles[0].default_relay_id = "ghost".to_string();
         let error = resolve_active_model(&drifted, "gpt-9.9-unknown").unwrap_err();
-        assert!(error.to_string().contains("按模型聚合需要选择"), "{error}");
+        assert!(error.to_string().contains("默认供应商"), "{error}");
+        assert!(error.to_string().contains("gpt-9.9-unknown"), "{error}");
 
         let mut unusable = settings();
         unusable.aggregate_relay_profiles[0].default_relay_id = "openai".to_string();
@@ -784,34 +681,6 @@ mod tests {
         assert!(legacy.default_relay_id.is_empty());
     }
 
-    /// 同名模型被多个成员声明：取聚合成员顺序里第一个可用者，不进入轮转池。
-    #[test]
-    fn ambiguous_foreign_model_uses_first_available_member() {
-        let mut settings = settings();
-        settings
-            .relay_profiles
-            .iter_mut()
-            .find(|relay| relay.id == "deepseek")
-            .unwrap()
-            .model_list = "deepseek-reasoner\ngpt-5.6-sol".to_string();
-
-        let binding = resolve_active_model(&settings, "gpt-5.6-sol")
-            .unwrap()
-            .expect("两个成员都声明 gpt-5.6-sol");
-        assert_eq!(binding.relay_id, "deepseek");
-
-        // 第一个匹配成员不可用时，退到下一个同样声明该模型的成员。
-        settings
-            .relay_profiles
-            .iter_mut()
-            .find(|relay| relay.id == "deepseek")
-            .unwrap()
-            .api_key = String::new();
-        let binding = resolve_active_model(&settings, "gpt-5.6-sol")
-            .unwrap()
-            .expect("应退到可用的 openai 成员");
-        assert_eq!(binding.relay_id, "openai");
-    }
 
     /// 活动目录发布的模型 ID：聚合是 `cpx-*`，普通供应商是它自己的目录条目加路由源模型名。
     #[test]
