@@ -41,6 +41,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../assets/claude-localization/page-shim.js"),
     ),
     (
+        "page-dictation.js",
+        include_bytes!("../../../assets/claude-localization/page-dictation.js"),
+    ),
+    (
         "catalogs/zh-Hans.json",
         include_bytes!("../../../assets/claude-localization/catalogs/zh-Hans.json"),
     ),
