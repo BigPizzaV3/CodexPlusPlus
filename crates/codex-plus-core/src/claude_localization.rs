@@ -443,14 +443,14 @@ fn set_locale_at(config: &Path, backup: &Path, locale: Option<&str>, restore: bo
 }
 
 pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
-    ensure!(cfg!(any(target_os = "macos", target_os = "windows")), "Claude 汉化目前支持 macOS 和 Windows");
+    ensure!(cfg!(any(target_os = "macos", target_os = "windows")), "Claude 增强目前支持 macOS 和 Windows");
     ensure!(
         ["prepare", "check", "launch", "restore"].contains(&action),
         "未知汉化操作"
     );
     let _guard = OPERATION
         .try_lock()
-        .map_err(|_| anyhow::anyhow!("另一项 Claude 汉化操作正在进行"))?;
+        .map_err(|_| anyhow::anyhow!("另一项 Claude 增强操作正在进行"))?;
     let source = source_app();
     ensure!(source.is_dir(), "未找到 Claude.app，请先安装官方应用");
     let script_runtime = if cfg!(target_os = "windows") {

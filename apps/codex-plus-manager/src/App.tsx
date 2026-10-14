@@ -1051,7 +1051,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
   { id: "multiLaunch", label: t("Codex多开"), icon: Layers3, badge: "NEW", tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
-  { id: "claude", label: t("Claude 汉化"), icon: Languages, tool: "claude" },
+  { id: "claude", label: t("Claude 增强"), icon: Languages, tool: "claude" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
   { id: "context", label: "MCP", icon: Network, tool: "codex" },
   { id: "skills", label: "Skills", icon: BookOpen, tool: "codex" },
@@ -11581,14 +11581,50 @@ function ClaudeLocalizationScreen() {
   const statusText = !s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
   return (
     <div className="claude-localization-page">
+      {/* 左栏：增强项。每一项都跑在右边的受管副本上，汉化只是其中之一。 */}
+      <div className="claude-l10n-column">
+        <Panel>
+          <CardHead
+            title={t("增强功能")}
+            detail={t("都在受管副本里生效，开关改动在重启中文 Claude 后应用。")}
+          />
+          <CardContent>
+            <div className="claude-l10n-feature">
+              <span>
+                <strong>{t("界面汉化")}</strong>
+                <small>{t("启动时注入官方中文词表，界面语言切到简体中文。")}</small>
+              </span>
+              <span className="claude-l10n-status claude-l10n-status-ok">
+                <i aria-hidden="true" />
+                {t("随副本启用")}
+              </span>
+            </div>
+            <label className="switch-row compact">
+              <input
+                checked={Boolean(s?.voiceInput)}
+                disabled={busy !== null}
+                onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("语音输入")}</strong>
+                <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+          </CardContent>
+        </Panel>
+      </div>
+      {/* 右栏：所有增强共同的前置条件。 */}
+      <div className="claude-l10n-column">
       <Panel className="claude-l10n-hero">
         <CardContent>
           <div className="claude-l10n-hero-head">
             <div className="claude-l10n-hero-title">
-              <span className="claude-l10n-hero-icon"><Languages className="h-5 w-5" /></span>
+              <span className="claude-l10n-hero-icon"><PackageOpen className="h-5 w-5" /></span>
               <div>
-                <strong>{t("Claude Code 汉化")}</strong>
-                <span className="claude-l10n-hero-subtitle">{t("官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。")}</span>
+                <strong>{t("受管副本")}</strong>
+                <span className="claude-l10n-hero-subtitle">{t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
               </div>
             </div>
             <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
@@ -11637,27 +11673,7 @@ function ClaudeLocalizationScreen() {
           </div>
         </CardContent>
       </Panel>
-      <Panel>
-        <CardHead
-          title={t("语音输入")}
-          detail={t("在 Claude 输入框右下角提供一个麦克风入口，识别走 Codex++ 的听写服务（本地 SenseVoice 或你配置的接口）。")}
-        />
-        <CardContent>
-          <label className="switch-row compact">
-            <input
-              checked={Boolean(s?.voiceInput)}
-              disabled={busy !== null}
-              onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启用语音输入")}</strong>
-              <small>{t("识别结果只写进输入框，不自动发送；改动在重启中文 Claude 后生效。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-        </CardContent>
-      </Panel>
+      </div>
     </div>
   );
 }
@@ -12395,7 +12411,7 @@ function routeSubtitle(route: Route) {
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     grok: t("管理 Grok CLI 的模型与 API 端点"),
-    claude: t("保留官方 Claude.app 原样，通过受管副本动态应用中文界面"),
+    claude: t("保留官方 Claude.app 原样，通过受管副本为 Claude 应用增强功能"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP 服务器与插件"),

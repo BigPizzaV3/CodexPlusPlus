@@ -10218,7 +10218,18 @@ select {
 .provider-aggregate-toolbar{display:flex;justify-content:flex-end;margin:0 0 10px}
 @media(max-width:760px){.provider-view-tabs{width:100%}.provider-view-tabs button{flex:1;justify-content:center}.provider-aggregate-empty{align-items:flex-start;flex-direction:column}}
 
-.claude-localization-page { display: grid; gap: 14px; max-width: 960px; }
+/* 左栏是增强项，右栏是它们共同依赖的受管副本（前置条件）。 */
+.claude-localization-page {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 14px; align-items: start; max-width: 1180px;
+}
+.claude-l10n-column { display: grid; gap: 14px; align-content: start; }
+/* 增强项一行：左边标题与说明，右边状态或开关。 */
+.claude-l10n-feature { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.claude-l10n-feature strong { display: block; font-size: 14px; }
+.claude-l10n-feature small { display: block; margin-top: 5px; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.6; }
+.claude-l10n-feature + .switch-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); }
+@media (max-width: 1040px) { .claude-localization-page { grid-template-columns: minmax(0, 1fr); } }
 
 /* 概览卡：标题 + 状态徽标、四项数据卡、提示条与操作区。 */
 .claude-l10n-hero .card-content { display: grid; gap: 24px; padding: 24px 28px; }

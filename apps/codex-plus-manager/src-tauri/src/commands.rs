@@ -42,7 +42,7 @@ pub async fn download_dictation_local_model() -> CommandResult<Value> {
 pub fn claude_localization_status()
 -> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
     ok(
-        "Claude 汉化状态已读取。",
+        "Claude 增强状态已读取。",
         codex_plus_core::claude_localization::status(),
     )
 }
@@ -59,7 +59,7 @@ pub async fn claude_localization_action(action: String) -> CommandResult<Value> 
             serde_json::to_value(payload.status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
-        Err(error) => failed(&format!("Claude 汉化操作失败：{error}"), json!({})),
+        Err(error) => failed(&format!("Claude 增强操作失败：{error}"), json!({})),
     }
 }
 
