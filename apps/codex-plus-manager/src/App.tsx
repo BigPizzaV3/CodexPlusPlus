@@ -11628,6 +11628,11 @@ function ClaudeLocalizationScreen() {
               </span>
               <ToggleVisual />
             </label>
+            {!s?.prepared ? (
+              <p className="claude-l10n-hint">
+                {t("副本还没准备：开关会先存下来，等你在右边准备好副本并启动后生效。")}
+              </p>
+            ) : null}
           </CardContent>
         </Panel>
       </div>
@@ -11648,6 +11653,12 @@ function ClaudeLocalizationScreen() {
               {statusText}
             </span>
           </div>
+          {!s?.prepared ? (
+            <div className="claude-l10n-onboarding" role="note">
+              <strong>{t("第一步：先准备副本")}</strong>
+              <span>{t("所有增强都跑在受管副本上，官方 Claude.app 不会被改动。准备好副本再启动，左栏的开关才会真正生效。")}</span>
+            </div>
+          ) : null}
           <div className="claude-l10n-stats">
             <div className="claude-l10n-stat">
               <span>{t("官方版本")}</span>
@@ -11673,7 +11684,14 @@ function ClaudeLocalizationScreen() {
           {error ? <div className="inline-error">{error}</div> : null}
           <div className="claude-l10n-actions">
             <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
-              <PackageOpen className="h-4 w-4" />{busy === "prepare" ? t("准备中…") : t("准备副本")}
+              <PackageOpen className="h-4 w-4" />
+              {busy === "prepare"
+                ? t("准备中…")
+                : s?.needsRebuild
+                  ? t("更新副本")
+                  : s?.prepared
+                    ? t("重新准备副本")
+                    : t("准备副本")}
             </Button>
             <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")}>
               <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动 Claude 副本")}
@@ -11681,9 +11699,6 @@ function ClaudeLocalizationScreen() {
             <div className="claude-l10n-actions-secondary">
               <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
                 <RefreshCw className="h-4 w-4" />{t("检查副本")}
-              </Button>
-              <Button disabled={busy !== null || !s?.shellLocale} onClick={() => void act("restore")} variant="secondary">
-                <RotateCcw className="h-4 w-4" />{t("还原语言")}
               </Button>
             </div>
           </div>

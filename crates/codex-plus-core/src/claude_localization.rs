@@ -360,7 +360,33 @@ pub fn set_localization(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     let mut settings = store.load()?;
     settings.claude_app_localization = enabled;
     store.save(&settings)?;
+    if !enabled {
+        // 关掉汉化就顺手把外壳语言还原回去，不必等到下次启动副本——否则用户直接打开
+        // 官方 Claude 时看到的还是被改过的语言，会觉得开关没生效。
+        restore_shell_locale()?;
+    }
     Ok(status())
+}
+
+/// 读汉化前备份里的原语言。没有备份、或备份损坏时返回 None——调用方据此判定
+/// 「从来没汉化过」，从而不去碰用户自己的语言设置。
+fn saved_shell_locale(backup: &Path) -> Option<String> {
+    fs::read(backup)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value.get("locale").and_then(Value::as_str).map(str::to_string))
+}
+
+/// 把官方 Claude 的外壳语言还原成汉化前备份里的值。
+///
+/// 没有备份说明从来没汉化过，这时什么都不做：用户自己的语言设置不该被我们删掉。
+fn restore_shell_locale() -> Result<()> {
+    let config = config_path();
+    let backup = config.with_extension("codex-plus-locale-backup.json");
+    match saved_shell_locale(&backup) {
+        Some(value) => set_locale_at(&config, &backup, Some(value.as_str()), true),
+        None => Ok(()),
+    }
 }
 
 fn install_assets(root: &Path) -> Result<()> {
@@ -552,12 +578,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
             let config = config_path();
             let backup = config.with_extension("codex-plus-locale-backup.json");
             let previous = read_config(&config)?.get("locale").cloned();
-            let saved_locale = || -> Option<String> {
-                fs::read(&backup)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                    .and_then(|saved| saved.get("locale").and_then(Value::as_str).map(str::to_string))
-            };
+            let saved_locale = || saved_shell_locale(&backup);
             let localization = localization_enabled();
             let locale = if action == "restore" {
                 ensure!(backup.is_file(), "没有 codex++ 保存的语言备份");
@@ -621,6 +642,19 @@ mod tests {
         // 界面上的「官方词条」直接变成 0。这里钉住它按名字取、且确实读到了词条。
         let entries = status().catalog_entries;
         assert!(entries > 1000, "官方中文词表应有上千条，实际 {entries}");
+    }
+
+    #[test]
+    fn saved_shell_locale_tolerates_missing_or_broken_backup() {
+        // 关掉汉化时会按这个值还原官方语言；读不出来就必须什么都不做，
+        // 否则会把用户自己的语言设置删掉。
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("locale-backup.json");
+        assert_eq!(saved_shell_locale(&backup), None, "没有备份时不能凭空给一个语言");
+        fs::write(&backup, br#"{"locale":"ja-JP","other":1}"#).unwrap();
+        assert_eq!(saved_shell_locale(&backup).as_deref(), Some("ja-JP"));
+        fs::write(&backup, b"not json").unwrap();
+        assert_eq!(saved_shell_locale(&backup), None, "备份损坏时不能乱动用户设置");
     }
 
     #[test]

@@ -10228,6 +10228,15 @@ select {
 .claude-l10n-column .switch-row + .switch-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); }
 .claude-l10n-column .switch-row strong { font-size: 14px; }
 .claude-l10n-column .switch-row small { margin-top: 5px; line-height: 1.6; }
+/* 副本还没准备时的引导块与提示：先建前置条件，再谈增强。 */
+.claude-l10n-onboarding {
+  display: grid; gap: 7px; margin-top: 14px;
+  padding: 16px 18px; border: 1px solid hsl(var(--brand-accent) / 0.45); border-radius: 12px;
+  background: hsl(var(--brand-accent) / 0.08);
+}
+.claude-l10n-onboarding strong { font-size: 14px; color: hsl(var(--brand-accent)); }
+.claude-l10n-onboarding span { color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.7; }
+.claude-l10n-hint { margin: 14px 0 0; padding-top: 14px; border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.7; }
 @media (max-width: 1040px) { .claude-localization-page { grid-template-columns: minmax(0, 1fr); } }
 
 /* 概览卡：标题 + 状态徽标、四项数据卡、提示条与操作区。 */
