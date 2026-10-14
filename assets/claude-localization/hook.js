@@ -213,10 +213,15 @@ function install() {
     // 语音脚本缺失不该影响汉化本身，只记一条日志。
     log('cannot read ' + DICTATION_FILE + ': ' + (e && e.message));
   }
-  // 管理器的「语音输入」关掉时不注入：页面里既没有入口，也不注册调用通道。
+  // 管理器的「增强功能」开关：语音输入关掉时不注入入口，
+  // 界面汉化关掉时不注入中文界面那一段（副本按原语言跑）。
   if (globalThis.__claudeCnVoiceInput === false) {
     DICTATION = '';
     log('voice input disabled by settings');
+  }
+  if (globalThis.__claudeCnLocalization === false) {
+    SHIM = '';
+    log('localization disabled by settings');
   }
 
   const HOST = /(^|\.)claude\.(ai|com)$/;
@@ -263,7 +268,7 @@ function install() {
             try {
               at = JSON.parse(v).at;
             } catch (e) {}
-            if ((at === null || at === undefined) && !RELOADED.has(wc)) {
+            if (SHIM && (at === null || at === undefined) && !RELOADED.has(wc)) {
               RELOADED.add(wc);
               log(tag + ' page script missed the document, reloading once');
               try { wc.reload(); } catch (e) {}

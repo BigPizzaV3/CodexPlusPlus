@@ -119,6 +119,7 @@ pub fn run() {
             commands::claude_localization_status,
             commands::claude_localization_action,
             commands::claude_localization_set_voice_input,
+            commands::claude_localization_set_localization,
             commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,

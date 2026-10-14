@@ -126,3 +126,30 @@ test("语音输入开关关闭时不注入入口、也不注册调用通道", ()
     "启动脚本的环境变量名两端必须一致",
   );
 });
+
+test("界面汉化是独立开关，不跟副本准备绑定", () => {
+  // 汉化与语音输入一样是可独立关闭的增强项；副本只是它们共同的前置条件。
+  assert.ok(
+    hook.includes("__claudeCnLocalization === false") && hook.includes("SHIM = ''"),
+    "hook 必须能按开关整体跳过中文界面注入",
+  );
+  const injector = read("assets/claude-localization/inject-cn.js");
+  assert.ok(
+    injector.includes("CODEX_PLUS_CLAUDE_LOCALIZATION"),
+    "注入器必须读取汉化开关",
+  );
+  const localization = read("crates/codex-plus-core/src/claude_localization.rs");
+  assert.ok(
+    localization.includes("CODEX_PLUS_CLAUDE_LOCALIZATION"),
+    "启动脚本的环境变量名两端必须一致",
+  );
+  assert.ok(
+    localization.includes("pub fn set_localization"),
+    "必须有独立写汉化开关的入口",
+  );
+  const settings = read("crates/codex-plus-core/src/settings.rs");
+  assert.ok(
+    settings.includes('"claudeAppLocalization"'),
+    "汉化开关必须持久化在自己的设置字段里",
+  );
+});

@@ -76,6 +76,18 @@ pub fn claude_localization_set_voice_input(enabled: bool)
 }
 
 #[tauri::command]
+pub fn claude_localization_set_localization(enabled: bool)
+-> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
+    match codex_plus_core::claude_localization::set_localization(enabled) {
+        Ok(status) => ok(
+            if enabled { "界面汉化已开启。" } else { "界面汉化已关闭。" },
+            status,
+        ),
+        Err(error) => failed(&error.to_string(), codex_plus_core::claude_localization::status()),
+    }
+}
+
+#[tauri::command]
 pub async fn scan_agent_cache() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Value> {
         let mut slot = AGENT_CACHE_PLAN

@@ -75,6 +75,8 @@ pub struct ClaudeLocalizationStatus {
     pub catalog_entries: usize,
     /// 副本页面里是否带语音入口；关掉后已在运行的副本要重启才会消失。
     pub voice_input: bool,
+    /// 是否注入中文界面；关掉后副本按原语言启动，与「准备副本」互不影响。
+    pub localization: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -323,6 +325,7 @@ pub fn status() -> ClaudeLocalizationStatus {
         shell_locale,
         catalog_entries,
         voice_input: voice_input_enabled(),
+        localization: localization_enabled(),
     }
 }
 
@@ -334,11 +337,28 @@ fn voice_input_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// 界面汉化开关。同样是读不到就按开启处理。
+fn localization_enabled() -> bool {
+    crate::settings::SettingsStore::default()
+        .load()
+        .map(|settings| settings.claude_app_localization)
+        .unwrap_or(true)
+}
+
 /// 写入语音入口开关。只改 Codex++ 自己的设置，不触碰副本与官方应用。
 pub fn set_voice_input(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     let store = crate::settings::SettingsStore::default();
     let mut settings = store.load()?;
     settings.claude_app_voice_input = enabled;
+    store.save(&settings)?;
+    Ok(status())
+}
+
+/// 写入界面汉化开关。副本是否已准备、是否重建，与这个开关无关。
+pub fn set_localization(enabled: bool) -> Result<ClaudeLocalizationStatus> {
+    let store = crate::settings::SettingsStore::default();
+    let mut settings = store.load()?;
+    settings.claude_app_localization = enabled;
     store.save(&settings)?;
     Ok(status())
 }
@@ -369,6 +389,11 @@ fn run_script(program: &Path, script: &str, copy: &Path, args: &[&str]) -> Resul
         .env(
             "CODEX_PLUS_CLAUDE_VOICE_INPUT",
             if voice_input_enabled() { "1" } else { "0" },
+        )
+        // 同理：注入器按这个决定要不要带中文界面那一段。
+        .env(
+            "CODEX_PLUS_CLAUDE_LOCALIZATION",
+            if localization_enabled() { "1" } else { "0" },
         )
         .stdout(output.try_clone()?)
         .stderr(output)
@@ -527,20 +552,38 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
             let config = config_path();
             let backup = config.with_extension("codex-plus-locale-backup.json");
             let previous = read_config(&config)?.get("locale").cloned();
-            let original = if action == "restore" {
-                ensure!(backup.is_file(), "没有 codex++ 保存的语言备份");
-                let saved: Value = serde_json::from_slice(&fs::read(&backup)?)?;
-                saved
-                    .get("locale")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            } else {
-                Some("zh-Hans".to_string())
+            let saved_locale = || -> Option<String> {
+                fs::read(&backup)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .and_then(|saved| saved.get("locale").and_then(Value::as_str).map(str::to_string))
             };
-            set_locale_at(&config, &backup, original.as_deref(), action == "restore")?;
-            let locale = original.as_deref().unwrap_or("en-US");
+            let localization = localization_enabled();
+            let locale = if action == "restore" {
+                ensure!(backup.is_file(), "没有 codex++ 保存的语言备份");
+                let value = saved_locale();
+                set_locale_at(&config, &backup, value.as_deref(), true)?;
+                value.unwrap_or_else(|| "en-US".to_string())
+            } else if localization {
+                set_locale_at(&config, &backup, Some("zh-Hans"), false)?;
+                "zh-Hans".to_string()
+            } else {
+                // 汉化关掉：副本按原语言启动。有备份说明之前汉化过，还原它；
+                // 从没汉化过就完全不碰用户自己的语言设置。
+                match saved_locale() {
+                    Some(value) => {
+                        set_locale_at(&config, &backup, Some(value.as_str()), true)?;
+                        value
+                    }
+                    None => previous
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .unwrap_or("en-US")
+                        .to_string(),
+                }
+            };
             let script = if cfg!(target_os = "windows") { "inject-cn.ps1" } else { "inject-cn.js" };
-            if let Err(error) = run_script(&launcher, script, &copy, &["--locale", locale]) {
+            if let Err(error) = run_script(&launcher, script, &copy, &["--locale", locale.as_str()]) {
                 // 启动失败后只在应用未运行时还原本次外壳语言，避免与 Claude 写盘竞争。
                 if !claude_running() {
                     let _ = set_locale_at(
@@ -554,6 +597,8 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
             }
             if action == "restore" {
                 "已还原保存的语言并启动副本。".to_string()
+            } else if !localization {
+                "已按原语言启动副本，其他增强照常注入。".to_string()
             } else {
                 "中文启动注入完成，主界面将在加载后应用中文。".to_string()
             }

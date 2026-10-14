@@ -10224,11 +10224,10 @@ select {
   gap: 14px; align-items: start; max-width: 1180px;
 }
 .claude-l10n-column { display: grid; gap: 14px; align-content: start; }
-/* 增强项一行：左边标题与说明，右边状态或开关。 */
-.claude-l10n-feature { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.claude-l10n-feature strong { display: block; font-size: 14px; }
-.claude-l10n-feature small { display: block; margin-top: 5px; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.6; }
-.claude-l10n-feature + .switch-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); }
+/* 左栏里每项增强都是一个开关行，两者之间用分隔线断开。 */
+.claude-l10n-column .switch-row + .switch-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); }
+.claude-l10n-column .switch-row strong { font-size: 14px; }
+.claude-l10n-column .switch-row small { margin-top: 5px; line-height: 1.6; }
 @media (max-width: 1040px) { .claude-localization-page { grid-template-columns: minmax(0, 1fr); } }
 
 /* 概览卡：标题 + 状态徽标、四项数据卡、提示条与操作区。 */

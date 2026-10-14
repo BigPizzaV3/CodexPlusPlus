@@ -11543,6 +11543,7 @@ type ClaudeLocalizationStatus = {
   shellLocale: string | null;
   catalogEntries: number;
   voiceInput: boolean;
+  localization: boolean;
 };
 
 function ClaudeLocalizationScreen() {
@@ -11575,6 +11576,18 @@ function ClaudeLocalizationScreen() {
     } catch (cause) { setError(stringifyError(cause)); }
     finally { setBusy(null); }
   };
+  const toggleLocalization = async (enabled: boolean) => {
+    setBusy("localization"); setError(null);
+    try {
+      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+        "claude_localization_set_localization",
+        { enabled },
+      );
+      setStatus(result);
+      if (result.status !== "ok") setError(result.message);
+    } catch (cause) { setError(stringifyError(cause)); }
+    finally { setBusy(null); }
+  };
   const s = status;
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
@@ -11586,19 +11599,22 @@ function ClaudeLocalizationScreen() {
         <Panel>
           <CardHead
             title={t("增强功能")}
-            detail={t("都在受管副本里生效，开关改动在重启中文 Claude 后应用。")}
+            detail={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}
           />
           <CardContent>
-            <div className="claude-l10n-feature">
+            <label className="switch-row compact">
+              <input
+                checked={Boolean(s?.localization)}
+                disabled={busy !== null}
+                onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
+                type="checkbox"
+              />
               <span>
                 <strong>{t("界面汉化")}</strong>
-                <small>{t("启动时注入官方中文词表，界面语言切到简体中文。")}</small>
+                <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
               </span>
-              <span className="claude-l10n-status claude-l10n-status-ok">
-                <i aria-hidden="true" />
-                {t("随副本启用")}
-              </span>
-            </div>
+              <ToggleVisual />
+            </label>
             <label className="switch-row compact">
               <input
                 checked={Boolean(s?.voiceInput)}

@@ -559,6 +559,10 @@ pub struct BackendSettings {
     // 不改官方应用、不动输入框已有内容；关掉只是没有入口，已运行的副本需重启才生效。
     #[serde(rename = "claudeAppVoiceInput", default = "default_true")]
     pub claude_app_voice_input: bool,
+    // 默认开启：受管副本注入中文词表并把外壳语言切到 zh-Hans。关掉后副本按原语言启动，
+    // 与「准备副本」这件事互不影响——副本只是所有增强共同的前置条件。
+    #[serde(rename = "claudeAppLocalization", default = "default_true")]
+    pub claude_app_localization: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
     // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
@@ -772,6 +776,7 @@ impl Default for BackendSettings {
             codex_app_session_share: true,
             codex_app_usage_status_line: true,
             claude_app_voice_input: true,
+            claude_app_localization: true,
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
@@ -2437,18 +2442,23 @@ mod tests {
     }
 
     #[test]
-    fn claude_voice_input_defaults_on_and_survives_a_missing_key() {
-        // 老用户的 settings.json 里没有这个键：必须按默认开启读出来，否则升级后
-        // 语音入口会静默消失，用户会以为是坏了，而不是自己关掉的。
+    fn claude_enhancement_switches_default_on_and_respect_explicit_off() {
+        // 老用户的 settings.json 里没有这两个键：必须按默认开启读出来，否则升级后
+        // 语音入口与中文界面会静默消失，用户会以为是坏了，而不是自己关掉的。
         let mut legacy = serde_json::to_value(BackendSettings::default()).unwrap();
-        legacy.as_object_mut().unwrap().remove("claudeAppVoiceInput");
-        let parsed: BackendSettings = serde_json::from_value(legacy).unwrap();
-        assert!(parsed.claude_app_voice_input, "缺少键时应按默认开启");
+        let legacy = legacy.as_object_mut().unwrap();
+        legacy.remove("claudeAppVoiceInput");
+        legacy.remove("claudeAppLocalization");
+        let parsed: BackendSettings = serde_json::from_value(serde_json::Value::Object(legacy.clone())).unwrap();
+        assert!(parsed.claude_app_voice_input, "缺少键时语音输入应按默认开启");
+        assert!(parsed.claude_app_localization, "缺少键时界面汉化应按默认开启");
 
         let mut off = serde_json::to_value(BackendSettings::default()).unwrap();
         off["claudeAppVoiceInput"] = json!(false);
+        off["claudeAppLocalization"] = json!(false);
         let parsed: BackendSettings = serde_json::from_value(off).unwrap();
         assert!(!parsed.claude_app_voice_input, "显式关闭必须被尊重");
+        assert!(!parsed.claude_app_localization, "显式关闭必须被尊重");
     }
 
     #[test]
