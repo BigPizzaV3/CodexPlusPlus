@@ -291,10 +291,81 @@ current-main commits; this recovery deliberately does not revive channel
 protection or replace newer upstream code. This permits a normal fast-forward
 push rather than force-pushing the PR branch.
 
-Additional integration tests, the native release build, isolated startup,
-and fresh Windows/macOS CI are tracked separately. Earlier passing CI on
-`e5ebafb` does not certify the new submitted tree. Real-provider behavior
-and model-generated program correctness remain uncertified.
+### Final Verification (2026-10-14)
+
+The implementation head for these results is
+`87054ccf50837a60f63d7d3fd92e9f4e2b310b8b`. The verification below combines
+the completed previous session with the resumed startup check. A fresh fetch
+at 20:44 China Standard Time still found upstream `main` at `f6092f2`;
+the implementation was behind by zero commits.
+
+| Check | Result |
+| --- | --- |
+| Complete Core suite, single-threaded tests | 61 targets; 1857 passed, 0 failed, 8 existing ignored |
+| `protocol_proxy` integration tests | 173 passed, 0 failed |
+| `launcher` integration tests | 101 passed, 0 failed |
+| `dream_skin_package` integration tests | 11 passed, 0 failed |
+| Windows artifacts CI | Success: frontend checks, workspace Rust tests, release application, NSIS installer, artifact upload |
+| macOS universal DMG CI | Success: universal build, bundle structure check, artifact upload |
+| Local native release artifact | Produced at 20:36:17 China Standard Time; 72,192,000-byte executable |
+| Resumed isolated startup | Responding process with a window handle, `manager.start` for version `1.8.0`, and loopback guard at `127.0.0.1:49319` |
+
+The complete Core command was:
+
+```powershell
+cargo test --offline --locked --no-fail-fast -j 2 -p codex-plus-core -- --test-threads=1
+```
+
+Both CI jobs belong to [run 38556910278](https://github.com/BigPizzaV3/CodexPlusPlus/actions/runs/38556910278),
+whose head is exactly `87054cc`. Earlier CI on `e5ebafb` is not used as
+evidence for this implementation. Any subsequent documentation-only head
+must be distinguished from this tested implementation head.
+
+The local native build command was:
+
+```powershell
+$env:CARGO_INCREMENTAL = '0'
+$env:SHERPA_ONNX_LIB_DIR = 'C:\Users\Rat\AppData\Local\Temp\codexpp-pr2411-current-main-20261014\target\sherpa-onnx-prebuilt\sherpa-onnx-v1.13.8-win-x64-static-MT-Release-lib\lib'
+cargo build --offline --locked --release -j 2 -p codex-plus-manager --target-dir C:\Users\Rat\AppData\Local\Temp\codexpp-pr2411-native-target-20261014
+```
+
+The original terminal session was no longer attachable on resume, so its
+final exit output is unavailable. The executable and dependency manifest
+survived, and the resumed check directly launched that executable. Its SHA-256
+is `fbf6226acb10b242184fe4b03ee344ac605d03c4b62f39d81135c7c4f9c24cf8`.
+Existing compiler warnings were recorded in the original session, not
+silenced or repaired as part of this PR.
+
+Temporary source and smoke-script files were no longer present on resume.
+The pushed implementation was restored into a persistent local checkout;
+no missing local changes were inferred or recreated as source changes.
+The restored checkout has no frontend dependencies: a resumed inspector
+assembly check could not run because `esbuild` was absent. Dependencies were
+not installed for this documentation-only change, and the complete suites
+were not rerun on resume. The earlier local and implementation-head CI
+results above remain separately identified.
+The smoke script needed two local corrections: avoid PowerShell's read-only
+`$HOME` variable, and explicitly set the exact guard-port override. The first
+launch used the existing file-lock fallback; after restarting only that
+test process, the final process listened on port 49319 without fallback.
+
+The final smoke instance uses a dedicated `CODEX_HOME` and
+`CODEX_PLUS_STATE_DIR`. Auto-takeover, provider sync, enhancements, and Weixin
+connection are disabled in its settings. The saved launcher remains stopped;
+neither helper port 49321 nor debug port 49329 was started. This checks manager
+startup, not a real supplier request or the full interactive UI. The installed
+application was not replaced.
+
+Two complete parallel Core runs had timed out in the unchanged
+`dictation_disconnect_stops_waiting_for_upstream` fixture while waiting for
+the mock's first request, before its cancellation assertion. Isolation,
+all 34 dictation-related tests, the complete single-threaded library, the
+complete single-threaded Core suite, and the new-head Windows workspace CI
+passed. The root cause remains unconfirmed; the fixture was not changed or
+ignored. This local test-instability risk remains open.
+
+Real-provider behavior and model-generated program correctness remain
+uncertified.
 
 ## Residual Risks and Rollback
 
