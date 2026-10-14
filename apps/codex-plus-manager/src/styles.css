@@ -3618,6 +3618,20 @@ details.relay-fold[open] > .relay-fold-body {
   transition: width 220ms var(--motion-ease);
 }
 
+.provider-sync-progress-bar[data-indeterminate="true"] .provider-sync-progress-fill {
+  width: 32%;
+  animation: task-progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes task-progress-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 .task-progress {
   margin-top: 10px;
 }

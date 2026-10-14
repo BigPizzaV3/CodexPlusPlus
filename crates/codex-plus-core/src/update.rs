@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -43,6 +44,26 @@ pub struct UpdateInstall {
     pub release: Release,
     pub installer_path: PathBuf,
     pub launched: bool,
+}
+
+/// 更新过程中可被前端消费的真实阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateStage {
+    Downloading,
+    Writing,
+    Launching,
+}
+
+/// 传给 UI 的进度事件；percent 仅在下载阶段且响应带 Content-Length 时存在。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub stage: UpdateStage,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percent: Option<f64>,
+    pub elapsed_ms: u64,
 }
 
 pub fn parse_version_tag(value: &str) -> anyhow::Result<Vec<u64>> {
@@ -202,82 +223,28 @@ pub async fn perform_update(
     release: &Release,
     download_dir: &Path,
 ) -> anyhow::Result<UpdateInstall> {
-    let url = release
-        .asset_url
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("没有可下载的 Release asset"))?;
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.perform.start",
-        json!({
-            "version": release.version,
-            "assetName": release.asset_name,
-            "assetUrl": url,
-            "downloadTimeoutSeconds": UPDATE_DOWNLOAD_TIMEOUT.as_secs()
-        }),
-    );
-    let response = match update_http_client()?.get(url).send().await {
-        Ok(response) => response,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "update.download.failed",
-                json!({ "version": release.version, "assetName": release.asset_name, "error": error.to_string() }),
-            );
-            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
-        }
-    };
-    let response = match response.error_for_status() {
-        Ok(response) => response,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "update.download.bad_status",
-                json!({ "version": release.version, "assetName": release.asset_name, "error": error.to_string() }),
-            );
-            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
-        }
-    };
-    let bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "update.download.body_failed",
-                json!({ "version": release.version, "assetName": release.asset_name, "error": error.to_string() }),
-            );
-            return Err(anyhow::anyhow!("读取安装包失败：{error}"));
-        }
-    };
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.download.completed",
-        json!({
-            "version": release.version,
-            "assetName": release.asset_name,
-            "bytes": bytes.len()
-        }),
-    );
-    let installer_path = match download_asset_to(release, &bytes, download_dir) {
-        Ok(path) => path,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "update.write.failed",
-                json!({
-                    "version": release.version,
-                    "assetName": release.asset_name,
-                    "downloadDir": download_dir.to_string_lossy(),
-                    "bytes": bytes.len(),
-                    "error": error.to_string()
-                }),
-            );
-            return Err(error);
-        }
-    };
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.write.completed",
-        json!({
-            "version": release.version,
-            "assetName": release.asset_name,
-            "installerPath": installer_path.to_string_lossy(),
-            "bytes": bytes.len()
-        }),
-    );
+    perform_update_with_progress(release, download_dir, |_| {}).await
+}
+
+pub async fn perform_update_with_progress<F>(
+    release: &Release,
+    download_dir: &Path,
+    mut on_progress: F,
+) -> anyhow::Result<UpdateInstall>
+where
+    F: FnMut(UpdateProgress) + Send,
+{
+    let (installer_path, downloaded_bytes, total_bytes) =
+        download_release_asset_with_progress(release, download_dir, &mut on_progress).await?;
+
+    let launch_started = Instant::now();
+    on_progress(UpdateProgress {
+        stage: UpdateStage::Launching,
+        downloaded_bytes,
+        total_bytes,
+        percent: None,
+        elapsed_ms: 0,
+    });
     #[cfg(target_os = "macos")]
     let launch_result = {
         let path = installer_path.clone();
@@ -295,6 +262,7 @@ pub async fn perform_update(
                 "version": release.version,
                 "assetName": release.asset_name,
                 "installerPath": installer_path.to_string_lossy(),
+                "elapsedMs": launch_started.elapsed().as_millis() as u64,
                 "error": error.to_string()
             }),
         );
@@ -305,7 +273,8 @@ pub async fn perform_update(
         json!({
             "version": release.version,
             "assetName": release.asset_name,
-            "installerPath": installer_path.to_string_lossy()
+            "installerPath": installer_path.to_string_lossy(),
+            "elapsedMs": launch_started.elapsed().as_millis() as u64
         }),
     );
     Ok(UpdateInstall {
@@ -313,6 +282,157 @@ pub async fn perform_update(
         installer_path,
         launched: true,
     })
+}
+
+async fn download_release_asset_with_progress<F>(
+    release: &Release,
+    download_dir: &Path,
+    on_progress: &mut F,
+) -> anyhow::Result<(PathBuf, u64, Option<u64>)>
+where
+    F: FnMut(UpdateProgress),
+{
+    let url = release
+        .asset_url
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("没有可下载的 Release asset"))?;
+    let download_started = Instant::now();
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.perform.start",
+        json!({
+            "version": release.version,
+            "assetName": release.asset_name,
+            "assetUrl": url,
+            "downloadTimeoutSeconds": UPDATE_DOWNLOAD_TIMEOUT.as_secs()
+        }),
+    );
+    let response = match update_http_client()?.get(url).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.download.failed",
+                json!({
+                    "version": release.version,
+                    "assetName": release.asset_name,
+                    "elapsedMs": download_started.elapsed().as_millis() as u64,
+                    "error": error.to_string()
+                }),
+            );
+            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
+        }
+    };
+    let response = match response.error_for_status() {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.download.bad_status",
+                json!({
+                    "version": release.version,
+                    "assetName": release.asset_name,
+                    "elapsedMs": download_started.elapsed().as_millis() as u64,
+                    "error": error.to_string()
+                }),
+            );
+            return Err(anyhow::anyhow!("下载安装包失败：{error}"));
+        }
+    };
+
+    // 用流式读取替代 response.bytes()，让 UI 能拿到真实下载字节数；
+    // 仍先把完整安装包收集到内存，写盘行为与旧实现保持一致。
+    let total_bytes = response.content_length();
+    on_progress(UpdateProgress {
+        stage: UpdateStage::Downloading,
+        downloaded_bytes: 0,
+        total_bytes,
+        percent: total_bytes.filter(|total| *total > 0).map(|_| 0.0),
+        elapsed_ms: 0,
+    });
+    let mut bytes = Vec::new();
+    let mut downloaded_bytes = 0_u64;
+    let mut last_percent_bucket = -1_i32;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "update.download.body_failed",
+                    json!({
+                        "version": release.version,
+                        "assetName": release.asset_name,
+                        "downloadedBytes": downloaded_bytes,
+                        "elapsedMs": download_started.elapsed().as_millis() as u64,
+                        "error": error.to_string()
+                    }),
+                );
+                return Err(anyhow::anyhow!("读取安装包失败：{error}"));
+            }
+        };
+        downloaded_bytes += chunk.len() as u64;
+        bytes.extend_from_slice(&chunk);
+        let percent = total_bytes
+            .filter(|total| *total > 0)
+            .map(|total| (downloaded_bytes as f64 / total as f64 * 100.0).clamp(0.0, 100.0));
+        let percent_bucket = percent.map(|value| value.floor() as i32).unwrap_or(-1);
+        let finished_known_total = total_bytes.is_some_and(|total| downloaded_bytes >= total);
+        if percent.is_none() || percent_bucket > last_percent_bucket || finished_known_total {
+            last_percent_bucket = percent_bucket;
+            on_progress(UpdateProgress {
+                stage: UpdateStage::Downloading,
+                downloaded_bytes,
+                total_bytes,
+                percent,
+                elapsed_ms: download_started.elapsed().as_millis() as u64,
+            });
+        }
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.download.completed",
+        json!({
+            "version": release.version,
+            "assetName": release.asset_name,
+            "bytes": bytes.len(),
+            "totalBytes": total_bytes,
+            "elapsedMs": download_started.elapsed().as_millis() as u64
+        }),
+    );
+
+    on_progress(UpdateProgress {
+        stage: UpdateStage::Writing,
+        downloaded_bytes,
+        total_bytes,
+        percent: None,
+        elapsed_ms: 0,
+    });
+    let write_started = Instant::now();
+    let installer_path = match download_asset_to(release, &bytes, download_dir) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "update.write.failed",
+                json!({
+                    "version": release.version,
+                    "assetName": release.asset_name,
+                    "downloadDir": download_dir.to_string_lossy(),
+                    "bytes": bytes.len(),
+                    "elapsedMs": write_started.elapsed().as_millis() as u64,
+                    "error": error.to_string()
+                }),
+            );
+            return Err(error);
+        }
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.write.completed",
+        json!({
+            "version": release.version,
+            "assetName": release.asset_name,
+            "installerPath": installer_path.to_string_lossy(),
+            "bytes": bytes.len(),
+            "elapsedMs": write_started.elapsed().as_millis() as u64
+        }),
+    );
+    Ok((installer_path, downloaded_bytes, total_bytes))
 }
 
 fn update_http_client() -> anyhow::Result<reqwest::Client> {
@@ -444,5 +564,65 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     {
         let _ = path;
         anyhow::bail!("当前平台不支持启动安装包")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn download_stage_progress_reports_bytes_then_writing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = b"fake-installer-payload-for-test".to_vec();
+        let body_for_server = body.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body_for_server.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            let split = body_for_server.len() / 2;
+            stream.write_all(&body_for_server[..split]).unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+            stream.write_all(&body_for_server[split..]).unwrap();
+        });
+
+        let release = Release {
+            version: "v9.9.9".to_string(),
+            url: String::new(),
+            body: String::new(),
+            asset_name: Some("CodexPlusPlus-9.9.9-windows-x64-setup.exe".to_string()),
+            asset_url: Some(format!("http://{address}/installer.exe")),
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<UpdateProgress>::new()));
+        let observed_for_callback = observed.clone();
+        let (written_path, downloaded, total) = download_release_asset_with_progress(
+            &release,
+            directory.path(),
+            &mut |progress| observed_for_callback.lock().unwrap().push(progress),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(downloaded, body.len() as u64);
+        assert_eq!(total, Some(body.len() as u64));
+        assert_eq!(std::fs::read(&written_path).unwrap(), body);
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.first().map(|progress| progress.stage), Some(UpdateStage::Downloading));
+        assert!(observed
+            .iter()
+            .any(|progress| progress.stage == UpdateStage::Downloading && progress.downloaded_bytes > 0));
+        assert_eq!(observed.last().map(|progress| progress.stage), Some(UpdateStage::Writing));
     }
 }

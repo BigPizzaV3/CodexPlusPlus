@@ -824,6 +824,17 @@ type TaskProgress = {
   active: boolean;
   percent: number;
   message: string;
+  indeterminate?: boolean;
+};
+
+type UpdateStage = "downloading" | "writing" | "launching";
+
+type UpdateProgressEvent = {
+  stage: UpdateStage;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+  elapsedMs: number;
 };
 
 type SessionIndexRepairReport = {
@@ -2461,40 +2472,41 @@ export function App() {
         : null;
     setUpdateInstallProgress({
       active: true,
-      percent: 8,
-      message: t("正在准备安装包下载…"),
+      percent: 0,
+      indeterminate: true,
+      message: t("正在准备下载安装包…"),
     });
-    const startedAt = Date.now();
-    const progressTimer = window.setInterval(() => {
-      setUpdateInstallProgress((current) => {
-        if (!current.active) return current;
-        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-        const nextPercent =
-          elapsedSeconds < 3
-            ? Math.min(24, current.percent + 4)
-            : elapsedSeconds < 15
-              ? Math.min(68, current.percent + 3)
-              : elapsedSeconds < 45
-                ? Math.min(86, current.percent + 1)
-                : Math.min(99, current.percent + 0.2);
-        const message =
-          elapsedSeconds < 3
-            ? t("正在获取 GitHub Release 信息…")
-            : elapsedSeconds < 15
-              ? t("正在下载安装包…")
-              : elapsedSeconds < 45
-                ? t("正在写入安装包…")
-                : t("下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。");
-        return { ...current, percent: nextPercent, message };
-      });
-    }, 500);
+    const fallbackTimer = window.setTimeout(() => {
+      setUpdateInstallProgress((current) =>
+        current.active && current.indeterminate
+          ? { ...current, message: t("更新包仍在处理中，请保持窗口打开；完成后会自动更新状态。") }
+          : current,
+      );
+    }, 15_000);
+    let unlisten: (() => void) | null = null;
     try {
+      unlisten = await listen<UpdateProgressEvent>("update-progress", (event) => {
+        const progress = event.payload;
+        const message =
+          progress.stage === "downloading"
+            ? t("正在下载安装包…")
+            : progress.stage === "writing"
+              ? t("正在写入安装包并准备安装…")
+              : t("正在启动安装器…");
+        setUpdateInstallProgress({
+          active: true,
+          percent: progress.stage === "downloading" ? (progress.percent ?? 0) : 0,
+          indeterminate: progress.stage !== "downloading" || progress.percent == null,
+          message,
+        });
+      });
       const result = await run(() => call<UpdateResult>("perform_update", { release }));
       if (result) {
         setUpdate(result);
         setUpdateInstallProgress({
           active: false,
           percent: result.progress ?? 100,
+          indeterminate: false,
           message: result.message,
         });
         showNotice(t("更新安装"), result.message, result.status);
@@ -2502,11 +2514,13 @@ export function App() {
         setUpdateInstallProgress({
           active: false,
           percent: 100,
+          indeterminate: false,
           message: t("安装包更新失败，请查看错误提示后重试。"),
         });
       }
     } finally {
-      window.clearInterval(progressTimer);
+      window.clearTimeout(fallbackTimer);
+      unlisten?.();
     }
   };
 
@@ -11476,16 +11490,20 @@ function TaskProgressBox({ progress, title, completedTitle = t("上次修复结�
     <div className="provider-sync-progress task-progress" data-active={progress.active}>
       <div className="provider-sync-progress-head">
         <strong>{progress.active ? title : completedTitle}</strong>
-        <span>{formatProgressPercent(progress.percent)}%</span>
+        <span>{progress.indeterminate ? null : `${formatProgressPercent(progress.percent)}%`}</span>
       </div>
       <div
         aria-valuemax={100}
         aria-valuemin={0}
-        aria-valuenow={progress.percent}
+        aria-valuenow={progress.indeterminate ? undefined : progress.percent}
         className="provider-sync-progress-bar"
+        data-indeterminate={progress.indeterminate ? "true" : undefined}
         role="progressbar"
       >
-        <div className="provider-sync-progress-fill" style={{ width: `${progress.percent}%` }} />
+        <div
+          className="provider-sync-progress-fill"
+          style={progress.indeterminate ? undefined : { width: `${progress.percent}%` }}
+        />
       </div>
       <small>{progress.message}</small>
     </div>
