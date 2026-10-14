@@ -1,9 +1,7 @@
 //! 输入框听写的独立 OpenAI 兼容适配器。音频和密钥不写入诊断日志。
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -478,45 +476,158 @@ fn validate_local_wav(audio: &[u8]) -> Result<(), DictationError> {
     Ok(())
 }
 
+/// 进程级缓存的本地 SenseVoice recognizer。
+///
+/// 之前每次转写都重新 `OfflineRecognizer::create`，实测 1 秒音频也要 9~18 秒，而且耗时
+/// 几乎与音频长度无关——瓶颈是 239 MB 模型的加载与特征提取器初始化，不是解码。模型和
+/// 语言不变时复用同一个 recognizer，单次转写只剩解码与传输；代价是常驻一份模型内存。
+struct CachedLocalRecognizer {
+    model: PathBuf,
+    tokens: PathBuf,
+    language: String,
+    /// 两个资产文件各自的 (大小, 修改时间)；任一变化都要重建 recognizer。
+    signature: ((u64, u64), (u64, u64)),
+    recognizer: sherpa_onnx::OfflineRecognizer,
+}
+
+/// 本地识别的专用线程。
+///
+/// sherpa 的 `OfflineRecognizer` 由 crate 手动标了 `Send`/`Sync`，但它内部是 C++ 句柄
+/// 加自建线程池。实测在高频复用下出现过 helper 进程静默退出的情况（无崩溃报告），
+/// 而单线程复用时各类场景都稳定。所以把加载与解码都固定在同一个线程里：既不跨线程
+/// 碰 FFI 句柄，也天然把并发请求排成一条队，串行语义不再依赖 tokio 阻塞池的调度。
+enum LocalRecognizerRequest {
+    Transcribe {
+        samples: Vec<f32>,
+        language: String,
+        reply: std::sync::mpsc::Sender<Result<String, DictationError>>,
+    },
+}
+
+static LOCAL_RECOGNIZER_TX: LazyLock<Option<std::sync::mpsc::Sender<LocalRecognizerRequest>>> =
+    LazyLock::new(|| {
+        let (sender, receiver) = std::sync::mpsc::channel::<LocalRecognizerRequest>();
+        std::thread::Builder::new()
+            .name("codex-plus-dictation".to_string())
+            .spawn(move || local_recognizer_loop(receiver))
+            .map(|_| sender)
+            .ok()
+    });
+
+fn local_recognizer_loop(receiver: std::sync::mpsc::Receiver<LocalRecognizerRequest>) {
+    let mut cached: Option<CachedLocalRecognizer> = None;
+    while let Ok(LocalRecognizerRequest::Transcribe { samples, language, reply }) = receiver.recv() {
+        let result = recognize_local(&mut cached, &samples, &language);
+        // 调用方已经走远时忽略发送失败：这条线程只负责把结果交回去。
+        let _ = reply.send(result);
+    }
+}
+
+/// SenseVoice 只吃 16 kHz 单声道，这个值同时是 `validate_local_wav` 校验过的采样率。
+const LOCAL_SAMPLE_RATE: i32 = 16_000;
+
+/// 轻量文件指纹：加载过的模型只要大小与修改时间没变就直接复用。
+fn local_asset_signature(path: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some((meta.len(), modified))
+}
+
+/// 16 kHz 单声道 PCM 转 f32 样本；调用前 `validate_local_wav` 已确认头部格式。
+fn local_wav_samples(audio: &[u8]) -> Vec<f32> {
+    audio[44..]
+        .chunks_exact(2)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32_768.0)
+        .collect()
+}
+
+/// 在识别线程里跑一次本地识别；模型没变时复用缓存，既不重新加载也不重算 SHA256。
+fn recognize_local(
+    cached: &mut Option<CachedLocalRecognizer>,
+    samples: &[f32],
+    language: &str,
+) -> Result<String, DictationError> {
+    let root = local_model_dir();
+    let model = root.join(SENSEVOICE_ASSETS[0].name);
+    let tokens = root.join(SENSEVOICE_ASSETS[1].name);
+    let signature = local_asset_signature(&model).zip(local_asset_signature(&tokens));
+    let reusable = match (&*cached, signature) {
+        (Some(entry), Some(signature)) => {
+            entry.model == model
+                && entry.tokens == tokens
+                && entry.language == language
+                && entry.signature == signature
+        }
+        _ => false,
+    };
+    if !reusable {
+        // 只有真要加载时才做全量校验：239 MB 的 SHA256 不该出现在每次转写的路径上。
+        verified_local_assets(&root)?;
+        let mut config = sherpa_onnx::OfflineRecognizerConfig::default();
+        config.model_config.sense_voice = sherpa_onnx::OfflineSenseVoiceModelConfig {
+            model: Some(model.to_string_lossy().into_owned()),
+            language: Some(language.to_string()),
+            use_itn: true,
+        };
+        config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
+        config.model_config.provider = Some("cpu".to_string());
+        config.model_config.num_threads = 2;
+        let recognizer = sherpa_onnx::OfflineRecognizer::create(&config)
+            .ok_or_else(|| DictationError::new(502, "SenseVoice 模型加载失败"))?;
+        *cached = Some(CachedLocalRecognizer {
+            model,
+            tokens,
+            language: language.to_string(),
+            signature: signature.unwrap_or_default(),
+            recognizer,
+        });
+    }
+    let entry = cached
+        .as_ref()
+        .ok_or_else(|| DictationError::new(500, "本地语音模型未就绪"))?;
+    let stream = entry.recognizer.create_stream();
+    // 直接送样本，不再为每次转写落一个临时 WAV 再读回来。
+    stream.accept_waveform(LOCAL_SAMPLE_RATE, samples);
+    entry.recognizer.decode(&stream);
+    Ok(stream
+        .get_result()
+        .map(|result| result.text)
+        .unwrap_or_default()
+        .trim()
+        .to_string())
+}
+
 async fn transcribe_local_recording(settings: &DictationSettings, recording: Recording<'_>) -> Result<Value, DictationError> {
     validate_local_wav(recording.audio)?;
-    let assets = tokio::task::spawn_blocking(|| verified_local_assets(&local_model_dir()))
-        .await.map_err(|_| DictationError::new(500, "无法检查本地语音模型"))??;
     let language = match settings.language.trim() {
         "" => "auto",
         value @ ("auto" | "zh" | "en" | "yue" | "ja" | "ko") => value,
         _ => return Err(DictationError::new(400, "SenseVoice 不支持该语音语言")),
     }.to_string();
-    let audio = recording.audio.to_vec();
-    let model = assets[0].clone();
-    let tokens = assets[1].clone();
-    let text = tokio::task::spawn_blocking(move || {
-        let wav_path = local_model_dir().join(format!("request-{}.wav", uuid::Uuid::new_v4()));
-        let mut file = OpenOptions::new().create_new(true).write(true).read(true).open(&wav_path)
-            .map_err(|_| "无法创建本地语音临时文件")?;
-        file.write_all(&audio).map_err(|_| "无法写入本地语音临时文件")?;
-        file.flush().ok();
-        let result = (|| {
-            let wave = sherpa_onnx::Wave::read(wav_path.to_string_lossy().as_ref())
-                .ok_or("无法读取本地 WAV 音频")?;
-            let mut config = sherpa_onnx::OfflineRecognizerConfig::default();
-            config.model_config.sense_voice = sherpa_onnx::OfflineSenseVoiceModelConfig {
-                model: Some(model.to_string_lossy().into_owned()), language: Some(language), use_itn: true,
-            };
-            config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
-            config.model_config.provider = Some("cpu".to_string());
-            config.model_config.num_threads = 2;
-            let recognizer = sherpa_onnx::OfflineRecognizer::create(&config)
-                .ok_or("SenseVoice 模型加载失败")?;
-            let stream = recognizer.create_stream();
-            stream.accept_waveform(wave.sample_rate(), wave.samples());
-            recognizer.decode(&stream);
-            Ok::<String, &'static str>(stream.get_result().map(|result| result.text).unwrap_or_default().trim().to_string())
-        })();
-        let _ = std::fs::remove_file(wav_path);
-        result
-    }).await.map_err(|_| DictationError::new(500, "本地 SenseVoice 推理失败"))?
-        .map_err(|message| DictationError::new(502, message))?;
+    let sender = LOCAL_RECOGNIZER_TX
+        .as_ref()
+        .ok_or_else(|| DictationError::new(500, "本地语音推理线程不可用"))?;
+    let (reply, answer) = std::sync::mpsc::channel();
+    sender
+        .send(LocalRecognizerRequest::Transcribe {
+            samples: local_wav_samples(recording.audio),
+            language,
+            reply,
+        })
+        .map_err(|_| DictationError::new(500, "本地语音推理线程已停止"))?;
+    // 推理线程一次只做一件事，这里等它把结果交回来。
+    let text = tokio::task::spawn_blocking(move || answer.recv())
+        .await
+        .map_err(|_| DictationError::new(500, "本地 SenseVoice 推理失败"))?
+        .map_err(|_| DictationError::new(500, "本地语音推理线程已停止"))??;
     Ok(json!({ "text": text }))
 }
 
@@ -901,6 +1012,56 @@ mod tests {
     use super::*;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// 16 kHz 单声道 16 位 WAV 头，测试里只需头部合法 + 若干样本。
+    fn test_wav(samples: &[i16]) -> Vec<u8> {
+        let mut wav = vec![0u8; 44];
+        wav[..4].copy_from_slice(b"RIFF");
+        wav[4..8].copy_from_slice(&(36 + samples.len() as u32 * 2).to_le_bytes());
+        wav[8..12].copy_from_slice(b"WAVE");
+        wav[12..16].copy_from_slice(b"fmt ");
+        wav[16..20].copy_from_slice(&16u32.to_le_bytes());
+        wav[20..22].copy_from_slice(&1u16.to_le_bytes());
+        wav[22..24].copy_from_slice(&1u16.to_le_bytes());
+        wav[24..28].copy_from_slice(&16_000u32.to_le_bytes());
+        wav[28..32].copy_from_slice(&32_000u32.to_le_bytes());
+        wav[32..34].copy_from_slice(&2u16.to_le_bytes());
+        wav[34..36].copy_from_slice(&16u16.to_le_bytes());
+        wav[36..40].copy_from_slice(b"data");
+        wav[40..44].copy_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
+
+    #[test]
+    fn local_wav_samples_convert_pcm_without_a_temporary_file() {
+        let wav = test_wav(&[0, 16_384, -32_768, 32_767]);
+        assert!(validate_local_wav(&wav).is_ok());
+        let samples = local_wav_samples(&wav);
+        assert_eq!(samples.len(), 4);
+        assert_eq!(samples[0], 0.0);
+        assert!((samples[1] - 0.5).abs() < 1e-6);
+        assert_eq!(samples[2], -1.0);
+        assert!(samples[3] > 0.999 && samples[3] <= 1.0);
+    }
+
+    #[test]
+    fn local_asset_signature_changes_when_the_model_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model.int8.onnx");
+        assert_eq!(local_asset_signature(&path), None, "文件不存在时不能给出指纹");
+        std::fs::write(&path, b"first").unwrap();
+        let first = local_asset_signature(&path).unwrap();
+        assert_eq!(first.0, 5);
+        std::fs::write(&path, b"second-longer").unwrap();
+        assert_ne!(
+            first,
+            local_asset_signature(&path).unwrap(),
+            "模型被换掉后必须让缓存失效，否则会一直用旧模型识别"
+        );
+    }
 
     #[test]
     fn dictation_missing_or_corrupt_local_assets_require_manual_download() {
