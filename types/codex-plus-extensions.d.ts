@@ -19,7 +19,9 @@ type CodexPlusExtensionRoute =
   | "/thread-usage-history"
   | "/archived-thread"
   | "/export-markdown"
-  | "/user-scripts/list";
+  | "/user-scripts/list"
+  | "/cdp/targets"
+  | "/cdp/evaluate";
 
 interface CodexPlusToastOptions {
   type?: CodexPlusToastType;

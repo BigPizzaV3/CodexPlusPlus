@@ -7,7 +7,7 @@ use codex_plus_core::launcher::{
 use codex_plus_core::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
 use codex_plus_core::routes::{
     BridgeContext, BridgeDataService, BridgeRuntimeService, BridgeSettingsService,
-    CoreRuntimeService, handle_bridge_request,
+    CoreRuntimeService, evaluate_extension_cdp, handle_bridge_request,
 };
 use codex_plus_core::settings::BackendSettings;
 use codex_plus_core::status::StatusStore;
@@ -30,6 +30,8 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/user-scripts/delete", json!({"key": "user:a.js"})),
         ("/user-scripts/reload", json!({})),
         ("/user-scripts/load", json!({})),
+        ("/cdp/targets", json!({})),
+        ("/cdp/evaluate", json!({"kind":"avatar-overlay","expression":"1"})),
         ("/devtools/open", json!({})),
         ("/manager/open", json!({})),
         ("/manager/open-transient", json!({})),
@@ -83,6 +85,29 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn cdp_evaluate_rejects_empty_expression_without_touching_cdp() {
+    let error = evaluate_extension_cdp(1, &json!({"kind": "avatar-overlay"}))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("expression"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn cdp_routes_are_wired_for_extensions() {
+    let result = handle_bridge_request(test_context(), "/cdp/targets", json!({})).await;
+    assert_eq!(result["status"], "failed");
+    assert_ne!(result["message"], "Unknown bridge path");
+    assert!(
+        result["message"].as_str().unwrap_or("").contains("CDP targets"),
+        "{}",
+        result
+    );
 }
 
 #[tokio::test]

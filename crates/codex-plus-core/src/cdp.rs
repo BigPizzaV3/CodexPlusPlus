@@ -1,5 +1,6 @@
 use anyhow::{Context, bail};
 use serde::Deserialize;
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::time::Duration;
@@ -430,6 +431,71 @@ fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
             || url.starts_with("data:text/html"))
 }
 
+/// 拓展可注入的 Codex 页面种类。管理页、ChatGPT 网页不在此列。
+pub const EXTENSION_CDP_KINDS: [&str; 3] = ["main", "avatar-overlay", "quick-chat"];
+
+pub fn extension_cdp_kind(target: &CdpTarget) -> Option<&'static str> {
+    if !is_injectable_page_target(target) || !is_codex_app_page_target(target) {
+        return None;
+    }
+    if is_avatar_overlay_page_target(target) {
+        Some("avatar-overlay")
+    } else if is_quick_chat_page_target(target) {
+        Some("quick-chat")
+    } else {
+        Some("main")
+    }
+}
+
+pub fn extension_cdp_target_public(target: &CdpTarget) -> Option<Value> {
+    Some(json!({
+        "id": target.id,
+        "title": target.title,
+        "url": target.url,
+        "kind": extension_cdp_kind(target)?,
+    }))
+}
+
+pub fn select_extension_cdp_targets<'a>(
+    targets: &'a [CdpTarget],
+    target_id: Option<&str>,
+    kind: Option<&str>,
+) -> anyhow::Result<Vec<&'a CdpTarget>> {
+    if target_id.is_none() && kind.is_none() {
+        bail!("target_id 或 kind 必须提供其一");
+    }
+    if let Some(kind) = kind {
+        if !EXTENSION_CDP_KINDS.contains(&kind) {
+            bail!("不支持的 CDP kind：{kind}");
+        }
+    }
+    let selected = targets
+        .iter()
+        .filter(|target| {
+            let Some(target_kind) = extension_cdp_kind(target) else {
+                return false;
+            };
+            target_id.is_none_or(|id| target.id == id)
+                && kind.is_none_or(|expected| target_kind == expected)
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        bail!("没有匹配的 CDP 页面");
+    }
+    Ok(selected)
+}
+
+pub async fn list_extension_cdp_targets(debug_port: u16) -> anyhow::Result<Value> {
+    let targets = list_targets(debug_port).await?;
+    Ok(json!({
+        "status": "ok",
+        "targets": targets
+            .iter()
+            .filter_map(extension_cdp_target_public)
+            .collect::<Vec<_>>(),
+    }))
+}
+
 #[cfg(test)]
 mod endpoint_tests {
     use super::*;
@@ -603,5 +669,100 @@ mod endpoint_tests {
 
         assert!(!endpoint_available(port));
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod extension_target_tests {
+    use super::*;
+
+    fn target(id: &str, title: &str, url: &str, websocket: Option<&str>) -> CdpTarget {
+        CdpTarget {
+            id: id.to_string(),
+            target_type: "page".to_string(),
+            title: title.to_string(),
+            url: url.to_string(),
+            web_socket_debugger_url: websocket.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn classifies_codex_app_pages_and_hides_manager() {
+        assert_eq!(
+            extension_cdp_kind(&target(
+                "main",
+                "Codex",
+                "app://-/index.html",
+                Some("ws://127.0.0.1:9229/devtools/page/1"),
+            )),
+            Some("main")
+        );
+        assert_eq!(
+            extension_cdp_kind(&target(
+                "pet",
+                "overlay",
+                "app://-/index.html?initialRoute=%2Favatar-overlay",
+                Some("ws://127.0.0.1:9229/devtools/page/2"),
+            )),
+            Some("avatar-overlay")
+        );
+        assert_eq!(
+            extension_cdp_kind(&target(
+                "qc",
+                "quick",
+                "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat",
+                Some("ws://127.0.0.1:9229/devtools/page/3"),
+            )),
+            Some("quick-chat")
+        );
+        assert_eq!(
+            extension_cdp_kind(&target(
+                "manager",
+                "Codex++ 管理工具",
+                "http://127.0.0.1:1420/",
+                Some("ws://127.0.0.1:9229/devtools/page/4"),
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn public_target_omits_websocket_url() {
+        let public = extension_cdp_target_public(&target(
+            "pet",
+            "overlay",
+            "app://-/index.html?initialRoute=%2Favatar-overlay",
+            Some("ws://127.0.0.1:9229/devtools/page/2"),
+        ))
+        .unwrap();
+        assert_eq!(public["kind"], "avatar-overlay");
+        assert!(public.get("webSocketDebuggerUrl").is_none());
+        assert!(public.get("web_socket_debugger_url").is_none());
+        assert!(!public.to_string().contains("ws://"));
+    }
+
+    #[test]
+    fn select_requires_kind_or_target_id_and_filters() {
+        let targets = vec![
+            target(
+                "main",
+                "Codex",
+                "app://-/index.html",
+                Some("ws://127.0.0.1:9229/devtools/page/1"),
+            ),
+            target(
+                "pet",
+                "overlay",
+                "app://-/index.html?initialRoute=%2Favatar-overlay",
+                Some("ws://127.0.0.1:9229/devtools/page/2"),
+            ),
+        ];
+        assert!(select_extension_cdp_targets(&targets, None, None).is_err());
+        let overlay = select_extension_cdp_targets(&targets, None, Some("avatar-overlay")).unwrap();
+        assert_eq!(overlay.len(), 1);
+        assert_eq!(overlay[0].id, "pet");
+        let by_id = select_extension_cdp_targets(&targets, Some("main"), None).unwrap();
+        assert_eq!(by_id[0].id, "main");
+        assert!(select_extension_cdp_targets(&targets, None, Some("browser")).is_err());
     }
 }
