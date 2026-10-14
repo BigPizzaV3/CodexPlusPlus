@@ -6774,3 +6774,81 @@ base_url = "https://relay.example.test/v1"
     assert_eq!(model["context_window"], 1_048_576);
     assert_eq!(model["max_context_window"], 1_048_576);
 }
+
+/// Kimi 官方 Responses 接口不认 `tool_search` 工具（整单 400）：即使没配窗口也要落
+/// catalog，并把 `supports_search_tool` 关掉；用户在元数据里显式声明仍然优先。
+#[test]
+fn apply_kimi_official_responses_disables_search_tool_in_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = RelayProfile {
+        id: "kimi-responses".to_string(),
+        name: "Kimi".to_string(),
+        model: "kimi-k3".to_string(),
+        upstream_base_url: "https://api.moonshot.cn/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "kimi-k3"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://api.moonshot.cn/v1"
+"#
+        .to_string(),
+        model_list: "kimi-k3\nkimi-k2.6".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(config.contains("model-catalogs/kimi-responses.json"), "{config}");
+    let catalog_path = temp.path().join("model-catalogs").join("kimi-responses.json");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    let models = catalog["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    for model in models {
+        assert_eq!(model["supports_search_tool"], false, "{}", model["slug"]);
+    }
+
+    profile.model_metadata = r#"{"kimi-k3":{"supports_search_tool":true}}"#.to_string();
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    let k3 = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "kimi-k3")
+        .unwrap();
+    assert_eq!(k3["supports_search_tool"], true);
+}
+
+/// 其他 Responses 上游不受影响：没有窗口/元数据时仍保持「不落 catalog」。
+#[test]
+fn apply_other_responses_upstream_keeps_catalog_unmanaged() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "plain-responses".to_string(),
+        model: "custom-model".to_string(),
+        upstream_base_url: "https://responses.example.test/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "custom-model"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://responses.example.test/v1"
+"#
+        .to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(!config.contains("model_catalog_json"), "{config}");
+}

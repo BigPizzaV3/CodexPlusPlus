@@ -3101,13 +3101,15 @@ fn apply_model_catalog_to_config_with_live_policy(
     // Known bundled metadata entries need a catalog even without a user-supplied window.
     // 托管 Responses 传输走 model_routes 时需要 catalog，与会话身份无关；
     // 纯平铺 model_list 且无窗口/元数据的仍保持"不生成"契约（无后缀不落盘，见既有测试）。
+    // 上游不认 tool_search 时必须落 catalog 关掉该能力，否则 Codex 照发、整单 400。
     if !should_write_managed_model_catalog(
         &entries,
         has_metadata_overrides,
         standard_responses,
         profile.has_model_routes(),
         official_deepseek_responses,
-    ) {
+    ) && !upstream_rejects_tool_search(profile)
+    {
         let mut doc = parse_toml_document(&config_text)?;
         if root_key_string(&config_text, "model_catalog_json").as_deref()
             == Some(catalog_relative.as_str())
@@ -3129,6 +3131,11 @@ fn apply_model_catalog_to_config_with_live_policy(
         (!lite_supported).then_some(false),
         official_deepseek_responses,
     );
+    let catalog_json = if upstream_rejects_tool_search(profile) {
+        disable_search_tool_in_catalog(&catalog_json)?
+    } else {
+        catalog_json
+    };
     let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
@@ -3482,6 +3489,59 @@ pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
     ]
     .iter()
     .any(|base_url| deepseek_api_base_url(base_url))
+}
+
+/// Kimi 官方（Moonshot 开放平台 / Kimi For Coding）的 Responses 接口不认识 Codex 的
+/// `tool_search` 工具类型，请求里带上就整单 400
+/// （`tools.N: tool type "tool_search" is not supported`）。
+/// 这类上游生成 catalog 时要关掉 `supports_search_tool`，Codex 才不会发该工具，
+/// 改为直接列出 MCP 工具。Chat Completions 协议由代理把 tool_search 转成 function
+/// 工具，不受影响，因此只判定 Responses。
+pub(crate) fn upstream_rejects_tool_search(profile: &RelayProfile) -> bool {
+    if profile.protocol != RelayProtocol::Responses {
+        return false;
+    }
+    let resolved_base_url = relay_profile_base_url(profile);
+    [
+        profile.base_url.as_str(),
+        profile.upstream_base_url.as_str(),
+        resolved_base_url.as_str(),
+    ]
+    .iter()
+    .any(|base_url| kimi_official_base_url(base_url))
+}
+
+fn kimi_official_base_url(base_url: &str) -> bool {
+    let host = base_url
+        .trim()
+        .split("://")
+        .nth(1)
+        .unwrap_or(base_url)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    ["moonshot.cn", "moonshot.ai", "kimi.com"]
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
+/// 把 catalog 里所有模型的 `supports_search_tool` 置为 false。
+/// 须在 `apply_model_metadata_overrides` 之前调用，用户显式声明仍然优先。
+pub(crate) fn disable_search_tool_in_catalog(catalog_json: &str) -> anyhow::Result<String> {
+    let mut catalog: Value = serde_json::from_str(catalog_json)
+        .map_err(|error| anyhow::anyhow!("catalog JSON 解析失败：{error}"))?;
+    let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+        return Ok(catalog_json.to_string());
+    };
+    for model in models.iter_mut().filter(|model| model.is_object()) {
+        model["supports_search_tool"] = json!(false);
+    }
+    Ok(serde_json::to_string_pretty(&catalog)?)
 }
 
 fn deepseek_api_base_url(base_url: &str) -> bool {

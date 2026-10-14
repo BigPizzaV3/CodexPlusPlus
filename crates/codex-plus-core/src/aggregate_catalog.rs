@@ -442,6 +442,12 @@ fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Value> {
     let fallback = parse_window_token(&profile.context_window);
     let catalog_json =
         build_model_catalog_json_with_capabilities(&entries, fallback, None, Some(false), false);
+    // 聚合代理按成员原生协议转发，成员上游不认 tool_search 时同样要在目录里关掉。
+    let catalog_json = if crate::relay_config::upstream_rejects_tool_search(profile) {
+        crate::relay_config::disable_search_tool_in_catalog(&catalog_json)?
+    } else {
+        catalog_json
+    };
     let metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
     let catalog_json =
         crate::relay_config::apply_model_metadata_overrides(&catalog_json, &metadata)?;
@@ -613,6 +619,47 @@ mod tests {
         assert!(models
             .iter()
             .any(|model| model["slug"] == "cpx-openai/gpt-5.6-sol"));
+    }
+
+    /// Kimi 官方成员按原生 Responses 转发时上游不认 tool_search，目录里要关掉；
+    /// 其他成员保持模板原值。
+    #[test]
+    fn kimi_official_responses_member_disables_search_tool() {
+        let mut settings = settings();
+        settings.relay_profiles.insert(
+            0,
+            RelayProfile {
+                id: "kimi".to_string(),
+                name: "Kimi 官方".to_string(),
+                model: "kimi-k3".to_string(),
+                upstream_base_url: "https://api.moonshot.cn/v1".to_string(),
+                base_url: "https://api.moonshot.cn/v1".to_string(),
+                api_key: "sk-kimi".to_string(),
+                protocol: crate::settings::RelayProtocol::Responses,
+                relay_mode: RelayMode::PureApi,
+                ..RelayProfile::default()
+            },
+        );
+        settings.aggregate_relay_profiles[0]
+            .members
+            .push(AggregateRelayMember {
+                relay_id: "kimi".to_string(),
+                weight: 1,
+            });
+        let aggregate = settings.active_aggregate_relay_profile().unwrap();
+        let catalog: Value =
+            serde_json::from_str(&build_catalog_json(&settings, &aggregate).unwrap()).unwrap();
+        let models = catalog["models"].as_array().unwrap();
+        let kimi = models
+            .iter()
+            .find(|model| model["slug"] == "cpx-kimi/kimi-k3")
+            .unwrap();
+        assert_eq!(kimi["supports_search_tool"], false);
+        let openai = models
+            .iter()
+            .find(|model| model["slug"] == "cpx-openai/gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(openai["supports_search_tool"], true);
     }
 
     #[test]
