@@ -11618,19 +11618,6 @@ function ClaudeLocalizationScreen() {
             <Info className="h-4 w-4" />
             <span>{t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
           </div>
-          <label className="switch-row compact claude-l10n-voice">
-            <input
-              checked={Boolean(s?.voiceInput)}
-              disabled={busy !== null}
-              onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("语音输入")}</strong>
-              <small>{t("在 Claude 输入框右下角加一个语音入口，识别走 Codex++ 的听写服务（本地 SenseVoice 或你配置的接口），结果只写进输入框、不自动发送。改动在重启中文 Claude 后生效。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
           {error ? <div className="inline-error">{error}</div> : null}
           <div className="claude-l10n-actions">
             <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
@@ -11648,6 +11635,27 @@ function ClaudeLocalizationScreen() {
               </Button>
             </div>
           </div>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead
+          title={t("语音输入")}
+          detail={t("在 Claude 输入框右下角提供一个麦克风入口，识别走 Codex++ 的听写服务（本地 SenseVoice 或你配置的接口）。")}
+        />
+        <CardContent>
+          <label className="switch-row compact">
+            <input
+              checked={Boolean(s?.voiceInput)}
+              disabled={busy !== null}
+              onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("启用语音输入")}</strong>
+              <small>{t("识别结果只写进输入框，不自动发送；改动在重启中文 Claude 后生效。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
         </CardContent>
       </Panel>
     </div>

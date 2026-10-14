@@ -299,8 +299,12 @@ pub fn status() -> ClaudeLocalizationStatus {
     let shell_locale = read_config(&config_path())
         .ok()
         .and_then(|v| v.get("locale")?.as_str().map(str::to_string));
-    let catalog_entries = serde_json::from_slice::<Value>(ASSETS[7].1)
-        .ok()
+    // 按名字取词表，不用下标：往 ASSETS 里插一个文件就会让下标整体错位，
+    // 上一版就是这样把「官方词条」读成 0 的。
+    let catalog_entries = ASSETS
+        .iter()
+        .find(|(name, _)| *name == "catalogs/zh-Hans.json")
+        .and_then(|(_, bytes)| serde_json::from_slice::<Value>(bytes).ok())
         .and_then(|value| value.as_object().map(|obj| obj.len()))
         .unwrap_or(0);
     ClaudeLocalizationStatus {
@@ -565,6 +569,14 @@ pub fn perform(action: &str) -> Result<ClaudeLocalizationResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_entries_come_from_the_chinese_catalog() {
+        // 曾经用 ASSETS[7] 取词表：往资产清单里插一个文件就让下标整体错位，
+        // 界面上的「官方词条」直接变成 0。这里钉住它按名字取、且确实读到了词条。
+        let entries = status().catalog_entries;
+        assert!(entries > 1000, "官方中文词表应有上千条，实际 {entries}");
+    }
 
     #[test]
     fn restore_preserves_later_settings_and_missing_locale() {
