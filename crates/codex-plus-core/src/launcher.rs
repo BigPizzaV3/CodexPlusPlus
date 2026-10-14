@@ -5381,4 +5381,3 @@ mod proxy_stream_tests {
         assert!(!output.contains("event: response.failed"));
     }
 }
-

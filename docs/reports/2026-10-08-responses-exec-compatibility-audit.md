@@ -229,6 +229,54 @@ the proxy forwards the received status; external proxy/interception or fixture
 timing remains an unconfirmed hypothesis. No production HTTP proxy policy was
 changed, and this residual test instability is not hidden by disabling tests.
 
+## PR 2411 Follow-up Audit (2026-10-14)
+
+Two additional findings were fixed and committed locally:
+
+- `ee0571a`: accept both delta-seconds and HTTP-date `Retry-After` values.
+  Past dates produce zero delay; the existing default cooldown policy is
+  unchanged. Future and past HTTP-date regressions cover the parser.
+- `2d79f26`: stop reading adapted SSE once the converter reaches a terminal
+  state, including successful completion. A localhost fixture sends a valid
+  terminal response but keeps the upstream socket open; the downstream must
+  emit `[DONE]` and close without waiting for upstream EOF.
+
+Verification of these local fixes, before reconciling remote history:
+
+| Check | Result |
+| --- | --- |
+| `cargo check --offline --locked -p codex-plus-core` | Passed |
+| Channel-protection unit tests | 11 passed |
+| Terminal-stream helper regression | 1 passed |
+| Core library tests | 727 passed, 1 failed, 3 ignored |
+| `launcher` integration tests | 98 passed |
+| `protocol_proxy` integration tests | 160 passed |
+| `responses_exec_compatibility` integration tests | 7 passed |
+| `dream_skin_package` integration tests | 8 passed |
+| Manager `npm test` | 493 passed, 1 skipped, 0 failed |
+| Manager `npm run vite:build` | Passed |
+
+The core library failure was
+`update::macos::tests::macos_update_accepts_unified_installation_and_requests_manual_legacy_migration`
+on Windows. It is outside the changed adapter/cooldown paths and is not
+suppressed. The native manager build stopped with insufficient disk space;
+it has not been certified as passing. These results do not supersede the
+earlier full-suite evidence for older revisions.
+
+A fresh Git fetch found upstream `main` at `f6092f2` and the PR head at
+`2f461715`. The PR head contains both fixes; its difference from the local
+fixes is only line endings and trailing blank lines. A normal local merge
+preserves both histories, followed by line-ending cleanup; no force push is
+needed and no functional remote change is discarded.
+
+The branch is **102 upstream-main commits behind** at this snapshot.
+Upstream commit `1528186` deliberately removed channel protection, while this
+PR still uses it for negotiation accounting. Updating the PR against current
+main therefore requires a separate integration decision and regression pass,
+not blindly retaining the removed feature. This follow-up closes the two
+findings on the existing PR base, but does **not** certify merge readiness
+against current main or real-provider conformance.
+
 ## Residual Risks and Rollback
 
 Accepting the wrapper proves protocol acceptance only. A particular model may
