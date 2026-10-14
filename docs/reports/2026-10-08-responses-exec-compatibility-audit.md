@@ -229,6 +229,73 @@ the proxy forwards the received status; external proxy/interception or fixture
 timing remains an unconfirmed hypothesis. No production HTTP proxy policy was
 changed, and this residual test instability is not hidden by disabling tests.
 
+## Current-Main Recovery and HTTP-Date Review (2026-10-14)
+
+This section supersedes the follow-up verification attached to `c588621`.
+That submission used an older PR history and did not preserve the
+unconditional `Retry-After` wait from the author's reviewed revision
+`e5ebafb`. Parser-only unit coverage did not detect the behavioral regression.
+
+The author's reviewed PR history was recovered and rebased onto upstream
+`main` at `f6092f2`. `git range-diff` confirms all 15 PR patches were preserved
+through the rebase. Upstream session-header forwarding, official-login
+transport, aggregate routing, and deliberate removal of channel protection
+remain intact.
+
+The fix for [comment 6150422715](https://github.com/BigPizzaV3/CodexPlusPlus/pull/2411#issuecomment-6150422715)
+now changes the actual exec-negotiation path in `protocol_proxy.rs`:
+
+- Preserve delta-seconds, and parse HTTP-date with the already-locked
+  `httpdate` dependency.
+- Compute the remaining duration before retrying; past dates produce zero
+  delay. Missing, invalid, and non-text header values retain the no-wait
+  behavior.
+- Wait independently of retired channel settings, after an exact rejection
+  is confirmed and before the one permitted physical compatibility retry.
+- Keep the terminal-SSE correction: complete adapted responses emit `[DONE]`
+  and close downstream without waiting for an upstream socket to close.
+
+Regression evidence:
+
+- The future-date HTTP fixture records the server's advertised deadline and
+  actual arrival of the adapted request. It failed before the fix: the retry
+  arrived before the deadline, with the test completing in 0.21 seconds.
+- A second HTTP fixture verifies successful negotiation with a past date.
+- Four parser unit tests cover integer/zero values, a future date with a
+  fractional remaining duration, a past date, and missing/invalid values.
+- The held-open upstream SSE fixture failed before the terminal correction,
+  then guards downstream `[DONE]` delivery and closure.
+
+Current verification:
+
+| Check | Result |
+| --- | --- |
+| Core library tests, default parallel execution | 831 passed, 0 failed, 3 existing ignored |
+| `responses_exec_compatibility` | 9 passed, 0 failed |
+| Manager `npm test` | 608 passed, 0 failed, 1 existing skipped |
+| Manager `npm run check` | Passed |
+| Manager `npm run vite:build` | Passed |
+| Native-browser inspector assembly check | Passed |
+| Submitted diff whitespace check | Passed |
+
+An initial full-library run exposed an overly broad two-second timeout in
+the new SSE fixture: request startup had consumed its closure deadline.
+The fixture now waits for the terminal event before starting the same
+two-second closure deadline, awaits aborted fixture tasks, and releases
+shared state before assertions. The default parallel suite then passed;
+no existing test was disabled.
+
+The remote `c588621` history is retained as a merge parent without importing
+its obsolete tree. Its two functional fixes are represented by the new
+current-main commits; this recovery deliberately does not revive channel
+protection or replace newer upstream code. This permits a normal fast-forward
+push rather than force-pushing the PR branch.
+
+Additional integration tests, the native release build, isolated startup,
+and fresh Windows/macOS CI are tracked separately. Earlier passing CI on
+`e5ebafb` does not certify the new submitted tree. Real-provider behavior
+and model-generated program correctness remain uncertified.
+
 ## Residual Risks and Rollback
 
 Accepting the wrapper proves protocol acceptance only. A particular model may

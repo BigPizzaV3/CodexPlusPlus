@@ -42,7 +42,7 @@ model's ability to write correct Code Mode programs.
    either bound bypasses negotiation without losing buffered bytes or changing
    the original error's status/body.
 3. Allow at most one negotiation retry across the entire client request,
-   including failover and cooldown loops. Retry the same upstream with a flat Responses function schema
+   including failover. Retry the same upstream with a flat Responses function schema
    wrapping `exec` input in a required string property named `input`.
    Preserve unrelated tools, including custom `apply_patch`. A conflicting
    function name or ambiguous tool declaration disables adaptation. Translate
@@ -93,8 +93,10 @@ model's ability to write correct Code Mode programs.
    item, not only compact endpoints or `compaction_trigger` requests. Preserve
    their existing request and error behavior; do not attempt to rewrite upstream
    server history.
-9. The physical retry participates in channel queueing and rate accounting
-   without reacquiring a lock while holding it. Recoverable validation rejection
+9. The physical retry honors `Retry-After` before sending the adapted request,
+   accepting both delta-seconds and HTTP-date independently of channel settings.
+   Past dates mean zero additional delay; absent or invalid values add no wait.
+   Do not restore channel protection, which upstream removed. Recoverable validation rejection
    does not count as a supplier failure. Adapted rotation success is recorded
    only on a complete validated response; parsing/truncation or upstream failure
    records one failure for that attempt and evicts its compatibility entry.
@@ -182,7 +184,7 @@ failing reproducer and confirm it fails for the rejected-tool behavior.
 - Verify retained custom `apply_patch`, unrelated tools, opaque reasoning,
   compaction bypass, and pass-through stateful requests.
 - Verify effective custom authentication/tenant-header cache isolation,
-  queue release, retry rate accounting, final-only adapted failure statistics,
+  delta-seconds and future/past HTTP-date retry timing, final-only adapted failure statistics,
   failover behavior, cache capacity and expiry, and cancellation.
 - Prove the reproducer detects a deliberate regression to the retry guard or
   strict parser. Do not weaken existing assertions to obtain passing results.
@@ -201,7 +203,7 @@ execute code in the proxy, accept malformed arguments, or probe paid models.
 - All affected baseline tests pass, along with new targeted tests and core build
   checks. Report pre-existing warnings separately.
 - An independent implementation review covers execution-input validation, SSE lifecycle,
-  history identity, cache isolation, and channel/rotation effects. Resolve all
+  history identity, cache isolation, and retry/rotation effects. Resolve all
   blocking findings and rerun the affected checks.
 - Implementation PR notes contain sanitized reproduction, verified coverage,
   exclusions, and residual risks. Local mock tests are not real-provider
