@@ -61,6 +61,9 @@ jobs:
       - name: Check native browser inspector bundle
         run: node scripts/assemble-native-browser-inspector.mjs --check
 
+      - name: Check renderer injection bundle
+        run: node scripts/assemble-renderer-inject.mjs --check
+
       - name: TypeScript check
         working-directory: apps/codex-plus-manager
         run: npm run check
@@ -147,6 +150,16 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
         run: npm ci
+
+      - name: Rate-limit and capacity behavior tests
+        working-directory: apps/codex-plus-manager
+        run: node --test src/rate-limit-auto-resume.test.ts src/capacity-auto-retry.test.ts
+
+      - name: Rate-limit settings tests
+        run: cargo test -p codex-plus-core --test rate_limit_auto_resume_settings
+
+      - name: Check renderer injection bundle
+        run: node scripts/assemble-renderer-inject.mjs --check
 
       - name: Check native browser inspector bundle
         run: node scripts/assemble-native-browser-inspector.mjs --check

@@ -177,6 +177,8 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通
 
 「429 错误自动继续」默认关闭，可在管理工具或 Codex 内的 Codex++ 设置中开启。仅在原生「继续」按钮可用、输入框为空且最新轮次确认为 HTTP 429 失败时，等待 30 秒后点击；每个失败轮次只点一次，每次打开会话最多 5 次。点击状态提示可停止；无法确认主机或读取最新轮次时不触发。
 
+本地验证命令、CI 与实际应用手测步骤见 [HTTP 429 自动继续验证](docs/specs/rate-limit-auto-resume-verification.md)。
+
 <details>
   <summary><strong>展开查看 Codex 内的增强设置</strong></summary>
 

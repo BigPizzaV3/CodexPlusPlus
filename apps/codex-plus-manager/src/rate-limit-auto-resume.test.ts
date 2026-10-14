@@ -12,9 +12,9 @@ function failedTurn(id = "turn-1", status = 429): TestTurn {
   return { id, status: "failed", error: { codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: status } }, message: `HTTP ${status}` } };
 }
 
-function harness() {
+function harness(settings: { enabled?: boolean } = { enabled: true }) {
   const data = {
-    enabled: true, now: 100000, threadId, hostId: "local", active: true, visible: true,
+    enabled: settings.enabled, now: 100000, threadId, hostId: "local", active: true, visible: true,
     label: "Resume", draft: "", disabled: false, composerCount: 1, clicks: 0,
     turn: failedTurn(), reads: 0, clientAvailable: true, href: `/thread/${threadId}`,
   };
@@ -57,9 +57,56 @@ test("429 waits 30 seconds, rechecks latest turn, and clicks the native Resume o
   await h.tick(1);
   assert.equal(h.data.clicks, 1);
   assert.equal(h.data.reads, 2);
-  await h.tick(60000);
+  await h.tick(29999);
   assert.equal(h.data.clicks, 1);
   assert.equal(h.data.reads, 2, "unchanged Resume must not repeatedly read full history");
+  await h.tick(1);
+  assert.equal(h.data.clicks, 1);
+  assert.equal(h.data.reads, 3, "recheck the turn after the cooldown even if Resume never changed");
+});
+
+test("missing and false settings default off without a timer or native reads", async () => {
+  for (const settings of [{}, { enabled: false }]) {
+    const h = harness(settings);
+    h.api.sync(); await h.tick(120000);
+    assert.equal(h.intervals.size, 0);
+    assert.equal(h.data.reads, 0);
+    assert.equal(h.data.clicks, 0);
+  }
+});
+
+test("a fast second 429 is detected even without observing a button transition", async () => {
+  const h = harness(); await h.tick(); await h.tick(30000);
+  h.data.turn = failedTurn("fast-failure");
+  await h.tick(29999);
+  assert.equal(h.data.clicks, 1);
+  await h.tick(1);
+  assert.equal(h.data.clicks, 1, "a new failed turn needs its own 30-second wait");
+  await h.tick(29999);
+  assert.equal(h.data.clicks, 1);
+  await h.tick(1);
+  assert.equal(h.data.clicks, 2);
+});
+
+test("concurrent ticks and a repeated tick at the deadline cannot double click", async () => {
+  const h = harness(); await h.tick();
+  await Promise.all([h.tick(30000), h.tick(), h.tick()]);
+  assert.equal(h.data.clicks, 1);
+  assert.equal(h.data.reads, 2);
+  await h.tick();
+  assert.equal(h.data.clicks, 1);
+});
+
+test("turn changes while the verification read is pending restart the cooldown", async () => {
+  const h = harness(); await h.tick();
+  let resolve: (value: ReadResult) => void = () => {};
+  h.client.sendRequest = () => new Promise((done) => { resolve = done; }) as ReturnType<typeof h.client.sendRequest>;
+  const pending = h.tick(30000);
+  await Promise.resolve(); await Promise.resolve();
+  resolve({ thread: { id: threadId, turns: [failedTurn("new-turn")] } });
+  await pending;
+  assert.equal(h.data.clicks, 0);
+  assert.equal(h.api.state.nextAttemptAt, h.data.now + 30000);
 });
 
 test("structured status takes precedence; plain conversation numbers cannot match", () => {

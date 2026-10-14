@@ -73,7 +73,7 @@
     {
       "name": "82-rate-limit-auto-resume.js",
       "description": "HTTP 429 自动继续：最新轮次确认、限次及输入框守卫",
-      "lines": 176
+      "lines": 177
     },
     {
       "name": "82-boot-shell-recovery.js",

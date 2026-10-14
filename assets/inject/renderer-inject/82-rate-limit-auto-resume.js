@@ -4,7 +4,6 @@
   const rateLimitAutoResumeState = {
     timer: null, busy: false, generation: 0, identity: "", attempts: 0,
     pendingTurn: "", nextAttemptAt: 0, nextReadAt: 0, attemptedTurns: new Set(), stopped: false,
-    awaitingButtonChange: false,
   };
 
   function rateLimitAutoResumeEnabled() {
@@ -60,7 +59,6 @@
     state.nextReadAt = 0;
     state.attemptedTurns.clear();
     state.stopped = false;
-    state.awaitingButtonChange = false;
     rateLimitAutoResumeStatus("");
   }
 
@@ -108,11 +106,10 @@
       // 输入内容/原生自动重试/新轮次运行时取消待点击计划，但保留本次访问的总次数。
       state.pendingTurn = "";
       state.nextAttemptAt = 0;
-      state.awaitingButtonChange = false;
+      state.nextReadAt = 0;
       rateLimitAutoResumeStatus("");
       return;
     }
-    if (state.awaitingButtonChange) return;
     if (state.pendingTurn && Date.now() < state.nextAttemptAt) {
       rateLimitAutoResumeStatus(`429 · ${Math.ceil((state.nextAttemptAt - Date.now()) / 1000)} 秒后自动继续（${state.attempts}/${rateLimitAutoResumeMaxAttempts}）`);
       return;
@@ -138,6 +135,8 @@
           || !rateLimitAutoResumeIs429(turn.error) || !button || state.attemptedTurns.has(turn.id)) {
         state.pendingTurn = "";
         state.nextAttemptAt = 0;
+        // 同一个终止轮次可能长时间显示 Resume；限制完整历史读取频率。
+        state.nextReadAt = Date.now() + rateLimitAutoResumeDelayMs;
         rateLimitAutoResumeStatus("");
         return;
       }
@@ -152,7 +151,9 @@
       state.attempts += 1;
       state.pendingTurn = "";
       state.nextAttemptAt = 0;
-      state.awaitingButtonChange = true;
+      // 快速失败时，1 秒轮询可能看不到 Resume -> Stop -> Resume 的中间态。
+      // 不依赖按钮变化解锁，稍后重新确认 turnId；attemptedTurns 防止重复点击。
+      state.nextReadAt = Date.now() + rateLimitAutoResumeDelayMs;
       button.click();
       rateLimitAutoResumeStatus(`429 · 已自动继续 ${state.attempts}/${rateLimitAutoResumeMaxAttempts} 次`);
     } catch {
