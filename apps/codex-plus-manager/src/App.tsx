@@ -11659,12 +11659,29 @@ function ClaudeLocalizationScreen() {
               {statusText}
             </span>
           </div>
-          {!s?.prepared ? (
-            <div className="claude-l10n-onboarding" role="note">
-              <strong>{t("第一步：先准备副本")}</strong>
-              <span>{t("所有增强都跑在受管副本上，官方 Claude.app 不会被改动。准备好副本再启动，左栏的开关才会真正生效。")}</span>
+          <div className="claude-l10n-steps" role="list">
+            <div className="claude-l10n-step" data-done={s?.prepared ? "true" : "false"} role="listitem">
+              <span className="claude-l10n-step-no" aria-hidden="true">{s?.prepared ? "✓" : "1"}</span>
+              <div className="claude-l10n-step-body">
+                <strong>{t("准备副本")}</strong>
+                <small>{t("用下面的按钮创建受管副本；官方 Claude.app 与 app.asar 保持原样。")}</small>
+              </div>
             </div>
-          ) : null}
+            <div className="claude-l10n-step" data-done={s?.running ? "true" : "false"} role="listitem">
+              <span className="claude-l10n-step-no" aria-hidden="true">{s?.running ? "✓" : "2"}</span>
+              <div className="claude-l10n-step-body">
+                <strong>{t("启动 Claude 副本")}</strong>
+                <small>{t("增强只在副本里生效，官方版和登录态不受影响。")}</small>
+              </div>
+            </div>
+            <div className="claude-l10n-step" role="listitem">
+              <span className="claude-l10n-step-no" aria-hidden="true">3</span>
+              <div className="claude-l10n-step-body">
+                <strong>{t("在左边开启需要的增强")}</strong>
+                <small>{t("界面汉化与语音输入各自独立，改动在重启副本后应用。")}</small>
+              </div>
+            </div>
+          </div>
           <div className="claude-l10n-stats">
             <div className="claude-l10n-stat">
               <span>{t("官方版本")}</span>
