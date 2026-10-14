@@ -213,6 +213,11 @@ function install() {
     // 语音脚本缺失不该影响汉化本身，只记一条日志。
     log('cannot read ' + DICTATION_FILE + ': ' + (e && e.message));
   }
+  // 管理器的「语音输入」关掉时不注入：页面里既没有入口，也不注册调用通道。
+  if (globalThis.__claudeCnVoiceInput === false) {
+    DICTATION = '';
+    log('voice input disabled by settings');
+  }
 
   const HOST = /(^|\.)claude\.(ai|com)$/;
   const hostOf = (url) => {
@@ -303,17 +308,20 @@ function install() {
       if (!dbg.isAttached()) dbg.attach('1.3');
       // Runtime 域必须先打开，bindingCalled 事件才会派发。
       dbg.sendCommand('Runtime.enable').catch(() => {});
-      dbg.sendCommand('Runtime.addBinding', { name: BINDING }).catch((e) => {
-        log('dictation binding failed: ' + (e && e.message));
-      });
-      dbg.on('message', (_event, method, params) => {
-        if (method !== 'Runtime.bindingCalled' || !params || params.name !== BINDING) return;
-        try {
-          handleDictationCall(wc, params.payload);
-        } catch (e) {
-          log('dictation dispatch error: ' + (e && e.message));
-        }
-      });
+      // 语音输入关掉时连通道都不注册：页面里不会出现那个可调用的全局函数。
+      if (DICTATION) {
+        dbg.sendCommand('Runtime.addBinding', { name: BINDING }).catch((e) => {
+          log('dictation binding failed: ' + (e && e.message));
+        });
+        dbg.on('message', (_event, method, params) => {
+          if (method !== 'Runtime.bindingCalled' || !params || params.name !== BINDING) return;
+          try {
+            handleDictationCall(wc, params.payload);
+          } catch (e) {
+            log('dictation dispatch error: ' + (e && e.message));
+          }
+        });
+      }
       dbg.sendCommand('Page.enable').catch(() => {});
       dbg
         .sendCommand('Page.addScriptToEvaluateOnNewDocument', {

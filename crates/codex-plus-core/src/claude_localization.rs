@@ -73,6 +73,8 @@ pub struct ClaudeLocalizationStatus {
     pub python_available: bool,
     pub shell_locale: Option<String>,
     pub catalog_entries: usize,
+    /// 副本页面里是否带语音入口；关掉后已在运行的副本要重启才会消失。
+    pub voice_input: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,7 +318,25 @@ pub fn status() -> ClaudeLocalizationStatus {
         python_available: find_runtime("python3").is_some(),
         shell_locale,
         catalog_entries,
+        voice_input: voice_input_enabled(),
     }
+}
+
+/// 语音入口开关。读不到设置时按开启处理，与 settings 里的默认值保持一致。
+fn voice_input_enabled() -> bool {
+    crate::settings::SettingsStore::default()
+        .load()
+        .map(|settings| settings.claude_app_voice_input)
+        .unwrap_or(true)
+}
+
+/// 写入语音入口开关。只改 Codex++ 自己的设置，不触碰副本与官方应用。
+pub fn set_voice_input(enabled: bool) -> Result<ClaudeLocalizationStatus> {
+    let store = crate::settings::SettingsStore::default();
+    let mut settings = store.load()?;
+    settings.claude_app_voice_input = enabled;
+    store.save(&settings)?;
+    Ok(status())
 }
 
 fn install_assets(root: &Path) -> Result<()> {
@@ -341,6 +361,11 @@ fn run_script(program: &Path, script: &str, copy: &Path, args: &[&str]) -> Resul
         .args(args)
         .env("CODEX_PLUS_CLAUDE_SOURCE", source_app())
         .env("CODEX_PLUS_CLAUDE_COPY", copy)
+        // 启动脚本据此决定要不要给页面注入语音入口；构建/校验脚本读到也无害。
+        .env(
+            "CODEX_PLUS_CLAUDE_VOICE_INPUT",
+            if voice_input_enabled() { "1" } else { "0" },
+        )
         .stdout(output.try_clone()?)
         .stderr(output)
         .spawn()

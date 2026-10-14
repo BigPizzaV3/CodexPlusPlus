@@ -555,6 +555,10 @@ pub struct BackendSettings {
     // 默认开启：纯展示层状态栏，不改变 Codex 的请求内容与本地数据，误开没有副作用。
     #[serde(rename = "codexAppUsageStatusLine", default = "default_true")]
     pub codex_app_usage_status_line: bool,
+    // 默认开启：只在受管副本的页面里加一个语音入口，识别走 Codex++ 自己的听写服务，
+    // 不改官方应用、不动输入框已有内容；关掉只是没有入口，已运行的副本需重启才生效。
+    #[serde(rename = "claudeAppVoiceInput", default = "default_true")]
+    pub claude_app_voice_input: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
     // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
@@ -767,6 +771,7 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_session_share: true,
             codex_app_usage_status_line: true,
+            claude_app_voice_input: true,
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
@@ -2429,6 +2434,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn claude_voice_input_defaults_on_and_survives_a_missing_key() {
+        // 老用户的 settings.json 里没有这个键：必须按默认开启读出来，否则升级后
+        // 语音入口会静默消失，用户会以为是坏了，而不是自己关掉的。
+        let mut legacy = serde_json::to_value(BackendSettings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("claudeAppVoiceInput");
+        let parsed: BackendSettings = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.claude_app_voice_input, "缺少键时应按默认开启");
+
+        let mut off = serde_json::to_value(BackendSettings::default()).unwrap();
+        off["claudeAppVoiceInput"] = json!(false);
+        let parsed: BackendSettings = serde_json::from_value(off).unwrap();
+        assert!(!parsed.claude_app_voice_input, "显式关闭必须被尊重");
     }
 
     #[test]

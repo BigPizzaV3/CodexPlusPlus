@@ -104,3 +104,25 @@ test("Code 与 Cowork 两套发送键都要认得", () => {
     "模式切换后 composer 会被整块重建，需要低频兜底重挂",
   );
 });
+
+test("语音输入开关关闭时不注入入口、也不注册调用通道", () => {
+  // 管理器的「Claude 增强 → 语音输入」把开关写进环境变量，注入器再交给 hook。
+  assert.ok(
+    hook.includes("__claudeCnVoiceInput === false"),
+    "hook 必须按开关决定是否注入 page-dictation.js",
+  );
+  assert.ok(
+    hook.includes("if (DICTATION)") && hook.includes("Runtime.addBinding"),
+    "关掉时不应注册 CDP binding，页面里不该出现可调用的全局函数",
+  );
+  const injector = read("assets/claude-localization/inject-cn.js");
+  assert.ok(
+    injector.includes("CODEX_PLUS_CLAUDE_VOICE_INPUT"),
+    "注入器必须读取管理器传来的开关",
+  );
+  const localization = read("crates/codex-plus-core/src/claude_localization.rs");
+  assert.ok(
+    localization.includes("CODEX_PLUS_CLAUDE_VOICE_INPUT"),
+    "启动脚本的环境变量名两端必须一致",
+  );
+});
