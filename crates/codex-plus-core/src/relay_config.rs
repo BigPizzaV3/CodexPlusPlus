@@ -3131,12 +3131,12 @@ fn apply_model_catalog_to_config_with_live_policy(
         (!lite_supported).then_some(false),
         official_deepseek_responses,
     );
+    let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
     let catalog_json = if upstream_rejects_tool_search(profile) {
         disable_search_tool_in_catalog(&catalog_json)?
     } else {
         catalog_json
     };
-    let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
@@ -3531,7 +3531,9 @@ fn kimi_official_base_url(base_url: &str) -> bool {
 }
 
 /// 把 catalog 里所有模型的 `supports_search_tool` 置为 false。
-/// 须在 `apply_model_metadata_overrides` 之前调用，用户显式声明仍然优先。
+/// 须在 `apply_model_metadata_overrides` 之后调用：管理器「保存此模型」会把整份元数据
+/// （含模板里的 `supports_search_tool: true`）存成覆盖，覆盖优先会让改任意一项就复发；
+/// 上游本来就拒收该工具，允许打开没有意义。
 pub(crate) fn disable_search_tool_in_catalog(catalog_json: &str) -> anyhow::Result<String> {
     let mut catalog: Value = serde_json::from_str(catalog_json)
         .map_err(|error| anyhow::anyhow!("catalog JSON 解析失败：{error}"))?;

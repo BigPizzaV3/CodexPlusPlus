@@ -442,15 +442,16 @@ fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Value> {
     let fallback = parse_window_token(&profile.context_window);
     let catalog_json =
         build_model_catalog_json_with_capabilities(&entries, fallback, None, Some(false), false);
-    // 聚合代理按成员原生协议转发，成员上游不认 tool_search 时同样要在目录里关掉。
+    let metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
+    let catalog_json =
+        crate::relay_config::apply_model_metadata_overrides(&catalog_json, &metadata)?;
+    // 聚合代理按成员原生协议转发，成员上游不认 tool_search 时同样要在目录里关掉；
+    // 放在元数据覆盖之后，已保存的整份元数据不能把它重新打开。
     let catalog_json = if crate::relay_config::upstream_rejects_tool_search(profile) {
         crate::relay_config::disable_search_tool_in_catalog(&catalog_json)?
     } else {
         catalog_json
     };
-    let metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
-    let catalog_json =
-        crate::relay_config::apply_model_metadata_overrides(&catalog_json, &metadata)?;
     Ok(serde_json::from_str(&catalog_json)?)
 }
 
@@ -621,8 +622,8 @@ mod tests {
             .any(|model| model["slug"] == "cpx-openai/gpt-5.6-sol"));
     }
 
-    /// Kimi 官方成员按原生 Responses 转发时上游不认 tool_search，目录里要关掉；
-    /// 其他成员保持模板原值。
+    /// Kimi 官方成员按原生 Responses 转发时上游不认 tool_search，目录里要关掉，
+    /// 已保存的元数据覆盖也不能重新打开；其他成员保持模板原值。
     #[test]
     fn kimi_official_responses_member_disables_search_tool() {
         let mut settings = settings();
@@ -637,6 +638,8 @@ mod tests {
                 api_key: "sk-kimi".to_string(),
                 protocol: crate::settings::RelayProtocol::Responses,
                 relay_mode: RelayMode::PureApi,
+                // 管理器「保存此模型」存下的整份元数据会带着模板里的 true。
+                model_metadata: r#"{"kimi-k3":{"supports_search_tool":true}}"#.to_string(),
                 ..RelayProfile::default()
             },
         );

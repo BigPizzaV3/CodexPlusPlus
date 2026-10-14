@@ -6776,7 +6776,7 @@ base_url = "https://relay.example.test/v1"
 }
 
 /// Kimi 官方 Responses 接口不认 `tool_search` 工具（整单 400）：即使没配窗口也要落
-/// catalog，并把 `supports_search_tool` 关掉；用户在元数据里显式声明仍然优先。
+/// catalog，并把 `supports_search_tool` 关掉；管理器保存的整份元数据带着 true 也不能重新打开。
 #[test]
 fn apply_kimi_official_responses_disables_search_tool_in_catalog() {
     let temp = tempfile::tempdir().unwrap();
@@ -6823,7 +6823,7 @@ base_url = "https://api.moonshot.cn/v1"
         .iter()
         .find(|model| model["slug"] == "kimi-k3")
         .unwrap();
-    assert_eq!(k3["supports_search_tool"], true);
+    assert_eq!(k3["supports_search_tool"], false);
 }
 
 /// 其他 Responses 上游不受影响：没有窗口/元数据时仍保持「不落 catalog」。
