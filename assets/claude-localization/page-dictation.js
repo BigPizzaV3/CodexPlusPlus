@@ -232,17 +232,20 @@
     /**
      * 找发送键所在的那一排按钮，返回插入位置。
      *
-     * 实测（Claude 2.31226）输入框右下角的动作区是「发送按钮 → DIV.flex → …
-     * → DIV.flex.items-center.gap-xs」，官方自己的动作按钮就排在这个带 gap 的容器里，
-     * 所以插到它的第一个子节点之前，入口就落在发送键左侧、间距与其他按钮一致。
+     * 两套界面的发送键完全不同：Code 模式是 `code-prompt-send` /「发送」，Cowork 模式是
+     * `chat-input-send` /「开始任务」。所以先按 testid 命中，再按动作词兜底，最后退到
+     * 「发送键的父容器」——实测 Cowork 的父容器就是一个只放发送键的 flex，插在它前面
+     * 正好落在同一排。官方自己的动作按钮都排在带 gap 的 flex 里，优先用那种容器。
      */
     function findActionRow(scope) {
-      var send = scope.querySelector('[data-testid="code-prompt-send"], [data-testid="epitaxy-cds-send"]');
+      var send = scope.querySelector(
+        '[data-testid="code-prompt-send"], [data-testid="chat-input-send"], [data-testid="epitaxy-cds-send"]',
+      );
       if (!send) {
         var buttons = scope.querySelectorAll('button');
         for (var i = 0; i < buttons.length; i++) {
-          var label = buttons[i].getAttribute('aria-label') || buttons[i].title || '';
-          if (/^(发送|Send|停止|Stop)/.test(label)) {
+          var label = (buttons[i].getAttribute('aria-label') || buttons[i].title || '').trim();
+          if (/^(发送|开始任务|新建任务|Send|Start|运行|Run|停止|Stop)/.test(label)) {
             send = buttons[i];
             break;
           }
@@ -253,11 +256,11 @@
       for (var depth = 0; depth < 4 && node; depth++) {
         var style = window.getComputedStyle(node);
         if (style.display.indexOf('flex') >= 0 && style.gap && style.gap !== 'normal') {
-          return { row: node, before: node.firstElementChild };
+          return { row: node, before: node.firstElementChild, spaced: true };
         }
         node = node.parentElement;
       }
-      return send.parentElement ? { row: send.parentElement, before: send } : null;
+      return send.parentElement ? { row: send.parentElement, before: send, spaced: false } : null;
     }
 
     // ---------- 录音 ----------
@@ -530,7 +533,9 @@
       for (var depth = 0; depth < 8 && node && node !== document.body; depth++) {
         if (
           node.querySelector &&
-          node.querySelector('[data-testid="code-prompt-send"], [data-testid="epitaxy-cds-send"]')
+          node.querySelector(
+            '[data-testid="code-prompt-send"], [data-testid="chat-input-send"], [data-testid="epitaxy-cds-send"]',
+          )
         ) {
           return node;
         }
@@ -545,13 +550,15 @@
       if (!editor) return;
       var dock = findDock(editor);
       if (!dock) return;
-      // 优先落在发送键左侧的动作区；拿不到动作区就退回原来的容器。
-      var action = findActionRow(composerScope(editor) || dock) || { row: dock, before: null };
+      // 优先落在发送键左侧的动作区；拿不到动作区就退回编辑器所在的容器。
+      var action = findActionRow(composerScope(editor) || dock) || { row: dock, before: null, spaced: true };
       var existing = document.getElementById(BUTTON_ID);
       if (existing && existing.parentNode === action.row) {
         state.editor = editor;
         state.dock = action.row;
         state.button = existing;
+        // 官方容器自带 gap 时不要额外留白；没有 gap 的容器（Cowork 的发送键父层）自己补。
+        existing.style.marginRight = action.spaced ? '' : '6px';
         return;
       }
       installStyle();
@@ -559,6 +566,7 @@
       // 状态留在 state 里，新按钮按当前 phase 重画即可。
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
       var button = makeButton();
+      button.style.marginRight = action.spaced ? '' : '6px';
       if (action.before && action.before.parentNode === action.row) {
         action.row.insertBefore(button, action.before);
       } else {
@@ -596,6 +604,9 @@
     setTimeout(schedule, 0);
     setTimeout(schedule, 1500);
     setTimeout(schedule, 5000);
+    // 低频兜底：在 Code / Cowork 之间切换、开关侧栏时整块 composer 可能被重建，
+    // 实测有 MutationObserver 没抓到的情形，靠这一轮保证入口一定会回来。
+    setInterval(schedule, 2500);
 
     return 'ok';
   } catch (e) {

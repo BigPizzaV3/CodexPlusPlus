@@ -92,3 +92,15 @@ test("音频上传字段按白名单收敛，不把页面内容塞进请求头",
     "helper 转写需要能力令牌，缺了会 403",
   );
 });
+
+test("Code 与 Cowork 两套发送键都要认得", () => {
+  // 两套界面的发送键 testid 与文案完全不同：Code 是 code-prompt-send /「发送」，
+  // Cowork 是 chat-input-send /「开始任务」。少认一套，入口就会掉到编辑器容器的末尾。
+  assert.ok(page.includes("code-prompt-send"), "缺少 Code 模式的发送键 testid");
+  assert.ok(page.includes("chat-input-send"), "缺少 Cowork 模式的发送键 testid");
+  assert.ok(page.includes("开始任务"), "Cowork 的发送键标签是「开始任务」，兜底匹配必须覆盖");
+  assert.ok(
+    page.includes("setInterval(schedule"),
+    "模式切换后 composer 会被整块重建，需要低频兜底重挂",
+  );
+});
