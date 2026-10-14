@@ -11559,8 +11559,10 @@ function ClaudeLocalizationScreen() {
     setBusy(action); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
-      setStatus(result);
-      if (result.status !== "ok") setError(result.message);
+      // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
+      // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (result.status === "ok") setStatus(result);
+      else setError(result.message);
     } catch (cause) { setError(stringifyError(cause)); }
     finally { setBusy(null); }
   };
@@ -11571,8 +11573,10 @@ function ClaudeLocalizationScreen() {
         "claude_localization_set_voice_input",
         { enabled },
       );
-      setStatus(result);
-      if (result.status !== "ok") setError(result.message);
+      // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
+      // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (result.status === "ok") setStatus(result);
+      else setError(result.message);
     } catch (cause) { setError(stringifyError(cause)); }
     finally { setBusy(null); }
   };
@@ -11583,8 +11587,10 @@ function ClaudeLocalizationScreen() {
         "claude_localization_set_localization",
         { enabled },
       );
-      setStatus(result);
-      if (result.status !== "ok") setError(result.message);
+      // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
+      // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (result.status === "ok") setStatus(result);
+      else setError(result.message);
     } catch (cause) { setError(stringifyError(cause)); }
     finally { setBusy(null); }
   };
@@ -11674,7 +11680,7 @@ function ClaudeLocalizationScreen() {
             </div>
             <div className="claude-l10n-stat">
               <span>{t("官方词条")}</span>
-              <strong>{s ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")}</strong>
+              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")}</strong>
             </div>
           </div>
           <div className="claude-l10n-note" role="note">
