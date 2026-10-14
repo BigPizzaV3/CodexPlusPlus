@@ -11657,10 +11657,10 @@ function ClaudeLocalizationScreen() {
           {error ? <div className="inline-error">{error}</div> : null}
           <div className="claude-l10n-actions">
             <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
-              <PackageOpen className="h-4 w-4" />{busy === "prepare" ? t("准备中…") : t("准备汉化副本")}
+              <PackageOpen className="h-4 w-4" />{busy === "prepare" ? t("准备中…") : t("准备副本")}
             </Button>
             <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")}>
-              <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动中文 Claude")}
+              <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动 Claude 副本")}
             </Button>
             <div className="claude-l10n-actions-secondary">
               <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
