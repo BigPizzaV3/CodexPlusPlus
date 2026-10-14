@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -295,6 +295,80 @@ async fn first_rejected_400_honors_retry_after_before_exec_retry() {
         1,
         "the compatibility retry must not be sent during Retry-After"
     );
+}
+
+#[tokio::test]
+async fn first_rejected_400_honors_http_date_before_exec_retry() {
+    let _lock = settings_path_test_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let server = MockServer::start().await;
+    let _settings = TestSettings::new(&server);
+    let retry_at = Arc::new(Mutex::new(None));
+    let retry_sent_at = Arc::new(Mutex::new(None));
+    let deadline = retry_at.clone();
+    let observed = retry_sent_at.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |incoming: &Request| {
+            if is_custom_exec(&incoming.body_json::<Value>().unwrap()) {
+                let date = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(3));
+                *deadline.lock().unwrap() = Some(httpdate::parse_http_date(&date).unwrap());
+                exec_rejection().insert_header("Retry-After", date)
+            } else {
+                *observed.lock().unwrap() = Some(SystemTime::now());
+                ResponseTemplate::new(200).set_body_json(function_response(
+                    &json!({"input": PROGRAM}).to_string(),
+                    "call_http_date",
+                ))
+            }
+        })
+        .mount(&server)
+        .await;
+
+    let original = request("http-date-model");
+    let (response, json) =
+        tokio::time::timeout(Duration::from_secs(10), client_response(&original))
+            .await
+            .expect("compatibility retry should finish after the HTTP-date deadline");
+    assert_eq!(response.status, "200 OK");
+    assert_client_exec(&json, PROGRAM, "call_http_date");
+    assert!(
+        retry_sent_at.lock().unwrap().unwrap() >= retry_at.lock().unwrap().unwrap(),
+        "compatibility retry was sent before the server's HTTP-date deadline"
+    );
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 2);
+    assert_function_bridge(&received[1].body_json::<Value>().unwrap(), &original);
+}
+
+#[tokio::test]
+async fn past_http_date_allows_exec_retry_without_delay() {
+    let _lock = settings_path_test_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let server = MockServer::start().await;
+    let _settings = TestSettings::new(&server);
+    Mock::given(method("POST"))
+        .respond_with(move |incoming: &Request| {
+            if is_custom_exec(&incoming.body_json::<Value>().unwrap()) {
+                exec_rejection().insert_header("Retry-After", "Thu, 01 Jan 1970 00:00:00 GMT")
+            } else {
+                ResponseTemplate::new(200).set_body_json(function_response(
+                    &json!({"input": PROGRAM}).to_string(),
+                    "call_past_date",
+                ))
+            }
+        })
+        .mount(&server)
+        .await;
+
+    let original = request("past-date-model");
+    let (response, json) = tokio::time::timeout(Duration::from_secs(2), client_response(&original))
+        .await
+        .expect("past HTTP-date must not postpone the compatibility retry");
+    assert_eq!(response.status, "200 OK");
+    assert_client_exec(&json, PROGRAM, "call_past_date");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
 #[tokio::test]

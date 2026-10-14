@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use serde_json::{Map, Value, json};
@@ -151,6 +151,22 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+
+fn exec_retry_after_duration(
+    headers: &reqwest::header::HeaderMap,
+    now: SystemTime,
+) -> Option<Duration> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let retry_at = httpdate::parse_http_date(value).ok()?;
+    Some(retry_at.duration_since(now).unwrap_or_default())
+}
 
 /// codex v2 远程压缩请求在 input 末尾携带的控制 item（openai/codex compact_remote_v2）。
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
@@ -2204,12 +2220,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 
         if eligible && !exec_adapted && !exec_negotiation_used && status_code == 400 {
             let retry = async {
-                let first_retry_after = upstream
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.trim().parse::<u64>().ok())
-                    .map(std::time::Duration::from_secs);
+                let first_retry_after =
+                    exec_retry_after_duration(upstream.headers(), SystemTime::now());
                 let (inspected, rejected) =
                     crate::responses_exec_transport::inspect_rejection(upstream, &upstream_body).await?;
                 upstream = inspected;
@@ -7706,6 +7718,66 @@ mod relay_custom_header_tests {
             request.headers().get("authorization").unwrap(),
             "Bearer explicit"
         );
+    }
+}
+
+#[cfg(test)]
+mod exec_retry_after_tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, RETRY_AFTER};
+
+    fn headers(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, value.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn delta_seconds_are_preserved() {
+        assert_eq!(
+            exec_retry_after_duration(&headers(" 90 "), SystemTime::UNIX_EPOCH),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            exec_retry_after_duration(&headers("0"), SystemTime::UNIX_EPOCH),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn future_http_date_uses_remaining_delay() {
+        let retry_at = SystemTime::UNIX_EPOCH + Duration::from_secs(180);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(90_250);
+        assert_eq!(
+            exec_retry_after_duration(&headers(&httpdate::fmt_http_date(retry_at)), now),
+            Some(Duration::from_millis(89_750))
+        );
+    }
+
+    #[test]
+    fn past_http_date_is_immediate() {
+        assert_eq!(
+            exec_retry_after_duration(
+                &headers("Thu, 01 Jan 1970 00:00:00 GMT"),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+            ),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn missing_and_invalid_values_are_ignored() {
+        assert_eq!(
+            exec_retry_after_duration(&HeaderMap::new(), SystemTime::UNIX_EPOCH),
+            None
+        );
+        for value in ["", "not-a-date", "-1", "1.5"] {
+            assert_eq!(
+                exec_retry_after_duration(&headers(value), SystemTime::UNIX_EPOCH),
+                None,
+                "{value}"
+            );
+        }
     }
 }
 
