@@ -101,7 +101,9 @@
       style.setAttribute(MARK, 'style');
       style.textContent =
         '#' + BUTTON_ID + '{display:inline-flex;align-items:center;justify-content:center;' +
-        'width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;' +
+        // align-self 是必需的：插进 Cowork 那一行时，宿主容器的默认对齐会把固定高度的
+        // 按钮顶到上沿，看起来比发送键高半格。
+        'align-self:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;' +
         'color:inherit;opacity:.72;cursor:pointer;flex:0 0 auto;transition:opacity .15s,background .15s}' +
         '#' + BUTTON_ID + ':hover{opacity:1;background:color-mix(in srgb,currentColor 12%,transparent)}' +
         '#' + BUTTON_ID + '[data-phase="recording"]{opacity:1;color:#e5484d;background:color-mix(in srgb,#e5484d 16%,transparent)}' +
@@ -252,13 +254,19 @@
         }
       }
       if (!send) return null;
-      var node = send.parentElement;
-      for (var depth = 0; depth < 4 && node; depth++) {
-        var style = window.getComputedStyle(node);
+      // 从发送键往上找「这一行的容器」：横向 flex 且带间距，说明官方在这一行排按钮。
+      // 注意要往上够深：Cowork 的发送键外面裹了 4 层单元素 div，第 5 层才是那一行，
+      // 上溯不够就会退化成「塞进发送键的父容器」，结果贴着左边的模型选择器、还贴顶。
+      var node = send;
+      for (var depth = 0; depth < 8 && node && node.parentElement; depth++) {
+        var parent = node.parentElement;
+        var style = window.getComputedStyle(parent);
         if (style.display.indexOf('flex') >= 0 && style.gap && style.gap !== 'normal') {
-          return { row: node, before: node.firstElementChild, spaced: true };
+          // 插到「含发送键的那个子元素」之前，而不是容器最前面——容器的第一个子元素
+          // 可能是模型选择器之类的左侧内容。
+          return { row: parent, before: node, spaced: true };
         }
-        node = node.parentElement;
+        node = parent;
       }
       return send.parentElement ? { row: send.parentElement, before: send, spaced: false } : null;
     }
