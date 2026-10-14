@@ -89,6 +89,14 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn load_user_scripts(&self) -> anyhow::Result<Value> {
         self.user_script_inventory().await
     }
+    /// 列出拓展可注入的 Codex 页面。默认关闭，具体 runtime 再接 CDP。
+    async fn cdp_targets(&self) -> anyhow::Result<Value> {
+        anyhow::bail!("CDP targets are unavailable")
+    }
+    /// 在指定 Codex 页面执行表达式。默认关闭。
+    async fn cdp_evaluate(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("CDP evaluate is unavailable")
+    }
     /// 拉市场清单，并合并本地已安装状态。
     async fn script_market_list(&self) -> anyhow::Result<Value> {
         anyhow::bail!("script market is unavailable")
@@ -187,6 +195,52 @@ pub trait BridgeDataService: Send + Sync {
     }
 }
 
+/// 拓展脚本在独立 Codex 页面（例如宠物 overlay）执行表达式。
+/// 只走 Runtime.evaluate，且必须指定 kind 或 target_id，避免误打到管理页。
+pub const EXTENSION_CDP_EXPRESSION_MAX_BYTES: usize = 256 * 1024;
+
+fn nonempty_payload_str<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+pub async fn evaluate_extension_cdp(debug_port: u16, payload: &Value) -> anyhow::Result<Value> {
+    let expression = nonempty_payload_str(payload, "expression")
+        .ok_or_else(|| anyhow::anyhow!("expression 不能为空"))?;
+    if expression.len() > EXTENSION_CDP_EXPRESSION_MAX_BYTES {
+        anyhow::bail!("expression 超过 {} 字节上限", EXTENSION_CDP_EXPRESSION_MAX_BYTES);
+    }
+    let target_id = nonempty_payload_str(payload, "target_id")
+        .or_else(|| nonempty_payload_str(payload, "targetId"));
+    let kind = nonempty_payload_str(payload, "kind");
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let selected = crate::cdp::select_extension_cdp_targets(&targets, target_id, kind)?;
+    let mut results = Vec::new();
+    for target in selected {
+        let websocket = target
+            .web_socket_debugger_url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("CDP 页面没有 WebSocket URL"))?;
+        let result = match crate::bridge::evaluate_script(websocket, expression).await {
+            Ok(response) => json!({
+                "id": target.id,
+                "ok": true,
+                "value": response.pointer("/result/result/value").cloned().unwrap_or(Value::Null),
+            }),
+            Err(error) => json!({
+                "id": target.id,
+                "ok": false,
+                "error": error.to_string(),
+            }),
+        };
+        results.push(result);
+    }
+    Ok(json!({ "status": "ok", "results": results }))
+}
+
 pub async fn handle_bridge_request(
     ctx: BridgeContext,
     path: &str,
@@ -262,6 +316,8 @@ pub async fn handle_bridge_request(
         }
         "/user-scripts/load" => ctx.runtime.load_user_scripts().await,
         "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
+        "/cdp/targets" => ctx.runtime.cdp_targets().await,
+        "/cdp/evaluate" => ctx.runtime.cdp_evaluate(payload.clone()).await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager(payload.clone()).await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager(payload.clone()).await,
@@ -602,6 +658,14 @@ impl BridgeRuntimeService for CoreRuntimeService {
             anyhow::bail!("Codex 页面尚未连接");
         }
         self.user_script_inventory().await
+    }
+
+    async fn cdp_targets(&self) -> anyhow::Result<Value> {
+        crate::cdp::list_extension_cdp_targets(self.debug_port).await
+    }
+
+    async fn cdp_evaluate(&self, payload: Value) -> anyhow::Result<Value> {
+        evaluate_extension_cdp(self.debug_port, &payload).await
     }
 
     async fn open_devtools(&self) -> anyhow::Result<Value> {

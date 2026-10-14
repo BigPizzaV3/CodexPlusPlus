@@ -2017,7 +2017,7 @@ describe("拓展接口层", () => {
     return Array.from(body.matchAll(/"([^"]+)"/g), ([, route]) => route);
   }
 
-  it("路由白名单只放只读能力，不含设置写入与远端控制", async () => {
+  it("路由白名单不含设置写入与远端控制，CDP 注入需显式开放", async () => {
     const routes = await readRouteWhitelist();
     assert.ok(routes.length > 0, "白名单不能为空");
     // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
@@ -2025,6 +2025,8 @@ describe("拓展接口层", () => {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
+    assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
+    assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
   });
 
   it("接口对象在 IIFE 收尾前挂载", async () => {

@@ -1621,6 +1621,16 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         codex_plus_core::user_scripts::reload_scripts_at(&websocket_url, &self.user_scripts).await
     }
 
+    async fn cdp_targets(&self) -> anyhow::Result<Value> {
+        let debug_port = *self.debug_port.lock().unwrap();
+        codex_plus_core::cdp::list_extension_cdp_targets(debug_port).await
+    }
+
+    async fn cdp_evaluate(&self, payload: Value) -> anyhow::Result<Value> {
+        let debug_port = *self.debug_port.lock().unwrap();
+        codex_plus_core::routes::evaluate_extension_cdp(debug_port, &payload).await
+    }
+
     async fn script_market_list(&self) -> anyhow::Result<Value> {
         codex_plus_core::script_market::list_market_scripts(&self.user_scripts).await
     }

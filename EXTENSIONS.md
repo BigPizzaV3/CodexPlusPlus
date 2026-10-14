@@ -282,8 +282,20 @@ window.codexPlus.call("/session/export", { session_id })
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
 | `/user-scripts/list` | 读拓展清单 |
+| `/cdp/targets` | 列出可注入的 Codex 页面（`main` / `avatar-overlay` / `quick-chat`） |
+| `/cdp/evaluate` | 在匹配的 Codex 页面执行 JS 表达式 |
 
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo`、`/share/create` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+
+`/cdp/evaluate` 是显式开放的底层注入能力，用来把脚本打进宠物 overlay 这类独立窗口。它**不是**任意 CDP 协议：只能 `Runtime.evaluate`，只能打到 `app://-/index.html` 的 Codex 页面，返回值里也不带 WebSocket URL。调用时必须提供 `kind` 或 `target_id` 其一：
+
+```js
+const { targets } = await window.codexPlus.call("/cdp/targets");
+await window.codexPlus.call("/cdp/evaluate", {
+  kind: "avatar-overlay",
+  expression: "window.__myOverlayHook = true",
+});
+```
 
 ---
 
