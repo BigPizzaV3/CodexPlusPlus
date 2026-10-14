@@ -228,6 +228,15 @@ pub struct AggregateRelayProfile {
     /// 空串表示未设置，此时保持原有的 400 报错行为。
     #[serde(default)]
     pub default_relay_id: String,
+    /// 把默认成员的官方登录同步进 Codex（auth.json 的 `tokens` 段）。
+    ///
+    /// 聚合的请求都发往本地代理，默认切换只写一个代理 Key，于是 Codex 侧显示"未登录"，
+    /// 官方成员的账号态与额度都不在 Codex 里体现。打开这个开关后，切换聚合时会把默认
+    /// 成员的 ChatGPT 凭据一并写进 live auth.json（代理 Key 与其它字段保留），账号在
+    /// Codex 里就是登录态。默认关：它会把某个账号的凭据写进 Codex 的凭据文件，
+    /// 应当由用户显式选择。
+    #[serde(rename = "syncDefaultMemberLogin", default)]
+    pub sync_default_member_login: bool,
 }
 
 impl Default for RelayProfile {
@@ -3353,6 +3362,7 @@ experimental_bearer_token = "sk-existing""#
                 name: "聚合".to_string(),
                 session_provider: RelaySessionProvider::Openai,
                 model_aggregation_enabled: true,
+                sync_default_member_login: false,
                 strategy: AggregateRelayStrategy::WeightedRoundRobin,
                 members: vec![
                     AggregateRelayMember {

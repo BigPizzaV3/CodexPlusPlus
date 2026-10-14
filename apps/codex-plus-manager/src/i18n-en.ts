@@ -1067,6 +1067,12 @@ export const EN_PLAIN: Record<string, string> = {
     "This aggregate merges member models into the Codex list; prefixed models stay bound to their member, while plain model names still follow the strategy.",
   "聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。":
     "An aggregate provider needs at least 1 usable member (an API provider or a signed-in official account).",
+  "把默认成员的官方登录同步到 Codex":
+    "Sync the default member's official login into Codex",
+  "开启后切换到本聚合时，会把默认成员的 ChatGPT 凭据一并写进 Codex（代理 Key 保留），账号在 Codex 里就是登录态。默认成员不是官方登录时无效。":
+    "When enabled, switching to this aggregate also writes the default member's ChatGPT credentials into Codex (the proxy key is kept), so the account shows as signed in. No effect when the default member is not an official login.",
+  "当前默认成员不是官方登录账号，无法把登录同步到 Codex；只有「官方登录」类型的成员才有 ChatGPT 凭据。":
+    "The current default member is not an official-login account, so its login cannot be synced into Codex; only official-login members carry ChatGPT credentials.",
   "聚合策略": "Aggregate strategy",
   "故障转移": "Failover",
   "模型聚合": "Model aggregation",

@@ -471,6 +471,8 @@ type RelayAggregateConfig = {
   modelAggregationEnabled?: boolean;
   /** 默认供应商：解析不到成员的普通模型请求交给该成员转发；空串表示未设置。 */
   defaultRelayId?: string;
+  /** 把默认成员的官方登录同步进 Codex（写 auth.json 的 tokens 段）。默认关。 */
+  syncDefaultMemberLogin?: boolean;
 };
 type AggregateRelayMember = {
   relayId: string;
@@ -485,6 +487,8 @@ type AggregateRelayProfile = {
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
   defaultRelayId?: string;
+  /** 把默认成员的官方登录同步进 Codex（auth.json 的 tokens 段）。默认关。 */
+  syncDefaultMemberLogin?: boolean;
 };
 
 type RelayContextSelection = {
@@ -10326,6 +10330,11 @@ function AggregateRelayProfileEditor({
     });
   };
   const totalWeight = aggregate.members.reduce((total, member) => total + clampAggregateWeight(member.weight), 0);
+  // 只有"纯官方登录"成员才有 ChatGPT 凭据可同步；带 URL/Key 的官方混入走 API 通道。
+  const defaultMemberCandidate = candidates.find((candidate) => candidate.id === aggregate.defaultRelayId);
+  const defaultMemberIsOfficialLogin = !!defaultMemberCandidate
+    && defaultMemberCandidate.relayMode === "official"
+    && !defaultMemberCandidate.officialMixApiKey;
   const routes = aggregate.routes ?? [];
   const routeTargetOptions = aggregate.members
     .map((member) => {
@@ -10512,6 +10521,26 @@ function AggregateRelayProfileEditor({
               ])
               : t("还没指定默认供应商：在上方成员行尾点「设为默认」。不带 cpx- 前缀的请求会原样交给它，没设就报错。")}
           </span>
+          {defaultMemberIsOfficialLogin ? (
+            <label className="aggregate-default-login-sync">
+              <input
+                checked={aggregate.syncDefaultMemberLogin === true}
+                onChange={(event) => updateAggregate({
+                  ...aggregate,
+                  syncDefaultMemberLogin: event.currentTarget.checked,
+                })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("把默认成员的官方登录同步到 Codex")}</strong>
+                <small>{t("开启后切换到本聚合时，会把默认成员的 ChatGPT 凭据一并写进 Codex（代理 Key 保留），账号在 Codex 里就是登录态。默认成员不是官方登录时无效。")}</small>
+              </span>
+            </label>
+          ) : (
+            <span className="aggregate-default-login-note">
+              {t("当前默认成员不是官方登录账号，无法把登录同步到 Codex；只有「官方登录」类型的成员才有 ChatGPT 凭据。")}
+            </span>
+          )}
         </div>
       ) : null}
       {!modelMode ? <div className="aggregate-routes">
@@ -13243,6 +13272,7 @@ function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: Aggregat
       })),
       routes: normalizeAggregateRoutes(aggregate.routes ?? []),
       defaultRelayId: aggregate.defaultRelayId ?? "",
+      syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
     },
   };
 }
@@ -14194,6 +14224,7 @@ function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): 
         priority: route.priority,
       })),
       defaultRelayId: aggregate.defaultRelayId ?? "",
+      syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
     };
   });
 }
@@ -14521,6 +14552,7 @@ function normalizeAggregateConfig(
     members,
     routes,
     defaultRelayId,
+    syncDefaultMemberLogin: aggregate?.syncDefaultMemberLogin === true,
   };
 }
 

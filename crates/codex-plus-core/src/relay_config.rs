@@ -433,6 +433,51 @@ pub fn apply_relay_config_to_home_with_protocol(
     )
 }
 
+/// 解析"要不要把默认成员的官方登录同步进 Codex"，以及要写进去的凭据。
+///
+/// 返回 `None` 表示本次切换不碰 Token 段（开关关着、不是聚合、或刚升级还没设置过）；
+/// 返回 `Some(Some(contents))` 是要同步的 auth.json 片段；`Some(None)` 表示开关开着
+/// 但默认成员没有可用的官方登录凭据，此时要顺手清掉 live 里残留的登录态。
+fn resolve_synced_chatgpt_tokens(profile: &RelayProfile) -> SyncedChatgptTokens {
+    if profile.relay_mode != crate::settings::RelayMode::Aggregate {
+        return None;
+    }
+    let Ok(settings) = crate::settings::SettingsStore::default().load() else {
+        return None;
+    };
+    let aggregate = settings
+        .aggregate_relay_profiles
+        .iter()
+        .find(|aggregate| aggregate.id == profile.id)?;
+    if !aggregate.sync_default_member_login {
+        return None;
+    }
+    let default_relay_id = aggregate.default_relay_id.trim();
+    if default_relay_id.is_empty() {
+        return Some(String::new());
+    }
+    let Some(member) = settings
+        .relay_profiles
+        .iter()
+        .find(|relay| relay.id == default_relay_id)
+    else {
+        return Some(String::new());
+    };
+    // 只有"纯官方登录"成员才有可写的 ChatGPT 凭据；带 URL/Key 的官方混入走 API 通道。
+    // 拿不到凭据时返回空串：调用方据此清掉 live 里可能残留的、已经不参与聚合的登录态。
+    if !crate::official_login::is_official_login_profile(member) {
+        return Some(String::new());
+    }
+    Some(member.auth_contents.clone())
+}
+
+/// 聚合是否会把默认成员的 ChatGPT 登录同步进 Codex（开关开着且成员确有可用凭据）。
+fn aggregate_syncs_member_login(profile: &RelayProfile) -> bool {
+    resolve_synced_chatgpt_tokens(profile).is_some_and(|contents| {
+        !crate::official_login::chatgpt_account_id_from_auth_contents(&contents).is_empty()
+    })
+}
+
 pub fn apply_relay_config_to_home_with_session_provider(
     home: &Path,
     base_url: &str,
@@ -463,7 +508,7 @@ pub fn apply_relay_config_to_home_with_session_provider(
     // 保留 live auth.json 里已有的其它凭据（尤其是官方 OAuth `tokens`）：
     // 整体覆盖成只含代理 Key 的 JSON 会清掉登录态，重启后 Codex 退回登录页
     // （issue #1604 / PR #1813 的数据完整性风险）。
-    let auth_contents = auth_contents_with_proxy_key(home, "", bearer_token)?;
+    let auth_contents = auth_contents_with_proxy_key(home, "", bearer_token, None)?;
     let backup_path =
         write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
     let status = relay_config_status_from_home(home);
@@ -567,6 +612,7 @@ pub fn apply_relay_profile_files_to_home_with_context(
                 home,
                 &profile.auth_contents,
                 &relay_profile_api_key(profile),
+                None,
             )?
         } else {
             profile.auth_contents.clone()
@@ -755,11 +801,28 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
             // 聚合模式的实际请求发往本地代理，它需要 API 模式的凭据。
             // 不能走 Official 分支删 OPENAI_API_KEY，否则 auth.json 会被清成空文件/空对象，
             // Codex 判定未登录而弹登录页（issue #1604）。
-            let auth_contents = auth_contents_with_proxy_key(
+            //
+            // 聚合默认只写代理 Key，Codex 侧看不到官方成员的账号态；用户在聚合里打开
+            // 「同步默认成员登录」后，这里再把该成员的 ChatGPT 凭据并进去，账号在 Codex
+            // 里就是登录态（`resolve_synced_chatgpt_tokens` 负责判定，默认返回 None）。
+            let synced_login = resolve_synced_chatgpt_tokens(profile);
+            let mut auth_contents = auth_contents_with_proxy_key(
                 home,
                 &profile.auth_contents,
                 &relay_profile_api_key(profile),
+                synced_login.as_deref(),
             )?;
+            // 把默认成员的登录态并进 `tokens` 段：同账号用 live 的更新一代，代理 Key 与
+            // 用户自己的字段都保留。`synced_login` 为空串表示成员没有可用凭据 → 清掉残留。
+            if let Some(member_auth) = synced_login.as_deref()
+                && let Some(merged) = crate::official_login::auth_contents_with_member_login(
+                    &auth_contents,
+                    member_auth,
+                    true,
+                )
+            {
+                auth_contents = merged;
+            }
             apply_relay_files_to_home(home, &compatible_config, &auth_contents)
         } else {
             let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
@@ -4165,13 +4228,26 @@ fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow:
 /// 因此：1) 不清掉 live 里已有的其它凭据；2) 输出永远是合法 JSON 对象，绝不写空文件
 /// （Codex 解析空文件会报 EOF 并退回登录页）；3) live 与快照都不可用时直接报错中止，
 /// 不静默覆盖用户凭据。
+/// 要同步进 Codex 的登录快照。
+///
+/// `None`：这次不碰 Token 段（开关关着、不是聚合 —— 与历史行为完全一致）。
+/// `Some(contents)`：默认成员的 auth.json 快照（可能为空串，表示成员没有可用登录凭据，
+/// 此时要把 live 里残留的 ChatGPT 登录态清掉——否则用户关掉开关、或把默认成员换成
+/// API 供应商之后，Codex 里还挂着一个已经不参与聚合的账号）。
+type SyncedChatgptTokens = Option<String>;
+
 fn auth_contents_with_proxy_key(
     home: &Path,
     auth_contents: &str,
     bearer_token: &str,
+    // synced_login：默认成员的登录快照；`Some("")` 表示"要同步但没有凭据"，
+    // 由调用方清理残留（本函数只负责代理 Key，登录态合并见
+    // `official_login::auth_contents_with_member_login`）。
+    synced_login: Option<&str>,
 ) -> anyhow::Result<String> {
     let auth_path = home.join("auth.json");
     let live = read_optional_text(&auth_path)?;
+    let _ = synced_login;
     if let Some(merged) = merge_proxy_key_into_auth_json(&live, bearer_token) {
         return Ok(merged);
     }
@@ -4537,7 +4613,12 @@ fn complete_relay_profile_config_with_proxy_port(
         provider["requires_openai_auth"] = toml_edit::value(true);
     }
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
-        provider["requires_openai_auth"] = toml_edit::value(false);
+        // 聚合默认是纯 API 形态。打开「同步默认成员登录」且该成员有可用的 ChatGPT 凭据时，
+        // 改成与「官方 + API」混合模式一致的形态：requires_openai_auth = true 让 Codex
+        // 读取并显示 auth.json 里的账号登录态，请求仍由 experimental_bearer_token
+        // （代理 Key）发往本地聚合代理。为 false 时 Codex 根本不看登录态，界面只显示 provider 名。
+        provider["requires_openai_auth"] =
+            toml_edit::value(aggregate_syncs_member_login(profile));
     }
     let provider_base_url = if profile.has_model_routes()
         || profile.uses_no_auth()

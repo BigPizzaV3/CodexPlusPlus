@@ -565,6 +565,7 @@ mod tests {
             name: "模型聚合".to_string(),
             session_provider: crate::settings::RelaySessionProvider::Custom,
             model_aggregation_enabled: true,
+            sync_default_member_login: false,
             strategy: AggregateRelayStrategy::Failover,
             members: vec![
                 AggregateRelayMember {

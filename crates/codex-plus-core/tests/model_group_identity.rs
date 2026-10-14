@@ -48,6 +48,7 @@ fn aggregate(member_ids: &[&str], default_relay_id: &str) -> AggregateRelayProfi
             .collect(),
         routes: Vec::new(),
         default_relay_id: default_relay_id.to_string(),
+        sync_default_member_login: false,
     }
 }
 

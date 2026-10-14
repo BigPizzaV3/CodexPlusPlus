@@ -4603,6 +4603,7 @@ async fn aggregate_official_member_forwards_with_oauth_credentials() {
             }],
             routes: Vec::new(),
             default_relay_id: String::new(),
+            sync_default_member_login: false,
         }],
         ..BackendSettings::default()
     };
@@ -4733,6 +4734,7 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
             }],
             routes: Vec::new(),
             default_relay_id: String::new(),
+            sync_default_member_login: false,
         }],
         ..BackendSettings::default()
     };
@@ -5393,6 +5395,7 @@ fn aggregate_proxy_settings(
             ],
             routes: Vec::new(),
             default_relay_id: String::new(),
+            sync_default_member_login: false,
         }],
         ..BackendSettings::default()
     }

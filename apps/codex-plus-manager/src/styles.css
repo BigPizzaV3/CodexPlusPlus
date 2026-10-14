@@ -10272,3 +10272,37 @@ select {
   .claude-l10n-hero-head { flex-direction: column; }
   .claude-l10n-actions-secondary { margin-left: 0; }
 }
+
+/* 聚合「默认成员登录同步」开关：跟默认供应商提示同处一块，但要能一眼看出是可选项。 */
+.aggregate-default-login-sync {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  cursor: pointer;
+}
+
+.aggregate-default-login-sync > input {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  accent-color: hsl(var(--primary));
+  cursor: pointer;
+}
+
+.aggregate-default-login-sync > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.aggregate-default-login-sync small,
+.aggregate-default-login-note {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.aggregate-default-login-note {
+  display: block;
+}
