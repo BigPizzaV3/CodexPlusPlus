@@ -3157,6 +3157,9 @@ export function App() {
   };
 
   useEffect(() => {
+    // 工具栏只依赖本地配置，不能排在广告等网络请求之后。
+    // 切换语言会重载窗口，串行等待会让三个 Agent 图标长时间消失。
+    void refreshTools(true);
     void (async () => {
       const startup = await run(() => call<StartupResult>("startup_options"));
       const handledNavigation = await consumePendingManagerNavigation();
@@ -3170,7 +3173,6 @@ export function App() {
       // 概览页的赞助商区块要显示真实广告源内容，所以启动就拉一次，
       // 不要等到用户点进「推荐内容」才加载。
       await refreshAds(true);
-      await refreshTools(true);
       if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
       await refreshEnvConflicts(true);
