@@ -51,17 +51,58 @@ fn collect_stderr_tail(sink: &Arc<Mutex<VecDeque<String>>>) -> String {
         .unwrap_or_default()
 }
 
-/// 留空时不让用户猜路径：Windows 直接选用桌面版维护的标准 CLI，
+/// 留空或托管路径失效时，Windows 选用桌面版维护的标准 CLI，
 /// 其余平台沿用 PATH 里的 codex（macOS 桌面版内置路径本来就可执行）。
 fn resolve_startup_executable(configured: &str) -> String {
-    if !configured.is_empty() {
-        return configured.to_string();
-    }
     #[cfg(windows)]
-    if let Some(path) = crate::app_paths::find_desktop_managed_codex_cli() {
-        return path.to_string_lossy().into_owned();
+    {
+        return resolve_windows_startup_executable(
+            configured,
+            std::env::var_os("LOCALAPPDATA").as_deref().map(Path::new),
+        );
     }
-    "codex".to_string()
+    #[cfg(not(windows))]
+    {
+        if !configured.is_empty() {
+            return configured.to_string();
+        }
+        "codex".to_string()
+    }
+}
+
+#[cfg(windows)]
+fn resolve_windows_startup_executable(configured: &str, local_appdata: Option<&Path>) -> String {
+    // 桌面版更新会替换哈希目录；仅恢复已失效的托管路径，保留自定义路径的校验。
+    let missing_managed = !configured.is_empty()
+        && !Path::new(configured).exists()
+        && local_appdata.is_some_and(|local| {
+            let bin = local.join("OpenAI").join("Codex").join("bin");
+            let prefix = format!(
+                "{}\\",
+                bin.to_string_lossy()
+                    .replace('/', "\\")
+                    .to_ascii_lowercase()
+            );
+            let normalized = configured.replace('/', "\\").to_ascii_lowercase();
+            normalized.strip_prefix(&prefix).is_some_and(|suffix| {
+                let parts: Vec<_> = suffix.split('\\').collect();
+                parts == ["codex.exe"]
+                    || (parts.len() == 2
+                        && !parts[0].is_empty()
+                        && parts[0].bytes().all(|byte| byte.is_ascii_hexdigit())
+                        && parts[1] == "codex.exe")
+            })
+        });
+    if configured.is_empty() || missing_managed {
+        if let Some(path) = crate::app_paths::find_desktop_managed_codex_cli_from_var(local_appdata)
+        {
+            return path.to_string_lossy().into_owned();
+        }
+        if configured.is_empty() {
+            return "codex".to_string();
+        }
+    }
+    configured.to_string()
 }
 
 /// 启动前先把「路径本身就不对」的情况挑出来。
@@ -644,6 +685,78 @@ fn deep_string(value: Option<&Value>, keys: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn expired_managed_executable_resolves_after_desktop_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("OpenAI").join("Codex").join("bin");
+        let old = bin.join("0123456789abcdef").join("codex.exe");
+        let current = bin.join("abcdef0123456789").join("codex.exe");
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+        std::fs::write(&current, "cli").unwrap();
+        let resolve = |path: &str| resolve_windows_startup_executable(path, Some(temp.path()));
+
+        assert_eq!(resolve(&old.to_string_lossy()), current.to_string_lossy());
+        assert_eq!(
+            resolve(&bin.join("codex.exe").to_string_lossy()),
+            current.to_string_lossy()
+        );
+        assert_eq!(
+            resolve(
+                &old.to_string_lossy()
+                    .replace('\\', "/")
+                    .to_ascii_uppercase()
+            ),
+            current.to_string_lossy()
+        );
+        assert_eq!(resolve(""), current.to_string_lossy());
+        assert!(validate_codex_executable(&resolve(&old.to_string_lossy())).is_ok());
+
+        // 仍存在的旧版本必须继续使用，不能强行切换用户选择。
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "old cli").unwrap();
+        assert_eq!(resolve(&old.to_string_lossy()), old.to_string_lossy());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_recovery_preserves_custom_paths_and_missing_cli_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("OpenAI/Codex/bin");
+        let expired = bin.join("0123456789abcdef/codex.exe");
+        let expired = expired.to_string_lossy().into_owned();
+        assert_eq!(
+            resolve_windows_startup_executable(&expired, Some(temp.path())),
+            expired
+        );
+        assert!(validate_codex_executable(&expired).is_err());
+
+        let current = bin.join("codex.exe");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&current, "cli").unwrap();
+        for custom in [
+            temp.path()
+                .join("custom/codex.exe")
+                .to_string_lossy()
+                .into_owned(),
+            bin.join("custom/codex.exe").to_string_lossy().into_owned(),
+            temp.path()
+                .join("OpenAI/Codex/bin-other/0123456789abcdef/codex.exe")
+                .to_string_lossy()
+                .into_owned(),
+            bin.join("0123456789abcdef/other.exe")
+                .to_string_lossy()
+                .into_owned(),
+            "codex".to_string(),
+        ] {
+            assert_eq!(
+                resolve_windows_startup_executable(&custom, Some(temp.path())),
+                custom
+            );
+        }
+        assert_eq!(resolve_windows_startup_executable(&expired, None), expired);
+    }
 
     #[test]
     fn extracts_ids_from_current_app_server_shapes() {

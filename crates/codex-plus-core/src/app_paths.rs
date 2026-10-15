@@ -862,7 +862,7 @@ pub fn find_desktop_managed_codex_cli() -> Option<PathBuf> {
     )
 }
 
-fn find_desktop_managed_codex_cli_from_var(local_appdata: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn find_desktop_managed_codex_cli_from_var(local_appdata: Option<&Path>) -> Option<PathBuf> {
     let bin = local_appdata?.join("OpenAI").join("Codex").join("bin");
     let mut candidates = vec![bin.join("codex.exe")];
     if let Ok(entries) = std::fs::read_dir(&bin) {
