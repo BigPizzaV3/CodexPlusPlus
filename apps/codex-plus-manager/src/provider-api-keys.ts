@@ -54,6 +54,19 @@ export function relayProfileWithNormalizedApiKeys(profile: RelayProfile): RelayP
   };
 }
 
+export function relayProfileWithUpdatedApiKey(profile: RelayProfile, apiKey: string): RelayProfile {
+  if (profile.noAuth || profile.relayMode === "aggregate"
+    || (profile.relayMode === "official" && !profile.officialMixApiKey)) return profile;
+  const normalized = normalizeRelayApiKeys(profile);
+  return {
+    ...profile,
+    ...normalized,
+    apiKey,
+    apiKeys: normalized.apiKeys.map((entry) => entry.id === normalized.activeApiKeyId
+      ? { ...entry, apiKey } : entry),
+  };
+}
+
 export function createRelayApiKey(apiKeys: RelayApiKey[]): RelayApiKey {
   const used = new Set(apiKeys.map((entry) => entry.id));
   return {

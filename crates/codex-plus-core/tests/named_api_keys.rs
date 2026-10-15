@@ -86,3 +86,55 @@ fn missing_selection_falls_back_and_empty_current_key_does_not_borrow_another_ke
     assert_eq!(profile.active_api_key_id, "main");
     assert_eq!(relay_profile_api_key(&profile), "");
 }
+
+#[test]
+fn edited_selected_key_survives_storage_apply_and_backfill() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let mut profile = profile();
+    normalize_relay_profile_for_storage(&mut profile).unwrap();
+    profile.api_keys.push(RelayApiKey {
+        id: "backup".into(),
+        name: "备用".into(),
+        api_key: "backup-key".into(),
+    });
+    profile.api_key = "rotated-key".into();
+    profile.api_keys[0].api_key = profile.api_key.clone();
+    profile.auth_contents = json!({"OPENAI_API_KEY":"rotated-key"}).to_string();
+    profile.config_contents = profile.config_contents.replace("legacy-key", "rotated-key");
+    store
+        .save(&BackendSettings {
+            active_relay_id: profile.id.clone(),
+            relay_profiles: vec![profile],
+            ..Default::default()
+        })
+        .unwrap();
+    let mut reloaded = store.load().unwrap().active_relay_profile();
+    codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
+        temp.path(),
+        &reloaded,
+        "",
+    )
+    .unwrap();
+    codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
+        temp.path(),
+        &mut reloaded,
+        &mut String::new(),
+    )
+    .unwrap();
+    normalize_relay_profile_for_storage(&mut reloaded).unwrap();
+    assert_eq!(reloaded.active_api_key_id, "default");
+    assert_eq!(reloaded.api_keys[0].api_key, "rotated-key");
+    assert_eq!(reloaded.api_keys[1].api_key, "backup-key");
+    assert_eq!(relay_profile_api_key(&reloaded), "rotated-key");
+    let auth: serde_json::Value = serde_json::from_str(&reloaded.auth_contents).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "rotated-key");
+    let config: toml::Value = std::fs::read_to_string(temp.path().join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        config["model_providers"]["custom"]["experimental_bearer_token"].as_str(),
+        Some("rotated-key")
+    );
+}

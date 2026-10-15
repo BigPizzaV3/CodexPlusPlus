@@ -7,6 +7,7 @@ import { modelSlugFromRowName, suffixWindowString } from "./model-metadata.ts";
 import { normalizeRelayModelRoutes } from "./model-routes.ts";
 import { sessionProviderForProtocol } from "./relay-session.ts";
 import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members.ts";
+import { relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey } from "./provider-api-keys.ts";
 
 // 执行 App 中实际使用的配置 helper，避免把另一份实现复制进测试。
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
@@ -40,6 +41,7 @@ const context = vm.createContext({
   CHAT_UPSTREAM_BASE_URL_KEY: "codex_plus_chat_base_url",
   normalizeRelayModelRoutes, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
   aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile,
+  relayProfileWithUpdatedApiKey,
 });
 vm.runInContext(code, context);
 
@@ -85,6 +87,100 @@ test("editing and clearing the API key keeps provider and auth snapshots consist
     if (flag === undefined) assert.doesNotMatch(updated.configContents, /requires_openai_auth/);
     else assert.match(updated.configContents, new RegExp("requires_openai_auth = " + flag));
   }
+});
+
+test("auth and config editors rotate only the selected named key through save and reload", () => {
+  for (const source of ["auth", "config"]) {
+    const original = relayProfileWithNormalizedApiKeys(context.deriveRelayProfileFromFiles(profile(false)));
+    original.apiKeys!.push({ id: "backup", name: "备用", apiKey: "fixture-backup-key" });
+    const edited = context.deriveRelayProfileFromFiles({
+      ...original,
+      ...(source === "auth"
+        ? { authContents: JSON.stringify({ OPENAI_API_KEY: "fixture-rotated-key", vendor: "stored" }) }
+        : { configContents: original.configContents.replace("fixture-provider-key", "fixture-rotated-key") }),
+    }, source);
+    const saved = relayProfileWithNormalizedApiKeys(edited);
+    const reloaded = context.deriveRelayProfileFromFiles(JSON.parse(JSON.stringify(saved)));
+    assert.equal(reloaded.apiKey, "fixture-rotated-key");
+    assert.equal(reloaded.activeApiKeyId, original.activeApiKeyId);
+    assert.equal(reloaded.apiKeys[0].apiKey, "fixture-rotated-key");
+    assert.equal(reloaded.apiKeys[1].apiKey, "fixture-backup-key");
+    assert.equal(JSON.parse(reloaded.authContents).OPENAI_API_KEY, "fixture-rotated-key");
+    assert.equal(JSON.parse(reloaded.authContents).vendor, "stored");
+    assert.equal(context.codexExperimentalBearerTokenFromConfig(reloaded.configContents), "fixture-rotated-key");
+    assert.equal(original.apiKeys![0].apiKey, "fixture-provider-key");
+  }
+});
+
+test("file editors can clear the selected key without restoring a backup", () => {
+  for (const source of ["auth", "config"]) {
+    const original = relayProfileWithNormalizedApiKeys(context.deriveRelayProfileFromFiles(profile(false)));
+    original.apiKeys!.push({ id: "backup", name: "备用", apiKey: "fixture-backup-key" });
+    const cleared = context.deriveRelayProfileFromFiles({
+      ...original,
+      ...(source === "auth"
+        ? { authContents: JSON.stringify({ OPENAI_API_KEY: "", vendor: "stored" }) }
+        : { configContents: context.removeCodexExperimentalBearerToken(original.configContents) }),
+    }, source);
+    assert.equal(relayProfileWithNormalizedApiKeys(cleared).apiKey, "");
+    assert.equal(cleared.apiKeys[0].apiKey, "");
+    assert.equal(cleared.apiKeys[1].apiKey, "fixture-backup-key");
+    assert.equal(context.codexExperimentalBearerTokenFromConfig(cleared.configContents), "");
+    assert.equal(JSON.parse(cleared.authContents).OPENAI_API_KEY, "");
+  }
+});
+
+test("file editor callbacks keep rotated credentials through profile normalization", () => {
+  const editors = app.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "RelayFileEditors")!;
+  const handlers = new Map<string, string>();
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxAttribute(node) && node.name.getText(app) === "onValueChange"
+      && node.initializer && ts.isJsxExpression(node.initializer)) {
+      const value = node.parent.properties.find((attr) => ts.isJsxAttribute(attr) && attr.name.getText(app) === "value");
+      if (value && ts.isJsxAttribute(value) && value.initializer && ts.isJsxExpression(value.initializer)) {
+        handlers.set(value.initializer.expression!.getText(app), node.initializer.expression!.getText(app));
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(editors);
+  for (const field of ["configPreview", "profile.authContents"]) {
+    const original = relayProfileWithNormalizedApiKeys(context.deriveRelayProfileFromFiles(profile(false)));
+    let edited: typeof original | undefined;
+    const compiled = ts.transpileModule(`const handler = ${handlers.get(field)};`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const handler = new Function("profile", "onProfileChange", "deriveRelayProfileFromFiles",
+      "stripCommonConfigTextFallback", "relayCombinedCommonConfig", "stripContextEntriesFromConfig", "entries", "form",
+      `${compiled}; return handler;`)(original, (value: typeof original) => { edited = value; },
+        context.deriveRelayProfileFromFiles, (value: string) => value, () => "", (value: string) => value, {}, {});
+    handler(field === "configPreview"
+      ? original.configContents.replace("fixture-provider-key", "fixture-rotated-key")
+      : original.authContents.replace("fixture-provider-key", "fixture-rotated-key"));
+    assert.ok(edited);
+    assert.equal(relayProfileWithNormalizedApiKeys(edited).apiKey, "fixture-rotated-key");
+  }
+});
+
+test("unfinished auth edits retain the text and the selected credential", () => {
+  const original = relayProfileWithNormalizedApiKeys(context.deriveRelayProfileFromFiles(profile(false)));
+  const authContents = '{"OPENAI_API_KEY": "unfinished';
+  const edited = context.deriveRelayProfileFromFiles({ ...original, authContents }, "auth");
+  assert.equal(edited.authContents, authContents);
+  assert.equal(edited.apiKeys[0].apiKey, "fixture-provider-key");
+});
+
+test("mixed API config rotation preserves OAuth and the selected named key", () => {
+  const original = relayProfileWithNormalizedApiKeys(context.withGeneratedRelayFiles({
+    ...profile(), relayMode: "official", officialMixApiKey: true,
+    authContents: JSON.stringify({ tokens: { access_token: "fixture-oauth" } }),
+  }));
+  const edited = context.deriveRelayProfileFromFiles({
+    ...original, configContents: original.configContents.replace("fixture-provider-key", "fixture-rotated-key"),
+  }, "config");
+  assert.equal(relayProfileWithNormalizedApiKeys(edited).apiKey, "fixture-rotated-key");
+  assert.equal(JSON.parse(edited.authContents).tokens.access_token, "fixture-oauth");
+  assert.equal(JSON.parse(edited.authContents).OPENAI_API_KEY, undefined);
 });
 
 test("inline imports and backfilled auth snapshots keep explicit provider credentials", () => {

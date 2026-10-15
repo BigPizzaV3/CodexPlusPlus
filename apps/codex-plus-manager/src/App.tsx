@@ -174,7 +174,7 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
-import { createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, type RelayApiKey } from "./provider-api-keys";
+import { createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -11011,7 +11011,7 @@ function RelayFileEditors({
             onProfileChange(deriveRelayProfileFromFiles({
               ...profile,
               configContents,
-            }));
+            }, "config"));
           }}
         />
       </RelayFold>
@@ -11072,7 +11072,7 @@ function RelayFileEditors({
         <SyncedTextarea
           className="relay-file-textarea"
           value={profile.authContents}
-          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }))}
+          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }, "auth"))}
         />
       </RelayFold>
     </div>
@@ -13535,18 +13535,27 @@ function buildOfficialRelayAuthJson(contents: string): string {
   }
 }
 
-function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
+function deriveRelayProfileFromFiles(profile: RelayProfile, editedFile?: "config" | "auth"): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
     return normalizeAggregateRelayProfile(profile, null);
   }
+  if (editedFile === "auth") {
+    try {
+      JSON.parse(profile.authContents || "{}");
+    } catch {
+      return profile;
+    }
+  }
   let configContents = profile.configContents || "";
-  const authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
+  let authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
   const configBaseUrl = codexBaseUrlFromConfig(configContents);
   const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
-  const apiKey = profile.relayMode === "official"
+  const apiKey = editedFile === "config" ? configApiKey
+    : editedFile === "auth" && profile.relayMode === "pureApi" ? codexApiKeyFromAuth(authContents)
+    : profile.relayMode === "official"
     ? configApiKey || profile.apiKey || ""
     : codexApiKeyFromAuth(authContents) || configApiKey || "";
   if (profile.relayMode === "pureApi") {
@@ -13556,12 +13565,16 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
       : apiKey && configContents.trim()
         ? setCodexExperimentalBearerToken(configContents, apiKey, { requiresOpenAiAuth: false })
         : configContents;
+    if (editedFile && !profile.noAuth) {
+      if (editedFile === "config") authContents = setAuthOpenAiApiKey(authContents, apiKey);
+      if (!apiKey) configContents = removeCodexExperimentalBearerToken(configContents);
+    }
   }
   const configModel = codexModelFromConfig(configContents);
   // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
   // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
   const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
-  return {
+  const derived = {
     ...profile,
     model,
     sessionProvider: relaySessionProviderFromConfig(configContents),
@@ -13573,6 +13586,7 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
     configContents,
     authContents,
   };
+  return editedFile ? relayProfileWithUpdatedApiKey(derived, apiKey) : derived;
 }
 
 function applyRelayProfilePatchToFiles(
@@ -13613,6 +13627,7 @@ function applyRelayProfilePatchToFiles(
     next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
   }
   if ("apiKey" in patch) {
+    next = relayProfileWithUpdatedApiKey(next, patch.apiKey || "");
     if (next.relayMode === "pureApi") {
       next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
       next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "", { requiresOpenAiAuth: false });
