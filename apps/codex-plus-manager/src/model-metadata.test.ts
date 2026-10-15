@@ -467,13 +467,19 @@ describe("model metadata helpers", () => {
   });
 
   it("导入文档写回模型行的规则覆盖", () => {
-    // 窗口不同才写；相同不写（避免多余 state 更新）
+    // 窗口只补空列
     assert.deepStrictEqual(
       importDocumentSyncPatch({ window: "", autoCompact: "" }, { contextWindow: "500000", autoCompactPercent: null }),
       { window: "500000" },
     );
     assert.deepStrictEqual(
       importDocumentSyncPatch({ window: "500000", autoCompact: "" }, { contextWindow: "500000", autoCompactPercent: null }),
+      {},
+    );
+    // 手工填过的窗口是显式覆盖层：文档里的值不能把它换掉，否则「配好 1M 的模型
+    // 粘贴供应商 models.json 后被上游 256K 覆盖」会再次出现。
+    assert.deepStrictEqual(
+      importDocumentSyncPatch({ window: "1m", autoCompact: "50%" }, { contextWindow: "262144", autoCompactPercent: null }),
       {},
     );
     // 压缩比不同才写
@@ -483,7 +489,7 @@ describe("model metadata helpers", () => {
     );
     // JSON 未声明压缩比（null）：不动行里的值
     assert.deepStrictEqual(
-      importDocumentSyncPatch({ window: "500000", autoCompact: "90%" }, { contextWindow: "600000", autoCompactPercent: null }),
+      importDocumentSyncPatch({ window: "", autoCompact: "90%" }, { contextWindow: "600000", autoCompactPercent: null }),
       { window: "600000" },
     );
     // 空预览（粘贴清空/粘贴失败）：整体 no-op

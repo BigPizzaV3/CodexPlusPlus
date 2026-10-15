@@ -171,7 +171,7 @@ pub fn has_other_desktop_instance(
             .iter()
             .filter(|process| {
                 windows_executable_matches(process, &expected)
-                    && !windows_is_electron_child(process)
+                    && windows_is_electron_child(process) != Some(true)
             })
             .map(|process| process.process_id)
             .collect::<Vec<_>>();
@@ -282,12 +282,35 @@ fn windows_executable_matches(
 /// crashpad 会再 fork 一个 crashpad，父进程同样叫 `ChatGPT.exe`，
 /// 于是「父进程同名就当成子进程」会漏掉它，把子进程误判成主进程。
 #[cfg(windows)]
-fn windows_is_electron_child(
-    process: &crate::windows_integration::WindowsProcessInfo,
-) -> bool {
-    process.exe_file.to_ascii_lowercase() == "chatgpt.exe"
-        && crate::windows_integration::process_command_line(process.process_id)
-            .is_some_and(|command_line| command_line.contains("--type="))
+fn windows_is_electron_child(process: &crate::windows_integration::WindowsProcessInfo) -> Option<bool> {
+    crate::windows_integration::process_command_line(process.process_id).map(
+        |command_line| windows_command_line_is_electron_child(&process.exe_file, &command_line),
+    )
+}
+
+#[cfg(any(windows, test))]
+fn windows_command_line_is_electron_child(executable_name: &str, command_line: &str) -> bool {
+    if !crate::app_paths::is_supported_app_executable_name(executable_name) {
+        return false;
+    }
+    // 带空格的 EXE/用户目录必须保持为一个参数，不能在引号内误认 --type=。
+    let mut quoted = false;
+    let mut backslashes = 0;
+    let mut argument = String::new();
+    for character in command_line.chars().chain(std::iter::once(' ')) {
+        if character == '"' && backslashes % 2 == 0 {
+            quoted = !quoted;
+        } else if !quoted && matches!(character, ' ' | '\t') {
+            if argument == "--type" || argument.starts_with("--type=") {
+                return true;
+            }
+            argument.clear();
+        } else {
+            argument.push(character);
+        }
+        backslashes = if character == '\\' { backslashes + 1 } else { 0 };
+    }
+    false
 }
 
 #[cfg(windows)]
@@ -301,8 +324,11 @@ fn probe_windows_desktop_app(app_dir: &Path) -> AppProbe {
         if !windows_executable_matches(&process, &expected) {
             continue;
         }
-        if windows_is_electron_child(&process) {
-            continue;
+        match windows_is_electron_child(&process) {
+            Some(true) => continue,
+            // 无法排除 renderer/crashpad 时，不对不明归属进程发起接管。
+            None => return AppProbe::Unknown,
+            Some(false) => {}
         }
         // 实例代际：用进程启动时刻（秒）。Windows 上也用于「本次不接管」的比对。
         let incarnation = match crate::watcher::inspect_process_instance(process.process_id) {
@@ -584,6 +610,30 @@ pub fn decide(inputs: &TakeoverInputs) -> TakeoverDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beta_electron_children_are_not_taken_over_as_desktop_main_processes() {
+        assert!(windows_command_line_is_electron_child(
+            "ChatGPT (Beta).exe",
+            r#""C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.727.4816.0_x64__abc\app\ChatGPT (Beta).exe" --type=renderer"#,
+        ));
+        assert!(windows_command_line_is_electron_child(
+            "Codex.exe",
+            "Codex.exe --type=gpu-process"
+        ));
+        assert!(!windows_command_line_is_electron_child(
+            "ChatGPT (Beta).exe",
+            r#""ChatGPT (Beta).exe" --remote-debugging-port=9229"#,
+        ));
+        assert!(!windows_command_line_is_electron_child(
+            "ChatGPT.exe",
+            r#"ChatGPT.exe --user-data-dir=C:\cache--type=main"#,
+        ));
+        assert!(!windows_command_line_is_electron_child(
+            "ChatGPT (Beta).exe",
+            r#""ChatGPT (Beta).exe" --user-data-dir="C:\cache --type=main""#,
+        ));
+    }
 
     fn running_instance() -> AppProbe {
         AppProbe::Running(InstanceKey::new(4242, "Tue Oct 13 13:19:56 2026"))

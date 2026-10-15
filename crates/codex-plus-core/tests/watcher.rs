@@ -160,6 +160,26 @@ fn codex_process_filter_keeps_chatgpt_desktop_package_processes() {
 }
 
 #[test]
+fn codex_process_filter_recognizes_beta_desktop_without_matching_cli_or_other_apps() {
+    let processes = [
+        (
+            31,
+            r"C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.727.4816.0_x64__abc\app\ChatGPT (Beta).exe",
+        ),
+        (
+            32,
+            r"C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.727.4816.0_x64__abc\app\resources\codex.exe",
+        ),
+        (
+            33,
+            r"C:\Program Files\WindowsApps\Other.App_1.0_x64__abc\app\ChatGPT (Beta).exe",
+        ),
+        (34, r"D:\Portable\ChatGPT (Beta).exe"),
+    ];
+    assert_eq!(codex_process_ids(processes), vec![31]);
+}
+
+#[test]
 fn launcher_process_filter_protects_current_process_ancestry() {
     let processes = [
         (10, 0, "codex-plus-plus.exe"),
@@ -327,6 +347,34 @@ fn session_index_cleanup_process_guard_blocks_desktop_apps_but_not_cli() {
         vec![11, 12, 13]
     );
     assert_eq!(find_codex_processes_from_snapshot(&processes), vec![11, 13]);
+}
+
+#[cfg(windows)]
+#[test]
+fn beta_desktop_is_included_in_watcher_and_session_cleanup_guard() {
+    let processes = [
+        WindowsProcessInfo {
+            process_id: 61,
+            parent_process_id: 0,
+            exe_file: "ChatGPT (Beta).exe".to_string(),
+            executable_path: Some(std::path::PathBuf::from(
+                r"C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.727.4816.0_x64__abc\app\ChatGPT (Beta).exe",
+            )),
+        },
+        WindowsProcessInfo {
+            process_id: 62,
+            parent_process_id: 0,
+            exe_file: "codex.exe".to_string(),
+            executable_path: Some(std::path::PathBuf::from(
+                r"C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.727.4816.0_x64__abc\app\resources\codex.exe",
+            )),
+        },
+    ];
+    assert_eq!(find_codex_processes_from_snapshot(&processes), vec![61]);
+    assert_eq!(
+        find_session_index_cleanup_blocking_processes_from_snapshot(&processes),
+        vec![61]
+    );
 }
 
 #[cfg(windows)]

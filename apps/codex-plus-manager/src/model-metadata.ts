@@ -436,7 +436,9 @@ export function metadataSourceTags(options: {
 export type ModelRowSyncPatch = { window?: string; autoCompact?: string };
 
 /// 导入文档解析结果 → 模型行补丁（JSON→行 的实时写回规则）：
-/// - 窗口：解析出有效值且与行现值不同才写（相同不写，避免多余 state 更新）
+/// - 窗口：**只补空列**。手工填过的窗口是显式覆盖层，导入文档不能把它换掉
+///   （曾出现「配好 1M 的模型，粘贴供应商 models.json 后被上游 256K 覆盖」）；
+///   想用文档的值就先把行内窗口清空。
 /// - 压缩比：解析出显示值且与行现值不同才写；null（JSON 未声明）不动行，
 ///   避免粘贴别的模型 JSON 时清掉用户行里的值
 export function importDocumentSyncPatch(
@@ -444,7 +446,7 @@ export function importDocumentSyncPatch(
   preview: { contextWindow: string | null; autoCompactPercent: string | null },
 ): ModelRowSyncPatch {
   const patch: ModelRowSyncPatch = {};
-  if (preview.contextWindow && preview.contextWindow !== row.window) {
+  if (preview.contextWindow && !row.window.trim()) {
     patch.window = preview.contextWindow;
   }
   if (preview.autoCompactPercent && preview.autoCompactPercent !== row.autoCompact) {

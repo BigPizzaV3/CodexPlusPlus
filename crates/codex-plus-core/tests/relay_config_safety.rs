@@ -405,7 +405,7 @@ fn failed_switch_restores_default_single_profile_and_unknown_fields_as_exact_byt
     let mut bad = api("bad", "https://bad.example/v1", "fixture-bad");
     bad.model_list = "gpt-5.6-sol".to_string();
     // 保存两条设置以后，应用阶段遇到目录占据catalog文件路径；不能绕过回滚断言。
-    std::fs::create_dir_all(home.join("model-catalogs/bad.json")).unwrap();
+    std::fs::create_dir_all(home.join("model-catalogs").join("bad.json")).unwrap();
     next.relay_profiles.push(bad);
     next.active_relay_id = "bad".to_string();
     assert!(switch_relay_profile_in_home(&store, &home, next, "default").is_err());
@@ -762,12 +762,12 @@ fn official_restore_rebuilds_its_catalog_and_keeps_per_model_limits() {
         config["model_auto_compact_token_limit"].as_integer(),
         Some(900000)
     );
-    assert_eq!(
-        config["model_catalog_json"].as_str(),
-        Some("model-catalogs/official.json")
-    );
+    let catalog_path = std::path::Path::new(config["model_catalog_json"].as_str().unwrap());
+    assert!(catalog_path.is_absolute());
+    assert_eq!(catalog_path, home.path().join("model-catalogs").join("official.json"));
+    assert!(catalog_path.is_file());
     let catalog: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(home.path().join("model-catalogs/official.json")).unwrap(),
+        &std::fs::read(home.path().join("model-catalogs").join("official.json")).unwrap(),
     )
     .unwrap();
     let entry = catalog["models"]
@@ -783,7 +783,7 @@ fn official_restore_rebuilds_its_catalog_and_keeps_per_model_limits() {
 
     // 生成目录后发生认证错误，旧live与目录均需恢复。
     let config_before = std::fs::read(home.path().join("config.toml")).unwrap();
-    let catalog_before = std::fs::read(home.path().join("model-catalogs/official.json")).unwrap();
+    let catalog_before = std::fs::read(home.path().join("model-catalogs").join("official.json")).unwrap();
     let mut invalid = profile.clone();
     invalid.auth_contents = "{bad".to_string();
     invalid.model_windows = r#"{"gpt-5.6-sol":"300000"}"#.to_string();
@@ -793,7 +793,7 @@ fn official_restore_rebuilds_its_catalog_and_keeps_per_model_limits() {
         config_before
     );
     assert_eq!(
-        std::fs::read(home.path().join("model-catalogs/official.json")).unwrap(),
+        std::fs::read(home.path().join("model-catalogs").join("official.json")).unwrap(),
         catalog_before
     );
 }
