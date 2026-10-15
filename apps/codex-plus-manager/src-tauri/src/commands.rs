@@ -8674,7 +8674,13 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
+        let _guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
+        // 注入实现会先读设置决定分支，不隔离就会随本机当前供应商（聚合/官方登录）
+        // 翻转断言——这个用例要断言的是「聚合注入不带 ChatGPT 登录」本身。
+        let settings_path = temp.path().join("settings.json");
+        let previous_settings =
+            codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
 
         let result = apply_aggregate_relay_injection_to_home(
             temp.path(),
@@ -8682,6 +8688,7 @@ base_url = "https://example.invalid/v1"
         );
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
+        codex_plus_core::paths::set_settings_path_for_tests(previous_settings);
         assert_eq!(result.status, "ok");
         assert!(result.payload.configured);
         assert!(!result.payload.authenticated);
