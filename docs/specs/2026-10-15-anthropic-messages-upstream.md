@@ -72,6 +72,23 @@ Chat 链路上跑通并有测试覆盖。新代码只落在 `anthropic_bridge.rs
 - **协议能力开关不联动**：`standardOpenaiProtocol`、远程原生压缩、搜索历史压缩兼容
   等 Chat/Responses 专有开关仍只认各自协议。
 
+## 真机验收
+
+常规回归全部使用本地 mock 上游；真机验收单独放在
+`crates/codex-plus-core/tests/live_anthropic_upstream.rs`，默认 `#[ignore]`，
+需要真实网关与额度时用环境变量驱动：
+
+```text
+LIVE_ANTHROPIC_BASE_URL=https://your-gateway.example.com \
+LIVE_ANTHROPIC_API_KEY=sk-... \
+LIVE_ANTHROPIC_MODEL=claude-sonnet-4-6 \
+cargo test -p codex-plus-core --test live_anthropic_upstream -- --ignored --nocapture --test-threads=1
+```
+
+覆盖 9 项：认证/端点探针、非流式、流式事件序列、工具调用回传、**思考签名跨轮回放**、
+截断上报、1M beta 头、Claude Code 伪装、提示缓存命中；请求带 3 次重试，
+网关按通道路由时的偶发 5xx 不会误报。
+
 ## 测试
 
 - `crates/codex-plus-core/tests/anthropic_upstream.rs`：请求体/URL/认证头、
