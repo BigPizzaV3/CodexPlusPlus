@@ -31,6 +31,7 @@ pub mod mcp_config;
 pub mod model_catalog;
 pub mod model_suffix;
 pub mod models;
+pub mod multi_worker;
 pub mod native_browser;
 pub mod native_browser_connection;
 pub mod official_login;

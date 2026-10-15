@@ -762,10 +762,10 @@ fn official_restore_rebuilds_its_catalog_and_keeps_per_model_limits() {
         config["model_auto_compact_token_limit"].as_integer(),
         Some(900000)
     );
-    assert_eq!(
-        config["model_catalog_json"].as_str(),
-        Some("model-catalogs/official.json")
-    );
+    let catalog_path = std::path::Path::new(config["model_catalog_json"].as_str().unwrap());
+    assert!(catalog_path.is_absolute());
+    assert_eq!(catalog_path, home.path().join("model-catalogs/official.json"));
+    assert!(catalog_path.is_file());
     let catalog: serde_json::Value = serde_json::from_slice(
         &std::fs::read(home.path().join("model-catalogs/official.json")).unwrap(),
     )

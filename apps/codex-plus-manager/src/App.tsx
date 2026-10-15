@@ -11550,23 +11550,46 @@ function ClaudeLocalizationScreen() {
   const [status, setStatus] = useState<CommandResult<ClaudeLocalizationStatus> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const refresh = async () => {
-    try { setStatus(await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_status")); }
-    catch (cause) { setError(stringifyError(cause)); }
+  const mounted = useRef(true);
+  const pending = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const accept = (result: CommandResult<ClaudeLocalizationStatus>) => {
+    if (!mounted.current) return;
+    if (result.status === "ok") setStatus(result);
+    else setError(result.message);
   };
-  useEffect(() => { void refresh(); }, []);
+  const refresh = async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy("detect"); setError(null);
+    try { accept(await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_status")); }
+    catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(action); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
-      if (result.status === "ok") setStatus(result);
-      else setError(result.message);
-    } catch (cause) { setError(stringifyError(cause)); }
-    finally { setBusy(null); }
+      accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
   };
   const toggleVoiceInput = async (enabled: boolean) => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy("voiceInput"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -11575,12 +11598,16 @@ function ClaudeLocalizationScreen() {
       );
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
-      if (result.status === "ok") setStatus(result);
-      else setError(result.message);
-    } catch (cause) { setError(stringifyError(cause)); }
-    finally { setBusy(null); }
+      accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
   };
   const toggleLocalization = async (enabled: boolean) => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy("localization"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -11589,15 +11616,17 @@ function ClaudeLocalizationScreen() {
       );
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
-      if (result.status === "ok") setStatus(result);
-      else setError(result.message);
-    } catch (cause) { setError(stringifyError(cause)); }
-    finally { setBusy(null); }
+      accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
   };
   const s = status;
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
-  const statusText = !s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
+  const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
   return (
     <div className="claude-localization-page">
       {/* 左栏：增强项。每一项都跑在右边的受管副本上，汉化只是其中之一。 */}
@@ -11611,7 +11640,7 @@ function ClaudeLocalizationScreen() {
             <label className="switch-row compact">
               <input
                 checked={Boolean(s?.localization)}
-                disabled={busy !== null}
+                disabled={busy !== null || !s?.supported}
                 onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
                 type="checkbox"
               />
@@ -11624,7 +11653,7 @@ function ClaudeLocalizationScreen() {
             <label className="switch-row compact">
               <input
                 checked={Boolean(s?.voiceInput)}
-                disabled={busy !== null}
+                disabled={busy !== null || !s?.supported}
                 onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
                 type="checkbox"
               />
@@ -11634,7 +11663,7 @@ function ClaudeLocalizationScreen() {
               </span>
               <ToggleVisual />
             </label>
-            {!s?.prepared ? (
+            {s?.supported && !s.prepared ? (
               <p className="claude-l10n-hint">
                 {t("副本还没准备：开关会先存下来，等你在右边准备好副本并启动后生效。")}
               </p>
@@ -11685,7 +11714,7 @@ function ClaudeLocalizationScreen() {
           <div className="claude-l10n-stats">
             <div className="claude-l10n-stat">
               <span>{t("官方版本")}</span>
-              <strong title={s?.sourceVersion || undefined}>{s?.sourceVersion || t("未检测到")}</strong>
+              <strong title={s?.sourceVersion || undefined}>{!s ? t("未检测") : s.sourceVersion || t("未检测到")}</strong>
             </div>
             <div className="claude-l10n-stat">
               <span>{t("副本版本")}</span>
@@ -11697,15 +11726,24 @@ function ClaudeLocalizationScreen() {
             </div>
             <div className="claude-l10n-stat">
               <span>{t("官方词条")}</span>
-              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")}</strong>
+              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}</strong>
             </div>
           </div>
           <div className="claude-l10n-note" role="note">
             <Info className="h-4 w-4" />
             <span>{t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
           </div>
+          {!s ? (
+            <p className="claude-l10n-hint">{t("点击“检测 Claude”读取安装状态；进入此页不会自动检测或修改应用。")}</p>
+          ) : !s.supported ? (
+            <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
+          ) : null}
           {error ? <div className="inline-error">{error}</div> : null}
           <div className="claude-l10n-actions">
+            <Button disabled={busy !== null} onClick={() => void refresh()} variant="secondary">
+              <RefreshCw className={`h-4 w-4 ${busy === "detect" ? "animate-spin" : ""}`} />
+              {busy === "detect" ? t("检测中…") : t("检测 Claude")}
+            </Button>
             <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
               <PackageOpen className="h-4 w-4" />
               {busy === "prepare"
