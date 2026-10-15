@@ -9,13 +9,16 @@
 //! 出问题时可以单独对拍，不必重新验证整条链路。
 //!
 //! 已知边界：
-//! - 不做提示缓存标记注入（`cache_control`），因此长对话不会自动命中 5 分钟缓存；
-//! - 不发送 `thinking` 配置，历史里的思考内容不回放（Anthropic 要求带签名，
-//!   缺签名整轮 400，宁可不发）。
+//! - 不做「adaptive thinking / output_config.effort」这类新档位映射，只用经典
+//!   `thinking: {type: enabled, budget_tokens}`；
+//! - 思考块签名依赖 Responses 的 `reasoning.encrypted_content` 回放（见下），
+//!   历史里没有签名时宁可不开启思考，也不发一个必然 400 的请求。
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 
 use crate::protocol_proxy::ChatSseToResponsesConverter;
@@ -27,6 +30,52 @@ pub const ANTHROPIC_DEFAULT_MAX_TOKENS: u64 = 8192;
 /// 认证字段：`x-api-key`（Anthropic 原生）或 `authorization`（多数中转网关）。
 pub const ANTHROPIC_AUTH_HEADER_API_KEY: &str = "x-api-key";
 pub const ANTHROPIC_AUTH_HEADER_BEARER: &str = "authorization";
+/// 伪装 Claude Code 客户端时使用的 UA / 头 / 首行身份（取自官方 Claude CLI）。
+pub const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/1.0.119 (external, cli)";
+pub const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+pub const CLAUDE_CODE_SYSTEM_IDENTITY: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+/// 1M 上下文 beta 头；模型声明窗口达到该阈值时自动附带。
+pub const ANTHROPIC_BETA_CONTEXT_1M: &str = "context-1m-2025-08-07";
+pub const CONTEXT_1M_THRESHOLD: u64 = 1_000_000;
+/// 思考块签名的回放信封前缀：签名只能靠客户端回放，必须能与其他供应商的
+/// 密文区分开（不同前缀的 encrypted_content 一律忽略）。
+pub const ANTHROPIC_THINKING_PREFIX: &str = "codex-plus-anthropic-thinking-v1:";
+
+/// Anthropic 上游的请求选项，由 `RelayProfile` 推导。
+#[derive(Debug, Clone)]
+pub struct AnthropicRequestOptions {
+    /// `max_tokens` 的兜底值。
+    pub max_tokens: u64,
+    /// 用户在供应商里显式配置了 `max_tokens`：此时它优先于请求自带值。
+    pub force_max_tokens: bool,
+    /// 注入提示缓存断点（`cache_control`）。
+    pub prompt_cache: bool,
+    /// 伪装 Claude Code 客户端（系统提示首行身份；请求头由协议层补）。
+    pub impersonate_claude_code: bool,
+}
+
+impl Default for AnthropicRequestOptions {
+    fn default() -> Self {
+        Self {
+            max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+            force_max_tokens: false,
+            prompt_cache: true,
+            impersonate_claude_code: false,
+        }
+    }
+}
+
+/// 从供应商配置推导请求选项。`anthropicMaxTokens` 非 0 视为用户显式指定，
+/// 此时它优先于请求自带的上限。
+pub fn request_options(profile: &crate::settings::RelayProfile) -> AnthropicRequestOptions {
+    AnthropicRequestOptions {
+        max_tokens: profile.anthropic_max_tokens(),
+        force_max_tokens: profile.anthropic_max_tokens != 0,
+        prompt_cache: profile.anthropic_prompt_cache,
+        impersonate_claude_code: profile.anthropic_impersonate_claude_code,
+    }
+}
 
 /// 上游 Messages 端点。Base URL 允许写成服务根地址、`/v1`、或完整端点：
 /// 末尾带 `#` 表示「原样使用，不要补版本前缀」（与 `chat_completions_url` 同一约定）。
@@ -43,18 +92,476 @@ pub fn anthropic_messages_url(base_url: &str) -> String {
 }
 
 /// Responses 请求体 → Anthropic Messages 请求体。
+///
+/// 除结构转换外还负责三件协议专有的事：
+/// 1. `reasoning.effort` → `thinking.budget_tokens`（并按 `max_tokens` 夹取）；
+/// 2. 把历史里带签名的思考块（存在 `reasoning.encrypted_content`）原样放回助手消息；
+/// 3. 提示缓存断点与 Claude Code 身份伪装（按选项）。
 pub fn responses_to_anthropic_messages(
     body: Value,
-    max_tokens_default: u64,
+    options: &AnthropicRequestOptions,
 ) -> anyhow::Result<Value> {
+    let effort = body
+        .pointer("/reasoning/effort")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let thinking_groups = signed_thinking_groups_from_responses_input(body.get("input"));
     let chat = crate::protocol_proxy::responses_to_chat_completions(body)?;
-    chat_completions_to_anthropic_messages(chat, max_tokens_default)
+    let mut result = chat_completions_to_anthropic_messages(chat, options)?;
+
+    // 1M 标记：模型名里的 `[1m]` 上游不认，剥掉交给协议层补 beta 头。
+    if let Some(model) = result.get("model").and_then(Value::as_str) {
+        let stripped = strip_context_marker(model);
+        if stripped != model {
+            result["model"] = json!(stripped);
+        }
+    }
+
+    apply_thinking(&mut result, effort.as_deref(), &thinking_groups);
+    if options.prompt_cache {
+        inject_prompt_cache(&mut result);
+    }
+    if options.impersonate_claude_code {
+        prepend_claude_code_identity(&mut result);
+    }
+    Ok(result)
+}
+
+/// 剥掉模型名末尾的 `[1m]` 标记（大小写不敏感），返回新的模型名。
+pub fn strip_context_marker(model: &str) -> String {
+    let trimmed = model.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.ends_with("[1m]") {
+        return trimmed[..trimmed.len() - 4].trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+/// Codex 的 `reasoning.effort` → Anthropic `thinking.budget_tokens`。
+///
+/// 档位表：`xhigh`/`max`/`ultra` 归到最深一档，未知档位返回 `None`
+/// （宁可不发 thinking，也不猜一个会吞掉采样参数的配置）。
+pub fn effort_to_thinking_budget(effort: &str) -> Option<u64> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "low" => Some(2048),
+        "medium" => Some(8192),
+        "high" => Some(16384),
+        "xhigh" | "max" | "ultra" => Some(24576),
+        _ => None,
+    }
+}
+
+/// 是否显式关掉了思考。
+fn effort_disables_thinking(effort: Option<&str>) -> bool {
+    matches!(
+        effort.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("none" | "off" | "disabled")
+    )
+}
+
+/// 把签名思考块编码进 `reasoning.encrypted_content`。
+///
+/// 编码的是**整组**思考块（而不是单块）：Chat 中枢每一轮只会产出一个 reasoning
+/// item，多块思考如果各自编码就会丢掉其余块，回放时缺块同样 400。
+pub fn encode_thinking_blocks(blocks: &[Value]) -> Option<String> {
+    let usable: Vec<&Value> = blocks.iter().filter(|block| is_signed_thinking(block)).collect();
+    if usable.is_empty() {
+        return None;
+    }
+    let bytes = serde_json::to_vec(&usable).ok()?;
+    Some(format!(
+        "{ANTHROPIC_THINKING_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(bytes)
+    ))
+}
+
+/// 解开 `encrypted_content` 里的思考块；不是本桥产生的密文一律返回空。
+pub fn decode_thinking_blocks(encrypted_content: &str) -> Vec<Value> {
+    let Some(encoded) = encrypted_content.strip_prefix(ANTHROPIC_THINKING_PREFIX) else {
+        return Vec::new();
+    };
+    let Ok(bytes) = URL_SAFE_NO_PAD.decode(encoded) else {
+        return Vec::new();
+    };
+    let Ok(decoded) = serde_json::from_slice::<Value>(&bytes) else {
+        return Vec::new();
+    };
+    // 兼容早期「单块对象」写法，并对每块重新校验签名，避免回放非法块。
+    let blocks = match decoded {
+        Value::Array(items) => items,
+        value @ Value::Object(_) => vec![value],
+        _ => Vec::new(),
+    };
+    blocks
+        .into_iter()
+        .filter(is_signed_thinking)
+        .collect()
+}
+
+fn is_signed_thinking(block: &Value) -> bool {
+    match block.get("type").and_then(Value::as_str) {
+        Some("thinking") => block
+            .get("signature")
+            .and_then(Value::as_str)
+            .is_some_and(|signature| !signature.trim().is_empty()),
+        Some("redacted_thinking") => block
+            .get("data")
+            .and_then(Value::as_str)
+            .is_some_and(|data| !data.trim().is_empty()),
+        _ => false,
+    }
+}
+
+/// 从 Responses 历史的 reasoning item 里按序取出签名思考块组。
+fn signed_thinking_groups_from_responses_input(input: Option<&Value>) -> Vec<Vec<Value>> {
+    let Some(items) = input.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+        .filter_map(|item| item.get("encrypted_content").and_then(Value::as_str))
+        .map(decode_thinking_blocks)
+        .filter(|blocks| !blocks.is_empty())
+        .collect()
+}
+
+/// 决定这一轮是否开启 extended thinking，并把签名块放回助手消息。
+///
+/// 安全约束：历史里已经有工具调用、却拿不到签名块时**不开启思考**——Anthropic 要求
+/// 工具循环里最后一条助手消息带完整签名的思考块，缺签名整轮 400，宁可不思考。
+fn apply_thinking(result: &mut Value, effort: Option<&str>, groups: &[Vec<Value>]) {
+    if effort_disables_thinking(effort) {
+        return;
+    }
+    let Some(budget) = effort.and_then(effort_to_thinking_budget) else {
+        return;
+    };
+    let max_tokens = result
+        .get("max_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
+    // Anthropic 要求 max_tokens > budget_tokens，且给可见回答留一半余量。
+    let clamped = budget.min(max_tokens / 2);
+    if clamped < 1024 {
+        return;
+    }
+    let attached = attach_thinking_groups(result, groups);
+    if !attached && has_tool_use_history(result) {
+        return;
+    }
+    result["thinking"] = json!({ "type": "enabled", "budget_tokens": clamped });
+    // 开启思考时 Anthropic 不接受 temperature / top_p 改动。
+    if let Some(object) = result.as_object_mut() {
+        object.remove("temperature");
+        object.remove("top_p");
+    }
+}
+
+fn has_tool_use_history(result: &Value) -> bool {
+    result
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| {
+                        blocks
+                            .iter()
+                            .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+                    })
+            })
+        })
+}
+
+/// 按序把签名思考块插到「带 tool_use 的助手消息」最前面。返回是否放回了至少一组。
+fn attach_thinking_groups(result: &mut Value, groups: &[Vec<Value>]) -> bool {
+    if groups.is_empty() {
+        return false;
+    }
+    let Some(messages) = result.get_mut("messages").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut next_group = 0usize;
+    let mut attached = false;
+    for message in messages.iter_mut() {
+        if next_group >= groups.len() {
+            break;
+        }
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let has_tool_use = message
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            });
+        if !has_tool_use {
+            continue;
+        }
+        let group = &groups[next_group];
+        if let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) {
+            // 思考块必须在助手消息最前面（Anthropic 的校验要求）。
+            let mut merged = group.clone();
+            merged.append(content);
+            *content = merged;
+            next_group += 1;
+            attached = true;
+        }
+    }
+    attached
+}
+
+/// Anthropic 响应里的签名思考块（供 Responses 侧回放）。
+pub fn thinking_blocks_from_anthropic_message(message: &Value) -> Vec<Value> {
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| is_signed_thinking(block))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 把签名思考块挂到 Responses 输出的 reasoning item 上。
+///
+/// Chat 中枢每轮只产出一个 reasoning item，因此整组签名共用一个信封；没有
+/// reasoning item（例如思考文本为空）时补一个，否则 Codex 下一轮回放不出签名。
+pub fn attach_thinking_to_responses(response: &mut Value, blocks: &[Value]) {
+    let Some(encrypted) = encode_thinking_blocks(blocks) else {
+        return;
+    };
+    let summary_text: String = blocks
+        .iter()
+        .filter_map(|block| block.get("thinking").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    let response_id = response
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("resp")
+        .to_string();
+    let Some(output) = response.get_mut("output").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(item) = output
+        .iter_mut()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+    {
+        item["encrypted_content"] = json!(encrypted);
+        return;
+    }
+    output.insert(
+        0,
+        json!({
+            "id": format!("rs_{response_id}"),
+            "type": "reasoning",
+            "summary": if summary_text.is_empty() {
+                json!([])
+            } else {
+                json!([{ "type": "summary_text", "text": summary_text }])
+            },
+            "encrypted_content": encrypted
+        }),
+    );
+}
+
+/// 注入提示缓存断点（最多 4 个，已有标记一律不动）。
+///
+/// 注入顺序：工具定义末尾 → 系统提示末尾 → 最新可缓存消息末尾 →
+/// 更早的一条 user 锚点，让长工具循环里的稳定前缀也能命中 5 分钟缓存。
+pub fn inject_prompt_cache(result: &mut Value) {
+    const MAX_BREAKPOINTS: usize = 4;
+    let existing = count_cache_breakpoints(result);
+    if existing >= MAX_BREAKPOINTS {
+        return;
+    }
+    let mut budget = MAX_BREAKPOINTS - existing;
+
+    if budget > 0 {
+        if let Some(last) = result
+            .get_mut("tools")
+            .and_then(Value::as_array_mut)
+            .and_then(|tools| tools.last_mut())
+        {
+            if last.get("cache_control").is_none() {
+                if let Some(object) = last.as_object_mut() {
+                    object.insert("cache_control".to_string(), cache_control());
+                    budget -= 1;
+                }
+            }
+        }
+    }
+
+    if budget > 0 {
+        // 字符串 system 必须先转成块数组才能挂 cache_control。
+        if let Some(text) = result.get("system").and_then(Value::as_str).map(str::to_string) {
+            result["system"] = json!([{ "type": "text", "text": text }]);
+        }
+        if let Some(last) = result
+            .get_mut("system")
+            .and_then(Value::as_array_mut)
+            .and_then(|blocks| blocks.last_mut())
+        {
+            if last.get("cache_control").is_none() {
+                if let Some(object) = last.as_object_mut() {
+                    object.insert("cache_control".to_string(), cache_control());
+                    budget -= 1;
+                }
+            }
+        }
+    }
+
+    if budget > 0 {
+        let Some(messages) = result.get_mut("messages").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for message in messages.iter_mut().rev() {
+            if inject_message_breakpoint(message) {
+                budget -= 1;
+                break;
+            }
+        }
+        // 长工具循环里最新断点可能离稳定前缀超过 20 个块，再补一个更早的 user 锚点。
+        if budget > 0 && messages.len() >= 4 {
+            let mut user_count = 0;
+            for message in messages.iter_mut().rev() {
+                if message.get("role").and_then(Value::as_str) != Some("user") {
+                    continue;
+                }
+                user_count += 1;
+                if user_count == 2 {
+                    let _ = inject_message_breakpoint(message);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn cache_control() -> Value {
+    json!({ "type": "ephemeral" })
+}
+
+fn count_cache_breakpoints(value: &Value) -> usize {
+    fn count(node: &Value) -> usize {
+        match node {
+            Value::Array(items) => items.iter().map(count).sum(),
+            Value::Object(object) => {
+                let own = usize::from(object.contains_key("cache_control"));
+                own + object.values().map(count).sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+    count(value)
+}
+
+/// 给消息最后一个非 thinking 内容块挂断点（工具循环通常以 user/tool_result 结束）。
+fn inject_message_breakpoint(message: &mut Value) -> bool {
+    let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    for block in blocks.iter_mut().rev() {
+        let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+        if matches!(block_type, "thinking" | "redacted_thinking") {
+            continue;
+        }
+        if block.get("cache_control").is_some() {
+            return false;
+        }
+        let Some(object) = block.as_object_mut() else {
+            return false;
+        };
+        object.insert("cache_control".to_string(), cache_control());
+        return true;
+    }
+    false
+}
+
+/// 伪装 Claude Code：系统提示首行必须是官方身份串（幂等）。
+fn prepend_claude_code_identity(result: &mut Value) {
+    let identity = json!({ "type": "text", "text": CLAUDE_CODE_SYSTEM_IDENTITY });
+    let mut blocks: Vec<Value> = vec![identity];
+    match result.get("system") {
+        Some(Value::String(existing)) if !existing.is_empty() => {
+            blocks.push(json!({ "type": "text", "text": existing }));
+        }
+        Some(Value::Array(existing)) => {
+            if existing
+                .first()
+                .and_then(|block| block.get("text"))
+                .and_then(Value::as_str)
+                == Some(CLAUDE_CODE_SYSTEM_IDENTITY)
+            {
+                return;
+            }
+            blocks.extend(existing.iter().cloned());
+        }
+        _ => {}
+    }
+    result["system"] = Value::Array(blocks);
+}
+
+/// 上游 `anthropic-beta` 头取值：伪装身份与 1M 上下文按需组合，空则不发。
+pub fn anthropic_beta_header(impersonate_claude_code: bool, context_1m: bool) -> Option<String> {
+    let mut betas: Vec<&str> = Vec::new();
+    if impersonate_claude_code {
+        betas.push(CLAUDE_CODE_BETA);
+    }
+    if context_1m {
+        betas.push(ANTHROPIC_BETA_CONTEXT_1M);
+    }
+    (!betas.is_empty()).then(|| betas.join(","))
+}
+
+/// 该模型是否声明了 ≥1M 的上下文窗口（决定要不要发 1M beta 头）。
+///
+/// 只认本仓已有的窗口声明机制：`modelWindows` 里该模型的显式窗口，其次是
+/// profile 级 `contextWindow`。
+pub fn model_declares_context_1m(
+    profile: &crate::settings::RelayProfile,
+    model: &str,
+) -> bool {
+    let model = model.trim();
+    if model.is_empty() {
+        return false;
+    }
+    let declared = serde_json::from_str::<Value>(profile.model_windows.trim())
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .and_then(|map| {
+            map.get(model)
+                .or_else(|| map.get(model.rsplit('/').next().unwrap_or(model)))
+                .cloned()
+        })
+        .and_then(|value| parse_declared_window(&value))
+        .or_else(|| parse_declared_window(&Value::String(profile.context_window.clone())));
+    declared.is_some_and(|window| window >= CONTEXT_1M_THRESHOLD)
+}
+
+fn parse_declared_window(value: &Value) -> Option<u64> {
+    let raw = match value {
+        Value::Number(number) => number.as_u64()?,
+        Value::String(text) => crate::model_suffix::parse_model_suffix(&format!("x[{text}]")).1?,
+        _ => return None,
+    };
+    (raw > 0).then_some(raw)
 }
 
 /// Chat Completions 请求体 → Anthropic Messages 请求体。
 pub fn chat_completions_to_anthropic_messages(
     chat: Value,
-    max_tokens_default: u64,
+    options: &AnthropicRequestOptions,
 ) -> anyhow::Result<Value> {
     let mut out = json!({});
 
@@ -62,13 +569,19 @@ pub fn chat_completions_to_anthropic_messages(
         out["model"] = model.clone();
     }
 
-    // Anthropic 必填项：调用方没有输出上限时用兜底值，避免整轮 400。
-    let max_tokens = chat
+    // Anthropic 必填项。优先级：供应商里显式配置的值 > 请求自带值
+    // > 内置兜底——用户在表单里填了值就说明他知道真实上限，不该被请求悄悄盖掉。
+    let requested = chat
         .get("max_tokens")
         .or_else(|| chat.get("max_completion_tokens"))
         .and_then(Value::as_u64)
-        .filter(|value| *value > 0)
-        .unwrap_or(max_tokens_default.max(1));
+        .filter(|value| *value > 0);
+    let max_tokens = if options.force_max_tokens {
+        options.max_tokens
+    } else {
+        requested.unwrap_or(options.max_tokens)
+    }
+    .max(1);
     out["max_tokens"] = json!(max_tokens);
 
     if chat.get("stream").and_then(Value::as_bool).unwrap_or(false) {
@@ -594,6 +1107,31 @@ pub struct AnthropicSseToChatSse {
     next_tool_index: u64,
     stopped: bool,
     failed: bool,
+    /// 正在累积的思考块（text + signature），content_block_stop 时收口。
+    pending_thinking: Option<PendingThinking>,
+    /// 已收口、带签名的思考块，供 Responses 侧回放。
+    thinking_blocks: Vec<Value>,
+}
+
+#[derive(Default)]
+struct PendingThinking {
+    text: String,
+    signature: Option<String>,
+    redacted: Option<String>,
+}
+
+impl PendingThinking {
+    fn into_block(self) -> Option<Value> {
+        if let Some(data) = self.redacted.filter(|data| !data.trim().is_empty()) {
+            return Some(json!({ "type": "redacted_thinking", "data": data }));
+        }
+        let signature = self.signature.filter(|value| !value.trim().is_empty())?;
+        Some(json!({
+            "type": "thinking",
+            "thinking": self.text,
+            "signature": signature
+        }))
+    }
 }
 
 impl Default for AnthropicSseToChatSse {
@@ -608,6 +1146,8 @@ impl Default for AnthropicSseToChatSse {
             next_tool_index: 0,
             stopped: false,
             failed: false,
+            pending_thinking: None,
+            thinking_blocks: Vec::new(),
         }
     }
 }
@@ -615,6 +1155,11 @@ impl Default for AnthropicSseToChatSse {
 impl AnthropicSseToChatSse {
     pub fn has_failed(&self) -> bool {
         self.failed
+    }
+
+    /// 取出已收口的签名思考块（供 Responses 侧写进 encrypted_content）。
+    pub fn take_thinking_blocks(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.thinking_blocks)
     }
 
     /// 只有收到 `message_stop`（或错误事件）才算正常终止，用于识别被掐断的流。
@@ -698,8 +1243,28 @@ impl AnthropicSseToChatSse {
             }
             "content_block_start" => {
                 let block = data.get("content_block").cloned().unwrap_or(Value::Null);
-                if block.get("type").and_then(Value::as_str) != Some("tool_use") {
-                    return;
+                match block.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "thinking" => {
+                        self.finalize_pending_thinking();
+                        self.pending_thinking = Some(PendingThinking::default());
+                        return;
+                    }
+                    "redacted_thinking" => {
+                        self.finalize_pending_thinking();
+                        self.pending_thinking = Some(PendingThinking {
+                            redacted: block
+                                .get("data")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            ..PendingThinking::default()
+                        });
+                        return;
+                    }
+                    "tool_use" => {}
+                    _ => {
+                        self.finalize_pending_thinking();
+                        return;
+                    }
                 }
                 let block_index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let tool_index = self.next_tool_index;
@@ -741,10 +1306,20 @@ impl AnthropicSseToChatSse {
                     }
                     "thinking_delta" => {
                         if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
+                            if let Some(pending) = self.pending_thinking.as_mut() {
+                                pending.text.push_str(text);
+                            }
                             if !text.is_empty() {
                                 let chunk = self
                                     .base_chunk(json!({ "reasoning_content": text }), None, None);
                                 emit_chat_chunk(output, &chunk);
+                            }
+                        }
+                    }
+                    "signature_delta" => {
+                        if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
+                            if let Some(pending) = self.pending_thinking.as_mut() {
+                                pending.signature = Some(signature.to_string());
                             }
                         }
                     }
@@ -774,6 +1349,7 @@ impl AnthropicSseToChatSse {
                     _ => {}
                 }
             }
+            "content_block_stop" => self.finalize_pending_thinking(),
             "message_delta" => {
                 let stop_reason = data.pointer("/delta/stop_reason").and_then(Value::as_str);
                 let finish_reason = anthropic_stop_reason_to_finish_reason(stop_reason);
@@ -805,6 +1381,15 @@ impl AnthropicSseToChatSse {
         output.push_str("data: [DONE]\n\n");
     }
 
+    /// 收口当前思考块：带签名的进回放列表，没签名的直接丢（回放非法块会 400）。
+    fn finalize_pending_thinking(&mut self) {
+        if let Some(pending) = self.pending_thinking.take() {
+            if let Some(block) = pending.into_block() {
+                self.thinking_blocks.push(block);
+            }
+        }
+    }
+
     fn base_chunk(
         &self,
         delta: Value,
@@ -833,6 +1418,7 @@ impl AnthropicSseToChatSse {
 pub struct AnthropicSseToResponsesConverter {
     bridge: AnthropicSseToChatSse,
     chat: ChatSseToResponsesConverter,
+    patcher: ReasoningItemPatcher,
 }
 
 impl AnthropicSseToResponsesConverter {
@@ -840,6 +1426,7 @@ impl AnthropicSseToResponsesConverter {
         Self {
             bridge: AnthropicSseToChatSse::default(),
             chat: ChatSseToResponsesConverter::with_request(request),
+            patcher: ReasoningItemPatcher::default(),
         }
     }
 
@@ -856,7 +1443,8 @@ impl AnthropicSseToResponsesConverter {
         if chat_bytes.is_empty() {
             return Vec::new();
         }
-        self.chat.push_bytes(&chat_bytes)
+        let responses_bytes = self.chat.push_bytes(&chat_bytes);
+        self.patch(&responses_bytes)
     }
 
     pub fn finish(&mut self) -> Vec<u8> {
@@ -867,11 +1455,25 @@ impl AnthropicSseToResponsesConverter {
             self.chat.push_bytes(&tail)
         };
         output.extend(self.chat.finish());
-        output
+        let mut patched = self.patch(&output);
+        patched.extend(self.patcher.flush());
+        patched
     }
 
     pub fn fail(&mut self, message: String, error_type: Option<String>) -> Vec<u8> {
         self.chat.fail(message, error_type)
+    }
+
+    /// 把已收口的签名思考块补进 Responses 事件里的 reasoning item。
+    fn patch(&mut self, responses_bytes: &[u8]) -> Vec<u8> {
+        let blocks = self.bridge.take_thinking_blocks();
+        if !blocks.is_empty() {
+            self.patcher.add_blocks(blocks);
+        }
+        if self.patcher.is_idle() {
+            return responses_bytes.to_vec();
+        }
+        self.patcher.push_bytes(responses_bytes)
     }
 }
 
@@ -880,8 +1482,142 @@ impl Default for AnthropicSseToResponsesConverter {
         Self {
             bridge: AnthropicSseToChatSse::default(),
             chat: ChatSseToResponsesConverter::default(),
+            patcher: ReasoningItemPatcher::default(),
         }
     }
+}
+
+/// 给 Responses SSE 里还没带 `encrypted_content` 的 reasoning item 补签名信封。
+///
+/// 只在 `response.output_item.done` 与 `response.completed` 上打补丁：
+/// `output_item.added` 发得比 signature_delta 早，那时签名还没到。
+#[derive(Default)]
+struct ReasoningItemPatcher {
+    buffer: String,
+    utf8_remainder: Vec<u8>,
+    groups: Vec<Vec<Value>>,
+    used: usize,
+}
+
+impl ReasoningItemPatcher {
+    fn is_idle(&self) -> bool {
+        self.groups.is_empty() && self.buffer.is_empty()
+    }
+
+    fn add_blocks(&mut self, blocks: Vec<Value>) {
+        if !blocks.is_empty() {
+            self.groups.push(blocks);
+        }
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
+        append_utf8_safe(&mut self.buffer, &mut self.utf8_remainder, bytes);
+        let mut output = String::new();
+        while let Some(block) = take_sse_block(&mut self.buffer) {
+            output.push_str(&self.patch_block(&block));
+        }
+        output.into_bytes()
+    }
+
+    fn flush(&mut self) -> Vec<u8> {
+        if !self.utf8_remainder.is_empty() {
+            self.buffer
+                .push_str(&String::from_utf8_lossy(&self.utf8_remainder));
+            self.utf8_remainder.clear();
+        }
+        if self.buffer.trim().is_empty() {
+            self.buffer.clear();
+            return Vec::new();
+        }
+        let block = std::mem::take(&mut self.buffer);
+        self.patch_block(&block).into_bytes()
+    }
+
+    fn patch_block(&mut self, block: &str) -> String {
+        let mut data_lines: Vec<String> = Vec::new();
+        for line in block.lines() {
+            if let Some(data) = strip_sse_field(line, "data") {
+                data_lines.push(data.to_string());
+            }
+        }
+        if data_lines.is_empty() {
+            return format!("{block}\n\n");
+        }
+        let data = data_lines.join("\n");
+        if data.trim() == "[DONE]" {
+            return format!("{block}\n\n");
+        }
+        let Ok(mut value) = serde_json::from_str::<Value>(&data) else {
+            return format!("{block}\n\n");
+        };
+        if !self.patch_event(&mut value) {
+            return format!("{block}\n\n");
+        }
+        // 只替换 data 行，保留 event 行等其余内容。
+        let mut replaced = false;
+        let mut lines: Vec<String> = Vec::new();
+        for line in block.lines() {
+            if !replaced && strip_sse_field(line, "data").is_some() {
+                lines.push(format!("data: {value}"));
+                replaced = true;
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+        format!("{}\n\n", lines.join("\n"))
+    }
+
+    fn patch_event(&mut self, value: &mut Value) -> bool {
+        match value.get("type").and_then(Value::as_str).unwrap_or("") {
+            "response.output_item.done" => match value.get_mut("item") {
+                Some(item) => self.patch_item(item),
+                None => false,
+            },
+            "response.completed" => {
+                let mut patched = false;
+                if let Some(output) = value
+                    .pointer_mut("/response/output")
+                    .and_then(Value::as_array_mut)
+                {
+                    for item in output.iter_mut() {
+                        patched |= self.patch_item(item);
+                    }
+                }
+                patched
+            }
+            _ => false,
+        }
+    }
+
+    fn patch_item(&mut self, item: &mut Value) -> bool {
+        if item.get("type").and_then(Value::as_str) != Some("reasoning")
+            || item.get("encrypted_content").is_some()
+        {
+            return false;
+        }
+        let Some(group) = self.groups.get(self.used) else {
+            return false;
+        };
+        let Some(encrypted) = encode_thinking_blocks(group) else {
+            return false;
+        };
+        item["encrypted_content"] = json!(encrypted);
+        self.used += 1;
+        true
+    }
+}
+
+/// 非流式响应体统一成 chat 形态，供压缩聚合器解析（它只认 chat / Responses 结构）。
+pub fn normalize_non_stream_body_for_compaction(
+    wire_api: crate::protocol_proxy::UpstreamWireApi,
+    body: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    if wire_api != crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
+        return Ok(body.to_vec());
+    }
+    let message: Value = serde_json::from_slice(body)?;
+    let chat = anthropic_message_to_chat_completion(message)?;
+    Ok(serde_json::to_vec(&chat)?)
 }
 
 /// 一次性把整段 Anthropic SSE 转成 Responses SSE（非 launcher 路径使用）。
@@ -960,6 +1696,15 @@ fn strip_sse_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
 
+    fn options_with_max_tokens(max_tokens: u64) -> AnthropicRequestOptions {
+        AnthropicRequestOptions {
+            max_tokens,
+            // 这些用例只关心结构转换，缓存断点由专门用例覆盖。
+            prompt_cache: false,
+            ..AnthropicRequestOptions::default()
+        }
+    }
+
     fn chat_request() -> Value {
         json!({
             "model": "claude-sonnet-5",
@@ -1014,7 +1759,7 @@ mod tests {
 
     #[test]
     fn chat_request_maps_to_anthropic_shape() {
-        let converted = chat_completions_to_anthropic_messages(chat_request(), 8192).unwrap();
+        let converted = chat_completions_to_anthropic_messages(chat_request(), &options_with_max_tokens(8192)).unwrap();
         assert_eq!(converted["model"], "claude-sonnet-5");
         assert_eq!(converted["max_tokens"], 512);
         assert_eq!(converted["stream"], true);
@@ -1056,7 +1801,7 @@ mod tests {
                 { "role": "user", "content": "继续" }
             ]
         });
-        let converted = chat_completions_to_anthropic_messages(request, 4096).unwrap();
+        let converted = chat_completions_to_anthropic_messages(request, &options_with_max_tokens(4096)).unwrap();
         assert_eq!(converted["max_tokens"], 4096);
         let messages = converted["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "user");
@@ -1073,7 +1818,7 @@ mod tests {
             "tools": [],
             "tool_choice": "auto"
         });
-        let converted = chat_completions_to_anthropic_messages(request, 8192).unwrap();
+        let converted = chat_completions_to_anthropic_messages(request, &options_with_max_tokens(8192)).unwrap();
         assert!(converted.get("tools").is_none());
         assert!(converted.get("tool_choice").is_none());
     }
@@ -1164,6 +1909,283 @@ mod tests {
             !converter.has_terminal_event(),
             "缺少 message_stop 不能被当成正常结束"
         );
+    }
+
+    #[test]
+    fn explicit_max_tokens_wins_over_request_value() {
+        let request = json!({
+            "model": "m",
+            "max_tokens": 512,
+            "messages": [{ "role": "user", "content": "hi" }]
+        });
+        // 未显式配置：请求自带值优先。
+        let converted =
+            chat_completions_to_anthropic_messages(request.clone(), &options_with_max_tokens(8192))
+                .unwrap();
+        assert_eq!(converted["max_tokens"], 512);
+        // 显式配置（用户在表单里填了）：覆盖请求值。
+        let forced = AnthropicRequestOptions {
+            max_tokens: 64000,
+            force_max_tokens: true,
+            prompt_cache: false,
+            ..AnthropicRequestOptions::default()
+        };
+        let converted = chat_completions_to_anthropic_messages(request, &forced).unwrap();
+        assert_eq!(converted["max_tokens"], 64000);
+    }
+
+    #[test]
+    fn thinking_budget_follows_effort_and_clamps_to_half_of_max_tokens() {
+        // high → 16384，但 max_tokens 只有 3000，夹到一半（1500）给可见回答留余量。
+        let body = json!({
+            "model": "claude-sonnet-5",
+            "max_output_tokens": 3000,
+            "temperature": 0.3,
+            "reasoning": { "effort": "high" },
+            "input": "hi"
+        });
+        let converted =
+            responses_to_anthropic_messages(body, &options_with_max_tokens(8192)).unwrap();
+        assert_eq!(converted["thinking"]["type"], "enabled");
+        assert_eq!(converted["thinking"]["budget_tokens"], 1500);
+        // 开启思考时不能带 temperature（Anthropic 会拒绝）。
+        assert!(converted.get("temperature").is_none());
+
+        // 上限太小（1000 < 1024 下限）→ 干脆不开思考，保持普通采样。
+        let small = json!({
+            "model": "claude-sonnet-5",
+            "max_output_tokens": 2000,
+            "temperature": 0.3,
+            "reasoning": { "effort": "medium" },
+            "input": "hi"
+        });
+        let converted =
+            responses_to_anthropic_messages(small, &options_with_max_tokens(8192)).unwrap();
+        assert!(converted.get("thinking").is_none());
+
+        // 未知档位 / 显式关闭都不发 thinking。
+        for effort in ["none", "off", "disabled", "bogus"] {
+            let body = json!({
+                "model": "claude-sonnet-5",
+                "reasoning": { "effort": effort },
+                "input": "hi"
+            });
+            let converted =
+                responses_to_anthropic_messages(body, &options_with_max_tokens(8192)).unwrap();
+            assert!(converted.get("thinking").is_none(), "effort={effort}");
+        }
+    }
+
+    #[test]
+    fn thinking_is_skipped_when_tool_history_has_no_signature() {
+        // 历史里有工具调用但拿不到签名块：开启思考必然被 Anthropic 拒绝，宁可不发。
+        let body = json!({
+            "model": "claude-sonnet-5",
+            "reasoning": { "effort": "medium" },
+            "input": [
+                { "type": "function_call", "call_id": "c1", "name": "lookup", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "结果" }
+            ]
+        });
+        let converted =
+            responses_to_anthropic_messages(body, &options_with_max_tokens(8192)).unwrap();
+        assert!(converted.get("thinking").is_none());
+        let assistant = converted["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["content"][0]["type"], "tool_use");
+    }
+
+    /// 签名思考块的完整闭环：响应侧编码进 encrypted_content，下一轮原样放回。
+    #[test]
+    fn signed_thinking_survives_round_trip_through_responses() {
+        let message = json!({
+            "id": "msg_1",
+            "model": "claude-sonnet-5",
+            "stop_reason": "tool_use",
+            "content": [
+                { "type": "thinking", "thinking": "先想一下", "signature": "sig-abc" },
+                { "type": "tool_use", "id": "toolu_1", "name": "lookup", "input": { "q": "x" } }
+            ],
+            "usage": { "input_tokens": 1, "output_tokens": 1 }
+        });
+        let blocks = thinking_blocks_from_anthropic_message(&message);
+        assert_eq!(blocks.len(), 1);
+        let chat = anthropic_message_to_chat_completion(message).unwrap();
+        let mut response = crate::protocol_proxy::chat_completion_to_response_with_request(
+            chat,
+            &json!({ "model": "claude-sonnet-5" }),
+        )
+        .unwrap();
+        attach_thinking_to_responses(&mut response, &blocks);
+        let reasoning = response["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "reasoning")
+            .cloned()
+            .expect("思考内容应产出 reasoning item");
+        let encrypted = reasoning["encrypted_content"].as_str().unwrap();
+        assert!(encrypted.starts_with(ANTHROPIC_THINKING_PREFIX));
+        assert_eq!(decode_thinking_blocks(encrypted)[0]["signature"], "sig-abc");
+
+        // Codex 下一轮把该 reasoning item 原样放回 input。
+        let next = json!({
+            "model": "claude-sonnet-5",
+            "reasoning": { "effort": "medium" },
+            "input": [
+                reasoning.clone(),
+                { "type": "function_call", "call_id": "toolu_1", "name": "lookup",
+                  "arguments": "{\"q\":\"x\"}" },
+                { "type": "function_call_output", "call_id": "toolu_1", "output": "结果" }
+            ]
+        });
+        let converted =
+            responses_to_anthropic_messages(next, &options_with_max_tokens(16384)).unwrap();
+        assert_eq!(converted["thinking"]["type"], "enabled");
+        let assistant = converted["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["content"][0]["type"], "thinking");
+        assert_eq!(assistant["content"][0]["signature"], "sig-abc");
+        assert_eq!(assistant["content"][1]["type"], "tool_use");
+    }
+
+    fn count_cache_breakpoints(value: &Value) -> usize {
+        match value {
+            Value::Array(items) => items.iter().map(count_cache_breakpoints).sum(),
+            Value::Object(object) => {
+                usize::from(object.contains_key("cache_control"))
+                    + object.values().map(count_cache_breakpoints).sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn prompt_cache_injects_at_most_four_breakpoints() {
+        let mut body = json!({
+            "model": "claude-sonnet-5",
+            "max_tokens": 1024,
+            "system": "系统提示",
+            "tools": [ { "name": "a", "input_schema": {} }, { "name": "b", "input_schema": {} } ],
+            "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "1" }] },
+                { "role": "assistant", "content": [{ "type": "text", "text": "2" }] },
+                { "role": "user", "content": [{ "type": "text", "text": "3" }] },
+                { "role": "assistant", "content": [{ "type": "text", "text": "4" }] },
+                { "role": "user", "content": [{ "type": "text", "text": "5" }] }
+            ]
+        });
+        inject_prompt_cache(&mut body);
+        assert_eq!(count_cache_breakpoints(&body), 4);
+        // 字符串 system 被展开成块数组，断点挂在最后一块上。
+        assert_eq!(body["system"][0]["type"], "text");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+
+        // 幂等：再注入一次不会超过上限，也不会重复标记。
+        inject_prompt_cache(&mut body);
+        assert_eq!(count_cache_breakpoints(&body), 4);
+
+        // 调用方自己标满 4 个断点时一个都不动。
+        let mut full = json!({
+            "model": "m",
+            "system": [ { "type": "text", "text": "s", "cache_control": { "type": "ephemeral" } } ],
+            "tools": [ { "name": "a", "input_schema": {}, "cache_control": { "type": "ephemeral" } } ],
+            "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "1",
+                    "cache_control": { "type": "ephemeral" } }] },
+                { "role": "user", "content": [{ "type": "text", "text": "2",
+                    "cache_control": { "type": "ephemeral" } }] }
+            ]
+        });
+        let before = full.clone();
+        inject_prompt_cache(&mut full);
+        assert_eq!(full, before);
+    }
+
+    #[test]
+    fn claude_code_identity_is_prepended_once() {
+        let mut body = json!({ "system": "你是助手" });
+        prepend_claude_code_identity(&mut body);
+        prepend_claude_code_identity(&mut body);
+        let system = body["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[0]["text"], CLAUDE_CODE_SYSTEM_IDENTITY);
+        assert_eq!(system[1]["text"], "你是助手");
+
+        let mut empty = json!({});
+        prepend_claude_code_identity(&mut empty);
+        assert_eq!(empty["system"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn context_marker_and_beta_header() {
+        assert_eq!(strip_context_marker("claude-sonnet-5[1m]"), "claude-sonnet-5");
+        assert_eq!(strip_context_marker("claude-sonnet-5[1M]"), "claude-sonnet-5");
+        assert_eq!(strip_context_marker("claude-sonnet-5"), "claude-sonnet-5");
+
+        assert_eq!(
+            anthropic_beta_header(true, true).unwrap(),
+            "claude-code-20250219,context-1m-2025-08-07"
+        );
+        assert_eq!(
+            anthropic_beta_header(false, true).unwrap(),
+            "context-1m-2025-08-07"
+        );
+        assert!(anthropic_beta_header(false, false).is_none());
+
+        let mut profile = crate::settings::RelayProfile {
+            model_windows: r#"{"claude-sonnet-5":"1M"}"#.to_string(),
+            ..crate::settings::RelayProfile::default()
+        };
+        assert!(model_declares_context_1m(&profile, "claude-sonnet-5"));
+        profile.model_windows = r#"{"claude-sonnet-5":"200K"}"#.to_string();
+        assert!(!model_declares_context_1m(&profile, "claude-sonnet-5"));
+        // 每模型窗口写死不到 1M 时，不会被 profile 级 contextWindow 顶掉。
+        profile.context_window = "1000000".to_string();
+        assert!(!model_declares_context_1m(&profile, "claude-sonnet-5"));
+        // 没有该模型的条目时才退回 profile 级 contextWindow。
+        profile.model_windows = r#"{"other-model":"200K"}"#.to_string();
+        assert!(model_declares_context_1m(&profile, "claude-sonnet-5"));
+    }
+
+    /// 流式：signature_delta 要落进 reasoning item 的 encrypted_content。
+    #[test]
+    fn stream_signature_is_attached_to_reasoning_item() {
+        let stream = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_s\",\"model\":\"claude-sonnet-5\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"想\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-stream\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+        let output =
+            String::from_utf8(anthropic_sse_to_responses_sse(stream, &json!({}))).unwrap();
+        let encrypted = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+            .find_map(|value| {
+                value
+                    .pointer("/item/encrypted_content")
+                    .or_else(|| value.pointer("/response/output/0/encrypted_content"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .expect("reasoning item 必须带回放信封");
+        let blocks = decode_thinking_blocks(&encrypted);
+        assert_eq!(blocks[0]["signature"], "sig-stream");
+        assert_eq!(blocks[0]["thinking"], "想");
     }
 
     #[test]

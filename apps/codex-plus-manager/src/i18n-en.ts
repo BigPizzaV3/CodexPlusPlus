@@ -228,6 +228,14 @@ export const EN_PLAIN: Record<string, string> = {
   "API Key 环境变量": "API Key environment variable",
   "Chat Completions 转 Responses": "Chat Completions to Responses",
   "Anthropic Messages 转 Responses": "Anthropic Messages to Responses",
+  "提示缓存": "Prompt caching",
+  "给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。":
+    "Marks 5-minute cache breakpoints on the system prompt, tool definitions and the latest turn (up to 4), so long conversations are not re-billed in full every turn.",
+  "模拟 Claude Code 客户端": "Emulate the Claude Code client",
+  "伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。":
+    "Spoofs the User-Agent, anthropic-beta and x-app headers and injects the Claude Code identity as the first system line. Enable only when the gateway restricts usage to Claude Code.",
+  "思考档位跟随 Codex 的 reasoning effort 折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。":
+    "Thinking budget follows Codex reasoning effort, and a declared 1M context window automatically adds the 1m context beta header.",
   "认证字段": "Auth header",
   "x-api-key（Anthropic 原生）": "x-api-key (Anthropic native)",
   "Authorization: Bearer": "Authorization: Bearer",

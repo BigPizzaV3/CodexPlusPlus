@@ -452,8 +452,12 @@ export type RelayProfile = {
   webSearchHistoryCompat: boolean;
   /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
   anthropicAuthHeader?: string;
-  /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192。 */
+  /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192；填了则优先于请求值。 */
   anthropicMaxTokens?: number;
+  /** 注入 Anthropic 提示缓存断点，默认开启。 */
+  anthropicPromptCache?: boolean;
+  /** 伪装 Claude Code 客户端（仅网关限制「只能通过 Claude Code 使用」时需要）。 */
+  anthropicImpersonateClaudeCode?: boolean;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -9371,6 +9375,44 @@ function RelayProfileEditor({
                           }
                         />
                       </Field>
+                      <label className="switch-row compact relay-switch-row relay-field-anthropic-cache">
+                        <input
+                          checked={profile.anthropicPromptCache !== false}
+                          onChange={(event) =>
+                            updateDraft({ anthropicPromptCache: event.currentTarget.checked })
+                          }
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong>{t("提示缓存")}</strong>
+                          <small>
+                            {t("给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。")}
+                          </small>
+                        </span>
+                        <ToggleVisual />
+                      </label>
+                      <label className="switch-row compact relay-switch-row relay-field-anthropic-impersonate">
+                        <input
+                          checked={profile.anthropicImpersonateClaudeCode === true}
+                          onChange={(event) =>
+                            updateDraft({ anthropicImpersonateClaudeCode: event.currentTarget.checked })
+                          }
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong>{t("模拟 Claude Code 客户端")}</strong>
+                          <small>
+                            {t("伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。")}
+                          </small>
+                        </span>
+                        <ToggleVisual />
+                      </label>
+                      <div className="hint-line relay-protocol-hint">
+                        <MessageCircle className="h-4 w-4" />
+                        <span>
+                          {t("思考档位跟随 Codex 的 reasoning effort 折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。")}
+                        </span>
+                      </div>
                     </>
                   ) : null}
                 </div>
@@ -13394,6 +13436,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
     anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
+    anthropicPromptCache: profile.anthropicPromptCache !== false,
+    anthropicImpersonateClaudeCode: profile.anthropicImpersonateClaudeCode === true,
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }

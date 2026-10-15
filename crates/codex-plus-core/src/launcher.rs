@@ -2352,8 +2352,12 @@ async fn handle_protocol_proxy_connection(
     };
     if upstream.compaction {
         // v2 远程压缩非流式路径：同样重组为单个 compaction 输出项。
-        let body = crate::protocol_proxy::wrap_non_stream_response_as_compaction(
+        let compaction_input = crate::anthropic_bridge::normalize_non_stream_body_for_compaction(
+            upstream.wire_api,
             &upstream_body,
+        )?;
+        let body = crate::protocol_proxy::wrap_non_stream_response_as_compaction(
+            &compaction_input,
             request_json
                 .as_ref()
                 .and_then(|request| request.get("model"))
@@ -2405,18 +2409,27 @@ async fn handle_protocol_proxy_connection(
         return Ok(());
     }
     let upstream_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
-    // Anthropic 上游先落成 chat 响应体，再复用同一份 chat → Responses 映射。
-    let chat_json = if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages
-    {
-        crate::anthropic_bridge::anthropic_message_to_chat_completion(upstream_json)?
-    } else {
-        upstream_json
-    };
-    let response_json = if let Some(request_json) = request_json.as_ref() {
+    // Anthropic 上游先落成 chat 响应体，再复用同一份 chat → Responses 映射；
+    // 签名思考块要挂回 Responses 的 reasoning item，下一轮才能原样回放。
+    let (chat_json, thinking_blocks) =
+        if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
+            let blocks =
+                crate::anthropic_bridge::thinking_blocks_from_anthropic_message(&upstream_json);
+            (
+                crate::anthropic_bridge::anthropic_message_to_chat_completion(upstream_json)?,
+                blocks,
+            )
+        } else {
+            (upstream_json, Vec::new())
+        };
+    let mut response_json = if let Some(request_json) = request_json.as_ref() {
         crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
     } else {
         crate::protocol_proxy::chat_completion_to_response(chat_json)?
     };
+    if !thinking_blocks.is_empty() {
+        crate::anthropic_bridge::attach_thinking_to_responses(&mut response_json, &thinking_blocks);
+    }
     let body = serde_json::to_vec(&response_json)?;
     write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
     log_helper_response(

@@ -152,7 +152,9 @@ async fn requests_go_to_messages_endpoint_with_anthropic_body_and_headers() {
         "缺少 anthropic-version：{headers}"
     );
     assert_eq!(sent["model"], "claude-sonnet-5");
-    assert_eq!(sent["system"], "你是助手");
+    // 提示缓存默认开启：字符串 system 会展开成块数组，断点落在最后一块。
+    assert_eq!(sent["system"][0]["type"], "text");
+    assert_eq!(sent["system"][0]["text"], "你是助手");
     assert_eq!(sent["max_tokens"], 256);
     assert_eq!(sent["messages"][0]["role"], "user");
     assert_eq!(sent["messages"][0]["content"][0]["text"], "你好");
@@ -321,6 +323,114 @@ base_url = "https://api.anthropic.com"
         !live.contains("https://api.anthropic.com"),
         "真实上游不能进 live 配置：{live}"
     );
+}
+
+/// 伪装 Claude Code：UA / x-app / anthropic-beta 与系统提示首行身份一起生效。
+#[tokio::test]
+async fn impersonation_sends_claude_code_identity_and_headers() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_request(
+        listener,
+        "application/json",
+        r#"{"id":"msg_imp","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}"#
+            .to_string(),
+    ));
+
+    let mut settings = anthropic_settings(format!("http://{address}"));
+    settings.relay_profiles[0].anthropic_impersonate_claude_code = true;
+    let _ = open_responses_proxy_request_with_settings(
+        &codex_request(false).to_string(),
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let (headers, sent) = server.await.unwrap();
+    let lowered = headers.to_ascii_lowercase();
+    assert!(
+        lowered.contains("user-agent: claude-cli/1.0.119 (external, cli)"),
+        "UA 未替换：{headers}"
+    );
+    assert!(lowered.contains("x-app: cli"), "缺少 x-app：{headers}");
+    assert!(
+        lowered.contains("anthropic-beta: claude-code-20250219"),
+        "缺少 claude-code beta：{headers}"
+    );
+    assert_eq!(
+        sent["system"][0]["text"],
+        codex_plus_core::anthropic_bridge::CLAUDE_CODE_SYSTEM_IDENTITY
+    );
+}
+
+/// 显式配置的 max tokens 覆盖请求值；提示缓存断点随请求发出。
+#[tokio::test]
+async fn explicit_max_tokens_and_prompt_cache_reach_upstream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_request(
+        listener,
+        "application/json",
+        r#"{"id":"msg_cap","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}"#
+            .to_string(),
+    ));
+
+    let mut settings = anthropic_settings(format!("http://{address}"));
+    settings.relay_profiles[0].anthropic_max_tokens = 64000;
+    let _ = open_responses_proxy_request_with_settings(
+        &codex_request(false).to_string(),
+        settings,
+    )
+    .await
+    .unwrap();
+
+    let (_, sent) = server.await.unwrap();
+    // 请求里是 256，供应商里显式填了 64000 → 以显式值为准。
+    assert_eq!(sent["max_tokens"], 64000);
+    assert_eq!(
+        sent["system"][0]["cache_control"]["type"], "ephemeral",
+        "系统提示末尾应有缓存断点：{sent}"
+    );
+    assert_eq!(
+        sent["tools"][0]["cache_control"]["type"], "ephemeral",
+        "工具定义末尾应有缓存断点：{sent}"
+    );
+}
+
+/// 模型声明 1M 窗口时剥掉 `[1m]` 标记并附上 1M beta 头。
+#[tokio::test]
+async fn declared_1m_window_adds_context_beta_and_strips_marker() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_request(
+        listener,
+        "application/json",
+        r#"{"id":"msg_1m","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}"#
+            .to_string(),
+    ));
+
+    let mut settings = anthropic_settings(format!("http://{address}"));
+    settings.relay_profiles[0].model_windows = r#"{"claude-sonnet-5":"1M"}"#.to_string();
+    let mut request = codex_request(false);
+    request["model"] = json!("claude-sonnet-5[1m]");
+    let _ = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+
+    let (headers, sent) = server.await.unwrap();
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("anthropic-beta: context-1m-2025-08-07"),
+        "缺少 1M beta 头：{headers}"
+    );
+    assert_eq!(sent["model"], "claude-sonnet-5", "标记必须剥掉");
 }
 
 /// 协议变体与新增字段的序列化 / 默认值契约。

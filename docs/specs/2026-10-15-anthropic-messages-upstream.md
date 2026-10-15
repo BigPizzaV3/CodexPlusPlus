@@ -21,13 +21,19 @@ compaction）以及响应侧那台数千行的 `ChatSseToResponsesConverter` 状
 Chat 链路上跑通并有测试覆盖。新代码只落在 `anthropic_bridge.rs` 这一层，
 出问题时可以对拍「是 Chat ↔ Anthropic 这段错，还是既有链路错」。
 
-代价（已知）：
-- Anthropic 的 `thinking.signature`、`cache_control` 断点、`[1m]` beta 头在 Chat
-  形态里没有落点，因此当前不回放思考内容、不做提示缓存标记注入；
-- 多一次纯内存 JSON 变换（微秒级，可忽略）。
+中途态表达力弱于 Anthropic 的部分，用**旁路状态**补齐（不推倒中间态）：
 
-要支持「思考内容跨轮原样回放」或「缓存断点注入」时，需要给中间态加旁路状态
-（把签名随 Responses 的 `encrypted_content` 带回客户端），不做推倒重来。
+- **思考签名**：Anthropic 的 `thinking.signature` 在 Chat 形态里没有落点，于是把整组
+  签名块 base64 后塞进 Responses reasoning item 的 `encrypted_content`
+  （前缀 `codex-plus-anthropic-thinking-v1:`）。Codex 下一轮会把该 item 原样放回
+  `input`，桥接层解出来再插到助手消息最前面——签名随客户端走，代理无状态。
+  多块思考合并成一个信封，因为 Chat 中枢每轮只产出一个 reasoning item。
+- **提示缓存**：`cache_control` 断点由桥接层注入（工具定义末尾 → 系统提示末尾 →
+  最新可缓存消息 → 更早的 user 锚点，最多 4 个，已有标记不动）。
+- **1M 上下文**：复用本仓已有的窗口声明（`modelWindows` / `contextWindow`），
+  声明值 ≥ 1,000,000 时自动附上 `context-1m-2025-08-07` beta 头。
+
+代价只剩一次纯内存 JSON 变换（微秒级）。
 
 ## 落点
 
@@ -51,6 +57,16 @@ Chat 链路上跑通并有测试覆盖。新代码只落在 `anthropic_bridge.rs
 - **`temperature` 收敛**：OpenAI 允许到 2.0，Anthropic 只到 1.0，超出会被夹到 1.0。
 - **消息形态**：`system` 消息收敛成顶层 `system`；同角色消息合并；首条必须是 user，
   否则补一条 `(continuing the conversation)`；`tool` 消息转成 `tool_result` 内容块。
+- **`max_tokens` 优先级**：供应商表单显式填写的值 > 请求自带 `max_output_tokens` >
+  内置 8192。用户填了值就不该被请求悄悄盖掉（显式配置优先）。
+- **思考（extended thinking）**：`reasoning.effort` 折算成 `thinking.budget_tokens`
+  （low 2048 / medium 8192 / high 16384 / xhigh·max·ultra 24576），并按
+  `max_tokens / 2` 夹取给可见回答留余量；夹取后低于 1024 就不开思考。
+  开启时移除 `temperature` / `top_p`。历史里已有工具调用却拿不到签名块时**不开启**
+  思考——缺签名必然 400，宁可不思考也不发一个失败请求。
+- **伪装 Claude Code**（默认关）：UA 换成 `claude-cli/1.0.119 (external, cli)`、
+  附 `x-app: cli` 与 `anthropic-beta: claude-code-20250219`，并在系统提示首行注入官方
+  身份串；仅用于网关限制「只能通过 Claude Code 使用」的场景。
 - **流式终态**：`message_stop` 是完成事件。缺失时不补 `[DONE]`，按「流被掐断」上报，
   不把截断的回答伪装成成功。
 - **协议能力开关不联动**：`standardOpenaiProtocol`、远程原生压缩、搜索历史压缩兼容

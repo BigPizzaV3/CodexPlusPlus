@@ -3013,10 +3013,12 @@ async fn upstream_request_parts(
             relay.standard_openai_protocol,
         )?,
         // Responses → Chat → Anthropic：第一跳复用上面同一份实现，第二跳在桥接模块里。
-        RelayProtocol::AnthropicMessages => crate::anthropic_bridge::responses_to_anthropic_messages(
-            request_json,
-            relay.anthropic_max_tokens(),
-        )?,
+        RelayProtocol::AnthropicMessages => {
+            crate::anthropic_bridge::responses_to_anthropic_messages(
+                request_json,
+                &crate::anthropic_bridge::request_options(relay),
+            )?
+        }
     };
     if relay.protocol == RelayProtocol::Responses {
         if relay.web_search_history_compat_enabled()
@@ -3143,11 +3145,16 @@ fn build_responses_upstream_request(
     session_headers: ProxySessionHeaders<'_>,
     official_credential: Option<&crate::official_login::OfficialCredential>,
 ) -> anyhow::Result<reqwest::RequestBuilder> {
+    // 伪装 Claude Code 时 UA 必须换成官方 CLI 的值，否则网关按 UA 判定客户端。
+    let user_agent = if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages
+        && relay.anthropic_impersonate_claude_code
+    {
+        crate::anthropic_bridge::CLAUDE_CODE_USER_AGENT.to_string()
+    } else {
+        effective_user_agent(&relay.user_agent, original_user_agent)
+    };
     let mut builder = upstream_request_builder(
-        crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?,
+        crate::http_client::proxied_client(&user_agent)?,
         endpoint,
         relay,
         is_stream,
@@ -3155,6 +3162,29 @@ fn build_responses_upstream_request(
         official_credential,
     );
     builder = with_client_session_headers(builder, relay, session_headers);
+    if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages {
+        // 1M 上下文 / Claude Code 身份都靠 anthropic-beta 表达；用户显式配了该头就不插手。
+        let has_custom_beta = relay
+            .custom_headers
+            .iter()
+            .any(|header| header.key.trim().eq_ignore_ascii_case("anthropic-beta"));
+        if !has_custom_beta {
+            let model = upstream_body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let context_1m = crate::anthropic_bridge::model_declares_context_1m(relay, model);
+            if let Some(beta) = crate::anthropic_bridge::anthropic_beta_header(
+                relay.anthropic_impersonate_claude_code,
+                context_1m,
+            ) {
+                builder = builder.header("anthropic-beta", beta);
+            }
+        }
+        if relay.anthropic_impersonate_claude_code {
+            builder = builder.header("x-app", "cli");
+        }
+    }
     if wire_api == UpstreamWireApi::Responses {
         if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
             builder = builder.header("x-codex-beta-features", value);
@@ -3334,10 +3364,14 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             .and_then(Value::as_str)
             .unwrap_or("");
         if !is_stream {
+            let body = crate::anthropic_bridge::normalize_non_stream_body_for_compaction(
+                wire_api,
+                &upstream_body,
+            )?;
             return Ok(ProxyHttpResponse {
                 status: "200 OK".to_string(),
                 content_type: "text/event-stream; charset=utf-8".to_string(),
-                body: wrap_non_stream_response_as_compaction(&upstream_body, model)?,
+                body: wrap_non_stream_response_as_compaction(&body, model)?,
             });
         }
         let mut converter = CompactionSseConverter::new(model);
@@ -3405,8 +3439,15 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             });
         }
         let message: Value = serde_json::from_slice(&upstream_body)?;
+        let thinking_blocks = crate::anthropic_bridge::thinking_blocks_from_anthropic_message(&message);
         let chat_json = crate::anthropic_bridge::anthropic_message_to_chat_completion(message)?;
-        let response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
+        let mut response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
+        if !thinking_blocks.is_empty() {
+            crate::anthropic_bridge::attach_thinking_to_responses(
+                &mut response_json,
+                &thinking_blocks,
+            );
+        }
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "application/json; charset=utf-8".to_string(),

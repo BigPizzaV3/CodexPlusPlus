@@ -141,12 +141,23 @@ pub struct RelayProfile {
     )]
     pub anthropic_auth_header: String,
     /// Anthropic 的 `max_tokens` 是必填项：Codex 请求没带上限时用这个值兜底。
+    /// 一旦填了（非 0），它优先于请求自带的上限。
     #[serde(
         rename = "anthropicMaxTokens",
         default,
         skip_serializing_if = "is_zero_u64"
     )]
     pub anthropic_max_tokens: u64,
+    /// 注入 Anthropic 提示缓存断点（`cache_control`），默认开启。
+    #[serde(rename = "anthropicPromptCache", default = "default_true")]
+    pub anthropic_prompt_cache: bool,
+    /// 伪装 Claude Code 客户端：只在网关限制「仅 Claude Code 可用」时才需要。
+    #[serde(
+        rename = "anthropicImpersonateClaudeCode",
+        default,
+        skip_serializing_if = "is_false"
+    )]
+    pub anthropic_impersonate_claude_code: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -296,6 +307,8 @@ impl Default for RelayProfile {
             web_search_history_compat: false,
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
+            anthropic_prompt_cache: true,
+            anthropic_impersonate_claude_code: false,
         }
     }
 }
@@ -960,6 +973,8 @@ impl BackendSettings {
                 web_search_history_compat: false,
                 anthropic_auth_header: String::new(),
                 anthropic_max_tokens: 0,
+                anthropic_prompt_cache: true,
+                anthropic_impersonate_claude_code: false,
             };
         }
 
@@ -1019,6 +1034,8 @@ impl BackendSettings {
             web_search_history_compat: false,
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
+            anthropic_prompt_cache: true,
+            anthropic_impersonate_claude_code: false,
         }
     }
 
