@@ -5042,6 +5042,15 @@ fn runtime_evaluate_params_sets_expected_flags() {
 }
 
 #[test]
+fn runtime_evaluate_params_return_by_value_sets_flag() {
+    let params = bridge::runtime_evaluate_params_return_by_value("({hello:\"world\"})");
+
+    assert_eq!(params["returnByValue"], true);
+    assert_eq!(params["awaitPromise"], false);
+    assert_eq!(params["allowUnsafeEvalBlockedByCSP"], true);
+}
+
+#[test]
 fn runtime_evaluate_params_can_await_promise_for_bridge_health_checks() {
     let params = bridge::runtime_evaluate_params_with_await_promise("Promise.resolve(true)", true);
 
@@ -6391,6 +6400,86 @@ async fn recv_text_message(socket: &mut TestSocket) -> Option<String> {
         Some(Ok(Message::Text(text))) => Some(text.to_string()),
         _ => None,
     }
+}
+
+#[tokio::test]
+async fn extension_cdp_evaluate_returns_objects_and_arrays_by_value() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("cdp listener should bind");
+    let port = listener.local_addr().expect("listener address").port();
+    let websocket = format!("ws://127.0.0.1:{port}/devtools/page/overlay");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let websocket = websocket.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut peeked = [0_u8; 2048];
+                let peeked_len = stream.peek(&mut peeked).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&peeked[..peeked_len]);
+                if head.contains("GET /json") {
+                    let mut buf = vec![0_u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let body = json!([{
+                        "id": "overlay",
+                        "type": "page",
+                        "title": "overlay",
+                        "url": "app://-/index.html?initialRoute=%2Favatar-overlay",
+                        "webSocketDebuggerUrl": websocket,
+                    }])
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    return;
+                }
+                let mut socket = accept_async(stream)
+                    .await
+                    .expect("websocket should upgrade");
+                let command = recv_json(&mut socket).await;
+                assert_eq!(command["method"], "Runtime.evaluate");
+                let by_value = command["params"]["returnByValue"] == true;
+                let expression = command["params"]["expression"].as_str().unwrap_or("");
+                // 不带 returnByValue 时，V8 对对象只回 objectId，value 为空。
+                let remote = if !by_value {
+                    json!({ "type": "object", "objectId": "obj-1" })
+                } else if expression.contains('[') {
+                    json!({ "type": "object", "value": [1, "two"] })
+                } else {
+                    json!({ "type": "object", "value": { "hello": "world" } })
+                };
+                send_json(
+                    &mut socket,
+                    json!({ "id": command["id"], "result": { "result": remote } }),
+                )
+                .await;
+                close_socket(&mut socket).await;
+            });
+        }
+    });
+
+    let object = codex_plus_core::routes::evaluate_extension_cdp(
+        port,
+        &json!({ "kind": "avatar-overlay", "expression": "({hello:\"world\"})" }),
+    )
+    .await
+    .expect("object evaluation should succeed");
+    assert_eq!(object["results"][0]["ok"], true);
+    assert_eq!(object["results"][0]["value"]["hello"], "world");
+
+    let array = codex_plus_core::routes::evaluate_extension_cdp(
+        port,
+        &json!({ "kind": "avatar-overlay", "expression": "[1, \"two\"]" }),
+    )
+    .await
+    .expect("array evaluation should succeed");
+    assert_eq!(array["results"][0]["ok"], true);
+    assert_eq!(array["results"][0]["value"], json!([1, "two"]));
 }
 
 async fn spawn_cdp_server<F, Fut>(handler: F) -> (String, oneshot::Receiver<()>)

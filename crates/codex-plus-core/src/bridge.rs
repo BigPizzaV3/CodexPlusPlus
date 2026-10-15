@@ -167,6 +167,23 @@ pub async fn evaluate_script(websocket_url: &str, script: &str) -> anyhow::Resul
     evaluate_script_with_await_promise(websocket_url, script, false).await
 }
 
+/// 拓展 `/cdp/evaluate` 专用。对象和数组必须按值返回，否则 CDP 只给 objectId。
+pub async fn evaluate_script_return_by_value(
+    websocket_url: &str,
+    script: &str,
+) -> anyhow::Result<Value> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    let response = session
+        .send_command(
+            1,
+            "Runtime.evaluate",
+            runtime_evaluate_params_return_by_value(script),
+        )
+        .await?;
+    ensure_runtime_evaluate_succeeded(response)
+}
+
 pub async fn evaluate_script_with_await_promise(
     websocket_url: &str,
     script: &str,
@@ -1050,6 +1067,14 @@ fn collect_script_identifier(response: &Value, identifiers: &mut Vec<String>) {
 
 pub fn runtime_evaluate_params(script: &str) -> Value {
     runtime_evaluate_params_with_await_promise(script, false)
+}
+
+pub fn runtime_evaluate_params_return_by_value(script: &str) -> Value {
+    let mut params = runtime_evaluate_params(script);
+    if let Some(object) = params.as_object_mut() {
+        object.insert("returnByValue".to_string(), Value::Bool(true));
+    }
+    params
 }
 
 pub fn runtime_evaluate_params_with_await_promise(script: &str, await_promise: bool) -> Value {

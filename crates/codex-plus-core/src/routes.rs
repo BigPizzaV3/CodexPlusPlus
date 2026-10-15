@@ -211,7 +211,10 @@ pub async fn evaluate_extension_cdp(debug_port: u16, payload: &Value) -> anyhow:
     let expression = nonempty_payload_str(payload, "expression")
         .ok_or_else(|| anyhow::anyhow!("expression 不能为空"))?;
     if expression.len() > EXTENSION_CDP_EXPRESSION_MAX_BYTES {
-        anyhow::bail!("expression 超过 {} 字节上限", EXTENSION_CDP_EXPRESSION_MAX_BYTES);
+        anyhow::bail!(
+            "expression 超过 {} 字节上限",
+            EXTENSION_CDP_EXPRESSION_MAX_BYTES
+        );
     }
     let target_id = nonempty_payload_str(payload, "target_id")
         .or_else(|| nonempty_payload_str(payload, "targetId"));
@@ -224,7 +227,9 @@ pub async fn evaluate_extension_cdp(debug_port: u16, payload: &Value) -> anyhow:
             .web_socket_debugger_url
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("CDP 页面没有 WebSocket URL"))?;
-        let result = match crate::bridge::evaluate_script(websocket, expression).await {
+        let result = match crate::bridge::evaluate_script_return_by_value(websocket, expression)
+            .await
+        {
             Ok(response) => json!({
                 "id": target.id,
                 "ok": true,
