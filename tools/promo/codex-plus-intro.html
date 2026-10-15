@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Codex++ 介绍视频</title>
+<style>
+  :root{
+    --bg:#05070d;
+    --panel:#0b1120;
+    --line:#1b2740;
+    --txt:#e6edf7;
+    --dim:#8a9bb8;
+    --cyan:#22d3ee;
+    --blue:#3b82f6;
+    --violet:#a78bfa;
+    --green:#34d399;
+    --amber:#fbbf24;
+    --rose:#fb7185;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",Inter,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--txt);font-family:var(--sans);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:14px;overflow:hidden;
+  }
+  svg{display:block}
+
+  /* ---------- 舞台 ---------- */
+  #stage{
+    position:relative;width:1920px;height:1080px;background:#04060c;overflow:hidden;
+    transform-origin:center center;flex:0 0 auto;
+    box-shadow:0 40px 120px rgba(0,0,0,.85),0 0 0 1px rgba(34,211,238,.10);
+    border-radius:10px;
+  }
+  #bg{position:absolute;inset:0;width:100%;height:100%}
+  .vignette{
+    position:absolute;inset:0;pointer-events:none;z-index:3;
+    background:radial-gradient(120% 85% at 50% 45%,transparent 38%,rgba(0,0,0,.55) 100%);
+  }
+  .scanlines{
+    position:absolute;inset:0;pointer-events:none;z-index:4;opacity:.16;
+    background:repeating-linear-gradient(to bottom,rgba(255,255,255,.06) 0 1px,transparent 1px 3px);
+    mix-blend-mode:overlay;
+  }
+
+  /* ---------- 场景 ---------- */
+  .scene{
+    position:absolute;inset:0;z-index:5;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:38px;padding:80px 120px;
+    opacity:0;visibility:hidden;pointer-events:none;
+  }
+  .scene.active{opacity:1;visibility:visible}
+
+  @keyframes rise{from{opacity:0;transform:translateY(34px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes riseSm{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes slideL{from{opacity:0;transform:translateX(-46px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes slideR{from{opacity:0;transform:translateX(46px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes popIn{from{opacity:0;transform:scale(.86)}to{opacity:1;transform:scale(1)}}
+  @keyframes growW{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  @keyframes flow{to{background-position:200% 0}}
+  @keyframes flowline{to{background-position:26px 0}}
+  @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+  @keyframes sweep{0%{transform:translateX(-120%) skewX(-18deg)}100%{transform:translateX(220%) skewX(-18deg)}}
+  @keyframes pulse{0%,100%{opacity:.42;transform:scale(1)}50%{opacity:.85;transform:scale(1.06)}}
+  @keyframes orbit{to{transform:rotate(360deg)}}
+  @keyframes drawIn{to{stroke-dashoffset:0}}
+  @keyframes nodePop{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
+
+  .scene.active [data-a]{animation:var(--anim,rise) var(--dur,.9s) cubic-bezier(.2,.7,.25,1) both;animation-delay:var(--delay,0s)}
+
+  /* ---------- 排版 ---------- */
+  .eyebrow{
+    font-family:var(--mono);font-size:25px;letter-spacing:.42em;text-transform:uppercase;
+    color:var(--cyan);display:flex;align-items:center;gap:20px;font-weight:500;
+  }
+  .eyebrow::before{content:"";width:52px;height:2px;background:linear-gradient(90deg,transparent,var(--cyan))}
+  h1.big{font-size:132px;line-height:1;font-weight:800;letter-spacing:-.035em}
+  h2.big{font-size:80px;line-height:1.18;font-weight:750;letter-spacing:-.028em;text-align:center;max-width:1780px}
+  .grad{
+    background:linear-gradient(96deg,var(--cyan) 0%,var(--blue) 38%,var(--violet) 72%,var(--cyan) 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    background-size:200% 100%;animation:flow 7s linear infinite;
+  }
+  .mono{font-family:var(--mono)}
+  .hl{color:var(--cyan)}
+  .hl-v{color:var(--violet)}
+  .hl-g{color:var(--green)}
+  .hl-a{color:var(--amber)}
+
+  /* ---------- 图标通用 ---------- */
+  .ico{color:var(--cyan)}
+  /* 图标：<use> 落在 shadow DOM，样式必须写在 symbol 上；这里只统一外层容器尺寸 */
+  .scene svg{display:block}
+  .tag svg,.lockPill svg,.plat svg,.routeNode svg,.fileCard svg,.chip svg{
+    width:24px;height:24px;flex:0 0 auto}
+  .tag svg{width:19px;height:19px}
+  .icoBox{
+    width:78px;height:78px;border-radius:20px;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(150deg,rgba(34,211,238,.16),rgba(59,130,246,.06));
+    border:1px solid rgba(34,211,238,.30);flex:0 0 auto;
+  }
+  .icoBox svg{width:100%;height:100%}
+
+  /* ---------- 芯片 ---------- */
+  .chips{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+  .chip{
+    font-family:var(--mono);font-size:23px;padding:11px 24px;border-radius:999px;
+    border:1px solid var(--line);background:rgba(13,20,36,.72);color:var(--dim);
+    display:flex;align-items:center;gap:12px;backdrop-filter:blur(6px);
+  }
+  .chip b{color:var(--txt);font-weight:600}
+  .chip .dot{width:9px;height:9px;border-radius:50%;background:var(--cyan);box-shadow:0 0 12px var(--cyan)}
+  .chip.v .dot{background:var(--violet);box-shadow:0 0 12px var(--violet)}
+  .chip.g .dot{background:var(--green);box-shadow:0 0 12px var(--green)}
+  .chip.a .dot{background:var(--amber);box-shadow:0 0 12px var(--amber)}
+  .chip svg{width:22px;height:22px}
+
+  /* ---------- 面板 ---------- */
+  .panel{
+    background:linear-gradient(180deg,rgba(14,21,38,.94),rgba(9,14,26,.94));
+    border:1px solid var(--line);border-radius:20px;position:relative;overflow:hidden;
+    box-shadow:0 30px 80px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.045);
+  }
+  .panel::after{
+    content:"";position:absolute;top:0;left:0;width:34%;height:100%;pointer-events:none;
+    background:linear-gradient(90deg,transparent,rgba(34,211,238,.10),transparent);
+    animation:sweep 4.6s ease-in-out infinite;
+  }
+  .pbar{
+    display:flex;align-items:center;gap:11px;padding:15px 22px;
+    border-bottom:1px solid var(--line);background:rgba(255,255,255,.022);
+  }
+  .pdot{width:12px;height:12px;border-radius:50%}
+  .ptitle{font-family:var(--mono);font-size:20px;color:var(--dim);letter-spacing:.06em}
+
+  /* ---------- S1 开场 ---------- */
+  .logoWrap{position:relative;display:flex;align-items:center;justify-content:center}
+  .logoTile{
+    width:206px;height:206px;border-radius:50px;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(150deg,rgba(34,211,238,.20),rgba(59,130,246,.10) 45%,rgba(167,139,250,.20));
+    border:1px solid rgba(34,211,238,.36);font-size:100px;font-weight:800;letter-spacing:-.05em;
+    box-shadow:0 0 90px rgba(34,211,238,.30),inset 0 0 60px rgba(34,211,238,.10);
+    position:relative;z-index:2;
+  }
+  .halo{
+    position:absolute;width:500px;height:500px;border-radius:50%;z-index:1;
+    background:radial-gradient(circle,rgba(34,211,238,.20),transparent 66%);
+    animation:pulse 3.4s ease-in-out infinite;
+  }
+  .halo2{
+    position:absolute;width:640px;height:640px;border-radius:50%;z-index:1;
+    border:1px dashed rgba(34,211,238,.16);animation:orbit 34s linear infinite;
+  }
+  .verTag{
+    font-family:var(--mono);font-size:25px;color:var(--green);border:1px solid rgba(52,211,153,.32);
+    background:rgba(52,211,153,.08);padding:8px 18px;border-radius:999px;
+  }
+
+  /* ---------- S2 架构图 ---------- */
+  .diagram{display:flex;align-items:center;justify-content:center;gap:0;width:1660px}
+  .node{
+    width:330px;padding:32px 24px 28px;border-radius:22px;text-align:center;
+    border:1px solid var(--line);background:linear-gradient(180deg,rgba(14,21,38,.94),rgba(9,14,26,.94));
+    box-shadow:0 24px 60px rgba(0,0,0,.5);position:relative;
+  }
+  .node .icoBox{margin:0 auto 18px}
+  .node .nm{font-size:31px;font-weight:650;letter-spacing:-.01em}
+  .node .tag{
+    font-family:var(--mono);font-size:20px;color:var(--dim);margin-top:10px;
+    display:inline-flex;align-items:center;gap:8px;
+  }
+  .node.untouched{border-color:rgba(52,211,153,.36)}
+  .node.untouched .icoBox{background:linear-gradient(150deg,rgba(52,211,153,.16),rgba(52,211,153,.04));border-color:rgba(52,211,153,.34);color:var(--green)}
+  .node.untouched .tag{color:var(--green)}
+  .node.core{
+    border-color:rgba(34,211,238,.5);
+    background:linear-gradient(180deg,rgba(16,32,52,.96),rgba(8,16,28,.96));
+    box-shadow:0 0 0 1px rgba(34,211,238,.14),0 30px 70px rgba(34,211,238,.16);
+  }
+  .link{
+    width:132px;height:4px;flex:0 0 auto;position:relative;
+    background:repeating-linear-gradient(90deg,var(--cyan) 0 13px,transparent 13px 26px);
+    background-size:26px 4px;opacity:.85;
+  }
+  .scene.active .link{animation:flowline 1s linear infinite}
+  .link::after{
+    content:"";position:absolute;right:-2px;top:-6px;
+    border-left:12px solid var(--cyan);border-top:8px solid transparent;border-bottom:8px solid transparent;
+  }
+  .link.v{background:repeating-linear-gradient(90deg,var(--violet) 0 13px,transparent 13px 26px);background-size:26px 4px}
+  .link.v::after{border-left-color:var(--violet)}
+  .lockRow{display:flex;gap:16px;margin-top:-4px}
+  .lockPill{
+    display:flex;align-items:center;gap:12px;font-size:24px;color:var(--dim);
+    border:1px solid var(--line);border-radius:14px;padding:12px 22px;
+    background:rgba(13,20,36,.7);
+  }
+  .lockPill svg{width:24px;height:24px}
+  .lockPill.ok svg{color:var(--green)}
+  .lockPill.no svg{color:var(--rose)}
+  .lockPill b{color:var(--txt);font-weight:600}
+
+  /* ---------- S3 供应商 ---------- */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:56px;width:1660px;align-items:center}
+  .modeGrid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .mode{
+    padding:26px 22px;border-radius:18px;border:1px solid transparent;background:rgba(255,255,255,.018);
+    display:flex;flex-direction:column;align-items:center;gap:14px;position:relative;
+    opacity:.32;transition:opacity .45s ease,border-color .45s ease,background .45s ease,transform .45s ease;
+  }
+  .mode .icoBox{
+    width:70px;height:70px;border-radius:18px;background:rgba(255,255,255,.05);border-color:var(--line);
+    color:var(--dim);transition:all .45s ease;
+  }
+    .mode .nm{font-size:27px;font-weight:620;letter-spacing:-.01em}
+  .mode.on{
+    opacity:1;border-color:rgba(34,211,238,.46);
+    background:linear-gradient(150deg,rgba(34,211,238,.14),rgba(59,130,246,.05));
+    box-shadow:0 0 0 1px rgba(34,211,238,.12),0 18px 46px rgba(34,211,238,.14);
+    transform:translateY(-4px);
+  }
+  .mode.on .icoBox{color:var(--cyan);background:linear-gradient(150deg,rgba(34,211,238,.2),rgba(59,130,246,.06));border-color:rgba(34,211,238,.45)}
+  .fieldRow{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
+  .fieldLbl{font-family:var(--mono);font-size:19px;color:var(--dim);letter-spacing:.14em;text-transform:uppercase}
+  .field{
+    font-family:var(--mono);font-size:23px;padding:14px 20px;border-radius:12px;
+    background:rgba(4,8,16,.9);border:1px solid var(--line);color:var(--txt);min-height:54px;
+    display:flex;align-items:center;white-space:pre;transition:border-color .3s;
+  }
+  .field.done{border-color:rgba(52,211,153,.4)}
+  .progress{height:8px;border-radius:6px;background:rgba(255,255,255,.07);overflow:hidden;margin-top:6px}
+  .progress i{
+    display:block;height:100%;width:100%;transform-origin:left center;
+    background:linear-gradient(90deg,var(--cyan),var(--blue),var(--violet));
+    animation:growW 2.2s cubic-bezier(.5,.05,.2,1) both;
+  }
+  .route{display:flex;align-items:center;gap:10px;justify-content:center}
+  .routeNode{
+    display:flex;align-items:center;gap:12px;font-family:var(--mono);font-size:22px;
+    padding:14px 22px;border-radius:14px;
+    border:1px dashed rgba(167,139,250,.4);background:rgba(167,139,250,.07);color:var(--txt);
+    transition:all .4s ease;
+  }
+  .routeNode svg{width:24px;height:24px}
+  .routeNode.dead{border-color:rgba(248,113,113,.5);background:rgba(248,113,113,.08);color:#fca5a5}
+  .routeNode.dead svg{color:#f87171}
+  .routeNode.live{border-style:solid;border-color:rgba(52,211,153,.5);background:rgba(52,211,153,.09);color:var(--green)}
+  .routeNode.live svg{color:var(--green)}
+  .arrow{color:var(--dim);font-size:24px;font-family:var(--mono)}
+
+  /* ---------- S4 上下文 ---------- */
+  .ctx{display:grid;grid-template-columns:440px 1fr;gap:76px;width:1660px;align-items:center}
+  .ctx > *{min-width:0}
+  .gaugeWrap{position:relative;width:440px;height:440px;flex:0 0 auto}
+  .gaugeWrap svg{display:block;width:440px;height:440px;transform:rotate(-90deg)}
+  .gaugeTrack{fill:none;stroke:rgba(255,255,255,.06);stroke-width:22}
+  .gaugeArc{
+    fill:none;stroke:url(#gaugeGrad);stroke-width:22;stroke-linecap:round;
+    stroke-dasharray:502.65;stroke-dashoffset:502.65;
+  }
+  .scene.active .gaugeArc{animation:drawIn 2.4s cubic-bezier(.4,.05,.2,1) .55s forwards}
+  .gaugeCenter{
+    position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:6px;
+  }
+  .gaugeNum{font-family:var(--mono);font-size:52px;font-weight:700;letter-spacing:-.03em;line-height:1}
+  .gaugeLbl{font-family:var(--mono);font-size:19px;color:var(--dim);letter-spacing:.16em}
+  .gaugeModel{font-family:var(--mono);font-size:20px;color:var(--cyan);margin-top:8px;white-space:nowrap}
+  .pillList{display:flex;flex-direction:column;gap:16px}
+  .pill{
+    display:flex;align-items:center;gap:18px;padding:18px 24px;border-radius:16px;
+    border:1px solid var(--line);background:linear-gradient(180deg,rgba(14,21,38,.9),rgba(9,14,26,.9));
+    opacity:0;
+  }
+  .pill .nm{font-family:var(--mono);font-size:24px;color:var(--txt);width:290px;flex:0 0 auto}
+  .pill .bar{flex:1;height:12px;border-radius:6px;background:rgba(255,255,255,.06);overflow:hidden}
+  .pill .bar i{
+    display:block;height:100%;width:var(--w);transform-origin:left center;border-radius:6px;
+    background:linear-gradient(90deg,var(--blue),var(--cyan));transform:scaleX(0);
+  }
+  .scene.active .pill{animation:slideR .7s cubic-bezier(.2,.7,.25,1) both;animation-delay:var(--delay)}
+  .scene.active .pill .bar i{animation:growW .9s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--delay) + .25s)}
+  .pill .w{font-family:var(--mono);font-size:23px;width:82px;text-align:right;flex:0 0 auto}
+  .fileCard{
+    display:flex;align-items:center;gap:16px;padding:18px 26px;border-radius:16px;
+    border:1px dashed rgba(34,211,238,.35);background:rgba(34,211,238,.05);
+    font-family:var(--mono);font-size:22px;color:var(--cyan);
+  }
+  .fileCard svg{width:28px;height:28px}
+
+  /* ---------- S5 能力网格 ---------- */
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:26px;width:1700px}
+  .tile{
+    padding:34px 26px 30px;border-radius:20px;border:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(14,21,38,.92),rgba(8,12,22,.92));
+    display:flex;flex-direction:column;align-items:center;gap:18px;position:relative;overflow:hidden;
+  }
+  .tile::before{
+    content:"";position:absolute;inset:0;border-radius:20px;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 0%,var(--glow),transparent 62%);opacity:.55;
+  }
+  .tile .icoBox{
+    width:86px;height:86px;border-radius:24px;
+    background:linear-gradient(150deg,var(--glow),rgba(255,255,255,.02));
+    border-color:var(--edge);color:var(--accent);
+  }
+    .tile .nm{font-size:29px;font-weight:640;letter-spacing:-.01em;position:relative}
+  .tile::after{
+    content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent);opacity:.55;
+  }
+
+  /* ---------- S6 规模 ---------- */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:0;width:1700px}
+  .stat{padding:0 48px;position:relative;display:flex;flex-direction:column;gap:18px}
+  .stat+.stat::before{content:"";position:absolute;left:0;top:4%;height:92%;width:1px;
+    background:linear-gradient(180deg,transparent,rgba(34,211,238,.45),transparent)}
+  .stat .num{font-family:var(--mono);font-size:98px;font-weight:700;line-height:1;letter-spacing:-.04em}
+  .stat .lb{font-size:26px;color:var(--dim);line-height:1.45}
+  .stat .lb b{color:var(--txt);font-weight:600}
+  .spark{display:flex;align-items:flex-end;gap:5px;height:64px}
+  .spark i{
+    flex:1;border-radius:3px 3px 0 0;height:var(--h);transform-origin:bottom center;
+    background:linear-gradient(180deg,var(--accent),transparent 190%);
+  }
+  .scene.active .spark i{animation:growW .8s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--delay);transform-origin:bottom center}
+  .platRow{display:flex;gap:26px;align-items:center;justify-content:center}
+  .plat{
+    display:flex;align-items:center;gap:14px;padding:16px 30px;border-radius:16px;
+    border:1px solid var(--line);background:rgba(13,20,36,.72);font-size:25px;color:var(--dim);
+  }
+  .plat svg{width:30px;height:30px;color:var(--cyan)}
+  .plat b{color:var(--txt);font-weight:600}
+
+  /* ---------- S7 收尾 ---------- */
+  .urlBar{
+    font-family:var(--mono);font-size:38px;padding:22px 44px;border-radius:16px;
+    border:1px solid rgba(34,211,238,.34);background:rgba(34,211,238,.07);
+    display:flex;align-items:center;gap:20px;box-shadow:0 0 70px rgba(34,211,238,.18);
+  }
+  .urlBar .cursor{animation:blink 1.1s step-end infinite;color:var(--cyan)}
+
+  /* ---------- 控制条 ---------- */
+  #ui{display:flex;align-items:center;gap:16px;font-size:13px;color:var(--dim);font-family:var(--mono)}
+  #ui button{
+    font-family:var(--mono);font-size:13px;color:var(--txt);cursor:pointer;
+    background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:9px;padding:9px 16px;
+    transition:.18s;
+  }
+  #ui button:hover{background:rgba(34,211,238,.14);border-color:rgba(34,211,238,.45)}
+  #rec.on{background:rgba(248,113,113,.2);border-color:#f87171;color:#fecaca}
+  #hud{position:absolute;left:26px;bottom:22px;z-index:9;font-family:var(--mono);font-size:19px;color:rgba(138,155,184,.65);letter-spacing:.1em}
+  #recBadge{
+    position:absolute;right:26px;top:22px;z-index:9;display:none;align-items:center;gap:9px;
+    font-family:var(--mono);font-size:18px;color:#fecaca;background:rgba(248,113,113,.16);
+    border:1px solid rgba(248,113,113,.5);padding:8px 15px;border-radius:999px;
+  }
+  #recBadge.show{display:flex}
+  #recBadge i{width:10px;height:10px;border-radius:50%;background:#f87171;animation:blink 1s step-end infinite}
+
+  #prog{position:relative;width:100%;height:3px;background:rgba(255,255,255,.07)}
+  #progFill{position:absolute;left:0;top:0;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--violet))}
+  #prog .mark{position:absolute;top:0;width:1px;height:100%;background:rgba(255,255,255,.2)}
+
+  /* 录制态：隐藏所有交互外框，让舞台正好铺满一帧画面 */
+  body.recording #ui,
+  body.recording #prog,
+  body.recording #hud{display:none}
+  body.recording{gap:0;background:#04060c}
+</style>
+</head>
+<body>
+
+<!-- ============ 图标精灵 ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-app" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/>
+    <path d="M6.5 6.5h.01M9.5 6.5h.01"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-bolt" viewBox="0 0 24 24"><path d="M13 2.5L5 13.5h5.5L10 21.5l8-11h-5.5z"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-server" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/>
+    <path d="M7 7.5h.01M7 16.5h.01"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-shield" viewBox="0 0 24 24">
+    <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-lock" viewBox="0 0 24 24">
+    <rect x="4" y="10" width="16" height="10" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M6 18L18 6"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-power" viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.5 6.5a8 8 0 1 0 11 0"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-tag" viewBox="0 0 24 24">
+    <path d="M3 12V5a2 2 0 0 1 2-2h7l9 9-9 9z"/><circle cx="8" cy="8" r="1.4"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-swap" viewBox="0 0 24 24"><path d="M4 8h13l-4-4"/><path d="M20 16H7l4 4"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-key" viewBox="0 0 24 24">
+    <circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2.5"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-cloud" viewBox="0 0 24 24">
+    <path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.5 1.5A3.5 3.5 0 0 0 7 18z"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-route" viewBox="0 0 24 24">
+    <circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/>
+    <path d="M7.5 6h6a3 3 0 0 1 0 6h-3a3 3 0 0 0 0 6h6"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-session" viewBox="0 0 24 24">
+    <path d="M4 6h16M4 12h9M4 18h6"/><path d="M16 15.5l5 5M21 15.5l-5 5"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-plugin" viewBox="0 0 24 24">
+    <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M17 14.5v5M14.5 17h5"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-mic" viewBox="0 0 24 24">
+    <rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-palette" viewBox="0 0 24 24">
+    <path d="M12 3a9 9 0 1 0 0 18c1.5 0 2.1-1 1.7-2.1-.4-1 .2-1.9 1.4-1.9H17a4 4 0 0 0 4-4c0-5.2-4-10-9-10z"/>
+    <circle cx="8.4" cy="10" r="1"/><circle cx="12" cy="7.4" r="1"/><circle cx="15.6" cy="10" r="1"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-script" viewBox="0 0 24 24"><path d="M9 6.5l-5.5 5.5L9 17.5M15 6.5l5.5 5.5L15 17.5"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-doctor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-chat" viewBox="0 0 24 24">
+    <path d="M3 7.5h8v6H6l-3 3z"/><path d="M13 11h8v6h-5l-3 3z"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-file" viewBox="0 0 24 24">
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-cpu" viewBox="0 0 24 24">
+    <rect x="7" y="7" width="10" height="10" rx="2.2"/>
+    <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-windows" viewBox="0 0 24 24">
+    <rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/>
+    <rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-mac" viewBox="0 0 24 24">
+    <rect x="3" y="5" width="18" height="12" rx="2"/><path d="M2 20h20"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-download" viewBox="0 0 24 24"><path d="M12 3.5v11M7 10l5 5 5-5M5 20.5h14"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-globe" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 3 2.6 15 0 18-2.6-3-2.6-15 0-18z"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-box" viewBox="0 0 24 24">
+    <path d="M12 2.8l8.5 4.7v9L12 21.2l-8.5-4.7v-9z"/><path d="M12 12l8.5-4.5M12 12v9.2M12 12L3.5 7.5"/>
+  </symbol>
+  <symbol fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" id="i-refresh" viewBox="0 0 24 24">
+    <path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>
+  </symbol>
+</svg>
+
+<div id="stage">
+  <canvas id="bg" width="1920" height="1080"></canvas>
+  <div class="vignette"></div>
+  <div class="scanlines"></div>
+
+  <!-- ===== 1. 开场 ===== -->
+  <section class="scene" data-dur="4400" data-name="开场">
+    <div class="logoWrap" data-a style="--anim:popIn;--dur:1s">
+      <div class="halo2"></div>
+      <div class="halo"></div>
+      <div class="logoTile"><span class="grad">++</span></div>
+    </div>
+    <h1 class="big grad" data-a style="--delay:.35s;--dur:1s">Codex<span style="font-weight:300;opacity:.85">++</span></h1>
+    <div class="chips" data-a style="--delay:.7s">
+      <span class="verTag">v1.6.0</span>
+      <div class="chip"><span class="dot"></span>Rust 1.85+</div>
+      <div class="chip v"><span class="dot"></span>Tauri 2.x</div>
+      <div class="chip g"><span class="dot"></span>CDP 接管</div>
+      <div class="chip a"><span class="dot"></span>AGPL-3.0</div>
+    </div>
+    <p style="font-size:31px;color:var(--dim);letter-spacing:.02em" data-a style="--delay:.95s">
+      Codex / ChatGPT 桌面应用的<b style="color:var(--txt);font-weight:650">外部启动器</b>
+    </p>
+  </section>
+
+  <!-- ===== 2. 架构图 ===== -->
+  <section class="scene" data-dur="5600" data-name="零侵入架构">
+    <div class="eyebrow" data-a style="--anim:slideL">架构</div>
+    <h2 class="big" data-a style="--delay:.14s">
+      不改官方代码，<span class="grad">在它外面接管</span>
+    </h2>
+
+    <div class="diagram">
+      <div class="node untouched" data-a style="--anim:slideL;--delay:.35s">
+        <div class="icoBox ico"><svg><use href="#i-app"/></svg></div>
+        <div class="nm">官方应用包</div>
+        <div class="tag"><svg style="width:19px;height:19px" viewBox="0 0 24 24"><use href="#i-lock"/></svg>原封不动</div>
+      </div>
+
+      <div class="link" data-a style="--anim:riseSm;--delay:.55s"></div>
+
+      <div class="node core" data-a style="--anim:rise;--delay:.7s">
+        <div class="icoBox ico"><svg><use href="#i-bolt"/></svg></div>
+        <div class="nm">CDP 调试端口</div>
+        <div class="tag">只读接管</div>
+      </div>
+
+      <div class="link v" data-a style="--anim:riseSm;--delay:.85s"></div>
+
+      <div class="node core" data-a style="--anim:slideR;--delay:1s">
+        <div class="icoBox ico" style="color:var(--violet);border-color:rgba(167,139,250,.4);background:linear-gradient(150deg,rgba(167,139,250,.18),rgba(167,139,250,.04))">
+          <svg><use href="#i-layers"/></svg>
+        </div>
+        <div class="nm">增强层注入</div>
+        <div class="tag">本地辅助服务</div>
+      </div>
+    </div>
+
+    <div class="lockRow">
+      <div class="lockPill ok" data-a style="--anim:riseSm;--delay:1.25s">
+        <svg>><use href="#i-check"/></svg>
+        <span>不写 <b class="mono">app.asar</b></span>
+      </div>
+      <div class="lockPill ok" data-a style="--anim:riseSm;--delay:1.38s">
+        <svg>><use href="#i-check"/></svg>
+        <span>不装<b>补丁文件</b></span>
+      </div>
+      <div class="lockPill no" data-a style="--anim:riseSm;--delay:1.51s">
+        <svg>><use href="#i-ban"/></svg>
+        <span>卸载无残留</span>
+      </div>
+      <div class="lockPill ok" data-a style="--anim:riseSm;--delay:1.64s">
+        <svg>><use href="#i-power"/></svg>
+        <span>可<b>整体关闭</b></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 3. 供应商切换 ===== -->
+  <section class="scene" data-dur="5800" data-name="供应商切换">
+    <div class="eyebrow" data-a style="--anim:slideL">供应商配置</div>
+
+    <div class="split">
+      <div class="modeGrid" data-a style="--anim:slideL;--delay:.2s">
+        <div class="mode" data-mode="0">
+          <div class="icoBox ico"><svg><use href="#i-check"/></svg></div>
+          <div class="nm">官方登录</div>
+        </div>
+        <div class="mode" data-mode="1">
+          <div class="icoBox ico"><svg><use href="#i-cloud"/></svg></div>
+          <div class="nm">官方 + API</div>
+        </div>
+        <div class="mode" data-mode="2">
+          <div class="icoBox ico"><svg><use href="#i-key"/></svg></div>
+          <div class="nm">纯 API</div>
+        </div>
+        <div class="mode" data-mode="3">
+          <div class="icoBox ico"><svg><use href="#i-route"/></svg></div>
+          <div class="nm">聚合供应商</div>
+        </div>
+      </div>
+
+      <div class="panel" data-a style="--anim:rise;--delay:.45s">
+        <div class="pbar">
+          <div class="pdot" style="background:var(--cyan)"></div>
+          <div class="ptitle">供应商详情 · 切换中</div>
+        </div>
+        <div style="padding:32px 36px">
+          <div class="fieldRow">
+            <div class="fieldLbl">协议</div>
+            <div class="field" id="fProto">Responses</div>
+          </div>
+          <div class="fieldRow">
+            <div class="fieldLbl">Base URL</div>
+            <div class="field" id="fUrl"></div>
+          </div>
+          <div class="fieldRow">
+            <div class="fieldLbl">API Key</div>
+            <div class="field" id="fKey"></div>
+          </div>
+          <div class="fieldRow" style="margin-bottom:6px">
+            <div class="fieldLbl">写入</div>
+            <div class="field" id="fTarget">config.toml</div>
+          </div>
+          <div class="progress"><i style="animation-delay:2.3s"></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="route" data-a style="--delay:1.5s">
+      <div class="routeNode"><svg>><use href="#i-server"/></svg>上游 A</div>
+      <div class="arrow">→</div>
+      <div class="routeNode dead" id="rDead">
+        <svg>><use href="#i-x"/></svg>500 超时
+      </div>
+      <div class="arrow">→</div>
+      <div class="routeNode live" id="rLive">
+        <svg>><use href="#i-refresh"/></svg>自动转移
+      </div>
+      <div class="arrow">→</div>
+      <div class="routeNode live">
+        <svg>><use href="#i-server"/></svg>上游 B · 2.1s
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 4. 每模型上下文 ===== -->
+  <section class="scene" data-dur="6200" data-name="每模型上下文">
+    <div class="eyebrow" data-a style="--anim:slideL">模型与上下文</div>
+
+    <div class="ctx">
+      <div class="gaugeWrap" data-a style="--anim:popIn;--dur:1s">
+        <svg viewBox="0 0 200 200">
+          <defs>
+            <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#3b82f6"/>
+              <stop offset="55%" stop-color="#22d3ee"/>
+              <stop offset="100%" stop-color="#a78bfa"/>
+            </linearGradient>
+          </defs>
+          <circle class="gaugeTrack" cx="100" cy="100" r="80"/>
+          <circle class="gaugeArc" id="gaugeArc" cx="100" cy="100" r="80"/>
+        </svg>
+        <div class="gaugeCenter">
+          <div class="gaugeNum grad" id="gaugeNum">0</div>
+          <div class="gaugeLbl">TOKENS</div>
+          <div class="gaugeModel">deepseek-v4-pro[1M]</div>
+        </div>
+      </div>
+
+      <div class="pillList">
+        <div class="fileCard" data-a style="--anim:slideR;--delay:.3s">
+          <svg>><use href="#i-file"/></svg>
+          model_catalog.json · 按模型生成
+        </div>
+
+        <div class="pill" style="--delay:.55s;--w:100%">
+          <div class="nm">deepseek-v4-pro[1M]</div>
+          <div class="bar"><i style="background:linear-gradient(90deg,#3b82f6,#22d3ee)"></i></div>
+          <div class="w hl">1M</div>
+        </div>
+        <div class="pill" style="--delay:.72s;--w:100%">
+          <div class="nm">kimi-k2.7[200K]</div>
+          <div class="bar"><i style="background:linear-gradient(90deg,#3b82f6,#a78bfa)"></i></div>
+          <div class="w hl-v">200K</div>
+        </div>
+        <div class="pill" style="--delay:.89s;--w:100%">
+          <div class="nm">glm-5.2[128K]</div>
+          <div class="bar"><i style="background:linear-gradient(90deg,#22d3ee,#34d399)"></i></div>
+          <div class="w hl-g">128K</div>
+        </div>
+
+        <div class="lockRow" style="margin-top:6px">
+          <div class="lockPill ok">
+            <svg>><use href="#i-check"/></svg>
+            <span>每模型<b>独立窗口</b></span>
+          </div>
+          <div class="lockPill ok">
+            <svg>><use href="#i-check"/></svg>
+            <span>各自<b>压缩阈值</b></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 5. 能力网格 ===== -->
+  <section class="scene" data-dur="5400" data-name="增强能力">
+    <div class="eyebrow" data-a style="--anim:slideL">Codex 界面增强</div>
+    <div class="grid" id="grid"></div>
+    <div class="lockRow">
+      <div class="lockPill ok" data-a style="--anim:riseSm;--delay:.05s">
+        <svg>><use href="#i-power"/></svg>
+        <span>每一项都能<b>单独开关</b></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 6. 规模 ===== -->
+  <section class="scene" data-dur="4800" data-name="规模">
+    <div class="eyebrow" data-a style="--anim:slideL">工程规模</div>
+    <h2 class="big" data-a style="--delay:.14s;font-size:68px">一个 fork，<span class="grad">全栈自己写</span></h2>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="platRow">
+      <div class="plat" data-a style="--anim:riseSm;--delay:1.35s">
+        <svg>><use href="#i-windows"/></svg>
+        <span>Windows <b>NSIS</b></span>
+      </div>
+      <div class="plat" data-a style="--anim:riseSm;--delay:1.47s">
+        <svg>><use href="#i-mac"/></svg>
+        <span>macOS <b>通用 DMG</b></span>
+      </div>
+      <div class="plat" data-a style="--anim:riseSm;--delay:1.59s">
+        <svg>><use href="#i-shield"/></svg>
+        <span><b>签名 + 公证</b></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 7. 收尾 ===== -->
+  <section class="scene" data-dur="5200" data-name="获取">
+    <div class="logoWrap" data-a style="--anim:popIn">
+      <div class="halo"></div>
+      <div class="logoTile" style="width:148px;height:148px;border-radius:38px;font-size:72px"><span class="grad">++</span></div>
+    </div>
+    <h1 class="big grad" data-a style="--delay:.25s;font-size:104px">Codex++</h1>
+
+    <div class="urlBar" data-a style="--delay:.5s">
+      <span style="color:var(--dim)">github.com/</span><span>BigPizzaV3</span><span style="color:var(--dim)">/</span><span class="grad" style="font-weight:600">CodexPlusPlus</span><span class="cursor">▌</span>
+    </div>
+
+    <div class="platRow" data-a style="--delay:.78s">
+      <div class="plat"><svg>><use href="#i-windows"/></svg><span>Windows x64</span></div>
+      <div class="plat"><svg>><use href="#i-mac"/></svg><span>macOS 通用包</span></div>
+      <div class="plat"><svg>><use href="#i-globe"/></svg><span>GitHub Releases</span></div>
+      <div class="plat"><svg>><use href="#i-shield"/></svg><span>AGPL-3.0</span></div>
+    </div>
+
+    <div class="chips" data-a style="--delay:1.05s">
+      <div class="chip"><span class="dot"></span>供应商切换</div>
+      <div class="chip v"><span class="dot"></span>每模型上下文</div>
+      <div class="chip g"><span class="dot"></span>界面增强</div>
+      <div class="chip a"><span class="dot"></span>会话管理</div>
+    </div>
+  </section>
+
+  <div id="hud">00:00 / 00:00</div>
+  <div id="recBadge"><i></i><span id="recText">REC</span></div>
+</div>
+
+<div id="prog"><div id="progFill"></div></div>
+<div id="ui">
+  <button id="btnPlay">⏸ 暂停</button>
+  <button id="btnPrev">⟨ 上一段</button>
+  <button id="btnNext">下一段 ⟩</button>
+  <button id="btnRestart">↺ 重播</button>
+  <button id="rec">⏺ 录制并导出视频</button>
+  <span id="hint">空格播放/暂停 · ←/→ 切段 · R 重播 · F 全屏</span>
+</div>
+
+<script>
+/* =========================================================
+   数据：全部来自本仓库源码 / README（v1.6.0）
+   ========================================================= */
+const ACCENTS = ["#22d3ee","#a78bfa","#34d399","#fbbf24","#60a5fa","#f472b6","#2dd4bf","#c084fc"];
+
+const TILES = [
+  { icon:"i-session",  nm:"会话管理" },
+  { icon:"i-plugin",   nm:"插件市场" },
+  { icon:"i-mic",      nm:"语音输入" },
+  { icon:"i-palette",  nm:"皮肤管理" },
+  { icon:"i-script",   nm:"脚本市场" },
+  { icon:"i-swap",     nm:"协议转换" },
+  { icon:"i-doctor",   nm:"Provider Doctor" },
+  { icon:"i-chat",     nm:"微信连接" },
+];
+
+const STATS = [
+  { to:115830, lb:"<b>行 Rust 代码</b>",  spark:[.35,.5,.62,.72,.85,.94,1] },
+  { to:12440,  lb:"<b>行注入脚本</b>",    spark:[.3,.45,.58,.7,.8,.9,1] },
+  { to:19,     lb:"份<b>模型元数据</b>",  spark:[.2,.3,.45,.55,.7,.85,1] },
+  { to:1,      lb:"个<b>外部进程</b>接管", spark:[1] },
+];
+
+/* =========================================================
+   场景驱动
+   ========================================================= */
+const stage   = document.getElementById("stage");
+const scenes  = [...document.querySelectorAll(".scene")];
+const hud     = document.getElementById("hud");
+const progFill= document.getElementById("progFill");
+const progBar = document.getElementById("prog");
+
+const DURS = scenes.map(s => +s.dataset.dur);
+const STARTS = [];
+DURS.reduce((acc, d, i) => { STARTS[i] = acc; return acc + d; }, 0);
+const TOTAL = DURS.reduce((a, b) => a + b, 0);
+
+DURS.slice(0, -1).reduce((acc, d) => {
+  const el = document.createElement("div");
+  el.className = "mark";
+  el.style.left = ((acc + d) / TOTAL * 100) + "%";
+  progBar.appendChild(el);
+  return acc + d;
+}, 0);
+
+let idx = -1, playing = true, base = 0, pauseAt = 0, rafId = 0;
+
+function fmtTime(ms){
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+
+function enter(i, force){
+  if (i < 0 || i >= scenes.length) return;
+  if (i === idx && !force) return;
+  if (i === idx && force) { scenes[i].classList.remove("active"); void scenes[i].offsetWidth; }
+  scenes.forEach((s, n) => s.classList.toggle("active", n === i));
+  idx = i;
+  onEnter(i);
+}
+
+let timers = [];
+function stopTimers(ts){ (ts || []).forEach(clearTimeout); }
+
+/* ---- S3：字段打字 + 模式高亮 + 路由 ---- */
+const URLTXT = "https://api.example.com/v1";
+const KEYTXT = "sk-••••••••••••••••••••••••4f2a";
+function runProvider(){
+  const urlEl = document.getElementById("fUrl");
+  const keyEl = document.getElementById("fKey");
+  const targetEl = document.getElementById("fTarget");
+  const modes = [...document.querySelectorAll(".mode")];
+  const dead = document.getElementById("rDead");
+  const live = document.getElementById("rLive");
+
+  urlEl.textContent = ""; keyEl.textContent = "";
+  urlEl.classList.remove("done"); keyEl.classList.remove("done");
+  targetEl.textContent = "config.toml";
+  modes.forEach(m => m.classList.remove("on"));
+  dead.style.opacity = "1";
+  live.style.boxShadow = "none";
+
+  const ts = [];
+  const at = (ms, fn) => ts.push(setTimeout(fn, ms));
+
+  const TARGETS = ["auth.json", "provider token", "独立 auth.json", "路由表 · 多上游"];
+  [0, 1, 2, 3].forEach((m, k) => at(200 + k * 430, () => {
+    modes.forEach(x => x.classList.remove("on"));
+    modes[m].classList.add("on");
+    targetEl.textContent = TARGETS[m];
+  }));
+
+  at(900, () => {
+    let i = 0;
+    (function s(){ if (i <= URLTXT.length){ urlEl.textContent = URLTXT.slice(0, i++); ts.push(setTimeout(s, 26)); } else urlEl.classList.add("done"); })();
+  });
+  at(1500, () => {
+    let i = 0;
+    (function s(){ if (i <= KEYTXT.length){ keyEl.textContent = KEYTXT.slice(0, i++); ts.push(setTimeout(s, 22)); } else keyEl.classList.add("done"); })();
+  });
+
+  at(2900, () => { dead.style.opacity = ".5"; });
+  at(3300, () => { live.style.boxShadow = "0 0 34px rgba(52,211,153,.6)"; });
+  return ts;
+}
+
+/* ---- S4：仪表数字滚动 ---- */
+function runContext(){
+  const numEl = document.getElementById("gaugeNum");
+  numEl.textContent = "0";
+  const ts = [];
+  const TARGET = 1000000, T0 = 550, TD = 2400;
+  (function tick(){
+    const e = performance.now() - base - STARTS[idx] - T0;
+    if (e < 0) { ts.push(setTimeout(tick, 40)); return; }
+    const p = Math.min(1, e / TD);
+    const eased = 1 - Math.pow(1 - p, 3);
+    numEl.textContent = Math.round(TARGET * eased).toLocaleString("en-US");
+    if (p < 1) ts.push(setTimeout(tick, 26));
+  })();
+  return ts;
+}
+
+/* ---- S5：能力磁贴 ---- */
+function buildGrid(){
+  const g = document.getElementById("grid");
+  if (g.childElementCount) return;
+  TILES.forEach((t, k) => {
+    const c = ACCENTS[k % ACCENTS.length];
+    const d = document.createElement("div");
+    d.className = "tile";
+    d.setAttribute("data-a", "");
+    d.style.setProperty("--anim", "riseSm");
+    d.style.setProperty("--dur", ".72s");
+    d.style.setProperty("--delay", (0.3 + k * 0.11) + "s");
+    d.style.setProperty("--accent", c);
+    d.style.setProperty("--glow", c + "33");
+    d.style.setProperty("--edge", c + "66");
+    d.innerHTML = `<div class="icoBox"><svg><use href="#${t.icon}"/></svg></div><div class="nm">${t.nm}</div>`;
+    g.appendChild(d);
+  });
+}
+
+/* ---- S6：统计 + 迷你柱图 ---- */
+function buildStats(){
+  const s = document.getElementById("stats");
+  if (s.childElementCount) return;
+  STATS.forEach((st, k) => {
+    const d = document.createElement("div");
+    d.className = "stat";
+    d.setAttribute("data-a", "");
+    d.style.setProperty("--anim", "rise");
+    d.style.setProperty("--delay", (0.2 + k * 0.14) + "s");
+    d.style.setProperty("--accent", ACCENTS[k % ACCENTS.length]);
+    const bars = st.spark.map((h, i) =>
+      `<i style="--h:${(h*100).toFixed(0)}%;--delay:${(0.55 + k*0.14 + i*0.07).toFixed(2)}s"></i>`).join("");
+    d.innerHTML =
+      `<div class="num grad" data-to="${st.to}">0</div>` +
+      `<div class="lb">${st.lb}</div>` +
+      `<div class="spark">${bars}</div>`;
+    s.appendChild(d);
+  });
+}
+
+function startCounters(){
+  [...document.querySelectorAll(".stat .num")].forEach(el => {
+    const to = +el.dataset.to, T0 = 400, TD = 1700;
+    (function tick(){
+      const e = performance.now() - base - STARTS[idx] - T0;
+      if (e < 0) { timers.push(setTimeout(tick, 30)); return; }
+      const p = Math.min(1, e / TD);
+      el.textContent = Math.round(to * (1 - Math.pow(1 - p, 3))).toLocaleString("en-US");
+      if (p < 1) timers.push(setTimeout(tick, 24));
+    })();
+  });
+}
+
+function onEnter(i){
+  stopTimers(timers); timers = [];
+  if (i < 0 || i >= scenes.length) return;
+  const name = scenes[i].dataset.name;
+  if (name === "供应商切换") timers = runProvider();
+  if (name === "每模型上下文") timers = runContext();
+  if (name === "规模") startCounters();
+}
+
+/* =========================================================
+   主循环
+   ========================================================= */
+function loop(){
+  rafId = requestAnimationFrame(loop);
+  if (!playing) return;
+  const now = performance.now();
+  const el = now - base;
+
+  if (el >= TOTAL){ restart(); return; }
+
+  let i = 0;
+  while (i < scenes.length - 1 && el >= STARTS[i + 1]) i++;
+  if (i !== idx) enter(i);
+
+  progFill.style.width = (el / TOTAL * 100).toFixed(3) + "%";
+  hud.textContent = fmtTime(el) + " / " + fmtTime(TOTAL) + "   ·   " +
+                    String(idx + 1).padStart(2, "0") + "/" + String(scenes.length).padStart(2, "0") +
+                    "  " + scenes[idx].dataset.name;
+}
+
+function setPlaying(p){
+  const now = performance.now();
+  if (p && !playing) base = now - pauseAt;
+  if (!p) pauseAt = now - base;
+  playing = p;
+  document.getElementById("btnPlay").textContent = p ? "⏸ 暂停" : "▶ 播放";
+}
+
+function goTo(i, force){
+  i = Math.max(0, Math.min(scenes.length - 1, i));
+  const now = performance.now();
+  base = now - STARTS[i];
+  // 暂停状态下也要把"已播到本段开头"记进 pauseAt，
+  // 否则之后按播放会从 0 重新计时、跳回第一段
+  pauseAt = STARTS[i];
+  enter(i, force === true);
+  hud.textContent = fmtTime(STARTS[i]) + " / " + fmtTime(TOTAL);
+  progFill.style.width = (STARTS[i] / TOTAL * 100).toFixed(3) + "%";
+}
+
+function restart(){ base = performance.now(); pauseAt = 0; enter(0, true); }
+
+/* =========================================================
+   背景：网格 + 粒子星座 + 光斑
+   ========================================================= */
+const bg = document.getElementById("bg");
+const ctx = bg.getContext("2d");
+const VW = 1920, VH = 1080;
+const dots = Array.from({ length: 100 }, () => ({
+  x: Math.random() * VW, y: Math.random() * VH,
+  vx: (Math.random() - 0.5) * 0.22, vy: (Math.random() - 0.5) * 0.22,
+  r: Math.random() * 1.6 + 0.6,
+}));
+
+function drawBG(now){
+  ctx.clearRect(0, 0, VW, VH);
+
+  const g = ctx.createLinearGradient(0, 0, VW, VH);
+  g.addColorStop(0, "#04060c");
+  g.addColorStop(0.5, "#070c18");
+  g.addColorStop(1, "#04060c");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VW, VH);
+
+  const blobs = [
+    { x: 0.22, y: 0.28, r: 780, c: "rgba(34,211,238,", a: 0.10, sp: 0.00013 },
+    { x: 0.80, y: 0.72, r: 900, c: "rgba(139,92,246,", a: 0.11, sp: -0.00011 },
+    { x: 0.55, y: 0.10, r: 620, c: "rgba(59,130,246,", a: 0.07, sp: 0.00009 },
+  ];
+  blobs.forEach(b => {
+    const px = (b.x + Math.sin(now * b.sp) * 0.05) * VW;
+    const py = (b.y + Math.cos(now * b.sp * 1.4) * 0.05) * VH;
+    const rg = ctx.createRadialGradient(px, py, 0, px, py, b.r);
+    rg.addColorStop(0, b.c + b.a + ")");
+    rg.addColorStop(1, b.c + "0)");
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, VW, VH);
+  });
+
+  const S = 68;
+  ctx.strokeStyle = "rgba(80,140,200,.055)";
+  ctx.lineWidth = 1;
+  const drift = (now * 0.008) % S;
+  ctx.beginPath();
+  for (let x = -S + drift; x <= VW; x += S) { ctx.moveTo(x, 0); ctx.lineTo(x, VH); }
+  for (let y = -S + drift; y <= VH; y += S) { ctx.moveTo(0, y); ctx.lineTo(VW, y); }
+  ctx.stroke();
+
+  dots.forEach(d => {
+    d.x += d.vx; d.y += d.vy;
+    if (d.x < 0) d.x = VW; if (d.x > VW) d.x = 0;
+    if (d.y < 0) d.y = VH; if (d.y > VH) d.y = 0;
+  });
+  ctx.strokeStyle = "rgba(34,211,238,.10)";
+  for (let i = 0; i < dots.length; i++){
+    for (let j = i + 1; j < dots.length; j++){
+      const dx = dots[i].x - dots[j].x, dy = dots[i].y - dots[j].y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 20000){
+        ctx.globalAlpha = 1 - d2 / 20000;
+        ctx.beginPath();
+        ctx.moveTo(dots[i].x, dots[i].y);
+        ctx.lineTo(dots[j].x, dots[j].y);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+  dots.forEach(d => {
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(150,220,255,.5)";
+    ctx.fill();
+  });
+}
+function bgLoop(now){ drawBG(now); requestAnimationFrame(bgLoop); }
+
+/* =========================================================
+   舞台缩放：内部分辨率恒为 1920x1080
+   ========================================================= */
+function fitStage(){
+  // 录制时不留边距，窗口按 1920x1080 时舞台正好 1:1 铺满
+  const pad = document.body.classList.contains("recording") ? 0 : 120;
+  const s = Math.min((window.innerWidth - pad) / 1920, (window.innerHeight - pad) / 1080, 1);
+  stage.style.transform = `scale(${s})`;
+  stage.style.margin = `${(1080 * s - 1080) / 2}px ${(1920 * s - 1920) / 2}px`;
+}
+window.addEventListener("resize", fitStage);
+
+/* =========================================================
+   控制条
+   ========================================================= */
+document.getElementById("btnPlay").onclick = () => setPlaying(!playing);
+document.getElementById("btnPrev").onclick = () => goTo(idx - 1);
+document.getElementById("btnNext").onclick = () => goTo(idx + 1);
+document.getElementById("btnRestart").onclick = restart;
+document.addEventListener("keydown", e => {
+  if (e.code === "Space"){ e.preventDefault(); setPlaying(!playing); }
+  if (e.key === "ArrowRight") goTo(idx + 1);
+  if (e.key === "ArrowLeft")  goTo(idx - 1);
+  if (e.key.toLowerCase() === "r") restart();
+  if (e.key.toLowerCase() === "f") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+});
+
+/* =========================================================
+   录制导出：优先整屏，退化到背景 canvas
+   ========================================================= */
+const recBtn  = document.getElementById("rec");
+const recBadge= document.getElementById("recBadge");
+const recText = document.getElementById("recText");
+let recorder = null, chunks = [], recStart = 0, recTick = 0;
+
+function pickMime(){
+  const cands = ["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"];
+  return cands.find(c => window.MediaRecorder && MediaRecorder.isTypeSupported(c)) || "";
+}
+
+recBtn.onclick = async () => {
+  if (recorder) { recorder.stop(); return; }
+  if (!window.MediaRecorder) { alert("当前环境不支持 MediaRecorder，无法导出视频。"); return; }
+
+  document.body.classList.add("recording");
+  fitStage();
+  restart();
+  playing = true;
+  document.getElementById("btnPlay").textContent = "⏸ 暂停";
+  if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+
+  let stream = null, mode = "canvas";
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 30, width: 1920, height: 1080 }, audio: false,
+      });
+      mode = "display";
+    }
+  } catch (err) { stream = null; }
+
+  if (!stream) {
+    const ok = confirm(
+      "无法获取屏幕录制权限，将只录制背景图层（不含图标与文字）。\n\n" +
+      "建议：允许共享当前标签页后重试。\n\n仍然继续吗？"
+    );
+    if (!ok) { document.body.classList.remove("recording"); fitStage(); return; }
+    stream = bg.captureStream(30);
+  }
+
+  const mime = pickMime();
+  chunks = [];
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: 16_000_000 });
+  } catch (err) {
+    alert("无法创建录制器：" + err.message);
+    recorder = null;
+    document.body.classList.remove("recording"); fitStage();
+    return;
+  }
+  recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+
+  if (mode === "display") {
+    stream.getVideoTracks()[0].addEventListener("ended", () => { if (recorder) recorder.stop(); });
+  }
+
+  recorder.onstop = () => {
+    if (mode === "display") stream.getTracks().forEach(t => t.stop());
+    const blob = new Blob(chunks, { type: mime || "video/webm" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T-]/g, "");
+    a.href = url;
+    a.download = `codex-plus-intro-${stamp}.webm`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    recorder = null;
+    document.body.classList.remove("recording");
+    fitStage();
+    recBtn.classList.remove("on"); recBtn.textContent = "⏺ 录制并导出视频";
+    recBadge.classList.remove("show");
+    clearInterval(recTick);
+  };
+
+  recorder.start(1000);
+  recStart = performance.now();
+  recBtn.classList.add("on"); recBtn.textContent = "⏹ 停止录制";
+  recBadge.classList.add("show");
+
+  recTick = setInterval(() => {
+    const s = (performance.now() - recStart) / 1000;
+    recText.textContent = `REC ${mode === "display" ? "全屏" : "仅背景"} ${s.toFixed(1)}s / ${(TOTAL / 1000).toFixed(1)}s`;
+    if (s * 1000 >= TOTAL + 250) { clearInterval(recTick); if (recorder) recorder.stop(); }
+  }, 100);
+};
+
+/* =========================================================
+   CDP 帧喂入编码器
+   外部驱动用 Page.startScreencast 逐帧抓图后推给页面，
+   页面把它画在离屏 canvas 上再用 MediaRecorder 编码。
+   这条路的画面与真实渲染逐像素一致，且不依赖共享选择框。
+   ========================================================= */
+(function installFeeder(){
+  let cv = null, cx = null, stream = null, rec = null, parts = [], mime = "", t0 = 0;
+
+  const api = {
+    start(opts = {}){
+      const w = opts.width || 1920, h = opts.height || 1080, fps = opts.fps || 30;
+      cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      cx = cv.getContext("2d", { alpha: false });
+      cx.fillStyle = "#04060c"; cx.fillRect(0, 0, w, h);
+      stream = cv.captureStream(fps);
+      mime = ["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"]
+        .find(c => MediaRecorder.isTypeSupported(c)) || "";
+      parts = []; t0 = performance.now();
+      rec = new MediaRecorder(stream, {
+        mimeType: mime || undefined,
+        videoBitsPerSecond: opts.bitrate || 14_000_000,
+      });
+      rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+      rec.start(1000);
+      return { mime, started: true };
+    },
+
+    // b64 为 JPEG（Page.screencastFrame 的 data 字段，可直接解）
+    async frame(b64){
+      if (!rec || rec.state === "inactive") return false;
+      const bin = atob(b64);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      let bmpOrImg;
+      try {
+        bmpOrImg = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
+      } catch {
+        bmpOrImg = await new Promise((res, rej) => {
+          const img = new Image();
+          img.onload = () => res(img); img.onerror = rej;
+          img.src = "data:image/jpeg;base64," + b64;
+        });
+      }
+      cx.drawImage(bmpOrImg, 0, 0, cv.width, cv.height);
+      if (bmpOrImg.close) bmpOrImg.close();
+      return true;
+    },
+
+    finish(){
+      return new Promise(res => {
+        if (!rec) return res(null);
+        rec.onstop = () => {
+          const blob = new Blob(parts, { type: mime || "video/webm" });
+          const url = URL.createObjectURL(blob);
+          // 交给外部驱动按文件名取自 /tmp/codexrec 的下载目录
+          self.__recordedBlob = blob;
+          self.__recordedUrl = url;
+          res({ size: blob.size, ms: Math.round(performance.now() - t0), mime });
+        };
+        rec.stop();
+      });
+    },
+
+    // 直接读出 base64，供外部驱动写盘（省掉浏览器下载目录的不确定性）
+    async readBase64(){
+      const blob = self.__recordedBlob;
+      if (!blob) return null;
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let s = "";
+      const CH = 0x8000;
+      for (let i = 0; i < buf.length; i += CH) {
+        s += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
+      }
+      return btoa(s);
+    },
+  };
+
+  window.__codexRec = api;
+})();
+
+/* =========================================================
+   启动
+   ========================================================= */
+buildGrid();
+buildStats();
+fitStage();
+bgLoop(performance.now());
+base = performance.now();
+enter(0);
+loop();
+</script>
+</body>
+</html>
