@@ -1,5 +1,9 @@
 # 更新日志
 
+## 未发布
+
+- 新增「Anthropic Messages 上游」协议（供应商编辑页 →「上游协议」第三项，卡片标注「Anthropic Messages 转 Responses」）：Codex 只认 Responses API，而 Claude 系中转网关、企业内部网关常常只暴露 `/v1/messages`，过去把这类地址填进供应商只能得到 `/responses` 404。现在选这个协议后 Codex 照旧连本机 `127.0.0.1:57321`，由本地协议代理把请求转成 Anthropic Messages 发给上游、再把响应（含 SSE 流）转回 Responses——工具调用、多轮 `tool_result`、图片（data URL 与 http(s) 链接）、思考内容、用量与缓存字段都在转换范围内。实现走「Responses → Chat → Anthropic」两跳，复用既有 Chat 链路上已经过测试的工具配对修复、`custom` 工具与 `tool_search` 命名空间、图片搬迁等映射，新增代码集中在 `anthropic_bridge.rs` 一层，便于对拍定位。认证默认发 `x-api-key`（Anthropic 原生），可在供应商表单切到 `Authorization: Bearer`（多数中转网关），`anthropic-version: 2023-06-01` 始终带上；`max_tokens` 是 Anthropic 的必填项，Codex 请求没带输出上限时用表单里的「最大输出 tokens」（默认 8192）兜底，`temperature` 超过 1.0 会被夹到 1.0。已知边界：不注入提示缓存断点（`cache_control`），也不回放思考块签名（Anthropic 要求签名完整，缺签名整轮 400，宁可不发）；`message_stop` 缺失时按流被掐断上报，不伪装成成功。供应商导入会把 Codex 供应商的 `anthropic` 上游格式识别成该协议，不再退化成 Responses 直连。详见 `docs/specs/2026-10-15-anthropic-messages-upstream.md`。
+
 ## 1.9.0 - 2026-10-15
 
 - 新增「Claude 增强」页（左侧工具条第二位，原「Claude 汉化」）：把「受管副本」提为**所有增强共同的前置条件**，单独一张卡片承载状态、官方/副本版本、外壳语言、官方词条与「准备 / 启动 / 检查」操作，并配带编号的上手步骤（准备副本 → 启动 Claude 副本 → 在左边开启增强），完成的一步打勾变绿、当前该做的一步高亮；「界面汉化」与「语音输入」移到左栏，是两个各自独立的开关，互不影响，也都与「准备副本」解绑——副本没准备时开关照样先存下来，准备好并启动后才生效。

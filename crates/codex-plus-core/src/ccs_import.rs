@@ -173,6 +173,8 @@ pub fn relay_profile_from_ccs(
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
         web_search_history_compat: false,
+        anthropic_auth_header: String::new(),
+        anthropic_max_tokens: 0,
     }
 }
 
@@ -239,6 +241,11 @@ fn extract_protocol(config: &Value) -> RelayProtocol {
         if is_chat_protocol(&api_format) {
             return RelayProtocol::ChatCompletions;
         }
+        // 导入源的 Codex 供应商允许把上游设为 Anthropic Messages，
+        // 导入时要保住协议，否则会退化成 Responses 直连并必然 404。
+        if is_anthropic_protocol(&api_format) {
+            return RelayProtocol::AnthropicMessages;
+        }
     }
     if let Some(wire_api) = config
         .get("config")
@@ -291,6 +298,17 @@ fn is_chat_protocol(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "chat" | "chat_completions" | "chat-completions" | "openai_chat" | "openai-chat"
+    )
+}
+
+fn is_anthropic_protocol(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "anthropic"
+            | "anthropic_messages"
+            | "anthropic-messages"
+            | "claude"
+            | "claude_messages"
     )
 }
 

@@ -645,6 +645,8 @@ pub struct ProxySessionHeaders<'a> {
 pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
+    /// Anthropic Messages（`/v1/messages`），经 `anthropic_bridge` 转换。
+    AnthropicMessages,
     AudioTranscriptions,
     ImageGenerations,
     ImageEdits,
@@ -2986,9 +2988,8 @@ async fn upstream_request_parts(
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
-    if relay.protocol == RelayProtocol::ChatCompletions
-        && input_has_native_compaction(&request_json)
-    {
+    // Chat 与 Anthropic 上游都没有原生压缩项，只能走合成摘要路径。
+    if relay.requires_protocol_proxy_conversion() && input_has_native_compaction(&request_json) {
         return Err(NativeCompactionUnsupported::history().into());
     }
     // 原生 v2 上游要先看到 compaction_trigger。只有确认它没有返回 compaction 项后才剥掉重试。
@@ -2998,7 +2999,7 @@ async fn upstream_request_parts(
             return Err(NativeCompactionUnsupported::history().into());
         }
     }
-    let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
+    let synthetic_compaction = compact && relay.requires_protocol_proxy_conversion();
     if let Some(model) = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -3010,6 +3011,11 @@ async fn upstream_request_parts(
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
             relay.standard_openai_protocol,
+        )?,
+        // Responses → Chat → Anthropic：第一跳复用上面同一份实现，第二跳在桥接模块里。
+        RelayProtocol::AnthropicMessages => crate::anthropic_bridge::responses_to_anthropic_messages(
+            request_json,
+            relay.anthropic_max_tokens(),
         )?,
     };
     if relay.protocol == RelayProtocol::Responses {
@@ -3082,6 +3088,7 @@ async fn upstream_request_parts(
     let wire_api = match relay.protocol {
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
+        RelayProtocol::AnthropicMessages => UpstreamWireApi::AnthropicMessages,
     };
     // 官方登录成员没有用户填写的 base_url，固定发往 chatgpt.com 后端。
     let endpoint_base = official_base
@@ -3097,6 +3104,9 @@ async fn upstream_request_parts(
             }
             RelayProtocol::Responses => responses_url(endpoint_base),
             RelayProtocol::ChatCompletions => chat_completions_url(endpoint_base),
+            RelayProtocol::AnthropicMessages => {
+                crate::anthropic_bridge::anthropic_messages_url(endpoint_base)
+            }
         },
         body,
         wire_api,
@@ -3202,7 +3212,8 @@ fn with_relay_auth(
     relay: &crate::settings::RelayProfile,
 ) -> reqwest::RequestBuilder {
     // 认证（API Key / 无认证）+ 供应商自定义请求头，统一在 relay_headers 里决定优先级。
-    crate::relay_headers::apply(request, relay)
+    // Anthropic 上游的 `x-api-key` 与 `anthropic-version` 也在这里按协议注入。
+    crate::relay_headers::apply_for_protocol(request, relay)
 }
 
 /// 官方登录成员的上游认证：OAuth Bearer + `chatgpt-account-id`，
@@ -3330,11 +3341,21 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             });
         }
         let mut converter = CompactionSseConverter::new(model);
-        if wire_api != UpstreamWireApi::Responses {
+        if wire_api == UpstreamWireApi::AnthropicMessages {
+            // Anthropic 事件流先落成 chat 事件流，再交给既有的 chat 压缩聚合器。
+            let chat_sse =
+                crate::anthropic_bridge::anthropic_sse_to_chat_sse(&String::from_utf8_lossy(
+                    &upstream_body,
+                ));
             converter = converter.with_chat_upstream();
+            converter.push_upstream_bytes(chat_sse.as_bytes());
+        } else {
+            if wire_api != UpstreamWireApi::Responses {
+                converter = converter.with_chat_upstream();
+            }
+            // 整包已收齐，直接喂给有状态 SSE 解析器（与 launcher 逐 chunk 路径同逻辑）。
+            converter.push_upstream_bytes(&upstream_body);
         }
-        // 整包已收齐，直接喂给有状态 SSE 解析器（与 launcher 逐 chunk 路径同逻辑）。
-        converter.push_upstream_bytes(&upstream_body);
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "text/event-stream; charset=utf-8".to_string(),
@@ -3370,6 +3391,26 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
                 upstream_content_type
             },
             body,
+        });
+    }
+
+    if wire_api == UpstreamWireApi::AnthropicMessages {
+        // Anthropic → Chat → Responses：第二跳与 Chat 上游共用同一份映射。
+        if is_stream {
+            let text = String::from_utf8_lossy(&upstream_body);
+            return Ok(ProxyHttpResponse {
+                status: "200 OK".to_string(),
+                content_type: "text/event-stream; charset=utf-8".to_string(),
+                body: crate::anthropic_bridge::anthropic_sse_to_responses_sse(&text, &request_json),
+            });
+        }
+        let message: Value = serde_json::from_slice(&upstream_body)?;
+        let chat_json = crate::anthropic_bridge::anthropic_message_to_chat_completion(message)?;
+        let response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
+        return Ok(ProxyHttpResponse {
+            status: "200 OK".to_string(),
+            content_type: "application/json; charset=utf-8".to_string(),
+            body: serde_json::to_vec(&response_json)?,
         });
     }
 

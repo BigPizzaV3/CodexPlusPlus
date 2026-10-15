@@ -973,6 +973,9 @@ pub async fn test_relay_profile(
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => format!("{base_url}/responses"),
         RelayProtocol::ChatCompletions => format!("{base_url}/chat/completions"),
+        RelayProtocol::AnthropicMessages => {
+            crate::anthropic_bridge::anthropic_messages_url(base_url)
+        }
     };
     let test_model = model.trim();
     if test_model.is_empty() {
@@ -993,6 +996,9 @@ pub async fn test_relay_profile(
         let v1_endpoint = match profile.protocol {
             RelayProtocol::Responses => format!("{v1_url}/responses"),
             RelayProtocol::ChatCompletions => format!("{v1_url}/chat/completions"),
+            RelayProtocol::AnthropicMessages => {
+                crate::anthropic_bridge::anthropic_messages_url(&v1_url)
+            }
         };
         let v1_response = relay_test_request(&client, &v1_endpoint, profile, api_key, &payload)
             .send()
@@ -1030,13 +1036,12 @@ fn relay_test_request(
     api_key: &str,
     payload: &Value,
 ) -> reqwest::RequestBuilder {
-    let mut request = client
+    let request = client
         .post(endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
-    if !profile.uses_no_auth() && !crate::relay_headers::has_authorization(&profile.custom_headers) {
-        request = request.bearer_auth(api_key);
-    }
-    crate::relay_headers::apply_headers(request, &profile.custom_headers).json(payload)
+    // 认证字段按协议注入（Anthropic 上游是 x-api-key，其余是 Bearer），
+    // 与协议代理转发共用 `relay_headers`，避免两处行为不一致。
+    crate::relay_headers::apply_with_api_key(request, profile, api_key).json(payload)
 }
 
 fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
@@ -1053,13 +1058,21 @@ fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
             ],
             "max_tokens": 16
         }),
+        RelayProtocol::AnthropicMessages => serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "hi" }
+            ],
+            "max_tokens": 16
+        }),
     }
 }
 
 fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_port: u16) -> String {
     match protocol {
         RelayProtocol::Responses => base_url.to_string(),
-        RelayProtocol::ChatCompletions => {
+        // 需要协议转换的上游一律让 Codex 连本机代理，由代理决定真实上游协议。
+        RelayProtocol::ChatCompletions | RelayProtocol::AnthropicMessages => {
             crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
         }
     }
@@ -1423,7 +1436,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
     if normalize_relay_endpoint(&live) == normalize_relay_endpoint(&managed_openai_base_url()) {
         return true;
     }
-    let proxy_mode = profile.protocol == RelayProtocol::ChatCompletions
+    let proxy_mode = profile.requires_protocol_proxy_conversion()
         || profile.has_model_routes()
         || profile.uses_no_auth()
         || profile.web_search_history_compat_enabled()
@@ -4497,7 +4510,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
             return profile.base_url.trim().to_string();
         }
     }
-    if profile.protocol == RelayProtocol::ChatCompletions {
+    if profile.requires_protocol_proxy_conversion() {
         if !profile.upstream_base_url.trim().is_empty() {
             return profile.upstream_base_url.trim().to_string();
         }
@@ -4513,7 +4526,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     let provider_base_url = provider_string_from_config(&profile.config_contents, "base_url")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_default();
-    if profile.protocol == RelayProtocol::ChatCompletions
+    if profile.requires_protocol_proxy_conversion()
         && provider_base_url
             == crate::protocol_proxy::local_responses_proxy_base_url(
                 crate::protocol_proxy::protocol_proxy_port(),
@@ -4733,6 +4746,11 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
         })
         .collect();
     normalize_relay_headers(&mut profile.custom_headers)?;
+    // Anthropic 上游的认证字段只认两种写法，别名（bearer / x_api_key 等）在这里收敛；
+    // 空串表示默认 `x-api-key`。`anthropic_max_tokens` 的 0 表示用内置兜底值，
+    // 不强制写盘，避免给既有设置文件引入无意义 diff。
+    profile.anthropic_auth_header =
+        crate::settings::normalize_anthropic_auth_header(&profile.anthropic_auth_header);
 
     if profile.model_list.contains('[') {
         let (clean_list, migrated_windows) =

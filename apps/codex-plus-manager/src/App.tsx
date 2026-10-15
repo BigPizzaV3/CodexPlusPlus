@@ -450,6 +450,10 @@ export type RelayProfile = {
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
   webSearchHistoryCompat: boolean;
+  /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
+  anthropicAuthHeader?: string;
+  /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192。 */
+  anthropicMaxTokens?: number;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -514,7 +518,7 @@ type CodexContextEntries = {
   plugins: CodexContextEntry[];
 };
 
-type RelayProtocol = "responses" | "chatCompletions";
+type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_messages";
 type StepwiseGenerationMode = "auto" | "manual";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
@@ -9340,9 +9344,35 @@ function RelayProfileEditor({
                       options={[
                         { value: "responses", label: "Responses API" },
                         { value: "chatCompletions", label: "Chat Completions" },
+                        { value: "anthropicMessages", label: "Anthropic Messages" },
                       ]}
                     />
                   </Field>
+                  {profile.protocol === "anthropicMessages" ? (
+                    <>
+                      <Field className="relay-field-anthropic-auth" label={t("认证字段")}>
+                        <AppSelect
+                          ariaLabel={t("认证字段")}
+                          value={profile.anthropicAuthHeader || "x-api-key"}
+                          onChange={(value) => updateDraft({ anthropicAuthHeader: value })}
+                          options={[
+                            { value: "x-api-key", label: t("x-api-key（Anthropic 原生）") },
+                            { value: "authorization", label: t("Authorization: Bearer") },
+                          ]}
+                        />
+                      </Field>
+                      <Field className="relay-field-anthropic-max-tokens" label={t("最大输出 tokens")}>
+                        <Input
+                          inputMode="numeric"
+                          value={profile.anthropicMaxTokens ? String(profile.anthropicMaxTokens) : ""}
+                          placeholder="8192"
+                          onChange={(event) =>
+                            updateDraft({ anthropicMaxTokens: normalizeAnthropicMaxTokens(Number(event.currentTarget.value)) })
+                          }
+                        />
+                      </Field>
+                    </>
+                  ) : null}
                 </div>
               </div>
             ) : (
@@ -10028,10 +10058,14 @@ function RelayProfileEditor({
                 </div>
               </Field>
             ) : null}
-            {showApiFields && profile.protocol === "chatCompletions" ? (
+            {showApiFields && profile.protocol !== "responses" ? (
               <div className="hint-line relay-protocol-hint">
                 <MessageCircle className="h-4 w-4" />
-                <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}</span>
+                <span>
+                  {profile.protocol === "anthropicMessages"
+                    ? t("此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。")
+                    : t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}
+                </span>
               </div>
             ) : null}
             <div className="hint-line relay-protocol-hint">
@@ -13332,7 +13366,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
-    protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
+    protocol: normalizeRelayProtocol(profile.protocol),
     relayMode,
     sessionProvider: relaySessionProvider(profile),
     officialMixApiKey,
@@ -13358,6 +13392,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
+    anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
+    anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
@@ -13391,8 +13427,30 @@ function activeRelayProfile(settings: BackendSettings): RelayProfile {
   );
 }
 
+/** 协议取值归一化：认不出的值一律回退 Responses，避免脏数据把上游写成直连。 */
+function normalizeRelayProtocol(value: RelayProtocol | undefined): RelayProtocol {
+  if (value === "chatCompletions" || value === "anthropicMessages") return value;
+  return "responses";
+}
+
+/** Anthropic 认证字段：只允许 `x-api-key` 与 `authorization`，缺省用前者。 */
+function normalizeAnthropicAuthHeader(value: string | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "authorization" || normalized === "bearer") return "authorization";
+  if (normalized === "x-api-key" || normalized === "x_api_key" || normalized === "api_key") return "x-api-key";
+  return "";
+}
+
+/** Anthropic 的 `max_tokens` 兜底值：空/非法按 0（用内置 8192），上限 200000。 */
+function normalizeAnthropicMaxTokens(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(200000, Math.round(value));
+}
+
 function relayProtocolLabel(protocol: RelayProtocol): string {
-  return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
+  if (protocol === "chatCompletions") return t("Chat Completions 转 Responses");
+  if (protocol === "anthropicMessages") return t("Anthropic Messages 转 Responses");
+  return "Responses API";
 }
 
 function ccsProviderSummary(result: CcsProvidersResult | null): string {
@@ -13573,7 +13631,7 @@ function buildRelayConfigToml(
     && profile.protocol === "responses"
     && profile.relayMode !== "aggregate"
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
-  const baseUrl = profile.protocol === "chatCompletions" || searchHistoryCompat
+  const baseUrl = profile.protocol !== "responses" || searchHistoryCompat
     ? PROTOCOL_PROXY_BASE_URL
     : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -13712,7 +13770,7 @@ function applyRelayProfilePatchToFiles(
       && next.protocol === "responses"
       && next.relayMode !== "aggregate"
       && (next.relayMode !== "official" || next.officialMixApiKey);
-    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat
+    const baseUrlForConfig = next.protocol !== "responses" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -14559,7 +14617,7 @@ function relayProviderView(profile: RelayProfile): ProviderViewKind {
   if (isAggregateRelayProfile(profile)) {
     return profile.aggregate?.modelAggregationEnabled === true ? "modelAggregation" : "failover";
   }
-  return profile.protocol === "chatCompletions" || normalizeRelayModelRoutes(profile.modelRoutes).length
+  return profile.protocol !== "responses" || normalizeRelayModelRoutes(profile.modelRoutes).length
     ? "routing"
     : "direct";
 }

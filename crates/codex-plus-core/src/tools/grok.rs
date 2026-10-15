@@ -34,12 +34,19 @@ use crate::settings::{RelayProfile, RelayProtocol};
 use crate::tools::ToolConfig;
 
 /// Grok 的 `api_backend` 取值。当前 Codex++ 只产 `chat_completions`，
-/// 如果上游是 Responses 或 Anthropic Messages 端点，跟着 profile 的协议走。
-fn api_backend_for(profile: &RelayProfile) -> &'static str {
-    match profile.protocol {
+/// 如果上游是 Responses 端点，跟着 profile 的协议走。
+///
+/// Anthropic Messages 在 Grok 的 `api_backend` 里没有对应取值，
+/// 与其写一个错的协议名让 Grok 请求必然失败，不如在这里明确拒绝。
+fn api_backend_for(profile: &RelayProfile) -> anyhow::Result<&'static str> {
+    Ok(match profile.protocol {
         RelayProtocol::Responses => "responses",
         RelayProtocol::ChatCompletions => "chat_completions",
-    }
+        RelayProtocol::AnthropicMessages => bail!(
+            "Grok 不支持 Anthropic Messages 上游「{}」；请为 Grok 选择 Responses 或 Chat Completions 协议的供应商",
+            profile.name
+        ),
+    })
 }
 
 /// profile 的供应商端点：优先 `upstream_base_url`，退回 `base_url`。
@@ -154,7 +161,7 @@ pub fn apply_profile_to_grok_at(
     }
 
     let base_url = profile_base_url(profile);
-    let api_backend = api_backend_for(profile).to_string();
+    let api_backend = api_backend_for(profile)?.to_string();
     let api_key = profile.api_key.trim().to_string();
 
     // 先把磁盘上的现状读出来：revision 用来做并发保护（防止覆盖别人的改动），

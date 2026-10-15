@@ -15,6 +15,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
@@ -128,6 +132,21 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub web_search_history_compat: bool,
+    /// Anthropic 上游的认证字段：`x-api-key`（默认，Anthropic 原生）或
+    /// `authorization`（多数 Claude 系中转网关用 Bearer）。
+    #[serde(
+        rename = "anthropicAuthHeader",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub anthropic_auth_header: String,
+    /// Anthropic 的 `max_tokens` 是必填项：Codex 请求没带上限时用这个值兜底。
+    #[serde(
+        rename = "anthropicMaxTokens",
+        default,
+        skip_serializing_if = "is_zero_u64"
+    )]
+    pub anthropic_max_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -275,6 +294,8 @@ impl Default for RelayProfile {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            anthropic_auth_header: String::new(),
+            anthropic_max_tokens: 0,
         }
     }
 }
@@ -296,6 +317,49 @@ impl RelayProfile {
             .iter()
             .any(|route| !route.model.trim().is_empty() && !route.target_relay_id.trim().is_empty())
     }
+
+    /// 上游协议是否需要本地协议代理转换（Codex 侧恒以 Responses 说话）。
+    ///
+    /// 与「Chat Completions 专有行为」区分开：`standard_openai_protocol`、
+    /// 原生远程压缩、VLM 等开关只认 `ChatCompletions`，不要用本函数替代。
+    pub fn requires_protocol_proxy_conversion(&self) -> bool {
+        matches!(
+            self.protocol,
+            RelayProtocol::ChatCompletions | RelayProtocol::AnthropicMessages
+        )
+    }
+
+    /// Anthropic 上游的认证字段，空值表示默认的 `x-api-key`。
+    pub fn anthropic_auth_header(&self) -> &str {
+        let value = self.anthropic_auth_header.trim();
+        if value.is_empty() {
+            crate::anthropic_bridge::ANTHROPIC_AUTH_HEADER_API_KEY
+        } else {
+            value
+        }
+    }
+
+    /// Anthropic 的 `max_tokens` 兜底值（协议必填，Codex 未给上限时使用）。
+    pub fn anthropic_max_tokens(&self) -> u64 {
+        if self.anthropic_max_tokens == 0 {
+            crate::anthropic_bridge::ANTHROPIC_DEFAULT_MAX_TOKENS
+        } else {
+            self.anthropic_max_tokens
+        }
+    }
+}
+
+/// 归一化 Anthropic 认证字段：只接受两种取值，其余（含空串）按默认 `x-api-key` 处理。
+pub fn normalize_anthropic_auth_header(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "authorization" | "bearer" | "auth_token" | "anthropic_auth_token" => {
+            crate::anthropic_bridge::ANTHROPIC_AUTH_HEADER_BEARER.to_string()
+        }
+        "x-api-key" | "x_api_key" | "api_key" | "anthropic_api_key" => {
+            crate::anthropic_bridge::ANTHROPIC_AUTH_HEADER_API_KEY.to_string()
+        }
+        _ => String::new(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -312,6 +376,8 @@ pub enum RelayProtocol {
     #[default]
     Responses,
     ChatCompletions,
+    /// Anthropic Messages（`/v1/messages`）：由本地协议代理转成 Responses 供 Codex 使用。
+    AnthropicMessages,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -892,6 +958,8 @@ impl BackendSettings {
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
                 web_search_history_compat: false,
+                anthropic_auth_header: String::new(),
+                anthropic_max_tokens: 0,
             };
         }
 
@@ -949,6 +1017,8 @@ impl BackendSettings {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            anthropic_auth_header: String::new(),
+            anthropic_max_tokens: 0,
         }
     }
 
@@ -1001,7 +1071,7 @@ impl BackendSettings {
 
     pub fn active_relay_transport_uses_protocol_proxy(&self) -> bool {
         self.active_aggregate_relay_profile().is_some()
-            || self.active_relay_profile().protocol == RelayProtocol::ChatCompletions
+            || self.active_relay_profile().requires_protocol_proxy_conversion()
             || self.active_relay_profile().has_model_routes()
             || self.active_relay_profile().uses_no_auth()
             || self.active_relay_profile().web_search_history_compat_enabled()

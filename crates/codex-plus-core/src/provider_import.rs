@@ -214,6 +214,8 @@ fn relay_profile_from_request(
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
         web_search_history_compat: false,
+        anthropic_auth_header: String::new(),
+        anthropic_max_tokens: 0,
     }
 }
 
@@ -244,6 +246,9 @@ fn normalize_request(mut request: ProviderImportRequest) -> anyhow::Result<Provi
 fn relay_protocol(value: &str) -> RelayProtocol {
     match value.trim().to_ascii_lowercase().as_str() {
         "chat" | "chat_completions" | "chat-completions" => RelayProtocol::ChatCompletions,
+        "anthropic" | "anthropic_messages" | "anthropic-messages" | "messages" => {
+            RelayProtocol::AnthropicMessages
+        }
         _ => RelayProtocol::Responses,
     }
 }
