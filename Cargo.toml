@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.8.0"
+version = "1.9.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/BigPizzaV3/CodexPlusPlus"
@@ -20,6 +20,8 @@ base64 = "0.22"
 directories = "6"
 fs2 = "0.4"
 futures-util = "0.3"
+http = "1"
+httpdate = "1"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "rustls-tls-native-roots", "system-proxy"], default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

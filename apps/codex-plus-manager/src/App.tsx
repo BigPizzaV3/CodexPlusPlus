@@ -472,6 +472,8 @@ type RelayAggregateConfig = {
   modelAggregationEnabled?: boolean;
   /** 默认供应商：解析不到成员的普通模型请求交给该成员转发；空串表示未设置。 */
   defaultRelayId?: string;
+  /** 把默认成员的官方登录同步进 Codex（写 auth.json 的 tokens 段）。默认关。 */
+  syncDefaultMemberLogin?: boolean;
 };
 type AggregateRelayMember = {
   relayId: string;
@@ -486,6 +488,8 @@ type AggregateRelayProfile = {
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
   defaultRelayId?: string;
+  /** 把默认成员的官方登录同步进 Codex（auth.json 的 tokens 段）。默认关。 */
+  syncDefaultMemberLogin?: boolean;
 };
 
 type RelayContextSelection = {
@@ -1048,7 +1052,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
   { id: "multiLaunch", label: t("Codex多开"), icon: Layers3, badge: "NEW", tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
-  { id: "claude", label: t("Claude 汉化"), icon: Languages, tool: "claude" },
+  { id: "claude", label: t("Claude 增强"), icon: Languages, tool: "claude" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
   { id: "context", label: "MCP", icon: Network, tool: "codex" },
   { id: "skills", label: "Skills", icon: BookOpen, tool: "codex" },
@@ -3155,6 +3159,9 @@ export function App() {
   };
 
   useEffect(() => {
+    // 工具栏只依赖本地配置，不能排在广告等网络请求之后。
+    // 切换语言会重载窗口，串行等待会让三个 Agent 图标长时间消失。
+    void refreshTools(true);
     void (async () => {
       const startup = await run(() => call<StartupResult>("startup_options"));
       const handledNavigation = await consumePendingManagerNavigation();
@@ -3168,7 +3175,6 @@ export function App() {
       // 概览页的赞助商区块要显示真实广告源内容，所以启动就拉一次，
       // 不要等到用户点进「推荐内容」才加载。
       await refreshAds(true);
-      await refreshTools(true);
       if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
       await refreshEnvConflicts(true);
@@ -9671,6 +9677,11 @@ function RelayProfileEditor({
                               rows={7}
                             />
                             {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
+                            {metadataImportPreview?.contextWindow && row.window.trim() && metadataImportPreview.contextWindow !== row.window.trim() ? (
+                              <div className="relay-model-metadata-import-warning" role="status">
+                                {tf("文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。", [metadataImportPreview.contextWindow, row.window.trim()])}
+                              </div>
+                            ) : null}
                             {metadataImportPreview?.ignoredFields.length ? (
                               <div className="relay-model-metadata-import-warning" role="status">
                                 {tf("以下字段由 Codex++ 计算或维护，导入不会覆盖：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
@@ -10328,6 +10339,11 @@ function AggregateRelayProfileEditor({
     });
   };
   const totalWeight = aggregate.members.reduce((total, member) => total + clampAggregateWeight(member.weight), 0);
+  // 只有"纯官方登录"成员才有 ChatGPT 凭据可同步；带 URL/Key 的官方混入走 API 通道。
+  const defaultMemberCandidate = candidates.find((candidate) => candidate.id === aggregate.defaultRelayId);
+  const defaultMemberIsOfficialLogin = !!defaultMemberCandidate
+    && defaultMemberCandidate.relayMode === "official"
+    && !defaultMemberCandidate.officialMixApiKey;
   const routes = aggregate.routes ?? [];
   const routeTargetOptions = aggregate.members
     .map((member) => {
@@ -10514,6 +10530,26 @@ function AggregateRelayProfileEditor({
               ])
               : t("还没指定默认供应商：在上方成员行尾点「设为默认」。不带 cpx- 前缀的请求会原样交给它，没设就报错。")}
           </span>
+          {defaultMemberIsOfficialLogin ? (
+            <label className="aggregate-default-login-sync">
+              <input
+                checked={aggregate.syncDefaultMemberLogin === true}
+                onChange={(event) => updateAggregate({
+                  ...aggregate,
+                  syncDefaultMemberLogin: event.currentTarget.checked,
+                })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("把默认成员的官方登录同步到 Codex")}</strong>
+                <small>{t("开启后切换到本聚合时，会把默认成员的 ChatGPT 凭据一并写进 Codex（代理 Key 保留），账号在 Codex 里就是登录态。默认成员不是官方登录时无效。")}</small>
+              </span>
+            </label>
+          ) : (
+            <span className="aggregate-default-login-note">
+              {t("当前默认成员不是官方登录账号，无法把登录同步到 Codex；只有「官方登录」类型的成员才有 ChatGPT 凭据。")}
+            </span>
+          )}
         </div>
       ) : null}
       {!modelMode ? <div className="aggregate-routes">
@@ -11515,6 +11551,8 @@ type ClaudeLocalizationStatus = {
   pythonAvailable: boolean;
   shellLocale: string | null;
   catalogEntries: number;
+  voiceInput: boolean;
+  localization: boolean;
 };
 
 function ClaudeLocalizationScreen() {
@@ -11530,8 +11568,38 @@ function ClaudeLocalizationScreen() {
     setBusy(action); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
-      setStatus(result);
-      if (result.status !== "ok") setError(result.message);
+      // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
+      // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (result.status === "ok") setStatus(result);
+      else setError(result.message);
+    } catch (cause) { setError(stringifyError(cause)); }
+    finally { setBusy(null); }
+  };
+  const toggleVoiceInput = async (enabled: boolean) => {
+    setBusy("voiceInput"); setError(null);
+    try {
+      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+        "claude_localization_set_voice_input",
+        { enabled },
+      );
+      // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
+      // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (result.status === "ok") setStatus(result);
+      else setError(result.message);
+    } catch (cause) { setError(stringifyError(cause)); }
+    finally { setBusy(null); }
+  };
+  const toggleLocalization = async (enabled: boolean) => {
+    setBusy("localization"); setError(null);
+    try {
+      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+        "claude_localization_set_localization",
+        { enabled },
+      );
+      // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
+      // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (result.status === "ok") setStatus(result);
+      else setError(result.message);
     } catch (cause) { setError(stringifyError(cause)); }
     finally { setBusy(null); }
   };
@@ -11541,20 +11609,87 @@ function ClaudeLocalizationScreen() {
   const statusText = !s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
   return (
     <div className="claude-localization-page">
+      {/* 左栏：增强项。每一项都跑在右边的受管副本上，汉化只是其中之一。 */}
+      <div className="claude-l10n-column">
+        <Panel>
+          <CardHead
+            title={t("增强功能")}
+            detail={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}
+          />
+          <CardContent>
+            <label className="switch-row compact">
+              <input
+                checked={Boolean(s?.localization)}
+                disabled={busy !== null}
+                onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("界面汉化")}</strong>
+                <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            <label className="switch-row compact">
+              <input
+                checked={Boolean(s?.voiceInput)}
+                disabled={busy !== null}
+                onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("语音输入")}</strong>
+                <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            {!s?.prepared ? (
+              <p className="claude-l10n-hint">
+                {t("副本还没准备：开关会先存下来，等你在右边准备好副本并启动后生效。")}
+              </p>
+            ) : null}
+          </CardContent>
+        </Panel>
+      </div>
+      {/* 右栏：所有增强共同的前置条件。 */}
+      <div className="claude-l10n-column">
       <Panel className="claude-l10n-hero">
         <CardContent>
           <div className="claude-l10n-hero-head">
             <div className="claude-l10n-hero-title">
-              <span className="claude-l10n-hero-icon"><Languages className="h-5 w-5" /></span>
+              <span className="claude-l10n-hero-icon"><PackageOpen className="h-5 w-5" /></span>
               <div>
-                <strong>{t("Claude Code 汉化")}</strong>
-                <span className="claude-l10n-hero-subtitle">{t("官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。")}</span>
+                <strong>{t("受管副本")}</strong>
+                <span className="claude-l10n-hero-subtitle">{t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
               </div>
             </div>
             <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
               <i aria-hidden="true" />
               {statusText}
             </span>
+          </div>
+          <div className="claude-l10n-steps" role="list">
+            <div className="claude-l10n-step" data-done={s?.prepared ? "true" : "false"} role="listitem">
+              <span className="claude-l10n-step-no" aria-hidden="true">{s?.prepared ? "✓" : "1"}</span>
+              <div className="claude-l10n-step-body">
+                <strong>{t("准备副本")}</strong>
+                <small>{t("用下面的按钮创建受管副本；官方 Claude.app 与 app.asar 保持原样。")}</small>
+              </div>
+            </div>
+            <div className="claude-l10n-step" data-done={s?.running ? "true" : "false"} role="listitem">
+              <span className="claude-l10n-step-no" aria-hidden="true">{s?.running ? "✓" : "2"}</span>
+              <div className="claude-l10n-step-body">
+                <strong>{t("启动 Claude 副本")}</strong>
+                <small>{t("增强只在副本里生效，官方版和登录态不受影响。")}</small>
+              </div>
+            </div>
+            <div className="claude-l10n-step" role="listitem">
+              <span className="claude-l10n-step-no" aria-hidden="true">3</span>
+              <div className="claude-l10n-step-body">
+                <strong>{t("在左边开启需要的增强")}</strong>
+                <small>{t("界面汉化与语音输入各自独立，改动在重启副本后应用。")}</small>
+              </div>
+            </div>
           </div>
           <div className="claude-l10n-stats">
             <div className="claude-l10n-stat">
@@ -11571,7 +11706,7 @@ function ClaudeLocalizationScreen() {
             </div>
             <div className="claude-l10n-stat">
               <span>{t("官方词条")}</span>
-              <strong>{s ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")}</strong>
+              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")}</strong>
             </div>
           </div>
           <div className="claude-l10n-note" role="note">
@@ -11581,22 +11716,27 @@ function ClaudeLocalizationScreen() {
           {error ? <div className="inline-error">{error}</div> : null}
           <div className="claude-l10n-actions">
             <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
-              <PackageOpen className="h-4 w-4" />{busy === "prepare" ? t("准备中…") : t("准备汉化副本")}
+              <PackageOpen className="h-4 w-4" />
+              {busy === "prepare"
+                ? t("准备中…")
+                : s?.needsRebuild
+                  ? t("更新副本")
+                  : s?.prepared
+                    ? t("重新准备副本")
+                    : t("准备副本")}
             </Button>
             <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")}>
-              <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动中文 Claude")}
+              <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动 Claude 副本")}
             </Button>
             <div className="claude-l10n-actions-secondary">
               <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
                 <RefreshCw className="h-4 w-4" />{t("检查副本")}
               </Button>
-              <Button disabled={busy !== null || !s?.shellLocale} onClick={() => void act("restore")} variant="secondary">
-                <RotateCcw className="h-4 w-4" />{t("还原语言")}
-              </Button>
             </div>
           </div>
         </CardContent>
       </Panel>
+      </div>
     </div>
   );
 }
@@ -12334,7 +12474,7 @@ function routeSubtitle(route: Route) {
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     grok: t("管理 Grok CLI 的模型与 API 端点"),
-    claude: t("保留官方 Claude.app 原样，通过受管副本动态应用中文界面"),
+    claude: t("保留官方 Claude.app 原样，通过受管副本为 Claude 应用增强功能"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP 服务器与插件"),
@@ -13245,6 +13385,7 @@ function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: Aggregat
       })),
       routes: normalizeAggregateRoutes(aggregate.routes ?? []),
       defaultRelayId: aggregate.defaultRelayId ?? "",
+      syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
     },
   };
 }
@@ -14196,6 +14337,7 @@ function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): 
         priority: route.priority,
       })),
       defaultRelayId: aggregate.defaultRelayId ?? "",
+      syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
     };
   });
 }
@@ -14523,6 +14665,7 @@ function normalizeAggregateConfig(
     members,
     routes,
     defaultRelayId,
+    syncDefaultMemberLogin: aggregate?.syncDefaultMemberLogin === true,
   };
 }
 

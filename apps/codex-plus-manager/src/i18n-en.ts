@@ -1067,6 +1067,12 @@ export const EN_PLAIN: Record<string, string> = {
     "This aggregate merges member models into the Codex list; prefixed models stay bound to their member, while plain model names still follow the strategy.",
   "聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。":
     "An aggregate provider needs at least 1 usable member (an API provider or a signed-in official account).",
+  "把默认成员的官方登录同步到 Codex":
+    "Sync the default member's official login into Codex",
+  "开启后切换到本聚合时，会把默认成员的 ChatGPT 凭据一并写进 Codex（代理 Key 保留），账号在 Codex 里就是登录态。默认成员不是官方登录时无效。":
+    "When enabled, switching to this aggregate also writes the default member's ChatGPT credentials into Codex (the proxy key is kept), so the account shows as signed in. No effect when the default member is not an official login.",
+  "当前默认成员不是官方登录账号，无法把登录同步到 Codex；只有「官方登录」类型的成员才有 ChatGPT 凭据。":
+    "The current default member is not an official-login account, so its login cannot be synced into Codex; only official-login members carry ChatGPT credentials.",
   "聚合策略": "Aggregate strategy",
   "故障转移": "Failover",
   "模型聚合": "Model aggregation",
@@ -1444,6 +1450,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column holds {1}. The current value was kept; clear the window to use the document's value.",
   "{0} 个插件": "{0} plugins",
   "{0} / {1} 个插件": "{0} / {1} plugins",
   "查看插件 {0} 的详情": "View details for plugin {0}",

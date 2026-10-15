@@ -433,6 +433,51 @@ pub fn apply_relay_config_to_home_with_protocol(
     )
 }
 
+/// 解析"要不要把默认成员的官方登录同步进 Codex"，以及要写进去的凭据。
+///
+/// 返回 `None` 表示本次切换不碰 Token 段（开关关着、不是聚合、或刚升级还没设置过）；
+/// 返回 `Some(Some(contents))` 是要同步的 auth.json 片段；`Some(None)` 表示开关开着
+/// 但默认成员没有可用的官方登录凭据，此时要顺手清掉 live 里残留的登录态。
+fn resolve_synced_chatgpt_tokens(profile: &RelayProfile) -> SyncedChatgptTokens {
+    if profile.relay_mode != crate::settings::RelayMode::Aggregate {
+        return None;
+    }
+    let Ok(settings) = crate::settings::SettingsStore::default().load() else {
+        return None;
+    };
+    let aggregate = settings
+        .aggregate_relay_profiles
+        .iter()
+        .find(|aggregate| aggregate.id == profile.id)?;
+    if !aggregate.sync_default_member_login {
+        return None;
+    }
+    let default_relay_id = aggregate.default_relay_id.trim();
+    if default_relay_id.is_empty() {
+        return Some(String::new());
+    }
+    let Some(member) = settings
+        .relay_profiles
+        .iter()
+        .find(|relay| relay.id == default_relay_id)
+    else {
+        return Some(String::new());
+    };
+    // 只有"纯官方登录"成员才有可写的 ChatGPT 凭据；带 URL/Key 的官方混入走 API 通道。
+    // 拿不到凭据时返回空串：调用方据此清掉 live 里可能残留的、已经不参与聚合的登录态。
+    if !crate::official_login::is_official_login_profile(member) {
+        return Some(String::new());
+    }
+    Some(member.auth_contents.clone())
+}
+
+/// 聚合是否会把默认成员的 ChatGPT 登录同步进 Codex（开关开着且成员确有可用凭据）。
+fn aggregate_syncs_member_login(profile: &RelayProfile) -> bool {
+    resolve_synced_chatgpt_tokens(profile).is_some_and(|contents| {
+        !crate::official_login::chatgpt_account_id_from_auth_contents(&contents).is_empty()
+    })
+}
+
 pub fn apply_relay_config_to_home_with_session_provider(
     home: &Path,
     base_url: &str,
@@ -463,7 +508,7 @@ pub fn apply_relay_config_to_home_with_session_provider(
     // 保留 live auth.json 里已有的其它凭据（尤其是官方 OAuth `tokens`）：
     // 整体覆盖成只含代理 Key 的 JSON 会清掉登录态，重启后 Codex 退回登录页
     // （issue #1604 / PR #1813 的数据完整性风险）。
-    let auth_contents = auth_contents_with_proxy_key(home, "", bearer_token)?;
+    let auth_contents = auth_contents_with_proxy_key(home, "", bearer_token, None)?;
     let backup_path =
         write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
     let status = relay_config_status_from_home(home);
@@ -567,6 +612,7 @@ pub fn apply_relay_profile_files_to_home_with_context(
                 home,
                 &profile.auth_contents,
                 &relay_profile_api_key(profile),
+                None,
             )?
         } else {
             profile.auth_contents.clone()
@@ -758,11 +804,28 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
             // 聚合模式的实际请求发往本地代理，它需要 API 模式的凭据。
             // 不能走 Official 分支删 OPENAI_API_KEY，否则 auth.json 会被清成空文件/空对象，
             // Codex 判定未登录而弹登录页（issue #1604）。
-            let auth_contents = auth_contents_with_proxy_key(
+            //
+            // 聚合默认只写代理 Key，Codex 侧看不到官方成员的账号态；用户在聚合里打开
+            // 「同步默认成员登录」后，这里再把该成员的 ChatGPT 凭据并进去，账号在 Codex
+            // 里就是登录态（`resolve_synced_chatgpt_tokens` 负责判定，默认返回 None）。
+            let synced_login = resolve_synced_chatgpt_tokens(profile);
+            let mut auth_contents = auth_contents_with_proxy_key(
                 home,
                 &profile.auth_contents,
                 &relay_profile_api_key(profile),
+                synced_login.as_deref(),
             )?;
+            // 把默认成员的登录态并进 `tokens` 段：同账号用 live 的更新一代，代理 Key 与
+            // 用户自己的字段都保留。`synced_login` 为空串表示成员没有可用凭据 → 清掉残留。
+            if let Some(member_auth) = synced_login.as_deref()
+                && let Some(merged) = crate::official_login::auth_contents_with_member_login(
+                    &auth_contents,
+                    member_auth,
+                    true,
+                )
+            {
+                auth_contents = merged;
+            }
             apply_relay_files_to_home(home, &compatible_config, &auth_contents)
         } else {
             let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
@@ -3041,13 +3104,15 @@ fn apply_model_catalog_to_config_with_live_policy(
     // Known bundled metadata entries need a catalog even without a user-supplied window.
     // 托管 Responses 传输走 model_routes 时需要 catalog，与会话身份无关；
     // 纯平铺 model_list 且无窗口/元数据的仍保持"不生成"契约（无后缀不落盘，见既有测试）。
+    // 上游不认 tool_search 时必须落 catalog 关掉该能力，否则 Codex 照发、整单 400。
     if !should_write_managed_model_catalog(
         &entries,
         has_metadata_overrides,
         standard_responses,
         profile.has_model_routes(),
         official_deepseek_responses,
-    ) {
+    ) && !upstream_rejects_tool_search(profile)
+    {
         let mut doc = parse_toml_document(&config_text)?;
         if root_key_string(&config_text, "model_catalog_json").as_deref()
             == Some(catalog_relative.as_str())
@@ -3070,6 +3135,11 @@ fn apply_model_catalog_to_config_with_live_policy(
         official_deepseek_responses,
     );
     let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
+    let catalog_json = if upstream_rejects_tool_search(profile) {
+        disable_search_tool_in_catalog(&catalog_json)?
+    } else {
+        catalog_json
+    };
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_relative);
@@ -3424,6 +3494,61 @@ pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
     .any(|base_url| deepseek_api_base_url(base_url))
 }
 
+/// Kimi 官方（Moonshot 开放平台 / Kimi For Coding）的 Responses 接口不认识 Codex 的
+/// `tool_search` 工具类型，请求里带上就整单 400
+/// （`tools.N: tool type "tool_search" is not supported`）。
+/// 这类上游生成 catalog 时要关掉 `supports_search_tool`，Codex 才不会发该工具，
+/// 改为直接列出 MCP 工具。Chat Completions 协议由代理把 tool_search 转成 function
+/// 工具，不受影响，因此只判定 Responses。
+pub(crate) fn upstream_rejects_tool_search(profile: &RelayProfile) -> bool {
+    if profile.protocol != RelayProtocol::Responses {
+        return false;
+    }
+    let resolved_base_url = relay_profile_base_url(profile);
+    [
+        profile.base_url.as_str(),
+        profile.upstream_base_url.as_str(),
+        resolved_base_url.as_str(),
+    ]
+    .iter()
+    .any(|base_url| kimi_official_base_url(base_url))
+}
+
+fn kimi_official_base_url(base_url: &str) -> bool {
+    let host = base_url
+        .trim()
+        .split("://")
+        .nth(1)
+        .unwrap_or(base_url)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    ["moonshot.cn", "moonshot.ai", "kimi.com"]
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
+/// 把 catalog 里所有模型的 `supports_search_tool` 置为 false。
+/// 须在 `apply_model_metadata_overrides` 之后调用：管理器「保存此模型」会把整份元数据
+/// （含模板里的 `supports_search_tool: true`）存成覆盖，覆盖优先会让改任意一项就复发；
+/// 上游本来就拒收该工具，允许打开没有意义。
+pub(crate) fn disable_search_tool_in_catalog(catalog_json: &str) -> anyhow::Result<String> {
+    let mut catalog: Value = serde_json::from_str(catalog_json)
+        .map_err(|error| anyhow::anyhow!("catalog JSON 解析失败：{error}"))?;
+    let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+        return Ok(catalog_json.to_string());
+    };
+    for model in models.iter_mut().filter(|model| model.is_object()) {
+        model["supports_search_tool"] = json!(false);
+    }
+    Ok(serde_json::to_string_pretty(&catalog)?)
+}
+
 fn deepseek_api_base_url(base_url: &str) -> bool {
     let host = base_url
         .trim()
@@ -3587,8 +3712,8 @@ fn copy_standard_responses_catalog(
     let mut changed = false;
     let configured_windows = entries
         .iter()
-        .map(|entry| (entry.slug.as_str(), entry.suffix_window.or(fallback_window)))
-        .collect::<std::collections::HashMap<_, _>>();
+        .map(|entry| (entry.slug.clone(), entry.suffix_window.or(fallback_window)))
+        .collect::<std::collections::BTreeMap<_, _>>();
     for model in models {
         // Lite 能力跟随上游：官方登录 + ChatGPT 后端保留原值，
         // 其余上游强制关闭（外部目录的 Lite 标记可能照抄官方目录，
@@ -3602,7 +3727,10 @@ fn copy_standard_responses_catalog(
         let Some(slug) = model.get("slug").and_then(Value::as_str) else {
             continue;
         };
-        let Some(Some(window)) = configured_windows.get(slug) else {
+        // 外部 catalog 的 slug 与本地行的写法/大小写可能不一致，走三级回退查表，
+        // 否则配置好的窗口会在外部目录里整条失效、保留上游给的值。
+        let Some(Some(window)) = crate::model_suffix::lookup_model_map(&configured_windows, slug)
+        else {
             continue;
         };
         if model.get("context_window").and_then(Value::as_u64) != Some(*window) {
@@ -4168,13 +4296,26 @@ fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow:
 /// 因此：1) 不清掉 live 里已有的其它凭据；2) 输出永远是合法 JSON 对象，绝不写空文件
 /// （Codex 解析空文件会报 EOF 并退回登录页）；3) live 与快照都不可用时直接报错中止，
 /// 不静默覆盖用户凭据。
+/// 要同步进 Codex 的登录快照。
+///
+/// `None`：这次不碰 Token 段（开关关着、不是聚合 —— 与历史行为完全一致）。
+/// `Some(contents)`：默认成员的 auth.json 快照（可能为空串，表示成员没有可用登录凭据，
+/// 此时要把 live 里残留的 ChatGPT 登录态清掉——否则用户关掉开关、或把默认成员换成
+/// API 供应商之后，Codex 里还挂着一个已经不参与聚合的账号）。
+type SyncedChatgptTokens = Option<String>;
+
 fn auth_contents_with_proxy_key(
     home: &Path,
     auth_contents: &str,
     bearer_token: &str,
+    // synced_login：默认成员的登录快照；`Some("")` 表示"要同步但没有凭据"，
+    // 由调用方清理残留（本函数只负责代理 Key，登录态合并见
+    // `official_login::auth_contents_with_member_login`）。
+    synced_login: Option<&str>,
 ) -> anyhow::Result<String> {
     let auth_path = home.join("auth.json");
     let live = read_optional_text(&auth_path)?;
+    let _ = synced_login;
     if let Some(merged) = merge_proxy_key_into_auth_json(&live, bearer_token) {
         return Ok(merged);
     }
@@ -4540,7 +4681,12 @@ fn complete_relay_profile_config_with_proxy_port(
         provider["requires_openai_auth"] = toml_edit::value(true);
     }
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
-        provider["requires_openai_auth"] = toml_edit::value(false);
+        // 聚合默认是纯 API 形态。打开「同步默认成员登录」且该成员有可用的 ChatGPT 凭据时，
+        // 改成与「官方 + API」混合模式一致的形态：requires_openai_auth = true 让 Codex
+        // 读取并显示 auth.json 里的账号登录态，请求仍由 experimental_bearer_token
+        // （代理 Key）发往本地聚合代理。为 false 时 Codex 根本不看登录态，界面只显示 provider 名。
+        provider["requires_openai_auth"] =
+            toml_edit::value(aggregate_syncs_member_login(profile));
     }
     let provider_base_url = if profile.has_model_routes()
         || profile.uses_no_auth()

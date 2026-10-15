@@ -445,6 +445,13 @@ fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Value> {
     let metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
     let catalog_json =
         crate::relay_config::apply_model_metadata_overrides(&catalog_json, &metadata)?;
+    // 聚合代理按成员原生协议转发，成员上游不认 tool_search 时同样要在目录里关掉；
+    // 放在元数据覆盖之后，已保存的整份元数据不能把它重新打开。
+    let catalog_json = if crate::relay_config::upstream_rejects_tool_search(profile) {
+        crate::relay_config::disable_search_tool_in_catalog(&catalog_json)?
+    } else {
+        catalog_json
+    };
     Ok(serde_json::from_str(&catalog_json)?)
 }
 
@@ -565,6 +572,7 @@ mod tests {
             name: "模型聚合".to_string(),
             session_provider: crate::settings::RelaySessionProvider::Custom,
             model_aggregation_enabled: true,
+            sync_default_member_login: false,
             strategy: AggregateRelayStrategy::Failover,
             members: vec![
                 AggregateRelayMember {
@@ -612,6 +620,49 @@ mod tests {
         assert!(models
             .iter()
             .any(|model| model["slug"] == "cpx-openai/gpt-5.6-sol"));
+    }
+
+    /// Kimi 官方成员按原生 Responses 转发时上游不认 tool_search，目录里要关掉，
+    /// 已保存的元数据覆盖也不能重新打开；其他成员保持模板原值。
+    #[test]
+    fn kimi_official_responses_member_disables_search_tool() {
+        let mut settings = settings();
+        settings.relay_profiles.insert(
+            0,
+            RelayProfile {
+                id: "kimi".to_string(),
+                name: "Kimi 官方".to_string(),
+                model: "kimi-k3".to_string(),
+                upstream_base_url: "https://api.moonshot.cn/v1".to_string(),
+                base_url: "https://api.moonshot.cn/v1".to_string(),
+                api_key: "sk-kimi".to_string(),
+                protocol: crate::settings::RelayProtocol::Responses,
+                relay_mode: RelayMode::PureApi,
+                // 管理器「保存此模型」存下的整份元数据会带着模板里的 true。
+                model_metadata: r#"{"kimi-k3":{"supports_search_tool":true}}"#.to_string(),
+                ..RelayProfile::default()
+            },
+        );
+        settings.aggregate_relay_profiles[0]
+            .members
+            .push(AggregateRelayMember {
+                relay_id: "kimi".to_string(),
+                weight: 1,
+            });
+        let aggregate = settings.active_aggregate_relay_profile().unwrap();
+        let catalog: Value =
+            serde_json::from_str(&build_catalog_json(&settings, &aggregate).unwrap()).unwrap();
+        let models = catalog["models"].as_array().unwrap();
+        let kimi = models
+            .iter()
+            .find(|model| model["slug"] == "cpx-kimi/kimi-k3")
+            .unwrap();
+        assert_eq!(kimi["supports_search_tool"], false);
+        let openai = models
+            .iter()
+            .find(|model| model["slug"] == "cpx-openai/gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(openai["supports_search_tool"], true);
     }
 
     #[test]

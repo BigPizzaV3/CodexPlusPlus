@@ -230,6 +230,7 @@ fn imported_aggregate_preserves_members_and_routes_after_switching_away_and_back
             priority: 5,
         }],
         default_relay_id: "first".into(),
+        sync_default_member_login: true,
     };
     let settings = BackendSettings {
         relay_profiles_enabled: true,

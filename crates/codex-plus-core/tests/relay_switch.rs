@@ -262,6 +262,7 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
             }],
             routes: Vec::new(),
             default_relay_id: String::new(),
+            sync_default_member_login: false,
         }],
         active_aggregate_relay_id: "agg".to_string(),
         ..BackendSettings::default()
@@ -604,6 +605,7 @@ fn official_oauth_survives_aggregate_round_trip() {
             }],
             routes: Vec::new(),
             default_relay_id: String::new(),
+            sync_default_member_login: false,
         }],
         active_aggregate_relay_id: "agg".to_string(),
         ..BackendSettings::default()
@@ -681,6 +683,7 @@ fn aggregate_target_settings(api: RelayProfile, aggregate: RelayProfile) -> Back
             }],
             routes: Vec::new(),
             default_relay_id: String::new(),
+            sync_default_member_login: false,
         }],
         active_aggregate_relay_id: "agg".to_string(),
         ..BackendSettings::default()
@@ -967,6 +970,7 @@ fn switch_restores_profiles_filtered_out_of_request() {
             ],
             routes: Vec::new(),
             default_relay_id: "deepseek".to_string(),
+            sync_default_member_login: false,
         }],
         ..BackendSettings::default()
     };
