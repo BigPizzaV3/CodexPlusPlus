@@ -158,6 +158,14 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub anthropic_impersonate_claude_code: bool,
+    /// 思考模式：空/`auto`（新代模型透传等级、旧代回落预算）、`adaptive`（强制透传）、
+    /// `budget`（强制经典预算）、`off`（不发 thinking）。
+    #[serde(
+        rename = "anthropicThinkingMode",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub anthropic_thinking_mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -309,6 +317,7 @@ impl Default for RelayProfile {
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,
             anthropic_impersonate_claude_code: false,
+            anthropic_thinking_mode: String::new(),
         }
     }
 }
@@ -350,6 +359,11 @@ impl RelayProfile {
         } else {
             value
         }
+    }
+
+    /// Anthropic 的思考模式（空值按 `auto`）。
+    pub fn anthropic_thinking_mode(&self) -> crate::anthropic_bridge::AnthropicThinkingMode {
+        crate::anthropic_bridge::AnthropicThinkingMode::parse(&self.anthropic_thinking_mode)
     }
 
     /// Anthropic 的 `max_tokens` 兜底值（协议必填，Codex 未给上限时使用）。
@@ -975,6 +989,7 @@ impl BackendSettings {
                 anthropic_max_tokens: 0,
                 anthropic_prompt_cache: true,
                 anthropic_impersonate_claude_code: false,
+                anthropic_thinking_mode: String::new(),
             };
         }
 
@@ -1036,6 +1051,7 @@ impl BackendSettings {
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,
             anthropic_impersonate_claude_code: false,
+            anthropic_thinking_mode: String::new(),
         }
     }
 

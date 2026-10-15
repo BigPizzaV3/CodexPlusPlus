@@ -458,6 +458,8 @@ export type RelayProfile = {
   anthropicPromptCache?: boolean;
   /** 伪装 Claude Code 客户端（仅网关限制「只能通过 Claude Code 使用」时需要）。 */
   anthropicImpersonateClaudeCode?: boolean;
+  /** 思考模式：空/auto、adaptive（等级透传）、budget（经典预算）、off。 */
+  anthropicThinkingMode?: string;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -9375,6 +9377,21 @@ function RelayProfileEditor({
                           }
                         />
                       </Field>
+                      <Field className="relay-field-anthropic-thinking" label={t("思考模式")}>
+                        <AppSelect
+                          ariaLabel={t("思考模式")}
+                          value={profile.anthropicThinkingMode || "auto"}
+                          onChange={(value) =>
+                            updateDraft({ anthropicThinkingMode: value === "auto" ? "" : value })
+                          }
+                          options={[
+                            { value: "auto", label: t("自动（新代模型透传等级）") },
+                            { value: "adaptive", label: t("等级透传（adaptive）") },
+                            { value: "budget", label: t("经典预算（budget_tokens）") },
+                            { value: "off", label: t("关闭思考") },
+                          ]}
+                        />
+                      </Field>
                       <label className="switch-row compact relay-switch-row relay-field-anthropic-cache">
                         <input
                           checked={profile.anthropicPromptCache !== false}
@@ -9410,7 +9427,7 @@ function RelayProfileEditor({
                       <div className="hint-line relay-protocol-hint">
                         <MessageCircle className="h-4 w-4" />
                         <span>
-                          {t("思考档位跟随 Codex 的 reasoning effort 折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。")}
+                          {t("思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。")}
                         </span>
                       </div>
                     </>
@@ -13438,6 +13455,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
     anthropicPromptCache: profile.anthropicPromptCache !== false,
     anthropicImpersonateClaudeCode: profile.anthropicImpersonateClaudeCode === true,
+    anthropicThinkingMode: normalizeAnthropicThinkingMode(profile.anthropicThinkingMode),
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
@@ -13482,6 +13500,15 @@ function normalizeAnthropicAuthHeader(value: string | undefined): string {
   const normalized = (value ?? "").trim().toLowerCase();
   if (normalized === "authorization" || normalized === "bearer") return "authorization";
   if (normalized === "x-api-key" || normalized === "x_api_key" || normalized === "api_key") return "x-api-key";
+  return "";
+}
+
+/** 思考模式：只认四个取值，其余（含空串）按 auto。 */
+function normalizeAnthropicThinkingMode(value: string | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "adaptive" || normalized === "budget" || normalized === "off") {
+    return normalized;
+  }
   return "";
 }
 

@@ -228,6 +228,13 @@ export const EN_PLAIN: Record<string, string> = {
   "API Key 环境变量": "API Key environment variable",
   "Chat Completions 转 Responses": "Chat Completions to Responses",
   "Anthropic Messages 转 Responses": "Anthropic Messages to Responses",
+  "思考模式": "Thinking mode",
+  "自动（新代模型透传等级）": "Auto (pass level through on newer models)",
+  "等级透传（adaptive）": "Pass level through (adaptive)",
+  "经典预算（budget_tokens）": "Classic budget (budget_tokens)",
+  "关闭思考": "Disable thinking",
+  "思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。":
+    "Thinking follows Codex reasoning effort: in auto mode newer models receive the level as-is (adaptive + effort) while older ones fall back to a thinking budget. A declared 1M context window automatically adds the 1m context beta header.",
   "提示缓存": "Prompt caching",
   "给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。":
     "Marks 5-minute cache breakpoints on the system prompt, tool definitions and the latest turn (up to 4), so long conversations are not re-billed in full every turn.",

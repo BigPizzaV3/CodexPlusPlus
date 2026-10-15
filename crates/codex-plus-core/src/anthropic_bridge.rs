@@ -42,6 +42,40 @@ pub const CONTEXT_1M_THRESHOLD: u64 = 1_000_000;
 /// 密文区分开（不同前缀的 encrypted_content 一律忽略）。
 pub const ANTHROPIC_THINKING_PREFIX: &str = "codex-plus-anthropic-thinking-v1:";
 
+/// 思考模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnthropicThinkingMode {
+    /// 默认：新代模型把 Codex 的等级透传给 Anthropic，旧代回落经典预算。
+    #[default]
+    Auto,
+    /// 强制等级透传（`thinking.type = adaptive` + `output_config.effort`）。
+    Adaptive,
+    /// 强制经典预算（`thinking.budget_tokens`）。
+    Budget,
+    /// 完全不发 `thinking`。
+    Off,
+}
+
+impl AnthropicThinkingMode {
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "adaptive" | "effort" | "level" => Self::Adaptive,
+            "budget" | "tokens" => Self::Budget,
+            "off" | "none" | "disabled" => Self::Off,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Adaptive => "adaptive",
+            Self::Budget => "budget",
+            Self::Off => "off",
+        }
+    }
+}
+
 /// Anthropic 上游的请求选项，由 `RelayProfile` 推导。
 #[derive(Debug, Clone)]
 pub struct AnthropicRequestOptions {
@@ -53,6 +87,8 @@ pub struct AnthropicRequestOptions {
     pub prompt_cache: bool,
     /// 伪装 Claude Code 客户端（系统提示首行身份；请求头由协议层补）。
     pub impersonate_claude_code: bool,
+    /// 思考模式。
+    pub thinking_mode: AnthropicThinkingMode,
 }
 
 impl Default for AnthropicRequestOptions {
@@ -62,6 +98,7 @@ impl Default for AnthropicRequestOptions {
             force_max_tokens: false,
             prompt_cache: true,
             impersonate_claude_code: false,
+            thinking_mode: AnthropicThinkingMode::Auto,
         }
     }
 }
@@ -74,6 +111,7 @@ pub fn request_options(profile: &crate::settings::RelayProfile) -> AnthropicRequ
         force_max_tokens: profile.anthropic_max_tokens != 0,
         prompt_cache: profile.anthropic_prompt_cache,
         impersonate_claude_code: profile.anthropic_impersonate_claude_code,
+        thinking_mode: profile.anthropic_thinking_mode(),
     }
 }
 
@@ -117,7 +155,7 @@ pub fn responses_to_anthropic_messages(
         }
     }
 
-    apply_thinking(&mut result, effort.as_deref(), &thinking_groups);
+    apply_thinking(&mut result, effort.as_deref(), &thinking_groups, options.thinking_mode);
     if options.prompt_cache {
         inject_prompt_cache(&mut result);
     }
@@ -149,6 +187,35 @@ pub fn effort_to_thinking_budget(effort: &str) -> Option<u64> {
         "xhigh" | "max" | "ultra" => Some(24576),
         _ => None,
     }
+}
+
+/// Codex 的等级 → Anthropic adaptive thinking 的 `output_config.effort`。
+///
+/// Anthropic 只认 `low` / `medium` / `high` / `max` 四档，Codex 的扩展档位
+/// （`xhigh` / `ultra`，以及网关常见的 `max`）一律归到最深一档——原样透传会被上游拒绝。
+pub fn effort_to_anthropic_effort(effort: &str) -> Option<&'static str> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" | "max" | "ultra" => Some("max"),
+        _ => None,
+    }
+}
+
+/// 模型是否支持 adaptive thinking（等级透传）。
+///
+/// 只认新代及 4.6 以后的家族：旧代模型收到 `adaptive` 不会报错，而是**静默忽略**
+/// （实测 haiku-4-5 / opus-4-5 就是这样），因此把旧代交给经典预算更可控。
+pub fn model_supports_adaptive_thinking(model: &str) -> bool {
+    let name = model.trim().to_ascii_lowercase();
+    let name = name.rsplit('/').next().unwrap_or(name.as_str());
+    let name = name.strip_prefix("claude-").unwrap_or(name);
+    const FAMILIES: &[&str] = &[
+        "opus-5", "sonnet-5", "haiku-5", "fable-5", "mythos-5", "opus-4-6", "sonnet-4-6",
+        "haiku-4-6", "opus-4-7", "sonnet-4-7", "opus-4-8", "sonnet-4-8",
+    ];
+    FAMILIES.iter().any(|family| name.starts_with(family))
 }
 
 /// 是否显式关掉了思考。
@@ -230,32 +297,73 @@ fn signed_thinking_groups_from_responses_input(input: Option<&Value>) -> Vec<Vec
 ///
 /// 安全约束：历史里已经有工具调用、却拿不到签名块时**不开启思考**——Anthropic 要求
 /// 工具循环里最后一条助手消息带完整签名的思考块，缺签名整轮 400，宁可不思考。
-fn apply_thinking(result: &mut Value, effort: Option<&str>, groups: &[Vec<Value>]) {
-    if effort_disables_thinking(effort) {
+fn apply_thinking(
+    result: &mut Value,
+    effort: Option<&str>,
+    groups: &[Vec<Value>],
+    mode: AnthropicThinkingMode,
+) {
+    if mode == AnthropicThinkingMode::Off || effort_disables_thinking(effort) {
         return;
     }
-    let Some(budget) = effort.and_then(effort_to_thinking_budget) else {
+    let Some(effort) = effort else {
         return;
     };
-    let max_tokens = result
-        .get("max_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
-    // Anthropic 要求 max_tokens > budget_tokens，且给可见回答留一半余量。
-    let clamped = budget.min(max_tokens / 2);
-    if clamped < 1024 {
+    let model = result
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    // auto：新代模型透传等级，其余回落经典预算；adaptive 强制透传。
+    let use_adaptive = match mode {
+        AnthropicThinkingMode::Adaptive => true,
+        AnthropicThinkingMode::Budget => false,
+        _ => model_supports_adaptive_thinking(&model),
+    };
+    let plan = if use_adaptive {
+        effort_to_anthropic_effort(effort).map(ThinkingPlan::Adaptive)
+    } else {
+        let Some(budget) = effort_to_thinking_budget(effort) else {
+            return;
+        };
+        let max_tokens = result
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
+        // Anthropic 要求 max_tokens > budget_tokens，且给可见回答留一半余量。
+        let clamped = budget.min(max_tokens / 2);
+        (clamped >= 1024).then_some(ThinkingPlan::Budget(clamped))
+    };
+    let Some(plan) = plan else {
         return;
-    }
+    };
     let attached = attach_thinking_groups(result, groups);
     if !attached && has_tool_use_history(result) {
         return;
     }
-    result["thinking"] = json!({ "type": "enabled", "budget_tokens": clamped });
+    match plan {
+        // 等级透传：预算由模型自己决定，不再做 max_tokens/2 压制。
+        ThinkingPlan::Adaptive(level) => {
+            result["thinking"] = json!({ "type": "adaptive" });
+            result["output_config"] = json!({ "effort": level });
+        }
+        ThinkingPlan::Budget(budget) => {
+            result["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+        }
+    }
     // 开启思考时 Anthropic 不接受 temperature / top_p 改动。
     if let Some(object) = result.as_object_mut() {
         object.remove("temperature");
         object.remove("top_p");
     }
+}
+
+/// 这一轮准备怎么开思考。
+enum ThinkingPlan {
+    /// `thinking.type = adaptive` + `output_config.effort`。
+    Adaptive(&'static str),
+    /// `thinking.type = enabled` + `budget_tokens`。
+    Budget(u64),
 }
 
 fn has_tool_use_history(result: &Value) -> bool {
@@ -1912,6 +2020,122 @@ mod tests {
     }
 
     #[test]
+    fn effort_level_and_model_capability_mapping() {
+        // Codex 的扩展档位归到 Anthropic 的最深一档；未知档位不透传。
+        assert_eq!(effort_to_anthropic_effort("minimal"), Some("low"));
+        assert_eq!(effort_to_anthropic_effort("low"), Some("low"));
+        assert_eq!(effort_to_anthropic_effort("medium"), Some("medium"));
+        assert_eq!(effort_to_anthropic_effort("high"), Some("high"));
+        assert_eq!(effort_to_anthropic_effort("xhigh"), Some("max"));
+        assert_eq!(effort_to_anthropic_effort("ultra"), Some("max"));
+        assert_eq!(effort_to_anthropic_effort("max"), Some("max"));
+        assert_eq!(effort_to_anthropic_effort("none"), None);
+        assert_eq!(effort_to_anthropic_effort("bogus"), None);
+
+        for capable in [
+            "claude-sonnet-5",
+            "claude-opus-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-sonnet-4-6",
+            "openrouter/claude-opus-5",
+        ] {
+            assert!(model_supports_adaptive_thinking(capable), "{capable} 应支持 adaptive");
+        }
+        for legacy in [
+            "claude-opus-4-5",
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5-20250929",
+            "claude-3-7-sonnet",
+        ] {
+            assert!(!model_supports_adaptive_thinking(legacy), "{legacy} 不该走 adaptive");
+        }
+    }
+
+    #[test]
+    fn auto_mode_passes_level_for_new_models_and_budget_for_old_ones() {
+        let request = |model: &str| {
+            json!({
+                "model": model,
+                "max_output_tokens": 8192,
+                "reasoning": { "effort": "high" },
+                "input": "hi"
+            })
+        };
+
+        // 新代：等级原样透传，不再受 max_tokens/2 压制。
+        let new_gen =
+            responses_to_anthropic_messages(request("claude-sonnet-5"), &options_with_max_tokens(8192))
+                .unwrap();
+        assert_eq!(new_gen["thinking"], json!({ "type": "adaptive" }));
+        assert_eq!(new_gen["output_config"], json!({ "effort": "high" }));
+        assert!(new_gen["thinking"].get("budget_tokens").is_none());
+
+        // 旧代：回落经典预算（high → 16384，被 max_tokens 夹到 4096）。
+        let legacy =
+            responses_to_anthropic_messages(request("claude-opus-4-5"), &options_with_max_tokens(8192))
+                .unwrap();
+        assert_eq!(legacy["thinking"]["type"], "enabled");
+        assert_eq!(legacy["thinking"]["budget_tokens"], 4096);
+        assert!(legacy.get("output_config").is_none());
+
+        // Codex 扩展档位透传时会收敛成 max。
+        let mut ultra = request("claude-opus-5");
+        ultra["reasoning"]["effort"] = json!("ultra");
+        let converted =
+            responses_to_anthropic_messages(ultra, &options_with_max_tokens(8192)).unwrap();
+        assert_eq!(converted["output_config"], json!({ "effort": "max" }));
+    }
+
+    #[test]
+    fn forced_thinking_modes_override_model_capability() {
+        let request = |model: &str| {
+            json!({
+                "model": model,
+                "max_output_tokens": 8192,
+                "reasoning": { "effort": "medium" },
+                "input": "hi"
+            })
+        };
+        let with_mode = |mode: AnthropicThinkingMode, legacy: bool| {
+            let options = AnthropicRequestOptions {
+                thinking_mode: mode,
+                prompt_cache: false,
+                ..AnthropicRequestOptions::default()
+            };
+            responses_to_anthropic_messages(
+                request(if legacy { "claude-opus-4-5" } else { "claude-sonnet-5" }),
+                &options,
+            )
+            .unwrap()
+        };
+
+        // 强制 adaptive：旧代也发等级（上游不支持时只会静默忽略，不报错）。
+        let forced = with_mode(AnthropicThinkingMode::Adaptive, true);
+        assert_eq!(forced["thinking"], json!({ "type": "adaptive" }));
+        assert_eq!(forced["output_config"], json!({ "effort": "medium" }));
+
+        // 强制 budget：新代也走预算。
+        let forced = with_mode(AnthropicThinkingMode::Budget, false);
+        assert_eq!(forced["thinking"]["type"], "enabled");
+        assert!(forced.get("output_config").is_none());
+
+        // 关闭：两种模型都不发 thinking。
+        for legacy in [true, false] {
+            let off = with_mode(AnthropicThinkingMode::Off, legacy);
+            assert!(off.get("thinking").is_none(), "legacy={legacy}");
+            assert!(off.get("output_config").is_none(), "legacy={legacy}");
+        }
+
+        // 模式字符串解析（设置里是自由文本）。
+        assert_eq!(AnthropicThinkingMode::parse(" adaptive "), AnthropicThinkingMode::Adaptive);
+        assert_eq!(AnthropicThinkingMode::parse("BUDGET"), AnthropicThinkingMode::Budget);
+        assert_eq!(AnthropicThinkingMode::parse("off"), AnthropicThinkingMode::Off);
+        assert_eq!(AnthropicThinkingMode::parse(""), AnthropicThinkingMode::Auto);
+        assert_eq!(AnthropicThinkingMode::parse("看不懂"), AnthropicThinkingMode::Auto);
+    }
+
+    #[test]
     fn explicit_max_tokens_wins_over_request_value() {
         let request = json!({
             "model": "m",
@@ -1936,9 +2160,10 @@ mod tests {
 
     #[test]
     fn thinking_budget_follows_effort_and_clamps_to_half_of_max_tokens() {
+        // 旧代模型（不支持 adaptive）在 auto 模式下走经典预算。
         // high → 16384，但 max_tokens 只有 3000，夹到一半（1500）给可见回答留余量。
         let body = json!({
-            "model": "claude-sonnet-5",
+            "model": "claude-opus-4-5",
             "max_output_tokens": 3000,
             "temperature": 0.3,
             "reasoning": { "effort": "high" },
@@ -1953,7 +2178,7 @@ mod tests {
 
         // 上限太小（1000 < 1024 下限）→ 干脆不开思考，保持普通采样。
         let small = json!({
-            "model": "claude-sonnet-5",
+            "model": "claude-opus-4-5",
             "max_output_tokens": 2000,
             "temperature": 0.3,
             "reasoning": { "effort": "medium" },
@@ -1966,7 +2191,7 @@ mod tests {
         // 未知档位 / 显式关闭都不发 thinking。
         for effort in ["none", "off", "disabled", "bogus"] {
             let body = json!({
-                "model": "claude-sonnet-5",
+                "model": "claude-opus-4-5",
                 "reasoning": { "effort": effort },
                 "input": "hi"
             });
@@ -2045,7 +2270,12 @@ mod tests {
         });
         let converted =
             responses_to_anthropic_messages(next, &options_with_max_tokens(16384)).unwrap();
-        assert_eq!(converted["thinking"]["type"], "enabled");
+        // 新代模型在 auto 模式下走等级透传，旧代走预算；两种都会回放签名。
+        let thinking_type = converted["thinking"]["type"].as_str().unwrap_or("");
+        assert!(
+            matches!(thinking_type, "adaptive" | "enabled"),
+            "思考未开启：{converted}"
+        );
         let assistant = converted["messages"]
             .as_array()
             .unwrap()

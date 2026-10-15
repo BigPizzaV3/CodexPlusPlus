@@ -59,11 +59,19 @@ Chat 链路上跑通并有测试覆盖。新代码只落在 `anthropic_bridge.rs
   否则补一条 `(continuing the conversation)`；`tool` 消息转成 `tool_result` 内容块。
 - **`max_tokens` 优先级**：供应商表单显式填写的值 > 请求自带 `max_output_tokens` >
   内置 8192。用户填了值就不该被请求悄悄盖掉（显式配置优先）。
-- **思考（extended thinking）**：`reasoning.effort` 折算成 `thinking.budget_tokens`
-  （low 2048 / medium 8192 / high 16384 / xhigh·max·ultra 24576），并按
-  `max_tokens / 2` 夹取给可见回答留余量；夹取后低于 1024 就不开思考。
-  开启时移除 `temperature` / `top_p`。历史里已有工具调用却拿不到签名块时**不开启**
-  思考——缺签名必然 400，宁可不思考也不发一个失败请求。
+- **思考（extended thinking）** 有两种下发方式，由 `anthropicThinkingMode` 选择：
+  - `auto`（默认）：新代模型（opus-5 / sonnet-5 / haiku-5 / fable-5 / mythos-5 与
+    4.6 以后的家族）走**等级透传**——`thinking: {type: adaptive}` +
+    `output_config: {effort}`，等级不再被预算夹取；旧代模型回落经典预算。
+    依据是实测：旧代模型收到 `adaptive` 不报错但会静默忽略，交给预算更可控。
+  - `adaptive` / `budget` / `off`：强制其中一种，或彻底关掉。
+  - 等级词表：`minimal`/`low` → `low`，`medium` → `medium`，`high` → `high`，
+    `xhigh`/`max`/`ultra` → `max`（Anthropic 只认这四档，网关普遍不校验取值，
+    必须自己收敛）；`none`/`off`/缺省不发 thinking。
+  - 经典预算路径：low 2048 / medium 8192 / high 16384 / xhigh·max·ultra 24576，
+    并按 `max_tokens / 2` 夹取给可见回答留余量；夹取后低于 1024 就不开思考。
+  - 两种方式都会移除 `temperature` / `top_p`；历史里已有工具调用却拿不到签名块时
+    **不开启**思考——缺签名必然 400，宁可不思考也不发一个失败请求。
 - **伪装 Claude Code**（默认关）：UA 换成 `claude-cli/1.0.119 (external, cli)`、
   附 `x-app: cli` 与 `anthropic-beta: claude-code-20250219`，并在系统提示首行注入官方
   身份串；仅用于网关限制「只能通过 Claude Code 使用」的场景。

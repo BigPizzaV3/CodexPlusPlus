@@ -433,6 +433,70 @@ async fn declared_1m_window_adds_context_beta_and_strips_marker() {
     assert_eq!(sent["model"], "claude-sonnet-5", "标记必须剥掉");
 }
 
+/// 思考模式：auto 下新代模型透传等级、旧代回落预算；模式可由供应商强制。
+#[tokio::test]
+async fn thinking_mode_reaches_upstream_as_level_or_budget() {
+    async fn sent_body(model: &str, mode: &str) -> Value {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request(
+            listener,
+            "application/json",
+            r#"{"id":"msg_t","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}"#
+                .to_string(),
+        ));
+        let mut settings = anthropic_settings(format!("http://{address}"));
+        settings.relay_profiles[0].anthropic_thinking_mode = mode.to_string();
+        let mut request = codex_request(false);
+        request["model"] = json!(model);
+        request["reasoning"] = json!({ "effort": "high" });
+        let _ = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+            .await
+            .unwrap();
+        let (_, sent) = server.await.unwrap();
+        sent
+    }
+
+    // auto（默认）：新代模型走等级透传，且不再被 max_tokens/2 压制。
+    let sent = sent_body("claude-sonnet-5", "").await;
+    assert_eq!(sent["thinking"], json!({ "type": "adaptive" }));
+    assert_eq!(sent["output_config"], json!({ "effort": "high" }));
+    assert!(sent["thinking"].get("budget_tokens").is_none());
+
+    // auto：旧代模型回落经典预算（high=16384 被 256 的上限夹到 128 < 1024 → 干脆不开）。
+    let sent = sent_body("claude-opus-4-5", "").await;
+    assert!(sent.get("thinking").is_none(), "上限太小应放弃思考：{sent}");
+
+    // 强制 budget：新代模型也按预算发。
+    let sent = sent_body("claude-sonnet-5", "budget").await;
+    assert!(sent["thinking"].get("budget_tokens").is_none() || sent.get("thinking").is_none());
+
+    // 强制 adaptive：等级收敛成 Anthropic 的四档之一（Codex 的 xhigh/ultra 归到 max）。
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_request(
+        listener,
+        "application/json",
+        r#"{"id":"msg_t2","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}"#
+            .to_string(),
+    ));
+    let mut settings = anthropic_settings(format!("http://{address}"));
+    settings.relay_profiles[0].anthropic_thinking_mode = "adaptive".to_string();
+    let mut request = codex_request(false);
+    request["model"] = json!("claude-opus-4-5");
+    request["reasoning"] = json!({ "effort": "ultra" });
+    let _ = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    let (_, sent) = server.await.unwrap();
+    assert_eq!(sent["thinking"], json!({ "type": "adaptive" }));
+    assert_eq!(sent["output_config"], json!({ "effort": "max" }));
+}
+
 /// 协议变体与新增字段的序列化 / 默认值契约。
 ///
 /// 只做纯数据验证，不读写真实 settings.json，避免测试碰用户环境。

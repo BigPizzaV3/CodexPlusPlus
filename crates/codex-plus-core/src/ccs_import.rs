@@ -177,6 +177,7 @@ pub fn relay_profile_from_ccs(
         anthropic_max_tokens: 0,
         anthropic_prompt_cache: true,
         anthropic_impersonate_claude_code: false,
+        anthropic_thinking_mode: String::new(),
     }
 }
 
