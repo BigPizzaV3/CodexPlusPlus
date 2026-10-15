@@ -9,7 +9,9 @@
 //! 分组键是加法：既有的 slug / display_name / description 行为必须原样保留
 //! （前端还要靠「（供应商）」后缀给老目录兜底）。
 
-use codex_plus_core::aggregate_catalog::{build_catalog_json, catalog_summary};
+use codex_plus_core::aggregate_catalog::{
+    active_model_bindings, build_catalog_json, catalog_summary, resolve_active_model,
+};
 use codex_plus_core::model_suffix::model_ui_metadata_with_override;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings, RelayMode,
@@ -328,4 +330,91 @@ fn unset_default_member_publishes_no_default_marker() {
 
     let summary = catalog_summary(temp.path(), &settings, &aggregate).unwrap();
     assert_eq!(summary["codex_plus_default_group_id"], "");
+}
+
+/// 成员的模型列表里混进了带 `cpx-` 前缀的 ID（常见来源：从聚合目录复制模型名）。
+/// 再套一层成员前缀会变成两层前缀并露在客户端列表里，所以发布时先剥掉成员**自己**的
+/// 那一层；别的成员的前缀保留（那是跨成员引用，剥掉会改变上游请求语义）。
+#[test]
+fn member_own_cpx_prefix_is_not_nested_twice() {
+    let aggregate = aggregate(&["relay-a", "relay-b"], "relay-a");
+    let mut relay_b = member("relay-b", "哈基米 国模");
+    relay_b.model = "cpx-relay-b/kimi-k3".to_string();
+    relay_b.model_list = "cpx-relay-b/kimi-k3\ncpx-relay-a/deepseek-flash".to_string();
+    let settings = settings(vec![member("relay-a", "DeepSeek"), relay_b], &aggregate);
+
+    let catalog = catalog(&settings, &aggregate);
+
+    // 自指前缀被剥掉：上游是 kimi-k3，聚合发布成单层 cpx-relay-b/kimi-k3。
+    let entry = catalog_model(&catalog, "cpx-relay-b/kimi-k3");
+    assert_eq!(entry["codex_plus_group"], "哈基米 国模");
+    assert_eq!(entry["codex_plus_group_id"], "relay-b");
+    assert!(
+        !catalog_slugs(&catalog)
+            .iter()
+            .any(|slug| slug.starts_with("cpx-relay-b/cpx-relay-b/")),
+        "不该出现两层前缀：{:?}",
+        catalog_slugs(&catalog)
+    );
+
+    // 跨成员引用保持原样（那是另一家的 ID，剥掉会改上游语义）。
+    assert!(
+        catalog_slugs(&catalog).contains(&"cpx-relay-b/cpx-relay-a/deepseek-flash"),
+        "跨成员前缀应保留：{:?}",
+        catalog_slugs(&catalog)
+    );
+
+    // 发布出来的 ID 必须能真正请求，且向上游只发送去掉自指前缀后的模型名。
+    let bindings = active_model_bindings(&settings).unwrap();
+    for (published, upstream) in [
+        ("cpx-relay-b/kimi-k3", "kimi-k3"),
+        (
+            "cpx-relay-b/cpx-relay-a/deepseek-flash",
+            "cpx-relay-a/deepseek-flash",
+        ),
+    ] {
+        let resolved = resolve_active_model(&settings, published).unwrap().unwrap();
+        assert_eq!(resolved.relay_id, "relay-b");
+        assert_eq!(resolved.upstream_model, upstream);
+        let bound = bindings
+            .iter()
+            .find(|binding| binding.catalog_model == published)
+            .expect("已发布的成员模型应有对应绑定");
+        assert_eq!(bound.upstream_model, upstream);
+    }
+}
+
+#[test]
+fn member_prefixed_and_bare_entries_share_one_binding() {
+    let aggregate = aggregate(&["relay-a", "relay-b"], "relay-a");
+    let mut relay_b = member("relay-b", "供应商 B");
+    relay_b.model = "cpx-relay-b/custom-model".to_string();
+    relay_b.model_list = "custom-model".to_string();
+    relay_b.model_windows = r#"{"cpx-relay-b/custom-model":"128K"}"#.to_string();
+    relay_b.model_metadata =
+        r#"{"cpx-relay-b/custom-model":{"display_name":"自定义模型"}}"#.to_string();
+    let settings = settings(vec![member("relay-a", "供应商 A"), relay_b], &aggregate);
+
+    let catalog = catalog(&settings, &aggregate);
+    let published = "cpx-relay-b/custom-model";
+    assert_eq!(
+        catalog_slugs(&catalog)
+            .iter()
+            .filter(|slug| **slug == published)
+            .count(),
+        1
+    );
+    let entry = catalog_model(&catalog, published);
+    assert_eq!(entry["context_window"], 128_000);
+    assert_eq!(entry["display_name"], "自定义模型（供应商 B）");
+    let bindings = active_model_bindings(&settings).unwrap();
+    assert_eq!(
+        bindings
+            .iter()
+            .filter(|binding| binding.catalog_model == published)
+            .count(),
+        1
+    );
+    let resolved = resolve_active_model(&settings, published).unwrap().unwrap();
+    assert_eq!(resolved.upstream_model, "custom-model");
 }
