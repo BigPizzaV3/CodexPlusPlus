@@ -456,6 +456,8 @@ dependencies = [
  "directories",
  "fs2",
  "futures-util",
+ "http",
+ "httpdate",
  "qrcode",
  "reqwest 0.12.28",
  "rusqlite",
