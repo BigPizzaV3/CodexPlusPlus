@@ -42,7 +42,7 @@ pub async fn download_dictation_local_model() -> CommandResult<Value> {
 pub fn claude_localization_status()
 -> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
     ok(
-        "Claude 汉化状态已读取。",
+        "Claude 增强状态已读取。",
         codex_plus_core::claude_localization::status(),
     )
 }
@@ -59,7 +59,31 @@ pub async fn claude_localization_action(action: String) -> CommandResult<Value> 
             serde_json::to_value(payload.status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
-        Err(error) => failed(&format!("Claude 汉化操作失败：{error}"), json!({})),
+        Err(error) => failed(&format!("Claude 增强操作失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub fn claude_localization_set_voice_input(enabled: bool)
+-> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
+    match codex_plus_core::claude_localization::set_voice_input(enabled) {
+        Ok(status) => ok(
+            if enabled { "语音输入已开启。" } else { "语音输入已关闭。" },
+            status,
+        ),
+        Err(error) => failed(&error.to_string(), codex_plus_core::claude_localization::status()),
+    }
+}
+
+#[tauri::command]
+pub fn claude_localization_set_localization(enabled: bool)
+-> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
+    match codex_plus_core::claude_localization::set_localization(enabled) {
+        Ok(status) => ok(
+            if enabled { "界面汉化已开启。" } else { "界面汉化已关闭。" },
+            status,
+        ),
+        Err(error) => failed(&error.to_string(), codex_plus_core::claude_localization::status()),
     }
 }
 
@@ -8786,6 +8810,7 @@ base_url = "https://example.invalid/v1"
                 members: Vec::new(),
                 routes: Vec::new(),
                 default_relay_id: String::new(),
+                sync_default_member_login: false,
             }],
             ..BackendSettings::default()
         };
@@ -8820,6 +8845,7 @@ base_url = "https://example.invalid/v1"
                 members: Vec::new(),
                 routes: Vec::new(),
                 default_relay_id: String::new(),
+                sync_default_member_login: false,
             }],
             ..BackendSettings::default()
         };
@@ -8876,6 +8902,7 @@ base_url = "https://example.invalid/v1"
                 }],
                 routes: Vec::new(),
                 default_relay_id: String::new(),
+                sync_default_member_login: false,
             }],
             ..BackendSettings::default()
         };

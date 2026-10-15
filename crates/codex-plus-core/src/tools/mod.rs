@@ -122,8 +122,8 @@ pub const TOOL_CODEX_NAME: &str = "Codex";
 pub const TOOL_GROK_NAME: &str = "Grok";
 pub const TOOL_CLAUDE_NAME: &str = "Claude Code";
 
-/// 已注册的工具，顺序即 UI 顶栏顺序。
-pub const REGISTERED_TOOLS: &[ToolId] = &[ToolId::Codex, ToolId::Grok, ToolId::Claude];
+/// 已注册的工具，顺序即 UI 顶栏顺序：Codex、Claude、Grok。
+pub const REGISTERED_TOOLS: &[ToolId] = &[ToolId::Codex, ToolId::Claude, ToolId::Grok];
 
 pub fn tool_display_name(id: &ToolId) -> &'static str {
     match id {
@@ -332,11 +332,11 @@ mod tests {
         assert_eq!(specs[0].id, ToolId::Codex);
         assert_eq!(specs[0].name, TOOL_CODEX_NAME);
         assert!(specs[0].switchable);
-        assert_eq!(specs[1].id, ToolId::Grok);
+        // Claude 排在第二位：工具条上的位置是明确要求过的，别随手调回去。
+        assert_eq!(specs[1].id, ToolId::Claude);
+        assert_eq!(specs[1].name, TOOL_CLAUDE_NAME);
         assert!(specs[1].switchable);
-        // Claude Code 已注册：可进入本地化管理页，供应商写盘仍未接入。
-        assert_eq!(specs[2].id, ToolId::Claude);
-        assert_eq!(specs[2].name, TOOL_CLAUDE_NAME);
+        assert_eq!(specs[2].id, ToolId::Grok);
         assert!(specs[2].switchable);
         assert!(specs.iter().all(|spec| !spec.home_dir.is_empty()));
     }

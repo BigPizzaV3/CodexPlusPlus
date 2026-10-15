@@ -15,7 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::settings::{RelayMode, RelayProfile, SettingsStore};
 
@@ -239,6 +239,140 @@ fn credential(login: OfficialLogin) -> OfficialCredential {
         access_token: login.access_token,
         account_id: login.account_id,
     }
+}
+
+/// 从 auth.json 文本里取 ChatGPT 账号 id；没有登录态时为空串。
+pub fn chatgpt_account_id_from_auth_contents(contents: &str) -> String {
+    official_login_from_auth_contents(contents)
+        .map(|login| login.account_id)
+        .unwrap_or_default()
+}
+
+/// 把「默认成员的 ChatGPT 凭据 + 当前 live auth.json + 代理 Key」合并成最终要写的
+/// auth.json 文本。
+///
+/// 入参 `base_auth_contents` 是已经写好代理 Key 的那份 auth.json（来自 live 优先的合并）。
+/// `member_auth_contents` 是默认成员的登录快照。
+///
+/// 去留规则：
+///   - **同账号**：用 live 里更新的一代 `tokens`（Codex 运行时刷新并轮换 refresh token，
+///     live 代际比快照新），成员快照只在 live 缺字段时补齐；
+///   - live 里是**另一个账号**（用户刚在 Codex 换了账号）或压根没有登录态：以成员快照为准；
+///   - 成员快照没有可用凭据：移除 `tokens` / `auth_mode`，不留一个已经离开聚合的账号。
+///
+/// `clear_when_missing`：成员没有凭据时是否清掉 live 里残留的登录态。同步开关关着的
+/// 调用方应传 `false`——那种情况下根本不该碰用户现有的登录。
+pub fn auth_contents_with_member_login(
+    base_auth_contents: &str,
+    member_auth_contents: &str,
+    clear_when_missing: bool,
+) -> Option<String> {
+    let value: Value = serde_json::from_str(base_auth_contents).ok()?;
+    let mut object = value.as_object()?.clone();
+
+    let member = official_login_from_auth_contents(member_auth_contents);
+    if member.is_none() {
+        if !clear_when_missing {
+            return None;
+        }
+        object.remove("tokens");
+        object.remove("auth_mode");
+        return Some(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&Value::Object(object)).ok()?
+        ));
+    }
+
+    // live 侧按顶层 account_id 匹配（同步写出去的就是这个形状）。
+    let live_account_id = object
+        .get("tokens")
+        .and_then(|tokens| tokens.get("account_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let live_login = official_login_from_auth_contents(base_auth_contents);
+    let member_login = member.expect("已判定存在");
+    let mut login = member_login.clone();
+    if !live_account_id.is_empty() && live_account_id != member_login.account_id {
+        // 别的账号：不覆盖它，直接不动登录态。
+        return None;
+    }
+    // live 与成员是同一账号时，access/refresh 取 live 里更新的一代；否则以成员快照为准。
+    let live_is_same_account = live_login
+        .as_ref()
+        .is_some_and(|live| live.account_id == login.account_id);
+    if live_is_same_account
+        && let Some(live) = live_login.as_ref()
+    {
+        if !live.access_token.is_empty() {
+            login.access_token = live.access_token.clone();
+        }
+        if !live.refresh_token.is_empty() {
+            login.refresh_token = live.refresh_token.clone();
+        }
+    } else {
+        if login.access_token.is_empty()
+            && let Some(live) = live_login.as_ref()
+        {
+            login.access_token = live.access_token.clone();
+        }
+        if login.refresh_token.is_empty()
+            && let Some(live) = live_login.as_ref()
+        {
+            login.refresh_token = live.refresh_token.clone();
+        }
+    }
+    if login.access_token.is_empty() && login.refresh_token.is_empty() {
+        return None;
+    }
+
+    let mut tokens = object
+        .get("tokens")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    // 成员的其它 token 字段（`id_token` 等）：Codex 解析登录态时 `id_token` 是**必填**，
+    // 只写 access/refresh 会让它报 `missing field id_token`，界面上依然显示未登录。
+    if let Some(member_object) = serde_json::from_str::<Value>(member_auth_contents)
+        .ok()
+        .and_then(|value| value.get("tokens").and_then(Value::as_object).cloned())
+    {
+        for (key, value) in member_object {
+            if value.is_null() || tokens.contains_key(&key) {
+                continue;
+            }
+            tokens.insert(key, value);
+        }
+    }
+    if !login.access_token.is_empty() {
+        tokens.insert("access_token".to_string(), json!(login.access_token));
+    }
+    if !login.refresh_token.is_empty() {
+        tokens.insert("refresh_token".to_string(), json!(login.refresh_token));
+    }
+    if !login.account_id.is_empty() {
+        tokens.insert("account_id".to_string(), json!(login.account_id));
+    }
+    object.insert("tokens".to_string(), Value::Object(tokens));
+    // Codex 靠 `auth_mode: chatgpt` 判定"这是登录态"，不写它账号仍显示未登录。
+    object
+        .entry("auth_mode".to_string())
+        .or_insert_with(|| json!("chatgpt"));
+    // 刷新时间戳也带上：成员快照里的 `last_refresh` 是它最后刷新的时间，缺了 Codex
+    // 会按"从未刷新"处理。已存在（live 里的）不覆盖。
+    if !object.contains_key("last_refresh")
+        && let Some(last_refresh) = serde_json::from_str::<Value>(member_auth_contents)
+            .ok()
+            .and_then(|value| value.get("last_refresh").cloned())
+        && !last_refresh.is_null()
+    {
+        object.insert("last_refresh".to_string(), last_refresh);
+    }
+    Some(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&Value::Object(object)).ok()?
+    ))
 }
 
 fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
