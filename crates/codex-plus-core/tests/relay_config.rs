@@ -43,6 +43,14 @@ fn model_catalog_pointer(contents: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn assert_managed_catalog_pointer(home: &std::path::Path, config: &str, filename: &str) {
+    let pointer = model_catalog_pointer(config).expect("必须生成 model_catalog_json 指针");
+    let path = std::path::Path::new(&pointer);
+    assert!(path.is_absolute(), "受管 catalog 必须使用绝对路径：{pointer}");
+    assert_eq!(path, home.join("model-catalogs").join(filename));
+    assert!(path.is_file(), "catalog 文件必须已写入：{pointer}");
+}
+
 /// 回归（issue #2147）：通用配置里混进「只有 `enabled_tools`、没有 `command`/`url`」
 /// 的残缺 MCP 条目时，合并后必须把它丢掉——codex 对缺传输方式的条目不是跳过，
 /// 而是拒载**整份** config.toml（`invalid transport`），用户表现是「编辑通用配置后
@@ -2748,10 +2756,7 @@ experimental_bearer_token = "sk-new"
         "坏 catalog 指针不得落盘：{config}"
     );
     // 降级而非拒载：本 profile 的托管 catalog 照常生成，每模型窗口仍然生效。
-    assert_eq!(
-        model_catalog_pointer(&config).as_deref(),
-        Some("model-catalogs/relay-a.json")
-    );
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-a.json");
     assert!(
         temp.path()
             .join("model-catalogs")
@@ -2795,10 +2800,7 @@ experimental_bearer_token = "sk-new"
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(!config.contains("/nonexistent/codex-plus-test/"));
-    assert_eq!(
-        config.parse::<toml_edit::DocumentMut>().unwrap()["model_catalog_json"].as_str(),
-        Some("model-catalogs/relay-a.json")
-    );
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-a.json");
 }
 
 #[test]
@@ -2842,7 +2844,6 @@ experimental_bearer_token = "sk-new"
         model_catalog_pointer(&config).as_deref(),
         Some(external_catalog.to_string_lossy().as_ref())
     );
-    assert!(!config.contains("model-catalogs/relay-a.json"));
     assert!(!temp.path().join("model-catalogs").exists());
 }
 
@@ -2874,7 +2875,7 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-a.json");
     assert!(!config.contains("cc-switch-model-catalog.json"));
 
     let catalog: serde_json::Value = serde_json::from_str(
@@ -2917,7 +2918,7 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-a.json");
     assert!(!config.contains("cc-switch-model-catalog.json"));
 }
 
@@ -4958,7 +4959,7 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-a.json");
     let catalog_path = temp.path().join("model-catalogs").join("relay-a.json");
     assert!(catalog_path.exists());
     let catalog = std::fs::read_to_string(&catalog_path).unwrap();
@@ -5007,10 +5008,7 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(
-        config.contains(r#"model_catalog_json = "model-catalogs/relay-routes.json""#),
-        "custom Responses provider with model routes must write a catalog: {config}"
-    );
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-routes.json");
     let catalog = std::fs::read_to_string(
         temp.path().join("model-catalogs").join("relay-routes.json"),
     )
@@ -5115,7 +5113,7 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-gpt56.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-gpt56.json");
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-gpt56.json"))
             .unwrap(),
@@ -5184,7 +5182,7 @@ base_url = "https://relay.example/v1"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-astra.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-astra.json");
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(temp.path().join("model-catalogs/relay-astra.json")).unwrap(),
     )
@@ -5233,7 +5231,7 @@ base_url = "https://relay.example/v1"
 
     let read_model = || {
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-        assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-gpt61.json""#));
+        assert_managed_catalog_pointer(temp.path(), &config, "relay-gpt61.json");
         let catalog: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(temp.path().join("model-catalogs/relay-gpt61.json")).unwrap(),
         )
@@ -5296,7 +5294,7 @@ base_url = "https://relay.example/v1"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-gpt6.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-gpt6.json");
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(temp.path().join("model-catalogs/relay-gpt6.json")).unwrap(),
     )
@@ -5383,10 +5381,7 @@ experimental_bearer_token = "sk-deepseek"
         Some("mcp__node_repl")
     );
     assert_eq!(parsed["features"]["goals"].as_bool(), Some(true));
-    assert_eq!(
-        parsed["model_catalog_json"].as_str(),
-        Some("model-catalogs/deepseek-responses.json")
-    );
+    assert_managed_catalog_pointer(temp.path(), &config, "deepseek-responses.json");
 
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
@@ -5611,7 +5606,7 @@ wire_api = "responses"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/deepseek-cc-switch.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "deepseek-cc-switch.json");
     assert!(!config.contains("cc-switch-model-catalog.json"));
     assert!(
         temp.path()
@@ -5676,10 +5671,7 @@ requires_openai_auth = true
         parsed["features"]["code_mode"]["enabled"].as_bool(),
         Some(true)
     );
-    assert_eq!(
-        parsed["model_catalog_json"].as_str(),
-        Some("model-catalogs/deepseek-relay-catalog.json")
-    );
+    assert_managed_catalog_pointer(temp.path(), &config, "deepseek-relay-catalog.json");
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
             temp.path()
@@ -5864,7 +5856,7 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-gpt56-external.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-gpt56-external.json");
     let copied: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
             temp.path()
@@ -5989,7 +5981,7 @@ experimental_bearer_token = "sk-ark"
     // 后缀不得进入 config.toml 的 model 字段，否则 codex 无法匹配 catalog
     assert!(!config.contains("[1M]"));
     assert!(config.contains(r#"model = "deepseek-v4-flash""#));
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-ark.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-ark.json");
 
     let catalog_path = temp.path().join("model-catalogs").join("relay-ark.json");
     assert!(catalog_path.exists());
@@ -6034,7 +6026,7 @@ experimental_bearer_token = "sk-ark"
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(!config.contains("[1M]"));
     assert!(config.contains(r#"model = "glm-5.2""#));
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-ark.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-ark.json");
 
     let catalog =
         std::fs::read_to_string(temp.path().join("model-catalogs").join("relay-ark.json")).unwrap();
@@ -6122,8 +6114,7 @@ experimental_bearer_token = "sk-new"
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-fusheng.json""#));
-    assert!(!config.contains("model-catalogs/relay-a6.json"));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-fusheng.json");
 
     let catalog =
         std::fs::read_to_string(temp.path().join("model-catalogs/relay-fusheng.json")).unwrap();
@@ -6164,7 +6155,7 @@ experimental_bearer_token = "sk-new"
     // model 为空时，应取 model_list 第一条的 slug（剥离后缀）写入 config.toml
     assert!(config.contains(r#"model = "deepseek/deepseek-v4-flash""#));
     assert!(!config.contains("[1M]"));
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-a.json");
 }
 
 #[test]
@@ -6293,7 +6284,7 @@ experimental_bearer_token = "sk-new"
 
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-auto-only.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-auto-only.json");
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(temp.path().join("model-catalogs/relay-auto-only.json")).unwrap(),
     )
@@ -6419,11 +6410,7 @@ experimental_bearer_token = "sk-new"
         .expect("坏指针应降级，而不是拒绝切换");
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert_eq!(
-        config.parse::<toml_edit::DocumentMut>().unwrap()["model_catalog_json"].as_str(),
-        Some("model-catalogs/relay-external-missing.json"),
-        "坏指针应被本 profile 的托管 catalog 取代：{config}"
-    );
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-external-missing.json");
 }
 
 #[test]
@@ -6760,7 +6747,7 @@ base_url = "https://relay.example.test/v1"
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains(r#"model_catalog_json = "model-catalogs/relay-a.json""#));
+    assert_managed_catalog_pointer(temp.path(), &config, "relay-a.json");
     let catalog: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(temp.path().join("model-catalogs/relay-a.json")).unwrap(),
     )
@@ -6803,7 +6790,7 @@ base_url = "https://api.moonshot.cn/v1"
 
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(config.contains("model-catalogs/kimi-responses.json"), "{config}");
+    assert_managed_catalog_pointer(temp.path(), &config, "kimi-responses.json");
     let catalog_path = temp.path().join("model-catalogs").join("kimi-responses.json");
     let catalog: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();

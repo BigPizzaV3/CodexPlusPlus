@@ -2941,6 +2941,76 @@ fn apply_model_catalog_to_config(
     apply_model_catalog_to_config_with_live_policy(home, profile, config_text, true)
 }
 
+/// 只修复旧版生成的相对 catalog 指针，不重放供应商配置或改写用户外部目录。
+/// 新版 Codex 的部分读取路径没有反序列化基目录，只有绝对路径能稳定加载（#2529）。
+pub fn migrate_managed_model_catalog_pointer_in_home(
+    home: &Path,
+    settings: &BackendSettings,
+) -> anyhow::Result<bool> {
+    if !settings.relay_profiles_enabled {
+        return Ok(false);
+    }
+    let config_path = home.join("config.toml");
+    let config_metadata = match std::fs::symlink_metadata(&config_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("读取 catalog 指针配置状态失败"),
+    };
+    // 原子写回会替换链接本身，用户自行链接的配置不属于这次窄迁移。
+    if config_metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let contents = std::fs::read_to_string(&config_path).context("读取 catalog 指针配置失败")?;
+    // 诊断不附带 TOML 原文，避免把用户配置中的凭据写进启动日志。
+    let mut doc = parse_toml_document(&contents)
+        .map_err(|_| anyhow::anyhow!("实时 config.toml 语法无效，未迁移模型 catalog 指针"))?;
+    let Some(raw_path) = doc.get("model_catalog_json").and_then(Item::as_str) else {
+        return Ok(false);
+    };
+    let path = Path::new(raw_path);
+    if path.is_absolute() {
+        return Ok(false);
+    }
+    // 旧产物只有 model-catalogs/<id>.json 两层。拒绝 ..、嵌套目录与其它前缀，
+    // 不使用 apply 时用于识别旧管理器目录的宽松启发式。
+    let mut components = path
+        .components()
+        .filter(|component| *component != std::path::Component::CurDir);
+    let Some(std::path::Component::Normal(root)) = components.next() else {
+        return Ok(false);
+    };
+    let Some(std::path::Component::Normal(filename)) = components.next() else {
+        return Ok(false);
+    };
+    if root != "model-catalogs"
+        || Path::new(filename).extension() != Some(std::ffi::OsStr::new("json"))
+        || components.next().is_some()
+    {
+        return Ok(false);
+    }
+    let catalog_dir = home.join(root);
+    let catalog_path = catalog_dir.join(filename);
+    // 软链或目录联接可能把看似受管的路径指到用户外部目录；保守地保持原状。
+    for (candidate, expect_directory) in [(&catalog_dir, true), (&catalog_path, false)] {
+        let metadata = match std::fs::symlink_metadata(candidate) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error).context("检查受管模型 catalog 路径失败"),
+        };
+        if metadata.file_type().is_symlink()
+            || (expect_directory && !metadata.is_dir())
+            || (!expect_directory && !metadata.is_file())
+        {
+            return Ok(false);
+        }
+    }
+    let absolute = std::path::absolute(catalog_path).context("解析模型 catalog 绝对路径失败")?;
+    doc["model_catalog_json"] = toml_edit::value(absolute.to_string_lossy().as_ref());
+    crate::settings::atomic_write(&config_path, doc.to_string().as_bytes())
+        .context("迁移模型 catalog 绝对路径失败")?;
+    Ok(true)
+}
+
 fn apply_model_catalog_to_config_with_live_policy(
     home: &Path,
     profile: &RelayProfile,
@@ -2951,6 +3021,12 @@ fn apply_model_catalog_to_config_with_live_policy(
         "model-catalogs/{}.json",
         sanitize_catalog_filename(&profile.id)
     );
+    // 不用 canonicalize：它在 Windows 会引入 \\?\ 前缀；absolute 也能处理相对
+    // CODEX_HOME，同时保持受管文件原来的位置和符号链接语义。
+    let catalog_absolute = std::path::absolute(home.join(&catalog_relative))
+        .context("解析受管模型 catalog 绝对路径失败")?
+        .to_string_lossy()
+        .to_string();
     let mut config_text = config_text.to_string();
     if let Some(catalog_json) = crate::aggregate_catalog::build_catalog_for_profile(profile)? {
         let catalog_path = home.join(&catalog_relative);
@@ -2970,7 +3046,7 @@ fn apply_model_catalog_to_config_with_live_policy(
         {
             doc["model"] = toml_edit::value(default_model);
         }
-        doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+        doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
         return Ok(normalize_optional_toml(doc));
     }
     let mut model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
@@ -3034,7 +3110,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     // 该固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
     // 切换到 Codex++ profile 时应接管，否则旧 catalog 会继续覆盖本 profile 的模型元数据。
     if let Some(existing) = root_key_string(&config_text, "model_catalog_json") {
-        if existing != catalog_relative {
+        if existing != catalog_relative && existing != catalog_absolute {
             if is_codex_plus_managed_model_catalog(home, &existing)
                 || is_cc_switch_model_catalog(&existing)
             {
@@ -3075,7 +3151,7 @@ fn apply_model_catalog_to_config_with_live_policy(
                     )?
                 {
                     let mut doc = parse_toml_document(&config_text)?;
-                    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+                    doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
                     return Ok(normalize_optional_toml(doc));
                 }
                 return Ok(config_text);
@@ -3105,7 +3181,7 @@ fn apply_model_catalog_to_config_with_live_policy(
                 lite_supported,
             )?
         {
-            doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+            doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
         } else {
             doc["model_catalog_json"] = toml_edit::value(external_catalog);
         }
@@ -3124,8 +3200,8 @@ fn apply_model_catalog_to_config_with_live_policy(
     ) && !upstream_rejects_tool_search(profile)
     {
         let mut doc = parse_toml_document(&config_text)?;
-        if root_key_string(&config_text, "model_catalog_json").as_deref()
-            == Some(catalog_relative.as_str())
+        if root_key_string(&config_text, "model_catalog_json")
+            .is_some_and(|pointer| pointer == catalog_relative || pointer == catalog_absolute)
         {
             doc.remove("model_catalog_json");
         }
@@ -3152,7 +3228,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     };
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
-    doc["model_catalog_json"] = toml_edit::value(catalog_relative);
+    doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
     Ok(normalize_optional_toml(doc))
 }
 
@@ -3722,8 +3798,8 @@ fn copy_standard_responses_catalog(
     let mut changed = false;
     let configured_windows = entries
         .iter()
-        .map(|entry| (entry.slug.as_str(), entry.suffix_window.or(fallback_window)))
-        .collect::<std::collections::HashMap<_, _>>();
+        .map(|entry| (entry.slug.clone(), entry.suffix_window.or(fallback_window)))
+        .collect::<std::collections::BTreeMap<_, _>>();
     for model in models {
         // Lite 能力跟随上游：官方登录 + ChatGPT 后端保留原值，
         // 其余上游强制关闭（外部目录的 Lite 标记可能照抄官方目录，
@@ -3737,7 +3813,10 @@ fn copy_standard_responses_catalog(
         let Some(slug) = model.get("slug").and_then(Value::as_str) else {
             continue;
         };
-        let Some(Some(window)) = configured_windows.get(slug) else {
+        // 外部 catalog 的 slug 与本地行的写法/大小写可能不一致，走三级回退查表，
+        // 否则配置好的窗口会在外部目录里整条失效、保留上游给的值。
+        let Some(Some(window)) = crate::model_suffix::lookup_model_map(&configured_windows, slug)
+        else {
             continue;
         };
         if model.get("context_window").and_then(Value::as_u64) != Some(*window) {

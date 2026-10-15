@@ -7,10 +7,42 @@ use std::thread;
 use codex_plus_core::model_catalog::{
     read_codex_model_catalog, read_codex_model_catalog_from_home,
 };
+use codex_plus_core::model_suffix::collect_catalog_entries;
 use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
 };
 use serde_json::json;
+
+#[test]
+fn catalog_entries_apply_manual_windows_case_insensitively() {
+    // 上游 /models 返回的 id 与本地保存的 key 常只差大小写；精确查表会让用户
+    // 配好的窗口整条落空，最后露出上游/Codex 默认的窗口。
+    let windows = HashMap::from([("DeepSeek-Flash".to_string(), "1m".to_string())]);
+    let compacts = HashMap::from([("DeepSeek-Flash".to_string(), "50%".to_string())]);
+    let entries = collect_catalog_entries("deepseek-flash\nglm-5.3", &windows, &compacts, "");
+    let deepseek = entries
+        .iter()
+        .find(|entry| entry.slug == "deepseek-flash")
+        .expect("模型条目缺失");
+    assert_eq!(deepseek.suffix_window, Some(1_000_000));
+    assert_eq!(deepseek.auto_compact_percent, Some(50_000_000));
+    // 没有配置窗口的模型不该被牵连。
+    let glm = entries
+        .iter()
+        .find(|entry| entry.slug == "glm-5.3")
+        .expect("模型条目缺失");
+    assert_eq!(glm.suffix_window, None);
+}
+
+#[test]
+fn catalog_entries_strip_suffix_from_row_name_and_look_up_window() {
+    // 行名带 [1M] 后缀时窗口来自后缀本身；没有后缀时来自 model_windows。
+    let entries =
+        collect_catalog_entries("deepseek-v4-pro[1M]", &HashMap::new(), &HashMap::new(), "");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].slug, "deepseek-v4-pro");
+    assert_eq!(entries[0].suffix_window, Some(1_000_000));
+}
 
 #[tokio::test]
 async fn model_catalog_fetches_models_from_codex_config_provider() {

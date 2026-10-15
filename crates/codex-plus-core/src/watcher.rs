@@ -943,7 +943,7 @@ pub fn find_session_index_cleanup_blocking_processes_from_snapshot(
 ) -> Vec<u32> {
     let mut ids = processes
         .iter()
-        .filter(|process| process.exe_file == "Codex.exe" || process.exe_file == "ChatGPT.exe")
+        .filter(|process| crate::app_paths::is_windows_desktop_app_executable_name(&process.exe_file))
         .map(|process| process.process_id)
         .collect::<Vec<_>>();
     ids.sort_unstable();
