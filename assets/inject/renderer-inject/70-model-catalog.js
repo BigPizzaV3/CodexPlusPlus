@@ -200,8 +200,9 @@
     const metadata = codexPlusModelMetadata(modelName);
     if (!descriptor || !metadata) return false;
     let changed = false;
-    for (const key of ["displayName", "description", "defaultReasoningEffort"]) {
-      if (typeof metadata[key] === "string" && metadata[key] && descriptor[key] !== metadata[key]) {
+    for (const key of ["displayName", "description", "defaultReasoningEffort", "contextWindow", "maxContextWindow", "context_window", "max_context_window"]) {
+      const valid = typeof metadata[key] === "string" ? !!metadata[key] : Number.isFinite(metadata[key]) && metadata[key] > 0;
+      if (valid && descriptor[key] !== metadata[key]) {
         descriptor[key] = metadata[key];
         changed = true;
       }

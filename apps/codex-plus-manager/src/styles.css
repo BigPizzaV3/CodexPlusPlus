@@ -10280,7 +10280,45 @@ select {
 .provider-aggregate-toolbar{display:flex;justify-content:flex-end;margin:0 0 10px}
 @media(max-width:760px){.provider-view-tabs{width:100%}.provider-view-tabs button{flex:1;justify-content:center}.provider-aggregate-empty{align-items:flex-start;flex-direction:column}}
 
-.claude-localization-page { display: grid; gap: 14px; max-width: 960px; }
+/* 左栏是增强项，右栏是它们共同依赖的受管副本（前置条件）。 */
+.claude-localization-page {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 14px; align-items: start; max-width: 1180px;
+}
+.claude-l10n-column { display: grid; gap: 14px; align-content: start; }
+/* 左栏里每项增强都是一个开关行，两者之间用分隔线断开。 */
+.claude-l10n-column .switch-row + .switch-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); }
+.claude-l10n-column .switch-row strong { font-size: 14px; }
+.claude-l10n-column .switch-row small { margin-top: 5px; line-height: 1.6; }
+/* 左栏卡片比右栏窄：标题与说明改竖排，否则说明会被挤成右对齐的两行。 */
+.claude-l10n-column .panel-head { display: grid; gap: 6px; align-items: start; }
+/* 上手步骤：带编号，完成的一步打勾，当前该做的那一步高亮。 */
+.claude-l10n-steps {
+  display: grid; gap: 12px; margin-top: 14px;
+  padding: 16px 18px; border: 1px solid hsl(var(--brand-accent) / 0.35); border-radius: 12px;
+  background: hsl(var(--brand-accent) / 0.05);
+}
+.claude-l10n-step { display: flex; align-items: flex-start; gap: 12px; }
+.claude-l10n-step-no {
+  width: 22px; height: 22px; flex: none; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600;
+  border: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground));
+}
+.claude-l10n-step[data-done="true"] .claude-l10n-step-no {
+  border-color: hsl(var(--status-success) / 0.5);
+  background: hsl(var(--status-success) / 0.12);
+  color: hsl(var(--status-success));
+}
+.claude-l10n-step[data-done="false"] .claude-l10n-step-no {
+  border-color: hsl(var(--brand-accent) / 0.6);
+  color: hsl(var(--brand-accent));
+}
+.claude-l10n-step-body strong { display: block; font-size: 13.5px; }
+.claude-l10n-step[data-done="false"] .claude-l10n-step-body strong { color: hsl(var(--brand-accent)); }
+.claude-l10n-step-body small { display: block; margin-top: 4px; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.6; }
+.claude-l10n-hint { margin: 14px 0 0; padding-top: 14px; border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.7; }
+@media (max-width: 1040px) { .claude-localization-page { grid-template-columns: minmax(0, 1fr); } }
 
 /* 概览卡：标题 + 状态徽标、四项数据卡、提示条与操作区。 */
 .claude-l10n-hero .card-content { display: grid; gap: 24px; padding: 24px 28px; }
@@ -10307,15 +10345,15 @@ select {
 .claude-l10n-status-warn { color: hsl(var(--status-warning)); border-color: hsl(var(--status-warning) / 0.4); background: hsl(var(--status-warning) / 0.08); }
 .claude-l10n-status-warn i { background: hsl(var(--status-warning)); }
 
-/* 标题区与数据卡、数据卡与说明条之间额外留白：这两段的间距单独拉大。 */
-.claude-l10n-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+/* 数据卡：按可用宽度自动折行（右栏变窄时从四列退到三列、两列），数值不再被省略号截断。 */
+.claude-l10n-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 12px; margin-top: 14px; }
 .claude-l10n-stat {
-  display: grid; gap: 8px; min-width: 0;
-  padding: 16px 18px; border: 1px solid hsl(var(--border)); border-radius: 12px;
+  display: grid; gap: 6px; min-width: 0;
+  padding: 14px 16px; border: 1px solid hsl(var(--border)); border-radius: 12px;
   background: hsl(var(--surface-sunken) / 0.45);
 }
 .claude-l10n-stat span { color: hsl(var(--muted-foreground)); font-size: 12px; }
-.claude-l10n-stat strong { font-size: 15.5px; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.claude-l10n-stat strong { font-size: 14.5px; letter-spacing: -0.01em; word-break: break-word; }
 
 .claude-l10n-note {
   display: flex; align-items: flex-start; gap: 11px;
@@ -10333,4 +10371,38 @@ select {
 @media (max-width: 560px) {
   .claude-l10n-hero-head { flex-direction: column; }
   .claude-l10n-actions-secondary { margin-left: 0; }
+}
+
+/* 聚合「默认成员登录同步」开关：跟默认供应商提示同处一块，但要能一眼看出是可选项。 */
+.aggregate-default-login-sync {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  cursor: pointer;
+}
+
+.aggregate-default-login-sync > input {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  accent-color: hsl(var(--primary));
+  cursor: pointer;
+}
+
+.aggregate-default-login-sync > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.aggregate-default-login-sync small,
+.aggregate-default-login-note {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.aggregate-default-login-note {
+  display: block;
 }

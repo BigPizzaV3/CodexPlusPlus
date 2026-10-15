@@ -58,7 +58,18 @@ def check(source, copy):
     _, _, flags = fuses(copy)
     if flags[3] != ord("1"):
         raise RuntimeError("副本未启用启动注入")
+    # 先比版本：官方更新后 app.asar 必然不一致，这时直接说「请重新准备副本」，
+    # 比让后面的 cmp 抛出笼统的「命令执行失败」有用得多。
     if os.name != "nt":
+        source_plist = source / "Contents/Info.plist"
+        copy_plist = copy / "Contents/Info.plist"
+        if source_plist.is_file() and copy_plist.is_file():
+            with source_plist.open("rb") as f:
+                source_info = plistlib.load(f)
+            with copy_plist.open("rb") as f:
+                copy_info = plistlib.load(f)
+            if source_info.get("CFBundleVersion") != copy_info.get("CFBundleVersion"):
+                raise RuntimeError("官方应用已更新，请重新准备副本")
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(copy)])
     source_asar, copy_asar = app_asar(root_for(source)), app_asar(root_for(copy))
     if source_asar and copy_asar:
@@ -66,19 +77,19 @@ def check(source, copy):
             if source_asar.read_bytes() != copy_asar.read_bytes():
                 raise RuntimeError("app.asar 已被改动")
         else:
-            run(["/usr/bin/cmp", "-s", str(source_asar), str(copy_asar)])
+            result = subprocess.run(
+                ["/usr/bin/cmp", "-s", str(source_asar), str(copy_asar)],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if result.returncode:
+                raise RuntimeError("app.asar 与官方不一致，请重新准备副本")
     ion = ion_for(copy)
     if not (ion / "i18n/zh-Hans.json").is_file() or not (ion / "i18n/dynamic/zh-Hans.json").is_file():
         raise RuntimeError("中文词表缺失")
     if "zh-Hans:" not in (ion / "index.html").read_text():
         raise RuntimeError("本地界面未注册中文词表")
-    if os.name != "nt":
-        with (source / "Contents/Info.plist").open("rb") as f:
-            source_info = plistlib.load(f)
-        with (copy / "Contents/Info.plist").open("rb") as f:
-            copy_info = plistlib.load(f)
-        if source_info.get("CFBundleVersion") != copy_info.get("CFBundleVersion"):
-            raise RuntimeError("官方应用已更新，请重新准备副本")
     print("副本签名、注入开关、中文词表与 app.asar 一致性检查通过", flush=True)
 
 

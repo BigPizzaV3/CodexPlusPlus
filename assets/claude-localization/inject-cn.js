@@ -46,6 +46,16 @@ const ATTACH = argOf('--attach', false);
 const PORT_ARG = argOf('--port', null);
 const PROFILE = argOf('--user-data-dir', null);
 const LOCALE = String(argOf('--locale', 'zh-Hans'));
+/**
+ * 语音入口开关，由管理器的「Claude 增强 → 语音输入」写入环境变量。
+ * 只影响是否注入页面脚本，关闭时不注册 binding，页面里连调用通道都不存在。
+ */
+const VOICE_INPUT = String(argOf('--voice-input', process.env.CODEX_PLUS_CLAUDE_VOICE_INPUT ?? '1')) !== '0';
+/**
+ * 界面汉化开关。关闭时不注入中文界面那一段，副本按原语言启动；
+ * 与「准备副本」无关——副本是所有增强共同的前置条件。
+ */
+const LOCALIZATION = String(argOf('--localization', process.env.CODEX_PLUS_CLAUDE_LOCALIZATION ?? '1')) !== '0';
 if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(LOCALE)) throw new Error('无效的语言代码');
 
 const EXEC = process.platform === 'win32'
@@ -242,7 +252,7 @@ async function evaluate(c, expression) {
     const version = await evaluateRetry(c, "require('electron').app.getVersion()");
     log(`→ 已连上主进程（Claude ${version}, pid ${await evaluateRetry(c, 'process.pid')}）`);
 
-    await evaluate(c, `globalThis.__claudeCnTargetLocale = ${JSON.stringify(LOCALE)}; require(${JSON.stringify(HOOK)})`);
+    await evaluate(c, `globalThis.__claudeCnTargetLocale = ${JSON.stringify(LOCALE)}; globalThis.__claudeCnVoiceInput = ${VOICE_INPUT ? 'true' : 'false'}; globalThis.__claudeCnLocalization = ${LOCALIZATION ? 'true' : 'false'}; require(${JSON.stringify(HOOK)})`);
     const okFlag = await evaluate(c, 'globalThis.__claudeCnHookInstalled === true');
     if (!okFlag) {
       console.error('✗ hook 没有装载成功，看看 ' + HOOK_LOG);

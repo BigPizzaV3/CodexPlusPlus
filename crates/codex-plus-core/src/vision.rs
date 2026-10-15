@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::model_suffix::lookup_model_map;
+
 const BATCH_SIZE: usize = 5;
 /// 黄金窗口：Phase 1 同步补全的最近 N 轮 user 消息。
 const GOLDEN_WINDOW_DEPTH: usize = 10;
@@ -116,42 +118,6 @@ pub enum ImageHandling {
     /// VLM 分析管线（两阶段：同步当前+黄金窗口，后台补深层）。
     #[serde(rename = "vlm")]
     Vlm,
-}
-
-/// 归一化 per-model map 的查表 key：剥掉 `[1M]` 窗口后缀，**保留原大小写**。
-///
-/// 后缀剥离复用 `model_suffix::parse_model_suffix`（与 catalog 生成同一套语义），
-/// 与前端 `model-windows.ts` 的 `modelMapKeyFromRowName` 逐字对齐：
-/// 只剥「合法窗口后缀」，`x[abc]`/`x[0]` 这类非法后缀整串保留。
-fn normalize_model_key(raw: &str) -> String {
-    crate::model_suffix::parse_model_suffix(raw).0
-}
-
-/// 在 per-model map 中逐级查表：原始名 → 规范 slug（剥后缀）→ 剥后缀 + 大小写不敏感。
-///
-/// 三级回退与前端 `model-windows.ts::lookupModelMapEntry` 同源（issue #2345）：
-/// - 直接命中：上游请求里的 model 字符串与 map key 逐字相同；
-/// - 规范 slug：请求带 `[1M]` 后缀而 key 不带（前端落盘的新数据）；
-/// - 归一化后大小写不敏感：**两侧都先剥后缀再比大小写**——只剥请求侧不够，
-///   历史数据的 key 是带后缀的行名原样（`deepseek-v4-pro[1M]`），请求侧不带后缀时
-///   会整个漏掉。同时覆盖供应商 slug 大小写不统一（`GLM-5.3` vs `glm-5.3`）。
-///
-/// 大小写不敏感一级按 BTreeMap 的字典序取第一个匹配，保证同一份配置的多次请求
-/// 解析结果稳定（不会因 HashMap 迭代序在两个同名不同 case 的 key 之间抖动）。
-fn lookup_model_map<'a, T>(
-    map: &'a std::collections::BTreeMap<String, T>,
-    model: &str,
-) -> Option<&'a T> {
-    if let Some(value) = map.get(model) {
-        return Some(value);
-    }
-    let slug = normalize_model_key(model);
-    if let Some(value) = map.get(&slug) {
-        return Some(value);
-    }
-    map.iter()
-        .find(|(key, _)| normalize_model_key(key).to_lowercase() == slug.to_lowercase())
-        .map(|(_, value)| value)
 }
 
 /// 解析 model_vlm JSON，返回该模型的图片处理模式。

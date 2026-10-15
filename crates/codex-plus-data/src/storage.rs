@@ -10,6 +10,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+mod session_paging;
+pub use session_paging::{LocalSessionPage, LocalSessionPager};
+
 pub fn delete_local_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
     backup_store: BackupStore,
@@ -267,11 +270,14 @@ impl SQLiteStorageAdapter {
             return Ok(Vec::new());
         }
         let db = Connection::open(&self.db_path)?;
-        match schema_kind(&db)? {
-            Some(SchemaKind::CodexThreads) => self.list_codex_threads(&db, limit),
-            Some(SchemaKind::CodexAutomationRuns) => self.list_codex_automation_runs(&db, limit),
-            _ => anyhow::bail!("Unsupported local storage schema"),
-        }
+        let query = session_paging::session_query(&db)?;
+        let mut stmt = db.prepare(&format!(
+            "{query} ORDER BY updated_at_ms DESC, id DESC LIMIT ?1"
+        ))?;
+        let rows = stmt.query_map([sqlite_limit(limit)], |row| {
+            session_paging::read_session(row, &self.db_path)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn list_local_session_ids(&self) -> anyhow::Result<Vec<String>> {
@@ -291,94 +297,6 @@ impl SQLiteStorageAdapter {
         let sql = format!("SELECT {id_column} FROM {table} {filter} ORDER BY {id_column}");
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map([], |row| row.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    fn list_codex_threads(
-        &self,
-        db: &Connection,
-        limit: usize,
-    ) -> anyhow::Result<Vec<LocalSession>> {
-        let columns = table_columns(&db, "threads")?
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let title = optional_column_expression(&columns, "title", "''");
-        let cwd = optional_column_expression(&columns, "cwd", "''");
-        let model_provider = optional_column_expression(&columns, "model_provider", "''");
-        let archived = optional_column_expression(&columns, "archived", "0");
-        let updated_at_ms = if columns.contains("updated_at_ms") {
-            "updated_at_ms"
-        } else if columns.contains("updated_at") {
-            "updated_at * 1000"
-        } else if columns.contains("created_at_ms") {
-            "created_at_ms"
-        } else {
-            "NULL"
-        };
-        let rollout_path = optional_column_expression(&columns, "rollout_path", "''");
-        let child_thread_filter = codex_thread_filter(db)?;
-        let sql = format!(
-            "SELECT id, {title}, {cwd}, {model_provider}, {archived}, {updated_at_ms}, {rollout_path}
-             FROM threads
-             {child_thread_filter}
-             ORDER BY COALESCE({updated_at_ms}, 0) DESC, id DESC
-             LIMIT ?1"
-        );
-        let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map([sqlite_limit(limit)], |row| {
-            Ok(LocalSession {
-                id: row.get(0)?,
-                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                cwd: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                model_provider: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                archived: row.get::<_, Option<i64>>(4)?.unwrap_or_default() != 0,
-                updated_at_ms: row.get(5)?,
-                rollout_path: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                db_path: self.db_path.to_string_lossy().to_string(),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    fn list_codex_automation_runs(
-        &self,
-        db: &Connection,
-        limit: usize,
-    ) -> anyhow::Result<Vec<LocalSession>> {
-        let columns = table_columns(db, "automation_runs")?
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let title = optional_column_expression(&columns, "thread_title", "''");
-        let cwd = optional_column_expression(&columns, "source_cwd", "''");
-        let status = optional_column_expression(&columns, "status", "''");
-        let updated_at = optional_column_expression(&columns, "updated_at", "NULL");
-        let created_at = optional_column_expression(&columns, "created_at", "NULL");
-        let sql = format!(
-            "SELECT thread_id, {title}, {cwd}, {status}, {updated_at}, {created_at}
-             FROM automation_runs
-             WHERE COALESCE(thread_id, '') <> ''
-             ORDER BY COALESCE({updated_at}, {created_at}, 0) DESC, thread_id DESC
-             LIMIT ?1"
-        );
-        let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map([sqlite_limit(limit)], |row| {
-            let updated_at_ms = row
-                .get::<_, Option<i64>>(4)?
-                .or(row.get::<_, Option<i64>>(5)?);
-            Ok(LocalSession {
-                id: row.get(0)?,
-                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                cwd: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                model_provider: String::new(),
-                archived: row
-                    .get::<_, Option<String>>(3)?
-                    .map(|status| status.eq_ignore_ascii_case("archived"))
-                    .unwrap_or(false),
-                updated_at_ms,
-                rollout_path: String::new(),
-                db_path: self.db_path.to_string_lossy().to_string(),
-            })
-        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
