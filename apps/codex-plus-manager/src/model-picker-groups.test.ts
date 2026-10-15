@@ -157,6 +157,18 @@ it("目录条目按别名匹配，且只用它补分组 id、不用它决定显�
   assert.match(source, /group\.entries\.some\(\(entry\) => entry\.groupId === defaultGroupId/);
 });
 
+it("表头右端对齐：标题撑满剩余空间，不靠 auto 外边距推计数", async () => {
+  const source = await readShard();
+  // 回归：用 `margin-left:auto` 把计数推到右边时，多出「默认」徽标的那一行 auto 外边距
+  // 会被吃掉，数字紧跟在徽标后面，与其它行错位。
+  assert.match(source, /codex-plus-model-group-title\{flex:1 1 auto/);
+  assert.doesNotMatch(
+    source,
+    /codex-plus-model-group-count\{flex:0 0 auto;margin-left:auto/,
+    "计数不能再用 margin-left:auto 定位",
+  );
+});
+
 it("默认标志不改变无障碍语义：读屏会念出「默认供应商」", async () => {
   const source = await readShard();
   assert.match(source, /（默认供应商）/);
