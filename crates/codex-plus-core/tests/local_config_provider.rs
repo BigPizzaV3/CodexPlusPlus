@@ -1,6 +1,7 @@
 use codex_plus_core::provider_import::initialize_local_config_provider;
 use codex_plus_core::settings::{
-    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+    AggregateRelayMember, AggregateRelayProfile, AggregateRelayRoute, AggregateRelayStrategy,
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, RelaySessionProvider, SettingsStore,
 };
 
 fn api_profile(id: &str) -> RelayProfile {
@@ -43,7 +44,10 @@ fn imports_local_files_as_an_ordinary_selectable_provider() {
     assert_eq!(imported.model_list, "local-model");
     let config: toml::Value = imported.config_contents.parse().unwrap();
     assert_eq!(config["model"].as_str(), Some("local-model"));
-    assert_eq!(config["model_providers"]["local"]["base_url"].as_str(), Some(local.base_url.as_str()));
+    assert_eq!(
+        config["model_providers"]["local"]["base_url"].as_str(),
+        Some(local.base_url.as_str())
+    );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&imported.auth_contents).unwrap(),
         serde_json::from_str::<serde_json::Value>(&local.auth_contents).unwrap()
@@ -198,6 +202,119 @@ fn local_proxy_import_keeps_real_upstream_and_protocol() {
         existing.base_url
     );
     assert_eq!(settings.relay_profiles[0].api_key, existing.api_key);
+}
+
+#[test]
+fn imported_aggregate_preserves_members_and_routes_after_switching_away_and_back() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let aggregate = AggregateRelayProfile {
+        id: "aggregate".into(),
+        name: "聚合".into(),
+        session_provider: RelaySessionProvider::Custom,
+        model_aggregation_enabled: false,
+        strategy: AggregateRelayStrategy::WeightedRoundRobin,
+        members: vec![
+            AggregateRelayMember {
+                relay_id: "first".into(),
+                weight: 2,
+            },
+            AggregateRelayMember {
+                relay_id: "second".into(),
+                weight: 3,
+            },
+        ],
+        routes: vec![AggregateRelayRoute {
+            pattern: "second-*".into(),
+            relay_id: "second".into(),
+            priority: 5,
+        }],
+        default_relay_id: "first".into(),
+    };
+    let settings = BackendSettings {
+        relay_profiles_enabled: true,
+        active_relay_id: aggregate.id.clone(),
+        active_aggregate_relay_id: aggregate.id.clone(),
+        relay_profiles: vec![
+            RelayProfile {
+                id: aggregate.id.clone(),
+                name: aggregate.name.clone(),
+                relay_mode: RelayMode::Aggregate,
+                use_common_config: false,
+                ..RelayProfile::default()
+            },
+            api_profile("first"),
+            api_profile("second"),
+        ],
+        aggregate_relay_profiles: vec![aggregate.clone()],
+        ..BackendSettings::default()
+    };
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(&store, temp.path(), settings, "")
+        .unwrap();
+    assert!(codex_plus_core::relay_config::responses_proxy_configured_in_home(temp.path()));
+    let mut settings = initialize_local_config_provider(&store, temp.path()).unwrap();
+    let imported = settings.relay_profiles[0].clone();
+    assert_ne!(imported.id, aggregate.id);
+    assert_eq!(imported.relay_mode, RelayMode::Aggregate);
+    assert_eq!(settings.active_relay_id, aggregate.id);
+    assert_eq!(
+        settings.active_aggregate_relay_profile(),
+        Some(aggregate.clone())
+    );
+    let mut expected = aggregate.clone();
+    expected.id = imported.id.clone();
+    expected.name = imported.name.clone();
+    assert_eq!(
+        settings
+            .aggregate_relay_profiles
+            .iter()
+            .find(|item| item.id == imported.id),
+        Some(&expected)
+    );
+
+    settings.active_relay_id = "first".into();
+    settings.active_aggregate_relay_id.clear();
+    let switched = codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &store,
+        temp.path(),
+        settings,
+        &aggregate.id,
+    )
+    .unwrap();
+    let mut settings = switched.settings;
+    settings.active_relay_id = imported.id.clone();
+    settings.active_aggregate_relay_id = imported.id.clone();
+    let restored = codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &store,
+        temp.path(),
+        settings,
+        "first",
+    )
+    .unwrap();
+    assert_eq!(
+        restored.settings.active_aggregate_relay_profile(),
+        Some(expected)
+    );
+    assert!(
+        restored
+            .settings
+            .active_relay_transport_uses_protocol_proxy()
+    );
+    assert!(codex_plus_core::relay_config::responses_proxy_configured_in_home(temp.path()));
+    let selected = codex_plus_core::relay_rotation::select_relay_for_request(
+        &restored.settings,
+        codex_plus_core::relay_rotation::RotationContext {
+            model: Some("second-model".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(selected.id, "second");
+    let reloaded = initialize_local_config_provider(&store, temp.path()).unwrap();
+    assert_eq!(
+        reloaded.aggregate_relay_profiles,
+        restored.settings.aggregate_relay_profiles
+    );
 }
 
 #[test]

@@ -120,9 +120,26 @@ pub fn initialize_local_config_provider(
                 crate::relay_config::RelayBackfillPolicy::AdoptLiveIdentity,
             )?;
         }
+        let aggregate = if profile.relay_mode == RelayMode::Aggregate {
+            Some(
+                settings
+                    .aggregate_relay_profiles
+                    .iter()
+                    .find(|aggregate| aggregate.id == profile.id)
+                    .cloned()
+                    .context("当前聚合供应商缺少成员定义，无法导入本机配置")?,
+            )
+        } else {
+            None
+        };
         profile.id = format!("relay-{}", uuid::Uuid::new_v4());
         profile.name = "系统默认".to_string();
         profile.model_list = profile.model.clone();
+        if let Some(mut aggregate) = aggregate {
+            aggregate.id = profile.id.clone();
+            aggregate.name = profile.name.clone();
+            settings.aggregate_relay_profiles.push(aggregate);
+        }
 
         if settings.relay_profiles == crate::settings::default_relay_profiles() {
             let legacy = settings.active_relay_profile();
