@@ -162,7 +162,7 @@ fn migration_only_changes_the_existing_managed_catalog_pointer_and_is_idempotent
         .unwrap();
     let home = temp.path().strip_prefix(&cwd).unwrap();
     std::fs::create_dir(home.join("model-catalogs")).unwrap();
-    let catalog = home.join("model-catalogs/legacy.json");
+    let catalog = home.join("model-catalogs").join("legacy.json");
     let contents = r#"{"models":[{"slug":"legacy"}]}"#;
     std::fs::write(&catalog, contents).unwrap();
     let original = write_pointer(home, Path::new("./model-catalogs/legacy.json"));
@@ -193,7 +193,7 @@ fn migration_only_changes_the_existing_managed_catalog_pointer_and_is_idempotent
 fn migration_preserves_disabled_external_missing_absolute_and_escaping_pointers() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
-    std::fs::create_dir_all(home.join("model-catalogs/nested")).unwrap();
+    std::fs::create_dir_all(home.join("model-catalogs").join("nested")).unwrap();
     std::fs::create_dir_all(home.join("external/model-catalogs")).unwrap();
     for relative in [
         "model-catalogs/existing.json",
@@ -221,7 +221,7 @@ fn migration_preserves_disabled_external_missing_absolute_and_escaping_pointers(
         PathBuf::from("model-catalogs/nested/custom.json"),
         PathBuf::from("model-catalogs/../user-catalog.json"),
         PathBuf::from("model-catalogs/missing.json"),
-        home.join("model-catalogs/existing.json"),
+        home.join("model-catalogs").join("existing.json"),
     ] {
         let original = write_pointer(home, &value);
         assert!(
@@ -266,7 +266,7 @@ fn migration_does_not_follow_catalog_directory_or_file_symlinks() {
             std::fs::create_dir(home.join("model-catalogs")).unwrap();
             std::os::unix::fs::symlink(
                 external.join("custom.json"),
-                home.join("model-catalogs/custom.json"),
+                home.join("model-catalogs").join("custom.json"),
             )
             .unwrap();
         }
@@ -288,7 +288,7 @@ fn migration_preserves_a_symlinked_user_config() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex-home");
     std::fs::create_dir_all(home.join("model-catalogs")).unwrap();
-    std::fs::write(home.join("model-catalogs/existing.json"), "{}").unwrap();
+    std::fs::write(home.join("model-catalogs").join("existing.json"), "{}").unwrap();
     let external_config = temp.path().join("user-config.toml");
     let original = "model_catalog_json = \"model-catalogs/existing.json\"\n";
     std::fs::write(&external_config, original).unwrap();

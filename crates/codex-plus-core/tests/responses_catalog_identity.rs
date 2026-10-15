@@ -158,7 +158,7 @@ fn managed_responses_copy_external_catalogs_for_both_identities() {
                     );
                     assert_eq!(
                         catalog_path,
-                        temp.path().join("model-catalogs/identity-catalog.json")
+                        temp.path().join("model-catalogs").join("identity-catalog.json")
                     );
                     assert!(catalog_path.is_file());
                     assert_eq!(catalog(temp.path()), expected);

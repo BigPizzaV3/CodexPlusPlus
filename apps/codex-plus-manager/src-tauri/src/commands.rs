@@ -8682,12 +8682,18 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
+        let _guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
+        // 只验证旧聚合链路，不读取运行中管理器的真实聚合设置和登录快照。
+        let settings_path = temp.path().join("settings.json");
+        std::fs::write(&settings_path, serde_json::to_vec(&BackendSettings::default()).unwrap()).unwrap();
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
 
         let result = apply_aggregate_relay_injection_to_home(
             temp.path(),
             codex_plus_core::settings::RelaySessionProvider::Custom,
         );
+        codex_plus_core::paths::set_settings_path_for_tests(previous);
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
         assert_eq!(result.status, "ok");
