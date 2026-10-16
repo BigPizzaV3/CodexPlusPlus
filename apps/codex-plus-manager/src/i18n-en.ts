@@ -227,6 +227,28 @@ export const EN_PLAIN: Record<string, string> = {
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
   "Chat Completions 转 Responses": "Chat Completions to Responses",
+  "Anthropic Messages 转 Responses": "Anthropic Messages to Responses",
+  "思考模式": "Thinking mode",
+  "自动（新代模型透传等级）": "Auto (pass level through on newer models)",
+  "等级透传（adaptive）": "Pass level through (adaptive)",
+  "经典预算（budget_tokens）": "Classic budget (budget_tokens)",
+  "关闭思考": "Disable thinking",
+  "思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。":
+    "Thinking follows Codex reasoning effort: in auto mode newer models receive the level as-is (adaptive + effort) while older ones fall back to a thinking budget. A declared 1M context window automatically adds the 1m context beta header.",
+  "提示缓存": "Prompt caching",
+  "给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。":
+    "Marks 5-minute cache breakpoints on the system prompt, tool definitions and the latest turn (up to 4), so long conversations are not re-billed in full every turn.",
+  "模拟 Claude Code 客户端": "Emulate the Claude Code client",
+  "伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。":
+    "Spoofs the User-Agent, anthropic-beta and x-app headers and injects the Claude Code identity as the first system line. Enable only when the gateway restricts usage to Claude Code.",
+  "思考档位跟随 Codex 的 reasoning effort 折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。":
+    "Thinking budget follows Codex reasoning effort, and a declared 1M context window automatically adds the 1m context beta header.",
+  "认证字段": "Auth header",
+  "x-api-key（Anthropic 原生）": "x-api-key (Anthropic native)",
+  "Authorization: Bearer": "Authorization: Bearer",
+  "最大输出 tokens": "Max output tokens",
+  "此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。":
+    "This upstream speaks Anthropic Messages (/v1/messages): the local proxy at 127.0.0.1:57321 converts requests to Anthropic and converts the responses back to Responses. Codex must be launched from Codex++.",
   "Codex 启动参数": "Codex launch arguments",
   "Codex MCP&插件": "Codex MCP & plugins",
   "Codex 应用": "Codex app",
@@ -457,7 +479,6 @@ export const EN_PLAIN: Record<string, string> = {
   "启用 Codex 皮肤": "Enable Codex skin",
   "最多建议数": "Max suggestions",
   "最大输入字符": "Max input characters",
-  "最大输出 tokens": "Max output tokens",
   "测试连接": "Test connection",
   "超时毫秒": "Timeout milliseconds",
   "连接": "Connection",
@@ -1450,6 +1471,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column holds {1}. The current value was kept; clear the window to use the document's value.",
   "{0} 个插件": "{0} plugins",
   "{0} / {1} 个插件": "{0} / {1} plugins",
   "查看插件 {0} 的详情": "View details for plugin {0}",

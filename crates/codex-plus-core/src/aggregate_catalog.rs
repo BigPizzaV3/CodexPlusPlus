@@ -64,7 +64,7 @@ pub fn active_model_bindings(
     };
     let mut bindings = Vec::new();
     for relay in member_profiles(settings, &aggregate)? {
-        for entry in profile_catalog_entries(relay)? {
+        for entry in member_upstream_catalog_entries(relay)? {
             bindings.push(AggregateModelBinding {
                 catalog_model: aggregate_model_id(&relay.id, &entry.slug),
                 relay_id: relay.id.clone(),
@@ -117,7 +117,7 @@ pub fn resolve_active_model(
             anyhow::bail!("聚合成员「{}」当前不可用：成员供应商不存在", member.name);
         };
         let relay = &settings.relay_profiles[relay_index];
-        if let Some(upstream_model) = profile_catalog_entries(relay)?
+        if let Some(upstream_model) = member_upstream_catalog_entries(relay)?
             .into_iter()
             .find(|entry| aggregate_model_id(&relay.id, &entry.slug) == catalog_model)
             .map(|entry| entry.slug)
@@ -250,6 +250,31 @@ fn member_model_prefix(relay_id: &str) -> String {
     aggregate_model_id(relay_id, "")
 }
 
+/// 从聚合目录复制的模型 ID 先去掉本成员的一层前缀；跨成员引用保持原样。
+fn strip_member_model_prefix(relay_id: &str, value: &str) -> String {
+    value
+        .strip_prefix(member_model_prefix(relay_id).as_str())
+        .filter(|rest| !rest.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+
+/// 请求解析和绑定列表必须使用与发布目录相同的上游 slug，否则目录中的单层 ID
+/// 会因原始条目仍带本成员前缀而无法解析。保留原始读取入口，供目录先按原配置键
+/// 应用窗口和元数据，再归一化身份，避免已有覆盖配置失效。
+fn member_upstream_catalog_entries(
+    profile: &RelayProfile,
+) -> anyhow::Result<Vec<ModelCatalogEntry>> {
+    let mut seen = HashSet::new();
+    Ok(profile_catalog_entries(profile)?
+        .into_iter()
+        .filter_map(|mut entry| {
+            entry.slug = strip_member_model_prefix(&profile.id, &entry.slug);
+            (!entry.slug.is_empty() && seen.insert(entry.slug.clone())).then_some(entry)
+        })
+        .collect())
+}
+
 fn aggregate_member_availability(
     settings: &BackendSettings,
     aggregate: &AggregateRelayProfile,
@@ -323,12 +348,25 @@ pub fn build_catalog_json(
         } else {
             relay.name.trim().to_string()
         };
+        // 成员自己的模型 ID 前缀：成员列表里若出现 `cpx-<自己>/kimi-k3`（从聚合目录复制
+        // 来的模型名很常见），再套一层前缀就会变成 `cpx-<自己>/cpx-<自己>/kimi-k3`——
+        // 两层前缀直接露在客户端列表里。这里先剥掉成员自己的那一层。
+        // 剥掉自指前缀后可能撞车：`model` 写 `cpx-<自己>/kimi-k3`、`model_list` 又写了裸名
+        // `kimi-k3`，两条会归一成同一个上游模型。按上游 slug 去重，保留先出现的那条
+        // （`model` 在列表最前，与目录原本的优先级一致）。
+        let mut seen_upstream = HashSet::new();
         for mut model in payload["models"].as_array().into_iter().flatten().cloned() {
-            let upstream = model["slug"].as_str().unwrap_or_default().to_string();
-            let display = model["display_name"]
-                .as_str()
-                .unwrap_or(&upstream)
-                .to_string();
+            let upstream = strip_member_model_prefix(
+                &relay.id,
+                model["slug"].as_str().unwrap_or_default(),
+            );
+            if upstream.is_empty() || !seen_upstream.insert(upstream.clone()) {
+                continue;
+            }
+            let display = {
+                let raw = model["display_name"].as_str().unwrap_or(&upstream).to_string();
+                strip_member_model_prefix(&relay.id, &raw)
+            };
             model["slug"] = if is_default_member {
                 json!(upstream)
             } else {

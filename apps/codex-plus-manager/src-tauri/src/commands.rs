@@ -39,12 +39,12 @@ pub async fn download_dictation_local_model() -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn claude_localization_status()
--> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
-    ok(
-        "Claude 增强状态已读取。",
-        codex_plus_core::claude_localization::status(),
-    )
+pub async fn claude_localization_status() -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(codex_plus_core::claude_localization::status).await {
+        Ok(Ok(status)) => ok("Claude 增强状态已读取。", serde_json::to_value(status).unwrap_or_else(|_| json!({}))),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 检测失败：{error}"), json!({})),
+    }
 }
 
 #[tauri::command]
@@ -64,26 +64,30 @@ pub async fn claude_localization_action(action: String) -> CommandResult<Value> 
 }
 
 #[tauri::command]
-pub fn claude_localization_set_voice_input(enabled: bool)
--> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
-    match codex_plus_core::claude_localization::set_voice_input(enabled) {
-        Ok(status) => ok(
+pub async fn claude_localization_set_voice_input(enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_voice_input(enabled)
+    }).await {
+        Ok(Ok(status)) => ok(
             if enabled { "语音输入已开启。" } else { "语音输入已关闭。" },
-            status,
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
-        Err(error) => failed(&error.to_string(), codex_plus_core::claude_localization::status()),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
     }
 }
 
 #[tauri::command]
-pub fn claude_localization_set_localization(enabled: bool)
--> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
-    match codex_plus_core::claude_localization::set_localization(enabled) {
-        Ok(status) => ok(
+pub async fn claude_localization_set_localization(enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_localization(enabled)
+    }).await {
+        Ok(Ok(status)) => ok(
             if enabled { "界面汉化已开启。" } else { "界面汉化已关闭。" },
-            status,
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
-        Err(error) => failed(&error.to_string(), codex_plus_core::claude_localization::status()),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
     }
 }
 
@@ -558,6 +562,9 @@ pub struct CodexMultiInstance {
     pub profile_id: String,
     pub profile_name: String,
     pub pid: Option<u32>,
+    /// Windows worker 的进程创建身份；旧清单缺失时不按 PID 强制终止。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_birth_id: Option<u64>,
     pub debug_port: u16,
     pub helper_port: u16,
     pub status: String,
@@ -1275,11 +1282,13 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         }
     };
     let pid = child.id();
+    let worker_birth_id = codex_plus_core::multi_worker::worker_birth_id(&child);
     let instance = CodexMultiInstance {
         instance_id: instance_id.clone(),
         profile_id: profile_id.clone(),
         profile_name: profile.name.clone(),
         pid: Some(pid),
+        worker_birth_id,
         debug_port,
         helper_port,
         status: "starting".to_string(),
@@ -1295,7 +1304,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         launch_result: None,
     };
     if let Err(error) = save_multi_instance_manifest(&root, &instance) {
-        let _ = terminate_multi_worker(pid, &worker_options_path);
+        let _ = terminate_multi_worker(pid, &worker_options_path, worker_birth_id);
         return failed(
             &format!("保存 Codex 多开实例信息失败：{error}"),
             json!({ "instanceId": instance_id }),
@@ -1366,6 +1375,7 @@ fn list_codex_multi_instances_blocking() -> CommandResult<CodexMultiInstancesPay
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "主进程".to_string()),
                 pid: None,
+                worker_birth_id: None,
                 debug_port,
                 helper_port: latest.helper_port.unwrap_or(default_helper_port()),
                 status: latest.status,
@@ -1463,7 +1473,7 @@ fn stop_codex_multi_instance_blocking(
     if !codex_plus_core::cdp::endpoint_available(instance.debug_port) {
         if let Some(pid) = instance.pid {
             let options_path = path.join("worker-options.json");
-            let _ = terminate_multi_worker(pid, &options_path);
+            let _ = terminate_multi_worker(pid, &options_path, instance.worker_birth_id);
         }
         return ok(
             "该实例当前未在运行，未结束任何 Codex 进程。",
@@ -1498,7 +1508,7 @@ fn stop_codex_multi_instance_blocking(
     let _ = std::fs::remove_file(path.join(MULTI_LAUNCH_RESULT_FILE));
     if let Some(pid) = instance.pid {
         let options_path = path.join("worker-options.json");
-        let _ = terminate_multi_worker(pid, &options_path);
+        let _ = terminate_multi_worker(pid, &options_path, instance.worker_birth_id);
     }
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.multi_instance_stopped",
@@ -1592,12 +1602,14 @@ fn multi_instance_status(running: bool, result: Option<&CodexMultiLaunchResult>)
     }
 }
 
-fn terminate_multi_worker(pid: u32, options_path: &Path) -> anyhow::Result<()> {
-    if pid == std::process::id() || !multi_worker_process_matches(pid, options_path) {
+fn terminate_multi_worker(pid: u32, options_path: &Path, worker_birth_id: Option<u64>) -> anyhow::Result<()> {
+    if pid == std::process::id() {
         return Ok(());
     }
     #[cfg(unix)]
     {
+        let _ = worker_birth_id;
+        if !multi_worker_process_matches(pid, options_path) { return Ok(()); }
         let status = std::process::Command::new("kill")
             .arg(pid.to_string())
             .status()?;
@@ -1605,19 +1617,23 @@ fn terminate_multi_worker(pid: u32, options_path: &Path) -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     {
-        let pid_arg = pid.to_string();
-        // 不带 `/T`：这里只该结束 worker 自己。
-        // `/T` 会连带杀掉整棵子进程树，而 worker 下面挂着 Codex Desktop；
-        // 一旦 manifest 里的 pid 已被系统回收，就会误杀无关进程树
-        // （Windows 分支没有 unix 那样的命令行校验，见 multi_worker_process_matches）。
-        let status = std::process::Command::new("taskkill")
-            .args(["/PID", pid_arg.as_str(), "/F"])
-            .status()?;
-        anyhow::ensure!(status.success(), "结束多开 worker 失败（pid {pid}）");
+        // 创建身份、精确参数与 exe 均验证后，使用同一句柄终止，不再按 PID taskkill。
+        let terminated = codex_plus_core::multi_worker::terminate_verified_worker(
+            pid, options_path, worker_birth_id,
+        )?;
+        if !terminated {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.multi_worker_stop_skipped",
+                json!({ "pid": pid, "reason": "identity_unverified" }),
+            );
+        }
     }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (pid, options_path, worker_birth_id);
     Ok(())
 }
 
+#[cfg(unix)]
 fn multi_worker_process_matches(pid: u32, options_path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -1630,16 +1646,6 @@ fn multi_worker_process_matches(pid: u32, options_path: &Path) -> bool {
         let command = String::from_utf8_lossy(&output.stdout);
         command.contains("--codex-plus-multi-worker")
             && command.contains(&options_path.to_string_lossy().to_string())
-    }
-    #[cfg(windows)]
-    {
-        let _ = options_path;
-        true
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (pid, options_path);
-        false
     }
 }
 
@@ -4157,7 +4163,33 @@ pub fn dismiss_pending_provider_import() -> CommandResult<PendingProviderImportP
 }
 
 #[tauri::command]
-pub fn list_local_sessions(
+pub async fn list_local_sessions(
+    request: Option<ListLocalSessionsRequest>,
+) -> CommandResult<LocalSessionsPayload> {
+    let offset = request.as_ref().map_or(0, |request| request.offset);
+    let limit = request
+        .as_ref()
+        .map_or(DEFAULT_LOCAL_SESSIONS_PAGE_SIZE, |request| request.limit)
+        .clamp(1, MAX_LOCAL_SESSIONS_PAGE_SIZE);
+    match tauri::async_runtime::spawn_blocking(move || list_local_sessions_blocking(request)).await
+    {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("会话查询后台任务失败：{error}"),
+            LocalSessionsPayload {
+                db_path: String::new(),
+                db_paths: Vec::new(),
+                sessions: Vec::new(),
+                offset,
+                limit,
+                has_more: false,
+                total_count: 0,
+            },
+        ),
+    }
+}
+
+fn list_local_sessions_blocking(
     request: Option<ListLocalSessionsRequest>,
 ) -> CommandResult<LocalSessionsPayload> {
     let request = request.unwrap_or(ListLocalSessionsRequest {
@@ -4166,40 +4198,18 @@ pub fn list_local_sessions(
     });
     let offset = request.offset;
     let limit = request.limit.clamp(1, MAX_LOCAL_SESSIONS_PAGE_SIZE);
-    let fetch_limit = offset.saturating_add(limit).saturating_add(1);
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
-    let mut sessions = Vec::new();
-    let mut session_ids = std::collections::HashSet::new();
-    let mut errors = Vec::new();
-    for db_path in &db_paths {
-        let adapter = local_session_adapter(db_path);
-        match adapter.list_local_session_ids() {
-            Ok(ids) => session_ids.extend(ids),
-            Err(error) if db_path.exists() => {
-                errors.push(format!("{}: {error}", db_path.to_string_lossy()));
-                continue;
-            }
-            Err(_) => continue,
-        }
-        match adapter.list_local_sessions_limited(fetch_limit) {
-            Ok(mut items) => sessions.append(&mut items),
-            Err(error) if db_path.exists() => {
-                errors.push(format!("{}: {error}", db_path.to_string_lossy()));
-            }
-            Err(_) => {}
-        }
-    }
-    sessions.sort_by(|left, right| {
-        right
-            .updated_at_ms
-            .cmp(&left.updated_at_ms)
-            .then_with(|| right.id.cmp(&left.id))
-    });
-    let mut seen_session_ids = std::collections::HashSet::new();
-    sessions.retain(|session| seen_session_ids.insert(session.id.clone()));
-    let has_more = sessions.len() > offset.saturating_add(limit);
-    let sessions = sessions.into_iter().skip(offset).take(limit).collect();
+    static PAGER: std::sync::OnceLock<std::sync::Mutex<codex_plus_data::LocalSessionPager>> =
+        std::sync::OnceLock::new();
+    let pager = PAGER.get_or_init(Default::default);
+    let page = match pager.lock() {
+        Ok(mut pager) => pager.list_page(&db_paths, offset, limit),
+        Err(_) => codex_plus_data::LocalSessionPage {
+            errors: vec!["会话查询缓存不可用，请重启管理窗口。".to_string()],
+            ..Default::default()
+        },
+    };
     let payload = LocalSessionsPayload {
         db_path: db_paths
             .first()
@@ -4209,24 +4219,24 @@ pub fn list_local_sessions(
             .iter()
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
-        sessions,
+        sessions: page.sessions,
         offset,
         limit,
-        has_more,
-        total_count: session_ids.len(),
+        has_more: page.has_more,
+        total_count: page.total_count,
     };
-    let page = offset / limit + 1;
-    if errors.is_empty() {
+    let page_number = (offset / limit).saturating_add(1);
+    if page.errors.is_empty() {
         ok(
             &format!(
-                "已读取第 {page} 页，共 {} 个本地会话。",
+                "已读取第 {page_number} 页，共 {} 个本地会话。",
                 payload.sessions.len()
             ),
             payload,
         )
     } else {
         failed(
-            &format!("读取部分本地会话失败：{}", errors.join("; ")),
+            &format!("读取部分本地会话失败：{}", page.errors.join("; ")),
             payload,
         )
     }
@@ -4310,15 +4320,6 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         message: result.message.clone(),
         payload: result,
     }
-}
-
-fn local_session_adapter(db_path: &Path) -> codex_plus_data::SQLiteStorageAdapter {
-    codex_plus_data::SQLiteStorageAdapter::new(
-        db_path,
-        codex_plus_data::BackupStore::new(
-            codex_plus_core::paths::default_app_state_dir().join("backups"),
-        ),
-    )
 }
 
 /// 归一化「Codex 应用路径」。**无效路径一律丢弃，不落库。**
@@ -6733,6 +6734,9 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             match profile.protocol {
                 codex_plus_core::settings::RelayProtocol::Responses => "Responses API",
                 codex_plus_core::settings::RelayProtocol::ChatCompletions => "Chat Completions",
+                codex_plus_core::settings::RelayProtocol::AnthropicMessages => {
+                    "Anthropic Messages"
+                }
             }
         ),
     });
@@ -8676,12 +8680,20 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
+        let _guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
+        // 只验证旧聚合链路，不读取运行中管理器的真实聚合设置和登录快照。
+        // 本地主线的同名单测（e0cb49cd）与远端（eb241dbf）做的是同一件事，
+        // 这里采用远端版本：额外写入一份默认 settings.json，隔离更彻底。
+        let settings_path = temp.path().join("settings.json");
+        std::fs::write(&settings_path, serde_json::to_vec(&BackendSettings::default()).unwrap()).unwrap();
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
 
         let result = apply_aggregate_relay_injection_to_home(
             temp.path(),
             codex_plus_core::settings::RelaySessionProvider::Custom,
         );
+        codex_plus_core::paths::set_settings_path_for_tests(previous);
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
         assert_eq!(result.status, "ok");
@@ -9245,7 +9257,7 @@ base_url = "https://example.invalid/v1"
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = list_local_sessions(None);
+        let result = tauri::async_runtime::block_on(list_local_sessions(None));
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.sessions.len(), 1);
@@ -9266,7 +9278,7 @@ base_url = "https://example.invalid/v1"
             .execute("INSERT INTO threads VALUES ('t3', '', 'Oldest', 50)", [])
             .unwrap();
 
-        let first_page = list_local_sessions(Some(ListLocalSessionsRequest {
+        let first_page = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
             offset: 0,
             limit: 2,
         }));
@@ -9276,7 +9288,7 @@ base_url = "https://example.invalid/v1"
         assert!(first_page.payload.has_more);
         assert_eq!(first_page.payload.total_count, 3);
 
-        let second_page = list_local_sessions(Some(ListLocalSessionsRequest {
+        let second_page = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
             offset: 2,
             limit: 2,
         }));
@@ -9286,6 +9298,40 @@ base_url = "https://example.invalid/v1"
         assert_eq!(second_page.payload.sessions[0].id, "t3");
         assert!(!second_page.payload.has_more);
         assert_eq!(second_page.payload.total_count, 3);
+    }
+
+    #[test]
+    fn list_local_sessions_returns_partial_payload_and_clamps_extreme_pages() {
+        let _codex_home_guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let home = temp.path().join("codex-home");
+        let sqlite = home.join("sqlite");
+        std::fs::create_dir_all(&sqlite).unwrap();
+        create_minimal_thread_db(&sqlite.join("state_5.sqlite"), "valid", "Valid", 10);
+        std::fs::write(home.join("state_5.sqlite"), b"not a database").unwrap();
+        unsafe {
+            std::env::set_var("CODEX_HOME", &home);
+        }
+        let first =
+            tauri::async_runtime::block_on(list_local_sessions(Some(ListLocalSessionsRequest {
+                offset: 0,
+                limit: 0,
+            })));
+        let beyond = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
+            offset: usize::MAX,
+            limit: usize::MAX,
+        }));
+        restore_codex_home(previous_codex_home);
+        assert_eq!(first.status, "failed");
+        assert_eq!(first.payload.limit, 1);
+        assert_eq!(first.payload.total_count, 1);
+        assert_eq!(first.payload.sessions[0].id, "valid");
+        assert_eq!(beyond.status, "failed");
+        assert_eq!(beyond.payload.limit, MAX_LOCAL_SESSIONS_PAGE_SIZE);
+        assert_eq!(beyond.payload.total_count, 1);
+        assert!(beyond.payload.sessions.is_empty());
+        assert!(!beyond.payload.has_more);
     }
 
     #[test]
@@ -9314,7 +9360,7 @@ base_url = "https://example.invalid/v1"
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = list_local_sessions(None);
+        let result = list_local_sessions_blocking(None);
         restore_codex_home(previous_codex_home);
 
         assert_eq!(result.status, "ok");
@@ -10047,6 +10093,7 @@ model_reasoning_effort = "high"
             profile_id: "profile-zhipu".to_string(),
             profile_name: "Zhipu GLM".to_string(),
             pid: Some(1234),
+            worker_birth_id: Some(123456789),
             debug_port: 9456,
             helper_port: 9457,
             status: "starting".to_string(),
@@ -10180,6 +10227,7 @@ model_reasoning_effort = "high"
 
         let instance = load_multi_instance_manifest(temp.path()).unwrap();
         assert!(instance.launch_result.is_none());
+        assert!(instance.worker_birth_id.is_none());
         assert_eq!(instance.debug_port, 9456);
     }
 

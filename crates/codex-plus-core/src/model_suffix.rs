@@ -20,6 +20,29 @@ pub struct ModelCatalogEntry {
     pub auto_compact_percent: Option<u32>,
 }
 
+/// 剥掉合法窗口后缀，保留模型 ID 的大小写。
+pub(crate) fn normalize_model_key(raw: &str) -> String {
+    parse_model_suffix(raw).0
+}
+
+/// 优先精确匹配，再剥后缀，最后按大小写不敏感匹配历史键。
+/// BTreeMap 保证同名大小写变体的回退结果稳定。
+pub(crate) fn lookup_model_map<'a, T>(
+    map: &'a std::collections::BTreeMap<String, T>,
+    model: &str,
+) -> Option<&'a T> {
+    if let Some(value) = map.get(model) {
+        return Some(value);
+    }
+    let slug = normalize_model_key(model);
+    if let Some(value) = map.get(&slug) {
+        return Some(value);
+    }
+    map.iter()
+        .find(|(key, _)| normalize_model_key(key).eq_ignore_ascii_case(&slug))
+        .map(|(_, value)| value)
+}
+
 /// 解析单个模型条目的后缀，返回 (slug, 可选窗口)。
 /// 括号内非合法窗口 token 时，整串作为 slug 且 window=None（不剥离括号）。
 pub fn parse_model_suffix(raw: &str) -> (String, Option<u64>) {
@@ -117,6 +140,8 @@ pub fn collect_catalog_entries(
     current_model: &str,
 ) -> Vec<ModelCatalogEntry> {
     // 先解析 model_list，保留顺序并去重；后缀已从 model_list 剥离，窗口来自 model_windows map。
+    let windows = model_windows.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+    let auto_compacts = model_auto_compact.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
     let mut seen = HashSet::new();
     let mut list_entries: Vec<ModelCatalogEntry> = Vec::new();
     for raw in model_list
@@ -132,12 +157,10 @@ pub fn collect_catalog_entries(
             continue;
         }
         let suffix_window = suffix_window.or_else(|| {
-            model_windows
-                .get(&slug)
+            lookup_model_map(&windows, &slug)
                 .and_then(|token| parse_window_token(token))
         });
-        let auto_compact_percent = model_auto_compact
-            .get(&slug)
+        let auto_compact_percent = lookup_model_map(&auto_compacts, &slug)
             .and_then(|token| parse_compact_percent(token));
         list_entries.push(ModelCatalogEntry {
             display_name: slug.clone(),
@@ -154,12 +177,10 @@ pub fn collect_catalog_entries(
         let (slug, suffix_window) = parse_model_suffix(current_model);
         if !slug.is_empty() {
             let suffix_window = suffix_window.or_else(|| {
-                model_windows
-                    .get(&slug)
+                lookup_model_map(&windows, &slug)
                     .and_then(|token| parse_window_token(token))
             });
-            let auto_compact_percent = model_auto_compact
-                .get(&slug)
+            let auto_compact_percent = lookup_model_map(&auto_compacts, &slug)
                 .and_then(|token| parse_compact_percent(token));
             entries.push(ModelCatalogEntry {
                 display_name: slug.clone(),
@@ -407,6 +428,16 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
     // 那一组打标志。只有显式 true 才转发，缺键/false 都不写，保持既有响应形态不变。
     if metadata.get("codex_plus_default").and_then(Value::as_bool) == Some(true) {
         ui["codex_plus_default"] = json!(true);
+    }
+    // 注入侧与原生目录使用同一份窗口信息。
+    for (source, camel, snake) in [
+        ("context_window", "contextWindow", "context_window"),
+        ("max_context_window", "maxContextWindow", "max_context_window"),
+    ] {
+        if let Some(window) = metadata.get(source) {
+            ui[camel] = window.clone();
+            ui[snake] = window.clone();
+        }
     }
     if !has_builtin {
         // 单独声明 Fast 不能替原生描述符制造名称、描述或推理默认档。

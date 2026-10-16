@@ -145,11 +145,16 @@
   /* 焦点圈 */
   --focus-ring: 0 0 0 3px hsl(var(--brand-accent) / 0.28);
 
-  font-family:
-    Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Microsoft YaHei", system-ui, sans-serif;
+  /* 界面字体：对齐 DSH（纯系统字体栈，不打包 Web 字体） */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial,
+    sans-serif;
+  /* 等宽字体：对齐 DSH 的代码字体栈（SF Mono 优先，回退打包的 JetBrains Mono） */
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
+    "Liberation Mono", Menlo, Courier, "PingFang SC", "Microsoft YaHei";
+
+  font-family: var(--font-sans);
   font-size: 13.5px;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   font-variant-numeric: tabular-nums;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -602,7 +607,7 @@ body {
   min-height: 48px;
   overflow-wrap: anywhere;
   color: hsl(var(--muted-foreground));
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.35;
   padding: 0 14px 14px;
@@ -632,7 +637,7 @@ body {
   min-width: 0;
   overflow-wrap: anywhere;
   color: hsl(var(--muted-foreground));
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 
@@ -840,14 +845,14 @@ body {
   border-radius: 999px;
   background: hsl(var(--background) / 0.6);
   color: hsl(var(--foreground));
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   padding: 4px 8px;
 }
 
 .env-conflict-tags small {
   color: hsl(var(--muted-foreground));
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: var(--font-sans);
 }
 
 .relay-master-switch {
@@ -2603,7 +2608,7 @@ details.relay-fold[open] > .relay-fold-body {
 
 .context-editor-textarea {
   min-height: 160px;
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -2685,7 +2690,7 @@ details.relay-fold[open] > .relay-fold-body {
   overflow: auto;
   border-width: 1px;
   border-style: solid;
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
   tab-size: 2;
@@ -4571,7 +4576,7 @@ input[type="range"]:disabled {
 .log-view {
   min-height: 180px;
   margin-top: 10px;
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
   white-space: pre;
@@ -4579,7 +4584,7 @@ input[type="range"]:disabled {
 
 .launch-args-input {
   min-height: 112px;
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -4596,7 +4601,7 @@ input[type="range"]:disabled {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--background));
-  font-family: Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 
@@ -5608,7 +5613,7 @@ input[type="range"]:disabled {
 
 .relay-model-row input {
   min-width: 0;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 /* 模型行内的下拉收紧内边距与图标间距，把宽度让给文字：
@@ -5765,7 +5770,7 @@ input[type="range"]:disabled {
 
 .relay-model-import-workbench textarea {
   min-height: 150px;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .relay-model-metadata-import-error,
@@ -5873,7 +5878,7 @@ input[type="range"]:disabled {
 
 .relay-model-route-row input {
   min-width: 0;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -6555,7 +6560,7 @@ select {
 .log-view,
 .launch-args-input,
 .log-lines {
-  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 /* ── 列表行 ─────────────────────────────────────────────────── */
@@ -8461,7 +8466,7 @@ select {
 
 .dream-skin-verification-meta code {
   margin-top: 3px;
-  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -8593,7 +8598,7 @@ select {
   min-width: 0;
   overflow: hidden;
   color: hsl(var(--foreground));
-  font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.4;
   text-overflow: ellipsis;

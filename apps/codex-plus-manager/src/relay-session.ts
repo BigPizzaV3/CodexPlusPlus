@@ -1,7 +1,7 @@
-export type CodexRelayProtocol = "responses" | "chatCompletions";
+export type CodexRelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 export type CodexRelaySessionProvider = "custom" | "openai";
 
-/** Chat Completions cannot keep an OpenAI session, so return to Custom. */
+/** Chat Completions 与 Anthropic Messages 都不能保持 OpenAI 会话身份，回退 Custom。 */
 export function sessionProviderForProtocol(
   sessionProvider: CodexRelaySessionProvider,
   protocol: CodexRelayProtocol,

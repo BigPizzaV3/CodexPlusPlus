@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use serde_json::{Map, Value, json};
@@ -151,6 +151,22 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+
+fn exec_retry_after_duration(
+    headers: &reqwest::header::HeaderMap,
+    now: SystemTime,
+) -> Option<Duration> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let retry_at = httpdate::parse_http_date(value).ok()?;
+    Some(retry_at.duration_since(now).unwrap_or_default())
+}
 
 /// codex v2 远程压缩请求在 input 末尾携带的控制 item（openai/codex compact_remote_v2）。
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
@@ -611,6 +627,9 @@ pub struct UpstreamProxyResponse {
     pub native_compaction_passthrough: bool,
     /// 响应体已经读完。为 Some 时不要再读 response。
     pub buffered_body: Option<Vec<u8>>,
+    /// 上游请求是否使用了 Responses exec 兼容包装。
+    pub exec_adapted: bool,
+    pub(crate) exec_outcome: Option<crate::responses_exec_transport::ExecOutcome>,
     pub response: Option<reqwest::Response>,
 }
 
@@ -626,6 +645,8 @@ pub struct ProxySessionHeaders<'a> {
 pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
+    /// Anthropic Messages（`/v1/messages`），经 `anthropic_bridge` 转换。
+    AnthropicMessages,
     AudioTranscriptions,
     ImageGenerations,
     ImageEdits,
@@ -1536,6 +1557,8 @@ fn native_compaction_unsupported_result(
             compaction: false,
             native_compaction_passthrough: false,
             buffered_body: Some(serde_json::to_vec(&body).unwrap_or_default()),
+            exec_adapted: false,
+            exec_outcome: None,
             response: None,
         })
     } else {
@@ -1919,6 +1942,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         "message": error.to_string()
                     }
                 }))?),
+                exec_adapted: false,
+                exec_outcome: None,
                 response: None,
             });
         }
@@ -1959,6 +1984,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     );
     let strict_aggregate_model = aggregate_model.is_some();
     let relay_count = relays.len();
+    let mut exec_negotiation_used = false;
     for (attempt, relay) in relays.iter().cloned().enumerate() {
         let has_more_candidates = attempt + 1 < relay_count;
         validate_upstream(&relay)?;
@@ -2044,21 +2070,39 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 }))
             }),
         );
-        let mut upstream = match send_responses_upstream_request(
-            &relay,
-            &endpoint,
-            &upstream_body,
-            wire_api,
-            is_stream,
-            original_user_agent,
-            beta_features,
-            session_headers,
-            official_credential.as_ref(),
-        )
-        .await
-        {
+        let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
+        let eligible = wire_api == UpstreamWireApi::Responses
+            && !is_compaction_request
+            && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
+        let mut key = None;
+        let mut exec_adapted = false;
+        let send = async {
+            let builder = build_responses_upstream_request(
+                &relay, &endpoint, &upstream_body, wire_api, is_stream,
+                original_user_agent, beta_features, session_headers, official_credential.as_ref(),
+            )?;
+            if eligible {
+                key = Some(crate::responses_exec_transport::cache_key(
+                    &relay.id, &builder.build()?, &upstream_body, &user_agent,
+                ));
+            }
+            if key.as_ref().is_some_and(crate::responses_exec_transport::cached)
+                && let Ok(adapted) = crate::responses_exec::adapt_request(upstream_body.clone())
+            {
+                upstream_body = adapted;
+                exec_adapted = true;
+            }
+            send_responses_upstream_request(
+                &relay, &endpoint, &upstream_body, wire_api, is_stream,
+                original_user_agent, beta_features, session_headers, official_credential.as_ref(),
+            ).await
+        };
+        let mut upstream = match send.await {
             Ok(upstream) => upstream,
             Err(error) => {
+                if exec_adapted && let Some(key) = key.as_ref() {
+                    crate::responses_exec_transport::evict(key);
+                }
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "protocol_proxy.upstream_request_failed",
                     json!({
@@ -2110,7 +2154,17 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             match crate::official_login::resolve_official_credential(&relay, true).await {
                 Ok(credential) => {
                     official_credential = Some(credential);
-                    match send_responses_upstream_request(
+                    let retry = async {
+                        if eligible {
+                            let builder = build_responses_upstream_request(
+                                &relay, &endpoint, &upstream_body, wire_api, is_stream,
+                                original_user_agent, beta_features, session_headers, official_credential.as_ref(),
+                            )?;
+                            key = Some(crate::responses_exec_transport::cache_key(
+                                &relay.id, &builder.build()?, &request_json, &user_agent,
+                            ));
+                        }
+                        send_responses_upstream_request(
                         &relay,
                         &endpoint,
                         &upstream_body,
@@ -2121,8 +2175,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         session_headers,
                         official_credential.as_ref(),
                     )
-                    .await
-                    {
+                        .await
+                    };
+                    match retry.await {
                         Ok(retried) => {
                             upstream = retried;
                             status_code = upstream.status().as_u16();
@@ -2134,6 +2189,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                                 .to_string();
                         }
                         Err(error) => {
+                            if exec_adapted && let Some(key) = key.as_ref() {
+                                crate::responses_exec_transport::evict(key);
+                            }
                             if !strict_aggregate_model {
                                 crate::relay_rotation::record_relay_request_failure(&settings);
                             }
@@ -2160,6 +2218,52 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     );
                 }
             }
+        }
+
+        if eligible && !exec_adapted && !exec_negotiation_used && status_code == 400 {
+            let retry = async {
+                let first_retry_after =
+                    exec_retry_after_duration(upstream.headers(), SystemTime::now());
+                let (inspected, rejected) =
+                    crate::responses_exec_transport::inspect_rejection(upstream, &upstream_body).await?;
+                upstream = inspected;
+                if rejected
+                    && let Ok(adapted) = crate::responses_exec::adapt_request(upstream_body.clone())
+                {
+                    if let Some(delay) = first_retry_after {
+                        tokio::time::sleep(delay).await;
+                    }
+                    exec_negotiation_used = true;
+                    exec_adapted = true;
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.exec_compatibility_retry",
+                        json!({"relayId": relay.id, "stream": is_stream}),
+                    );
+                    upstream = send_responses_upstream_request(
+                        &relay, &endpoint, &adapted, wire_api, is_stream,
+                        original_user_agent, beta_features, session_headers, official_credential.as_ref(),
+                    ).await?;
+                }
+                Ok::<_, anyhow::Error>(upstream)
+            };
+            upstream = match retry.await {
+                Ok(response) => response,
+                Err(error) => {
+                    if exec_adapted && let Some(key) = key.as_ref() {
+                        crate::responses_exec_transport::evict(key);
+                    }
+                    if !strict_aggregate_model {
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                    }
+                    if has_more_candidates {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
+            status_code = upstream.status().as_u16();
+            content_type = upstream.headers().get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
         }
 
         if probe_native_compaction {
@@ -2189,6 +2293,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     compaction: false,
                     native_compaction_passthrough: stream_response,
                     buffered_body: Some(probed),
+                    exec_adapted: false,
+                    exec_outcome: None,
                     response: None,
                 });
             }
@@ -2209,6 +2315,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                             compaction: false,
                             native_compaction_passthrough: true,
                             buffered_body: Some(probed),
+                            exec_adapted: false,
+                            exec_outcome: None,
                             response: None,
                         });
                     }
@@ -2224,6 +2332,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                             compaction: false,
                             native_compaction_passthrough: true,
                             buffered_body: Some(incomplete_compaction_stream(&probed)),
+                            exec_adapted: false,
+                            exec_outcome: None,
                             response: None,
                         });
                     }
@@ -2247,6 +2357,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         compaction: false,
                         native_compaction_passthrough: true,
                         buffered_body: Some(probed),
+                        exec_adapted: false,
+                        exec_outcome: None,
                         response: None,
                     });
                 }
@@ -2259,6 +2371,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         compaction: false,
                         native_compaction_passthrough: true,
                         buffered_body: Some(sse),
+                        exec_adapted: false,
+                        exec_outcome: None,
                         response: None,
                     });
                 }
@@ -2278,6 +2392,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     compaction: false,
                     native_compaction_passthrough: false,
                     buffered_body: Some(probed),
+                    exec_adapted: false,
+                    exec_outcome: None,
                     response: None,
                 });
             }
@@ -2376,7 +2492,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 "willFailover": has_more_candidates && !(200..300).contains(&status_code)
             }),
         );
-        if !strict_aggregate_model {
+        if exec_adapted && !(200..300).contains(&status_code)
+            && let Some(key) = key.as_ref()
+        {
+            crate::responses_exec_transport::evict(key);
+        }
+        if !strict_aggregate_model && (!exec_adapted || !(200..300).contains(&status_code)) {
             crate::relay_rotation::record_relay_request_event(
                 &settings,
                 if (200..300).contains(&status_code) {
@@ -2402,6 +2523,12 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 compaction: is_compaction_request,
                 native_compaction_passthrough: false,
                 buffered_body: None,
+                exec_adapted,
+                exec_outcome: (exec_adapted && (200..300).contains(&status_code)).then(|| {
+                    crate::responses_exec_transport::ExecOutcome::new(
+                        key.expect("adapted request has a cache identity"), &settings,
+                    )
+                }),
                 response: Some(upstream),
             });
         }
@@ -2534,6 +2661,8 @@ pub async fn open_models_proxy_request(
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
+        exec_adapted: false,
+        exec_outcome: None,
         response: Some(upstream),
     })
 }
@@ -2589,6 +2718,8 @@ pub async fn open_audio_transcriptions_proxy_request(
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
+        exec_adapted: false,
+        exec_outcome: None,
         response: Some(upstream),
     })
 }
@@ -2726,6 +2857,8 @@ async fn open_image_proxy_request(
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
+        exec_adapted: false,
+        exec_outcome: None,
         response: Some(upstream),
     })
 }
@@ -2784,6 +2917,8 @@ pub async fn open_chat_completions_proxy_request(
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
+        exec_adapted: false,
+        exec_outcome: None,
         response: Some(upstream),
     })
 }
@@ -2853,9 +2988,8 @@ async fn upstream_request_parts(
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
-    if relay.protocol == RelayProtocol::ChatCompletions
-        && input_has_native_compaction(&request_json)
-    {
+    // Chat 与 Anthropic 上游都没有原生压缩项，只能走合成摘要路径。
+    if relay.requires_protocol_proxy_conversion() && input_has_native_compaction(&request_json) {
         return Err(NativeCompactionUnsupported::history().into());
     }
     // 原生 v2 上游要先看到 compaction_trigger。只有确认它没有返回 compaction 项后才剥掉重试。
@@ -2865,7 +2999,7 @@ async fn upstream_request_parts(
             return Err(NativeCompactionUnsupported::history().into());
         }
     }
-    let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
+    let synthetic_compaction = compact && relay.requires_protocol_proxy_conversion();
     if let Some(model) = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2878,6 +3012,13 @@ async fn upstream_request_parts(
             request_json,
             relay.standard_openai_protocol,
         )?,
+        // Responses → Chat → Anthropic：第一跳复用上面同一份实现，第二跳在桥接模块里。
+        RelayProtocol::AnthropicMessages => {
+            crate::anthropic_bridge::responses_to_anthropic_messages(
+                request_json,
+                &crate::anthropic_bridge::request_options(relay),
+            )?
+        }
     };
     if relay.protocol == RelayProtocol::Responses {
         if relay.web_search_history_compat_enabled()
@@ -2949,6 +3090,7 @@ async fn upstream_request_parts(
     let wire_api = match relay.protocol {
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
+        RelayProtocol::AnthropicMessages => UpstreamWireApi::AnthropicMessages,
     };
     // 官方登录成员没有用户填写的 base_url，固定发往 chatgpt.com 后端。
     let endpoint_base = official_base
@@ -2964,6 +3106,9 @@ async fn upstream_request_parts(
             }
             RelayProtocol::Responses => responses_url(endpoint_base),
             RelayProtocol::ChatCompletions => chat_completions_url(endpoint_base),
+            RelayProtocol::AnthropicMessages => {
+                crate::anthropic_bridge::anthropic_messages_url(endpoint_base)
+            }
         },
         body,
         wire_api,
@@ -2982,11 +3127,34 @@ async fn send_responses_upstream_request(
     session_headers: ProxySessionHeaders<'_>,
     official_credential: Option<&crate::official_login::OfficialCredential>,
 ) -> anyhow::Result<reqwest::Response> {
+    let builder = build_responses_upstream_request(
+        relay, endpoint, upstream_body, wire_api, is_stream,
+        original_user_agent, beta_features, session_headers, official_credential,
+    )?;
+    send_upstream_request_for_responses(builder, is_stream).await
+}
+
+fn build_responses_upstream_request(
+    relay: &crate::settings::RelayProfile,
+    endpoint: &str,
+    upstream_body: &Value,
+    wire_api: UpstreamWireApi,
+    is_stream: bool,
+    original_user_agent: Option<&str>,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+    official_credential: Option<&crate::official_login::OfficialCredential>,
+) -> anyhow::Result<reqwest::RequestBuilder> {
+    // 伪装 Claude Code 时 UA 必须换成官方 CLI 的值，否则网关按 UA 判定客户端。
+    let user_agent = if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages
+        && relay.anthropic_impersonate_claude_code
+    {
+        crate::anthropic_bridge::CLAUDE_CODE_USER_AGENT.to_string()
+    } else {
+        effective_user_agent(&relay.user_agent, original_user_agent)
+    };
     let mut builder = upstream_request_builder(
-        crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?,
+        crate::http_client::proxied_client(&user_agent)?,
         endpoint,
         relay,
         is_stream,
@@ -2994,12 +3162,35 @@ async fn send_responses_upstream_request(
         official_credential,
     );
     builder = with_client_session_headers(builder, relay, session_headers);
+    if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages {
+        // 1M 上下文 / Claude Code 身份都靠 anthropic-beta 表达；用户显式配了该头就不插手。
+        let has_custom_beta = relay
+            .custom_headers
+            .iter()
+            .any(|header| header.key.trim().eq_ignore_ascii_case("anthropic-beta"));
+        if !has_custom_beta {
+            let model = upstream_body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let context_1m = crate::anthropic_bridge::model_declares_context_1m(relay, model);
+            if let Some(beta) = crate::anthropic_bridge::anthropic_beta_header(
+                relay.anthropic_impersonate_claude_code,
+                context_1m,
+            ) {
+                builder = builder.header("anthropic-beta", beta);
+            }
+        }
+        if relay.anthropic_impersonate_claude_code {
+            builder = builder.header("x-app", "cli");
+        }
+    }
     if wire_api == UpstreamWireApi::Responses {
         if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
             builder = builder.header("x-codex-beta-features", value);
         }
     }
-    send_upstream_request_for_responses(builder, is_stream).await
+    Ok(builder)
 }
 
 fn upstream_request_builder(
@@ -3051,7 +3242,8 @@ fn with_relay_auth(
     relay: &crate::settings::RelayProfile,
 ) -> reqwest::RequestBuilder {
     // 认证（API Key / 无认证）+ 供应商自定义请求头，统一在 relay_headers 里决定优先级。
-    crate::relay_headers::apply(request, relay)
+    // Anthropic 上游的 `x-api-key` 与 `anthropic-version` 也在这里按协议注入。
+    crate::relay_headers::apply_for_protocol(request, relay)
 }
 
 /// 官方登录成员的上游认证：OAuth Bearer + `chatgpt-account-id`，
@@ -3172,18 +3364,32 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             .and_then(Value::as_str)
             .unwrap_or("");
         if !is_stream {
+            let body = crate::anthropic_bridge::normalize_non_stream_body_for_compaction(
+                wire_api,
+                &upstream_body,
+            )?;
             return Ok(ProxyHttpResponse {
                 status: "200 OK".to_string(),
                 content_type: "text/event-stream; charset=utf-8".to_string(),
-                body: wrap_non_stream_response_as_compaction(&upstream_body, model)?,
+                body: wrap_non_stream_response_as_compaction(&body, model)?,
             });
         }
         let mut converter = CompactionSseConverter::new(model);
-        if wire_api != UpstreamWireApi::Responses {
+        if wire_api == UpstreamWireApi::AnthropicMessages {
+            // Anthropic 事件流先落成 chat 事件流，再交给既有的 chat 压缩聚合器。
+            let chat_sse =
+                crate::anthropic_bridge::anthropic_sse_to_chat_sse(&String::from_utf8_lossy(
+                    &upstream_body,
+                ));
             converter = converter.with_chat_upstream();
+            converter.push_upstream_bytes(chat_sse.as_bytes());
+        } else {
+            if wire_api != UpstreamWireApi::Responses {
+                converter = converter.with_chat_upstream();
+            }
+            // 整包已收齐，直接喂给有状态 SSE 解析器（与 launcher 逐 chunk 路径同逻辑）。
+            converter.push_upstream_bytes(&upstream_body);
         }
-        // 整包已收齐，直接喂给有状态 SSE 解析器（与 launcher 逐 chunk 路径同逻辑）。
-        converter.push_upstream_bytes(&upstream_body);
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "text/event-stream; charset=utf-8".to_string(),
@@ -3192,6 +3398,25 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
     }
 
     if wire_api == UpstreamWireApi::Responses {
+        let body = if upstream.exec_adapted {
+            let (body, valid) = if is_stream {
+                let mut converter = crate::responses_exec_sse::ExecSseAdapter::new();
+                let mut bytes = match converter.push_bytes(&upstream_body) {
+                    Ok(bytes) => bytes,
+                    Err(_) => converter.fail(),
+                };
+                bytes.extend(converter.finish()?);
+                (bytes, converter.succeeded())
+            } else {
+                crate::responses_exec_transport::adapted_json(&upstream_body)
+            };
+            if let Some(outcome) = upstream.exec_outcome.as_mut() {
+                outcome.finish(valid);
+            }
+            body
+        } else {
+            upstream_body.to_vec()
+        };
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: if upstream_content_type.is_empty() {
@@ -3199,7 +3424,34 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             } else {
                 upstream_content_type
             },
-            body: upstream_body.to_vec(),
+            body,
+        });
+    }
+
+    if wire_api == UpstreamWireApi::AnthropicMessages {
+        // Anthropic → Chat → Responses：第二跳与 Chat 上游共用同一份映射。
+        if is_stream {
+            let text = String::from_utf8_lossy(&upstream_body);
+            return Ok(ProxyHttpResponse {
+                status: "200 OK".to_string(),
+                content_type: "text/event-stream; charset=utf-8".to_string(),
+                body: crate::anthropic_bridge::anthropic_sse_to_responses_sse(&text, &request_json),
+            });
+        }
+        let message: Value = serde_json::from_slice(&upstream_body)?;
+        let thinking_blocks = crate::anthropic_bridge::thinking_blocks_from_anthropic_message(&message);
+        let chat_json = crate::anthropic_bridge::anthropic_message_to_chat_completion(message)?;
+        let mut response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
+        if !thinking_blocks.is_empty() {
+            crate::anthropic_bridge::attach_thinking_to_responses(
+                &mut response_json,
+                &thinking_blocks,
+            );
+        }
+        return Ok(ProxyHttpResponse {
+            status: "200 OK".to_string(),
+            content_type: "application/json; charset=utf-8".to_string(),
+            body: serde_json::to_vec(&response_json)?,
         });
     }
 
@@ -7548,6 +7800,66 @@ mod relay_custom_header_tests {
             request.headers().get("authorization").unwrap(),
             "Bearer explicit"
         );
+    }
+}
+
+#[cfg(test)]
+mod exec_retry_after_tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, RETRY_AFTER};
+
+    fn headers(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, value.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn delta_seconds_are_preserved() {
+        assert_eq!(
+            exec_retry_after_duration(&headers(" 90 "), SystemTime::UNIX_EPOCH),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            exec_retry_after_duration(&headers("0"), SystemTime::UNIX_EPOCH),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn future_http_date_uses_remaining_delay() {
+        let retry_at = SystemTime::UNIX_EPOCH + Duration::from_secs(180);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(90_250);
+        assert_eq!(
+            exec_retry_after_duration(&headers(&httpdate::fmt_http_date(retry_at)), now),
+            Some(Duration::from_millis(89_750))
+        );
+    }
+
+    #[test]
+    fn past_http_date_is_immediate() {
+        assert_eq!(
+            exec_retry_after_duration(
+                &headers("Thu, 01 Jan 1970 00:00:00 GMT"),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+            ),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn missing_and_invalid_values_are_ignored() {
+        assert_eq!(
+            exec_retry_after_duration(&HeaderMap::new(), SystemTime::UNIX_EPOCH),
+            None
+        );
+        for value in ["", "not-a-date", "-1", "1.5"] {
+            assert_eq!(
+                exec_retry_after_duration(&headers(value), SystemTime::UNIX_EPOCH),
+                None,
+                "{value}"
+            );
+        }
     }
 }
 

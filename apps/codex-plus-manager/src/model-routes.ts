@@ -9,7 +9,7 @@ export type RelayModelRouteProfile = {
   name: string;
   baseUrl: string;
   apiKey: string;
-  protocol: "responses" | "chatCompletions";
+  protocol: "responses" | "chatCompletions" | "anthropicMessages";
   relayMode: "official" | "mixedApi" | "pureApi" | "aggregate";
   officialMixApiKey: boolean;
   noAuth?: boolean;

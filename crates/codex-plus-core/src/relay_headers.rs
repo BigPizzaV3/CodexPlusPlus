@@ -123,6 +123,56 @@ pub fn apply(builder: RequestBuilder, relay: &RelayProfile) -> RequestBuilder {
     apply_headers(builder, &relay.custom_headers)
 }
 
+/// 协议感知的认证注入。
+///
+/// Anthropic Messages 上游默认要 `x-api-key` + `anthropic-version`，
+/// 部分中转网关只认 `Authorization: Bearer`，由 `anthropicAuthHeader` 选择；
+/// 其余协议完全保持 `apply` 的既有行为。
+pub fn apply_for_protocol(builder: RequestBuilder, relay: &RelayProfile) -> RequestBuilder {
+    apply_with_api_key(builder, relay, relay.api_key.trim())
+}
+
+/// `apply_for_protocol` 的显式 Key 版本：供应商测试会用官方登录 token 等
+/// 非 `profile.api_key` 的凭据，认证字段的判定必须与代理转发一致。
+pub fn apply_with_api_key(
+    builder: RequestBuilder,
+    relay: &RelayProfile,
+    api_key: &str,
+) -> RequestBuilder {
+    if relay.protocol != crate::settings::RelayProtocol::AnthropicMessages {
+        let builder = if relay.uses_no_auth() || has_authorization(&relay.custom_headers) {
+            builder
+        } else {
+            builder.bearer_auth(api_key)
+        };
+        return apply_headers(builder, &relay.custom_headers);
+    }
+    let api_key = api_key.trim();
+    let has_custom_api_key = relay.custom_headers.iter().any(|header| {
+        header.key.trim().eq_ignore_ascii_case("x-api-key") && !header.value.trim().is_empty()
+    });
+    let has_custom_version = relay
+        .custom_headers
+        .iter()
+        .any(|header| header.key.trim().eq_ignore_ascii_case("anthropic-version"));
+    let mut builder = builder;
+    if !relay.uses_no_auth() {
+        let wants_bearer = relay.anthropic_auth_header()
+            == crate::anthropic_bridge::ANTHROPIC_AUTH_HEADER_BEARER;
+        if wants_bearer {
+            if !has_authorization(&relay.custom_headers) && !api_key.is_empty() {
+                builder = builder.bearer_auth(api_key);
+            }
+        } else if !has_custom_api_key && !api_key.is_empty() {
+            builder = builder.header("x-api-key", api_key);
+        }
+    }
+    if !has_custom_version {
+        builder = builder.header("anthropic-version", crate::anthropic_bridge::ANTHROPIC_VERSION);
+    }
+    apply_headers(builder, &relay.custom_headers)
+}
+
 /// 日志 / 导出用：敏感头的值替换成 `***`，其余原样。
 pub fn redacted(headers: &[RelayHeaderKeyValue]) -> Vec<RelayHeaderKeyValue> {
     headers
