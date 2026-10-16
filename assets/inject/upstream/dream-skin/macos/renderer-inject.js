@@ -1,6 +1,6 @@
 // Canonical cross-platform renderer. Run tools/sync-runtime-assets.mjs after editing.
 ((cssText, artDataUrl, themeConfig) => {
-  const SELECTOR_CONTRACT = {"schema":"codex-dream-skin-selectors/1","selectors":[{"key":"shell-main","selector":"main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"])","tier":"L1","scope":"all","required":true},{"key":"left-panel","selector":"aside.app-shell-left-panel","tier":"L1","scope":"all","required":true},{"key":"header-tint","selector":"header:is(.app-header-tint, [data-app-shell-header-edge-scroll], [class*=\"_Header_\"])","tier":"L1","scope":"all","required":true},{"key":"main-content-top-fade","selector":":is(.app-shell-main-content-top-fade, [data-app-shell-main-content-top-fade], [class*=\"_MainContentTopFade_\"])","tier":"L2","scope":"all","required":false},{"key":"home-icon","selector":"[data-testid=\"home-icon\"]","tier":"L1","scope":"home","required":true},{"key":"home-route","selector":"[role=\"main\"]:has([data-testid=\"home-icon\"])","tier":"L1","scope":"home","required":true},{"key":"home-route-css","selector":"[role=\"main\"]","tier":"L1","scope":"home","required":true},{"key":"home-banners","selector":".home-banners","tier":"L2","scope":"home","required":false},{"key":"composer-chrome","selector":":is(.composer-surface-chrome, [class*=\"_ComposerLayoutRoot_\"], [data-composer-surface-variant][data-composer-radius-variant])","tier":"L2","scope":"home+thread","required":false},{"key":"composer-toolbar","selector":":is(.composer-surface-chrome [class*=\"_footer_\"], [class*=\"_ComposerLayoutRoot_\"] [class*=\"_ComposerLayoutFooter_\"], [data-composer-surface-variant][data-composer-radius-variant] :is([data-composer-footer-responsive], [class*=\"_ComposerLayoutFooter_\"], [class*=\"_footer_\"]))","tier":"L2","scope":"home+thread","required":false},{"key":"home-utility","selector":":is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"])","tier":"L2","scope":"home","required":false},{"key":"game-source","selector":"[data-feature=\"game-source\"]","tier":"L2","scope":"home","required":false},{"key":"home-suggestions","selector":".group\\/home-suggestions","tier":"L2","scope":"home","required":false},{"key":"project-selector","selector":".group\\/project-selector","tier":"L2","scope":"home config","required":false},{"key":"markdown","selector":"[class*=\"_markdown\"]","tier":"L2","scope":"thread","required":false},{"key":"thread-surface","selector":".thread-scroll-container","tier":"L2","scope":"thread","required":false},{"key":"message","selector":":is([data-message-author-role], [data-local-conversation-user-anchor], [data-local-conversation-final-assistant])","tier":"L2","scope":"thread","required":false},{"key":"settings-panel","selector":"[data-settings-panel-slug=\"general-settings\"]","tier":"L2","scope":"settings","required":false},{"key":"appearance-radio","selector":"input[name=\"appearance-theme\"]","tier":"L2","scope":"settings","required":false},{"key":"overlay-menu","selector":"[role=\"menu\"]","tier":"L2","scope":"overlay","required":false},{"key":"overlay-dialog","selector":"[role=\"dialog\"]","tier":"L2","scope":"overlay","required":false},{"key":"overlay-popper","selector":"[data-radix-popper-content-wrapper]","tier":"L2","scope":"overlay","required":false}],"stableTestids":["app-shell-header-context-menu-surface","home-icon","theme-preview"]};
+  const SELECTOR_CONTRACT = {"schema":"codex-dream-skin-selectors/1","selectors":[{"key":"shell-main","selector":"main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"])","tier":"L1","scope":"all","required":true},{"key":"left-panel","selector":"aside.app-shell-left-panel","tier":"L1","scope":"all","required":true},{"key":"header-tint","selector":"header:is(.app-header-tint, [data-app-shell-header-edge-scroll], [class*=\"_Header_\"])","tier":"L1","scope":"all","required":true},{"key":"main-content-top-fade","selector":":is(.app-shell-main-content-top-fade, [data-app-shell-main-content-top-fade]:not(:has(*)), [class*=\"_MainContentTopFade_\"])","tier":"L2","scope":"all","required":false},{"key":"home-icon","selector":"[data-testid=\"home-icon\"]","tier":"L1","scope":"home","required":true},{"key":"home-route","selector":"[role=\"main\"]:has([data-testid=\"home-icon\"])","tier":"L1","scope":"home","required":true},{"key":"home-route-css","selector":"[role=\"main\"]","tier":"L1","scope":"home","required":true},{"key":"home-banners","selector":".home-banners","tier":"L2","scope":"home","required":false},{"key":"composer-chrome","selector":":is(.composer-surface-chrome, [class*=\"_ComposerLayoutRoot_\"], [data-composer-surface-variant][data-composer-radius-variant])","tier":"L2","scope":"home+thread","required":false},{"key":"composer-toolbar","selector":":is(.composer-surface-chrome [class*=\"_footer_\"], [class*=\"_ComposerLayoutRoot_\"] [class*=\"_ComposerLayoutFooter_\"], [data-composer-surface-variant][data-composer-radius-variant] :is([data-composer-footer-responsive], [class*=\"_ComposerLayoutFooter_\"], [class*=\"_footer_\"]))","tier":"L2","scope":"home+thread","required":false},{"key":"home-utility","selector":":is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"])","tier":"L2","scope":"home","required":false},{"key":"game-source","selector":"[data-feature=\"game-source\"]","tier":"L2","scope":"home","required":false},{"key":"home-suggestions","selector":".group\\/home-suggestions","tier":"L2","scope":"home","required":false},{"key":"project-selector","selector":".group\\/project-selector","tier":"L2","scope":"home config","required":false},{"key":"markdown","selector":"[class*=\"_markdown\"]","tier":"L2","scope":"thread","required":false},{"key":"thread-surface","selector":".thread-scroll-container","tier":"L2","scope":"thread","required":false},{"key":"message","selector":":is([data-message-author-role], [data-local-conversation-user-anchor], [data-local-conversation-final-assistant])","tier":"L2","scope":"thread","required":false},{"key":"settings-panel","selector":"[data-settings-panel-slug=\"general-settings\"]","tier":"L2","scope":"settings","required":false},{"key":"appearance-radio","selector":"input[name=\"appearance-theme\"]","tier":"L2","scope":"settings","required":false},{"key":"overlay-menu","selector":"[role=\"menu\"]","tier":"L2","scope":"overlay","required":false},{"key":"overlay-dialog","selector":"[role=\"dialog\"]","tier":"L2","scope":"overlay","required":false},{"key":"overlay-popper","selector":"[data-radix-popper-content-wrapper]","tier":"L2","scope":"overlay","required":false}],"stableTestids":["app-shell-header-context-menu-surface","home-icon","theme-preview"]};
   const STATE_KEY = "__CODEX_DREAM_SKIN_STATE__";
   const DISABLED_KEY = "__CODEX_DREAM_SKIN_DISABLED__";
   const STYLE_REGISTRY_KEY = "__CODEX_DREAM_SKIN_STYLE_SHEETS__";
@@ -17,7 +17,7 @@
     variable: `--ds-community-composer-${property}`,
   })).filter(({ variable }) => cssText.includes(`${variable}:`));
   const ROOT_ATTRS = [
-    "data-dream-skin", SHELL_ATTR,
+    "data-dream-skin", SHELL_ATTR, "data-dream-upload-alpha",
     "data-dream-art-wide", "data-dream-art-safe", "data-dream-task-mode",
     "data-dream-art-safe-area", "data-dream-art-task-mode", "data-dream-art-aspect",
     "data-dream-art-ready",
@@ -39,11 +39,39 @@
   const STYLE_REVISION = __DREAM_SKIN_STYLE_REVISION_JSON__;
   const PAYLOAD_REVISION = __DREAM_SKIN_PAYLOAD_REVISION_JSON__;
   const THEME = themeConfig && typeof themeConfig === "object" ? themeConfig : {};
+  // Only adapt declarations in the already validated community layer. Keep
+  // foregrounds, borders and element opacity intact. Relative colors preserve
+  // authored RGB/alpha (including percentages); local preferences replace alpha
+  // rather than multiplying it. Opaque legacy literals use the same 30% default
+  // as public background tokens. Explicit `transparent` remains an empty layer.
+  const communityStart = cssText.indexOf("@layer dreamskin-community {");
+  if (communityStart >= 0) {
+    const communityCss = cssText.slice(communityStart).replace(
+      /(^[ \t]*background-color:\s*)([^;]+?)(\s*!important;)/gm,
+      (declaration, prefix, color, suffix) => {
+        const value = color.trim();
+        if (value.toLowerCase() === "transparent") return declaration;
+        const hasAlpha = /^#(?:[0-9a-f]{4}|[0-9a-f]{8})$/i.test(value)
+          || /^rgba\(/i.test(value) || /^var\(/i.test(value);
+        return `${prefix}rgb(from ${value} r g b / var(--ds-user-surface-alpha, ${hasAlpha ? "alpha" : "0.70"}))${suffix}`;
+      },
+    );
+    cssText = cssText.slice(0, communityStart) + communityCss;
+  }
+  // Cache structural :has() predicates as element markers. Chromium otherwise
+  // re-evaluates these stylesheet conditions during every native hover update.
+  const CSS_PREDICATES = [{"selector":":has([role=\"main\"])","attribute":"data-dream-has-0","branches":[{"selector":"[role=\"main\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-0]), :is(* [role=\"main\"]):not(*))"},{"selector":":has(main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]))","attribute":"data-dream-has-1","branches":[{"selector":"main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"])","relation":"descendant"}],"replacement":":is(:where([data-dream-has-1]), :is(* main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"])):not(*))"},{"selector":":has(main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]):not([data-app-shell-active-page=\"false\"], [data-app-shell-active-page=\"false\"] *) [role=\"main\"])","attribute":"data-dream-has-2","branches":[{"selector":"main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]):not([data-app-shell-active-page=\"false\"], [data-app-shell-active-page=\"false\"] *) [role=\"main\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-2]), :is(* main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]):not([data-app-shell-active-page=\"false\"], [data-app-shell-active-page=\"false\"] *) [role=\"main\"]):not(*))"},{"selector":":has([data-testid=\"home-icon\"])","attribute":"data-dream-has-3","branches":[{"selector":"[data-testid=\"home-icon\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-3]), :is(* [data-testid=\"home-icon\"]):not(*))"},{"selector":":has(> .home-banners)","attribute":"data-dream-has-4","branches":[{"selector":".home-banners","relation":"child"}],"replacement":":is(:where([data-dream-has-4]), :is(* > .home-banners):not(*))"},{"selector":":has([data-ds-part=\"main\"])","attribute":"data-dream-has-5","branches":[{"selector":"[data-ds-part=\"main\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-5]), :is(* [data-ds-part=\"main\"]):not(*))"},{"selector":":has([data-ds-part=\"main\"], [data-ds-part=\"home\"])","attribute":"data-dream-has-6","branches":[{"selector":"[data-ds-part=\"main\"]","relation":"descendant"},{"selector":"[data-ds-part=\"home\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-6]), :is(* [data-ds-part=\"main\"], * [data-ds-part=\"home\"]):not(*))"},{"selector":":has(:is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"]))","attribute":"data-dream-has-7","branches":[{"selector":":is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"])","relation":"descendant"}],"replacement":":is(:where([data-dream-has-7]), :is(* :is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"])):not(*))"},{"selector":":has(input[type=\"text\"])","attribute":"data-dream-has-8","branches":[{"selector":"input[type=\"text\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-8]), :is(* input[type=\"text\"]):not(*))"},{"selector":":has(> input[type=\"text\"])","attribute":"data-dream-has-9","branches":[{"selector":"input[type=\"text\"]","relation":"child"}],"replacement":":is(:where([data-dream-has-9]), :is(* > input[type=\"text\"]):not(*))"},{"selector":":has([data-codex-composer-root])","attribute":"data-dream-has-10","branches":[{"selector":"[data-codex-composer-root]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-10]), :is(* [data-codex-composer-root]):not(*))"},{"selector":":has(*)","attribute":"data-dream-has-11","branches":[{"selector":"*","relation":"descendant"}],"replacement":":is(:where([data-dream-has-11]), :is(* *):not(*))"},{"selector":":has(> .horizontal-scroll-fade-mask .group\\/project-selector)","attribute":"data-dream-has-12","branches":[{"selector":".horizontal-scroll-fade-mask .group\\/project-selector","relation":"child"}],"replacement":":is(:where([data-dream-has-12]), :is(* > .horizontal-scroll-fade-mask .group\\/project-selector):not(*))"},{"selector":":has(> [data-mention-list-scroll-area])","attribute":"data-dream-has-13","branches":[{"selector":"[data-mention-list-scroll-area]","relation":"child"}],"replacement":":is(:where([data-dream-has-13]), :is(* > [data-mention-list-scroll-area]):not(*))"},{"selector":":has(~ [role=\"dialog\"] [data-testid=\"image-preview-dismiss-area\"] table)","attribute":"data-dream-has-14","branches":[{"selector":"[role=\"dialog\"] [data-testid=\"image-preview-dismiss-area\"] table","relation":"sibling"}],"replacement":":is(:where([data-dream-has-14]), :is(* ~ [role=\"dialog\"] [data-testid=\"image-preview-dismiss-area\"] table):not(*))"},{"selector":":has([data-testid=\"image-preview-dismiss-area\"] table)","attribute":"data-dream-has-15","branches":[{"selector":"[data-testid=\"image-preview-dismiss-area\"] table","relation":"descendant"}],"replacement":":is(:where([data-dream-has-15]), :is(* [data-testid=\"image-preview-dismiss-area\"] table):not(*))"},{"selector":":has(table)","attribute":"data-dream-has-16","branches":[{"selector":"table","relation":"descendant"}],"replacement":":is(:where([data-dream-has-16]), :is(* table):not(*))"}]
+    .filter((item) => cssText.includes(item.selector));
+  for (const { selector, replacement } of CSS_PREDICATES) {
+    cssText = cssText.replaceAll(selector, replacement);
+  }
   const ART = THEME.art && typeof THEME.art === "object" ? THEME.art : {};
   const ART_METADATA = THEME.artMetadata && typeof THEME.artMetadata === "object"
     ? THEME.artMetadata : null;
   const ANALYSIS_CACHE_KEY = "__CODEX_DREAM_SKIN_ANALYSIS_CACHE__";
   const THEME_VARIABLES = [
+    "--ds-upload-panel-alpha", "--ds-upload-bg-alpha", "--ds-upload-panel-alt-alpha",
+    "--ds-user-surface-alpha",
     "--ds-bg", "--ds-panel", "--ds-panel-2", "--ds-green", "--ds-lime", "--ds-on-accent",
     "--ds-cyan", "--ds-purple", "--ds-text", "--ds-muted", "--ds-line",
     "--ds-bg-rgb", "--ds-panel-rgb", "--ds-panel-2-rgb", "--ds-accent-rgb",
@@ -95,6 +123,9 @@
     styleRepairs: 0,
     partPasses: 0,
     partWrites: 0,
+    predicatePasses: 0,
+    predicateWrites: 0,
+    predicateMs: 0,
     navigationEvents: 0,
     safetyPasses: 0,
     analysisRuns: 0,
@@ -201,15 +232,14 @@
     };
   };
 
-  const readableAccentInk = (accent, panel) => {
-    // The send button sits on the composer surface, which renders panel RGB
-    // at 94% regardless of the panel color's declared alpha. Compare against
-    // both possible backdrop extremes so artwork cannot flip the decision.
+  const readableAccentInk = (accent, panel, panelAlpha = 0.94) => {
+    // Match the composer background alpha and compare both possible backdrop
+    // extremes so artwork cannot flip the decision.
     const luminances = [0, 255].map((backdrop) => {
       const surface = compositeColor(
         panel,
         { r: backdrop, g: backdrop, b: backdrop },
-        0.94,
+        panelAlpha,
       );
       return relativeLuminance(compositeColor(accent, surface));
     });
@@ -255,6 +285,8 @@
 
   const detectShellAppearance = () => {
     const root = document.documentElement;
+    const nativeTheme = root?.getAttribute("data-theme");
+    if (nativeTheme === "dark" || nativeTheme === "light") return nativeTheme;
     if (root?.classList?.contains("electron-dark")) return "dark";
     if (root?.classList?.contains("electron-light")) return "light";
     try { return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; } catch {}
@@ -316,6 +348,38 @@
       for (const key of Object.keys(declaredColors)) explicit.add(key);
     }
     if (typeof legacyPalette.accent === "string") explicit.add("accent");
+    const explicitAlpha = (name) => {
+      const value = declaredColors[name];
+      if (!explicit.has(name) || typeof value !== "string") return null;
+      const source = value.trim();
+      const supplied = /^#(?:[0-9a-f]{4}|[0-9a-f]{8})$/i.test(source)
+        || /^rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*\)$/i.test(source);
+      return supplied ? parseRgb(source)?.alpha ?? null : null;
+    };
+    // Preferences are supplied by the local injector, never by the theme ZIP.
+    // Transparency is the visible wallpaper percentage (30 => alpha .70).
+    const userAlpha = typeof THEME.userTransparency === "number"
+      && Number.isFinite(THEME.userTransparency)
+      && THEME.userTransparency >= 0 && THEME.userTransparency <= 100
+      ? (100 - THEME.userTransparency) / 100 : null;
+    const panelAlpha = userAlpha ?? explicitAlpha("panel") ?? 0.70;
+    const backgroundAlpha = userAlpha ?? explicitAlpha("background") ?? panelAlpha;
+    const panelAltAlpha = userAlpha ?? explicitAlpha("panelAlt") ?? panelAlpha;
+    if (userAlpha !== null) setStyleProperty(root, "--ds-user-surface-alpha", String(userAlpha));
+    else root.style.removeProperty("--ds-user-surface-alpha");
+    const uploadAlphas = {
+      "--ds-upload-panel-alpha": panelAlpha,
+      "--ds-upload-bg-alpha": backgroundAlpha,
+      "--ds-upload-panel-alt-alpha": panelAltAlpha,
+    };
+    for (const [name, alpha] of Object.entries(uploadAlphas)) {
+      if (alpha !== null) setStyleProperty(root, name, String(alpha));
+      else root.style.removeProperty(name);
+    }
+    if (Object.values(uploadAlphas).some((alpha) => alpha !== null)) {
+      setAttribute(root, "data-dream-upload-alpha", "true");
+    } else root.removeAttribute("data-dream-upload-alpha");
+
     const adaptive = makeAdaptivePalette(artAnalysis?.accentRgb, shell);
     const legacyLight = (THEME.appearance === undefined || THEME.appearance === "auto")
       && THEME.colorMode !== "explicit" && shell === "light";
@@ -346,13 +410,14 @@
       const accentInk = readableAccentInk(
         accent,
         variables["--ds-panel"],
+        panelAlpha ?? 0.94,
       );
       if (accentInk) setStyleProperty(root, "--ds-on-accent", accentInk);
     }
     const publicColors = {
-      "--ds-theme-color-background": variables["--ds-bg"],
-      "--ds-theme-color-panel": variables["--ds-panel"],
-      "--ds-theme-color-panel-alt": variables["--ds-panel-2"],
+      "--ds-theme-color-background": `rgb(${rgbString(variables["--ds-bg"])} / ${backgroundAlpha})`,
+      "--ds-theme-color-panel": `rgb(${rgbString(variables["--ds-panel"])} / ${panelAlpha})`,
+      "--ds-theme-color-panel-alt": `rgb(${rgbString(variables["--ds-panel-2"])} / ${panelAltAlpha})`,
       "--ds-theme-color-accent": variables["--ds-green"],
       "--ds-theme-color-accent-alt": variables["--ds-lime"],
       "--ds-theme-color-secondary": variables["--ds-cyan"],
@@ -639,24 +704,20 @@
     return shell;
   };
 
-  const selectorHit = (key) => {
-    const selector = selectorByKey.get(key)?.selector;
-    if (!selector) return false;
-    try { return Boolean(document.querySelector(selector)); } catch { return false; }
+  // Codex 26.930 retains previous routes in the DOM. Their anchors must not
+  // select the active scope or receive public theme-part markers.
+  const queryAll = (selector) => {
+    if (!selector) return [];
+    try {
+      return [...document.querySelectorAll(selector)]
+        .filter((node) => !node.closest?.('[data-app-shell-active-page="false"]'));
+    } catch { return []; }
   };
-
-  const stableTestidHit = (testid) => {
-    const selector = stableTestidSelector(testid);
-    if (!selector) return false;
-    try { return Boolean(document.querySelector(selector)); } catch { return false; }
-  };
+  const selectorHit = (key) => queryAll(selectorByKey.get(key)?.selector).length > 0;
+  const stableTestidHit = (testid) => queryAll(stableTestidSelector(testid)).length > 0;
 
   const partNodes = new Set();
   const composerBorderRestores = new Map();
-  const queryAll = (selector) => {
-    if (!selector) return [];
-    try { return [...document.querySelectorAll(selector)]; } catch { return []; }
-  };
   const selectorNodes = (key) => queryAll(selectorByKey.get(key)?.selector);
   const genericNodes = (selector) => queryAll(selector)
     .filter((node) => node && typeof node.setAttribute === "function");
@@ -805,11 +866,63 @@
     refreshComposerBorders(composerNodes);
   };
 
+  const predicateNodes = CSS_PREDICATES.map(() => new Set());
+  const refreshPredicates = () => {
+    if (!CSS_PREDICATES.length) return;
+    const startedAt = now();
+    metrics.predicatePasses += 1;
+    CSS_PREDICATES.forEach(({ selector, attribute, branches }, index) => {
+      // Find the rare landmarks first. Running an unanchored :has() query over
+      // every element repeats subtree searches, even when the landmark is absent.
+      const candidates = new Set();
+      for (const branch of branches) {
+        for (const leaf of document.querySelectorAll(branch.selector)) {
+          if (branch.relation === "sibling" || branch.relation === "adjacent") {
+            for (let ancestor = leaf; ancestor; ancestor = ancestor.parentElement) {
+              for (let sibling = ancestor.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+                candidates.add(sibling);
+              }
+            }
+          } else {
+            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) candidates.add(ancestor);
+          }
+        }
+      }
+      // Native editor contents never own these structural skin surfaces.
+      // Their mutation observer normalizes unexpected attribute writes.
+      const desired = new Set([...candidates].filter((node) =>
+        !node.closest?.('[contenteditable="true"], .ProseMirror') && node.matches(selector)));
+      const previous = predicateNodes[index];
+      for (const node of previous) {
+        if (!desired.has(node)) {
+          node.removeAttribute(attribute);
+          metrics.predicateWrites += 1;
+        }
+      }
+      for (const node of desired) {
+        if (node.getAttribute(attribute) !== "true") {
+          node.setAttribute(attribute, "true");
+          metrics.predicateWrites += 1;
+        }
+      }
+      predicateNodes[index] = desired;
+    });
+    metrics.predicateMs += now() - startedAt;
+  };
+  const removePredicates = () => {
+    CSS_PREDICATES.forEach(({ attribute }, index) => {
+      // Sets retain detached owners so cleanup also restores removed routes.
+      const nodes = new Set([...predicateNodes[index], ...document.querySelectorAll(`[${attribute}]`)]);
+      for (const node of nodes) node.removeAttribute(attribute);
+      predicateNodes[index].clear();
+    });
+  };
+
   const removeParts = () => {
     for (const node of [...composerBorderRestores.keys()]) restoreComposerBorders(node);
     for (const node of partNodes) node.removeAttribute?.(PART_ATTR);
     partNodes.clear();
-    for (const node of queryAll(`[${PART_ATTR}]`)) node.removeAttribute?.(PART_ATTR);
+    for (const node of document.querySelectorAll(`[${PART_ATTR}]`)) node.removeAttribute?.(PART_ATTR);
   };
 
   const scopeMatches = (scope, baseState, overlay) => {
@@ -827,7 +940,7 @@
     if (selectorHit("settings-panel") || selectorHit("appearance-radio") ||
       stableTestidHit("theme-preview")) baseState = "settings";
     else if (selectorHit("home-icon") || selectorHit("home-route")) baseState = "home";
-    else if (!selectorHit("shell-main") && !document.querySelector('main, [role="main"]')) baseState = "settings";
+    else if (!selectorHit("shell-main") && !queryAll('main, [role="main"]').length) baseState = "settings";
     const missingL1 = SELECTOR_CONTRACT.selectors
       .filter((entry) => entry.tier === "L1" && entry.required &&
         scopeMatches(entry.scope, baseState, overlay) && !selectorHit(entry.key))
@@ -858,7 +971,10 @@
     if (!root) return;
     metrics.ensureCalls += 1;
     if (rootPass) applyRootState(root);
-    if (partPass) refreshParts();
+    if (partPass) {
+      refreshParts();
+      refreshPredicates();
+    }
     if (scopePass) refreshScope();
   };
 
@@ -878,6 +994,7 @@
       }
     }
     removeParts();
+    removePredicates();
     state?.rootObserver?.disconnect();
     state?.partObserver?.disconnect();
     if (bodyReadyHandler && typeof document.removeEventListener === "function") {
@@ -929,7 +1046,19 @@
     // SPA route changes are observable as DOM mutations even when Chromium's
     // Navigation API emits no event. Keep verification scope and public parts
     // derived from the same post-mutation tree.
-    partObserver = new MutationObserver(() => scheduleEnsure({ scope: true, parts: true }, 80));
+    const predicateClass = /main-surface|_MainContentSurface_|home-banners|_homeUtilityBar_|_ComposerHomeUtilityBar_|horizontal-scroll-fade-mask|group\/project-selector/;
+    partObserver = new MutationObserver((records) => {
+      const changed = records.some((record) => {
+        if (record.type !== "attributes") return true;
+        const current = record.target.getAttribute(record.attributeName);
+        if (record.oldValue === current) return false;
+        if (record.attributeName !== "class") return true;
+        const structuralClasses = (value) => String(value || "").split(/\s+/)
+          .filter((token) => predicateClass.test(token)).sort().join(" ");
+        return structuralClasses(record.oldValue) !== structuralClasses(current);
+      });
+      if (changed) scheduleEnsure({ scope: true, parts: true }, 80);
+    });
   }
 
   let mediaQuery = null;
@@ -987,7 +1116,15 @@
   };
   const observePartTree = (node) => {
     if (!partObserver || !node) return;
-    partObserver.observe(node, { childList: true, subtree: true });
+    partObserver.observe(node, {
+      childList: true, subtree: true,
+      attributes: true, attributeOldValue: true,
+      attributeFilter: [
+        "class", "role", "data-testid", "data-app-shell-main-surface",
+        "data-app-shell-active-page", "data-codex-composer-root", "type",
+        "data-mention-list-scroll-area",
+      ],
+    });
   };
   observeAttributes(document.documentElement);
   const observeBody = () => {

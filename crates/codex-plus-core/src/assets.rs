@@ -142,7 +142,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "25-community-shell-material";
+const DREAM_SKIN_RENDERER_REVISION: &str = "26-dream-skin-1.5.20";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -246,7 +246,8 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
         .replace(
             "__DREAM_SKIN_VERSION_JSON__",
-            &serde_json::to_string("1.2.0").unwrap(),
+            &serde_json::to_string(crate::dream_skin_package::DREAM_SKIN_PACKAGE_CLIENT_VERSION)
+                .unwrap(),
         )
         .replace(
             "__DREAM_SKIN_STYLE_REVISION_JSON__",

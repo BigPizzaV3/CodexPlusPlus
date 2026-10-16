@@ -17,8 +17,8 @@ const LICENSE_LIMIT: usize = 65_536;
 const SIGNATURE_LIMIT: usize = 4096;
 
 // 包导入的 Dream Skin 兼容级别独立于 Codex++ 产品版本和 Codex Desktop build。
-// 只有配套包格式、Safe CSS 与运行时经过验证后才能提高此值（issue #2339）。
-pub const DREAM_SKIN_PACKAGE_CLIENT_VERSION: &str = "1.5.12";
+// 与内置上游 v1.5.20 渲染资源及 Safe CSS 桥接同步（issue #2541）；提高前须验证配套能力。
+pub const DREAM_SKIN_PACKAGE_CLIENT_VERSION: &str = "1.5.20";
 
 const ALLOWED_FILES: &[&str] = &[
     "manifest.json",
@@ -210,6 +210,17 @@ pub fn validate_safe_css(css: &str) -> anyhow::Result<()> {
 /// after validation so community rules cannot smuggle arbitrary declarations in.
 pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
     let rules = parse_safe_css(css)?;
+    let composer_base_borders = rules
+        .iter()
+        .filter(|rule| rule.part == "composer" && !rule.selector.contains(':'))
+        .flat_map(|rule| rule.declarations.iter().map(|(property, _)| *property))
+        .filter(|property| {
+            property.starts_with("border-")
+                && (property.ends_with("color")
+                    || property.ends_with("width")
+                    || property.ends_with("style"))
+        })
+        .collect::<HashSet<_>>();
     let mut compiled = String::from("@layer dreamskin-community {\n");
     for rule in rules {
         compiled.push_str("  ");
@@ -221,12 +232,28 @@ pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
             compiled.push_str(": ");
             compiled.push_str(value);
             compiled.push_str(" !important;\n");
+            if rule.part == "composer" && composer_base_borders.contains(property) {
+                compiled.push_str(&format!(
+                    "    --ds-community-composer-{property}: {value} !important;\n"
+                ));
+            }
             if *property == "background-color" && matches!(rule.part, "sidebar" | "main" | "home") {
                 compiled.push_str("    background-image: none !important;\n");
             }
         }
         compiled.push_str("  }\n");
 
+        if rule.part == "home-hero"
+            && let Some((_, value)) = rule
+                .declarations
+                .iter()
+                .find(|(property, _)| *property == "font-size")
+        {
+            compiled.push_str(&format!(
+                "  {}::after {{\n    font-size: {value} !important;\n  }}\n",
+                rule.selector
+            ));
+        }
         if rule.part == "root" {
             let bridged = rule
                 .declarations

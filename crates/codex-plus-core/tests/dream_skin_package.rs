@@ -102,7 +102,7 @@ fn package_compatibility_uses_dream_skin_version_instead_of_product_version() {
     );
     assert!(validate_and_read_package(&supported, "macos").is_ok());
 
-    for minimum in ["1.5.18", "26.805.11740"] {
+    for minimum in ["1.5.21", "26.805.11740"] {
         let bytes = package_bytes_with_min_client_version("macos", css, None, "", minimum);
         let error = validate_and_read_package(&bytes, "macos")
             .unwrap_err()
