@@ -4623,9 +4623,7 @@ fn append_responses_item(
                 if content.is_null() && role != "assistant" {
                     return Ok(());
                 }
-                let allow_plaintext_encrypted_content = item
-                    .get("type")
-                    .and_then(Value::as_str)
+                let allow_plaintext_encrypted_content = item.get("type").and_then(Value::as_str)
                     == Some("agent_message")
                     && agent_message_has_confirmed_plaintext_shape(content);
                 let mut message = json!({
@@ -5324,6 +5322,7 @@ fn responses_content_to_chat_content(
 ///    可打印 ASCII 占比明显偏低（<60%）：分块加密输出的编码形态。
 ///    明文句子 base64 后通常带空格，不命中前半段；单 token 明文解码回来仍是
 ///    ASCII 文本，可打印占比高，不命中后半段。
+///
 /// 两个条件都不满足即按明文透传。
 fn encrypted_content_value_is_opaque(value: &str) -> bool {
     if value
