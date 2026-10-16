@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "服务等级（service tier）读写、线程覆盖与控件同步",
-      "lines": 1058
+      "lines": 1062
     },
     {
       "name": "40-backend-settings.js",
@@ -99,6 +99,11 @@
       "name": "93-dictation.js",
       "description": "独立 ASR 听写入口、录音、取消重试与原生输入框回填",
       "lines": 583
+    },
+    {
+      "name": "93-prompt-enhance.js",
+      "description": "提示词增强：读取草稿、后端改写、预览确认后替换或追加",
+      "lines": 380
     },
     {
       "name": "94-typing-effects.js",

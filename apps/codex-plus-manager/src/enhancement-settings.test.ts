@@ -122,7 +122,7 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
 
 test("complete voice and Stepwise panels share the enhancement form and save action", () => {
   const enhance = component("EnhanceScreen");
-  for (const name of ["DictationSettingsPanel", "StepwiseSettingsPanel"]) {
+  for (const name of ["DictationSettingsPanel", "PromptEnhanceSettingsPanel", "StepwiseSettingsPanel"]) {
     const panel = elements(enhance).find((element) => element.tagName.getText(app) === name);
     assert.ok(panel, `${name} belongs in Codex enhancements`);
     assert.equal(attribute(panel, "form"), "form");
@@ -132,9 +132,9 @@ test("complete voice and Stepwise panels share the enhancement form and save act
   assert.ok(calls.some((node) => node.expression.getText(app) === "actions.saveSettings"), "enhancements must retain their save action");
 
   const settings = component("SettingsScreen");
-  assert.ok(!elements(settings).some((element) => ["DictationSettingsPanel", "StepwiseSettingsPanel"].includes(element.tagName.getText(app))));
+  assert.ok(!elements(settings).some((element) => ["DictationSettingsPanel", "PromptEnhanceSettingsPanel", "StepwiseSettingsPanel"].includes(element.tagName.getText(app))));
   assert.ok(!descendants(settings).some((node) => ts.isPropertyAccessExpression(node)
-    && (/^form\.dictation(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
+    && (/^form\.(?:dictation|promptEnhance)(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
 });
 
 test("local speech download requires a configuration button click and mount only reads status", () => {
@@ -157,6 +157,12 @@ test("enhancement panels retain every service field, private key input and Stepw
     fieldControl(dictation, `form.dictation.${field}`);
   }
   assert.equal(attribute(fieldControl(dictation, "form.dictation.apiKey"), "type"), "password");
+
+  const promptEnhance = component("PromptEnhanceSettingsPanel");
+  for (const field of [
+    "enabled", "useStepwiseConnection", "baseUrl", "apiKey", "apiKeyEnv", "protocol", "model", "systemPrompt", "timeoutSeconds",
+  ]) fieldControl(promptEnhance, `form.promptEnhance.${field}`);
+  assert.equal(attribute(fieldControl(promptEnhance, "form.promptEnhance.apiKey"), "type"), "password");
 
   const stepwise = component("StepwiseSettingsPanel");
   for (const field of [
@@ -190,14 +196,14 @@ test("manager deep links select their enhancement tab before displaying the page
 test("all enhancement panes stay mounted while tab selection only changes visibility", () => {
   const enhance = component("EnhanceScreen");
   const panes = elements(enhance).filter((element) => attribute(element, "role") === "tabpanel");
-  assert.equal(panes.length, 3);
-  for (const tab of ["general", "dictation", "stepwise"]) {
+  assert.equal(panes.length, 4);
+  for (const tab of ["general", "dictation", "promptEnhance", "stepwise"]) {
     const pane = panes.find((element) => attribute(element, "hidden") === `activeTab !== "${tab}"`);
     assert.ok(pane, `missing visibility control for ${tab}`);
     assert.equal(isConditional(pane, enhance), false, `${tab} must retain local form UI state when hidden`);
     assert.ok(attribute(pane, "id"));
   }
-  assert.equal(new Set(panes.map((pane) => attribute(pane, "id"))).size, 3);
+  assert.equal(new Set(panes.map((pane) => attribute(pane, "id"))).size, 4);
   assert.ok(elements(enhance).some((element) => attribute(element, "role") === "tablist"));
   const tabs = elements(enhance).filter((element) => attribute(element, "role") === "tab");
   assert.ok(tabs.length > 0);

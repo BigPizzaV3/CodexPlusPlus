@@ -65,6 +65,24 @@ fn dictation_renderer_contract_harness() {
 }
 
 #[test]
+fn prompt_enhance_renderer_contract_harness() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let output = Command::new("node")
+        .arg(repo.join("assets/inject/prompt-enhance.test.cjs"))
+        .output()
+        .expect("node should run the prompt enhance renderer contract harness");
+    assert!(
+        output.status.success(),
+        "prompt enhance harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn screenshot_command_uses_png_from_surface() {
     assert_eq!(
         bridge::capture_screenshot_params(),

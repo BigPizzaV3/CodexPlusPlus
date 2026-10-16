@@ -225,6 +225,14 @@ pub async fn handle_bridge_request(
         "/dictation/cancel" => {
             crate::dictation::cancel_bridge(&payload).map_err(anyhow::Error::from)
         }
+        "/prompt-enhance/generate" => match ctx.settings.get_settings().await {
+            Ok(settings) => Ok(crate::prompt_enhance::generate(
+                serde_json::from_value(payload.clone()).unwrap_or_default(),
+                &settings,
+            )
+            .await),
+            Err(_) => Err(anyhow::anyhow!("无法读取提示词增强设置")),
+        },
         "/settings/set" => {
             settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
         }
@@ -404,7 +412,10 @@ pub async fn handle_bridge_request(
     };
 
     let response = result.unwrap_or_else(|error| {
-        if matches!(path, "/dictation/transcribe" | "/dictation/cancel") {
+        if matches!(
+            path,
+            "/dictation/transcribe" | "/dictation/cancel" | "/prompt-enhance/generate"
+        ) {
             failed_from_error(&Value::Null, error)
         } else {
             failed_from_error(&payload, error)
@@ -748,6 +759,16 @@ fn settings_payload_value(
                 .unwrap_or(false);
             dictation.insert("apiKeyConfigured".to_string(), json!(configured));
         }
+        if let Some(prompt_enhance) = object
+            .get_mut("promptEnhance")
+            .and_then(Value::as_object_mut)
+        {
+            let configured = prompt_enhance
+                .remove("apiKey")
+                .and_then(|value| value.as_str().map(|value| !value.trim().is_empty()))
+                .unwrap_or(false);
+            prompt_enhance.insert("apiKeyConfigured".to_string(), json!(configured));
+        }
         object.insert(
             "activeRelaySessionProvider".to_string(),
             Value::String(active_relay_session_provider.as_str().to_string()),
@@ -802,6 +823,17 @@ mod dictation_privacy_tests {
         assert_eq!(result["dictation"]["apiKeyConfigured"], true);
         assert!(settings.dictation.enabled);
         assert_eq!(settings.dictation.api_key, "fake-asr-private-key");
+    }
+
+    #[test]
+    fn prompt_enhance_settings_bridge_removes_key() {
+        let mut settings = BackendSettings::default();
+        settings.prompt_enhance.enabled = true;
+        settings.prompt_enhance.api_key = "fake-enhance-private-key".to_string();
+        let result = settings_payload_value(settings, String::new()).unwrap();
+        assert_eq!(result["promptEnhance"]["enabled"], true);
+        assert_eq!(result["promptEnhance"]["apiKeyConfigured"], true);
+        assert!(!result.to_string().contains("fake-enhance-private-key"));
     }
 }
 
