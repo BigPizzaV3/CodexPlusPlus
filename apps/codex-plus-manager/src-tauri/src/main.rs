@@ -15,6 +15,12 @@ fn main() {
         }
         return;
     }
+    // 安装器覆盖安装前请求正在运行的实例正常退出：本进程只写请求文件后立即返回，
+    // 不启动界面，也不强制结束进程（清理由运行中的实例自己完成）。
+    if requests_installer_quit(std::env::args()) {
+        codex_plus_manager_lib::request_running_manager_quit();
+        return;
+    }
     #[cfg(target_os = "macos")]
     if launched_from_legacy_manager_compat_bundle() {
         // 旧版更新器要求 DMG 中有第二个 manager bundle，并会在替换后打开它。
@@ -101,9 +107,32 @@ fn should_skip_autostart(args: impl IntoIterator<Item = String>, disabled: bool)
     disabled && args.into_iter().any(|arg| arg == "--autostart")
 }
 
+/// 安装器用 `--quit-for-install` 拉起第二个进程，由它把退出请求交给正在运行的实例。
+fn requests_installer_quit(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter()
+        .any(|arg| arg == codex_plus_manager_lib::QUIT_FOR_INSTALL_FLAG)
+}
+
 #[cfg(test)]
 mod tests {
     use super::should_skip_autostart;
+
+    #[test]
+    fn installer_quit_flag_only_matches_its_own_argument() {
+        assert!(super::requests_installer_quit(
+            ["codex-plus-plus", "--quit-for-install"].map(String::from)
+        ));
+        for args in [
+            vec!["codex-plus-plus"],
+            vec!["codex-plus-plus", "--autostart"],
+            vec!["codex-plus-plus", "--show-update"],
+            vec!["codex-plus-plus", "--quit"],
+        ] {
+            assert!(!super::requests_installer_quit(
+                args.into_iter().map(String::from)
+            ));
+        }
+    }
 
     #[test]
     fn disabling_login_startup_still_allows_opening_the_gui() {

@@ -190,6 +190,11 @@ fn windows_installer_waits_for_normal_exit_and_cancels_without_writing_apps() {
         .replace("\r\n", "\n");
     assert!(!nsi.contains("taskkill"));
     assert!(nsi.contains("IntCmp $2 20 wait_prompt 0 wait_prompt"));
+    // 超时后先请运行中的实例正常退出（--quit-for-install），失败才回退到托盘退出提示。
+    assert!(nsi.contains(r#"Exec '"$INSTDIR\codex-plus-plus.exe" --quit-for-install'"#));
+    assert!(nsi.contains("IfFileExists \"$INSTDIR\\codex-plus-plus.exe\" 0 wait_manual_prompt"));
+    assert!(nsi.contains("IntCmp $2 60 wait_manual_prompt 0 wait_manual_prompt"));
+    assert!(nsi.contains("wait_manual_prompt:\n    MessageBox MB_RETRYCANCEL"));
     assert!(nsi.contains("MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION"));
     assert!(nsi.contains("IDRETRY wait_retry IDCANCEL wait_cancel"));
     assert!(nsi.contains("wait_cancel:\n    Abort"));

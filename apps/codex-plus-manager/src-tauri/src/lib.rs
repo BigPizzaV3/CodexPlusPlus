@@ -16,6 +16,8 @@ static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
 const TRAY_MENU_SHOW: &str = "tray_show_main";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
+/// 安装器专用参数：请求已运行的实例正常退出（与托盘“退出程序”同一条清理路径）。
+pub const QUIT_FOR_INSTALL_FLAG: &str = "--quit-for-install";
 const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
 
 pub(crate) fn app_is_exiting() -> bool {
@@ -477,15 +479,7 @@ fn set_manager_activation_policy<R: tauri::Runtime>(
 pub fn focus_existing_manager_window() {
     // 锁持有者在主进程内消费请求，Linux 及隐藏窗口也能重新打开。
     let path = window_activation_request_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let request = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .to_string();
-    let _ = std::fs::write(path, request);
+    write_manager_request(&path);
     #[cfg(windows)]
     {
         let current_process_id = std::process::id();
@@ -525,12 +519,50 @@ fn window_activation_request_path() -> std::path::PathBuf {
     ))
 }
 
+fn quit_for_install_request_path() -> std::path::PathBuf {
+    codex_plus_core::paths::default_app_state_dir().join(format!(
+        "install-quit-{}.request",
+        codex_plus_core::ports::manager_guard_port()
+    ))
+}
+
+fn write_manager_request(path: &std::path::Path) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let request = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .to_string();
+    let _ = std::fs::write(path, request);
+}
+
+/// 由安装器拉起的第二个进程调用：只写退出请求，由已运行的实例自行正常退出。
+/// 没有实例在跑时请求无人消费，进程直接结束，不会打开界面。
+pub fn request_running_manager_quit() {
+    write_manager_request(&quit_for_install_request_path());
+}
+
 fn start_window_activation_listener(app: tauri::AppHandle) {
     let path = window_activation_request_path();
     let mut previous = std::fs::read(&path).unwrap_or_default();
+    let quit_path = quit_for_install_request_path();
+    let previous_quit = std::fs::read(&quit_path).unwrap_or_default();
     std::thread::spawn(move || {
         while !SHUTDOWN_STARTED.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(300));
+            // 安装器请求退出：走托盘“退出程序”同一条路径，先恢复系统浏览器再退出。
+            let current_quit = std::fs::read(&quit_path).unwrap_or_default();
+            if !current_quit.is_empty() && current_quit != previous_quit {
+                APP_EXITING.store(true, Ordering::SeqCst);
+                let app = app.clone();
+                let handle = app.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    app.exit(0);
+                });
+                return;
+            }
             let current = std::fs::read(&path).unwrap_or_default();
             if !current.is_empty() && current != previous {
                 previous = current;

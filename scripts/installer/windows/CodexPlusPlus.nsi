@@ -32,7 +32,10 @@ Var HadDesktopEntry
 !insertmacro MUI_LANGUAGE "English"
 
 ; 主程序退出时负责恢复系统浏览器及清理后台服务，安装器不能强制结束进程。
-; 每 500ms 检查一次；10 秒仍未退出时提示从托盘退出，再重试或取消安装/卸载。
+; 每 500ms 检查一次；10 秒仍未退出时先请正在运行的 Codex++ 正常退出
+; （--quit-for-install 与托盘「退出程序」同一条清理路径），再给 30 秒清理时间；
+; 仍不退出才提示手动从托盘退出，再重试或取消安装/卸载。
+; 旧版本不认识该参数，第二个进程会被单实例守卫直接结束且不会打开界面。
 ; 确认进程退出后再补 500ms 文件锁释放缓冲，避免 File/Delete 撞上残留锁（issue #2362）。
 ; 判据用 tasklist 输出 + 字符串包含，不用其退出码（实测 Win11 无匹配仍返回 0），
 ; 也不用 cmd 管道 find（PATH 里的 Unix find.exe 会劫持、多层引号易变形）。
@@ -55,7 +58,27 @@ Var HadDesktopEntry
     Sleep 500
     Goto wait_loop
   wait_prompt:
-    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "请从系统托盘退出 Codex++，等待后台服务清理完成后重试。" IDRETRY wait_retry IDCANCEL wait_cancel
+    ; 全新安装时安装目录还没有主程序，没有可请求的实例，直接进入手动提示。
+    IfFileExists "$INSTDIR\codex-plus-plus.exe" 0 wait_manual_prompt
+    ; 用 Exec 而不等待返回：旧版本若恰好在这时退出，拉起的进程不会阻塞安装器。
+    Exec '"$INSTDIR\codex-plus-plus.exe" --quit-for-install'
+    StrCpy $2 0
+  wait_quit_loop:
+    nsExec::ExecToStack '$SYSDIR\tasklist.exe /FI "IMAGENAME eq $1" /NH'
+    Pop $0
+    Pop $9
+    !if "${UNSTR}" == ""
+      ${StrStr} $8 "$9" "$1"
+    !else
+      ${UnStrStr} $8 "$9" "$1"
+    !endif
+    StrCmp $8 "" wait_done 0
+    IntOp $2 $2 + 1
+    IntCmp $2 60 wait_manual_prompt 0 wait_manual_prompt
+    Sleep 500
+    Goto wait_quit_loop
+  wait_manual_prompt:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "未能自动退出 Codex++。请在任务栏右下角展开隐藏图标（^），右键 Codex++ 图标选择「退出程序」，然后点「重试」；也可先取消，稍后重新运行安装包。" IDRETRY wait_retry IDCANCEL wait_cancel
   wait_retry:
     StrCpy $2 0
     Goto wait_loop
