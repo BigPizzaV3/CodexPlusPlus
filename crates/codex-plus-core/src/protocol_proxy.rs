@@ -5240,6 +5240,13 @@ fn responses_content_to_chat_content(
     }
 
     let Some(parts) = content.as_array() else {
+        // 本 PR 删除了原来的全局 encrypted preflight，对象形态的 content 必须在这里
+        // 自己守住防线，否则 {"type":"encrypted_content",...} 会原样发给 Chat 上游。
+        // 已确认的 agent_message 明文形态要求 content 是数组，因此对象形态没有合法
+        // 透传路径，一律 fail closed。
+        if content.get("type").and_then(Value::as_str) == Some("encrypted_content") {
+            return Err(UnsupportedEncryptedAgentContent.into());
+        }
         return Ok(content.clone());
     };
     let mut chat_parts = Vec::new();
@@ -5333,8 +5340,17 @@ fn encrypted_content_value_is_opaque(value: &str) -> bool {
     {
         return false;
     }
-    // base64url 与标准字母表在字符集层面无法区分，解码前统一成标准表并补齐填充。
-    let canonical = body.replace(['-', '_'], "+/");
+    // base64url 与标准字母表在字符集层面无法区分，解码前逐字符映射到标准表。
+    // 这里不能写成 replace(['-', '_'], "+/")：str::replace 会把每个匹配字符替换成
+    // 完整的 "+/" 两个字符，长度改变后解码必然失败，opaque 载荷会被误判为明文。
+    let canonical: String = body
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
     let padded = format!("{canonical}{}", "=".repeat((4 - canonical.len() % 4) % 4));
     let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&padded) else {
         // 长度不满足编码约束（解码失败）就不是合法的密文编码，按明文处理；
