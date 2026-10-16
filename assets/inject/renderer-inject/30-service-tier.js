@@ -1011,6 +1011,7 @@
   // 保留旧调用入口，语音能力由独立的 opt-in 控件提供。
   function installDictationSupportPatch() {
     installCodexPlusDictation();
+    runScanStep(installCodexPlusPromptEnhance);
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
@@ -1053,6 +1054,9 @@
     }
     // 设置已加载成功；语音 UI 的异常不应使 provider/Fast 刷新误判为失败。
     // service-tier harness 在 70 分片提前返回，尚未初始化 93 分片的录音状态。
-    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__) runScanStep(installCodexPlusDictation);
+    if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
+      runScanStep(installCodexPlusDictation);
+      runScanStep(installCodexPlusPromptEnhance);
+    }
     return true;
   }

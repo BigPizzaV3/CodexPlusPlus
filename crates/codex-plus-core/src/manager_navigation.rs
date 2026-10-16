@@ -129,7 +129,8 @@ fn normalize_navigation(
         navigation.page = "enhance".to_string();
     }
     match (navigation.page.as_str(), navigation.section.as_deref()) {
-        ("settings" | "pluginMarket", None) | ("enhance", None | Some("stepwise" | "dictation")) => Ok(navigation),
+        ("settings" | "pluginMarket", None)
+        | ("enhance", None | Some("stepwise" | "dictation" | "promptEnhance")) => Ok(navigation),
         _ => anyhow::bail!(
             "不支持的管理工具导航：{}/{}",
             navigation.page,
