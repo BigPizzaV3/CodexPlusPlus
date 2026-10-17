@@ -102,6 +102,8 @@ Provider switching saves the current profile before applying the target profile.
 
 ## Codex Enhancements
 
+- HTTP 429 auto-resume (off by default): enable it in the manager or in-app Codex++ settings. When the native Resume button is available, the composer is empty, and the latest turn failed with HTTP 429, wait 30 seconds and click Resume once per failed turn, up to five times per chat visit. Click the status indicator to stop. Unknown hosts or unreadable latest-turn state do not trigger a click.
+
 - Session delete, bulk delete, Markdown export, and project move actions.
 - Plugin marketplace unlock, plugin auto-expand, and model whitelist handling.
 - Plain-text paste and startup acceleration.
