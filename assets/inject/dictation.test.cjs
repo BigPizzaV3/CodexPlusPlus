@@ -88,6 +88,7 @@ function fixture() {
       codexPlusBackendSettings: { activeRelayCodexProvider: "stale" },
       postJson: async () => ({ enhancementsEnabled: true, activeRelayCodexProvider: "deepseek", dictation: { enabled: false } }),
       installCodexPlusDictation: () => { installations += 1; throw Error("dictation UI unavailable"); },
+      installCodexPlusPromptEnhance: () => {},
     });
     vm.runInContext(`${scanSource.slice(scanStart, scanEnd)}\n${loaderSource}`, context);
     assert.equal(await context.loadBackendSettingsState(), true, "UI installation failure must not invalidate successfully loaded provider settings");

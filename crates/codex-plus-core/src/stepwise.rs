@@ -14,14 +14,14 @@ const MAX_SUMMARY_LENGTH: usize = 72;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StepwiseProtocol {
+pub(crate) enum StepwiseProtocol {
     ChatCompletions,
     Responses,
     AnthropicMessages,
 }
 
 impl StepwiseProtocol {
-    fn from_setting(value: &str) -> Self {
+    pub(crate) fn from_setting(value: &str) -> Self {
         match value {
             "responses" => Self::Responses,
             "anthropic_messages" => Self::AnthropicMessages,
@@ -29,7 +29,7 @@ impl StepwiseProtocol {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ChatCompletions => "chat_completions",
             Self::Responses => "responses",
@@ -354,7 +354,7 @@ pub async fn generate(
     ))
 }
 
-fn stepwise_protocols(value: &str) -> Vec<StepwiseProtocol> {
+pub(crate) fn stepwise_protocols(value: &str) -> Vec<StepwiseProtocol> {
     if value == "auto" {
         vec![
             StepwiseProtocol::ChatCompletions,
@@ -454,7 +454,7 @@ fn build_upstream_request(
     })
 }
 
-fn insert_bearer_header(headers: &mut HeaderMap, api_key: &str) -> anyhow::Result<()> {
+pub(crate) fn insert_bearer_header(headers: &mut HeaderMap, api_key: &str) -> anyhow::Result<()> {
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {api_key}"))
@@ -472,7 +472,7 @@ fn failed_result(protocol: &str, error: impl Into<String>) -> Value {
     })
 }
 
-fn redact_secret(value: &str, secret: &str) -> String {
+pub(crate) fn redact_secret(value: &str, secret: &str) -> String {
     let secret = secret.trim();
     let value = if secret.is_empty() {
         value.to_string()

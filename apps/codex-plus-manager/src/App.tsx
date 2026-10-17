@@ -107,6 +107,13 @@ import {
   type DictationPreset,
 } from "./dictation-settings";
 import {
+  defaultPromptEnhanceSettings,
+  normalizePromptEnhanceSettings,
+  promptEnhanceSettingsIssue,
+  type PromptEnhanceSettings,
+  type PromptEnhanceSettingsIssue,
+} from "./prompt-enhance-settings";
+import {
   builtinEntryToImportDocument,
   builtinRowBackfillValue,
   clearModelMetadataForSlug,
@@ -311,6 +318,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppAutoTakeoverWhenActive: string;
   codexExtraArgs: string[];
   dictation: DictationSettings;
+  promptEnhance: PromptEnhanceSettings;
   providerSyncEnabled: boolean;
   ccsDbPath: string;
   providerSyncSavedProviders: string[];
@@ -1124,6 +1132,7 @@ const defaultSettings: BackendSettings = {
   codexAppAutoTakeoverWhenActive: "defer",
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
+  promptEnhance: defaultPromptEnhanceSettings(),
   providerSyncEnabled: false,
   ccsDbPath: "",
   providerSyncSavedProviders: [],
@@ -2555,6 +2564,11 @@ export function App() {
       showNotice(t("语音输入"), dictationIssue, "failed");
       return;
     }
+    const promptEnhanceIssue = promptEnhanceSettingsValidationMessage(promptEnhanceSettingsIssue(next.promptEnhance));
+    if (promptEnhanceIssue) {
+      showNotice(t("提示词增强"), promptEnhanceIssue, "failed");
+      return;
+    }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
       setSettings(result);
@@ -2573,6 +2587,11 @@ export function App() {
     const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
     if (dictationIssue) {
       showNotice(t("语音输入"), dictationIssue, "failed");
+      return null;
+    }
+    const promptEnhanceIssue = promptEnhanceSettingsValidationMessage(promptEnhanceSettingsIssue(normalized.promptEnhance));
+    if (promptEnhanceIssue) {
+      showNotice(t("提示词增强"), promptEnhanceIssue, "failed");
       return null;
     }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
@@ -5725,6 +5744,115 @@ function DictationSettingsPanel({ form, onFormChange }: {
   );
 }
 
+function PromptEnhanceSettingsPanel({ form, onFormChange }: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+}) {
+  const updatePromptEnhance = (patch: Partial<PromptEnhanceSettings>) => onFormChange({
+    ...form,
+    promptEnhance: { ...form.promptEnhance, ...patch },
+  });
+  const issue = promptEnhanceSettingsValidationMessage(promptEnhanceSettingsIssue(form.promptEnhance));
+  return (
+    <Panel className="enhance-service-panel">
+      <CardHead title={t("提示词增强")} detail={t("把输入框里的草稿改写得更清楚，确认后再写回输入框。")} />
+      <CardContent className="settings-content">
+        <div className="settings-block enhance-service-block" id={ENHANCEMENT_SECTION_IDS.promptEnhance}>
+          <FeatureToggle
+            title={t("启用提示词增强")}
+            detail={t("输入框底部显示增强按钮。结果先在预览框里显示，可以修改，确认替换或插入后才写回输入框。")}
+            disabled={!form.enhancementsEnabled}
+            checked={form.promptEnhance.enabled}
+            onChange={(enabled) => updatePromptEnhance({ enabled })}
+          />
+          <FeatureToggle
+            title={t("使用下一步建议的连接")}
+            detail={t("沿用下一步建议页填写的 Base URL、API Key、协议和模型。关闭后可以单独指定服务。")}
+            disabled={!form.enhancementsEnabled}
+            checked={form.promptEnhance.useStepwiseConnection}
+            onChange={(useStepwiseConnection) => updatePromptEnhance({ useStepwiseConnection })}
+          />
+          {form.promptEnhance.useStepwiseConnection ? null : <>
+            <div className="form-row">
+              <Field label="Base URL">
+                <Input
+                  value={form.promptEnhance.baseUrl}
+                  onChange={(event) => updatePromptEnhance({ baseUrl: event.currentTarget.value })}
+                  placeholder="https://api.example.com/v1"
+                  spellCheck={false}
+                />
+              </Field>
+              <Field label="Model">
+                <Input
+                  value={form.promptEnhance.model}
+                  onChange={(event) => updatePromptEnhance({ model: event.currentTarget.value })}
+                  placeholder={t("例如 gpt-5.4-mini")}
+                  spellCheck={false}
+                />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label={t("协议")}>
+                <AppSelect
+                  value={form.promptEnhance.protocol}
+                  onChange={(protocol) => updatePromptEnhance({ protocol })}
+                  options={[
+                    { value: "auto", label: t("自动兼容") },
+                    { value: "chat_completions", label: "Chat Completions" },
+                    { value: "responses", label: "Responses API" },
+                    { value: "anthropic_messages", label: "Anthropic Messages" },
+                  ]}
+                />
+              </Field>
+              <Field label="API Key">
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={form.promptEnhance.apiKey}
+                  onChange={(event) => updatePromptEnhance({ apiKey: event.currentTarget.value })}
+                />
+              </Field>
+            </div>
+            <Field label={t("API Key 环境变量")}>
+              <Input
+                value={form.promptEnhance.apiKeyEnv}
+                onChange={(event) => updatePromptEnhance({ apiKeyEnv: event.currentTarget.value })}
+                placeholder="OPENAI_API_KEY"
+                spellCheck={false}
+              />
+            </Field>
+          </>}
+          <details className="stepwise-advanced enhance-service-advanced">
+            <summary>{t("高级参数")}</summary>
+            <Field label={t("改写规则")}>
+              <Textarea
+                value={form.promptEnhance.systemPrompt}
+                onChange={(event) => updatePromptEnhance({ systemPrompt: event.currentTarget.value })}
+                placeholder={t("留空使用内置规则：保留原意和代码、路径等细节，按目标、上下文、要求、预期结果整理，不编造需求。")}
+                rows={5}
+              />
+            </Field>
+            <Field label={t("超时（秒）")}>
+              <Input
+                type="number"
+                min={5}
+                max={300}
+                value={form.promptEnhance.timeoutSeconds}
+                onChange={(event) => updatePromptEnhance({ timeoutSeconds: clampNumber(Number(event.currentTarget.value), 5, 300) })}
+              />
+            </Field>
+          </details>
+          {issue ? <p className="field-hint" role="alert">{issue}</p> : null}
+          <div className="hint-line enhance-service-note">
+            <Info className="h-4 w-4" />
+            <span>{t("草稿含 @文件、技能或附件时只能插入到末尾或复制，避免整段替换时丢失。保存后无需重启 Codex。")}</span>
+          </div>
+        </div>
+      </CardContent>
+    </Panel>
+  );
+}
+
 function StepwiseSettingsPanel({ form, onFormChange, actions }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
@@ -5876,6 +6004,7 @@ function EnhanceScreen({
   const tabs: Array<{ value: EnhancementTab; label: string }> = [
     { value: "general", label: t("常用增强") },
     { value: "dictation", label: t("语音输入") },
+    { value: "promptEnhance", label: t("提示词增强") },
     { value: "stepwise", label: t("下一步建议") },
   ];
   const selectTab = (tab: EnhancementTab) => {
@@ -6021,6 +6150,9 @@ function EnhanceScreen({
       </div>
       <div className="enhance-tab-panel" id="enhance-pane-dictation" role="tabpanel" aria-labelledby="enhance-tab-dictation" hidden={activeTab !== "dictation"}>
         <DictationSettingsPanel form={form} onFormChange={onFormChange} />
+      </div>
+      <div className="enhance-tab-panel" id="enhance-pane-promptEnhance" role="tabpanel" aria-labelledby="enhance-tab-promptEnhance" hidden={activeTab !== "promptEnhance"}>
+        <PromptEnhanceSettingsPanel form={form} onFormChange={onFormChange} />
       </div>
       <div className="enhance-tab-panel" id="enhance-pane-stepwise" role="tabpanel" aria-labelledby="enhance-tab-stepwise" hidden={activeTab !== "stepwise"}>
         <StepwiseSettingsPanel form={form} onFormChange={onFormChange} actions={actions} />
@@ -13427,6 +13559,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...normalizeWhaleBalanceSettings(settings),
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
+    promptEnhance: normalizePromptEnhanceSettings(settings.promptEnhance),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
@@ -13451,6 +13584,12 @@ function dictationSettingsValidationMessage(issue: DictationSettingsIssue | null
   if (issue === "baseUrl") return t("语音 Base URL 必须是 HTTP(S) 基础地址，不能包含账号密码、查询参数或片段。");
   if (issue === "model") return t("启用语音输入时需要填写语音模型。");
   if (issue === "apiKeyEnv") return t("语音 API Key 环境变量名称只能包含字母、数字和下划线，且不能以数字开头。");
+  return null;
+}
+
+function promptEnhanceSettingsValidationMessage(issue: PromptEnhanceSettingsIssue | null): string | null {
+  if (issue === "baseUrl") return t("单独配置提示词增强服务时需要填写 Base URL。");
+  if (issue === "model") return t("单独配置提示词增强服务时需要填写模型。");
   return null;
 }
 

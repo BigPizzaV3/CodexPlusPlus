@@ -618,10 +618,56 @@ impl DictationSettings {
     }
 }
 
+/// 提示词增强配置；默认复用下一步建议的连接，也可单独指定服务。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PromptEnhanceSettings {
+    pub enabled: bool,
+    pub use_stepwise_connection: bool,
+    pub base_url: String,
+    pub api_key: String,
+    pub api_key_env: String,
+    pub protocol: String,
+    pub model: String,
+    /// 留空时使用内置改写规则。
+    pub system_prompt: String,
+    pub timeout_seconds: u64,
+}
+
+impl Default for PromptEnhanceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            use_stepwise_connection: true,
+            base_url: String::new(),
+            api_key: String::new(),
+            api_key_env: String::new(),
+            protocol: default_stepwise_protocol(),
+            model: String::new(),
+            system_prompt: String::new(),
+            timeout_seconds: 60,
+        }
+    }
+}
+
+impl PromptEnhanceSettings {
+    pub fn normalize(&mut self) {
+        self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        self.api_key = self.api_key.trim().to_string();
+        self.api_key_env = self.api_key_env.trim().to_string();
+        self.protocol = normalize_stepwise_protocol(&self.protocol);
+        self.model = self.model.trim().to_string();
+        self.system_prompt = self.system_prompt.trim().to_string();
+        self.timeout_seconds = self.timeout_seconds.clamp(5, 300);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     #[serde(default)]
     pub dictation: DictationSettings,
+    #[serde(rename = "promptEnhance", default)]
+    pub prompt_enhance: PromptEnhanceSettings,
     #[serde(rename = "codexAppPath", default)]
     pub codex_app_path: String,
     /// 自动接管官方 App：开启后用户自己双击启动官方 App 时由 Codex++ 接管并注入。
@@ -873,6 +919,7 @@ impl Default for BackendSettings {
     fn default() -> Self {
         Self {
             dictation: DictationSettings::default(),
+            prompt_enhance: PromptEnhanceSettings::default(),
             codex_app_path: String::new(),
             codex_app_auto_takeover: false,
             codex_app_auto_takeover_when_active: default_auto_takeover_when_active(),
@@ -1814,6 +1861,34 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         }
         target.insert("dictation".to_string(), Value::Object(dictation));
     }
+    if let Some(patch) = source.get("promptEnhance").and_then(Value::as_object) {
+        let mut prompt_enhance = target
+            .get("promptEnhance")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        merge_bool_setting(&mut prompt_enhance, patch, "enabled");
+        merge_bool_setting(&mut prompt_enhance, patch, "useStepwiseConnection");
+        for key in [
+            "baseUrl",
+            "apiKey",
+            "apiKeyEnv",
+            "protocol",
+            "model",
+            "systemPrompt",
+        ] {
+            if let Some(value) = patch.get(key).and_then(Value::as_str) {
+                prompt_enhance.insert(key.to_string(), Value::String(value.trim().to_string()));
+            }
+        }
+        if let Some(value) = patch.get("timeoutSeconds").and_then(Value::as_u64) {
+            prompt_enhance.insert(
+                "timeoutSeconds".to_string(),
+                Value::from(value.clamp(5, 300)),
+            );
+        }
+        target.insert("promptEnhance".to_string(), Value::Object(prompt_enhance));
+    }
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
@@ -2305,6 +2380,7 @@ fn settings_to_object(settings: &BackendSettings) -> Map<String, Value> {
 
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
     settings.dictation.normalize();
+    settings.prompt_enhance.normalize();
     settings.codex_app_whale_balance_protocol =
         match settings.codex_app_whale_balance_protocol.trim() {
             "custom" => "custom",
