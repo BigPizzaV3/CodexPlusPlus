@@ -157,6 +157,16 @@ it("目录条目按别名匹配，且只用它补分组 id、不用它决定显�
   assert.match(source, /group\.entries\.some\(\(entry\) => entry\.groupId === defaultGroupId/);
 });
 
+it("目录热替换会清除旧默认组和旧供应商映射并安排重扫", async () => {
+  const source = await readShard();
+  const changed = source.match(/function codexPlusModelPickerCatalogChanged\(\) \{[\s\S]*?\n  \}/)?.[0];
+  assert.ok(changed, "要提供目录替换通知入口");
+  assert.match(changed, /state\.defaultGroupId = ""/);
+  assert.match(changed, /state\.providerNames\.clear\(\)/);
+  assert.match(changed, /state\.signature = ""/);
+  assert.match(changed, /codexPlusModelPickerScheduleRescan\(\)/);
+});
+
 it("表头右端对齐：标题撑满剩余空间，不靠 auto 外边距推计数", async () => {
   const source = await readShard();
   // 回归：用 `margin-left:auto` 把计数推到右边时，多出「默认」徽标的那一行 auto 外边距

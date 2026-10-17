@@ -335,6 +335,8 @@ describe("managed aggregate session connection", () => {
         codexRemoteSessionProviderOverrideEnabled: () => false,
         applyCodexRemoteSessionProviderOverride: (_method: string, params: any) => params,
         applyCodexServiceTierRequestOnly: (_method: string, params: any) => params,
+        sendCodexRetainedModelRequest: (_client: unknown, send: Function, method: string, params: unknown, options: unknown) =>
+          send(method, params, options),
         loadBackendSettingsState: async () => { calls.push("settings/get"); return true; },
         codexAppServerPreparationTimeoutMs: 1500,
         sendCodexPlusDiagnostic() {}, codexPlusModelUnlockEnabled: () => false,

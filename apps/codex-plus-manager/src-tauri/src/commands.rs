@@ -3250,7 +3250,19 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
             }
             // 自动接管是常驻行为，保存后立刻生效，不必重启管理器。
             crate::auto_takeover::apply_enabled(settings.codex_app_auto_takeover);
-            settings_payload("设置已保存。", "设置保存后重新读取失败")
+            let mut result = settings_payload("设置已保存。", "设置保存后重新读取失败");
+            if result.status == "ok" {
+                // 热保存只更新目录投影，不重放供应商切换、登录文件或最近会话状态。
+                if let Err(error) = codex_plus_core::relay_config::refresh_active_model_catalog_in_home(
+                    &codex_plus_core::relay_config::default_codex_home_dir(),
+                    &result.payload.settings,
+                ) {
+                    // settings 已持久化；告知刷新失败，但仍允许已确认的重启继续应用配置。
+                    result.status = "accepted".to_string();
+                    result.message = format!("设置已保存，但模型目录刷新失败：{error}。请修正配置后重新保存。");
+                }
+            }
+            result
         }
         Err(error) => {
             let _ = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(

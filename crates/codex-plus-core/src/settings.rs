@@ -1578,6 +1578,17 @@ impl SettingsStore {
         Self { path }
     }
 
+    /// 原子保存后的文件版本，供其它进程发现配置变化；不暴露配置或凭据内容。
+    pub fn revision(&self) -> anyhow::Result<String> {
+        let metadata = match fs::metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let modified = metadata.modified()?.duration_since(std::time::UNIX_EPOCH)?;
+        Ok(format!("{}:{}", modified.as_nanos(), metadata.len()))
+    }
+
     /// 读取设置。**嵌套调用只解析、不再归一化**。
     ///
     /// 归一化会走到 `complete_relay_profile_config`，它对聚合供应商会回头读全量设置
@@ -2556,6 +2567,25 @@ fn temp_path_for(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_revision_observes_another_store_without_exposing_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let writer = super::SettingsStore::new(path.clone());
+        let reader = super::SettingsStore::new(path);
+        assert_eq!(reader.revision().unwrap(), "");
+        let mut settings = super::BackendSettings::default();
+        writer.save(&settings).unwrap();
+        let first = reader.revision().unwrap();
+        assert!(!first.is_empty());
+        settings.relay_profiles[0].name = "fixture-private-value".to_string();
+        writer.save(&settings).unwrap();
+        let second = reader.revision().unwrap();
+        assert_ne!(first, second);
+        assert!(!second.contains("fixture-private-value"));
+        assert_eq!(writer.revision().unwrap(), second);
+    }
+
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};

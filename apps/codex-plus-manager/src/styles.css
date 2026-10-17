@@ -3761,6 +3761,15 @@ details.relay-fold[open] > .relay-fold-body {
   border-top: 1px solid hsl(var(--border));
 }
 
+.confirm-modal-restart-actions {
+  justify-content: center;
+}
+
+.confirm-modal-restart-actions > button {
+  flex: 0 1 176px;
+  justify-content: center;
+}
+
 .session-index-cleanup-modal {
   max-height: min(760px, calc(100vh - 48px));
   overflow: hidden;

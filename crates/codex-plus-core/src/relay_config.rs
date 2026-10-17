@@ -2948,6 +2948,116 @@ fn apply_model_catalog_to_config(
     apply_model_catalog_to_config_with_live_policy(home, profile, config_text, true)
 }
 
+/// 只刷新当前供应商的模型目录投影及其 config.toml 指针。
+///
+/// 该入口供“保存当前供应商”使用：不会重放 profile 配置、改写 auth.json、
+/// 回填 profile 或同步全局状态。活动项是聚合供应商时，目录直接由调用方传入的
+/// settings 生成，因此保存任一被该聚合引用的成员也会立即反映到目录。
+/// 返回值表示受管目录或 config.toml 是否实际发生变化。
+pub fn refresh_active_model_catalog_in_home(
+    home: &Path,
+    settings: &BackendSettings,
+) -> anyhow::Result<bool> {
+    if !settings.relay_profiles_enabled {
+        return Ok(false);
+    }
+
+    let config_path = home.join("config.toml");
+    let metadata = match std::fs::symlink_metadata(&config_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("当前尚无 config.toml，模型目录将在应用启动配置时生成");
+        }
+        Err(error) => return Err(error).context("读取实时模型目录配置状态失败"),
+    };
+    // 原子写会替换链接本身；用户自行链接的 config.toml 不属于热刷新边界。
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("config.toml 为符号链接，未替换链接或刷新目录指针");
+    }
+
+    let current_config =
+        std::fs::read_to_string(&config_path).context("读取实时模型目录配置失败")?;
+    let profile = settings.active_relay_profile();
+    let catalog_relative = format!(
+        "model-catalogs/{}.json",
+        sanitize_catalog_filename(&profile.id)
+    );
+    let catalog_path = home.join(&catalog_relative);
+    let mut pending_catalog = None;
+
+    let next_config = if profile.relay_mode == RelayMode::Aggregate {
+        let mut doc = parse_toml_document(&current_config)
+            .map_err(|_| anyhow::anyhow!("实时 config.toml 语法无效，未刷新模型目录"))?;
+        if let Some(aggregate) = settings
+            .active_aggregate_relay_profile()
+            .filter(|aggregate| aggregate.model_aggregation_enabled)
+        {
+            let catalog_json = crate::aggregate_catalog::build_catalog_json(settings, &aggregate)?;
+            let catalog_absolute = std::path::absolute(&catalog_path)
+                .context("解析受管模型 catalog 绝对路径失败")?;
+            doc["model_catalog_json"] =
+                toml_edit::value(catalog_absolute.to_string_lossy().as_ref());
+            pending_catalog = Some((catalog_path.clone(), catalog_json));
+        } else if root_key_string(&current_config, "model_catalog_json").is_some_and(|pointer| {
+            pointer == catalog_relative
+                || std::path::absolute(&catalog_path)
+                    .ok()
+                    .is_some_and(|absolute| pointer == absolute.to_string_lossy().as_ref())
+        }) {
+            doc.remove("model_catalog_json");
+        }
+        normalize_optional_toml(doc)
+    } else {
+        let rendered = render_model_catalog_to_config_with_live_policy(
+            home,
+            &profile,
+            &current_config,
+            true,
+            &mut pending_catalog,
+        )?;
+        let rendered_doc = parse_toml_document(&rendered)?;
+        let mut current_doc = parse_toml_document(&current_config)?;
+        if let Some(pointer) = rendered_doc
+            .get("model_catalog_json")
+            .and_then(Item::as_str)
+        {
+            current_doc["model_catalog_json"] = toml_edit::value(pointer);
+        } else {
+            current_doc.remove("model_catalog_json");
+        }
+        normalize_optional_toml(current_doc)
+    };
+
+    let previous_catalog = read_optional_bytes(&catalog_path)?;
+    let catalog_changed = pending_catalog
+        .as_ref()
+        .is_some_and(|(_, contents)| previous_catalog.as_deref() != Some(contents.as_bytes()));
+    let config_changed = next_config.as_bytes() != current_config.as_bytes();
+    if !catalog_changed && !config_changed {
+        return Ok(false);
+    }
+
+    if catalog_changed
+        && let Some((path, contents)) = pending_catalog.as_ref()
+    {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::settings::atomic_write(path, contents.as_bytes())
+            .context("刷新活动供应商模型 catalog 失败")?;
+    }
+    if config_changed
+        && let Err(error) = crate::settings::atomic_write(&config_path, next_config.as_bytes())
+    {
+        if catalog_changed {
+            restore_optional_file(&catalog_path, previous_catalog.as_deref())
+                .context("config.toml 写入失败后恢复模型 catalog 失败")?;
+        }
+        return Err(error).context("刷新活动供应商模型 catalog 指针失败");
+    }
+    Ok(true)
+}
+
 /// 只修复旧版生成的相对 catalog 指针，不重放供应商配置或改写用户外部目录。
 /// 新版 Codex 的部分读取路径没有反序列化基目录，只有绝对路径能稳定加载（#2529）。
 pub fn migrate_managed_model_catalog_pointer_in_home(
@@ -3024,6 +3134,30 @@ fn apply_model_catalog_to_config_with_live_policy(
     config_text: &str,
     allow_live_external_catalog: bool,
 ) -> anyhow::Result<String> {
+    let mut pending_catalog = None;
+    let config_text = render_model_catalog_to_config_with_live_policy(
+        home,
+        profile,
+        config_text,
+        allow_live_external_catalog,
+        &mut pending_catalog,
+    )?;
+    if let Some((catalog_path, catalog_json)) = pending_catalog {
+        if let Some(parent) = catalog_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
+    }
+    Ok(config_text)
+}
+
+fn render_model_catalog_to_config_with_live_policy(
+    home: &Path,
+    profile: &RelayProfile,
+    config_text: &str,
+    allow_live_external_catalog: bool,
+    pending_catalog: &mut Option<(std::path::PathBuf, String)>,
+) -> anyhow::Result<String> {
     let catalog_relative = format!(
         "model-catalogs/{}.json",
         sanitize_catalog_filename(&profile.id)
@@ -3037,10 +3171,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     let mut config_text = config_text.to_string();
     if let Some(catalog_json) = crate::aggregate_catalog::build_catalog_for_profile(profile)? {
         let catalog_path = home.join(&catalog_relative);
-        if let Some(parent) = catalog_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
+        *pending_catalog = Some((catalog_path, catalog_json.clone()));
         let mut doc = parse_toml_document(&config_text)?;
         if root_key_string(&config_text, "model").is_none()
             && let Ok(catalog) = serde_json::from_str::<Value>(&catalog_json)
@@ -3148,15 +3279,15 @@ fn apply_model_catalog_to_config_with_live_policy(
                     return Ok(config_text.to_string());
                 }
                 if standard_responses
-                    && copy_standard_responses_catalog(
+                    && let Some(catalog_json) = build_standard_responses_catalog(
                         home,
                         &existing,
-                        &catalog_relative,
                         &entries,
                         fallback,
                         lite_supported,
                     )?
                 {
+                    *pending_catalog = Some((home.join(&catalog_relative), catalog_json));
                     let mut doc = parse_toml_document(&config_text)?;
                     doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
                     return Ok(normalize_optional_toml(doc));
@@ -3179,15 +3310,15 @@ fn apply_model_catalog_to_config_with_live_policy(
         }
         let mut doc = parse_toml_document(&config_text)?;
         if standard_responses
-            && copy_standard_responses_catalog(
+            && let Some(catalog_json) = build_standard_responses_catalog(
                 home,
                 &external_catalog,
-                &catalog_relative,
                 &entries,
                 fallback,
                 lite_supported,
             )?
         {
+            *pending_catalog = Some((home.join(&catalog_relative), catalog_json));
             doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
         } else {
             doc["model_catalog_json"] = toml_edit::value(external_catalog);
@@ -3215,9 +3346,6 @@ fn apply_model_catalog_to_config_with_live_policy(
         return Ok(normalize_optional_toml(doc));
     }
     let catalog_path = home.join(&catalog_relative);
-    if let Some(parent) = catalog_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     // Lite 线格式跟随上游能力：仅官方登录态 + ChatGPT 后端保留模板原值，
     // 公开 API / 第三方中转一律关闭（标准 Responses），不再以 provider id 近似判断。
     let catalog_json = crate::model_suffix::build_model_catalog_json_with_capabilities(
@@ -3233,7 +3361,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     } else {
         catalog_json
     };
-    crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
+    *pending_catalog = Some((catalog_path, catalog_json));
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
     Ok(normalize_optional_toml(doc))
@@ -3777,14 +3905,13 @@ fn uses_official_deepseek_responses_for_config(profile: &RelayProfile, config_te
     uses_official_deepseek_responses(profile)
 }
 
-fn copy_standard_responses_catalog(
+fn build_standard_responses_catalog(
     home: &Path,
     source: &str,
-    target_relative: &str,
     entries: &[crate::model_suffix::ModelCatalogEntry],
     fallback_window: Option<u64>,
     lite_supported: bool,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<String>> {
     let source_path = {
         let path = Path::new(source);
         if path.is_absolute() {
@@ -3794,13 +3921,13 @@ fn copy_standard_responses_catalog(
         }
     };
     let Ok(contents) = std::fs::read_to_string(source_path) else {
-        return Ok(false);
+        return Ok(None);
     };
     let Ok(mut catalog) = serde_json::from_str::<Value>(&contents) else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
-        return Ok(false);
+        return Ok(None);
     };
     let mut changed = false;
     let configured_windows = entries
@@ -3836,15 +3963,9 @@ fn copy_standard_responses_catalog(
         }
     }
     if !changed {
-        return Ok(false);
+        return Ok(None);
     }
-
-    let target = home.join(target_relative);
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(target, serde_json::to_string_pretty(&catalog)?)?;
-    Ok(true)
+    Ok(Some(serde_json::to_string_pretty(&catalog)?))
 }
 
 fn live_external_model_catalog(home: &Path) -> Option<String> {

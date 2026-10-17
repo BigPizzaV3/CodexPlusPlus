@@ -83,6 +83,19 @@
     stored: false,
   };
 
+  function codexPlusModelPickerCatalogChanged() {
+    // 服务等级契约测试在前一分片提前退出，分组状态尚未初始化。
+    if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) return;
+    const state = codexPlusModelPickerGroupsState;
+    state.defaultGroupId = "";
+    state.providerNames.clear();
+    state.providerDirty = true;
+    state.signature = "";
+    state.catalogPending = false;
+    state.catalogRetryAt = 0;
+    codexPlusModelPickerScheduleRescan();
+  }
+
   function codexPlusModelPickerText() {
     const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
     return language.startsWith("zh")

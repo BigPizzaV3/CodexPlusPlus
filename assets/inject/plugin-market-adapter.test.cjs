@@ -63,6 +63,8 @@ function fixture(handler, { enabled = true } = {}) {
     codexRemoteSessionProviderRequestMethod: () => false, codexRemoteSessionProviderOverrideEnabled: () => false,
     applyCodexRemoteSessionProviderOverride: (_, params) => params, applyCodexServiceTierRequestOnly: (_, params) => params,
     refreshCodexThreadModelBeforeTurn: async () => null,
+    // 此夹具只验证插件适配链；模型保留行为由模型记忆专项测试覆盖。
+    sendCodexRetainedModelRequest: (_client, send, method, params, options) => send(method, params, options),
     codexThreadModelRequestState: () => ({ threadId: "", model: "" }),
     NativeClient,
     postJson: async (path, payload) => {

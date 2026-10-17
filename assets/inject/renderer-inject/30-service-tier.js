@@ -1392,6 +1392,9 @@
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (typeof observeCodexModelCatalogRevision === "function") {
+        observeCodexModelCatalogRevision(settings.modelCatalogRevision);
+      }
     } catch (_) {
       return false;
     }

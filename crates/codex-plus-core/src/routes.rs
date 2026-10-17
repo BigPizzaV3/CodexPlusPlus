@@ -63,6 +63,9 @@ impl BridgeContext {
 pub trait BridgeSettingsService: Send + Sync {
     async fn get_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings>;
+    async fn model_catalog_revision(&self) -> anyhow::Result<String> {
+        Ok(String::new())
+    }
 
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         Ok(String::new())
@@ -499,6 +502,10 @@ impl CoreSettingsService {
 
 #[async_trait]
 impl BridgeSettingsService for CoreSettingsService {
+    async fn model_catalog_revision(&self) -> anyhow::Result<String> {
+        self.store.revision()
+    }
+
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
         self.store.load()
     }
@@ -985,7 +992,11 @@ async fn settings_value(
 ) -> anyhow::Result<Value> {
     let settings = result?;
     let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
-    settings_payload_value(settings, codex_app_version)
+    let mut value = settings_payload_value(settings, codex_app_version)?;
+    if let Ok(revision) = ctx.settings.model_catalog_revision().await {
+        value["modelCatalogRevision"] = json!(revision);
+    }
+    Ok(value)
 }
 
 fn backend_status_value(

@@ -100,6 +100,7 @@ export function modelRouteSaveRequiresRestart(
   current: RelayModelRouteSettings,
   proposed: RelayModelRouteSettings,
   activeLiveBaseUrl: string,
+  runtimeProxyAddress: string = PROTOCOL_PROXY_BASE_URL,
 ): boolean {
   if (!proposed.relayProfilesEnabled) return false;
   if (!settingsRequireLocalHelper(proposed)) return false;
@@ -107,5 +108,25 @@ export function modelRouteSaveRequiresRestart(
   // Persisted enhancement/protocol settings do not prove the already-running helper is healthy.
   // The first helper-dependent configuration therefore always uses the restart transaction.
   if (!currentRequiresHelper) return true;
-  return activeLiveBaseUrl.trim() !== PROTOCOL_PROXY_BASE_URL;
+  return !localProxyEndpointMatches(activeLiveBaseUrl, runtimeProxyAddress);
+}
+
+export function localProxyEndpointMatches(
+  activeLiveBaseUrl: string,
+  runtimeProxyAddress: string,
+): boolean {
+  // 端口由后端选择并持久化，不能再把迁移后的代理误判成上游直连。
+  // 地址必须来自后端；不把任意 loopback 服务当作本项目的代理。
+  try {
+    const proxy = new URL(runtimeProxyAddress.trim());
+    const live = new URL(activeLiveBaseUrl.trim());
+    if (proxy.protocol !== "http:" || proxy.hostname !== "127.0.0.1"
+        || proxy.username || proxy.password || proxy.search || proxy.hash
+        || !["", "/", "/v1", "/v1/"].includes(proxy.pathname)) return false;
+    return live.origin === proxy.origin
+      && ["/v1", "/v1/"].includes(live.pathname)
+      && !(live.username || live.password || live.search || live.hash);
+  } catch {
+    return false;
+  }
 }

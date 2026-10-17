@@ -142,12 +142,13 @@ import {
 } from "./model-metadata";
 import {
   findRelayModelRouteIssue,
-  modelRouteSaveRequiresRestart,
+  localProxyEndpointMatches,
   normalizeRelayModelRoutes,
   webSearchHistoryCompatEnabled,
   PROTOCOL_PROXY_BASE_URL,
   type RelayModelRoute,
 } from "./model-routes";
+import { relaySettingsSaveRestartReason, relaySettingsSaveCapabilityProfileNames, type RelaySaveRestartReason, type RelaySaveChoice } from "./relay-save";
 import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
@@ -1243,6 +1244,9 @@ export function App() {
     message: string;
     confirmText: string;
     cancelText: string;
+    alternateText?: string;
+    resolveAlternate?: () => void;
+    icon?: "restart" | "save";
     resolve: (confirmed: boolean) => void;
   } | null>(null);
   const [sessionIndexCleanupDialog, setSessionIndexCleanupDialog] = useState<{
@@ -1649,6 +1653,25 @@ export function App() {
         confirmText: t("确认删除"),
         cancelText: t("取消"),
         resolve,
+      });
+    });
+
+  const confirmRelaySaveRestart = (reason: RelaySaveRestartReason, capabilityProfiles: string[] = []) =>
+    new Promise<RelaySaveChoice>((resolve) => {
+      const canDeferRestart = reason === "modelCapabilities";
+      setConfirmDialog({
+        title: canDeferRestart ? t("保存模型参数") : t("保存修改并重启客户端"),
+        message: canDeferRestart
+          ? tf("本次涉及以下聚合成员的上下文窗口、自动压缩阈值或模型能力：{0}。可能需要重启才能正确加载模型参数。你可以先保存并继续使用，部分参数可能暂未生效；稍后可手动重启。现在重启可能中断正在执行的任务。", [capabilityProfiles.join("、")])
+          : reason === "proxyUnavailable"
+            ? t("当前客户端未连接到同一正常运行的本地代理，无法直接热更新此次修改。继续保存将立即重启客户端，可能中断正在执行的任务。")
+            : t("本次修改涉及客户端原生配置或登录状态，需要重新加载才能完整生效。继续保存将立即重启客户端，可能中断正在执行的任务。"),
+        confirmText: canDeferRestart ? t("保存，暂不重启") : t("继续保存并重启"),
+        alternateText: canDeferRestart ? t("继续保存并重启") : undefined,
+        resolveAlternate: canDeferRestart ? () => resolve("restart") : undefined,
+        cancelText: t("取消"),
+        icon: canDeferRestart ? "save" : "restart",
+        resolve: (confirmed) => resolve(confirmed ? (canDeferRestart ? "save" : "restart") : "cancel"),
       });
     });
 
@@ -2580,7 +2603,7 @@ export function App() {
       const saved = normalizeSettings(result.settings);
       setSettings(result);
       setSettingsForm(saved);
-      if (!silent) showNotice(t("设置保存"), result.message, result.status);
+      if (!silent || result.status !== "ok") showNotice(t("设置保存"), result.message, result.status);
       return saved;
     }
     if (result) showNotice(t("设置保存"), result.message, result.status);
@@ -3467,6 +3490,7 @@ export function App() {
       performUpdate,
       saveSettings,
       saveSettingsValue,
+      confirmRelaySaveRestart,
       refreshSettings,
       resetSettings,
       resetImageOverlaySettings,
@@ -3910,6 +3934,10 @@ export function App() {
             confirmDialog.resolve(true);
             setConfirmDialog(null);
           }}
+          onAlternate={confirmDialog.resolveAlternate ? () => {
+            confirmDialog.resolveAlternate?.();
+            setConfirmDialog(null);
+          } : undefined}
         />
       ) : null}
       {sessionIndexCleanupDialog ? (
@@ -4093,6 +4121,7 @@ type Actions = {
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
+  confirmRelaySaveRestart: (reason: RelaySaveRestartReason, capabilityProfiles?: string[]) => Promise<RelaySaveChoice>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   resetImageOverlaySettings: () => Promise<void>;
@@ -8486,28 +8515,44 @@ function RelayProfileDetail({
         : updateRelayProfile(form, profile.id, normalizedDraft));
       const settingsValidationError = relaySettingsValidation(next);
       if (settingsValidationError) return;
+      // 概览使用后端实际选择的代理端口；读取失败时保守走原有重启流程。
+      let runtimeProxyAddress = "";
+      let helperRunning = false;
+      let clientRunning = true;
+      try {
+        const runtime = await invoke<OverviewResult>("load_overview");
+        runtimeProxyAddress = runtime.runtime_health?.local_server?.address ?? "";
+        helperRunning = runtime.runtime_health?.local_server?.status === "running";
+        clientRunning = runtime.runtime_health?.codex_app?.status !== "stopped";
+      } catch {}
+      const active = activeRelayProfile(form);
       const activeLiveBaseUrl = codexBaseUrlFromConfig(
-        relayFiles?.configContents ?? profile.configContents,
+        relayFiles?.configContents ?? active.configContents, runtimeProxyAddress,
       );
-      const requiresRestart = isActive && modelRouteSaveRequiresRestart(
+      const restartReason = clientRunning ? relaySettingsSaveRestartReason(
         normalizeSettings(form),
         next,
         activeLiveBaseUrl,
-      );
-      if (requiresRestart && !window.confirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"))) {
+        runtimeProxyAddress,
+        helperRunning,
+      ) : null;
+      const saveChoice = restartReason ? await actions.confirmRelaySaveRestart(
+        restartReason,
+        restartReason === "modelCapabilities" ? relaySettingsSaveCapabilityProfileNames(normalizeSettings(form), next) : [],
+      ) : "save";
+      if (saveChoice === "cancel") {
         return;
       }
       const savedSettings = await onFormChange(next);
       if (!savedSettings) return;
-      if (requiresRestart) {
+      if (saveChoice === "restart") {
         const restarted = await actions.restart(true);
         if (!restarted) return;
         onSaved?.();
         return;
       }
-      const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
-        ?? normalizedDraft;
-      if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
+      // 客户端未运行时才应用完整启动配置；运行中的热更只保存代理设置并刷新目录。
+      if (!clientRunning && isActive && savedSettings.relayProfilesEnabled) {
         await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
       }
       onSaved?.();
@@ -11485,10 +11530,12 @@ function ConfirmDialog({
   confirm,
   onConfirm,
   onCancel,
+  onAlternate,
 }: {
-  confirm: { title: string; message: string; confirmText: string; cancelText: string };
+  confirm: { title: string; message: string; confirmText: string; cancelText: string; alternateText?: string; icon?: "restart" | "save" };
   onConfirm: () => void;
   onCancel: () => void;
+  onAlternate?: () => void;
 }) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
@@ -11502,11 +11549,14 @@ function ConfirmDialog({
         <div className="confirm-modal-body">
           <p className="modal-message">{confirm.message}</p>
         </div>
-        <Toolbar className="confirm-modal-actions">
+        <Toolbar className={`confirm-modal-actions${confirm.icon ? " confirm-modal-restart-actions" : ""}`}>
           <Button onClick={onConfirm}>
-            <Trash2 className="h-4 w-4" />
+            {confirm.icon === "save" ? <Save className="h-4 w-4" /> : confirm.icon === "restart" ? <RefreshCw className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
             {confirm.confirmText}
           </Button>
+          {confirm.alternateText && onAlternate ? (
+            <Button onClick={onAlternate} variant="secondary">{confirm.alternateText}</Button>
+          ) : null}
           <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
         </Toolbar>
       </div>
@@ -14022,18 +14072,18 @@ function parseModelSuffix(raw: string): { slug: string; window?: number } {
   return { slug: modelSlugFromRowName(raw), window: Number(window) };
 }
 
-function codexBaseUrlFromConfig(contents: string): string {
-  return codexProviderStringFromConfig(contents, "base_url");
+function codexBaseUrlFromConfig(contents: string, runtimeProxyAddress = PROTOCOL_PROXY_BASE_URL): string {
+  return codexProviderStringFromConfig(contents, "base_url", runtimeProxyAddress);
 }
 
 function codexExperimentalBearerTokenFromConfig(contents: string): string {
   return codexProviderStringFromConfig(contents, "experimental_bearer_token");
 }
 
-function codexProviderStringFromConfig(contents: string, key: string): string {
+function codexProviderStringFromConfig(contents: string, key: string, runtimeProxyAddress = PROTOCOL_PROXY_BASE_URL): string {
   const provider = rootTomlStringValue(contents, "model_provider");
   const targetSection = codexProviderSectionName(provider || "custom");
-  const fallbackSection = provider === "openai" && rootTomlStringValue(contents, "openai_base_url") === PROTOCOL_PROXY_BASE_URL
+  const fallbackSection = provider === "openai" && localProxyEndpointMatches(rootTomlStringValue(contents, "openai_base_url"), runtimeProxyAddress)
     ? codexProviderSectionName("custom") : "";
   const lines = contents.split(/\r?\n/);
   const structural = tomlStructureMask(lines);

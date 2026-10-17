@@ -23,6 +23,9 @@
   let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelCatalogLoadSeq = 0;
+  let codexModelCatalogRevision = "";
+  let codexModelCatalogAppliedEpoch = 0;
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
@@ -32,6 +35,13 @@
     || (window.__codexPlusModelCollectionSnapshots = new WeakMap());
   const codexPlusModelDefaultSnapshots = window.__codexPlusModelDefaultSnapshots
     || (window.__codexPlusModelDefaultSnapshots = new WeakMap());
+  const codexPlusModelQueryRefreshEpochs = new WeakMap();
+  // 看门狗可能重注入；复用进行中的读取与退避链，回调始终使用最新目录闭包。
+  const codexPlusNativeConfigRefreshRuntime = window.__codexPlusNativeConfigRefreshRuntime
+    || (window.__codexPlusNativeConfigRefreshRuntime = { states: new WeakMap() });
+  const codexPlusNativeConfigRefreshStates = codexPlusNativeConfigRefreshRuntime.states;
+  codexPlusNativeConfigRefreshRuntime.signature = codexPlusNativeConfigCatalogSignature;
+  codexPlusNativeConfigRefreshRuntime.refresh = refreshCodexNativeLocalUserConfig;
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
     window.__codexPlusServiceTierTest = {
@@ -73,12 +83,21 @@
           ...catalog,
         };
         codexModelCatalogLoadedAt = Date.now();
+        codexModelCatalogAppliedEpoch += 1;
         codexModelCatalogPromise = null;
       },
       loadModelCatalog: (force = false) => loadCodexModelCatalog(force),
+      observeModelCatalogRevision: (revision) => observeCodexModelCatalogRevision(revision),
+      modelCatalogState: () => ({
+        revision: codexModelCatalogRevision,
+        loadSeq: codexModelCatalogLoadSeq,
+        appliedEpoch: codexModelCatalogAppliedEpoch,
+        models: [...(codexModelCatalog.models || [])],
+      }),
       patchModelContainer: (value, hostId = "local") => patchModelContainer(value, hostId),
       patchModelArray: (models, allowEmpty = false, hostId = "local") => patchModelArray(models, allowEmpty, hostId),
       patchStatsigModelDynamicConfig: (config, hostId = "local") => patchStatsigModelDynamicConfig(config, hostId),
+      refreshCachedLocalModelQueries: () => refreshCachedLocalModelQueries(),
       patchModelJsonResponse,
       patchMcpModelResponseData,
       recordModelListRequest,
@@ -126,13 +145,22 @@
     ]);
   }
 
+  function observeCodexModelCatalogRevision(revision) {
+    if (typeof revision !== "string" || !revision || revision === codexModelCatalogRevision) return false;
+    codexModelCatalogRevision = revision;
+    void loadCodexModelCatalog(true);
+    return true;
+  }
+
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
-    codexModelCatalogPromise = readCodexAppServerPreparation("/codex-model-catalog", {})
+    const seq = ++codexModelCatalogLoadSeq;
+    const revision = codexModelCatalogRevision;
+    const request = readCodexAppServerPreparation("/codex-model-catalog", {})
       .then(async (result) => {
-        codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+        const nextCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        if ((!nextCatalog.models || nextCatalog.models.length === 0) && nextCatalog.status === "not_configured") {
           try {
             const settingsResp = await readCodexAppServerPreparation("/settings/get", {});
             if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
@@ -141,8 +169,8 @@
               if (profile && profile.modelList) {
                 const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
                 if (extraModels.length > 0) {
-                  codexModelCatalog.models = extraModels;
-                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                  nextCatalog.models = extraModels;
+                  nextCatalog.default_model = nextCatalog.default_model || extraModels[0];
                   sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
                 }
               }
@@ -151,20 +179,41 @@
             sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
           }
         }
+        if (seq !== codexModelCatalogLoadSeq || revision !== codexModelCatalogRevision) {
+          return codexModelCatalogPromise && codexModelCatalogPromise !== request
+            ? codexModelCatalogPromise
+            : codexModelCatalog;
+        }
+        // 在目录替换前记录选中模型的供应商；裸 ID 在新目录中可能已经代表另一家。
+        captureCodexAggregateSelectedModels();
+        codexModelCatalog = nextCatalog;
+        codexModelCatalogAppliedEpoch += 1;
         codexModelCatalogLoadedAt = Date.now();
+        if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__) refreshCachedLocalModelQueries();
+        if (typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
         return codexModelCatalog;
       })
       .catch((error) => {
+        if (seq !== codexModelCatalogLoadSeq || revision !== codexModelCatalogRevision) {
+          return codexModelCatalogPromise && codexModelCatalogPromise !== request
+            ? codexModelCatalogPromise
+            : codexModelCatalog;
+        }
+        captureCodexAggregateSelectedModels();
         codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        codexModelCatalogAppliedEpoch += 1;
         codexModelCatalogLoadedAt = Date.now();
+        if (typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+        if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__) refreshCachedLocalModelQueries();
         return codexModelCatalog;
       })
       .finally(() => {
-        codexModelCatalogPromise = null;
+        if (codexModelCatalogPromise === request) codexModelCatalogPromise = null;
       });
-    return codexModelCatalogPromise;
+    codexModelCatalogPromise = request;
+    return request;
   }
 
   function codexPlusModelMetadata(modelName) {
@@ -267,7 +316,7 @@
   }
 
   function modelFilterPolicy(allowed) {
-    return allowed ? `${codexRemoteSessionActiveProfile()?.id || ""}:${codexModelCatalog.model || ""}:${JSON.stringify([...allowed].sort())}` : "";
+    return allowed ? `${codexRemoteSessionActiveProfile()?.id || ""}:${codexModelCatalogAppliedEpoch}:${JSON.stringify([...allowed].sort())}` : "";
   }
 
   function sameModelCollection(left, right) {
@@ -281,15 +330,19 @@
     let changed = false;
     if (previous && previous.policy !== policy && sameModelCollection(current, previous.patched)) {
       if (!sameModelCollection(current, previous.original)) {
-        if (Array.isArray(collection)) collection.splice(0, collection.length, ...previous.original);
-        else { collection.clear(); previous.original.forEach((item) => collection.add(item)); }
+        // 恢复的描述符也要独立，后续重新投影不能反过来污染历史快照。
+        const restored = previous.original.map((item) => item && typeof item === "object" ? { ...item } : item);
+        if (Array.isArray(collection)) collection.splice(0, collection.length, ...restored);
+        else { collection.clear(); restored.forEach((item) => collection.add(item)); }
         current = [...collection];
         changed = true;
       }
     }
     if (!allowed) codexPlusModelCollectionSnapshots.delete(collection);
     else if (!previous || previous.policy !== policy || !sameModelCollection(current, previous.patched)) {
-      codexPlusModelCollectionSnapshots.set(collection, { policy, original: current, patched: null });
+      // 元数据补丁只替换顶层字段，独立描述符可保留字段原值及原有数组引用。
+      const original = current.map((item) => item && typeof item === "object" ? { ...item } : item);
+      codexPlusModelCollectionSnapshots.set(collection, { policy, original, patched: null });
     }
     return changed;
   }
@@ -362,12 +415,124 @@
     return belongsToProfile && names.length ? new Set(names) : null;
   }
 
+  function codexAggregateAllowedModelSet(hostId) {
+    if (hostId !== "local" || !codexPlusBackendSettingsLoaded
+        || codexModelCatalog.status !== "ok") return null;
+    const profile = codexRemoteSessionActiveProfile();
+    if (profile?.relayMode !== "aggregate") return null;
+    const belongsToProfile = Array.isArray(codexModelCatalog.sources)
+      && codexModelCatalog.sources.some((source) =>
+        source?.id === `aggregate:${profile.id}` && source?.type === "aggregate_model_catalog");
+    return belongsToProfile ? new Set(codexPlusModelNames()) : null;
+  }
+
+  function codexAggregateSelectedModelTarget(model, hostId, groupId = "") {
+    const allowed = codexAggregateAllowedModelSet(hostId);
+    if (!allowed || typeof model !== "string") return "";
+    const defaultGroup = codexModelCatalog.codex_plus_default_group_id;
+    if (typeof defaultGroup !== "string" || !defaultGroup) return "";
+    if (groupId) {
+      const base = model.startsWith("cpx-") ? model.slice(model.indexOf("/") + 1) : model;
+      const target = groupId === defaultGroup ? base : `cpx-${groupId}/${base}`;
+      return target !== model && allowed.has(target)
+        && codexPlusModelMetadata(target)?.codex_plus_group_id === groupId ? target : "";
+    }
+    if (allowed.has(model)) return "";
+    const prefix = `cpx-${defaultGroup}/`;
+    if (!model.startsWith(prefix)) return "";
+    const target = model.slice(prefix.length);
+    // 只迁移晋升为默认成员的旧前缀，不能凭同名模型切到另一家。
+    return allowed.has(target) && codexPlusModelMetadata(target)?.codex_plus_group_id === defaultGroup
+      ? target : "";
+  }
+
+  function codexAggregateModelPickers() {
+    const pickers = [];
+    for (const node of document.querySelectorAll("[data-codex-intelligence-trigger]")) {
+      const key = Object.keys(node).find((name) => name.startsWith("__reactFiber$"));
+      let fiber = key ? node[key] : null;
+      let picker = null;
+      let hostId = "";
+      let conversationId = "";
+      let threadId = "";
+      for (let depth = 0; fiber && depth < 128; depth += 1, fiber = fiber.return) {
+        const props = fiber.memoizedProps || {};
+        if (!picker && typeof props.model === "string" && typeof props.onSelectModel === "function"
+            && Array.isArray(props.models)) picker = props;
+        if (!hostId && typeof props.permissionsHostId === "string" && props.permissionsHostId.trim()) {
+          hostId = props.permissionsHostId.trim();
+        }
+        if (!conversationId && typeof props.conversationId === "string") conversationId = props.conversationId.trim();
+        if (!threadId && typeof props.threadId === "string") threadId = props.threadId.trim();
+      }
+      // 宿主以 conversationId 标识当前会话；不能被更近层的旧 threadId 遮蔽。
+      const owner = conversationId || threadId;
+      if (picker && hostId === "local" && !picker.lockedModelSlug && !picker.modelOptionsDisabled
+          && !picker.modelSelectionDisabled) pickers.push({ node, picker, owner, hostId });
+      else {
+        window.__codexPlusAggregateModelSelectionIdentities?.delete(node);
+        window.__codexPlusAggregateModelSelectionAttempts?.delete(node);
+      }
+    }
+    return pickers;
+  }
+
+  function captureCodexAggregateSelectedModels() {
+    if (!codexAggregateAllowedModelSet("local")) return;
+    const identities = window.__codexPlusAggregateModelSelectionIdentities
+      || (window.__codexPlusAggregateModelSelectionIdentities = new WeakMap());
+    const profileId = codexRemoteSessionActiveProfile()?.id;
+    for (const { node, picker, owner, hostId } of codexAggregateModelPickers()) {
+      if (!owner) { identities.delete(node); continue; }
+      const previous = identities.get(node);
+      // 连续保存时 React 可能尚未消费上一次迁移，保留最初的供应商身份。
+      if (previous && previous.model === picker.model && previous.owner === owner
+          && previous.hostId === hostId && previous.profileId === profileId) continue;
+      const groupId = codexPlusModelMetadata(picker.model)?.codex_plus_group_id;
+      if (typeof groupId === "string" && groupId) {
+        identities.set(node, { model: picker.model, groupId, owner, hostId, profileId });
+      }
+    }
+  }
+
+  function syncCodexAggregateSelectedModel() {
+    if (!codexAggregateAllowedModelSet("local")) return false;
+    const attempts = window.__codexPlusAggregateModelSelectionAttempts
+      || (window.__codexPlusAggregateModelSelectionAttempts = new WeakMap());
+    let changed = false;
+    for (const { node, picker, owner, hostId } of codexAggregateModelPickers()) {
+      const identities = window.__codexPlusAggregateModelSelectionIdentities;
+      const identity = identities?.get(node);
+      const retained = identity?.model === picker.model && identity?.owner === owner && identity?.hostId === hostId
+        && identity?.profileId === codexRemoteSessionActiveProfile()?.id;
+      if (identity && !retained) identities.delete(node);
+      const target = codexAggregateSelectedModelTarget(picker.model, "local", retained ? identity.groupId : "");
+      // 等 React 消费新列表后再调用原生选择入口，保留当前思考等级。
+      if (!target || !picker.models.some((entry) => entry?.model === target)) continue;
+      const signature = JSON.stringify([codexModelCatalogAppliedEpoch,
+        codexRemoteSessionActiveProfile()?.id || "", hostId, owner,
+        picker.model, target, picker.reasoningEffort || ""]);
+      const previous = attempts.get(node);
+      if (previous?.callback === picker.onSelectModel && previous.signature === signature) continue;
+      attempts.set(node, { callback: picker.onSelectModel, signature });
+      try {
+        picker.onSelectModel(target, picker.reasoningEffort);
+        changed = true;
+      } catch (error) {
+        attempts.delete(node);
+        sendCodexPlusDiagnostic("aggregate_model_selection_refresh_failed", { error: String(error?.message || error) });
+      }
+    }
+    return changed;
+  }
+
   function patchModelArray(models, allowEmpty = false, hostId) {
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
-    const allowed = codexPureApiAllowedModelSet(hostId);
+    const aggregateModels = codexAggregateAllowedModelSet(hostId);
+    const allowed = aggregateModels || codexPureApiAllowedModelSet(hostId);
     let changed = prepareModelCollection(models, allowed);
     const customModels = codexPlusModelNames();
-    if (!customModels.length) return changed;
+    if (!customModels.length && !allowed) return changed;
     if (allowed) {
       const retained = models.filter((item) => allowed.has(item.model));
       if (retained.length !== models.length) {
@@ -391,6 +556,21 @@
         changed = true;
       }
     });
+    if (aggregateModels) {
+      // app-server 可能仍缓存旧 catalog。默认成员变化会重命名 slug，必须撤掉旧前缀，
+      // 并按新目录排列；只做追加会留下旧标签、重复组及找不到新选中模型的问题。
+      const byModel = new Map(models.map((item) => [item.model, item]));
+      const ordered = [...aggregateModels].map((name) => byModel.get(name));
+      if (!sameModelCollection(models, ordered)) {
+        models.splice(0, models.length, ...ordered);
+        changed = true;
+      }
+      const defaultModel = codexModelCatalog.model || codexModelCatalog.default_model;
+      models.forEach((item) => {
+        const isDefault = item.model === defaultModel;
+        if (item.isDefault !== isDefault) { item.isDefault = isDefault; changed = true; }
+      });
+    }
     finishModelCollection(models);
     return changed;
   }
@@ -528,6 +708,193 @@
     return config;
   }
 
+  function codexPlusNativeConfigCatalogSignature() {
+    if (codexModelCatalog.status !== "ok") return "";
+    // epoch 会随轮询增长；只对目录/配置版本变化重新读原生配置。
+    return JSON.stringify([
+      codexModelCatalogRevision, codexModelCatalog.model_provider,
+      codexModelCatalog.codex_model_provider, codexModelCatalog.model,
+      codexModelCatalog.default_model, codexModelCatalog.models,
+      codexModelCatalog.modelMetadata || codexModelCatalog.model_metadata,
+      (codexModelCatalog.sources || []).map((source) => [source.id, source.type]),
+    ]);
+  }
+
+  function refreshCodexNativeLocalUserConfig(client) {
+    if (!codexPlusModelUnlockEnabled() && !codexAggregateAllowedModelSet("local")) return false;
+    const signature = codexPlusNativeConfigCatalogSignature();
+    if (!signature) return false;
+    // 原生模型 observer 依赖这个禁用自动读取的查询来决定目录和白名单。
+    // invalidateQueries 不会重新读取 disabled observer，必须复用其原生 queryFn。
+    const queries = client.getQueryCache?.()?.getAll?.() || [];
+    let requested = false;
+    for (const query of queries) {
+      const key = query?.queryKey;
+      if (!Array.isArray(key) || key.length !== 3 || key[0] !== "config"
+        || key[1] !== "user" || key[2] !== "local"
+        || typeof query.fetch !== "function" || typeof query.options?.queryFn !== "function") continue;
+      let state = codexPlusNativeConfigRefreshStates.get(query);
+      if (!state) {
+        state = { completed: "", pending: null, changedWhilePending: false, failed: "", failures: 0, retryAfter: 0, retryTimer: 0 };
+        codexPlusNativeConfigRefreshStates.set(query, state);
+      }
+      if (state.pending) {
+        if (state.pending !== signature) state.changedWhilePending = true;
+        continue;
+      }
+      if (state.completed === signature || (state.failed === signature && Date.now() < state.retryAfter)) continue;
+      requested = true;
+      if (state.retryTimer) window.clearTimeout(state.retryTimer);
+      state.retryTimer = 0;
+      // 先登记 pending，防止 fetch 同步通知 React 后再次进入扫描。
+      state.completed = "";
+      state.changedWhilePending = false;
+      state.pending = signature;
+      Promise.resolve().then(() => query.fetch(undefined, { cancelRefetch: true }))
+        .then((data) => {
+          if (data?.readSucceeded !== true || !data.response?.config) throw new Error("native config read failed");
+          state.completed = signature;
+          state.failures = 0;
+          state.retryAfter = 0;
+          sendCodexPlusDiagnostic("model_native_config_refreshed", {});
+        })
+        .catch(() => {
+          state.failures = state.failed === signature ? state.failures + 1 : 1;
+          state.failed = signature;
+          const delay = Math.min(30000, 1000 * 2 ** Math.min(state.failures - 1, 5));
+          state.retryAfter = Date.now() + delay;
+          state.retryTimer = window.setTimeout(() => {
+            state.retryTimer = 0;
+            codexPlusNativeConfigRefreshRuntime.refresh(client);
+          }, delay);
+        })
+        .finally(() => {
+          state.pending = null;
+          // 连续切换期间的旧请求结束后，再读一次最新配置，不能把旧结果视作已更新。
+          if (state.changedWhilePending || signature !== codexPlusNativeConfigRefreshRuntime.signature()) {
+            state.completed = "";
+            state.retryAfter = 0;
+            codexPlusNativeConfigRefreshRuntime.refresh(client);
+          }
+        });
+    }
+    return requested;
+  }
+
+  function codexPlusLocalModelQuery(query) {
+    const key = query?.queryKey;
+    return Array.isArray(key)
+      && key[0] === "models"
+      && key[1] === "list"
+      && key[2] === "local";
+  }
+
+  function cloneCodexPlusModelCollection(models) {
+    const next = models.map((model) => model && typeof model === "object" ? { ...model } : model);
+    transferCodexPlusModelCollectionSnapshot(models, next);
+    return next;
+  }
+
+  function transferCodexPlusModelCollectionSnapshot(models, next) {
+    const snapshot = codexPlusModelCollectionSnapshots.get(models);
+    if (snapshot && sameModelCollection(models, snapshot.patched)) {
+      // 克隆与 TanStack 结构共享都可能替换元素引用；恢复时必须匹配最终存储的元素。
+      codexPlusModelCollectionSnapshots.set(next, {
+        ...snapshot,
+        original: [...snapshot.original],
+        patched: [...next],
+      });
+    }
+  }
+
+  function patchCachedLocalModelQueryData(current) {
+    if (Array.isArray(current)) {
+      const next = cloneCodexPlusModelCollection(current);
+      return patchModelArray(next, true, "local") ? next : current;
+    }
+    if (!current || typeof current !== "object" || !Array.isArray(current.data)) return current;
+    const data = cloneCodexPlusModelCollection(current.data);
+    return patchModelArray(data, true, "local") ? { ...current, data } : current;
+  }
+
+  function codexPlusModelQueryCollection(value) {
+    if (Array.isArray(value)) return value;
+    return value && typeof value === "object" && Array.isArray(value.data) ? value.data : null;
+  }
+
+  function refreshCachedLocalModelQueries() {
+    const client = typeof findCodexQueryClient === "function"
+      ? findCodexQueryClient()
+      : (window.__REACT_QUERY_CLIENT__ || window.__codexQueryClient);
+    if (!client || typeof client.setQueryData !== "function") return false;
+    installCodexPlusModelQueryPublication(client);
+    refreshCodexNativeLocalUserConfig(client);
+    if (codexPlusModelQueryRefreshEpochs.get(client) === codexModelCatalogAppliedEpoch) return false;
+    const cache = client.getQueryCache?.();
+    const queries = (typeof cache?.findAll === "function"
+      ? cache.findAll({ queryKey: ["models", "list"] })
+      : (typeof cache?.getAll === "function" ? cache.getAll() : []))
+      .filter(codexPlusLocalModelQuery);
+    if (!queries.length) return false;
+    let published = false;
+    for (const query of queries) {
+      const currentCollection = codexPlusModelQueryCollection(query.state?.data || query.data);
+      if (!codexPlusModelUnlockEnabled() && !codexAggregateAllowedModelSet("local")
+          && (!currentCollection || !codexPlusModelCollectionSnapshots.has(currentCollection))) continue;
+      try {
+        let nextCollection = null;
+        const stored = client.setQueryData(query.queryKey, (current) => {
+          const next = patchCachedLocalModelQueryData(current);
+          nextCollection = next !== current ? codexPlusModelQueryCollection(next) : null;
+          return next;
+        });
+        const storedCollection = codexPlusModelQueryCollection(stored);
+        if (nextCollection && storedCollection && storedCollection !== nextCollection)
+          transferCodexPlusModelCollectionSnapshot(nextCollection, storedCollection);
+        published = true;
+      } catch {
+      }
+      if (typeof client.invalidateQueries === "function") {
+        try {
+          Promise.resolve(client.invalidateQueries({ queryKey: query.queryKey, exact: true })).catch(() => {});
+          published = true;
+        } catch {
+        }
+      }
+    }
+    if (!published) return false;
+    codexPlusModelQueryRefreshEpochs.set(client, codexModelCatalogAppliedEpoch);
+    sendCodexPlusDiagnostic("model_query_cache_refreshed", { queryCount: queries.length });
+    return true;
+  }
+
+  function installCodexPlusModelQueryPublication(client) {
+    // 保存后 exact invalidate 仍可能从 app-server 拿回旧目录。在通知 React 之前投影，
+    // 保证晚到响应不能把新列表覆盖回去。跨重注入复用钩子，不层层包裹 Query 原型。
+    const runtime = window.__codexPlusModelQueryPublication
+      || (window.__codexPlusModelQueryPublication = { prototypes: new WeakSet() });
+    runtime.rewrite = (query, data) => codexPlusLocalModelQuery(query)
+      && (codexPlusModelUnlockEnabled() || codexAggregateAllowedModelSet("local"))
+      ? patchCachedLocalModelQueryData(data) : data;
+    runtime.transfer = (next, stored) => {
+      const source = codexPlusModelQueryCollection(next);
+      const target = codexPlusModelQueryCollection(stored);
+      if (source && target && source !== target) transferCodexPlusModelCollectionSnapshot(source, target);
+    };
+    for (const query of client.getQueryCache?.()?.getAll?.() || []) {
+      const proto = Object.getPrototypeOf(query);
+      if (!proto || typeof proto.setData !== "function" || runtime.prototypes.has(proto)) continue;
+      const original = proto.setData;
+      proto.setData = function codexPlusPublishModelQuery(data, ...rest) {
+        const next = runtime.rewrite(this, data);
+        const stored = original.call(this, next, ...rest);
+        runtime.transfer(next, stored);
+        return stored;
+      };
+      runtime.prototypes.add(proto);
+    }
+  }
+
   function statsigClients() {
     const root = window.__STATSIG__ || globalThis.__STATSIG__;
     if (!root || typeof root !== "object") return [];
@@ -646,6 +1013,232 @@
     return result;
   }
 
+  // 原生 next-turn 设置可能仅存活到线程卸载；只记录已成功提交的模型设置。
+  function codexRememberedThreadModels() {
+    try {
+      const value = JSON.parse(localStorage.getItem("codexPlus.threadModels.v1") || "[]");
+      return Array.isArray(value) ? value.filter((entry) => entry && typeof entry.key === "string"
+        && typeof entry.model === "string" && Number.isFinite(entry.at)).slice(0, 2000) : [];
+    } catch { return []; }
+  }
+
+  function codexThreadModelStorageKey(hostId, threadId) {
+    const profile = codexRemoteSessionActiveProfile();
+    return hostId === "local" && codexPlusBackendSettingsLoaded && profile?.id && threadId
+      ? JSON.stringify([hostId, profile.id, threadId]) : "";
+  }
+
+  function codexRetainedThreadModel(hostId, threadId) {
+    const key = codexThreadModelStorageKey(hostId, threadId);
+    if (!key || codexModelCatalog.status !== "ok") return null;
+    const saved = codexRememberedThreadModels().find((entry) => entry.key === key);
+    if (!saved) return null;
+    const model = resolveCodexThreadModelSelection(saved);
+    return model ? { ...saved, model } : null;
+  }
+
+  function resolveCodexThreadModelSelection(saved) {
+    let model = saved.model;
+    if (saved.groupId) {
+      const base = model.startsWith("cpx-") ? model.slice(model.indexOf("/") + 1) : model;
+      model = saved.groupId === codexModelCatalog.codex_plus_default_group_id
+        ? base : `cpx-${saved.groupId}/${base}`;
+      if (codexPlusModelMetadata(model)?.codex_plus_group_id !== saved.groupId) return "";
+    }
+    return codexModelCatalog.status === "ok" && codexPlusModelNames().includes(model) ? model : "";
+  }
+
+  function captureCodexThreadModelSelection(params) {
+    const model = params?.model || params?.collaborationMode?.settings?.model;
+    if (typeof model !== "string" || !model || codexModelCatalog.status !== "ok"
+        || !codexPlusModelNames().includes(model)) return null;
+    return { model, effort: params?.effort ?? params?.reasoningEffort
+      ?? params?.collaborationMode?.settings?.reasoning_effort ?? null,
+      groupId: codexPlusModelMetadata(model)?.codex_plus_group_id || "" };
+  }
+
+  function rememberCodexThreadModel(method, params, result, hostId, selection, explicit = false) {
+    if (!codexThreadModelObserverActive()) return;
+    if (!["thread/settings/update", "turn/start", "thread/start"].includes(String(method))) return;
+    const threadId = params?.threadId || result?.thread?.id;
+    const key = codexThreadModelStorageKey(hostId, threadId);
+    if (selection === undefined) selection = captureCodexThreadModelSelection(params);
+    if (!key || !selection || result?.applied === false || result?.error
+        || !resolveCodexThreadModelSelection(selection)) return;
+    const previous = codexRememberedThreadModels();
+    // 发消息可能携带原生回退值；已有明确选择时不能用它覆盖。
+    if (String(method) === "turn/start" && !explicit && previous.some((item) => item.key === key)) return;
+    const remembered = previous.find((item) => item.key === key);
+    // 自动恢复的重复确认不改变记录版本，否则会把三次重试额度不断重置。
+    if (remembered && remembered.groupId === selection.groupId && remembered.effort === selection.effort
+        && resolveCodexThreadModelSelection(remembered) === resolveCodexThreadModelSelection(selection)) return;
+    const entry = { key, ...selection, at: Date.now() };
+    try {
+      localStorage.setItem("codexPlus.threadModels.v1", JSON.stringify([
+        entry, ...previous.filter((item) => item.key !== key),
+      ].slice(0, 2000)));
+    } catch { /* 存储不可用时继续原生流程。 */ }
+  }
+
+  function retainCodexThreadResumeModel(method, params, hostId) {
+    if (String(method) !== "thread/resume" || params?.model) return params;
+    const saved = codexRetainedThreadModel(hostId, params?.threadId);
+    return saved ? { ...params, model: saved.model, reasoningEffort: saved.effort } : params;
+  }
+
+  async function sendCodexRetainedModelRequest(client, send, method, params, options) {
+    if (String(method) === "send-cli-request-for-host" && params?.method) {
+      return sendCodexRetainedModelRequest({ hostId: params.hostId || client.hostId },
+        (nestedMethod, nestedParams, nestedOptions) => send(method,
+          { ...params, method: nestedMethod, params: nestedParams }, nestedOptions),
+        String(params.method), params.params, options);
+    }
+    const profileId = codexRemoteSessionActiveProfile()?.id;
+    const key = codexThreadModelStorageKey(client.hostId, params?.threadId);
+    const selection = captureCodexThreadModelSelection(params);
+    const intent = window.__codexPlusThreadModelSelections?.get(key);
+    const explicit = intent && Date.now() - intent.at < 30000
+      && resolveCodexThreadModelSelection(intent.selection) === params?.model;
+    const pending = window.__codexPlusThreadModelPending || (window.__codexPlusThreadModelPending = new Map());
+    const tracks = key && String(method) === "thread/settings/update";
+    if (tracks) pending.set(key, (pending.get(key) || 0) + 1);
+    try {
+      const next = retainCodexThreadResumeModel(method, params, client.hostId);
+      const result = await send(method, next, options);
+      if (result?.applied === false || result?.error) {
+        if (explicit && window.__codexPlusThreadModelSelections?.get(key) === intent) window.__codexPlusThreadModelSelections.delete(key);
+      }
+      if (profileId === codexRemoteSessionActiveProfile()?.id) {
+        rememberCodexThreadModel(method, next, result, client.hostId, explicit ? intent.selection : selection, !!explicit);
+      }
+      return result;
+    } catch (error) {
+      // 不支持的 RPC 会由原生回退到本地状态；其它失败不能确认用户选择。
+      const unsupported = error?.code === -32601 || /method (?:not found|unsupported|not supported)/i.test(String(error?.message || error));
+      if (explicit && !unsupported && window.__codexPlusThreadModelSelections?.get(key) === intent) window.__codexPlusThreadModelSelections.delete(key);
+      throw error;
+    } finally {
+      if (tracks) {
+        const count = (pending.get(key) || 1) - 1;
+        if (count) pending.set(key, count); else pending.delete(key);
+      }
+    }
+  }
+
+  function codexThreadModelPickerContext(node) {
+    const fiberKey = Object.keys(node).find((key) => key.startsWith("__reactFiber$"));
+    let fiber = fiberKey ? node[fiberKey] : null;
+    let picker, conversationId = "", threadId = "", hostId = "", selectedModel = "", selectedEffort = "";
+    for (let depth = 0; fiber && depth < 128; depth++, fiber = fiber.return) {
+      const props = fiber.memoizedProps || {};
+      if (!selectedModel && typeof fiber.key === "string" && codexPlusModelNames().includes(fiber.key)) selectedModel = fiber.key;
+      if (!picker && !selectedEffort) selectedEffort = [props.value, fiber.key]
+        .find((value) => ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(value)) || "";
+      if (!picker && typeof props.model === "string" && typeof props.onSelectModel === "function"
+          && Array.isArray(props.models)) picker = props;
+      if (!conversationId && typeof props.conversationId === "string") conversationId = props.conversationId;
+      if (!threadId && typeof props.threadId === "string") threadId = props.threadId;
+      if (!hostId && typeof props.permissionsHostId === "string") hostId = props.permissionsHostId;
+    }
+    return { picker, owner: conversationId || threadId, hostId, selectedModel, selectedEffort };
+  }
+
+  function observeCodexThreadModelSelection(event) {
+    if (!codexThreadModelObserverActive()) return;
+    if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+    const row = event.target?.closest?.('[role="menuitemradio"]');
+    if (!row || row.getAttribute("aria-disabled") === "true"
+        || row.closest('[inert], [hidden], [aria-hidden="true"]')) return;
+    const { picker, owner, hostId, selectedModel, selectedEffort } = codexThreadModelPickerContext(row);
+    const key = codexThreadModelStorageKey(hostId, owner);
+    if (!key || !picker || picker.lockedModelSlug || picker.modelOptionsDisabled || picker.modelSelectionDisabled) return;
+    if (!selectedEffort && !row.closest("[data-model-picker-view]")) return;
+    const selection = captureCodexThreadModelSelection({ model: selectedModel || (selectedEffort ? picker.model : ""), effort: selectedEffort || null });
+    if (!selection) return;
+    const selections = window.__codexPlusThreadModelSelections || (window.__codexPlusThreadModelSelections = new Map());
+    // 只记用户激活原生模型行的意图；原生实际选中后才持久化，取消和自动回退不算选择。
+    selections.set(key, { selection, effortOnly: !selectedModel, at: Date.now(), confirmedSince: 0 });
+    for (const [entryKey, value] of selections) if (Date.now() - value.at >= 30000) selections.delete(entryKey);
+    window.setTimeout?.(syncCodexRetainedThreadModels, 300);
+  }
+
+  function codexThreadModelObserverActive() {
+    return !observeCodexThreadModelSelection.__codexPlusInstalled
+      || window.__codexPlusThreadModelSelectionObserver === observeCodexThreadModelSelection;
+  }
+
+  function installCodexThreadModelSelectionObserver() {
+    if (!codexThreadModelObserverActive()) return;
+    if (window.__codexPlusThreadModelSelectionObserver === observeCodexThreadModelSelection) return;
+    const previous = window.__codexPlusThreadModelSelectionObserver;
+    for (const type of ["click", "keydown"]) {
+      if (previous) document.removeEventListener?.(type, previous, true);
+      document.addEventListener?.(type, observeCodexThreadModelSelection, true);
+    }
+    observeCodexThreadModelSelection.__codexPlusInstalled = true;
+    window.__codexPlusThreadModelSelectionObserver = observeCodexThreadModelSelection;
+    window.__codexPlusThreadModelRestoreStates = new WeakMap();
+  }
+
+  function syncCodexRetainedThreadModels() {
+    if (!codexThreadModelObserverActive()) return;
+    installCodexThreadModelSelectionObserver();
+    const states = window.__codexPlusThreadModelRestoreStates || (window.__codexPlusThreadModelRestoreStates = new WeakMap());
+    for (const node of document.querySelectorAll("[data-codex-intelligence-trigger]")) {
+      const { picker, owner, hostId } = codexThreadModelPickerContext(node);
+      const key = codexThreadModelStorageKey(hostId, owner);
+      if (window.__codexPlusThreadModelPending?.has(key)) continue;
+      const selections = window.__codexPlusThreadModelSelections;
+      const intent = selections?.get(key);
+      if (intent && Date.now() - intent.at < 30000) {
+        const target = resolveCodexThreadModelSelection(intent.selection);
+        if (picker?.model === target && (!intent.effortOnly || picker.reasoningEffort === intent.selection.effort)) {
+          if (!intent.confirmedSince) {
+            intent.confirmedSince = Date.now();
+            window.setTimeout?.(syncCodexRetainedThreadModels, 300);
+          } else if (Date.now() - intent.confirmedSince >= 250) {
+            rememberCodexThreadModel("thread/settings/update", { threadId: owner }, {}, hostId,
+              { ...intent.selection, effort: picker.reasoningEffort ?? null });
+            selections.delete(key);
+          }
+        } else intent.confirmedSince = 0;
+        states.delete(node);
+        continue;
+      }
+      if (intent) selections.delete(key);
+      const saved = codexRetainedThreadModel(hostId, owner);
+      if (!picker || !saved || picker.lockedModelSlug || picker.modelOptionsDisabled || picker.modelSelectionDisabled
+          || !picker.models.some((entry) => entry?.model === saved.model)) {
+        states.delete(node);
+        continue;
+      }
+      const signature = JSON.stringify([key, picker.model, picker.reasoningEffort, saved.model, saved.effort, saved.at]);
+      if (picker.model === saved.model && (saved.effort == null || picker.reasoningEffort === saved.effort)) {
+        states.delete(node);
+        continue;
+      }
+      const previous = states.get(node);
+      if (!previous || previous.signature !== signature) {
+        states.set(node, { signature, since: Date.now(), attempts: 0, inFlight: false });
+        window.setTimeout?.(syncCodexRetainedThreadModels, 1600);
+        continue;
+      }
+      // 避免在原生乐观更新、会话加载或用户切换模型过程中抢写。
+      if (previous.inFlight || previous.attempts >= 3 || Date.now() - previous.since < 1500) continue;
+      previous.attempts += 1;
+      previous.inFlight = true;
+      const settled = () => {
+        previous.inFlight = false;
+        previous.since = Date.now();
+        // 原生回调可能不返回 Promise，下一轮按实际 picker 状态确认；最多尝试三次。
+        if (codexThreadModelObserverActive() && states.get(node) === previous && previous.attempts < 3) window.setTimeout?.(syncCodexRetainedThreadModels, 1600);
+      };
+      try {
+        Promise.resolve(picker.onSelectModel(saved.model, saved.effort)).then(settled, settled);
+      } catch { settled(); }
+    }
+  }
+
   function codexPerModelContextEnabled() {
     const profile = codexRemoteSessionActiveProfile();
     if (!profile) return false;
@@ -730,8 +1323,10 @@
       return false;
     }
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
-    const originalSendRequest = (client.__codexPlusModelOriginalSendRequest || client.sendRequest).bind(client);
-    client.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    const nativeSendRequest = (client.__codexPlusModelOriginalSendRequest || client.sendRequest).bind(client);
+    client.__codexPlusModelOriginalSendRequest = nativeSendRequest;
+    const originalSendRequest = (method, params, options) =>
+      sendCodexRetainedModelRequest(client, nativeSendRequest, method, params, options);
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const managed = codexPlusPluginNativeInterceptClient(method, params, options,
@@ -934,8 +1529,11 @@
       window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
       return false;
     }
-    const originalSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
-    proto.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    const nativeSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
+    proto.__codexPlusModelOriginalSendRequest = nativeSendRequest;
+    const originalSendRequest = function (method, params, options) {
+      return sendCodexRetainedModelRequest(this, nativeSendRequest.bind(this), method, params, options);
+    };
     proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
     proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const client = this;
@@ -1120,9 +1718,16 @@
   }
 
   function runCodexModelWhitelistRefreshPass() {
-    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    syncCodexRetainedThreadModels();
+    if (!codexPlusModelUnlockEnabled()) {
+      if (codexAggregateAllowedModelSet("local")) refreshCachedLocalModelQueries();
+      syncCodexAggregateSelectedModel();
+      return false;
+    }
     try {
       patchStatsigModelWhitelist();
+      refreshCachedLocalModelQueries();
+      syncCodexAggregateSelectedModel();
       installAppServerModelRequestPatch();
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
@@ -1132,7 +1737,7 @@
   }
 
   function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
-    if (!codexPlusModelUnlockEnabled()) return;
+    if (!codexPlusModelUnlockEnabled() && !codexAggregateAllowedModelSet("local")) return;
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
     sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
@@ -1150,6 +1755,7 @@
     ensureCodexModelWhitelistInstalls();
     if (!codexPlusModelNames().length) {
       loadCodexModelCatalog();
+      runCodexModelWhitelistRefreshPass();
       return;
     }
     runCodexModelWhitelistRefreshPass();

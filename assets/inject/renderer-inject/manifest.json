@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "服务等级（service tier）读写、线程覆盖与控件同步",
-      "lines": 1402
+      "lines": 1405
     },
     {
       "name": "31-config-read-deadline.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1956
+      "lines": 1961
     },
     {
       "name": "50-navigation.js",
@@ -58,12 +58,12 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1176
+      "lines": 1782
     },
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器按供应商分组折叠（聚合供应商场景）",
-      "lines": 1027
+      "lines": 1040
     },
     {
       "name": "80-session-share.js",

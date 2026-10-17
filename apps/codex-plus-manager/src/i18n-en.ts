@@ -5,6 +5,12 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "保存修改并重启客户端": "Save changes and restart the client",
+  "继续保存并重启": "Save and restart",
+  "保存模型参数": "Save model settings",
+  "保存，暂不重启": "Save without restarting",
+  "当前客户端未连接到同一正常运行的本地代理，无法直接热更新此次修改。继续保存将立即重启客户端，可能中断正在执行的任务。": "The client is not connected to the same running local proxy, so these changes cannot be applied live. Continuing will save and immediately restart the client, which may interrupt running tasks.",
+  "本次修改涉及客户端原生配置或登录状态，需要重新加载才能完整生效。继续保存将立即重启客户端，可能中断正在执行的任务。": "These changes affect native client configuration or login state and require a reload to take full effect. Continuing will save and immediately restart the client, which may interrupt running tasks.",
   "设为当前 Key": "Select this key",
   "Key 名称": "Key name",
   "删除 Key": "Delete key",
@@ -1479,6 +1485,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "本次涉及以下聚合成员的上下文窗口、自动压缩阈值或模型能力：{0}。可能需要重启才能正确加载模型参数。你可以先保存并继续使用，部分参数可能暂未生效；稍后可手动重启。现在重启可能中断正在执行的任务。": "These changes affect the context window, automatic compaction threshold, or model capabilities of these aggregate members: {0}. A restart may be needed to load model settings correctly. You can save and keep working, though some settings may not take effect yet, and restart manually later. Restarting now may interrupt running tasks.",
   "{0} 的 API Key": "API key for {0}",
   "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column holds {1}. The current value was kept; clear the window to use the document's value.",
   "{0} 个插件": "{0} plugins",
