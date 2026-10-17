@@ -7883,3 +7883,613 @@ mod compaction_probe_body_limit_tests {
         assert!(error.to_string().contains("上游响应体超过"));
     }
 }
+#[derive(Default)]
+pub(crate) struct ResponsesSseTransformer {
+    buf: Vec<u8>,
+    event_tail: [u8; 4],
+    completed: bool,
+    failed: bool,
+    failure: Option<String>,
+}
+
+/// SSE 事件最大字节数（4 MiB），超限则 fail closed。
+const RESPONSES_SSE_MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
+
+impl ResponsesSseTransformer {
+    /// Push upstream bytes; returns bytes ready to write to the client.
+    pub(crate) fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // 失败是终态：不再累积、分帧或转发后续字节，否则被截断事件的后半段
+        // 会被当成一个完整事件发给客户端。
+        if self.failed {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for &byte in bytes {
+            if self.buf.len() >= RESPONSES_SSE_MAX_EVENT_BYTES {
+                // 丢弃已累积的残片并锁定终态；本次 chunk 中此前已完整分帧的事件
+                // 仍然有效，照常返回给调用方转发。
+                self.fail(format!(
+                    "Responses SSE 事件超过 {} 字节上限",
+                    RESPONSES_SSE_MAX_EVENT_BYTES
+                ));
+                return out;
+            }
+            self.buf.push(byte);
+            self.event_tail.rotate_left(1);
+            self.event_tail[3] = byte;
+            if self.event_tail.ends_with(b"\n\n") || self.event_tail == *b"\r\n\r\n" {
+                let event: Vec<u8> = self.buf.drain(..).collect();
+                self.event_tail = [0; 4];
+                let processed = self.process_event(&event);
+                out.extend_from_slice(&processed);
+            }
+        }
+        out
+    }
+
+    /// 是否已进入失败终态。转发层应在每个 chunk 后检查，以便在上游保持连接时
+    /// 也能立即结束当前流，而不是等到 EOF。
+    pub(crate) fn has_failed(&self) -> bool {
+        self.failed
+    }
+
+    /// Flush after stream EOF. Returns failure reason if any.
+    pub(crate) fn finish(mut self) -> Option<String> {
+        self.buf.clear();
+        if let Some(failure) = self.failure.take() {
+            return Some(failure);
+        }
+        if self.completed {
+            None
+        } else {
+            Some("原生 Responses 上游在完成事件前结束了响应流".to_string())
+        }
+    }
+
+    /// 锁定失败终态并丢弃未完成的缓冲残片。只记录第一个失败原因。
+    fn fail(&mut self, reason: String) {
+        self.failed = true;
+        self.buf.clear();
+        self.event_tail = [0; 4];
+        if self.failure.is_none() {
+            self.failure = Some(reason);
+        }
+    }
+
+    fn process_event(&mut self, event_bytes: &[u8]) -> Vec<u8> {
+        let event_str = match std::str::from_utf8(event_bytes) {
+            Ok(s) => s,
+            Err(_) => return event_bytes.to_vec(),
+        };
+
+        // 先提取 SSE event: 字段作为回退类型名（与 NativeResponsesSseObserver 一致）
+        let sse_event_name = event_str
+            .lines()
+            .find_map(|line| strip_sse_field(line, "event"))
+            .map(str::trim)
+            .map(str::to_string);
+
+        let data_json_str = match extract_sse_data(event_str) {
+            Some(s) => s,
+            None => return event_bytes.to_vec(),
+        };
+        let data_json: Value = match serde_json::from_str(&data_json_str) {
+            Ok(v) => v,
+            Err(_) => return event_bytes.to_vec(),
+        };
+
+        // data JSON 的 type 优先，回退到 SSE event: 字段
+        let event_type_owned = data_json
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or(sse_event_name);
+        let event_type = event_type_owned.as_deref().unwrap_or("");
+        
+        match event_type {
+            "response.completed" => self.completed = true,
+            "response.failed" => {
+                self.failure = Some("原生 Responses 上游返回 response.failed".to_string())
+            }
+            "response.incomplete" => {
+                self.failure =
+                    Some("原生 Responses 上游返回 response.incomplete".to_string())
+            }
+            "error" => self.failure = Some("原生 Responses 上游返回 error 事件".to_string()),
+            _ => {}
+        }
+
+        if event_type != "response.output_item.done" {
+            return event_bytes.to_vec();
+        }
+
+        let mut modified = data_json.clone();
+        if !transform_apply_patch_item(&mut modified) {
+            return event_bytes.to_vec();
+        }
+
+        let new_data = match serde_json::to_string(&modified) {
+            Ok(s) => s,
+            Err(_) => return event_bytes.to_vec(),
+        };
+        replace_sse_data_line(event_str, &new_data).into_bytes()
+    }
+}
+fn extract_sse_data(event_str: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for line in event_str.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            parts.push(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn replace_sse_data_line(event_str: &str, new_data_json: &str) -> String {
+    let mut result = String::with_capacity(event_str.len() + new_data_json.len());
+    let mut data_replaced = false;
+    let mut prev_was_data = false;
+    for line in event_str.lines() {
+        if line.starts_with("data:") {
+            if !data_replaced {
+                result.push_str("data:");
+                result.push_str(new_data_json);
+                result.push('\n');
+                data_replaced = true;
+                prev_was_data = true;
+            }
+            // skip additional data: lines (already merged)
+        } else {
+            result.push_str(line);
+            result.push('\n');
+            prev_was_data = false;
+        }
+    }
+    // Preserve original line ending style
+    let ends_crlf = event_str.ends_with("\r\n\r\n");
+    // lines() strips trailing \r\n, so we need to reconstruct the terminator.
+    // After lines(), result ends with \n from the last line.
+    if ends_crlf {
+        // Convert trailing \n to \r\n and add extra \r\n
+        if result.ends_with('\n') {
+            result.pop();
+            result.push_str("\r\n\r\n");
+        }
+    } else {
+        // LF style: result already ends with \n, add one more
+        if !result.ends_with("\n\n") {
+            result.push('\n');
+        }
+    }
+    let _ = prev_was_data;
+    result
+}
+
+fn transform_apply_patch_item(json: &mut Value) -> bool {
+    let item = match json.get_mut("item") {
+        Some(i) => i,
+        None => {
+            return false;
+        }
+    };
+    
+    let item_type = item.get("type").and_then(|v| v.as_str());
+    
+    // apply_patch 可能是 function_call 或 custom_tool_call 类型
+    if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
+        return false;
+    }
+    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    
+    let is_apply_patch = name == "apply_patch"
+        || name.starts_with("apply_patch_")
+        || name.contains("apply_patch");
+    if !is_apply_patch {
+        return false;
+    }
+    
+    // 检查 arguments 和 input 字段（apply_patch 使用 input 而不是 arguments）
+    let (field_name, arguments) = if let Some(a) = item.get("arguments").and_then(|v| v.as_str()) {
+        ("arguments", a.to_string())
+    } else if let Some(i) = item.get("input").and_then(|v| v.as_str()) {
+        ("input", i.to_string())
+    } else {
+        return false;
+    };
+    
+    if arguments.starts_with("*** Begin Patch") || arguments.starts_with("*** begin_patch") {
+        return false;
+    }
+    
+    let unwrapped = unwrap_apply_patch_arguments(&arguments);
+    
+    if unwrapped == arguments {
+        return false;
+    }
+    
+    if let Some(field) = item.get_mut(field_name) {
+        *field = Value::String(unwrapped);
+        true
+    } else {
+        false
+    }
+}
+
+fn unwrap_apply_patch_arguments(args: &str) -> String {
+    let mut current = args.to_string();
+    for _ in 0..10 {
+        if current.starts_with("*** Begin Patch") || current.starts_with("*** begin_patch") {
+            break;
+        }
+        match serde_json::from_str::<Value>(&current) {
+            Ok(value) => {
+                if let Some(obj) = value.as_object() {
+                    let mut found = false;
+                    for key in &["input", "data", "raw_patch", "patch", "text", "content"] {
+                        if let Some(val) = obj.get(*key) {
+                            if let Some(s) = val.as_str() {
+                                current = s.to_string();
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if found {
+                        continue;
+                    }
+                    let mut patch_found = false;
+                    for (_, val) in obj {
+                        if let Some(s) = val.as_str() {
+                            if s.contains("*** Begin Patch") || s.contains("*** begin_patch") {
+                                current = s.to_string();
+                                patch_found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if patch_found {
+                        continue;
+                    }
+                    break;
+                } else if let Some(s) = value.as_str() {
+                    current = s.to_string();
+                } else {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    current
+}
+
+#[cfg(test)]
+mod responses_sse_transformer_tests {
+    use super::*;
+
+    #[test]
+    fn test_context_compaction_event() {
+        // 模拟上下文压缩时的事件
+        let compaction_event = r#"event: response.compaction.delta
+data: {"type":"response.compaction.delta","delta":"..."}
+
+"#;
+        let mut transformer = ResponsesSseTransformer::default();
+        let result = transformer.push_bytes(compaction_event.as_bytes());
+        assert_eq!(result, compaction_event.as_bytes());
+    }
+
+    #[test]
+    fn test_non_apply_patch_tool_call() {
+        let event = r#"event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","name":"web_search","arguments":"{\"query\":\"test\"}"}}
+
+"#;
+        let mut transformer = ResponsesSseTransformer::default();
+        let result = transformer.push_bytes(event.as_bytes());
+        assert_eq!(result, event.as_bytes());
+    }
+
+    #[test]
+    fn test_malformed_json() {
+        let event = r#"event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","name":"apply_patch"
+
+"#;
+        let mut transformer = ResponsesSseTransformer::default();
+        let result = transformer.push_bytes(event.as_bytes());
+        assert_eq!(result, event.as_bytes());
+    }
+
+    #[test]
+    fn test_raw_text_passthrough() {
+        let input = "*** Begin Patch\n*** Add File: test.txt\n+hello\n*** End Patch";
+        assert_eq!(unwrap_apply_patch_arguments(input), input);
+    }
+
+    #[test]
+    fn test_json_input_wrapper() {
+        let inner = "*** Begin Patch\n*** Add File: test.txt\n+hello\n*** End Patch";
+        let wrapped = serde_json::to_string(&serde_json::json!({"input": inner})).unwrap();
+        assert_eq!(unwrap_apply_patch_arguments(&wrapped), inner);
+    }
+
+    #[test]
+    fn test_json_data_wrapper() {
+        let inner = "*** Begin Patch\n+line1\n*** End Patch";
+        let wrapped = serde_json::to_string(&serde_json::json!({"data": inner})).unwrap();
+        assert_eq!(unwrap_apply_patch_arguments(&wrapped), inner);
+    }
+
+    #[test]
+    fn test_double_nested_json() {
+        let inner = "*** Begin Patch\n+ok\n*** End Patch";
+        let level1 = serde_json::to_string(&serde_json::json!({"data": inner})).unwrap();
+        let level2 = serde_json::to_string(&serde_json::json!({"input": level1})).unwrap();
+        assert_eq!(unwrap_apply_patch_arguments(&level2), inner);
+    }
+
+    #[test]
+    fn test_json_string_double_serialization() {
+        let inner = "*** Begin Patch\n+test\n*** End Patch";
+        let wrapped = serde_json::to_string(&serde_json::json!(inner)).unwrap();
+        assert_eq!(unwrap_apply_patch_arguments(&wrapped), inner);
+    }
+
+    #[test]
+    fn test_unknown_field_with_patch_marker() {
+        let inner = "*** Begin Patch\n+x\n*** End Patch";
+        let wrapped =
+            serde_json::to_string(&serde_json::json!({"custom_field": inner})).unwrap();
+        assert_eq!(unwrap_apply_patch_arguments(&wrapped), inner);
+    }
+
+    #[test]
+    fn test_non_patch_json_passthrough() {
+        let input = r#"{"name":"other","value":42}"#;
+        assert_eq!(unwrap_apply_patch_arguments(input), input);
+    }
+
+    #[test]
+    fn test_non_apply_patch_event_passthrough() {
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"data:{\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n";
+        let result = t.push_bytes(event);
+        assert_eq!(result, event.to_vec());
+    }
+
+    #[test]
+    fn test_apply_patch_done_unwrapped() {
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"data:{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"apply_patch\",\"arguments\":\"{\\\"input\\\":\\\"*** Begin Patch\\\\n+hello\\\\n*** End Patch\\\"}\"}}\n\n";
+        let result = t.push_bytes(event);
+        let s = String::from_utf8_lossy(&result);
+        assert!(s.contains("*** Begin Patch"), "got: {}", s);
+        assert!(!s.contains("\\\"input\\\""), "wrapper still present: {}", s);
+    }
+
+    #[test]
+    fn test_correct_format_not_modified() {
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"data:{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"apply_patch\",\"arguments\":\"*** Begin Patch\\n+hello\\n*** End Patch\"}}\n\n";
+        let result = t.push_bytes(event);
+        assert_eq!(result, event.to_vec());
+    }
+
+    #[test]
+    fn test_incomplete_event_buffered() {
+        let mut t = ResponsesSseTransformer::default();
+        let result = t.push_bytes(b"data:{\"type\":\"response.output_text.delta\"");
+        assert!(result.is_empty());
+        let result = t.push_bytes(b"}\n\n");
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_crlf_events() {
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"data:{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"apply_patch\",\"arguments\":\"{\\\"data\\\":\\\"*** Begin Patch\\\\n+ok\\\\n*** End Patch\\\"}\"}}\r\n\r\n";
+        let result = t.push_bytes(event);
+        let s = String::from_utf8_lossy(&result);
+        assert!(s.contains("*** Begin Patch"), "got: {}", s);
+    }
+
+    #[test]
+    fn test_completed_detection() {
+        let mut t = ResponsesSseTransformer::default();
+        t.push_bytes(b"data:{\"type\":\"response.completed\"}\n\n");
+        assert!(t.finish().is_none());
+    }
+
+    #[test]
+    fn test_failed_detection() {
+        let mut t = ResponsesSseTransformer::default();
+        t.push_bytes(b"data:{\"type\":\"response.failed\",\"error\":{\"message\":\"x\"}}\n\n");
+        assert!(t.finish().is_some());
+    }
+
+    #[test]
+    fn test_multiple_events_in_chunk() {
+        let mut t = ResponsesSseTransformer::default();
+        let events = b"data:{\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n\ndata:{\"type\":\"response.output_text.delta\",\"delta\":\"b\"}\n\n";
+        let result = t.push_bytes(events);
+        assert_eq!(result, events.to_vec());
+    }
+
+    #[test]
+    fn test_event_line_preserved() {
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"event: msg\ndata:{\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n";
+        let result = t.push_bytes(event);
+        let s = String::from_utf8_lossy(&result);
+        assert!(s.contains("event: msg"), "event line lost: {}", s);
+    }
+
+    #[test]
+    fn test_replace_sse_data_crlf() {
+        let original = "data:{\"old\":true}\r\n\r\n";
+        let result = replace_sse_data_line(original, "{\"new\":true}");
+        assert!(result.contains("data:{\"new\":true}"));
+        assert!(result.ends_with("\r\n\r\n"), "CRLF not preserved: {:?}", result);
+    }
+
+    #[test]
+    fn test_replace_sse_data_lf() {
+        let original = "data:{\"old\":true}\n\n";
+        let result = replace_sse_data_line(original, "{\"new\":true}");
+        assert!(result.contains("data:{\"new\":true}"));
+        assert!(result.ends_with("\n\n"), "LF not preserved: {:?}", result);
+    }
+
+    #[test]
+    fn test_replace_preserves_event_line() {
+        let original = "event: test\ndata:{\"old\":1}\n\n";
+        let result = replace_sse_data_line(original, "{\"new\":2}");
+        assert!(result.starts_with("event: test\n"), "event line lost: {:?}", result);
+        assert!(result.contains("data:{\"new\":2}"));
+    }
+
+    #[test]
+    fn test_fragmented_byte_by_byte() {
+        let mut t = ResponsesSseTransformer::default();
+        let full = b"data:{\"type\":\"response.completed\"}\n\n";
+        for b in full {
+            t.push_bytes(&[*b]);
+        }
+        assert!(t.finish().is_none());
+    }
+
+    #[test]
+    fn test_event_name_fallback_completed() {
+        // data JSON 没有 type 字段，但 SSE event: 字段包含 response.completed
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"event: response.completed\ndata:{\"response\":{}}\n\n";
+        t.push_bytes(event);
+        assert!(t.finish().is_none(), "should detect completed via event: fallback");
+    }
+
+    #[test]
+    fn test_event_name_fallback_failed() {
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"event: response.failed\ndata:{\"error\":{\"message\":\"x\"}}\n\n";
+        t.push_bytes(event);
+        assert!(t.finish().is_some(), "should detect failed via event: fallback");
+    }
+
+    #[test]
+    fn test_event_name_data_type_takes_priority() {
+        // data JSON 的 type 应优先于 SSE event: 字段
+        let mut t = ResponsesSseTransformer::default();
+        let event = b"event: something_else\ndata:{\"type\":\"response.completed\"}\n\n";
+        t.push_bytes(event);
+        assert!(t.finish().is_none(), "data type should take priority");
+    }
+
+    #[test]
+    fn test_event_size_limit_fail_closed() {
+        let mut t = ResponsesSseTransformer::default();
+        let chunk = vec![b'a'; 1024];
+        for _ in 0..(RESPONSES_SSE_MAX_EVENT_BYTES / 1024 + 10) {
+            t.push_bytes(&chunk);
+        }
+        assert!(t.has_failed(), "oversized event must lock the failed terminal state");
+        let result = t.finish();
+        assert!(result.is_some(), "should fail closed on oversized event");
+        let reason = result.unwrap_or_default();
+        assert!(reason.contains("上限"), "unexpected failure reason: {}", reason);
+    }
+
+    #[test]
+    fn test_overflow_is_terminal_across_chunks() {
+        // 跨 chunk 回归：先推 4 MiB + 1 个不含分隔符的字节触发上限，
+        // 再推一条完整的工具事件，它绝不能被转发（否则客户端会收到残片后续）。
+        let mut t = ResponsesSseTransformer::default();
+        let mut oversized = vec![b'a'; RESPONSES_SSE_MAX_EVENT_BYTES];
+        oversized.push(b'b');
+        t.push_bytes(&oversized);
+        assert!(t.has_failed(), "overflow must be a terminal state");
+
+        let tool_event = b"data:{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"apply_patch\",\"arguments\":\"{\\\"input\\\":\\\"*** Begin Patch\\\\n+hello\\\\n*** End Patch\\\"}\"}}\n\n";
+        let out = t.push_bytes(tool_event);
+        assert!(out.is_empty(), "no bytes may be forwarded after overflow, got: {:?}", String::from_utf8_lossy(&out));
+
+        let completed = b"data:{\"type\":\"response.completed\"}\n\n";
+        assert!(t.push_bytes(completed).is_empty(), "completed event must not be forwarded after overflow");
+
+        let reason = t.finish().unwrap_or_default();
+        assert!(reason.contains("上限"), "overflow failure must win over completed, got: {}", reason);
+    }
+
+    #[test]
+    fn test_overflow_keeps_already_framed_events() {
+        // 超限前已完整分帧的合法事件仍应转发；只有被截断的那个事件被丢弃。
+        let mut t = ResponsesSseTransformer::default();
+        let good = b"data:{\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n";
+        let mut payload = good.to_vec();
+        payload.extend_from_slice(&vec![b'a'; RESPONSES_SSE_MAX_EVENT_BYTES + 1]);
+        let out = t.push_bytes(&payload);
+        assert_eq!(&out[..], &good[..], "events framed before overflow must still be forwarded");
+        assert!(t.has_failed());
+    }
+
+    #[test]
+    fn test_large_event_under_limit_is_forwarded() {
+        // 远大于旧 observer 的 64 KiB 诊断前缀、但低于上限的合法事件，
+        // 必须原字节转发且仍能识别终止类型，不能被误判为超限。
+        let mut t = ResponsesSseTransformer::default();
+        let padding = "x".repeat(512 * 1024);
+        let event = format!(
+            "data:{{\"type\":\"response.completed\",\"response\":{{\"output\":\"{}\"}}}}\n\n",
+            padding
+        );
+        assert!(
+            event.len() < RESPONSES_SSE_MAX_EVENT_BYTES,
+            "fixture must stay under the limit"
+        );
+        let out = t.push_bytes(event.as_bytes());
+        assert_eq!(
+            out,
+            event.as_bytes(),
+            "large but legal event must be forwarded byte-for-byte"
+        );
+        assert!(!t.has_failed());
+        assert!(
+            t.finish().is_none(),
+            "completed must still be detected inside a large event"
+        );
+    }
+
+    #[test]
+    fn test_failed_after_completed_reports_failure_without_leaking_payload() {
+        // failure 优先于 completed，且失败原因不得回显上游 payload。
+        let mut t = ResponsesSseTransformer::default();
+        t.push_bytes(b"data:{\"type\":\"response.completed\"}\n\n");
+        t.push_bytes(b"data:{\"type\":\"response.failed\",\"error\":{\"message\":\"private-upstream-detail\"}}\n\n");
+        let reason = t.finish().expect("failure must win over completed");
+        assert!(reason.contains("response.failed"), "unexpected reason: {}", reason);
+        assert!(
+            !reason.contains("private-upstream-detail"),
+            "failure reason must not leak upstream payload: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn test_overflow_reason_does_not_leak_payload() {
+        let mut t = ResponsesSseTransformer::default();
+        let mut oversized = b"data:{\"output\":\"secret-upstream-content".to_vec();
+        oversized.extend_from_slice(&vec![b'y'; RESPONSES_SSE_MAX_EVENT_BYTES]);
+        t.push_bytes(&oversized);
+        let reason = t.finish().expect("overflow must be reported as failure");
+        assert!(reason.contains("上限"), "unexpected reason: {}", reason);
+        assert!(
+            !reason.contains("secret-upstream-content"),
+            "overflow reason must not leak buffered payload: {}",
+            reason
+        );
+    }
+}

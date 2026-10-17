@@ -2922,17 +2922,22 @@ async fn forward_protocol_proxy_stream(
 ) -> anyhow::Result<Option<String>> {
     let mut chunks = response.bytes_stream();
     if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
-        let mut observer = crate::protocol_proxy::NativeResponsesSseObserver::default();
+        let mut transformer = crate::protocol_proxy::ResponsesSseTransformer::default();
         while let Some(chunk) = chunks.next().await {
             match chunk {
                 Ok(bytes) => {
-                    stream.write_all(&bytes).await?;
-                    observer.push_bytes(&bytes);
+                    let out = transformer.push_bytes(&bytes);
+                    stream.write_all(&out).await?;
+                    // 超限等终态失败要立即结束流，不能等上游 EOF；
+                    // 否则上游保持连接时失败迟迟不上报，残片也会继续被转发。
+                    if transformer.has_failed() {
+                        return Ok(transformer.finish());
+                    }
                 }
                 Err(error) => return Ok(Some(error.without_url().to_string())),
             }
         }
-        return Ok(observer.finish());
+        return Ok(transformer.finish());
     }
     if wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
         // Anthropic SSE → chat SSE → Responses SSE，终端事件语义与 chat 上游一致。
@@ -6194,5 +6199,78 @@ mod proxy_stream_tests {
             forward_fixture(&without_stop, false, UpstreamWireApi::AnthropicMessages).await;
         assert!(failure.is_none(), "{failure:?}");
         assert!(output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn native_overflow_ends_stream_while_upstream_stays_open() {
+        use std::time::Duration;
+        use tokio::time::{sleep, timeout};
+
+        // 调用方回归：上游发送超过事件上限且不含分隔符的数据后保持连接不关闭。
+        // 转发层必须在超限的那个 chunk 上立即上报失败终态，而不是阻塞等待 EOF，
+        // 也不能把被截断事件的后半段继续转发给客户端。
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let byte = socket.read_u8().await.unwrap();
+                request.push(byte);
+                if request.ends_with(b"\r\n\r\n") { break; }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            // 20 * 256 KiB = 5 MiB，超过 4 MiB 上限
+            let block = vec![b'a'; 256 * 1024];
+            for _ in 0..20 {
+                socket
+                    .write_all(format!("{:X}\r\n", block.len()).as_bytes())
+                    .await
+                    .unwrap();
+                socket.write_all(&block).await.unwrap();
+                socket.write_all(b"\r\n").await.unwrap();
+            }
+            // 不写终止块也不 shutdown：模拟上游保持连接
+            sleep(Duration::from_secs(60)).await;
+        });
+
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/stream?key=fixture-secret"))
+            .send()
+            .await
+            .unwrap();
+        let downstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut reader = tokio::net::TcpStream::connect(downstream.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut writer, _) = downstream.accept().await.unwrap();
+
+        let forwarded = timeout(
+            Duration::from_secs(20),
+            forward_protocol_proxy_stream(&mut writer, response, UpstreamWireApi::Responses, None),
+        )
+        .await
+        .expect("超限后必须立即结束流，而不是等待上游 EOF")
+        .unwrap();
+        writer.shutdown().await.unwrap();
+
+        let failure = forwarded.expect("超限必须被记成流失败");
+        assert!(failure.contains("上限"), "unexpected failure: {}", failure);
+        assert!(!failure.contains("fixture-secret"), "failure must not leak the URL");
+
+        let mut forwarded_bytes = Vec::new();
+        reader.read_to_end(&mut forwarded_bytes).await.unwrap();
+        assert!(
+            forwarded_bytes.is_empty(),
+            "被截断的超限事件不得转发给客户端，收到 {} 字节",
+            forwarded_bytes.len()
+        );
+        upstream_task.abort();
     }
 }
