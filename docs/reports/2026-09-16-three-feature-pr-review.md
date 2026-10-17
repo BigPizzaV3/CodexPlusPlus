@@ -37,14 +37,14 @@
 
 **我重点审的是「有没有伪造身份」**——因为这类修复很容易滑向伪造登录。结论是**没有**：
 
-注入模块 [require-identification.mjs](assets/native-browser/require-identification.mjs) 的逻辑是：
+注入模块 [require-identification.mjs](../../assets/native-browser/require-identification.mjs) 的逻辑是：
 - 只在本地下达「要求标识」的决策，**不伪造 ChatGPT 登录、不提供其他服务的认证能力**
 - 请求头带的是**真实** `x-browser-agent: ChatGPT/<session-id>`，session ID 取自当前 turn
 - 严格校验：必须是 `type === "extension"`、family 与 extension ID 精确匹配白名单（edge `odlomjlbamekndcpllcnffbgeohgkmjh` / chrome `hehggadaopoacecdllhhajmbjkdcmajg`）、`agentRequestHeaderEnabled` 必须是 boolean
 - **I/O 后重新校验** `this.clientInfo`、session_id、turn_id 未变，防止「决策被应用到已被替换的客户端或已结束的 turn」
 - 控制文件必须 `lstat().isFile()` 且非软链且 ≤1KB
 
-适配层对运行时做固定指纹校验（browser service / native worker / node / manifest / CUA 入口各一个 SHA-256），拒绝软链、未知版本、外部修改。文档 [native-browser-identification.md](docs/native-browser-identification.md) 明确写了「不安装另一个浏览器引擎、不冒充 ChatGPT 登录、不提供其他已认证服务的访问」，并且**如实标注了局限**：不声明 macOS 支持、不保证未来 Codex 版本兼容、关闭选项**不会**清除扩展里已保留的标识状态。
+适配层对运行时做固定指纹校验（browser service / native worker / node / manifest / CUA 入口各一个 SHA-256），拒绝软链、未知版本、外部修改。文档 [native-browser-identification.md](../../docs/native-browser-identification.md) 明确写了「不安装另一个浏览器引擎、不冒充 ChatGPT 登录、不提供其他已认证服务的访问」，并且**如实标注了局限**：不声明 macOS 支持、不保证未来 Codex 版本兼容、关闭选项**不会**清除扩展里已保留的标识状态。
 
 **实测**：Rust 42 个 target 全过，前端 234 全过（比当前 main 多 44 个测试）。设置默认关闭。
 
