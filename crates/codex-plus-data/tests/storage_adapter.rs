@@ -1217,6 +1217,137 @@ fn archived_lookup_matches_expected_shape() {
 }
 
 #[test]
+fn thread_usage_falls_back_when_primary_has_no_target_thread() {
+    for primary_sql in [
+        "DELETE FROM threads",
+        "UPDATE threads SET id = 'other' WHERE id = 't1'",
+    ] {
+        let tmp = tempdir().unwrap();
+        let primary_db = tmp.path().join("sqlite/state_5.sqlite");
+        let candidate_db = tmp.path().join("state_5.sqlite");
+        let other_rollout = tmp.path().join("other-rollout.jsonl");
+        let rollout_path = tmp.path().join("rollout.jsonl");
+        fs::create_dir(primary_db.parent().unwrap()).unwrap();
+        write_thread_usage_rollout(&other_rollout);
+        write_thread_usage_rollout(&rollout_path);
+        create_codex_thread_db(&primary_db, &other_rollout);
+        create_codex_thread_db(&candidate_db, &rollout_path);
+        Connection::open(&primary_db)
+            .unwrap()
+            .execute(primary_sql, [])
+            .unwrap();
+        let adapter =
+            SQLiteStorageAdapter::new(&primary_db, BackupStore::new(tmp.path().join("backups")))
+                .with_allowed_db_paths([candidate_db]);
+
+        assert_thread_usage_reads_rollout(&adapter, &rollout_path);
+    }
+}
+
+#[test]
+fn thread_usage_falls_back_when_primary_rollout_is_null_empty_or_missing() {
+    for primary_rollout in [None, Some(" \t"), Some("missing-rollout.jsonl")] {
+        let tmp = tempdir().unwrap();
+        let primary_db = tmp.path().join("primary.sqlite");
+        let candidate_db = tmp.path().join("candidate.sqlite");
+        let rollout_path = tmp.path().join("rollout.jsonl");
+        write_thread_usage_rollout(&rollout_path);
+        create_codex_thread_db(&primary_db, &rollout_path);
+        create_codex_thread_db(&candidate_db, &rollout_path);
+        let primary_rollout = primary_rollout.map(|path| {
+            if path.trim().is_empty() {
+                path.to_string()
+            } else {
+                tmp.path().join(path).to_string_lossy().to_string()
+            }
+        });
+        Connection::open(&primary_db)
+            .unwrap()
+            .execute(
+                "UPDATE threads SET rollout_path = ?1 WHERE id = 't1'",
+                [primary_rollout],
+            )
+            .unwrap();
+        let adapter =
+            SQLiteStorageAdapter::new(&primary_db, BackupStore::new(tmp.path().join("backups")))
+                .with_allowed_db_paths([candidate_db]);
+
+        assert_thread_usage_reads_rollout(&adapter, &rollout_path);
+    }
+}
+
+#[test]
+fn thread_usage_skips_missing_and_corrupt_database_candidates() {
+    let tmp = tempdir().unwrap();
+    let missing_primary = tmp.path().join("missing-primary.sqlite");
+    let missing_candidate = tmp.path().join("missing-candidate.sqlite");
+    let corrupt_db = tmp.path().join("corrupt.sqlite");
+    let candidate_db = tmp.path().join("state_5.sqlite");
+    let rollout_path = tmp.path().join("rollout.jsonl");
+    fs::write(&corrupt_db, "not a SQLite database").unwrap();
+    write_thread_usage_rollout(&rollout_path);
+    create_codex_thread_db(&candidate_db, &rollout_path);
+    let adapter = SQLiteStorageAdapter::new(
+        &missing_primary,
+        BackupStore::new(tmp.path().join("backups")),
+    )
+    .with_allowed_db_paths([missing_candidate.clone(), corrupt_db.clone(), candidate_db]);
+
+    assert_thread_usage_reads_rollout(&adapter, &rollout_path);
+
+    assert!(!missing_primary.exists());
+    assert!(!missing_candidate.exists());
+    assert_eq!(
+        fs::read_to_string(corrupt_db).unwrap(),
+        "not a SQLite database"
+    );
+}
+
+fn write_thread_usage_rollout(path: &Path) {
+    let event = json!({
+        "timestamp": "2026-06-02T05:00:00Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "last_token_usage": {
+                    "input_tokens": 1200,
+                    "cached_input_tokens": 900,
+                    "output_tokens": 120,
+                    "total_tokens": 1320
+                },
+                "model_context_window": 258400
+            }
+        }
+    });
+    fs::write(path, format!("{event}\n")).unwrap();
+}
+
+fn assert_thread_usage_reads_rollout(adapter: &SQLiteStorageAdapter, rollout_path: &Path) {
+    let target = session("local:t1", "Codex Thread");
+    let history = adapter.codex_thread_usage_history(&target);
+    let live = adapter.codex_thread_usage_live(&target);
+    assert_eq!(
+        (history["status"].as_str(), live["status"].as_str()),
+        (Some("ok"), Some("ok")),
+        "history: {history}; live: {live}"
+    );
+    for value in [&history, &live] {
+        assert_eq!(value["session_id"], "t1");
+        assert_eq!(
+            value["rollout_path"],
+            rollout_path.to_string_lossy().as_ref()
+        );
+    }
+    assert_eq!(history["history"].as_array().unwrap().len(), 1);
+    assert_eq!(history["history"][0]["usage"]["inputTokens"], 1200);
+    assert_eq!(history["history"][0]["usage"]["totalTokens"], 1320);
+    assert_eq!(live["events"].as_array().unwrap().len(), 1);
+    assert_eq!(live["events"][0]["input_tokens"], 1200);
+    assert_eq!(live["events"][0]["total_tokens"], 1320);
+}
+
+#[test]
 fn thread_usage_history_reads_rollout_token_count_events() {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("state_5.sqlite");
