@@ -38,10 +38,16 @@ impl BackupStore {
             "source_db": source_db.to_string_lossy(),
             "tables": tables,
         });
-        fs::write(
-            self.path_for(&token),
-            serde_json::to_string_pretty(&payload)?,
+        // 删除数据库和历史之前，先确认完整恢复包已写入并刷盘。
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(self.path_for(&token))?;
+        std::io::Write::write_all(
+            &mut file,
+            serde_json::to_string_pretty(&payload)?.as_bytes(),
         )?;
+        file.sync_all()?;
         Ok(token)
     }
 

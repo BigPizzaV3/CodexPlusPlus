@@ -100,6 +100,7 @@ pub fn run() {
             commands::resume_existing_codex_background(app.handle().clone());
             // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。
             auto_takeover::start_supervisor();
+            start_history_retention_collector();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -627,4 +628,25 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
             }
         }
     }
+}
+
+/// 原生退出后重试；沿用管理器生命周期，不停止真实 Codex。
+fn start_history_retention_collector() {
+    std::thread::spawn(|| {
+        while !APP_EXITING.load(Ordering::SeqCst) {
+            let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+            if home.is_dir() {
+                if let Err(error) = codex_plus_data::collect_deleted_history(&home) {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "history_retention.collect_failed",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                }
+            }
+            for _ in 0..30 {
+                if APP_EXITING.load(Ordering::SeqCst) { return; }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    });
 }

@@ -3,15 +3,23 @@ use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+mod history_graph;
+mod history_retention;
 mod session_paging;
+use history_retention::HistoryRetention;
 pub use session_paging::{LocalSessionPage, LocalSessionPager};
+
+/// 管理器在原生写入停止后重试回收，不主动终止任何会话。
+pub fn collect_deleted_history(home: &Path) -> anyhow::Result<usize> {
+    history_retention::collect_deleted_history(home)
+}
 
 pub fn delete_local_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
@@ -19,27 +27,42 @@ pub fn delete_local_from_paths(
     session: &SessionRef,
     codex_home: Option<&Path>,
 ) -> DeleteResult {
+    let db_paths = db_paths.into_iter().collect::<Vec<_>>();
+    let retention = match codex_home
+        .map(|home| HistoryRetention::acquire(home, &db_paths))
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return failed(&session.session_id, error.to_string()),
+    };
     let mut result = failed(
         &session.session_id,
         "Thread not found in local storage".to_string(),
     );
     let mut deleted_count = 0usize;
     let mut backup_tokens = Vec::new();
+    let mut mutation_errors = Vec::new();
+    let fallback_paths = db_paths.clone();
     for db_path in db_paths {
         let adapter = match codex_home {
-            Some(home) => SQLiteStorageAdapter::new(db_path, backup_store.clone())
-                .with_codex_home(home),
+            Some(home) => {
+                SQLiteStorageAdapter::new(db_path, backup_store.clone()).with_codex_home(home)
+            }
             None => SQLiteStorageAdapter::new(db_path, backup_store.clone()),
         };
-        let candidate_result = adapter.delete_local(session);
+        let candidate_result = adapter.delete_local_inner(session, retention.as_ref());
         if matches!(candidate_result.status, DeleteStatus::LocalDeleted) {
             deleted_count += 1;
             if let Some(token) = candidate_result.undo_token.as_ref() {
                 backup_tokens.push(token.clone());
             }
             result = candidate_result;
-        } else if deleted_count == 0 {
-            result = candidate_result;
+        } else {
+            if candidate_result.message != "Thread not found in local storage"
+                && adapter.db_path.exists() {
+                mutation_errors.push(candidate_result.message.clone());
+            }
+            if deleted_count == 0 { result = candidate_result; }
         }
     }
     if deleted_count > 1 {
@@ -55,9 +78,30 @@ pub fn delete_local_from_paths(
     // 索引里也没有才是真的找不到。
     if deleted_count == 0
         && matches!(result.status, DeleteStatus::Failed)
+        && result.message == "Thread not found in local storage"
+        && mutation_errors.is_empty()
         && let Some(home) = codex_home
     {
         let thread_id = normalize_codex_thread_id(&session.session_id);
+        // API 模式也可能只有 rollout 和侧边栏，没有 canonical threads 行。
+        // 这种情况仍需持久删除标记、完整依赖备份以及相同的回收规则。
+        if let Some(guard) = &retention {
+            match guard.contains_history(&thread_id) {
+                Err(error) => return failed(&thread_id, error.to_string()),
+                Ok(true) => {
+                    let Some(path) = fallback_paths.iter().find(|path| path.is_file()) else {
+                        return failed(
+                            &thread_id,
+                            "找不到可保存历史删除状态的数据库，未删除".into(),
+                        );
+                    };
+                    let adapter =
+                        SQLiteStorageAdapter::new(path, backup_store.clone()).with_codex_home(home);
+                    return adapter.delete_index_only(session, guard);
+                }
+                Ok(false) => {}
+            }
+        }
         match crate::provider_sync::remove_session_index_entry(home, &thread_id) {
             Ok(removed) if removed > 0 => {
                 result.status = DeleteStatus::LocalDeleted;
@@ -70,8 +114,8 @@ pub fn delete_local_from_paths(
             }
         }
         match crate::provider_sync::remove_thread_sidebar_references(home, &thread_id) {
-            Ok(cleanup) if cleanup.global_state_entries_removed > 0
-                || cleanup.catalog_rows_removed > 0 =>
+            Ok(cleanup)
+                if cleanup.global_state_entries_removed > 0 || cleanup.catalog_rows_removed > 0 =>
             {
                 if matches!(result.status, DeleteStatus::Failed) {
                     result.status = DeleteStatus::LocalDeleted;
@@ -83,6 +127,16 @@ pub fn delete_local_from_paths(
                 result.message = format!("{}；侧边栏索引清理失败：{error}", result.message);
             }
         }
+    }
+    if deleted_count > 0
+        && let Some(retention) = retention
+    {
+        if let Err(error) = retention.collect() {
+            result.message = format!("{}；历史回收稍后重试：{error}", result.message);
+        }
+    }
+    if !mutation_errors.is_empty() {
+        result.message = format!("{}；部分存储未完成：{}", result.message, mutation_errors.join("; "));
     }
     result
 }
@@ -104,6 +158,9 @@ enum SchemaKind {
 
 fn codex_thread_filter(db: &Connection) -> anyhow::Result<String> {
     let mut subagent_filters = Vec::new();
+    if has_table(db, "codex_plus_deleted_threads")? {
+        subagent_filters.push("NOT EXISTS (SELECT 1 FROM codex_plus_deleted_threads d WHERE d.thread_id = threads.id)");
+    }
     if has_table(db, "thread_spawn_edges")?
         && table_columns(db, "thread_spawn_edges")?
             .iter()
@@ -156,6 +213,45 @@ impl ToSql for OwnedSqlValue {
 }
 
 impl SQLiteStorageAdapter {
+    fn delete_index_only(
+        &self,
+        session: &SessionRef,
+        retention: &HistoryRetention,
+    ) -> DeleteResult {
+        let id = normalize_codex_thread_id(&session.session_id);
+        let result = (|| -> anyhow::Result<DeleteResult> {
+            let mut db = Connection::open(&self.db_path)?;
+            if HistoryRetention::is_deleted(&db, &id)? {
+                anyhow::bail!("此会话已删除");
+            }
+            let mut tables = Map::new();
+            self.add_thread_sidebar_backups(&mut tables, &id)?;
+            retention.prepare_delete(&id, &mut tables)?;
+            let token =
+                self.backup_store
+                    .write_backup(&id, &self.db_path, Value::Object(tables))?;
+            let tx = db.transaction()?;
+            HistoryRetention::mark_deleted(&tx, &id, &token)?;
+            tx.commit()?;
+            let mut result = local_deleted(&id, &token, &self.backup_store.path_for(&token));
+            if let Some(home) = &self.codex_home {
+                if let Err(error) = crate::provider_sync::remove_session_index_entry(home, &id)
+                    .and_then(|_| {
+                        crate::provider_sync::remove_thread_sidebar_references(home, &id)
+                            .map(|_| ())
+                    })
+                {
+                    result.message = format!("已保留删除状态；侧边栏清理稍后重试：{error}");
+                }
+            }
+            if let Err(error) = retention.collect() {
+                result.message = format!("{}；历史回收稍后重试：{error}", result.message);
+            }
+            Ok(result)
+        })();
+        result.unwrap_or_else(|error| failed(&id, error.to_string()))
+    }
+
     pub fn new(db_path: impl Into<PathBuf>, backup_store: BackupStore) -> Self {
         let db_path = db_path.into();
         Self {
@@ -200,11 +296,7 @@ impl SQLiteStorageAdapter {
                 "候选路径：{}",
                 others
                     .iter()
-                    .map(|path| format!(
-                        "{} (exists: {})",
-                        path.to_string_lossy(),
-                        path.is_file()
-                    ))
+                    .map(|path| format!("{} (exists: {})", path.to_string_lossy(), path.is_file()))
                     .collect::<Vec<_>>()
                     .join("、")
             ));
@@ -216,6 +308,31 @@ impl SQLiteStorageAdapter {
     }
 
     pub fn delete_local(&self, session: &SessionRef) -> DeleteResult {
+        let retention = match self
+            .codex_home
+            .as_ref()
+            .map(|home| HistoryRetention::acquire(home, &self.allowed_db_paths))
+            .transpose()
+        {
+            Ok(value) => value,
+            Err(error) => return failed(&session.session_id, error.to_string()),
+        };
+        let mut result = self.delete_local_inner(session, retention.as_ref());
+        if matches!(result.status, DeleteStatus::LocalDeleted)
+            && let Some(retention) = retention
+        {
+            if let Err(error) = retention.collect() {
+                result.message = format!("{}；历史回收稍后重试：{error}", result.message);
+            }
+        }
+        result
+    }
+
+    fn delete_local_inner(
+        &self,
+        session: &SessionRef,
+        retention: Option<&HistoryRetention>,
+    ) -> DeleteResult {
         if !self.db_path.exists() {
             return failed(&session.session_id, self.database_not_found_message());
         }
@@ -223,7 +340,9 @@ impl SQLiteStorageAdapter {
             let mut db = Connection::open(&self.db_path)?;
             match schema_kind(&db)? {
                 Some(SchemaKind::GenericSessions) => self.delete_generic_session(&mut db, session),
-                Some(SchemaKind::CodexThreads) => self.delete_codex_thread(&mut db, session),
+                Some(SchemaKind::CodexThreads) => {
+                    self.delete_codex_thread(&mut db, session, retention)
+                }
                 Some(SchemaKind::CodexAutomationRuns) => {
                     self.delete_codex_automation_run(&mut db, session)
                 }
@@ -302,7 +421,15 @@ impl SQLiteStorageAdapter {
 
     pub fn undo(&self, token: &str) -> DeleteResult {
         let result = (|| -> anyhow::Result<DeleteResult> {
-            let backups = undo_backups(&self.backup_store, token)?;
+            let retention = self
+                .codex_home
+                .as_ref()
+                .map(|home| HistoryRetention::acquire(home, &self.allowed_db_paths))
+                .transpose()?;
+            let mut backups = undo_backups(&self.backup_store, token)?;
+            if let Some(retention) = &retention {
+                retention.prepare_undo(&mut backups)?;
+            }
             let session_id = backups[0]["session_id"].as_str().unwrap_or("").to_string();
             restore_backups(
                 &backups,
@@ -310,6 +437,9 @@ impl SQLiteStorageAdapter {
                 &self.allowed_db_paths,
                 self.codex_home.as_deref(),
             )?;
+            if let Some(retention) = retention {
+                retention.finish_undo(&backups)?;
+            }
             Ok(DeleteResult {
                 status: DeleteStatus::Undone,
                 session_id,
@@ -487,7 +617,8 @@ impl SQLiteStorageAdapter {
             .then_some(path)
         };
         for db_path in &self.allowed_db_paths {
-            let Ok(db) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+            let Ok(db) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            else {
                 continue;
             };
             let _ = db.busy_timeout(std::time::Duration::from_millis(50));
@@ -521,12 +652,12 @@ impl SQLiteStorageAdapter {
                 }
                 budget -= 1;
                 let Ok(entry) = entry else { continue };
-                let Ok(kind) = entry.file_type() else { continue };
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
                 if kind.is_dir() && depth < 3 {
                     pending.push((entry.path(), depth + 1));
-                } else if kind.is_file()
-                    && entry.file_name().to_string_lossy().ends_with(&suffix)
-                {
+                } else if kind.is_file() && entry.file_name().to_string_lossy().ends_with(&suffix) {
                     return fs::canonicalize(entry.path()).ok();
                 }
             }
@@ -596,6 +727,7 @@ impl SQLiteStorageAdapter {
         &self,
         db: &mut Connection,
         session: &SessionRef,
+        retention: Option<&HistoryRetention>,
     ) -> anyhow::Result<DeleteResult> {
         let thread_id = normalize_codex_thread_id(&session.session_id);
         let thread_rows = select_dicts(db, "SELECT * FROM threads WHERE id = ?1", &[&thread_id])?;
@@ -603,6 +735,12 @@ impl SQLiteStorageAdapter {
             return Ok(failed(
                 &session.session_id,
                 "Thread not found in local storage".to_string(),
+            ));
+        }
+        if HistoryRetention::is_deleted(db, &thread_id)? {
+            return Ok(failed(
+                &thread_id,
+                "此会话已删除，引用中的历史仍被保留".to_string(),
             ));
         }
         let mut tables = Map::new();
@@ -644,16 +782,35 @@ impl SQLiteStorageAdapter {
         )?;
         let (file_backups, unreadable_rollouts) =
             rollout_file_backups(tables.get("threads").and_then(Value::as_array));
+        if retention.is_some() && !unreadable_rollouts.is_empty() {
+            anyhow::bail!("历史读取失败，未删除：{}", unreadable_rollouts.join("; "));
+        }
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
         }
         self.add_thread_sidebar_backups(&mut tables, &thread_id)?;
+        let retain_history = if let Some(guard) = retention {
+            guard.prepare_delete(&thread_id, &mut tables)?;
+            true
+        } else {
+            false
+        };
         let token =
             self.backup_store
                 .write_backup(&thread_id, &self.db_path, Value::Object(tables))?;
         let backup_path = self.backup_store.path_for(&token);
         let delete_result = (|| -> anyhow::Result<()> {
             let tx = db.transaction()?;
+            if retention.is_some() {
+                HistoryRetention::mark_deleted(&tx, &thread_id, &token)?;
+            }
+            if retain_history {
+                if has_columns(&tx, "threads", &["archived"])? {
+                    tx.execute("UPDATE threads SET archived=1 WHERE id=?1", [&thread_id])?;
+                }
+                tx.commit()?;
+                return Ok(());
+            }
             delete_related_rows(&tx, "thread_dynamic_tools", "thread_id = ?1", &[&thread_id])?;
             delete_related_rows(&tx, "thread_goals", "thread_id = ?1", &[&thread_id])?;
             delete_related_rows(
@@ -688,7 +845,7 @@ impl SQLiteStorageAdapter {
             .into_iter()
             .map(|path| format!("{path}: 读取失败，未删除"))
             .collect::<Vec<_>>();
-        for file in file_backups {
+        for file in file_backups.into_iter().filter(|_| !retain_history) {
             if let Some(path) = file.get("path").and_then(Value::as_str) {
                 if let Err(err) = fs::remove_file(path) {
                     if err.kind() != std::io::ErrorKind::NotFound {
@@ -697,16 +854,16 @@ impl SQLiteStorageAdapter {
                 }
             }
         }
-        let session_index_note = self
-            .codex_home
-            .as_deref()
-            .and_then(|home| {
-                crate::provider_sync::remove_session_index_entry(home, &thread_id)
-                    .err()
-                    .map(|error| format!("session_index.jsonl 清理失败：{error}"))
-            });
+        let session_index_note = self.codex_home.as_deref().and_then(|home| {
+            crate::provider_sync::remove_session_index_entry(home, &thread_id)
+                .err()
+                .map(|error| format!("session_index.jsonl 清理失败：{error}"))
+        });
         if !file_errors.is_empty() {
-            let mut message = format!("本地数据库已删除，但文件删除失败：{}", file_errors.join("; "));
+            let mut message = format!(
+                "本地数据库已删除，但文件删除失败：{}",
+                file_errors.join("; ")
+            );
             if let Some(note) = session_index_note.as_deref() {
                 message = format!("{message}；{note}");
             }
@@ -719,6 +876,11 @@ impl SQLiteStorageAdapter {
             });
         }
         let mut result = local_deleted(&thread_id, &token, &backup_path);
+        if retain_history {
+            result.message =
+                "已从列表删除并创建备份；引用中的历史保留，最后引用删除且 Codex 停止写入后自动回收"
+                    .to_string();
+        }
         if let Some(note) = session_index_note.as_deref() {
             result.message = format!("{}；{}", result.message, note);
         }
@@ -1088,6 +1250,9 @@ fn restore_backups(
         let Some(tables) = backup["tables"].as_object() else {
             continue;
         };
+        if tables.contains_key("__history_files") && codex_home.is_none() {
+            anyhow::bail!("history dependency restore requires a Codex home");
+        }
         let source_db = backup_source_db(backup, fallback_db_path, allowed_db_paths)?;
         let db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         validate_restore_tables(tables)?;
@@ -1105,11 +1270,6 @@ fn restore_backups(
         let Some(tables) = backup["tables"].as_object() else {
             continue;
         };
-        let source_db = backup_source_db(backup, fallback_db_path, allowed_db_paths)?;
-        let mut db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        let tx = db.transaction()?;
-        restore_rows(&tx, tables)?;
-        tx.commit()?;
         if let Some(files) = tables.get("__files").and_then(Value::as_array) {
             for file in files {
                 let Some(path) = file.get("path").and_then(Value::as_str) else {
@@ -1123,9 +1283,34 @@ fn restore_backups(
                 if let Some(parent) = Path::new(path).parent() {
                     fs::create_dir_all(parent)?;
                 }
-                fs::write(path, bytes)?;
+                match fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                {
+                    Ok(mut file) => {
+                        std::io::Write::write_all(&mut file, &bytes)?;
+                        file.sync_all()?;
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::AlreadyExists
+                            && tables.contains_key("__history_files")
+                            && fs::read(path)?.starts_with(&bytes) => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
+    }
+    // 整组文件持久化后才激活任何数据库中的会话。
+    for backup in backups {
+        let Some(tables) = backup["tables"].as_object() else {
+            continue;
+        };
+        let source_db = backup_source_db(backup, fallback_db_path, allowed_db_paths)?;
+        let mut db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let tx = db.transaction()?;
+        restore_rows(&tx, tables)?;
+        tx.commit()?;
         if let Some(entries) = tables.get("__session_index").and_then(Value::as_array) {
             let lines = entries
                 .iter()
@@ -1134,7 +1319,7 @@ fn restore_backups(
                 .collect::<Vec<_>>();
             if !lines.is_empty() {
                 if let Some(home) = codex_home {
-                    let _ = crate::provider_sync::restore_session_index_entries(home, &lines);
+                    crate::provider_sync::restore_session_index_entries(home, &lines)?;
                 }
             }
         }
@@ -1173,6 +1358,31 @@ fn restore_rows(db: &Connection, tables: &Map<String, Value>) -> anyhow::Result<
                 }
                 insert_row(db, table, row)?;
             }
+        }
+    }
+    for row in tables
+        .get("__restore_archived")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if has_columns(db, "threads", &["archived"])? {
+            db.execute(
+                "UPDATE threads SET archived=?1 WHERE id=?2",
+                [
+                    OwnedSqlValue(json_to_sql_value(&row["archived"])),
+                    OwnedSqlValue(json_to_sql_value(&row["id"])),
+                ],
+            )?;
+        }
+        if has_columns(db, "threads", &["archived_at"])? {
+            db.execute(
+                "UPDATE threads SET archived_at=?1 WHERE id=?2",
+                [
+                    OwnedSqlValue(json_to_sql_value(&row["archived_at"])),
+                    OwnedSqlValue(json_to_sql_value(&row["id"])),
+                ],
+            )?;
         }
     }
     Ok(())
@@ -1228,7 +1438,8 @@ pub(crate) fn has_table(db: &Connection, table: &str) -> anyhow::Result<bool> {
             [table],
             |_| Ok(()),
         )
-        .is_ok())
+        .optional()?
+        .is_some())
 }
 
 fn has_columns(db: &Connection, table: &str, columns: &[&str]) -> anyhow::Result<bool> {
@@ -1281,6 +1492,8 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "__files",
         "__session_index",
         "__sidebar",
+        "__history_files",
+        "__restore_archived",
     ];
     for table in tables.keys() {
         if !allowed.contains(&table.as_str()) {
@@ -1388,7 +1601,7 @@ fn detect_file_restore_conflicts(tables: &Map<String, Value>) -> anyhow::Result<
 }
 
 fn allowed_backup_file_paths(tables: &Map<String, Value>) -> HashSet<String> {
-    tables
+    let mut paths: HashSet<String> = tables
         .get("threads")
         .and_then(Value::as_array)
         .into_iter()
@@ -1404,7 +1617,18 @@ fn allowed_backup_file_paths(tables: &Map<String, Value>) -> HashSet<String> {
             }
             views
         })
-        .collect()
+        .collect();
+    for file in tables
+        .get("__history_files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(path) = file["path"].as_str() {
+            paths.insert(path.to_string());
+        }
+    }
+    paths
 }
 
 fn insert_row(db: &Connection, table: &str, row: &Map<String, Value>) -> anyhow::Result<()> {

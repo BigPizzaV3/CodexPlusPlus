@@ -24,5 +24,5 @@ pub use provider_sync::{
     try_acquire_provider_sync_lifecycle_guard, validate_provider_sync_target,
 };
 pub use storage::{
-    LocalSession, LocalSessionPage, LocalSessionPager, SQLiteStorageAdapter, delete_local_from_paths,
+    LocalSession, LocalSessionPage, LocalSessionPager, SQLiteStorageAdapter, delete_local_from_paths, collect_deleted_history,
 };

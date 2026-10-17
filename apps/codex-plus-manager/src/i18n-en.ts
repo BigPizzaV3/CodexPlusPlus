@@ -708,8 +708,8 @@ export const EN_PLAIN: Record<string, string> = {
   "点击建议后自动发送；关闭时只填入输入框。": "Automatically sends after clicking a suggestion. When off, it only fills the composer.",
   "刚刚启动": "Just launched",
   "删除": "Delete",
-  "删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。":
-    "Deletion creates a local backup; if the Codex app is using this session, close the session window first.",
+  "删除会话会从列表隐藏并创建备份；仍被引用的历史保留，最后引用删除后自动回收；Codex运行期间延迟物理回收，退出后管理器自动检查。":
+    "Deleting a session hides it from the list and creates a backup; referenced history is retained until its last reference is deleted, then reclaimed automatically; physical cleanup is deferred while Codex runs and checked by the manager after exit.",
   "删除会话": "Delete session",
   "删除供应商": "Delete provider",
   "删除已选": "Delete selected",
@@ -1235,8 +1235,8 @@ export const EN_PLAIN: Record<string, string> = {
   "该步骤未执行。": "This step was not run.",
   "请先填写或选择应用路径。": "Fill in or select an app path first.",
   "请先选择要删除的会话。": "Select the sessions to delete first.",
-  "读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件":
-    "Reads Codex's local SQLite session database; deletes database records and the corresponding rollout files",
+  "读取本地会话；删除后保留引用中的历史，最后引用删除后自动回收":
+    "Reads local sessions; deletion retains referenced history until its last reference is deleted.",
   "读取 cc-switch 供应商失败。": "Failed to read cc-switch providers.",
   "读取 ~/.cc-switch/cc-switch.db": "Reading ~/.cc-switch/cc-switch.db",
   "调用失败": "Call failed",
@@ -1550,13 +1550,13 @@ export const EN_TEMPLATE: Record<string, string> = {
   "模型「{0}」不能路由到聚合供应商。": "Model “{0}” cannot route to an aggregate provider.",
   "模型「{0}」的目标供应商必须使用 Responses API。": "The target provider for model “{0}” must use the Responses API.",
   "模型「{0}」的目标供应商缺少 Base URL 或 Key。": "The target provider for model “{0}” is missing a Base URL or key.",
-  "删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。":
-    "Delete session “{0}”? This deletes the local database record and rollout file, and creates a backup.",
+  "删除会话“{0}”？删除会话会从列表隐藏并创建备份；仍被引用的历史保留，最后引用删除后自动回收；Codex运行期间延迟物理回收，退出后管理器自动检查。":
+    "Delete session “{0}”? Deleting a session hides it from the list and creates a backup; referenced history is retained until its last reference is deleted, then reclaimed automatically; physical cleanup is deferred while Codex runs and checked by the manager after exit.",
   "删除主题“{0}”？此操作无法撤销。": "Delete theme “{0}”? This action cannot be undone.",
   "删除拓展“{0}”？此操作会移除本地拓展文件。": "Delete extension “{0}”? This removes the local extension file.",
   "删除这些环境变量？\n\n{0}\n\n删除前会写入备份。": "Delete these environment variables?\n\n{0}\n\nA backup is written before deletion.",
-  "删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}":
-    "Delete the {0} selected session(s)? This deletes the local database records and rollout files, and creates a backup for each session.\n\n{1}{2}",
+  "删除选中的 {0} 个会话？删除会话会从列表隐藏并创建备份；仍被引用的历史保留，最后引用删除后自动回收；Codex运行期间延迟物理回收，退出后管理器自动检查。\n\n{1}{2}":
+    "Delete the {0} selected session(s)? Deleting a session hides it from the list and creates a backup; referenced history is retained until its last reference is deleted, then reclaimed automatically; physical cleanup is deferred while Codex runs and checked by the manager after exit.\n\n{1}{2}",
   "发现 {0} 个 Codex 供应商": "Found {0} Codex provider(s)",
   "发现新版本 {0}": "New version {0} available",
   "在 GitHub 上支持作者：{0}": "Support the author on GitHub: {0}",

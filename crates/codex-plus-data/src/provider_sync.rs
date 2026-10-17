@@ -1343,7 +1343,7 @@ fn collect_rebuildable_canonical_threads(
 
     // issue #2199：这是「删了又回来」的另一条重建入口——catalog 里还有行、canonical
     // `threads` 里没有、rollout 文件还在，就会被补回列表。已被删除的会话要排除在外。
-    let thread_tombstones = load_thread_tombstones(home);
+    let thread_tombstones = load_thread_tombstones(home)?;
     let mut rebuildable = Vec::new();
     for path in sqlite_paths {
         for thread in catalog_only_threads_for_path(path, &canonical_thread_ids)? {
@@ -3525,17 +3525,23 @@ fn thread_tombstone_path(codex_home: &Path) -> PathBuf {
 
 /// 读取删除墓碑（已删除、不得被索引重建复活的 thread id）。
 ///
-/// 墓碑只是「修复时跳过」的抑制信息，不是用户数据：文件缺失、读不动、内容坏了都
-/// 一律按「没有墓碑」处理——最坏结果是退回旧行为（可能复活），绝不因为墓碑本身
-/// 让同步或删除失败。见 issue #2199。
-fn load_thread_tombstones(codex_home: &Path) -> HashSet<String> {
+/// 兼容旧 JSON 墓碑的容错行为。新的 SQLite 删除状态是权威记录，读取失败必须
+/// 停止重建，不能误把软删除历史当作活会话重新加入列表。
+fn load_thread_tombstones(codex_home: &Path) -> anyhow::Result<HashSet<String>> {
     let path = thread_tombstone_path(codex_home);
-    let Ok(bytes) = fs::read(&path) else {
-        return HashSet::new();
-    };
-    serde_json::from_slice::<Vec<String>>(&bytes)
-        .map(|ids| ids.into_iter().collect())
-        .unwrap_or_default()
+    let mut ids: HashSet<String> = fs::read(&path).ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+        .unwrap_or_default().into_iter().collect();
+    // 持久删除状态不能受旧 JSON 墓碑的数量上限影响；读失败时停止重建。
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(codex_home) {
+        if !path.is_file() { continue; }
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        if crate::storage::has_table(&db, "codex_plus_deleted_threads")? {
+            let mut stmt = db.prepare("SELECT thread_id FROM codex_plus_deleted_threads")?;
+            for id in stmt.query_map([], |row| row.get::<_, String>(0))? { ids.insert(id?); }
+        }
+    }
+    Ok(ids)
 }
 
 /// 记一条删除墓碑。顺序按写入先后保留，超出上限时丢掉最旧的一批。
@@ -3557,7 +3563,7 @@ fn record_thread_tombstone(codex_home: &Path, thread_id: &str) -> anyhow::Result
 }
 
 /// 撤销删除时清除墓碑，否则刚恢复的会话会被重建流程一直挡在列表外。
-fn clear_thread_tombstones(codex_home: &Path, thread_ids: &HashSet<String>) {
+pub(crate) fn clear_thread_tombstones(codex_home: &Path, thread_ids: &HashSet<String>) {
     if thread_ids.is_empty() {
         return;
     }
@@ -3723,8 +3729,7 @@ fn remove_thread_from_catalog_dbs(codex_home: &Path, thread_id: &str) -> anyhow:
 
 /// Append previously removed `session_index.jsonl` lines back (undo flow).
 /// Lines whose `id` already exists are skipped. Returns the number of
-/// appended lines. Best-effort: returns `Ok(0)` without writing when the
-/// file changed since it was read.
+/// appended lines. Concurrent changes return an error so undo can be retried.
 pub fn restore_session_index_entries(
     codex_home: &Path,
     lines: &[String],
@@ -3733,11 +3738,12 @@ pub fn restore_session_index_entries(
         return Ok(0);
     }
     let path = codex_home.join("session_index.jsonl");
-    let original_bytes = if path.exists() {
-        fs::read(&path)?
-    } else {
-        Vec::new()
+    let original = match fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
     };
+    let original_bytes = original.clone().unwrap_or_default();
     let original_text = String::from_utf8(original_bytes.clone())?;
     let mut existing_ids = HashSet::new();
     for segment in original_text.split_inclusive('\n') {
@@ -3769,8 +3775,13 @@ pub fn restore_session_index_entries(
     if appended == 0 {
         return Ok(0);
     }
-    if fs::read(&path)? != original_bytes {
-        return Ok(0);
+    let current = match fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if current != original {
+        anyhow::bail!("session index changed during restore; retry undo");
     }
     codex_plus_core::settings::atomic_write(&path, next_text.as_bytes())?;
     clear_thread_tombstones(codex_home, &restored_ids);
@@ -5238,7 +5249,7 @@ fn collect_catalog_repair_plan(
     let spawned_child_ids = collect_spawned_child_thread_ids(paths)?;
     // issue #2199：删除墓碑一票否决。这里的候选会被 INSERT 回 `local_thread_catalog`，
     // 是「删了又回来」的重建入口之一。
-    let thread_tombstones = load_thread_tombstones(home);
+    let thread_tombstones = load_thread_tombstones(home)?;
     let mut catalog_non_root_thread_ids =
         collect_catalog_marked_non_root_thread_ids(paths, &spawned_child_ids)?;
     let mut observed_threads = HashMap::new();
@@ -7480,7 +7491,7 @@ mod deleted_thread_tombstone_tests {
 
         remove_thread_sidebar_references(&home, thread_id).unwrap();
         assert!(
-            load_thread_tombstones(&home).contains(thread_id),
+            load_thread_tombstones(&home).unwrap().contains(thread_id),
             "删除应写下墓碑"
         );
 
@@ -7494,7 +7505,7 @@ mod deleted_thread_tombstone_tests {
         assert_eq!(restore_session_index_entries(&home, &[line]).unwrap(), 1);
 
         assert!(
-            !load_thread_tombstones(&home).contains(thread_id),
+            !load_thread_tombstones(&home).unwrap().contains(thread_id),
             "撤销删除后墓碑必须清掉"
         );
 
@@ -7531,7 +7542,7 @@ mod deleted_thread_tombstone_tests {
         fs::create_dir_all(home.join("tmp")).unwrap();
         fs::write(home.join(THREAD_TOMBSTONE_RELATIVE_PATH), "[{\"thr").unwrap();
 
-        assert!(load_thread_tombstones(&home).is_empty());
+        assert!(load_thread_tombstones(&home).unwrap().is_empty());
         let result = run_provider_sync(Some(&home));
         assert_eq!(
             result.status,
@@ -7552,7 +7563,7 @@ mod deleted_thread_tombstone_tests {
             record_thread_tombstone(&home, &format!("thread-{index:05}")).unwrap();
         }
 
-        let ids = load_thread_tombstones(&home);
+        let ids = load_thread_tombstones(&home).unwrap();
         assert_eq!(ids.len(), MAX_THREAD_TOMBSTONES);
         assert!(!ids.contains("thread-00000"), "最旧的墓碑先被丢掉");
         assert!(ids.contains(&format!("thread-{:05}", MAX_THREAD_TOMBSTONES + 2)));
@@ -7571,5 +7582,21 @@ mod deleted_thread_tombstone_tests {
         let ids: Vec<String> =
             serde_json::from_slice(&fs::read(thread_tombstone_path(&home)).unwrap()).unwrap();
         assert_eq!(ids, vec!["thread-1".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod durable_history_deletion_tests {
+    use super::*;
+    #[test]
+    fn durable_marker_survives_missing_or_evicted_json_tombstone() {
+        let tmp=tempfile::tempdir().unwrap();
+        let db=Connection::open(tmp.path().join("state_5.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE codex_plus_deleted_threads(thread_id TEXT PRIMARY KEY, backup_token TEXT NOT NULL); INSERT INTO codex_plus_deleted_threads VALUES ('retained-source','token');").unwrap();
+        assert!(load_thread_tombstones(tmp.path()).unwrap().contains("retained-source"));
+        let path=thread_tombstone_path(tmp.path()); fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path,"[\"newer-unrelated-deletion\"]").unwrap();
+        let ids=load_thread_tombstones(tmp.path()).unwrap();
+        assert!(ids.contains("retained-source")); assert!(ids.contains("newer-unrelated-deletion"));
     }
 }
