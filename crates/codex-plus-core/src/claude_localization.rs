@@ -525,11 +525,23 @@ fn install_assets(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 管理器是无控制台窗口的 GUI 进程：派生 PowerShell 跑汉化脚本时若不设
+/// `CREATE_NO_WINDOW`，准备副本和启动中文 Claude 都会闪出 conhost 黑窗口。
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    command
+}
+
 fn run_script(program: &Path, script: &str, source: &Path, copy: &Path, args: &[&str]) -> Result<()> {
     let root = runtime_dir();
     let log = root.join("operation.log");
     let output = fs::File::create(&log)?;
-    let mut command = Command::new(program);
+    let mut command = hidden_command(program);
     if cfg!(target_os = "windows") && script.ends_with(".ps1") {
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
     }
@@ -855,6 +867,10 @@ mod tests {
         for name in ["build-copy.ps1", "inject-cn.ps1"] {
             let bytes = ASSETS.iter().find(|(asset, _)| *asset == name).unwrap().1;
             assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
+            assert!(
+                !bytes[3..].starts_with(&[0xef, 0xbb, 0xbf]),
+                "{name} 只能包含一个 UTF-8 BOM"
+            );
             let text = std::str::from_utf8(bytes).unwrap();
             assert!(!text.contains('\0'));
             assert!(text.contains("CODEX_PLUS_CLAUDE_COPY"));

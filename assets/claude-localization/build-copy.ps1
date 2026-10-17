@@ -14,6 +14,19 @@ function Find-Ion([string]$root) {
   throw "找不到 Claude 本地界面 ion-dist"
 }
 
+# Get-FileHash 属于 Microsoft.PowerShell.Utility，在被应用调起的 PowerShell 环境里
+# 可能不可用（报“无法识别 Get-FileHash”）；这里直接用 .NET，并把失败原因讲清楚。
+function Get-Sha256Hex([string]$path) {
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "副本校验失败：找不到 $path" }
+  $stream = [IO.File]::OpenRead($path)
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '') }
+    finally { $sha.Dispose() }
+  } catch { throw "副本校验失败：$($_.Exception.Message)" }
+  finally { $stream.Dispose() }
+}
+
 function Find-FuseBinary([string]$root) {
   $wire = [Text.Encoding]::ASCII.GetBytes('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX')
   $files = @(Get-ChildItem -LiteralPath $root -Filter '*.exe' -Recurse -File)
@@ -67,7 +80,7 @@ if (-not (Test-Path $sourceExe)) { throw "找不到 Claude：$sourceExe" }
 if ($args -contains '--check') {
   if (-not (Test-Path $copyExe)) { throw 'Windows Claude 副本不存在' }
   $sourceAsar = Join-Path $sourceRoot 'resources\app.asar'; $copyAsar = Join-Path $copyRoot 'resources\app.asar'
-  if ((Get-FileHash $sourceAsar).Hash -ne (Get-FileHash $copyAsar).Hash) { throw 'app.asar 已被改动' }
+  if ((Get-Sha256Hex $sourceAsar) -ne (Get-Sha256Hex $copyAsar)) { throw '副本校验失败：app.asar 完整性校验失败（SHA-256 不一致）' }
   $ion = Find-Ion $copyRoot
   if (-not (Test-Path (Join-Path $ion 'i18n\zh-Hans.json'))) { throw '中文词表缺失' }
   Write-Output 'Windows Claude 副本、中文词表与 app.asar 一致性检查通过'; exit 0
