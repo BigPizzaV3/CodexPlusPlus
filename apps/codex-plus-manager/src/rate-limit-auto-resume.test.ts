@@ -112,6 +112,10 @@ test("turn changes while the verification read is pending restart the cooldown",
 test("structured status takes precedence; plain conversation numbers cannot match", () => {
   const { api } = harness();
   assert.equal(api.is429(failedTurn().error), true);
+  assert.equal(api.is429({ codexErrorInfo: {
+    httpConnectionFailed: { httpStatusCode: 503 },
+    responseTooManyFailedAttempts: { httpStatusCode: 429 },
+  }, message: "upstream failure" }), true);
   assert.equal(api.is429({ ...failedTurn("a", 503).error, message: "HTTP 429" }), false);
   for (const message of ["HTTP 429", "unexpected status 429", "status code: 429", "429 Too Many Requests"]) assert.equal(api.is429({ message }), true);
   for (const message of ["line 429", "request 1429", "HTTP 503", "rate limit", "quota exceeded"]) assert.equal(api.is429({ message }), false);

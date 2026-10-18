@@ -41,10 +41,15 @@
   function rateLimitAutoResumeIs429(error) {
     if (!error || typeof error !== "object") return false;
     const info = error.codexErrorInfo;
+    let hasStructuredStatus = false;
     for (const key of ["httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts"]) {
       const status = info?.[key]?.httpStatusCode;
-      if (status != null) return status === 429;
+      if (status != null) {
+        hasStructuredStatus = true;
+        if (status === 429) return true;
+      }
     }
+    if (hasStructuredStatus) return false;
     // 没有结构化状态码时仅匹配明确的 HTTP/状态码文案，不匹配任意裸数字。
     return /\b(?:HTTP(?:\/\d(?:\.\d)?)?\s*(?:status\s*)?[:=]?\s*429|(?:status(?:\s+code)?|unexpected\s+status)\s*[:=]?\s*429|429\s+Too Many Requests)\b/i.test(error.message || "");
   }
