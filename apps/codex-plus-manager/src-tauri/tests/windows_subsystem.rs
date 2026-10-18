@@ -63,7 +63,7 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
     assert!(!lib_rs.contains("manager://close-requested"));
     assert!(lib_rs.contains("let _ = close_event_window.hide();"));
     assert!(!lib_rs.contains("startup_is_transient()"));
-    assert!(lib_rs.contains(".visible(true)"));
+    assert!(lib_rs.contains(".visible(!start_minimized)"));
     assert!(lib_rs.contains("codex_plus_launcher::shutdown()"));
     assert!(!app_tsx.contains("CloseConfirmDialog"));
     assert!(app_tsx.contains("manager_exit_app"));
