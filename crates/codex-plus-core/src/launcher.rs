@@ -5721,25 +5721,39 @@ mod tests {
 
     #[tokio::test]
     async fn helper_preserves_only_genuine_upstream_reasoning_markers() {
+        use std::time::Duration;
+
         let _settings_guard = crate::paths::settings_path_test_guard();
+        struct Restore(Option<PathBuf>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::paths::set_settings_path_for_tests(self.0.take());
+            }
+        }
         for marker in [None, Some("true"), Some("false")] {
             let temp = tempfile::tempdir().unwrap();
             let settings_path = temp.path().join("settings.json");
-            let previous = crate::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+            let _restore = Restore(crate::paths::set_settings_path_for_tests(Some(settings_path.clone())));
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
             let settings = crate::settings::BackendSettings {
                 relay_profiles_enabled: true,
                 active_relay_id: "marker-fixture".into(),
                 relay_profiles: vec![crate::settings::RelayProfile {
                     id: "marker-fixture".into(),
                     relay_mode: crate::settings::RelayMode::PureApi,
-                    base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+                    base_url: base_url.clone(),
+                    upstream_base_url: base_url.clone(),
                     api_key: "fixture-key".into(),
                     ..crate::settings::RelayProfile::default()
                 }],
                 ..crate::settings::BackendSettings::default()
             };
-            std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+            let store = crate::settings::SettingsStore::new(settings_path);
+            store.save(&settings).unwrap();
+            let loaded = store.load().unwrap().active_relay_profile();
+            assert_eq!(loaded.base_url, base_url);
+            assert_eq!(loaded.api_key, "fixture-key");
             let upstream = tokio::spawn(async move {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
@@ -5774,14 +5788,17 @@ mod tests {
             });
             let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
             let mut response = Vec::new();
-            client.read_to_end(&mut response).await.unwrap();
-            helper.await.unwrap();
-            upstream.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
+                .await.expect("reasoning marker response timed out").unwrap();
+            assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200 OK"));
+            tokio::time::timeout(Duration::from_secs(10), helper)
+                .await.expect("reasoning marker helper timed out").unwrap();
+            tokio::time::timeout(Duration::from_secs(10), upstream)
+                .await.expect("reasoning marker upstream timed out").unwrap();
             let end = find_header_end(&response).unwrap();
             let headers = String::from_utf8_lossy(&response[..end]);
             assert_eq!(header_value_from_headers(&headers, "x-reasoning-included").as_deref(), marker);
             assert!(!headers.to_ascii_lowercase().contains("x-private-fixture"));
-            crate::paths::set_settings_path_for_tests(previous);
         }
     }
 
