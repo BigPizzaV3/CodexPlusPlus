@@ -46,7 +46,7 @@ const _profileTypeCheck: RelayProfile = {
   noAuth: false,
   sub2apiMultiplier: "",
   standardOpenaiProtocol: false,
-  webSearchHistoryCompat: false,
+  localCompactionPromptAtEnd: false,
 };
 
 void _profileTypeCheck;

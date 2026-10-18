@@ -133,11 +133,11 @@ pub struct RelayProfile {
     )]
     pub standard_openai_protocol: bool,
     #[serde(
-        rename = "webSearchHistoryCompat",
+        rename = "localCompactionPromptAtEnd",
         default,
         skip_serializing_if = "is_false"
     )]
-    pub web_search_history_compat: bool,
+    pub local_compaction_prompt_at_end: bool,
     /// 只保留用户指定外部目录中的 Lite 声明，不为未知模型猜测能力。
     #[serde(default, skip_serializing_if = "is_false")]
     pub trust_upstream_catalog_lite: bool,
@@ -335,7 +335,7 @@ impl Default for RelayProfile {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
-            web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             anthropic_auth_header: String::new(),
@@ -357,9 +357,9 @@ impl RelayProfile {
         self.relay_mode == RelayMode::PureApi && self.no_auth
     }
 
-    pub fn web_search_history_compat_enabled(&self) -> bool {
-        self.web_search_history_compat
-            && self.protocol == RelayProtocol::Responses
+    pub fn local_compaction_prompt_at_end_enabled(&self) -> bool {
+        self.local_compaction_prompt_at_end
+            && matches!(self.protocol, RelayProtocol::Responses | RelayProtocol::ChatCompletions)
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
     }
@@ -697,6 +697,9 @@ pub struct BackendSettings {
     pub ccs_db_path: String,
     #[serde(rename = "ccsImportSources", default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ccs_import_sources: BTreeMap<String, crate::ccs_import::CcsImportOrigin>,
+    /// 退役功能留下的代理地址归属证据；配置归一化后仍需供启动迁移使用。
+    #[serde(rename = "retiredProtocolProxyEndpoints", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retired_protocol_proxy_endpoints: BTreeMap<String, String>,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
@@ -934,6 +937,7 @@ impl Default for BackendSettings {
             provider_sync_last_selected_provider: String::new(),
             ccs_db_path: String::new(),
             ccs_import_sources: BTreeMap::new(),
+            retired_protocol_proxy_endpoints: BTreeMap::new(),
             relay_profiles_enabled: true,
             enhancements_enabled: true,
             codex_app_standalone_quota_unlock: false,
@@ -1063,7 +1067,7 @@ impl BackendSettings {
                 model_routes: Vec::new(),
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
-                web_search_history_compat: false,
+                local_compaction_prompt_at_end: false,
                 trust_upstream_catalog_lite: false,
                 strict_responses_reasoning: false,
                 anthropic_auth_header: String::new(),
@@ -1129,7 +1133,7 @@ impl BackendSettings {
             model_routes: Vec::new(),
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
-            web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             anthropic_auth_header: String::new(),
@@ -1192,7 +1196,7 @@ impl BackendSettings {
             || self.active_relay_profile().requires_protocol_proxy_conversion()
             || self.active_relay_profile().has_model_routes()
             || self.active_relay_profile().uses_no_auth()
-            || self.active_relay_profile().web_search_history_compat_enabled()
+            || self.active_relay_profile().local_compaction_prompt_at_end_enabled()
             || self.active_relay_profile().request_compatibility_enabled()
     }
 
@@ -1681,6 +1685,10 @@ impl SettingsStore {
                 self.path.display()
             )
         })?;
+        capture_retired_protocol_proxy_endpoints(
+            &mut parsed,
+            &serde_json::from_str::<Value>(&contents)?,
+        );
         parsed.settings_revision = settings_revision(Some(contents.as_bytes()));
         if settings_normalize_depth() > 0 {
             // 外层已经在归一化了：这里再归一化就会递归回本函数。
@@ -1764,7 +1772,9 @@ impl SettingsStore {
         }
         // 先限制输入序列化大小，再复制/归一化；转义后的体积也计入预算。
         serialize_settings_bounded(settings)?;
-        let mut settings = normalize_settings_config_sections(settings.clone());
+        let mut settings = settings.clone();
+        capture_retired_protocol_proxy_endpoints(&mut settings, &Value::Object(raw.clone()));
+        let mut settings = normalize_settings_config_sections(settings);
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
         let mut next = settings_to_object(&settings);
         next.remove("revision");
@@ -1843,7 +1853,9 @@ impl SettingsStore {
         }
         merge_known_setting_fields(&mut raw, &payload);
         serialize_settings_bounded(&raw)?;
-        let candidate: BackendSettings = serde_json::from_value(Value::Object(raw.clone()))?;
+        let mut candidate: BackendSettings = serde_json::from_value(Value::Object(raw.clone()))?;
+        capture_retired_protocol_proxy_endpoints(&mut candidate, &Value::Object(original_raw.clone()));
+        capture_retired_protocol_proxy_endpoints(&mut candidate, &Value::Object(raw.clone()));
         validate_profile_updates(&candidate, &self.load_raw_object()?)?;
         let mut settings = normalize_settings_config_sections(
             candidate,
@@ -1856,6 +1868,12 @@ impl SettingsStore {
             "relayContextConfigContents".to_string(),
             Value::String(settings.relay_context_config_contents.clone()),
         );
+        if !settings.retired_protocol_proxy_endpoints.is_empty() {
+            raw.insert(
+                "retiredProtocolProxyEndpoints".to_string(),
+                serde_json::to_value(&settings.retired_protocol_proxy_endpoints)?,
+            );
+        }
         // 归一化把扁平字段镜像进了 tools.codex，这里写回原始对象，
         // 否则 update 路径保存的分片会停留在迁移前的旧值。
         raw.insert(
@@ -2524,6 +2542,8 @@ fn preserve_unknown_settings_fields(
         "modelRoutes",
         "customHeaders",
         "standardOpenaiProtocol",
+        "localCompactionPromptAtEnd",
+        // 已退役字段不得被未知扩展字段保留逻辑重新写回。
         "webSearchHistoryCompat",
         "trustUpstreamCatalogLite",
         "strictResponsesReasoning",
@@ -2626,6 +2646,7 @@ fn preserve_unknown_settings_fields(
         "codexAppCustomLayoutEnabled",
         "codexAppPluginAutoExpand",
         "computerUseGuardEnabled",
+        "retiredProtocolProxyEndpoints",
     ] {
         known[key] = Value::Null;
     }
@@ -2635,6 +2656,25 @@ fn preserve_unknown_settings_fields(
     *next = target.as_object_mut().expect("settings object").clone();
     Ok(())
 }
+fn capture_retired_protocol_proxy_endpoints(settings: &mut BackendSettings, raw: &Value) {
+    let Some(profiles) = raw.get("relayProfiles").and_then(Value::as_array) else {
+        return;
+    };
+    for profile in profiles {
+        if profile.get("webSearchHistoryCompat").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Ok(profile) = serde_json::from_value::<RelayProfile>(profile.clone()) else {
+            continue;
+        };
+        if let Some(endpoint) = crate::relay_config::retired_protocol_proxy_endpoint(&profile) {
+            settings.retired_protocol_proxy_endpoints
+                .entry(profile.id)
+                .or_insert(endpoint);
+        }
+    }
+}
+
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
     settings.dictation.normalize();
     settings.codex_app_whale_balance_protocol =
@@ -4653,20 +4693,20 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
-    fn web_search_history_compat_is_default_off_and_round_trips_per_provider() {
+    fn local_compaction_prompt_at_end_is_default_off_and_round_trips_per_provider() {
         let legacy = serde_json::to_value(RelayProfile::default()).unwrap();
-        assert!(legacy.get("webSearchHistoryCompat").is_none());
+        assert!(legacy.get("localCompactionPromptAtEnd").is_none());
         let disabled: RelayProfile = serde_json::from_value(legacy).unwrap();
-        assert!(!disabled.web_search_history_compat_enabled());
+        assert!(!disabled.local_compaction_prompt_at_end_enabled());
         let enabled = RelayProfile {
             relay_mode: RelayMode::PureApi,
-            web_search_history_compat: true,
+            local_compaction_prompt_at_end: true,
             ..RelayProfile::default()
         };
         let value = serde_json::to_value(&enabled).unwrap();
-        assert_eq!(value["webSearchHistoryCompat"], json!(true));
+        assert_eq!(value["localCompactionPromptAtEnd"], json!(true));
         let restored: RelayProfile = serde_json::from_value(value).unwrap();
-        assert!(restored.web_search_history_compat_enabled());
+        assert!(restored.local_compaction_prompt_at_end_enabled());
         let mut settings = BackendSettings {
             active_relay_id: "off".to_string(),
             relay_profiles: vec![
@@ -4682,33 +4722,60 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(dir.join("settings.json"));
         store.save(&settings).unwrap();
         settings = store.load().unwrap();
-        assert!(settings.relay_profiles[1].web_search_history_compat);
-        settings.relay_profiles[0].web_search_history_compat = true;
-        settings.relay_profiles[1].web_search_history_compat = false;
+        assert!(settings.relay_profiles[1].local_compaction_prompt_at_end);
+        settings.relay_profiles[0].local_compaction_prompt_at_end = true;
+        settings.relay_profiles[1].local_compaction_prompt_at_end = false;
         store.save(&settings).unwrap();
         let loaded = store.load().unwrap();
-        assert!(loaded.relay_profiles[0].web_search_history_compat);
-        assert!(!loaded.relay_profiles[1].web_search_history_compat);
+        assert!(loaded.relay_profiles[0].local_compaction_prompt_at_end);
+        assert!(!loaded.relay_profiles[1].local_compaction_prompt_at_end);
     }
 
     #[test]
-    fn web_search_history_compat_does_not_enable_official_or_chat_paths() {
+    fn local_compaction_prompt_at_end_only_enables_supported_provider_paths() {
         for (mode, protocol, mixed, expected) in [
             (RelayMode::Official, RelayProtocol::Responses, false, false),
             (RelayMode::Official, RelayProtocol::Responses, true, true),
             (RelayMode::Aggregate, RelayProtocol::Responses, false, false),
-            (RelayMode::PureApi, RelayProtocol::ChatCompletions, false, false),
+            (RelayMode::PureApi, RelayProtocol::ChatCompletions, false, true),
+            (RelayMode::PureApi, RelayProtocol::AnthropicMessages, false, false),
             (RelayMode::PureApi, RelayProtocol::Responses, false, true),
         ] {
             let profile = RelayProfile {
                 relay_mode: mode,
                 protocol,
                 official_mix_api_key: mixed,
-                web_search_history_compat: true,
+                local_compaction_prompt_at_end: true,
                 ..RelayProfile::default()
             };
-            assert_eq!(profile.web_search_history_compat_enabled(), expected);
+            assert_eq!(profile.local_compaction_prompt_at_end_enabled(), expected);
         }
+    }
+
+    #[test]
+    fn retired_search_history_setting_is_ignored_without_enabling_compaction() {
+        let mut legacy = serde_json::to_value(RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }).unwrap();
+        legacy["webSearchHistoryCompat"] = json!(true);
+        let profile: RelayProfile = serde_json::from_value(legacy).unwrap();
+        assert!(!profile.local_compaction_prompt_at_end_enabled());
+        let saved = serde_json::to_value(profile).unwrap();
+        assert!(saved.get("webSearchHistoryCompat").is_none());
+        assert!(saved.get("localCompactionPromptAtEnd").is_none());
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let mut legacy_settings = serde_json::to_value(BackendSettings::default()).unwrap();
+        legacy_settings["relayProfiles"][0]["webSearchHistoryCompat"] = json!(true);
+        std::fs::write(&path, serde_json::to_vec(&legacy_settings).unwrap()).unwrap();
+        let store = SettingsStore::new(path.clone());
+        let loaded = store.load().unwrap();
+        assert!(!loaded.active_relay_profile().local_compaction_prompt_at_end_enabled());
+        store.save(&loaded).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(saved["relayProfiles"][0].get("webSearchHistoryCompat").is_none());
     }
     // 自动接管的两个设置字段必须走既有 settings.json 链路持久化：
     // 守护线程在另一个线程里读同一个文件，写不进就等于开关无效。

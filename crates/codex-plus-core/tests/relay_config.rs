@@ -14,6 +14,7 @@ use codex_plus_core::relay_config::{
     sanitize_common_config_contents, set_codex_goals_feature_in_home,
     strip_common_config_from_config, sync_live_config_context_entries,
     upsert_context_entry_in_common_config,
+    restore_inactive_protocol_proxy_config_in_home,
 };
 use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
@@ -1267,9 +1268,9 @@ base_url = "https://responses.example.test/v1"
 }
 
 #[test]
-fn web_search_history_opt_in_routes_through_proxy_and_disable_restores_upstream() {
+fn local_compaction_opt_in_routes_through_proxy_and_disable_restores_upstream() {
     let mut profile = RelayProfile {
-        id: "search-compat".to_string(),
+        id: "local-compaction".to_string(),
         relay_mode: RelayMode::PureApi,
         base_url: "https://responses.example.test/v1".to_string(),
         upstream_base_url: "https://responses.example.test/v1".to_string(),
@@ -1278,7 +1279,7 @@ fn web_search_history_opt_in_routes_through_proxy_and_disable_restores_upstream(
     };
     codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
     assert!(profile.config_contents.contains("https://responses.example.test/v1"));
-    profile.web_search_history_compat = true;
+    profile.local_compaction_prompt_at_end = true;
     codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
     assert!(profile.config_contents.contains("http://127.0.0.1:57321/v1"));
     assert_eq!(profile.upstream_base_url, "https://responses.example.test/v1");
@@ -1296,11 +1297,191 @@ fn web_search_history_opt_in_routes_through_proxy_and_disable_restores_upstream(
     assert!(ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
     assert!(!ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
 
-    profile.web_search_history_compat = false;
+    profile.local_compaction_prompt_at_end = false;
     codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
     assert!(profile.config_contents.contains("https://responses.example.test/v1"));
     assert!(!profile.config_contents.contains("http://127.0.0.1:57321/v1"));
     assert_eq!(profile.base_url, "https://responses.example.test/v1");
+}
+
+#[test]
+fn retired_search_history_restores_saved_upstream_from_managed_proxy_config() {
+    for endpoint in ["http://127.0.0.1:57321/v1", "http://127.0.0.1:58432/v1"] {
+        let mut legacy = serde_json::to_value(RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            base_url: endpoint.to_string(),
+            upstream_base_url: "https://responses.example.test/v1".to_string(),
+            config_contents: format!(
+                "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n"
+            ),
+            ..RelayProfile::default()
+        }).unwrap();
+        legacy["webSearchHistoryCompat"] = serde_json::json!(true);
+        let mut profile: RelayProfile = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            codex_plus_core::relay_config::relay_profile_base_url(&profile),
+            "https://responses.example.test/v1",
+        );
+        normalize_relay_profile_for_storage(&mut profile).unwrap();
+        assert!(!profile.local_compaction_prompt_at_end_enabled());
+        assert_eq!(profile.base_url, "https://responses.example.test/v1");
+        assert_eq!(profile.upstream_base_url, "https://responses.example.test/v1");
+        assert!(profile.config_contents.contains("https://responses.example.test/v1"));
+        assert!(!profile.config_contents.contains(endpoint));
+    }
+}
+
+#[test]
+fn retired_search_history_restores_only_live_proxy_endpoint_without_replaying_profile() {
+    for (endpoint, upstream) in [
+        ("http://127.0.0.1:57321/v1", "https://responses.example.test/v1"),
+        ("http://127.0.0.1:58432/v1", "https://responses.example.test/v1"),
+        ("http://127.0.0.1:57321/v1", "http://localhost:3000/v1"),
+        ("http://127.0.0.1:58432/v1", "http://127.0.0.1:3000/v1"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let original = format!(
+            "# live settings\nmodel_provider = \"custom\"\nmodel = \"live-model\"\nmodel_reasoning_effort = \"max\"\nmodel_catalog_json = \"live-catalog.json\"\ncustom_setting = \"keep\"\n\n[model_providers.custom]\nbase_url = \"{endpoint}\" # keep endpoint comment\nexperimental_bearer_token = \"live-key\"\n\n[plugins.example]\nenabled = true\n"
+        );
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, &original).unwrap();
+        std::fs::write(temp.path().join("auth.json"), b"preserve-auth-bytes").unwrap();
+        std::fs::write(temp.path().join("live-catalog.json"), b"preserve-catalog-bytes").unwrap();
+        let legacy = serde_json::json!({
+            "relayProfilesEnabled": true,
+            "activeRelayId": "legacy",
+            "relayProfiles": [{
+                "id": "legacy", "name": "Legacy", "relayMode": "pureApi",
+                "protocol": "responses", "webSearchHistoryCompat": true,
+                "upstreamBaseUrl": upstream,
+                "configContents": format!("model_provider = \"custom\"\nmodel = \"stale-model\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n")
+            }]
+        });
+        let settings_path = temp.path().join("settings.json");
+        std::fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let store = codex_plus_core::settings::SettingsStore::new(settings_path.clone());
+        let mut settings = store.load().unwrap();
+        assert_eq!(settings.retired_protocol_proxy_endpoints.get("legacy").map(String::as_str), Some(endpoint));
+        assert!(!settings.relay_profiles[0].config_contents.contains(endpoint));
+        settings.codex_extra_args = vec!["--example-preference".to_string()];
+        store.save(&settings).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
+        assert_eq!(saved["retiredProtocolProxyEndpoints"]["legacy"], endpoint);
+        assert!(saved["relayProfiles"][0].get("webSearchHistoryCompat").is_none());
+        let settings = store.load().unwrap();
+        assert!(restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+        let expected = original.replace(endpoint, upstream);
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), expected);
+        assert_eq!(std::fs::read(temp.path().join("auth.json")).unwrap(), b"preserve-auth-bytes");
+        assert_eq!(std::fs::read(temp.path().join("live-catalog.json")).unwrap(), b"preserve-catalog-bytes");
+        assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+        assert_eq!(std::fs::read_to_string(config_path).unwrap(), expected);
+    }
+}
+
+#[test]
+fn retired_proxy_restoration_preserves_unrelated_endpoints_and_disabled_profiles() {
+    let saved = "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:58432/v1\"\n";
+    for (endpoint, enabled, upstream) in [
+        ("http://127.0.0.1:59999/v1", true, "https://responses.example.test/v1"),
+        ("http://localhost:58432/v1", true, "https://responses.example.test/v1"),
+        ("https://unrelated.example/v1", true, "https://responses.example.test/v1"),
+        ("http://127.0.0.1:57321/v1", false, "https://responses.example.test/v1"),
+        ("http://127.0.0.1:57321/v1", true, ""),
+        ("http://127.0.0.1:57321/v1", true, "http://127.0.0.1:57321/v1"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let original = format!("model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n");
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, &original).unwrap();
+        let settings = BackendSettings {
+            relay_profiles_enabled: enabled,
+            relay_profiles: vec![RelayProfile {
+                relay_mode: RelayMode::PureApi,
+                upstream_base_url: upstream.to_string(),
+                config_contents: saved.to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+}
+
+#[test]
+fn retired_proxy_evidence_survives_first_update_with_normalized_profiles() {
+    for (endpoint, upstream) in [
+        ("http://127.0.0.1:57321/v1", "https://responses.example.test/v1"),
+        ("http://127.0.0.1:58432/v1", "http://localhost:3000/v1"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let live = format!("model_provider = \"custom\"\nmodel_reasoning_effort = \"max\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n");
+        std::fs::write(temp.path().join("config.toml"), &live).unwrap();
+        let legacy = serde_json::json!({
+            "relayProfilesEnabled": true, "activeRelayId": "legacy",
+            "relayProfiles": [{
+                "id": "legacy", "name": "Legacy", "relayMode": "pureApi",
+                "protocol": "responses", "webSearchHistoryCompat": true,
+                "upstreamBaseUrl": upstream, "configContents": live
+            }]
+        });
+        std::fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let store = codex_plus_core::settings::SettingsStore::new(settings_path.clone());
+        let loaded = store.load().unwrap();
+        let profiles = serde_json::to_value(&loaded.relay_profiles).unwrap();
+        assert!(profiles[0].get("webSearchHistoryCompat").is_none());
+        assert!(!loaded.relay_profiles[0].config_contents.contains(endpoint));
+        let updated = store.update(serde_json::json!({
+            "revision": loaded.settings_revision,
+            "relayProfiles": profiles,
+            "codexExtraArgs": ["--example-preference"]
+        })).unwrap();
+        assert_eq!(updated.retired_protocol_proxy_endpoints.get("legacy").map(String::as_str), Some(endpoint));
+        let reloaded = store.load().unwrap();
+        let profiles = serde_json::to_value(&reloaded.relay_profiles).unwrap();
+        store.update(serde_json::json!({
+            "revision": reloaded.settings_revision, "relayProfiles": profiles
+        })).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
+        assert_eq!(saved["retiredProtocolProxyEndpoints"]["legacy"], endpoint);
+        assert!(saved["relayProfiles"][0].get("webSearchHistoryCompat").is_none());
+        let settings = store.load().unwrap();
+        assert!(restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
+            live.replace(endpoint, upstream),
+        );
+    }
+}
+
+#[test]
+fn retired_proxy_endpoint_evidence_requires_the_old_opt_in_and_exact_live_match() {
+    for enabled in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let legacy = serde_json::json!({
+            "relayProfilesEnabled": true, "activeRelayId": "legacy",
+            "relayProfiles": [{
+                "id": "legacy", "name": "Legacy", "relayMode": "pureApi",
+                "protocol": "responses", "webSearchHistoryCompat": enabled,
+                "upstreamBaseUrl": "http://localhost:3000/v1",
+                "configContents": "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:58432/v1\"\n"
+            }]
+        });
+        std::fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let store = codex_plus_core::settings::SettingsStore::new(settings_path);
+        let settings = store.load().unwrap();
+        assert_eq!(settings.retired_protocol_proxy_endpoints.contains_key("legacy"), enabled);
+        let live = "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:59999/v1\"\n";
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(&config_path, live).unwrap();
+        assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+        assert_eq!(std::fs::read_to_string(config_path).unwrap(), live);
+    }
 }
 
 #[test]

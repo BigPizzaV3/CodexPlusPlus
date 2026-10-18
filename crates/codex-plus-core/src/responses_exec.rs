@@ -217,7 +217,7 @@ fn tool_choice_references_exec(choice: &Value) -> bool {
     }
 }
 
-fn adapt_request_history(request: &mut Value) -> Result<()> {
+pub(crate) fn adapt_request_history(request: &mut Value) -> Result<()> {
     let Some(Value::Array(items)) = request.get_mut("input") else {
         return Ok(());
     };

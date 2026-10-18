@@ -352,7 +352,7 @@ fn relay_profile_from_request(
         model_routes: Vec::new(),
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
-        web_search_history_compat: false,
+        local_compaction_prompt_at_end: false,
         trust_upstream_catalog_lite: false,
         strict_responses_reasoning: false,
         anthropic_auth_header: String::new(),

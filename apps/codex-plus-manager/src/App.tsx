@@ -150,7 +150,7 @@ import {
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
-  webSearchHistoryCompatEnabled,
+  localCompactionPromptAtEndEnabled,
   PROTOCOL_PROXY_BASE_URL,
   type RelayModelRoute,
 } from "./model-routes";
@@ -466,7 +466,7 @@ export type RelayProfile = {
   noAuth: boolean;
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
-  webSearchHistoryCompat: boolean;
+  localCompactionPromptAtEnd: boolean;
   trustUpstreamCatalogLite?: boolean;
   strictResponsesReasoning?: boolean;
   /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
@@ -1248,7 +1248,7 @@ const defaultSettings: BackendSettings = {
       noAuth: false,
       sub2apiMultiplier: "",
       standardOpenaiProtocol: false,
-      webSearchHistoryCompat: false,
+      localCompactionPromptAtEnd: false,
     },
   ],
   relayCommonConfigContents: "",
@@ -10664,22 +10664,18 @@ function RelayProfileEditor({
                 <ToggleVisual />
               </label>
             ) : null}
-            {showApiFields ? (
-              <label
-                className={`switch-row compact relay-switch-row relay-field-search-history${profile.protocol === "responses" ? "" : " is-disabled"}`}
-                title={profile.protocol === "responses" ? undefined : t("仅限 Responses API。")}
-              >
+            {showApiFields && profile.relayMode !== "aggregate" && profile.protocol !== "anthropicMessages" ? (
+              <label className="switch-row compact relay-switch-row relay-field-local-compaction">
                 <input
-                  checked={profile.webSearchHistoryCompat}
-                  disabled={profile.protocol !== "responses"}
+                  checked={profile.localCompactionPromptAtEnd}
                   onChange={(event) =>
-                    updateDraft({ webSearchHistoryCompat: event.currentTarget.checked })
+                    updateDraft({ localCompactionPromptAtEnd: event.currentTarget.checked })
                   }
                   type="checkbox"
                 />
                 <span>
-                  <strong>{t("搜索历史压缩兼容（实验）")}</strong>
-                  <small>response protection is unavailable</small>
+                  <strong>{t("本地压缩缓存复用（实验）")}</strong>
+                  <small>{t("用户实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。默认关闭，仅作用于当前供应商的本地压缩。")}</small>
                 </span>
                 <ToggleVisual />
               </label>
@@ -14033,7 +14029,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             noAuth: false,
             sub2apiMultiplier: "",
             standardOpenaiProtocol: false,
-            webSearchHistoryCompat: false,
+            localCompactionPromptAtEnd: false,
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
@@ -14148,7 +14144,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         noAuth: false,
         sub2apiMultiplier: "",
         standardOpenaiProtocol: false,
-        webSearchHistoryCompat: false,
+        localCompactionPromptAtEnd: false,
       },
       null,
     );
@@ -14186,7 +14182,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
-    webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
+    localCompactionPromptAtEnd: profile.localCompactionPromptAtEnd === true,
     trustUpstreamCatalogLite: profile.trustUpstreamCatalogLite === true,
     strictResponsesReasoning: profile.strictResponsesReasoning === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
@@ -14435,16 +14431,13 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "strictResponsesReasoning" | "modelMetadata">,
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "localCompactionPromptAtEnd" | "strictResponsesReasoning" | "modelMetadata">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
-  const searchHistoryCompat = profile.webSearchHistoryCompat === true
-    && profile.protocol === "responses"
-    && profile.relayMode !== "aggregate"
-    && (profile.relayMode !== "official" || profile.officialMixApiKey);
-  const baseUrl = profile.protocol !== "responses" || searchHistoryCompat || requestCompatibilityEnabled(profile)
+  const localCompaction = localCompactionPromptAtEndEnabled(profile);
+  const baseUrl = profile.protocol !== "responses" || localCompaction || requestCompatibilityEnabled(profile)
     ? PROTOCOL_PROXY_BASE_URL
-    : profile.baseUrl.trim();
+    : (profile.upstreamBaseUrl || profile.baseUrl).trim();
   const apiKey = profile.apiKey.trim();
   const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const rootLines = [
@@ -14593,12 +14586,9 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "strictResponsesReasoning" in patch || "modelMetadata" in patch) {
-    const searchHistoryCompat = next.webSearchHistoryCompat === true
-      && next.protocol === "responses"
-      && next.relayMode !== "aggregate"
-      && (next.relayMode !== "official" || next.officialMixApiKey);
-    const baseUrlForConfig = next.protocol !== "responses" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || requestCompatibilityEnabled(next)
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "modelMetadata" in patch) {
+    const localCompaction = localCompactionPromptAtEndEnabled(next);
+    const baseUrlForConfig = next.protocol !== "responses" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || localCompaction || requestCompatibilityEnabled(next)
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -15276,7 +15266,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     sub2apiMultiplier: "",
     modelRoutes: [],
     standardOpenaiProtocol: false,
-    webSearchHistoryCompat: false,
+    localCompactionPromptAtEnd: false,
   };
   return withGeneratedRelayFiles(next);
 }
@@ -15321,7 +15311,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       sub2apiMultiplier: "",
       modelRoutes: [],
       standardOpenaiProtocol: false,
-      webSearchHistoryCompat: false,
+      localCompactionPromptAtEnd: false,
       aggregate: {
         strategy: "failover",
         modelAggregationEnabled: false,
@@ -15496,7 +15486,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     noAuth: false,
     sub2apiMultiplier: "",
     standardOpenaiProtocol: false,
-    webSearchHistoryCompat: false,
+    localCompactionPromptAtEnd: false,
     aggregate,
   };
 }

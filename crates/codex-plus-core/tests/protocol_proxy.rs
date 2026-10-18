@@ -177,13 +177,12 @@ fn web_search_history_leaves_unrelated_and_malformed_requests_unchanged() {
 }
 
 #[tokio::test]
-async fn web_search_history_proxy_declares_only_for_standard_responses() {
-    for (protocol, path, trigger, enabled, repair) in [
-        (RelayProtocol::Responses, "/v1/responses", false, true, true),
-        (RelayProtocol::Responses, "/v1/responses", false, false, false),
-        (RelayProtocol::Responses, "/v1/responses", true, true, true),
-        (RelayProtocol::Responses, "/v1/responses/compact", false, true, false),
-        (RelayProtocol::ChatCompletions, "/v1/responses", false, true, false),
+async fn retired_search_compatibility_leaves_custom_provider_requests_unchanged() {
+    for (protocol, path, trigger) in [
+        (RelayProtocol::Responses, "/v1/responses", false),
+        (RelayProtocol::Responses, "/v1/responses", true),
+        (RelayProtocol::Responses, "/v1/responses/compact", false),
+        (RelayProtocol::ChatCompletions, "/v1/responses", false),
     ] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -206,8 +205,6 @@ async fn web_search_history_proxy_declares_only_for_standard_responses() {
         let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
         settings.relay_profiles[1].protocol = protocol;
         settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
-        settings.relay_profiles[1].web_search_history_compat = enabled;
-        settings.relay_profiles[0].web_search_history_compat = !enabled;
         if protocol == RelayProtocol::ChatCompletions {
             // Model routing intentionally accepts only Responses targets.
             settings.relay_profiles[0].model_routes.clear();
@@ -237,17 +234,10 @@ async fn web_search_history_proxy_declares_only_for_standard_responses() {
         .unwrap();
         assert_eq!(result.status_code, 200);
         let (headers, sent) = server.await.unwrap();
-        if repair {
-            let mut expected = request;
-            expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
-            expected["tool_choice"] = json!("none");
-            assert_eq!(sent, expected, "history and native compaction must survive");
-            assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
-            assert!(!result.compaction);
-        } else if protocol == RelayProtocol::Responses {
+        if protocol == RelayProtocol::Responses {
             assert_eq!(
                 sent, request,
-                "disabled providers and legacy compact remain unchanged"
+                "custom providers and legacy compact remain unchanged"
             );
             assert!(headers.starts_with(&format!("POST {path} HTTP/1.1")));
         } else {
@@ -287,7 +277,6 @@ async fn web_search_history_streaming_compaction_preserves_native_state() {
         ]
     });
     let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
-    settings.relay_profiles[1].web_search_history_compat = true;
     settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
     let mut result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
         .await
@@ -295,16 +284,11 @@ async fn web_search_history_streaming_compaction_preserves_native_state() {
     assert!(!result.compaction);
     assert_eq!(result.read_body().await.unwrap(), response.as_bytes().to_vec());
     let (_, sent) = server.await.unwrap();
-    let mut expected = request;
-    expected["tools"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"type": "web_search", "external_web_access": false}));
-    assert_eq!(sent, expected);
+    assert_eq!(sent, request);
 }
 
 #[tokio::test]
-async fn web_search_history_uses_each_fallback_providers_own_opt_in() {
+async fn retired_search_compatibility_does_not_rewrite_fallback_requests() {
     for enabled in [false, true] {
         let first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -321,8 +305,6 @@ async fn web_search_history_uses_each_fallback_providers_own_opt_in() {
             format!("http://{}/v1", first.local_addr().unwrap()),
             format!("http://{}/v1", second.local_addr().unwrap()),
         );
-        settings.relay_profiles[0].web_search_history_compat = !enabled;
-        settings.relay_profiles[1].web_search_history_compat = enabled;
         settings.relay_profiles[0].relay_mode = RelayMode::PureApi;
         settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
         let first_server = tokio::spawn(respond_once(
@@ -341,13 +323,8 @@ async fn web_search_history_uses_each_fallback_providers_own_opt_in() {
         assert_eq!(result.status_code, 200);
         first_server.await.unwrap();
         let (_, sent) = second_server.await.unwrap();
-        let mut expected = request;
-        if enabled {
-            expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
-            expected["tool_choice"] = json!("none");
-        }
         assert_eq!(
-            sent, expected,
+            sent, request,
             "the first provider must not contaminate fallback requests"
         );
     }

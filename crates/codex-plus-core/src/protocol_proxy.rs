@@ -15,6 +15,8 @@ use serde_json::{Map, Value, json};
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
+mod local_compaction;
+
 pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
 
 /// 工具调用上需要跨 turn 原样带回的供应商附带数据，按 `call_id` 索引。
@@ -2495,6 +2497,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
     expand_local_compaction_history(&mut request_json);
+    let local_compaction_request = !is_responses_compact_proxy_path(request_path)
+        && !request_has_compaction_trigger(&request_json)
+        && local_compaction::is_local_request(&request_json, COMPACTION_SUMMARY_INSTRUCTION);
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -2632,6 +2637,33 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let legacy_native_compaction = relay.protocol == RelayProtocol::Responses
             && is_responses_compact_proxy_path(request_path);
         let is_compaction_request = compaction || probe_native_compaction || legacy_native_compaction;
+        let cache_key = relay.local_compaction_prompt_at_end_enabled()
+            .then(|| local_compaction::key(&relay, &upstream_body, session_headers))
+            .flatten();
+        // Cache the logical request, before exec compatibility rewrites its history.
+        let cache_body = cache_key.as_ref().map(|_| upstream_body.clone());
+        let mut local_candidate = if local_compaction_request {
+            cache_key.as_deref().and_then(|key| {
+                local_compaction::candidate(key, &upstream_body, wire_api)
+            })
+        } else {
+            None
+        };
+        if let Some(candidate) = local_candidate.as_mut()
+            && candidate.exec_adapted
+        {
+            let mut fallback = upstream_body.clone();
+            match (
+                crate::responses_exec::adapt_request(candidate.body.clone()),
+                crate::responses_exec::adapt_request_history(&mut fallback),
+            ) {
+                (Ok(adapted), Ok(())) => {
+                    candidate.body = adapted;
+                    upstream_body = fallback;
+                }
+                _ => local_candidate = None,
+            }
+        }
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "protocol_proxy.upstream_request",
@@ -2655,6 +2687,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
         let eligible = wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
+            && !local_compaction_request
             && crate::responses_exec::should_adapt_request(&upstream_body, request_path);
         let mut key = None;
         let mut exec_adapted = false;
@@ -2673,6 +2706,38 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             {
                 upstream_body = adapted;
                 exec_adapted = true;
+            }
+            if let Some(candidate) = local_candidate.as_ref() {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.local_compaction",
+                    json!({"relayId": relay.id, "action": "reuse_prefix"}),
+                );
+                let result = send_responses_upstream_request(
+                    &relay, &endpoint, &candidate.body, wire_api, is_stream,
+                    original_user_agent, beta_features, session_headers, official_credential.as_ref(),
+                ).await;
+                match result {
+                    Ok(response) if response.status().is_success()
+                        || matches!(response.status().as_u16(), 400 | 422) =>
+                    {
+                        match local_compaction::buffer_summary(response, wire_api, is_stream).await {
+                            Ok(response) => return Ok(response),
+                            Err(reason) => {
+                                let _ = crate::diagnostic_log::append_diagnostic_log(
+                                    "protocol_proxy.local_compaction",
+                                    json!({"relayId": relay.id, "action": "fallback", "reason": reason}),
+                                );
+                            }
+                        }
+                    }
+                    // Keep the existing failover policy for transport errors, 429 and 5xx.
+                    other => return other,
+                }
+            } else if local_compaction_request && cache_key.is_some() {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.local_compaction",
+                    json!({"relayId": relay.id, "action": "original_request", "reason": "no_matching_prefix"}),
+                );
             }
             send_responses_upstream_request(
                 &relay, &endpoint, &upstream_body, wire_api, is_stream,
@@ -3123,6 +3188,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             );
         }
         if (200..300).contains(&status_code) || !has_more_candidates {
+            if (200..300).contains(&status_code)
+                && !local_compaction_request
+                && !is_compaction_request
+                && let (Some(key), Some(body)) = (cache_key, cache_body)
+            {
+                local_compaction::remember(key, &body, exec_adapted);
+            }
             // 请求了 SSE 的兼容上游也可能返回 JSON 摘要；让调用方选择 JSON 包装器。
             let json_compaction = is_compaction_request
                 && content_type
@@ -3185,7 +3257,7 @@ fn select_model_route(
     if target_relay_id == source.id {
         anyhow::bail!("模型路由不能指向当前供应商自身：{model}");
     }
-    let target = settings
+    let mut target = settings
         .relay_profiles
         .iter()
         .find(|profile| profile.id == target_relay_id)
@@ -3197,6 +3269,7 @@ fn select_model_route(
     if target.protocol != RelayProtocol::Responses {
         anyhow::bail!("模型路由目标必须使用 Responses API：{}", target.name);
     }
+    target.local_compaction_prompt_at_end |= source.local_compaction_prompt_at_end_enabled();
 
     let upstream_model = if route.target_model.trim().is_empty() {
         model.to_string()
@@ -3713,14 +3786,13 @@ async fn upstream_request_parts(
         let official_auto_repair = official_base.is_some()
             && !legacy_compact_path
             && request_declares_no_tools(&body);
-        let opt_in_repair = relay.web_search_history_compat_enabled() && !legacy_compact_path;
-        if (opt_in_repair || official_auto_repair) && ensure_web_search_tool_for_history(&mut body)
+        if official_auto_repair && ensure_web_search_tool_for_history(&mut body)
         {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.web_search_history_compat",
                 json!({
                     "action": "declare_web_search",
-                    "source": if official_auto_repair { "official_login" } else { "provider_opt_in" },
+                    "source": "official_login",
                     "inputContainsWebSearchCall": true
                 }),
             );
