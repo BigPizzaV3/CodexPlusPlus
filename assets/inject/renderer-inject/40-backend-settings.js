@@ -1272,7 +1272,7 @@
             <section class="codex-plus-settings-section" aria-label="外观与布局">
               <h2 class="codex-plus-settings-section-title">外观与布局</h2>
               <div class="codex-plus-settings-card">
-                ${codexPlusIsWindowsPlatform ? `<div class="codex-plus-row">
+                ${codexPlusSupportsPetRealMouseLook ? `<div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">桌宠跟随真实鼠标</div><div class="codex-plus-row-description">仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
                 </div>` : ""}
@@ -1320,6 +1320,10 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">配置增强功能、模型和语音服务。</div></div>
                   <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">刷新 UI 配置</div><div class="codex-plus-row-description">手动请求当前 Statsig 客户端重新评估远程配置，并显示 enable_i18n 的结果。</div></div>
+                  <button type="button" class="codex-plus-action-button" data-codex-refresh-statsig="true">刷新 UI 配置</button>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户拓展报错。</div></div>
@@ -1469,6 +1473,35 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      const refreshStatsigButton = target?.closest("[data-codex-refresh-statsig]");
+      if (refreshStatsigButton) {
+        const button = refreshStatsigButton;
+        if (button.dataset.pending === "true") return;
+        button.dataset.pending = "true";
+        const originalLabel = button.textContent;
+        button.textContent = "刷新中…";
+        Promise.resolve(window.__codexPlusRefreshStatsigUiConfig?.())
+          .then((result) => {
+            if (!result || result.status === "unsupported") {
+              showToast("当前 Codex 构建没有可用的 Statsig 刷新接口", null);
+            } else if (result.status === "ok" && result.enable_i18n === true) {
+              showToast("UI 配置已刷新，enable_i18n=true", null);
+              // 只有用户主动点击且远端明确返回 true 时刷新页面，让 Codex
+              // 重新走语言包加载 gate；不在启动/网络恢复路径自动触发。
+              window.setTimeout(() => window.location.reload(), 150);
+            } else if (result.status === "ok" && result.enable_i18n === false) {
+              showToast("UI 配置已刷新，enable_i18n=false", null);
+            } else {
+              showToast(`UI 配置刷新${result.status === "partial" ? "部分完成" : "失败"}`, result.errors?.join("；") || null);
+            }
+          })
+          .catch((error) => showToast("UI 配置刷新失败", error?.message || String(error)))
+          .finally(() => {
+            button.dataset.pending = "false";
+            button.textContent = originalLabel || "刷新 UI 配置";
+          });
         return;
       }
       // 推荐卡片用 window.open 而非原生 <a target="_blank">：Codex 是 Electron

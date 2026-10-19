@@ -36,8 +36,116 @@ pub fn watcher_disabled_flag(root: &Path) -> PathBuf {
     root.join("watcher.disabled")
 }
 
+pub fn watcher_start_minimized_flag(root: &Path) -> PathBuf {
+    root.join("watcher.start-minimized")
+}
+
+pub fn watcher_start_codex_flag(root: &Path) -> PathBuf {
+    root.join("watcher.start-codex")
+}
+
+pub fn watcher_start_codex_on_open_flag(root: &Path) -> PathBuf {
+    root.join("watcher.start-codex-on-open")
+}
+
 pub fn default_watcher_disabled_flag() -> PathBuf {
     watcher_disabled_flag(&crate::paths::default_app_state_dir())
+}
+
+pub fn default_watcher_start_minimized_flag() -> PathBuf {
+    watcher_start_minimized_flag(&crate::paths::default_app_state_dir())
+}
+
+pub fn default_watcher_start_codex_flag() -> PathBuf {
+    watcher_start_codex_flag(&crate::paths::default_app_state_dir())
+}
+
+pub fn default_watcher_start_codex_on_open_flag() -> PathBuf {
+    watcher_start_codex_on_open_flag(&crate::paths::default_app_state_dir())
+}
+
+pub fn set_watcher_start_minimized_at(root: &Path, minimized: bool) -> std::io::Result<()> {
+    let flag = watcher_start_minimized_flag(root);
+    if minimized {
+        if let Some(parent) = flag.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(flag, b"enabled")
+    } else {
+        match std::fs::remove_file(flag) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub fn set_watcher_start_minimized(minimized: bool) -> std::io::Result<()> {
+    set_watcher_start_minimized_at(&crate::paths::default_app_state_dir(), minimized)
+}
+
+pub fn watcher_start_minimized_at(root: &Path) -> bool {
+    watcher_start_minimized_flag(root).is_file()
+}
+
+pub fn watcher_start_minimized() -> bool {
+    watcher_start_minimized_at(&crate::paths::default_app_state_dir())
+}
+
+pub fn set_watcher_start_codex_at(root: &Path, start_codex: bool) -> std::io::Result<()> {
+    let flag = watcher_start_codex_flag(root);
+    if start_codex {
+        if let Some(parent) = flag.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(flag, b"enabled")
+    } else {
+        match std::fs::remove_file(flag) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub fn set_watcher_start_codex(start_codex: bool) -> std::io::Result<()> {
+    set_watcher_start_codex_at(&crate::paths::default_app_state_dir(), start_codex)
+}
+
+pub fn watcher_start_codex_at(root: &Path) -> bool {
+    watcher_start_codex_flag(root).is_file()
+}
+
+pub fn watcher_start_codex() -> bool {
+    watcher_start_codex_at(&crate::paths::default_app_state_dir())
+}
+
+pub fn set_watcher_start_codex_on_open_at(root: &Path, enabled: bool) -> std::io::Result<()> {
+    let flag = watcher_start_codex_on_open_flag(root);
+    if enabled {
+        if let Some(parent) = flag.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(flag, b"enabled")
+    } else {
+        match std::fs::remove_file(flag) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub fn set_watcher_start_codex_on_open(enabled: bool) -> std::io::Result<()> {
+    set_watcher_start_codex_on_open_at(&crate::paths::default_app_state_dir(), enabled)
+}
+
+pub fn watcher_start_codex_on_open_at(root: &Path) -> bool {
+    watcher_start_codex_on_open_flag(root).is_file()
+}
+
+pub fn watcher_start_codex_on_open() -> bool {
+    watcher_start_codex_on_open_at(&crate::paths::default_app_state_dir())
 }
 
 pub fn enable_watcher_at(root: &Path) -> std::io::Result<()> {
@@ -86,7 +194,8 @@ pub fn macos_launch_agent_path_at(home: &Path) -> PathBuf {
         .join(format!("{MACOS_WATCHER_LABEL}.plist"))
 }
 
-/// 登录时由 launchd 自动加载的 plist。只登记 `--autostart`，界面照旧要用户自己点启动。
+/// 登录时由 launchd 自动加载的 plist。`--autostart` 先打开管理器；是否同时启动
+/// Codex 由独立的持久化开关决定。
 pub fn macos_launch_agent_plist(launcher_path: &Path) -> String {
     let executable = xml_escape(&launcher_path.to_string_lossy());
     format!(

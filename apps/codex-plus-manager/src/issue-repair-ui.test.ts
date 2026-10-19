@@ -26,11 +26,11 @@ test("authoritative model groups merge non-adjacent IDs and separate identical n
   assert.equal(context.codexPlusModelPickerGroups(rows.map((entry) => ({ ...entry, authoritativeGroupId: false }))).length, 1);
 });
 
-test("active SessionPage owns repair panel and enabled actions call existing callbacks", () => {
+test("active ProjectSessionPage owns repair panel and enabled actions call existing callbacks", () => {
   const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   const app = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const panels: ts.JsxSelfClosingElement[] = [];
-  const walk = (node: ts.Node) => { if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(app) === "SessionPage") panels.push(node); ts.forEachChild(node, walk); };
+  const walk = (node: ts.Node) => { if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(app) === "ProjectSessionPage") panels.push(node); ts.forEachChild(node, walk); };
   walk(app);
   assert.equal(panels.length, 1);
   assert.ok(panels[0].attributes.properties.some((attribute) => ts.isJsxAttribute(attribute) && attribute.name.getText(app) === "repairPanel" && attribute.initializer?.getText(app).includes("<SessionRepairPanel")));

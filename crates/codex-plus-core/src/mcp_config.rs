@@ -91,6 +91,76 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCommandInspection {
+    pub code: String,
+    pub message: String,
+    pub replacement_command: Option<String>,
+}
+
+pub async fn inspect_current_mcp_startup(form: McpServerForm) -> anyhow::Result<McpCommandInspection> {
+    let task = tokio::task::spawn_blocking(move || {
+        let cli = if cfg!(windows) { crate::app_paths::find_desktop_managed_codex_cli() } else { None };
+        inspect_mcp_startup(&form, cli.as_deref())
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), task).await
+        .map_err(|_| anyhow::anyhow!("MCP 路径检查超时，配置保持不变。"))?
+        .map_err(|_| anyhow::anyhow!("MCP 路径检查失败，配置保持不变。"))
+}
+
+fn is_known_packaged_codex_cli(command: &str) -> bool {
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    let bytes = normalized.as_bytes();
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || &bytes[1..3] != b":/" {
+        return false;
+    }
+    let parts: Vec<_> = normalized.split('/').collect();
+    let Some(index) = parts.iter().position(|part| *part == "windowsapps") else { return false; };
+    let tail = &parts[index + 1..];
+    tail.len() == 4
+        && ["openai.codex_", "openai.codexbeta_", "openai.chatgpt-desktop_"]
+            .iter().any(|prefix| tail[0].starts_with(prefix))
+        && tail[0].ends_with("__2p2nqsd0c76g0")
+        && tail[1..] == ["app", "resources", "codex.exe"]
+}
+
+/// 仅检查文件与已知命令来源，不执行用户命令、不改变配置或正在运行的服务器。
+pub fn inspect_mcp_startup(form: &McpServerForm, current_cli: Option<&std::path::Path>) -> McpCommandInspection {
+    let report = |code: &str, message: &str, replacement: Option<String>| McpCommandInspection {
+        code: code.into(), message: message.into(), replacement_command: replacement,
+    };
+    if form.transport != McpTransport::Stdio {
+        return report("http", "HTTP MCP 不使用本地启动命令。", None);
+    }
+    let normalized = form.command.trim().replace('\\', "/");
+    let filename = normalized.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+    if ["chatgpt.exe", "chatgpt (beta).exe", "codex.app"].contains(&filename.as_str())
+        && form.args.iter().all(|arg| arg.trim().is_empty())
+    {
+        return report("desktop_executable", "这是桌面程序，不是已验证的 stdio MCP 入口。请从插件运行时清单恢复 Node/worker 与配套参数，不要仅替换版本号。", None);
+    }
+    if crate::app_paths::is_windows_store_cli_path(&form.command) {
+        if is_known_packaged_codex_cli(&form.command)
+            && form.args.first().is_some_and(|arg| arg == "mcp-server") {
+            if let Some(candidate) = current_cli.filter(|path| path.is_file()
+                && path.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("codex.exe"))
+                && !crate::app_paths::is_windows_store_cli_path(&path.to_string_lossy())) {
+                return report("replacement_available", "已找到桌面版当前维护的 Codex CLI，可将新入口放入草稿。尚未验证 MCP 握手，不会重启服务器。", Some(candidate.to_string_lossy().into()));
+            }
+        }
+        return report("versioned_package", "启动命令依赖 WindowsApps 包版本。当前无法确认可替换的运行时，请从原插件重新接入；不会猜测程序或自动重启。", None);
+    }
+    if normalized.starts_with("//") || !std::path::Path::new(&form.command).is_absolute() {
+        return report("unverified", "此命令依赖 PATH 或网络路径，未执行命令，也未验证 MCP 握手。", None);
+    }
+    if std::path::Path::new(&form.command).is_file() {
+        report("present", "启动文件存在；这不代表 MCP 握手或工具列表已就绪。", None)
+    } else {
+        report("missing", "启动文件不存在，请核对安装来源与入口；不会自动改写未知程序。", None)
+    }
+}
+
 /// 手写 Default 而不是 derive：derive 会给 `enabled` 填 `false`，
 /// 绕过 serde 的 `default_true`，于是每条新建的 MCP 都会莫名带上
 /// `enabled = false`——建完就是停用的。

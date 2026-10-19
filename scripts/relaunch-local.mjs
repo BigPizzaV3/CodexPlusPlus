@@ -25,6 +25,11 @@ const stagingDir = path.join(distDir, ".local-build-staging");
 const stagingBundle = path.join(stagingDir, "Codex++.app");
 const pruneScript = path.join(root, "scripts", "prune-local-builds.mjs");
 
+function localBundleProcessPattern(bundle) {
+  // pgrep/pkill 使用扩展正则；Codex++.app 的加号必须按字面量匹配。
+  return `${bundle}/Contents/MacOS/`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 const args = new Set(process.argv.slice(2));
 const skipBuild = args.has("--skip-build");
 const noOpen = args.has("--no-open");
@@ -70,20 +75,23 @@ run("codesign", ["--force", "--deep", "--sign", "-", stagingBundle]);
 
 // 停掉固定目录里的旧实例（只匹配固定路径，不要误杀 /Applications 里的正式版）。
 const stopOldInstance = () => {
+  const pattern = localBundleProcessPattern(bundle);
   try {
-    execFileSync("pkill", ["-f", `${bundle}/Contents/MacOS`], { stdio: "ignore" });
-  } catch {
-    return; // 没有旧实例在跑
+    execFileSync("pkill", ["-f", pattern], { stdio: "ignore" });
+  } catch (error) {
+    if (error.status === 1) return; // 没有旧实例在跑
+    throw error;
   }
   for (let attempt = 0; attempt < 25; attempt += 1) {
     try {
-      execFileSync("pgrep", ["-f", `${bundle}/Contents/MacOS`], { stdio: "ignore" });
-    } catch {
-      return;
+      execFileSync("pgrep", ["-f", pattern], { stdio: "ignore" });
+    } catch (error) {
+      if (error.status === 1) return;
+      throw error;
     }
     execFileSync("sleep", ["0.2"]);
   }
-  console.warn("警告：旧实例未能退出，继续替换（新实例可能需要手动打开）");
+  throw new Error("固定开发实例未退出，已停止替换，请先结束该实例后重试。");
 };
 stopOldInstance();
 
@@ -97,7 +105,8 @@ rmSync(stagingDir, { recursive: true, force: true });
 
 if (!noOpen) {
   console.log("4/4 启动");
-  spawn("open", [bundle], { detached: true, stdio: "ignore" }).unref();
+  // 正式版可同时运行且 bundle id 相同；强制启动这个路径，避免仅激活正式版。
+  spawn("open", ["-n", bundle], { detached: true, stdio: "ignore" }).unref();
 } else {
   console.log("4/4 已跳过启动（--no-open）");
 }

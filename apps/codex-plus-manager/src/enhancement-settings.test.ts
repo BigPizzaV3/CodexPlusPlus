@@ -105,7 +105,9 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   assert.equal(attribute(petGroup, "detail"), 't("在 Codex 中查看用量，设置自己的角色和互动方式。")');
   const petLook = fieldControl(petGroup.parent, "form.codexAppPetRealMouseLook");
   assert.ok(descendants(enhance).some((node) => ts.isConditionalExpression(node)
-    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must remain Windows-only");
+    && node.condition.getText(app) === "supportsPetRealMouseLook" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must be available on Windows and macOS");
+  assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
+    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must not stay Windows-only");
   const whaleWidget = fieldControl(petGroup.parent, "form.codexAppWhaleWidgetEnabled");
   assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
     && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(whaleWidget)), "the Codex usage widget must be available on every platform");

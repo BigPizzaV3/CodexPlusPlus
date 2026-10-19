@@ -585,11 +585,23 @@ fn install_assets(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn hidden_script_command(program: &Path) -> Command {
+    let mut command = Command::new(program);
+    command.stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    command
+}
+
 fn run_script(program: &Path, script: &str, source: &Path, copy: &Path, args: &[&str]) -> Result<()> {
     let root = runtime_dir();
     let log = root.join("operation.log");
     let output = fs::File::create(&log)?;
-    let mut command = Command::new(program);
+    // 只隐藏脚本宿主，不给 Claude 本身加 WindowStyle Hidden，否则会破坏注入。
+    let mut command = hidden_script_command(program);
     if cfg!(target_os = "windows") && script.ends_with(".ps1") {
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
     }
@@ -957,6 +969,11 @@ mod tests {
             assert!(text.contains("CODEX_PLUS_CLAUDE_COPY"));
             assert!(text.replace('\n', "\r\n").contains("$ErrorActionPreference"));
         }
+        let build = std::str::from_utf8(ASSETS.iter().find(|(name, _)| *name == "build-copy.ps1").unwrap().1).unwrap();
+        assert!(build.contains("[Security.Cryptography.SHA256]::Create()"));
+        assert!(!build.contains("Get-FileHash"));
+        let inject = std::str::from_utf8(ASSETS.iter().find(|(name, _)| *name == "inject-cn.ps1").unwrap().1).unwrap();
+        assert!(!inject.contains("-WindowStyle Hidden"));
     }
 
     /// 超时回归的子进程就是当前测试二进制，不运行 shell 或用户安装的脚本。

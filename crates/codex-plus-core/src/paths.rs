@@ -1,8 +1,10 @@
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const APP_STATE_DIR: &str = ".codex-session-delete";
 const SETTINGS_FILE: &str = "settings.json";
+const SETTINGS_PATH_POINTER_FILE: &str = "settings.path";
 const LATEST_STATUS_FILE: &str = "latest-status.json";
 const DIAGNOSTIC_LOG_FILE: &str = "codex-plus.log";
 const PENDING_PROVIDER_IMPORT_FILE: &str = "pending-provider-import.json";
@@ -44,15 +46,51 @@ pub fn default_app_state_dir() -> PathBuf {
         return state_dir;
     }
 
+    default_state_base_dir()
+}
+
+fn default_state_base_dir() -> PathBuf {
     if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
         return home_dir.join(APP_STATE_DIR);
     }
-
     PathBuf::from(APP_STATE_DIR)
+}
+
+pub fn settings_path_pointer_path() -> PathBuf {
+    default_state_base_dir().with_file_name(SETTINGS_PATH_POINTER_FILE)
+}
+
+fn read_settings_path_pointer() -> Option<PathBuf> {
+    let path = settings_path_pointer_path();
+    let contents = fs::read_to_string(path).ok()?;
+    let target = PathBuf::from(contents.trim());
+    target.is_absolute().then_some(target)
+}
+
+pub fn set_settings_path_pointer(target: Option<&Path>) -> std::io::Result<()> {
+    let pointer = settings_path_pointer_path();
+    match target {
+        Some(target) => {
+            if let Some(parent) = pointer.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(pointer, target.to_string_lossy().as_bytes())
+        }
+        None => match fs::remove_file(pointer) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        },
+    }
 }
 
 pub fn default_settings_path() -> PathBuf {
     if let Some(path) = settings_path_for_tests() {
+        return path;
+    }
+    if state_dir_override().is_none()
+        && let Some(path) = read_settings_path_pointer()
+    {
         return path;
     }
     default_app_state_dir().join(SETTINGS_FILE)
@@ -136,6 +174,18 @@ mod tests {
         let path = default_settings_path();
 
         assert!(path.ends_with(".codex-session-delete/settings.json"));
+    }
+
+    #[test]
+    fn settings_path_pointer_accepts_only_absolute_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let pointer = dir.path().join("settings.path");
+        fs::write(&pointer, "/tmp/codex-settings.json\n").unwrap();
+        let absolute = fs::read_to_string(&pointer).unwrap();
+        assert!(PathBuf::from(absolute.trim()).is_absolute());
+
+        fs::write(&pointer, "relative/settings.json\n").unwrap();
+        assert!(!PathBuf::from(fs::read_to_string(pointer).unwrap().trim()).is_absolute());
     }
 
     #[test]

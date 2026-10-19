@@ -124,6 +124,20 @@ fn discover_roots(home: &Path, codex: &Path) -> Result<Vec<CacheRoot>> {
     // CODEX_HOME 在用户目录外或通过符号链接配置时，只忽略这部分。
     add("Codex", "cache", codex.join("cache"), true);
     add("Codex", "temporary", codex.join(".tmp"), false);
+    // Codex++ 的会话删除备份和更新下载目录不属于 Codex 会话正文，
+    // 允许用户在扫描预览后按文件清理，避免 GB 级历史备份长期占满磁盘。
+    add(
+        "Codex++",
+        "backup",
+        home.join(".codex-session-delete/backups"),
+        true,
+    );
+    add(
+        "Codex++",
+        "update",
+        home.join(".codex-session-delete/updates"),
+        true,
+    );
     add("Claude", "cache", home.join(".claude/cache"), true);
 
     #[cfg(target_os = "macos")]
@@ -639,6 +653,30 @@ mod tests {
         let roots = discover_roots(&home, &home.join(".codex")).unwrap();
         let plan = scan(&home, roots, SystemTime::now()).unwrap();
         (temp, plan)
+    }
+
+    #[test]
+    fn discovers_session_delete_backups_and_updates_as_confirmed_cleanup_groups() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        old_file(
+            &home.join(".codex-session-delete/backups/old-backup.json"),
+            "backup",
+        );
+        old_file(
+            &home.join(".codex-session-delete/updates/old-installer.exe"),
+            "update",
+        );
+        let roots = discover_roots(&home, &home.join(".codex")).unwrap();
+        let plan = scan(&home, roots, SystemTime::now()).unwrap();
+        let groups = plan
+            .report
+            .groups
+            .iter()
+            .filter(|group| group.app == "Codex++")
+            .collect::<Vec<_>>();
+        assert!(groups.iter().any(|group| group.kind == "backup" && group.eligible_files == 1));
+        assert!(groups.iter().any(|group| group.kind == "update" && group.eligible_files == 1));
     }
 
     fn selected(plan: &CachePlan) -> Vec<String> {

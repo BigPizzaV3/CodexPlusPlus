@@ -4,6 +4,64 @@
   const codexPlusIsNodeTestHarness = typeof process === "object" && !!process.versions?.node;
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
+  const codexPlusIsMacPlatform = /\bMacintosh\b/i.test(navigator.userAgent || "");
+  const codexPlusSupportsPetRealMouseLook = codexPlusIsWindowsPlatform || codexPlusIsMacPlatform;
+
+  function codexPlusStatsigClients() {
+    const root = window.__STATSIG__ || globalThis.__STATSIG__;
+    if (!root || typeof root !== "object") return [];
+    const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+    if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+    return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+  }
+
+  /**
+   * User-triggered Statsig refresh. SDK versions expose different refresh
+   * methods, so only invoke methods proven to exist on the live client and
+   * report unsupported when none is available.
+   */
+  window.__codexPlusRefreshStatsigUiConfig = async () => {
+    const clients = codexPlusStatsigClients();
+    const methods = [];
+    const errors = [];
+    for (const client of clients) {
+      try {
+        if (typeof client.updateUserAsync === "function") {
+          const user = typeof client.getUser === "function" ? client.getUser() : client.user;
+          await client.updateUserAsync(user);
+          methods.push("updateUserAsync");
+        } else if (typeof client.initializeAsync === "function") {
+          await client.initializeAsync();
+          methods.push("initializeAsync");
+        } else if (typeof client.fetchValues === "function") {
+          await client.fetchValues();
+          methods.push("fetchValues");
+        }
+      } catch (error) {
+        errors.push(String(error?.message || error));
+      }
+    }
+    const current = clients[0];
+    let enableI18n = null;
+    try {
+      const layer = typeof current?.getLayer === "function" ? current.getLayer("72216192") : null;
+      if (layer && typeof layer.get === "function") enableI18n = layer.get("enable_i18n", null);
+      if (enableI18n === null && typeof current?.getDynamicConfig === "function") {
+        enableI18n = current.getDynamicConfig("72216192", { disableExposureLog: true })?.get?.("enable_i18n", null) ?? null;
+      }
+    } catch (error) {
+      errors.push(String(error?.message || error));
+    }
+    const result = {
+      status: methods.length ? (errors.length ? "partial" : "ok") : "unsupported",
+      methods: Array.from(new Set(methods)),
+      clientCount: clients.length,
+      enable_i18n: typeof enableI18n === "boolean" ? enableI18n : null,
+      errors,
+    };
+    window.dispatchEvent(new CustomEvent("codex-plus-statsig-refreshed", { detail: result }));
+    return result;
+  };
 
   function installCodexPlusForceChineseLocale() {
     const config = window.__CODEX_PLUS_FORCE_CHINESE_LOCALE__;
@@ -7316,7 +7374,7 @@
             <section class="codex-plus-settings-section" aria-label="外观与布局">
               <h2 class="codex-plus-settings-section-title">外观与布局</h2>
               <div class="codex-plus-settings-card">
-                ${codexPlusIsWindowsPlatform ? `<div class="codex-plus-row">
+                ${codexPlusSupportsPetRealMouseLook ? `<div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">桌宠跟随真实鼠标</div><div class="codex-plus-row-description">仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="petRealMouseLook"><span></span></button>
                 </div>` : ""}
@@ -7364,6 +7422,10 @@
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">配置增强功能、模型和语音服务。</div></div>
                   <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
+                </div>
+                <div class="codex-plus-row">
+                  <div><div class="codex-plus-row-title">刷新 UI 配置</div><div class="codex-plus-row-description">手动请求当前 Statsig 客户端重新评估远程配置，并显示 enable_i18n 的结果。</div></div>
+                  <button type="button" class="codex-plus-action-button" data-codex-refresh-statsig="true">刷新 UI 配置</button>
                 </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户拓展报错。</div></div>
@@ -7513,6 +7575,35 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
+        return;
+      }
+      const refreshStatsigButton = target?.closest("[data-codex-refresh-statsig]");
+      if (refreshStatsigButton) {
+        const button = refreshStatsigButton;
+        if (button.dataset.pending === "true") return;
+        button.dataset.pending = "true";
+        const originalLabel = button.textContent;
+        button.textContent = "刷新中…";
+        Promise.resolve(window.__codexPlusRefreshStatsigUiConfig?.())
+          .then((result) => {
+            if (!result || result.status === "unsupported") {
+              showToast("当前 Codex 构建没有可用的 Statsig 刷新接口", null);
+            } else if (result.status === "ok" && result.enable_i18n === true) {
+              showToast("UI 配置已刷新，enable_i18n=true", null);
+              // 只有用户主动点击且远端明确返回 true 时刷新页面，让 Codex
+              // 重新走语言包加载 gate；不在启动/网络恢复路径自动触发。
+              window.setTimeout(() => window.location.reload(), 150);
+            } else if (result.status === "ok" && result.enable_i18n === false) {
+              showToast("UI 配置已刷新，enable_i18n=false", null);
+            } else {
+              showToast(`UI 配置刷新${result.status === "partial" ? "部分完成" : "失败"}`, result.errors?.join("；") || null);
+            }
+          })
+          .catch((error) => showToast("UI 配置刷新失败", error?.message || String(error)))
+          .finally(() => {
+            button.dataset.pending = "false";
+            button.textContent = originalLabel || "刷新 UI 配置";
+          });
         return;
       }
       // 推荐卡片用 window.open 而非原生 <a target="_blank">：Codex 是 Electron
@@ -8274,6 +8365,25 @@
     return text.includes("chatgpt authentication required for remote plugin catalog") && text.includes("api key auth is not supported");
   }
 
+  function pluginMarketplaceRemoteUnavailableError(value) {
+    const text = pluginMarketplaceErrorText(value).toLowerCase();
+    if (!text) return false;
+    if (pluginMarketplaceRemoteAuthError(value)) return true;
+    // 纯 API 模式没有 ChatGPT 会话时，Codex 仍会预热 featured 插件目录。
+    // 该远程请求超时会被上游错误提升为全局 connection-failed；插件目录应局部降级，
+    // 不能阻断已经连通的本地 helper、供应商和主模型请求（issue #2598）。
+    const isFeaturedWarmup = text.includes("failed to warm featured plugin ids cache")
+      || text.includes("/backend-api/plugins/featured");
+    const isRemotePluginSync = text.includes("remote installed plugin bundle sync")
+      || text.includes("remote plugin catalog");
+    const isNetworkFailure = text.includes("timeout")
+      || text.includes("timed out")
+      || text.includes("error sending request")
+      || text.includes("network")
+      || text.includes("connection");
+    return (isFeaturedWarmup || isRemotePluginSync) && isNetworkFailure;
+  }
+
   const codexPluginRemoteAuthRetryMs = 60_000;
 
   function clearPluginMarketplaceRemoteCatalogUnavailable() {
@@ -8353,7 +8463,7 @@
         const result = await originalSendRequest(method, requestParams, options);
         return patchPluginMarketplaceResult(requestMethod, result);
       } catch (error) {
-        if (requestMethod === "list-plugins" && pluginMarketplaceRemoteAuthError(error)) {
+        if (requestMethod === "list-plugins" && pluginMarketplaceRemoteUnavailableError(error)) {
           markPluginMarketplaceRemoteCatalogUnavailable(error);
           return requestProfile.remoteOnly
             ? remoteOnlyPluginMarketplaceFallbackResult()
@@ -8466,7 +8576,7 @@
       if (typeof data.bodyJsonString !== "string" || !data.bodyJsonString.trim()) return false;
       try {
         let result = JSON.parse(data.bodyJsonString);
-        if (pluginMarketplaceRemoteAuthError(result?.error || result)) {
+        if (pluginMarketplaceRemoteUnavailableError(result?.error || result)) {
           markPluginMarketplaceRemoteCatalogUnavailable(result?.error || result);
           const fallback = requestProfile?.remoteOnly
             ? remoteOnlyPluginMarketplaceFallbackResult()
@@ -8506,7 +8616,7 @@
       requestIds.delete(requestId);
     }
     if (requestProfiles instanceof Map) requestProfiles.delete(requestId);
-    if (pluginMarketplaceRemoteAuthError(message?.error)) {
+    if (pluginMarketplaceRemoteUnavailableError(message?.error)) {
       markPluginMarketplaceRemoteCatalogUnavailable(message.error);
       delete message.error;
       message.result = requestProfile?.remoteOnly
@@ -8527,6 +8637,7 @@
       patchRequestMessage: patchPluginMarketplaceRequestMessage,
       patchResponseData: patchPluginMarketplaceResponseData,
       remoteAuthError: pluginMarketplaceRemoteAuthError,
+      remoteUnavailableError: pluginMarketplaceRemoteUnavailableError,
       localFallback: localPluginMarketplaceFallbackResult,
       remoteOnlyFallback: remoteOnlyPluginMarketplaceFallbackResult,
       requestProfile: pluginMarketplaceRequestProfile,
@@ -14259,6 +14370,40 @@
   }
 
   /**
+   * The tail may contain several model calls from the same turn. Use the latest
+   * turn segment and weight cache hits by input tokens instead of averaging
+   * percentages from individual calls.
+   */
+  function codexPlusUsageTurnCache(events) {
+    if (!Array.isArray(events) || !events.length) return null;
+    let start = 0;
+    let hasTurnCounters = false;
+    for (let index = 1; index < events.length; index += 1) {
+      const previous = Number(events[index - 1].turn_output_tokens);
+      const current = Number(events[index].turn_output_tokens);
+      if (!Number.isFinite(previous) || !Number.isFinite(current)) continue;
+      hasTurnCounters = true;
+      if (current < previous) start = index;
+    }
+    const segment = events.slice(start);
+    let input = 0;
+    let cached = 0;
+    for (const event of segment) {
+      const currentInput = Number(event.input_tokens) || 0;
+      const currentCached = Number(event.cached_input_tokens) || 0;
+      if (currentInput > 0) {
+        input += currentInput;
+        cached += Math.max(0, Math.min(currentCached, currentInput));
+      }
+    }
+    if (input > 0) return codexPlusUsagePercent(cached, input);
+    return hasTurnCounters ? null : codexPlusUsagePercent(
+      Number(segment[segment.length - 1]?.cached_input_tokens),
+      Number(segment[segment.length - 1]?.input_tokens),
+    );
+  }
+
+  /**
    * 生成速度（token/s）。
    *
    * Codex 只在每次模型调用结束时写一条 token_count，事件间隔里同时包含生成和工具
@@ -14292,7 +14437,7 @@
     const observedAt = Date.parse(latest.t);
     return {
       speed: codexPlusUsageRate(events),
-      cache: codexPlusUsagePercent(Number(latest.cached_input_tokens), Number(latest.input_tokens)),
+      cache: codexPlusUsageTurnCache(events),
       context: codexPlusUsagePercent(Number(latest.total_tokens), Number(latest.context_window)),
       stale: Number.isFinite(observedAt) ? Date.now() - observedAt > codexPlusUsageStaleMs : false,
       modelContextWindow: Number(latest.context_window) || 0,
@@ -16026,6 +16171,16 @@
     return root ? codexPlusDictationEditor(root) : null;
   }
 
+  function codexPlusDictationGlobalEditor() {
+    const active = document.activeElement?.closest?.('[data-codex-composer-root], [data-composer-surface-variant], form');
+    const activeEditor = active ? codexPlusDictationEditor(active) : null;
+    if (activeEditor) return activeEditor;
+    return [...document.querySelectorAll('[data-codex-composer-root], [data-composer-surface-variant], form')]
+      .filter((root) => visibleElement(root) && root.getAttribute('data-composer-placement') !== 'home')
+      .map((root) => codexPlusDictationEditor(root))
+      .find(Boolean) || null;
+  }
+
   async function loadCodexPlusDictationNativeApi() {
     if (codexPlusDictation.nativeApiPromise) return codexPlusDictation.nativeApiPromise;
     codexPlusDictation.nativeApiPromise = loadOptionalCodexAppModule("app-initial-").then((module) => {
@@ -16140,9 +16295,12 @@
 
   async function startCodexPlusDictation(footer) {
     if (!codexPlusDictationEnabled() || codexPlusDictation.phase !== "idle") return;
-    const editor = codexPlusDictationScope(footer) && codexPlusDictationEditor(codexPlusDictationScope(footer));
+    const editor = footer
+      ? codexPlusDictationScope(footer) && codexPlusDictationEditor(codexPlusDictationScope(footer))
+      : codexPlusDictationGlobalEditor();
     if (!editor) { showToast("无法找到可编辑的 Codex 输入框", null); return; }
-    if (footer.getAttribute("data-dictation-view")) { showToast("请先结束原生语音输入", null); return; }
+    const footerView = footer || editor.closest?.('.composer-footer, [data-composer-footer-responsive]');
+    if (footerView?.getAttribute("data-dictation-view")) { showToast("请先结束原生语音输入", null); return; }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder !== "function") {
       showToast("当前环境不支持麦克风录音", null); return;
     }
@@ -16553,6 +16711,14 @@
       // 在录音期间，Enter 先结束转写再发送，不能让原生输入框先提交旧草稿。
       event.preventDefault(); event.stopImmediatePropagation();
       if (codexPlusDictation.phase !== "requesting") stopCodexPlusDictation("send");
+    }
+  };
+  window.__codexPlusDictationGlobalToggle = () => {
+    if (codexPlusDictation.phase === "recording") stopCodexPlusDictation("insert");
+    else if (codexPlusDictation.phase === "idle") void startCodexPlusDictation(null);
+    else if (["error", "result"].includes(codexPlusDictation.phase)) {
+      cancelCodexPlusDictation();
+      void startCodexPlusDictation(null);
     }
   };
   document.addEventListener("keydown", codexPlusDictationKeyHandler, true);

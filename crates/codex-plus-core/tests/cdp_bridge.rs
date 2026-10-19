@@ -209,12 +209,16 @@ fn stepwise_script_composes_one_runtime_from_separate_fragments() {
 }
 
 #[test]
-fn pet_real_mouse_settings_are_gated_to_windows_in_injected_ui() {
+fn pet_real_mouse_settings_are_shown_on_windows_and_mac_in_injected_ui() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("codexPlusIsWindowsPlatform"));
+    assert!(script.contains("codexPlusIsMacPlatform"));
+    assert!(script.contains("codexPlusSupportsPetRealMouseLook"));
     assert!(script.contains(r#"/\bWindows\b/i.test(navigator.userAgent || "")"#));
-    assert!(script.contains("codexPlusIsWindowsPlatform ? `<div"));
+    assert!(script.contains(r#"/\bMacintosh\b/i.test(navigator.userAgent || "")"#));
+    assert!(script.contains("codexPlusSupportsPetRealMouseLook ? `<div"));
+    assert!(!script.contains("codexPlusIsWindowsPlatform ? `<div"));
 }
 
 #[test]
@@ -368,143 +372,66 @@ fn pet_real_mouse_capability_probe_rejects_v1_without_explicit_v2_evidence() {
 }
 
 #[test]
-fn pet_real_mouse_update_script_stops_when_runtime_capability_is_missing() {
-    let script = assets::pet_real_mouse_update_script(-125, 640);
-
-    assert!(script.contains("data-avatar-mascot"));
-    assert!(script.contains("image.naturalWidth === 1536"));
-    assert!(script.contains("image.naturalHeight === 2288"));
-    assert!(script.contains("getComputedStyle(element).backgroundImage"));
-    assert!(script.contains("await image.decode()"));
-    assert!(script.contains("__codexPlusPetV2SpriteProbe"));
-    assert!(script.contains("updateScreenPoint?.({ x: -125, y: 640 }) === true"));
+fn pet_real_mouse_hook_probe_only_checks_update_screen_point() {
+    let probe = assets::pet_real_mouse_hook_probe_script();
+    assert!(probe.contains("__codexPlusPetRealMouseLook?.updateScreenPoint"));
+    assert!(!probe.contains("isV2Sprite"));
+    assert!(!probe.contains("vscode-api"));
+    assert!(!probe.contains("/pet/cursor-position"));
 }
 
 #[test]
-fn pet_real_mouse_update_script_accepts_png_webp_and_blob_v2_but_rejects_v1() {
+fn pet_real_mouse_update_script_stops_when_runtime_capability_is_missing() {
+    let script = assets::pet_real_mouse_update_script(-125, 640);
+
+    assert!(script.contains("updateScreenPoint?.({ x: -125, y: 640 }) === true"));
+    assert!(!script.contains("isV2Sprite"));
+    assert!(!script.contains("data-avatar-mascot"));
+    assert!(!script.contains("__codexPlusPetV2SpriteProbe"));
+    assert!(!script.contains("/pet/cursor-position"));
+    assert!(!script.contains("fetch("));
+}
+
+#[test]
+fn pet_real_mouse_update_script_calls_hook_without_v2_or_http() {
     let temp = tempfile::tempdir().expect("temp dir should be created");
-    let script_path = temp.path().join("pet-update.js");
-    let harness_path = temp.path().join("pet-update-harness.cjs");
-    std::fs::write(&script_path, assets::pet_real_mouse_update_script(120, 240))
-        .expect("pet update script should be written");
-    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
-    write!(
-        harness,
-        r#"
-const fs = require("fs");
-const vm = require("vm");
-const script = fs.readFileSync({script_path}, "utf8");
-const sources = {{
-  pngV2: "data:image/png;base64,png-v2",
-  webpV2: "data:image/webp;base64,webp-v2",
-  webpV1: "data:image/webp;base64,webp-v1",
-  blobV2: "blob:codex-plus-pet-v2",
-  unknown: "data:image/webp;base64,unknown",
-}};
-const dimensions = new Map([
-  [sources.pngV2, [1536, 2288]],
-  [sources.webpV2, [1536, 2288]],
-  [sources.webpV1, [1536, 1872]],
-  [sources.blobV2, [1536, 2288]],
-]);
-async function run({{ image = null, source = null }} = {{}}) {{
-  let calls = 0;
-  let decodes = 0;
-  const element = {{ querySelectorAll: () => [] }};
-  const mascot = {{
-    querySelectorAll: (selector) => selector === "img" && image ? [image] : [element],
-  }};
-  class MockImage {{
-    set src(value) {{ this.source = value; }}
-    async decode() {{
-      decodes += 1;
-      const size = dimensions.get(this.source);
-      if (!size) throw new Error("unsupported image");
-      [this.naturalWidth, this.naturalHeight] = size;
-    }}
-  }}
+    let harness_path = temp.path().join("pet-real-mouse-update-hook.cjs");
+    std::fs::write(
+        &harness_path,
+        format!(
+            r#"
+const vm = require("node:vm");
+const script = {script};
+function run(hasHook) {{
+  const state = {{ calls: 0, point: null }};
   const context = {{
-    document: {{ querySelector: () => mascot }},
-    getComputedStyle: (target) => ({{ backgroundImage: target === element && source ? `url("${{source}}")` : "none" }}),
-    Image: MockImage,
-    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
+    window: hasHook
+      ? {{
+          __codexPlusPetRealMouseLook: {{
+            updateScreenPoint: (point) => {{
+              state.calls += 1;
+              state.point = point;
+              return true;
+            }},
+          }},
+        }}
+      : {{}},
   }};
-  const result = await vm.runInNewContext(script, context);
-  return {{ result, calls, decodes }};
+  const result = vm.runInNewContext(script, context);
+  return {{ result, calls: state.calls, point: state.point }};
 }}
-async function runSwitchSequence() {{
-  let calls = 0;
-  let decodes = 0;
-  let source = sources.webpV2;
-  const element = {{ querySelectorAll: () => [] }};
-  const mascot = {{ querySelectorAll: () => [element] }};
-  class MockImage {{
-    set src(value) {{ this.source = value; }}
-    async decode() {{
-      decodes += 1;
-      [this.naturalWidth, this.naturalHeight] = dimensions.get(this.source);
-    }}
-  }}
-  const context = {{
-    document: {{ querySelector: () => mascot }},
-    getComputedStyle: (target) => ({{ backgroundImage: target === element ? `url("${{source}}")` : "none" }}),
-    Image: MockImage,
-    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
-  }};
-  const first = await vm.runInNewContext(script, context);
-  const cached = await vm.runInNewContext(script, context);
-  source = sources.webpV1;
-  const afterV1Switch = await vm.runInNewContext(script, context);
-  return {{ first, cached, afterV1Switch, calls, decodes }};
-}}
-async function runDecodeRace() {{
-  let calls = 0;
-  let source = sources.webpV2;
-  let finishDecode;
-  const element = {{ querySelectorAll: () => [] }};
-  const mascot = {{ querySelectorAll: () => [element] }};
-  class MockImage {{
-    set src(value) {{ this.source = value; }}
-    async decode() {{
-      await new Promise((resolve) => {{ finishDecode = resolve; }});
-      [this.naturalWidth, this.naturalHeight] = dimensions.get(this.source);
-    }}
-  }}
-  const context = {{
-    document: {{ querySelector: () => mascot }},
-    getComputedStyle: (target) => ({{ backgroundImage: target === element ? `url("${{source}}")` : "none" }}),
-    Image: MockImage,
-    window: {{ __codexPlusPetRealMouseLook: {{ updateScreenPoint: () => {{ calls += 1; return true; }} }} }},
-  }};
-  const pending = vm.runInNewContext(script, context);
-  source = sources.webpV1;
-  finishDecode();
-  return {{ result: await pending, calls }};
-}}
-(async () => {{
-  process.stdout.write(JSON.stringify({{
-    pngV2: await run({{ source: sources.pngV2 }}),
-    webpV2: await run({{ source: sources.webpV2 }}),
-    blobV2: await run({{ source: sources.blobV2 }}),
-    webpV1: await run({{ source: sources.webpV1 }}),
-    imgV2: await run({{ image: {{ naturalWidth: 1536, naturalHeight: 2288 }} }}),
-    unknown: await run({{ source: sources.unknown }}),
-    missing: await run(),
-    switchSequence: await runSwitchSequence(),
-    decodeRace: await runDecodeRace(),
-  }}));
-}})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
+process.stdout.write(JSON.stringify({{ missing: run(false), present: run(true) }}));
 "#,
-        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
-            .expect("script path should serialize")
+            script = serde_json::to_string(&assets::pet_real_mouse_update_script(42, -7))
+                .expect("update script should serialize"),
+        ),
     )
     .expect("harness should be written");
-    drop(harness);
 
     let output = Command::new("node")
         .arg(&harness_path)
         .output()
-        .expect("node should run pet update harness");
+        .expect("node should run pet update hook harness");
     assert!(
         output.status.success(),
         "node harness failed\nstdout:\n{}\nstderr:\n{}",
@@ -513,45 +440,12 @@ async function runDecodeRace() {{
     );
     let cases: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON");
-    assert_eq!(
-        cases["pngV2"],
-        json!({ "result": true, "calls": 1, "decodes": 1 })
-    );
-    assert_eq!(
-        cases["webpV2"],
-        json!({ "result": true, "calls": 1, "decodes": 1 })
-    );
-    assert_eq!(
-        cases["blobV2"],
-        json!({ "result": true, "calls": 1, "decodes": 1 })
-    );
-    assert_eq!(
-        cases["imgV2"],
-        json!({ "result": true, "calls": 1, "decodes": 0 })
-    );
-    assert_eq!(
-        cases["webpV1"],
-        json!({ "result": false, "calls": 0, "decodes": 1 })
-    );
-    assert_eq!(
-        cases["unknown"],
-        json!({ "result": false, "calls": 0, "decodes": 1 })
-    );
-    assert_eq!(
-        cases["missing"],
-        json!({ "result": false, "calls": 0, "decodes": 0 })
-    );
-    assert_eq!(
-        cases["switchSequence"],
-        json!({
-            "first": true,
-            "cached": true,
-            "afterV1Switch": false,
-            "calls": 2,
-            "decodes": 2
-        })
-    );
-    assert_eq!(cases["decodeRace"], json!({ "result": false, "calls": 0 }));
+    assert_eq!(cases["missing"]["result"], false);
+    assert_eq!(cases["missing"]["calls"], 0);
+    assert_eq!(cases["present"]["result"], true);
+    assert_eq!(cases["present"]["calls"], 1);
+    assert_eq!(cases["present"]["point"]["x"], 42);
+    assert_eq!(cases["present"]["point"]["y"], -7);
 }
 
 #[test]

@@ -6,12 +6,7 @@
 // look the source text up in the English dictionary; otherwise we return the
 // original Chinese, so Chinese stays the zero-overhead default.
 //
-// Language is resolved once at module load. Many Chinese literals live in
-// module-level constants (route tables, preset labels, …) that evaluate a
-// single time at import, so a live in-place swap can't reach them. Switching
-// language therefore persists the choice and reloads the webview, which is
-// instant for a local Tauri window and guarantees every literal — module-level
-// or render-level — re-evaluates under the new language.
+// 语言通过外部 store 通知 React 原地更新；模块级标签使用 getter，保留页面和草稿。
 
 import { EN_BACKEND, EN_BACKEND_PATTERNS, EN_PLAIN, EN_TEMPLATE } from "@/i18n-en";
 
@@ -27,9 +22,13 @@ function resolveInitialLanguage(): Language {
   }
 }
 
-// Resolved once per webview load. Do not mutate at runtime — use setLanguage,
-// which persists and reloads so module-level literals pick up the change.
-const LANG: Language = resolveInitialLanguage();
+let LANG: Language = resolveInitialLanguage();
+const listeners = new Set<() => void>();
+
+export function subscribeLanguage(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
 
 export function getLanguage(): Language {
   return LANG;
@@ -60,14 +59,16 @@ export function tf(key: string, args: Array<string | number>): string {
   });
 }
 
-/** Persist a new language and reload so every literal re-evaluates under it. */
+/** 原地切换，绝不把包含凭据的表单草稿写入浏览器存储。 */
 export function setLanguage(language: Language): void {
+  if (LANG === language) return;
   try {
     window.localStorage.setItem(STORAGE_KEY, language);
   } catch {
-    // Ignore storage failures; the reload below simply keeps the old value.
+    // 存储不可用时仍允许本窗口切换语言。
   }
-  window.location.reload();
+  LANG = language;
+  for (const listener of listeners) listener();
 }
 
 /** Flip between Chinese and English. */

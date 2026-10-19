@@ -25,6 +25,34 @@ fn global_switch_preserves_individual_script_choices_after_reload() {
 }
 
 #[test]
+fn skip_next_start_is_one_shot_and_preserves_script_choices() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    fs::write(user.join("unsafe.js"), "window.unsafeScript = true;").unwrap();
+    let config_path = temp.path().join("config.json");
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &config_path);
+    manager
+        .set_script_enabled("user:unsafe.js", true)
+        .unwrap();
+    manager.set_skip_next_start(true).unwrap();
+
+    assert_eq!(
+        manager.inventory().unwrap()["skip_next_start"].as_bool(),
+        Some(true)
+    );
+    let skipped = manager.build_initial_bundle().unwrap();
+    assert!(skipped.contains("mode: \"skipped\""));
+    assert!(!skipped.contains("window.unsafeScript = true"));
+    assert!(!manager.load_config().skip_next_start);
+    assert_eq!(manager.load_config().scripts.get("user:unsafe.js"), Some(&true));
+
+    let next = manager.build_initial_bundle().unwrap();
+    assert!(next.contains("mode: \"scripts\""));
+    assert!(next.contains("window.unsafeScript = true"));
+}
+
+#[test]
 fn reload_cleans_resources_and_applies_current_files_and_switches() {
     let temp = tempfile::tempdir().unwrap();
     let user = temp.path().join("user");

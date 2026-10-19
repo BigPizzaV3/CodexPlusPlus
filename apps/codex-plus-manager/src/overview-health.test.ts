@@ -50,6 +50,17 @@ test("maintenance retains application entrypoint checks and repairs", () => {
   assert.match(screen, /actions\.repairShortcuts\(\)/);
 });
 
+test("settings exposes reviewed configuration export and draft import", () => {
+  const screen = functionSource("SettingsScreen");
+  assert.match(screen, /actions\.exportSettings\(\)/);
+  assert.match(screen, /actions\.importSettings\(\)/);
+  const entry = functionSource("App");
+  assert.match(entry, /call<CommandResult<\{ path: string \}>>\("export_settings"/);
+  assert.match(entry, /call<SettingsResult>\("preview_import_settings"/);
+  assert.match(entry, /call<SettingsResult>\("set_settings_path"/);
+  assert.match(entry, /call<SettingsResult>\("reset_settings_path"/);
+});
+
 test("maintenance no longer offers the removed entrypoint management panel", () => {
   const screen = functionSource("MaintenanceScreen");
   assert.doesNotMatch(screen, /入口管理|安装入口|卸载入口|修复入口|卸载时移除 Codex\+\+ 托管数据/);
@@ -62,6 +73,8 @@ test("maintenance drives login startup and auto-takeover with switches", () => {
   const screen = functionSource("MaintenanceScreen");
   assert.match(screen, /switch-row/);
   assert.match(screen, /actions\.setWatcherEnabled\(event\.currentTarget\.checked\)/);
+  assert.match(screen, /actions\.setWatcherStartCodex\(event\.currentTarget\.checked\)/);
+  assert.match(screen, /actions\.setWatcherStartCodexOnOpen\(event\.currentTarget\.checked\)/);
   assert.match(screen, /actions\.setAutoTakeover\(event\.currentTarget\.checked\)/);
   // 开关取代了这两组按钮，别再退回去。
   assert.doesNotMatch(
@@ -77,4 +90,8 @@ test("watcher switch command is wired through invoke, handler and backend", () =
   assert.match(lib, /commands::set_watcher_enabled,/);
   const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
   assert.match(commands, /pub fn set_watcher_enabled\(enabled: bool\)/);
+  assert.match(commands, /pub fn set_watcher_start_codex\(start_codex: bool\)/);
+  assert.match(commands, /pub fn set_watcher_start_codex_on_open\(enabled: bool\)/);
+  assert.match(lib, /commands::set_watcher_start_codex,/);
+  assert.match(lib, /commands::set_watcher_start_codex_on_open,/);
 });

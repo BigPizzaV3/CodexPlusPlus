@@ -218,6 +218,40 @@
   }
 
   /**
+   * The tail may contain several model calls from the same turn. Use the latest
+   * turn segment and weight cache hits by input tokens instead of averaging
+   * percentages from individual calls.
+   */
+  function codexPlusUsageTurnCache(events) {
+    if (!Array.isArray(events) || !events.length) return null;
+    let start = 0;
+    let hasTurnCounters = false;
+    for (let index = 1; index < events.length; index += 1) {
+      const previous = Number(events[index - 1].turn_output_tokens);
+      const current = Number(events[index].turn_output_tokens);
+      if (!Number.isFinite(previous) || !Number.isFinite(current)) continue;
+      hasTurnCounters = true;
+      if (current < previous) start = index;
+    }
+    const segment = events.slice(start);
+    let input = 0;
+    let cached = 0;
+    for (const event of segment) {
+      const currentInput = Number(event.input_tokens) || 0;
+      const currentCached = Number(event.cached_input_tokens) || 0;
+      if (currentInput > 0) {
+        input += currentInput;
+        cached += Math.max(0, Math.min(currentCached, currentInput));
+      }
+    }
+    if (input > 0) return codexPlusUsagePercent(cached, input);
+    return hasTurnCounters ? null : codexPlusUsagePercent(
+      Number(segment[segment.length - 1]?.cached_input_tokens),
+      Number(segment[segment.length - 1]?.input_tokens),
+    );
+  }
+
+  /**
    * 生成速度（token/s）。
    *
    * Codex 只在每次模型调用结束时写一条 token_count，事件间隔里同时包含生成和工具
@@ -251,7 +285,7 @@
     const observedAt = Date.parse(latest.t);
     return {
       speed: codexPlusUsageRate(events),
-      cache: codexPlusUsagePercent(Number(latest.cached_input_tokens), Number(latest.input_tokens)),
+      cache: codexPlusUsageTurnCache(events),
       context: codexPlusUsagePercent(Number(latest.total_tokens), Number(latest.context_window)),
       stale: Number.isFinite(observedAt) ? Date.now() - observedAt > codexPlusUsageStaleMs : false,
       modelContextWindow: Number(latest.context_window) || 0,

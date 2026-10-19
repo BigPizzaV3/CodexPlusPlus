@@ -1139,22 +1139,66 @@ pub fn activate_process_window(process_id: u32) -> bool {
     }
 }
 
+/// 同一窗口分别确认图标与任务栏属性；换 HWND 后不能沿用上一窗口的成功状态。
+#[cfg(any(windows, test))]
+#[derive(Default)]
+pub(crate) struct WindowIconApplyState {
+    target: Option<usize>,
+    window_icon: bool,
+    taskbar: bool,
+}
+
+#[cfg(any(windows, test))]
+impl WindowIconApplyState {
+    fn apply(&mut self, target: usize, icon: impl FnOnce() -> bool, taskbar: impl FnOnce() -> bool) -> bool {
+        if self.target != Some(target) {
+            *self = Self { target: Some(target), ..Self::default() };
+        }
+        if !self.window_icon { self.window_icon = icon(); }
+        if !self.taskbar { self.taskbar = taskbar(); }
+        self.window_icon && self.taskbar
+    }
+}
+
 #[cfg(windows)]
 pub fn apply_codexplusplus_icon_to_process_window(
     process_id: u32,
     icon_resource_path: PathBuf,
 ) -> bool {
+    apply_codexplusplus_icon_attempt(process_id, &icon_resource_path, &mut WindowIconApplyState::default())
+}
+
+#[cfg(windows)]
+pub(crate) fn apply_codexplusplus_icon_attempt(
+    process_id: u32,
+    icon_resource_path: &PathBuf,
+    state: &mut WindowIconApplyState,
+) -> bool {
     let Some(hwnd) = visible_window_for_process(process_id) else {
         return false;
     };
-    let mut applied = false;
-    if apply_window_icons(hwnd, &icon_resource_path) {
-        applied = true;
+    let complete = state.apply(hwnd.0 as usize,
+        || apply_window_icons(hwnd, icon_resource_path),
+        || apply_taskbar_properties(hwnd, icon_resource_path).is_ok());
+    if !complete {
+        let _ = crate::diagnostic_log::append_diagnostic_log("launcher.window_icon.partial", serde_json::json!({
+            "process_id": process_id, "window_icon": state.window_icon, "taskbar": state.taskbar,
+        }));
     }
-    if apply_taskbar_properties(hwnd, &icon_resource_path).is_ok() {
-        applied = true;
+    complete
+}
+
+#[cfg(test)]
+mod icon_retry_tests {
+    use super::WindowIconApplyState;
+    #[test]
+    fn partial_success_retries_only_failed_steps_and_resets_for_a_new_window() {
+        let mut state = WindowIconApplyState::default();
+        assert!(!state.apply(1, || false, || true));
+        assert!(state.apply(1, || true, || panic!("任务栏已经成功，不应重复设置")));
+        assert!(!state.apply(2, || true, || false));
+        assert!(state.apply(2, || panic!("图标已经成功，不应重复设置"), || true));
     }
-    applied
 }
 
 #[cfg(windows)]

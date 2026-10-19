@@ -51,6 +51,46 @@ fn generated_model_catalog_pointer_is_absolute() {
 }
 
 #[test]
+fn wsl_catalog_paths_survive_apply_and_startup_migration() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = "[desktop]\nrunCodexInWindowsSubsystemForLinux = true\n";
+    std::fs::write(temp.path().join("config.toml"), config).unwrap();
+    let profile = profile();
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+    assert_eq!(pointer(temp.path()), PathBuf::from("model-catalogs/catalog-path.json"));
+    assert!(temp.path().join(pointer(temp.path())).is_file());
+    let settings = BackendSettings { relay_profiles_enabled: true, ..Default::default() };
+    assert!(!migrate_managed_model_catalog_pointer_in_home(temp.path(), &settings).unwrap());
+
+    // 同一 home 从原生 Windows 切到 WSL 时，已生成的绝对指针也可窄迁移。
+    let text = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let mut doc = text.parse::<toml_edit::DocumentMut>().unwrap();
+    doc["model_catalog_json"] = toml_edit::value(temp.path().join(pointer(temp.path())).to_string_lossy().as_ref());
+    std::fs::write(temp.path().join("config.toml"), doc.to_string()).unwrap();
+    assert!(migrate_managed_model_catalog_pointer_in_home(temp.path(), &settings).unwrap());
+    assert_eq!(pointer(temp.path()), PathBuf::from("model-catalogs/catalog-path.json"));
+}
+
+#[test]
+fn live_desktop_mode_outranks_stale_provider_snapshot_in_both_directions() {
+    for live_wsl in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("config.toml"), format!(
+            "[desktop]\nrunCodexInWindowsSubsystemForLinux = {live_wsl}\n"
+        )).unwrap();
+        let mut profile = profile();
+        profile.config_contents = format!(
+            "[desktop]\nrunCodexInWindowsSubsystemForLinux = {}\n", !live_wsl
+        );
+        apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+        let text = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        assert_eq!(doc["desktop"]["runCodexInWindowsSubsystemForLinux"].as_bool(), Some(live_wsl));
+        assert_eq!(pointer(temp.path()).is_absolute(), !live_wsl);
+    }
+}
+
+#[test]
 fn copied_external_catalog_pointers_are_absolute_without_changing_source() {
     for from_live in [false, true] {
         let temp = tempfile::tempdir().unwrap();

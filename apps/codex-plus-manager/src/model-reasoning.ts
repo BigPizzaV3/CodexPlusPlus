@@ -20,6 +20,24 @@ export const REASONING_LEVELS = [
 ] as const;
 
 export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+export type ReasoningParameterMode = "auto" | "omit" | "passthrough";
+
+export function reasoningParameterMode(metadata: ModelMetadata | null | undefined): ReasoningParameterMode {
+  const value = metadata?.codex_plus_reasoning_parameters;
+  return value === "omit" || value === "passthrough" ? value : "auto";
+}
+
+export function setModelReasoningParameterMode(value: string, slug: string, mode: ReasoningParameterMode): string {
+  const map = parseModelMetadataMap(value);
+  const key = modelMetadataKey(slug);
+  if (!key) return value;
+  const entry = { ...(map[key] ?? {}) };
+  if (mode === "auto") delete entry.codex_plus_reasoning_parameters;
+  else entry.codex_plus_reasoning_parameters = mode;
+  if (Object.keys(entry).length) map[key] = entry;
+  else delete map[key];
+  return serializeModelMetadataMap(map);
+}
 
 export const REASONING_LEVEL_DESCRIPTIONS: Record<ReasoningLevel, string> = {
   none: "Fast responses without reasoning",

@@ -28,10 +28,10 @@ export type RelayProfile = {
 export type PresetPatch = Partial<RelayProfile>;
 
 const categoryLabels: Record<string, string> = {
-  official: t("官方"),
-  cn_official: t("中国官方"),
-  aggregator: t("聚合/中转"),
-  third_party: t("第三方"),
+  get official() { return t("官方"); },
+  get cn_official() { return t("中国官方"); },
+  get aggregator() { return t("聚合/中转"); },
+  get third_party() { return t("第三方"); },
 };
 
 const initialFor = (name: string): string => {

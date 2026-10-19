@@ -14,7 +14,7 @@ use codex_plus_core::settings::{
 };
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::Emitter;
 
@@ -35,6 +35,34 @@ pub async fn download_dictation_local_model() -> CommandResult<Value> {
     match codex_plus_core::dictation::prepare_local_model().await {
         Ok(state) => ok("本地 SenseVoice 模型下载并校验完成。", state),
         Err(error) => failed(&error.message, json!({})),
+    }
+}
+
+#[tauri::command]
+pub fn load_global_dictation_hotkey() -> CommandResult<Value> {
+    ok(
+        "全局听写热键设置已读取。",
+        serde_json::to_value(codex_plus_core::global_dictation::load_config()).unwrap_or_else(|_| json!({})),
+    )
+}
+
+#[tauri::command]
+pub fn set_global_dictation_hotkey(enabled: bool, hotkey: String) -> CommandResult<Value> {
+    let mut config = codex_plus_core::global_dictation::load_config();
+    config.enabled = enabled;
+    config.hotkey = hotkey.trim().to_string();
+    if let Err(error) = codex_plus_core::global_dictation::validate_hotkey(&config.hotkey) {
+        return failed(&error.to_string(), json!({}));
+    }
+    if let Err(error) = codex_plus_core::global_dictation::save_config(&config) {
+        return failed(&format!("保存全局听写热键失败：{error}"), json!({}));
+    }
+    match crate::global_dictation::apply_config() {
+        Ok(()) => ok(
+            if enabled { "全局听写热键已开启。" } else { "全局听写热键已关闭。" },
+            serde_json::to_value(config).unwrap_or_else(|_| json!({})),
+        ),
+        Err(error) => failed(&format!("注册全局听写热键失败：{error}"), serde_json::to_value(config).unwrap_or_else(|_| json!({}))),
     }
 }
 
@@ -314,12 +342,28 @@ pub struct ListLocalSessionsRequest {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ListProjectSessionsRequest {
+    #[serde(default)]
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteLocalSessionRequest {
     pub session_id: String,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub db_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveLocalSessionsRequest {
+    #[serde(default)]
+    pub sessions: Vec<codex_plus_data::LocalSession>,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -654,10 +698,20 @@ pub struct DiagnosticsPayload {
     pub report: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct SettingsExportDocument {
+    schema: u8,
+    exported_at_ms: u64,
+    settings: BackendSettings,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct WatcherPayload {
     pub enabled: bool,
     pub disabled_flag: String,
+    pub start_minimized: bool,
+    pub start_codex: bool,
+    pub start_codex_on_open: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2858,7 +2912,7 @@ fn start_embedded_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
 }
 
 /// 重新打开管理界面时恢复已有 Codex 的 Helper、代理和注入，不启动官方应用。
-pub fn resume_existing_codex_background(app: tauri::AppHandle) {
+pub fn resume_existing_codex_background(app: tauri::AppHandle, start_if_missing: bool) {
     tauri::async_runtime::spawn_blocking(move || {
         if crate::app_is_exiting() {
             return;
@@ -2884,11 +2938,28 @@ pub fn resume_existing_codex_background(app: tauri::AppHandle) {
             status_store: StatusStore::default(),
             ..Default::default()
         };
-        if let Err(error) = codex_plus_launcher::resume_if_running(options) {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "manager.resume_existing_failed",
-                json!({ "message": error.to_string() }),
-            );
+        match codex_plus_launcher::resume_if_running(options.clone()) {
+            Ok(true) => {}
+            Ok(false) if start_if_missing => {
+                if let Err(error) = codex_plus_launcher::start(options) {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "manager.autostart_codex_failed",
+                        json!({ "message": error.to_string() }),
+                    );
+                } else {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "manager.autostart_codex_started",
+                        json!({}),
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.resume_existing_failed",
+                    json!({ "message": error.to_string() }),
+                );
+            }
         }
         let _ = tauri::Emitter::emit(&app, "runtime-health-changed", ());
     });
@@ -4396,6 +4467,77 @@ pub async fn list_local_sessions(
     }
 }
 
+#[tauri::command]
+pub async fn list_project_sessions(
+    request: ListProjectSessionsRequest,
+) -> CommandResult<LocalSessionsPayload> {
+    match tauri::async_runtime::spawn_blocking(move || list_project_sessions_blocking(request.cwd)).await {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("项目会话查询后台任务失败：{error}"),
+            LocalSessionsPayload {
+                db_path: String::new(),
+                db_paths: Vec::new(),
+                sessions: Vec::new(),
+                offset: 0,
+                limit: 1,
+                has_more: false,
+                total_count: 0,
+            },
+        ),
+    }
+}
+
+fn normalized_project_path(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+fn list_project_sessions_blocking(cwd: String) -> CommandResult<LocalSessionsPayload> {
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+    static PROJECT_PAGER: std::sync::OnceLock<std::sync::Mutex<codex_plus_data::LocalSessionPager>> =
+        std::sync::OnceLock::new();
+    let page = match PROJECT_PAGER.get_or_init(Default::default).lock() {
+        Ok(mut pager) => pager.list_page(&db_paths, 0, usize::MAX),
+        Err(_) => codex_plus_data::LocalSessionPage {
+            errors: vec!["项目会话查询缓存不可用，请重启管理窗口。".to_string()],
+            ..Default::default()
+        },
+    };
+    let target = normalized_project_path(&cwd);
+    let sessions = page
+        .sessions
+        .into_iter()
+        .filter(|session| normalized_project_path(&session.cwd) == target)
+        .collect::<Vec<_>>();
+    let payload = LocalSessionsPayload {
+        db_path: db_paths
+            .first()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        db_paths: db_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        limit: sessions.len().max(1),
+        total_count: sessions.len(),
+        sessions,
+        offset: 0,
+        has_more: false,
+    };
+    if page.errors.is_empty() {
+        ok(&format!("已读取项目全部 {} 个会话。", payload.total_count), payload)
+    } else {
+        failed(
+            &format!("读取项目会话时出现部分错误：{}", page.errors.join("; ")),
+            payload,
+        )
+    }
+}
+
 fn list_local_sessions_blocking(
     request: Option<ListLocalSessionsRequest>,
 ) -> CommandResult<LocalSessionsPayload> {
@@ -4527,6 +4669,84 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         message: result.message.clone(),
         payload: result,
     }
+}
+
+#[tauri::command]
+pub async fn archive_local_sessions(
+    request: ArchiveLocalSessionsRequest,
+) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || archive_local_sessions_blocking(request)).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("批量归档后台任务失败：{error}"), json!({})),
+    }
+}
+
+fn archive_local_sessions_blocking(request: ArchiveLocalSessionsRequest) -> CommandResult<Value> {
+    if request.sessions.is_empty() {
+        return failed("没有选择要归档的会话。", json!({ "succeeded": 0, "failed": 0 }));
+    }
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let allowed_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home)
+        .into_iter()
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .collect::<std::collections::HashSet<_>>();
+    let mut succeeded = 0usize;
+    let mut failures = Vec::new();
+    for session in request.sessions {
+        let path = PathBuf::from(&session.db_path);
+        let canonical = match std::fs::canonicalize(&path) {
+            Ok(path) => path,
+            Err(error) => {
+                failures.push(format!("{}：数据库不可用：{error}", session.id));
+                continue;
+            }
+        };
+        if !allowed_paths.contains(&canonical) {
+            failures.push(format!("{}：数据库不属于当前 Codex 会话库", session.id));
+            continue;
+        }
+        match archive_one_local_session(&canonical, &session.id, request.archived) {
+            Ok(()) => succeeded += 1,
+            Err(error) => failures.push(format!("{}：{error}", session.id)),
+        }
+    }
+    let failed_count = failures.len();
+    let status = if failed_count == 0 { "ok" } else if succeeded > 0 { "ok" } else { "failed" };
+    let message = if failed_count == 0 {
+        format!("已{} {} 个会话。", if request.archived { "归档" } else { "取消归档" }, succeeded)
+    } else {
+        format!("已{} {} 个，失败 {} 个：{}", if request.archived { "归档" } else { "取消归档" }, succeeded, failed_count, failures.iter().take(3).cloned().collect::<Vec<_>>().join("；"))
+    };
+    CommandResult {
+        status: status.to_string(),
+        message,
+        payload: json!({ "succeeded": succeeded, "failed": failed_count, "errors": failures }),
+    }
+}
+
+fn archive_one_local_session(path: &Path, session_id: &str, archived: bool) -> anyhow::Result<()> {
+    let mut connection = rusqlite::Connection::open(path)?;
+    let columns = connection
+        .prepare("PRAGMA table_info(threads)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+    anyhow::ensure!(columns.contains("archived"), "当前数据库不支持归档字段");
+    let has_archived_at = columns.contains("archived_at");
+    let transaction = connection.transaction()?;
+    let changed = if has_archived_at {
+        transaction.execute(
+            "UPDATE threads SET archived = ?1, archived_at = ?2 WHERE id = ?3",
+            rusqlite::params![archived as i64, if archived { Some(current_timestamp_ms() as i64) } else { None }, session_id],
+        )?
+    } else {
+        transaction.execute(
+            "UPDATE threads SET archived = ?1 WHERE id = ?2",
+            rusqlite::params![archived as i64, session_id],
+        )?
+    };
+    anyhow::ensure!(changed > 0, "未找到会话记录");
+    transaction.commit()?;
+    Ok(())
 }
 
 /// 归一化「Codex 应用路径」。**无效路径一律丢弃，不落库。**
@@ -5469,6 +5689,25 @@ pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload>
 }
 
 #[tauri::command]
+pub fn set_user_scripts_skip_next_start(skip: bool) -> CommandResult<SettingsPayload> {
+    let manager = default_user_script_manager();
+    match manager.set_skip_next_start(skip) {
+        Ok(_) => settings_payload(
+            if skip {
+                "下次启动将跳过本地拓展。"
+            } else {
+                "已取消下次启动跳过本地拓展。"
+            },
+            "设置下次启动安全模式失败",
+        ),
+        Err(error) => failed(
+            &format!("设置下次启动安全模式失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -6083,6 +6322,105 @@ pub fn set_watcher_enabled(enabled: bool) -> CommandResult<WatcherPayload> {
 }
 
 #[tauri::command]
+pub fn set_watcher_start_minimized(minimized: bool) -> CommandResult<WatcherPayload> {
+    match codex_plus_core::watcher::set_watcher_start_minimized(minimized) {
+        Ok(()) if minimized => ok("开机启动时将自动最小化。", watcher_payload()),
+        Ok(()) => ok("已取消开机启动自动最小化。", watcher_payload()),
+        Err(error) => failed(
+            &format!("设置开机启动自动最小化失败：{error}"),
+            watcher_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn set_watcher_start_codex(start_codex: bool) -> CommandResult<WatcherPayload> {
+    match codex_plus_core::watcher::set_watcher_start_codex(start_codex) {
+        Ok(()) if start_codex => ok("登录时将自动启动 Codex。", watcher_payload()),
+        Ok(()) => ok("已取消登录时自动启动 Codex。", watcher_payload()),
+        Err(error) => failed(
+            &format!("设置登录时自动启动 Codex 失败：{error}"),
+            watcher_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn set_watcher_start_codex_on_open(enabled: bool) -> CommandResult<WatcherPayload> {
+    match codex_plus_core::watcher::set_watcher_start_codex_on_open(enabled) {
+        Ok(()) if enabled => ok("打开 Codex++ 时将自动启动 Codex。", watcher_payload()),
+        Ok(()) => ok("已取消打开 Codex++ 时自动启动 Codex。", watcher_payload()),
+        Err(error) => failed(
+            &format!("设置打开 Codex++ 时自动启动失败：{error}"),
+            watcher_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
+    let profile_id = profile_id.trim().to_string();
+    ok(
+        "供应商代理已读取。",
+        json!({
+            "profileId": profile_id,
+            "proxyUrl": codex_plus_core::relay_proxy::proxy_for_profile(&profile_id).unwrap_or_default()
+        }),
+    )
+}
+
+#[tauri::command]
+pub fn set_relay_proxy(profile_id: String, proxy_url: String) -> CommandResult<Value> {
+    match codex_plus_core::relay_proxy::set_proxy_for_profile(&profile_id, &proxy_url) {
+        Ok(()) => ok(
+            if proxy_url.trim().is_empty() {
+                "供应商独立代理已清除。"
+            } else {
+                "供应商独立代理已保存。"
+            },
+            json!({
+                "profileId": profile_id.trim(),
+                "proxyUrl": proxy_url.trim()
+            }),
+        ),
+        Err(error) => failed(&format!("保存供应商代理失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub fn load_relay_feature(profile_id: String) -> CommandResult<Value> {
+    let profile_id = profile_id.trim().to_string();
+    ok(
+        "供应商功能开关已读取。",
+        json!({
+            "profileId": profile_id,
+            "stabilizePromptPrefix": codex_plus_core::relay_features::stabilize_prompt_prefix(&profile_id)
+        }),
+    )
+}
+
+#[tauri::command]
+pub fn set_relay_feature(profile_id: String, stabilize_prompt_prefix: bool) -> CommandResult<Value> {
+    match codex_plus_core::relay_features::set_stabilize_prompt_prefix(
+        &profile_id,
+        stabilize_prompt_prefix,
+    ) {
+        Ok(()) => ok(
+            if stabilize_prompt_prefix {
+                "供应商前缀稳定层已开启。"
+            } else {
+                "供应商前缀稳定层已关闭。"
+            },
+            json!({
+                "profileId": profile_id.trim(),
+                "stabilizePromptPrefix": stabilize_prompt_prefix
+            }),
+        ),
+        Err(error) => failed(&format!("保存供应商功能开关失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
     match read_tail(&path, request.lines) {
@@ -6144,6 +6482,144 @@ pub fn copy_diagnostics() -> CommandResult<DiagnosticsPayload> {
             report: diagnostics_report(),
         },
     )
+}
+
+#[tauri::command]
+pub fn export_settings(path: String, settings: BackendSettings) -> CommandResult<Value> {
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        return failed("导出路径为空。", json!({}));
+    }
+    let document = SettingsExportDocument {
+        schema: 1,
+        exported_at_ms: current_timestamp_ms(),
+        settings,
+    };
+    let contents = match serde_json::to_vec_pretty(&document) {
+        Ok(contents) => contents,
+        Err(error) => return failed(&format!("序列化配置失败：{error}"), json!({})),
+    };
+    if let Some(parent) = path.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return failed(&format!("创建导出目录失败：{error}"), json!({}));
+    }
+    match fs::write(&path, contents) {
+        Ok(()) => ok(
+            "配置已导出。导出文件包含供应商密钥等敏感信息，请妥善保管。",
+            json!({ "path": path.to_string_lossy() }),
+        ),
+        Err(error) => failed(&format!("写入配置导出文件失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub fn preview_import_settings(path: String) -> CommandResult<SettingsPayload> {
+    let path = PathBuf::from(path.trim());
+    let bytes = match fs::read(&path) {
+        Ok(bytes) if bytes.len() <= 8 * 1024 * 1024 => bytes,
+        Ok(_) => return failed("配置导入文件超过 8 MiB 上限。", fallback_settings_payload()),
+        Err(error) => return failed(&format!("读取配置导入文件失败：{error}"), fallback_settings_payload()),
+    };
+    let value: Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(error) => return failed(&format!("配置导入文件不是有效 JSON：{error}"), fallback_settings_payload()),
+    };
+    let mut settings: BackendSettings = if value.get("settings").is_some() {
+        match serde_json::from_value(value.get("settings").cloned().unwrap_or_default()) {
+            Ok(settings) => settings,
+            Err(error) => return failed(&format!("配置导入文件中的 settings 无效：{error}"), fallback_settings_payload()),
+        }
+    } else {
+        match serde_json::from_value(value) {
+            Ok(settings) => settings,
+            Err(error) => return failed(&format!("配置导入文件格式无效：{error}"), fallback_settings_payload()),
+        }
+    };
+    let current = match SettingsStore::default().load() {
+        Ok(current) => current,
+        Err(error) => return failed(&format!("读取当前设置失败：{error}"), fallback_settings_payload()),
+    };
+    settings.settings_revision = current.settings_revision;
+    settings.sync_tool_shards();
+    ok(
+        "配置已读入草稿，请检查后点击“保存设置”写入本机。",
+        SettingsPayload {
+            revision: settings.settings_revision.clone(),
+            settings,
+            settings_path: codex_plus_core::paths::default_settings_path()
+                .to_string_lossy()
+                .to_string(),
+            user_scripts: user_script_inventory(),
+        },
+    )
+}
+
+#[tauri::command]
+pub fn set_settings_path(path: String) -> CommandResult<SettingsPayload> {
+    let target = PathBuf::from(path.trim());
+    if !target.is_absolute() {
+        return failed("配置文件路径必须是绝对路径。", fallback_settings_payload());
+    }
+    let current = codex_plus_core::paths::default_settings_path();
+    if current != target && target.exists() {
+        return failed("目标配置文件已存在，为避免覆盖文件请先选择新路径。", fallback_settings_payload());
+    }
+    if current != target {
+        let contents = match fs::read(&current) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let settings = match SettingsStore::default().load() {
+                    Ok(settings) => settings,
+                    Err(error) => return failed(&format!("读取当前设置失败：{error}"), fallback_settings_payload()),
+                };
+                match serde_json::to_vec_pretty(&settings) {
+                    Ok(contents) => contents,
+                    Err(error) => return failed(&format!("序列化当前设置失败：{error}"), fallback_settings_payload()),
+                }
+            }
+            Err(error) => return failed(&format!("读取当前设置失败：{error}"), fallback_settings_payload()),
+        };
+        if let Some(parent) = target.parent()
+            && let Err(error) = fs::create_dir_all(parent)
+        {
+            return failed(&format!("创建配置目录失败：{error}"), fallback_settings_payload());
+        }
+        if let Err(error) = fs::write(&target, contents) {
+            return failed(&format!("复制配置文件失败：{error}"), fallback_settings_payload());
+        }
+    }
+    if let Err(error) = codex_plus_core::paths::set_settings_path_pointer(Some(&target)) {
+        if current != target {
+            let _ = fs::remove_file(&target);
+        }
+        return failed(&format!("保存配置路径失败：{error}"), fallback_settings_payload());
+    }
+    settings_payload("配置文件路径已更新；重新打开管理器后所有组件都会使用新路径。", "路径更新后重新读取失败")
+}
+
+#[tauri::command]
+pub fn reset_settings_path() -> CommandResult<SettingsPayload> {
+    let current = codex_plus_core::paths::default_settings_path();
+    let target = codex_plus_core::paths::default_app_state_dir().join("settings.json");
+    if current != target && target.exists() {
+        return failed("默认配置文件已存在，为避免覆盖文件请先处理该文件。", fallback_settings_payload());
+    }
+    if current != target {
+        let contents = match fs::read(&current) {
+            Ok(contents) => contents,
+            Err(error) => return failed(&format!("读取当前设置失败：{error}"), fallback_settings_payload()),
+        };
+        if let Err(error) = fs::create_dir_all(target.parent().unwrap_or(Path::new(".")))
+            .and_then(|_| fs::write(&target, contents))
+        {
+            return failed(&format!("恢复默认配置路径失败：{error}"), fallback_settings_payload());
+        }
+    }
+    if let Err(error) = codex_plus_core::paths::set_settings_path_pointer(None) {
+        return failed(&format!("清除配置路径失败：{error}"), fallback_settings_payload());
+    }
+    settings_payload("已恢复默认配置文件路径。", "恢复默认路径后重新读取失败")
 }
 
 #[tauri::command]
@@ -6658,6 +7134,20 @@ pub fn parse_mcp_entry(toml_body: String) -> CommandResult<McpFormPayload> {
                 form: Default::default(),
             },
         ),
+    }
+}
+
+/// 按需检查已知入口，后台执行且有时限；不启动 MCP、不写配置。
+#[tauri::command]
+pub async fn inspect_mcp_startup(
+    form: codex_plus_core::mcp_config::McpServerForm,
+) -> CommandResult<codex_plus_core::mcp_config::McpCommandInspection> {
+    match codex_plus_core::mcp_config::inspect_current_mcp_startup(form).await {
+        Ok(result) => {
+            let message = result.message.clone();
+            ok(&message, result)
+        }
+        Err(error) => failed(&error.to_string(), Default::default()),
     }
 }
 
@@ -8118,6 +8608,9 @@ fn watcher_payload() -> WatcherPayload {
     WatcherPayload {
         enabled: codex_plus_core::watcher::watcher_is_installed() && !flag.exists(),
         disabled_flag: flag.to_string_lossy().to_string(),
+        start_minimized: codex_plus_core::watcher::watcher_start_minimized(),
+        start_codex: codex_plus_core::watcher::watcher_start_codex(),
+        start_codex_on_open: codex_plus_core::watcher::watcher_start_codex_on_open(),
     }
 }
 

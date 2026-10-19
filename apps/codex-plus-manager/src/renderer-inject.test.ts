@@ -152,6 +152,16 @@ describe("renderer injection header compatibility", () => {
     };
     assert.equal(api.patchResponseData(failed), true);
     assert.deepEqual(failed.message.result?.marketplaces, [], "authentication fallback must not recover cached catalogs");
+    const timedOut: { type: string; message: { error?: unknown; result?: { marketplaces: unknown[] } } } = {
+      type: "mcp-response",
+      message: {
+        error: {
+          message: "failed to warm featured plugin ids cache: error sending request for url https://chatgpt.com/backend-api/plugins/featured?platform=codex: operation timed out",
+        },
+      },
+    };
+    assert.equal(api.patchResponseData(timedOut), true);
+    assert.deepEqual(timedOut.message.result?.marketplaces, [], "remote plugin timeout must become a local fallback");
     api.patchResponseData({ type: "mcp-response", message: { method: "install-plugin", result: { installed: true } } });
     assert.deepEqual(invalidations, [{ queryKey: ["plugins"] }]);
     assert.doesNotMatch(navigation + plugin, /__CODEX_PLUS_PLUGIN_MARKETPLACES__|mergeLocalPluginMarketplaces|plugin_marketplace_local_merged/);

@@ -4599,6 +4599,49 @@ async fn upstream_request_returns_when_provider_accepts_but_never_sends_headers(
     server.abort();
 }
 
+/// 系统代理/链路抖动经常表现为 TLS 握手阶段被对端断开
+/// （`client error (Connect): tls handshake eof`）。这类失败发生在请求送达
+/// 上游之前，必须在本地重试，不能把瞬时故障直接暴露成 502。
+#[tokio::test]
+async fn upstream_connect_failures_are_retried_before_reporting_502() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = accepted.clone();
+    let server = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            counter.fetch_add(1, Ordering::SeqCst);
+            // 握手阶段直接断开，复现 tls handshake eof。
+            drop(stream);
+        }
+    });
+
+    let started = Instant::now();
+    let error = send_upstream_request_with_header_timeout(
+        upstream_http_client()
+            .unwrap()
+            .post(format!("https://{addr}/v1/responses"))
+            .json(&json!({"model": "m", "input": "hi"})),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("上游请求失败"), "{text}");
+    assert!(
+        accepted.load(Ordering::SeqCst) >= 3,
+        "expected initial attempt plus 2 connect retries"
+    );
+    // 两次退避合计 550ms，证明不是一次失败就立刻返回。
+    assert!(started.elapsed() >= Duration::from_millis(500));
+    server.abort();
+}
+
 #[tokio::test]
 async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
     let _lock = settings_path_test_lock().lock().unwrap();
@@ -4746,6 +4789,148 @@ async fn aggregate_official_member_forwards_with_oauth_credentials() {
     assert!(headers_lower.contains("originator: codex_cli_rs"), "{headers}");
     assert!(!headers_lower.contains("sk-"), "{headers}");
     assert_eq!(body["model"], "gpt-5.6-sol");
+}
+
+/// 官方登录成员 + 单成员聚合外壳，用于验证官方登录通道的请求重写。
+fn official_aggregate_test_settings(official_id: &str, aggregate_id: &str) -> BackendSettings {
+    BackendSettings {
+        relay_profiles: vec![
+            RelayProfile {
+                id: official_id.to_string(),
+                name: "官方登录".to_string(),
+                relay_mode: RelayMode::Official,
+                auth_contents: json!({
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "official-access",
+                        "refresh_token": "official-refresh",
+                        "account_id": "acct-official"
+                    }
+                })
+                .to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: aggregate_id.to_string(),
+                name: "aggregate".to_string(),
+                relay_mode: RelayMode::Aggregate,
+                ..RelayProfile::default()
+            },
+        ],
+        active_relay_id: aggregate_id.to_string(),
+        active_aggregate_relay_id: aggregate_id.to_string(),
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: aggregate_id.to_string(),
+            name: "aggregate".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: false,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: official_id.to_string(),
+                weight: 1,
+            }],
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+/// 官方登录上游要求：回放 web_search_call 历史时必须声明 web_search 工具，
+/// 否则流式返回 `response protection is unavailable`。Codex 的本地压缩请求
+/// `tools` 为空，必须由代理补齐声明（且不能改写历史）。
+#[tokio::test]
+async fn aggregate_official_member_declares_web_search_for_tool_less_history() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    // 隔离真实 ~/.codex/auth.json，避免 live 登录快照影响凭据解析。
+    let _codex_home = EnvVarGuard::set(
+        "CODEX_HOME",
+        temp.path().to_str().unwrap(),
+    );
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_json_request_once(listener));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+
+    let request = json!({
+        "model": "gpt-6.1-sol",
+        "stream": false,
+        "tools": [],
+        "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"type": "web_search_call", "id": "ws_test", "status": "completed",
+                "action": {"type": "search", "query": "example"}},
+            {"type": "message", "role": "user", "content": [{"type": "input_text",
+                "text": "You are performing a CONTEXT CHECKPOINT COMPACTION."}]}
+        ]
+    });
+    let settings = official_aggregate_test_settings("proxy-official-web", "proxy-official-web-agg");
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let (headers, sent) = server.await.unwrap();
+    assert!(
+        headers.starts_with("POST /backend-api/codex/responses HTTP/1.1"),
+        "{headers}"
+    );
+    let mut expected = request;
+    expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
+    expected["tool_choice"] = json!("none");
+    assert_eq!(sent, expected, "只补搜索声明，历史内容必须原样保留");
+}
+
+/// 官方登录通道只修「没有声明任何工具」的请求；带工具的普通轮次保持原样。
+#[tokio::test]
+async fn aggregate_official_member_leaves_tool_declaring_requests_unchanged() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set(
+        "CODEX_HOME",
+        temp.path().to_str().unwrap(),
+    );
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(capture_json_request_once(listener));
+    let _env_guard = EnvVarGuard::set(
+        "CODEX_PLUS_OFFICIAL_BASE_URL",
+        &format!("http://{address}/backend-api/codex"),
+    );
+
+    let request = json!({
+        "model": "gpt-6.1-sol",
+        "stream": false,
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "auto",
+        "input": [
+            {"type": "web_search_call", "id": "ws_test", "status": "completed",
+                "action": {"type": "search", "query": "example"}},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+        ]
+    });
+    let settings =
+        official_aggregate_test_settings("proxy-official-tools", "proxy-official-tools-agg");
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+
+    let (_, sent) = server.await.unwrap();
+    assert_eq!(sent, request, "带工具的请求不应被改写");
 }
 
 /// 官方登录 token 被提前撤销：第一次 401 后强制刷新一次并原样重试，

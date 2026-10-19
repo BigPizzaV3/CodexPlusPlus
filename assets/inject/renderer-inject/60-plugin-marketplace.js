@@ -130,6 +130,25 @@
     return text.includes("chatgpt authentication required for remote plugin catalog") && text.includes("api key auth is not supported");
   }
 
+  function pluginMarketplaceRemoteUnavailableError(value) {
+    const text = pluginMarketplaceErrorText(value).toLowerCase();
+    if (!text) return false;
+    if (pluginMarketplaceRemoteAuthError(value)) return true;
+    // 纯 API 模式没有 ChatGPT 会话时，Codex 仍会预热 featured 插件目录。
+    // 该远程请求超时会被上游错误提升为全局 connection-failed；插件目录应局部降级，
+    // 不能阻断已经连通的本地 helper、供应商和主模型请求（issue #2598）。
+    const isFeaturedWarmup = text.includes("failed to warm featured plugin ids cache")
+      || text.includes("/backend-api/plugins/featured");
+    const isRemotePluginSync = text.includes("remote installed plugin bundle sync")
+      || text.includes("remote plugin catalog");
+    const isNetworkFailure = text.includes("timeout")
+      || text.includes("timed out")
+      || text.includes("error sending request")
+      || text.includes("network")
+      || text.includes("connection");
+    return (isFeaturedWarmup || isRemotePluginSync) && isNetworkFailure;
+  }
+
   const codexPluginRemoteAuthRetryMs = 60_000;
 
   function clearPluginMarketplaceRemoteCatalogUnavailable() {
@@ -209,7 +228,7 @@
         const result = await originalSendRequest(method, requestParams, options);
         return patchPluginMarketplaceResult(requestMethod, result);
       } catch (error) {
-        if (requestMethod === "list-plugins" && pluginMarketplaceRemoteAuthError(error)) {
+        if (requestMethod === "list-plugins" && pluginMarketplaceRemoteUnavailableError(error)) {
           markPluginMarketplaceRemoteCatalogUnavailable(error);
           return requestProfile.remoteOnly
             ? remoteOnlyPluginMarketplaceFallbackResult()
@@ -322,7 +341,7 @@
       if (typeof data.bodyJsonString !== "string" || !data.bodyJsonString.trim()) return false;
       try {
         let result = JSON.parse(data.bodyJsonString);
-        if (pluginMarketplaceRemoteAuthError(result?.error || result)) {
+        if (pluginMarketplaceRemoteUnavailableError(result?.error || result)) {
           markPluginMarketplaceRemoteCatalogUnavailable(result?.error || result);
           const fallback = requestProfile?.remoteOnly
             ? remoteOnlyPluginMarketplaceFallbackResult()
@@ -362,7 +381,7 @@
       requestIds.delete(requestId);
     }
     if (requestProfiles instanceof Map) requestProfiles.delete(requestId);
-    if (pluginMarketplaceRemoteAuthError(message?.error)) {
+    if (pluginMarketplaceRemoteUnavailableError(message?.error)) {
       markPluginMarketplaceRemoteCatalogUnavailable(message.error);
       delete message.error;
       message.result = requestProfile?.remoteOnly
@@ -383,6 +402,7 @@
       patchRequestMessage: patchPluginMarketplaceRequestMessage,
       patchResponseData: patchPluginMarketplaceResponseData,
       remoteAuthError: pluginMarketplaceRemoteAuthError,
+      remoteUnavailableError: pluginMarketplaceRemoteUnavailableError,
       localFallback: localPluginMarketplaceFallbackResult,
       remoteOnlyFallback: remoteOnlyPluginMarketplaceFallbackResult,
       requestProfile: pluginMarketplaceRequestProfile,

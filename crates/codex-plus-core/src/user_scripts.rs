@@ -100,6 +100,8 @@ fn parse_live_runtime_status_response(response: &Value) -> anyhow::Result<Value>
 pub struct UserScriptConfig {
     pub enabled: bool,
     pub scripts: BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skip_next_start: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub market: BTreeMap<String, MarketScriptInstall>,
 }
@@ -109,9 +111,14 @@ impl Default for UserScriptConfig {
         Self {
             enabled: true,
             scripts: BTreeMap::new(),
+            skip_next_start: false,
             market: BTreeMap::new(),
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -187,6 +194,27 @@ impl UserScriptManager {
         config.enabled = enabled;
         self.save_config_unlocked(&config)?;
         Ok(config)
+    }
+
+    pub fn set_skip_next_start(&self, skip: bool) -> anyhow::Result<UserScriptConfig> {
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        config.skip_next_start = skip;
+        self.save_config_unlocked(&config)?;
+        Ok(config)
+    }
+
+    /// Consume the one-shot safe-start marker before building the first-page bundle.
+    /// The marker is cleared only after the updated configuration is persisted.
+    pub fn consume_skip_next_start(&self) -> anyhow::Result<bool> {
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        if !config.skip_next_start {
+            return Ok(false);
+        }
+        config.skip_next_start = false;
+        self.save_config_unlocked(&config)?;
+        Ok(true)
     }
 
     pub fn set_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
@@ -278,6 +306,7 @@ impl UserScriptManager {
         let scripts = self.scan_scripts(&config, runtime_status)?;
         Ok(json!({
             "enabled": config.enabled,
+            "skip_next_start": config.skip_next_start,
             "builtin_dir": self.builtin_dir.to_string_lossy(),
             "user_dir": self.user_dir.to_string_lossy(),
             "scripts": scripts
@@ -303,7 +332,12 @@ impl UserScriptManager {
 
     /// 页面启动与桥接恢复只能初始化一次，不能清理旧脚本或触发刷新。
     pub fn build_initial_bundle(&self) -> anyhow::Result<String> {
-        let bundle = self.build_enabled_bundle()?;
+        let skip_next_start = self.consume_skip_next_start()?;
+        let bundle = if skip_next_start {
+            String::new()
+        } else {
+            self.build_enabled_bundle()?
+        };
         Ok(format!(
             r#"(() => {{
   {RUNTIME_SCRIPT}
@@ -312,8 +346,13 @@ impl UserScriptManager {
     runtime.initialized = true;
     {bundle}
   }}
-  return JSON.stringify({{ mode: "scripts", scripts: runtime.scripts }});
-}})()"#
+  return JSON.stringify({{ mode: "{mode}", scripts: runtime.scripts }});
+}})()"#,
+            mode = if skip_next_start {
+                "skipped"
+            } else {
+                "scripts"
+            }
         ))
     }
 
@@ -471,6 +510,10 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
 
 fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
     let enabled = raw.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    let skip_next_start = raw
+        .get("skip_next_start")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let scripts = raw
         .get("scripts")
         .and_then(Value::as_object)
@@ -494,6 +537,7 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
     UserScriptConfig {
         enabled,
         scripts,
+        skip_next_start,
         market,
     }
 }

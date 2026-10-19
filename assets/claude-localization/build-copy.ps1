@@ -7,6 +7,21 @@ $sourceRoot = Split-Path $sourceExe -Parent
 $copyRoot = Split-Path $copyExe -Parent
 $here = Split-Path $MyInvocation.MyCommand.Path -Parent
 
+function Get-Sha256Hex([string]$path) {
+  $stream = $null
+  $sha = $null
+  try {
+    $stream = [IO.File]::OpenRead($path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '')
+  } catch {
+    throw ('副本校验失败：' + $_.Exception.Message)
+  } finally {
+    if ($stream) { $stream.Dispose() }
+    if ($sha) { $sha.Dispose() }
+  }
+}
+
 function Find-Ion([string]$root) {
   foreach ($candidate in @((Join-Path $root 'resources\ion-dist'), (Join-Path $root 'ion-dist'))) {
     if (Test-Path (Join-Path $candidate 'index.html')) { return $candidate }
@@ -67,7 +82,7 @@ if (-not (Test-Path $sourceExe)) { throw "找不到 Claude：$sourceExe" }
 if ($args -contains '--check') {
   if (-not (Test-Path $copyExe)) { throw 'Windows Claude 副本不存在' }
   $sourceAsar = Join-Path $sourceRoot 'resources\app.asar'; $copyAsar = Join-Path $copyRoot 'resources\app.asar'
-  if ((Get-FileHash $sourceAsar).Hash -ne (Get-FileHash $copyAsar).Hash) { throw 'app.asar 已被改动' }
+  if ((Get-Sha256Hex $sourceAsar) -ne (Get-Sha256Hex $copyAsar)) { throw 'app.asar 已被改动' }
   $ion = Find-Ion $copyRoot
   if (-not (Test-Path (Join-Path $ion 'i18n\zh-Hans.json'))) { throw '中文词表缺失' }
   Write-Output 'Windows Claude 副本、中文词表与 app.asar 一致性检查通过'; exit 0

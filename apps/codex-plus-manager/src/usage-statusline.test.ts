@@ -36,14 +36,16 @@ const sandboxSource = [
   declaration("codexPlusUsageStaleMs"),
   declaration("codexPlusUsagePercent"),
   declaration("codexPlusUsageRate"),
+  declaration("codexPlusUsageTurnCache"),
   declaration("codexPlusUsageSnapshot"),
   declaration("codexPlusUsageThreadId"),
-  "return { codexPlusUsagePercent, codexPlusUsageRate, codexPlusUsageSnapshot, codexPlusUsageThreadId };",
+  "return { codexPlusUsagePercent, codexPlusUsageRate, codexPlusUsageTurnCache, codexPlusUsageSnapshot, codexPlusUsageThreadId };",
 ].join("\n");
 
 type Sandbox = {
   codexPlusUsagePercent: (numerator: number, denominator: number) => number | null;
   codexPlusUsageRate: (events: Array<Record<string, unknown>>) => number | null;
+  codexPlusUsageTurnCache: (events: Array<Record<string, unknown>>) => number | null;
   codexPlusUsageSnapshot: (events: Array<Record<string, unknown>>) => {
     speed: number | null;
     cache: number | null;
@@ -124,6 +126,18 @@ test("缓存命中与上下文占用按 Codex 的口径取值", () => {
   assert.equal(codexPlusUsageSnapshot([]), null);
 });
 
+test("同一轮缓存命中率按输入 token 加权，换轮后重新计算", () => {
+  const { codexPlusUsageTurnCache } = sandbox(Date.UTC(2026, 5, 2, 5, 0, 10));
+  assert.equal(codexPlusUsageTurnCache([
+    event(0, 100, { input_tokens: 100, cached_input_tokens: 40 }),
+    event(1, 200, { input_tokens: 900, cached_input_tokens: 810 }),
+  ]), 85);
+  assert.equal(codexPlusUsageTurnCache([
+    event(0, 100, { input_tokens: 100, cached_input_tokens: 40 }),
+    event(1, 20, { input_tokens: 1000, cached_input_tokens: 100 }),
+  ]), 10);
+});
+
 test("最近一条事件超过阈值后标记为过期", () => {
   const observed = Date.UTC(2026, 5, 2, 5, 0, 0);
   const fresh = sandbox(observed + 60_000).codexPlusUsageSnapshot([event(0, 1)]);
@@ -199,7 +213,7 @@ function lifecycle() {
   const source = [
     ...["codexPlusUsageState", "codexPlusUsageStaleMs", "codexPlusUsageIdleIntervalMs",
       "codexPlusUsageActiveIntervalMs", "codexPlusUsageWarmupIntervalMs", "codexPlusUsageFailureLimit",
-      "codexPlusUsagePercent", "codexPlusUsageRate", "codexPlusUsageSnapshot",
+      "codexPlusUsagePercent", "codexPlusUsageRate", "codexPlusUsageTurnCache", "codexPlusUsageSnapshot",
       "codexPlusUsageHide", "codexPlusUsageShow", "codexPlusUsageSyncPlacement",
       "codexPlusUsageRemember", "codexPlusUsageRefresh", "codexPlusUsageTick"].map(declaration),
     "return { state: codexPlusUsageState, sync: codexPlusUsageSyncPlacement, tick: codexPlusUsageTick, remember: codexPlusUsageRemember };",

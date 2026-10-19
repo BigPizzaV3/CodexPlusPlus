@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测、常量与图片覆盖层",
-      "lines": 1732
+      "lines": 1790
     },
     {
       "name": "01-registry.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1912
+      "lines": 1945
     },
     {
       "name": "50-navigation.js",
@@ -43,7 +43,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1877
+      "lines": 1897
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -83,7 +83,7 @@
     {
       "name": "83-usage-statusline.js",
       "description": "输入框下方用量状态栏：生成速度、缓存命中率与上下文占用",
-      "lines": 460
+      "lines": 494
     },
     {
       "name": "90-action-groups.js",
@@ -103,7 +103,7 @@
     {
       "name": "93-dictation.js",
       "description": "独立 ASR 听写入口、录音、取消重试与原生输入框回填",
-      "lines": 583
+      "lines": 604
     },
     {
       "name": "94-typing-effects.js",

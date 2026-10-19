@@ -153,3 +153,10 @@
   .mg-repo-form-footer { padding-inline:12px; gap:8px; }
   .mg-repo-form-footer .mg-row-actions { gap:5px; }
 }
+
+.mg-skill-group { display:flex; flex-direction:column; gap:0; margin-bottom:12px; }
+.mg-skill-group-head { display:flex; align-items:center; gap:8px; min-height:42px; border:1px solid hsl(var(--border)); border-bottom:0; border-radius:9px 9px 0 0; background:hsl(var(--muted)); }
+.mg-skill-group-head .mg-group-head { flex:1; border-bottom:0; background:transparent; }
+.mg-skill-group-head .mg-row-actions { padding-right:8px; }
+.mg-skill-group .mg-skill-list { border-radius:0 0 9px 9px; }
+.mg-skill-group-select { display:block; max-width:100%; margin-top:4px; border:1px solid hsl(var(--border)); border-radius:5px; background:transparent; color:inherit; font:inherit; font-size:10px; padding:2px 4px; }

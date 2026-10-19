@@ -1011,7 +1011,7 @@ pub async fn test_relay_profile(
         crate::anthropic_bridge::CLAUDE_CODE_USER_AGENT
     } else if !profile.user_agent.trim().is_empty() { profile.user_agent.trim() }
     else { "CodexPlusPlus/RelayTest" };
-    let client = crate::http_client::proxied_client(user_agent)?;
+    let client = crate::http_client::proxied_client_for_profile(user_agent, &profile.id)?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => crate::protocol_proxy::responses_url(base_url),
         RelayProtocol::ChatCompletions => crate::protocol_proxy::chat_completions_url(base_url),
@@ -1528,6 +1528,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.has_model_routes()
         || profile.uses_no_auth()
         || profile.web_search_history_compat_enabled()
+        || profile.request_compatibility_enabled()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -3030,8 +3031,29 @@ fn apply_model_catalog_to_config(
     apply_model_catalog_to_config_with_live_policy(home, profile, config_text, true)
 }
 
-/// 只修复旧版生成的相对 catalog 指针，不重放供应商配置或改写用户外部目录。
-/// 新版 Codex 的部分读取路径没有反序列化基目录，只有绝对路径能稳定加载（#2529）。
+fn wsl_catalog_paths_enabled(home: &Path, config: &str) -> bool {
+    let read = |text: &str| -> Option<bool> {
+        let doc = parse_toml_document(text).ok()?;
+        doc.get("desktop")?.get("runCodexInWindowsSubsystemForLinux")?.as_bool()
+    };
+    // 与最终写盘的 preserve_live_app_settings 保持相同优先级：桌面运行环境
+    // 属于本机设置，不能让供应商快照里过期的 true/false 改变目录解析方式。
+    read_optional_text(&home.join("config.toml")).ok().and_then(|text| read(&text))
+        .or_else(|| read(config))
+        .unwrap_or(false)
+}
+
+fn managed_catalog_pointer(home: &Path, relative: &str, config: &str) -> anyhow::Result<String> {
+    if wsl_catalog_paths_enabled(home, config) {
+        // WSL 的 app-server 不能读取 C:\\...；相对路径由共享 CODEX_HOME 解析。
+        return Ok(relative.replace('\\', "/"));
+    }
+    Ok(std::path::absolute(home.join(relative))
+        .context("解析受管模型 catalog 绝对路径失败")?.to_string_lossy().to_string())
+}
+
+/// 只迁移当前 home 内的受管目录，不重放供应商配置或改写用户外部目录。
+/// 原生 Windows 需要绝对路径（#2529），WSL 则保留共享 home 下的相对路径（#2591）。
 pub fn migrate_managed_model_catalog_pointer_in_home(
     home: &Path,
     settings: &BackendSettings,
@@ -3057,12 +3079,14 @@ pub fn migrate_managed_model_catalog_pointer_in_home(
         return Ok(false);
     };
     let path = Path::new(raw_path);
-    if path.is_absolute() {
-        return Ok(false);
-    }
+    let absolute_home = std::path::absolute(home)?;
+    let relative = if path.is_absolute() {
+        let Ok(relative) = path.strip_prefix(&absolute_home) else { return Ok(false); };
+        relative
+    } else { path };
     // 旧产物只有 model-catalogs/<id>.json 两层。拒绝 ..、嵌套目录与其它前缀，
     // 不使用 apply 时用于识别旧管理器目录的宽松启发式。
-    let mut components = path
+    let mut components = relative
         .components()
         .filter(|component| *component != std::path::Component::CurDir);
     let Some(std::path::Component::Normal(root)) = components.next() else {
@@ -3093,8 +3117,9 @@ pub fn migrate_managed_model_catalog_pointer_in_home(
             return Ok(false);
         }
     }
-    let absolute = std::path::absolute(catalog_path).context("解析模型 catalog 绝对路径失败")?;
-    doc["model_catalog_json"] = toml_edit::value(absolute.to_string_lossy().as_ref());
+    let pointer = managed_catalog_pointer(home, &relative.to_string_lossy(), &contents)?;
+    if raw_path == pointer { return Ok(false); }
+    doc["model_catalog_json"] = toml_edit::value(pointer);
     crate::settings::atomic_write(&config_path, doc.to_string().as_bytes())
         .context("迁移模型 catalog 绝对路径失败")?;
     Ok(true)
@@ -3112,10 +3137,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     );
     // 不用 canonicalize：它在 Windows 会引入 \\?\ 前缀；absolute 也能处理相对
     // CODEX_HOME，同时保持受管文件原来的位置和符号链接语义。
-    let catalog_absolute = std::path::absolute(home.join(&catalog_relative))
-        .context("解析受管模型 catalog 绝对路径失败")?
-        .to_string_lossy()
-        .to_string();
+    let catalog_pointer = managed_catalog_pointer(home, &catalog_relative, config_text)?;
     let mut config_text = config_text.to_string();
     if let Some(catalog_json) = crate::aggregate_catalog::build_catalog_for_profile(profile)? {
         let catalog_path = home.join(&catalog_relative);
@@ -3136,7 +3158,7 @@ fn apply_model_catalog_to_config_with_live_policy(
         {
             doc["model"] = toml_edit::value(default_model);
         }
-        doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
+        doc["model_catalog_json"] = toml_edit::value(catalog_pointer);
         return Ok(normalize_optional_toml(doc));
     }
     let mut model_windows = parse_model_string_map(&profile.model_windows, "model_windows")?;
@@ -3200,7 +3222,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     // 该固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
     // 切换到 Codex++ profile 时应接管，否则旧 catalog 会继续覆盖本 profile 的模型元数据。
     if let Some(existing) = root_key_string(&config_text, "model_catalog_json") {
-        if existing != catalog_relative && existing != catalog_absolute {
+        if existing != catalog_relative && existing != catalog_pointer {
             if is_codex_plus_managed_model_catalog(home, &existing)
                 || is_cc_switch_model_catalog(&existing)
             {
@@ -3237,11 +3259,11 @@ fn apply_model_catalog_to_config_with_live_policy(
                         &catalog_relative,
                         &entries,
                         fallback,
-                        lite_supported,
+                        lite_supported || profile.trust_upstream_catalog_lite,
                     )?
                 {
                     let mut doc = parse_toml_document(&config_text)?;
-                    doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
+                    doc["model_catalog_json"] = toml_edit::value(catalog_pointer);
                     return Ok(normalize_optional_toml(doc));
                 }
                 return Ok(config_text);
@@ -3268,10 +3290,10 @@ fn apply_model_catalog_to_config_with_live_policy(
                 &catalog_relative,
                 &entries,
                 fallback,
-                lite_supported,
+                lite_supported || profile.trust_upstream_catalog_lite,
             )?
         {
-            doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
+            doc["model_catalog_json"] = toml_edit::value(catalog_pointer);
         } else {
             doc["model_catalog_json"] = toml_edit::value(external_catalog);
         }
@@ -3291,7 +3313,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     {
         let mut doc = parse_toml_document(&config_text)?;
         if root_key_string(&config_text, "model_catalog_json")
-            .is_some_and(|pointer| pointer == catalog_relative || pointer == catalog_absolute)
+            .is_some_and(|pointer| pointer == catalog_relative || pointer == catalog_pointer)
         {
             doc.remove("model_catalog_json");
         }
@@ -3319,7 +3341,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     validate_managed_model_catalog(&catalog_json)?;
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
-    doc["model_catalog_json"] = toml_edit::value(catalog_absolute);
+    doc["model_catalog_json"] = toml_edit::value(catalog_pointer);
     Ok(normalize_optional_toml(doc))
 }
 
@@ -3652,6 +3674,11 @@ pub(crate) fn apply_model_metadata_overrides(
                 continue;
             }
             model_object.insert(key.clone(), value.clone());
+        }
+        if user_override.get("codex_plus_reasoning_parameters").and_then(Value::as_str) == Some("omit") {
+            model["supported_reasoning_levels"] = json!([]);
+            model["default_reasoning_level"] = Value::Null;
+            model["supports_reasoning_summaries"] = json!(false);
         }
         crate::model_suffix::apply_model_fast_support(model, user_override.get("codex_plus_fast_support"));
     }
@@ -4695,6 +4722,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     if profile.has_model_routes()
         || profile.uses_no_auth()
         || profile.web_search_history_compat_enabled()
+        || profile.request_compatibility_enabled()
         || has_managed_proxy_config
     {
         if !profile.upstream_base_url.trim().is_empty() {
@@ -4900,6 +4928,7 @@ fn complete_relay_profile_config_with_proxy_port(
     let provider_base_url = if profile.has_model_routes()
         || profile.uses_no_auth()
         || profile.web_search_history_compat_enabled()
+        || profile.request_compatibility_enabled()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {

@@ -446,6 +446,10 @@ const PET_V2_SPRITE_DETECTION_SCRIPT: &str = r#"
   };
 "#;
 
+pub fn pet_real_mouse_hook_probe_script() -> &'static str {
+    r#"typeof window.__codexPlusPetRealMouseLook?.updateScreenPoint === "function""#
+}
+
 pub fn pet_real_mouse_capability_probe_script() -> String {
     let mut script = String::from(
         r#"
@@ -492,19 +496,10 @@ pub fn pet_real_mouse_capability_probe_script() -> String {
 }
 
 pub fn pet_real_mouse_update_script(x: i32, y: i32) -> String {
-    let mut script = String::from(
-        r#"(async () => {
-  const mascot = document.querySelector('[data-avatar-mascot="true"]');
-"#,
-    );
-    script.push_str(PET_V2_SPRITE_DETECTION_SCRIPT);
-    script.push_str(&format!(
-        r#"
-  return await isV2Sprite(mascot)
-    && window.__codexPlusPetRealMouseLook?.updateScreenPoint?.({{ x: {x}, y: {y} }}) === true;
-}})()"#
-    ));
-    script
+    // 只要页面上有 updateScreenPoint 就推坐标。不能绑 V2 精灵图或 vscode dispatcher。
+    format!(
+        "window.__codexPlusPetRealMouseLook?.updateScreenPoint?.({{ x: {x}, y: {y} }}) === true;"
+    )
 }
 
 pub fn pet_real_mouse_stop_script() -> &'static str {

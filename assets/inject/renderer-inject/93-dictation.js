@@ -41,6 +41,16 @@
     return root ? codexPlusDictationEditor(root) : null;
   }
 
+  function codexPlusDictationGlobalEditor() {
+    const active = document.activeElement?.closest?.('[data-codex-composer-root], [data-composer-surface-variant], form');
+    const activeEditor = active ? codexPlusDictationEditor(active) : null;
+    if (activeEditor) return activeEditor;
+    return [...document.querySelectorAll('[data-codex-composer-root], [data-composer-surface-variant], form')]
+      .filter((root) => visibleElement(root) && root.getAttribute('data-composer-placement') !== 'home')
+      .map((root) => codexPlusDictationEditor(root))
+      .find(Boolean) || null;
+  }
+
   async function loadCodexPlusDictationNativeApi() {
     if (codexPlusDictation.nativeApiPromise) return codexPlusDictation.nativeApiPromise;
     codexPlusDictation.nativeApiPromise = loadOptionalCodexAppModule("app-initial-").then((module) => {
@@ -155,9 +165,12 @@
 
   async function startCodexPlusDictation(footer) {
     if (!codexPlusDictationEnabled() || codexPlusDictation.phase !== "idle") return;
-    const editor = codexPlusDictationScope(footer) && codexPlusDictationEditor(codexPlusDictationScope(footer));
+    const editor = footer
+      ? codexPlusDictationScope(footer) && codexPlusDictationEditor(codexPlusDictationScope(footer))
+      : codexPlusDictationGlobalEditor();
     if (!editor) { showToast("无法找到可编辑的 Codex 输入框", null); return; }
-    if (footer.getAttribute("data-dictation-view")) { showToast("请先结束原生语音输入", null); return; }
+    const footerView = footer || editor.closest?.('.composer-footer, [data-composer-footer-responsive]');
+    if (footerView?.getAttribute("data-dictation-view")) { showToast("请先结束原生语音输入", null); return; }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder !== "function") {
       showToast("当前环境不支持麦克风录音", null); return;
     }
@@ -568,6 +581,14 @@
       // 在录音期间，Enter 先结束转写再发送，不能让原生输入框先提交旧草稿。
       event.preventDefault(); event.stopImmediatePropagation();
       if (codexPlusDictation.phase !== "requesting") stopCodexPlusDictation("send");
+    }
+  };
+  window.__codexPlusDictationGlobalToggle = () => {
+    if (codexPlusDictation.phase === "recording") stopCodexPlusDictation("insert");
+    else if (codexPlusDictation.phase === "idle") void startCodexPlusDictation(null);
+    else if (["error", "result"].includes(codexPlusDictation.phase)) {
+      cancelCodexPlusDictation();
+      void startCodexPlusDictation(null);
     }
   };
   document.addEventListener("keydown", codexPlusDictationKeyHandler, true);

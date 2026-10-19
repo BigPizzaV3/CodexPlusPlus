@@ -914,7 +914,31 @@ fn launcher_applies_codexplusplus_window_icon_after_packaged_activation() {
     let source = include_str!("../src/launcher.rs");
 
     assert!(source.contains("apply_codexplusplus_window_icon_after_launch(process_id);"));
-    assert!(source.contains("windows_apply_codexplusplus_icon_to_process_window"));
+    assert!(source.contains("WindowIconApplyState::default()"));
+    assert!(source.contains("windows_integration::apply_codexplusplus_icon_attempt"));
+}
+
+#[test]
+fn local_relaunch_process_pattern_matches_literal_bundle_paths_only() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/relaunch-local.mjs");
+    let fixture = r#"
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const fn = source.match(/^function localBundleProcessPattern\(bundle\) \{[^]*?^\}/m);
+assert.ok(fn);
+const pattern = new Function(fn[0] + '; return localBundleProcessPattern;')();
+const bundle = '/tmp/work+[fixture]/Codex++.app';
+const re = new RegExp(pattern(bundle));
+assert.ok(re.test(bundle + '/Contents/MacOS/CodexPlusPlus'));
+assert.ok(!re.test('/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus'));
+assert.ok(!re.test('/tmp/work+[fixture]/Codexxx.app/Contents/MacOS/CodexPlusPlus'));
+assert.ok(!re.test(bundle + '.other/Contents/MacOS/CodexPlusPlus'));
+"#;
+    let output = std::process::Command::new("node")
+        .args(["-e", fixture]).arg(script).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -2016,6 +2040,8 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            trust_upstream_catalog_lite: false,
+            strict_responses_reasoning: false,
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,

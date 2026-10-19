@@ -138,6 +138,12 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub web_search_history_compat: bool,
+    /// 只保留用户指定外部目录中的 Lite 声明，不为未知模型猜测能力。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub trust_upstream_catalog_lite: bool,
+    /// 明确选择严格 Responses 历史契约；默认不改写历史。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strict_responses_reasoning: bool,
     /// Anthropic 上游的认证字段：`x-api-key`（默认，Anthropic 原生）或
     /// `authorization`（多数 Claude 系中转网关用 Bearer）。
     #[serde(
@@ -330,6 +336,8 @@ impl Default for RelayProfile {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            trust_upstream_catalog_lite: false,
+            strict_responses_reasoning: false,
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,
@@ -360,6 +368,39 @@ impl RelayProfile {
         self.model_routes
             .iter()
             .any(|route| !route.model.trim().is_empty() && !route.target_relay_id.trim().is_empty())
+    }
+
+    pub fn model_reasoning_parameters(&self, model: &str) -> &str {
+        // 只接受明确已知策略，旧配置与无效值维持自动兼容。
+        let Ok(entries) = serde_json::from_str::<BTreeMap<String, Value>>(&self.model_metadata) else {
+            return "auto";
+        };
+        let Some(metadata) = crate::model_suffix::lookup_model_map(&entries, model) else {
+            return "auto";
+        };
+        match metadata.get("codex_plus_reasoning_parameters").and_then(Value::as_str) {
+            Some("omit") => "omit",
+            Some("passthrough") => "passthrough",
+            _ => "auto",
+        }
+    }
+
+    pub fn request_compatibility_enabled(&self) -> bool {
+        if self.relay_mode == RelayMode::Official && !self.official_mix_api_key {
+            return false;
+        }
+        if self.protocol == RelayProtocol::Responses && self.strict_responses_reasoning {
+            return true;
+        }
+        if !self.model_metadata.contains("codex_plus_reasoning_parameters") {
+            return false;
+        }
+        serde_json::from_str::<Value>(&self.model_metadata).ok().is_some_and(|map| {
+            map.as_object().is_some_and(|map| map.values().any(|entry| {
+                matches!(entry.get("codex_plus_reasoning_parameters").and_then(Value::as_str),
+                    Some("omit" | "passthrough"))
+            }))
+        })
     }
 
     /// 上游协议是否需要本地协议代理转换（Codex 侧恒以 Responses 说话）。
@@ -1023,6 +1064,8 @@ impl BackendSettings {
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
                 web_search_history_compat: false,
+                trust_upstream_catalog_lite: false,
+                strict_responses_reasoning: false,
                 anthropic_auth_header: String::new(),
                 anthropic_max_tokens: 0,
                 anthropic_prompt_cache: true,
@@ -1087,6 +1130,8 @@ impl BackendSettings {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            trust_upstream_catalog_lite: false,
+            strict_responses_reasoning: false,
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,
@@ -1148,6 +1193,7 @@ impl BackendSettings {
             || self.active_relay_profile().has_model_routes()
             || self.active_relay_profile().uses_no_auth()
             || self.active_relay_profile().web_search_history_compat_enabled()
+            || self.active_relay_profile().request_compatibility_enabled()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -2479,6 +2525,8 @@ fn preserve_unknown_settings_fields(
         "customHeaders",
         "standardOpenaiProtocol",
         "webSearchHistoryCompat",
+        "trustUpstreamCatalogLite",
+        "strictResponsesReasoning",
         "anthropicAuthHeader",
         "anthropicMaxTokens",
         "anthropicPromptCache",
