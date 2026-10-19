@@ -115,7 +115,9 @@ where F: Fn() + Send + 'static {
         fn PeekMessageW(msg: *mut Msg, hwnd: *mut c_void, min: u32, max: u32, remove: u32) -> i32;
     }
     let (modifiers, key) = parse_hotkey(hotkey)?;
-    let id = 0xC0D3_0001_i32;
+    // Windows 的 hotkey id 是 i32；这个魔数按位模式使用，先写 u32 再转换，
+    // 避免 overflowing_literals 直接拒绝编译。
+    let id = 0xC0D3_0001_u32 as i32;
     if unsafe { RegisterHotKey(std::ptr::null_mut(), id, modifiers, key) } == 0 {
         anyhow::bail!("全局热键注册失败，可能已被其他程序占用：{hotkey}");
     }
