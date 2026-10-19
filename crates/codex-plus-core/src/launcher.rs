@@ -6556,7 +6556,7 @@ mod proxy_stream_tests {
 
         let forwarded = timeout(
             Duration::from_secs(20),
-            forward_protocol_proxy_stream(&mut writer, response, UpstreamWireApi::Responses, None),
+            forward_protocol_proxy_stream(&mut writer, response, UpstreamWireApi::Responses, None, None),
         )
         .await
         .expect("超限后必须立即结束流，而不是等待上游 EOF")
