@@ -2640,29 +2640,46 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let cache_key = relay.local_compaction_prompt_at_end_enabled()
             .then(|| local_compaction::key(&relay, &upstream_body, session_headers))
             .flatten();
-        // Cache the logical request, before exec compatibility rewrites its history.
-        let cache_body = cache_key.as_ref().map(|_| upstream_body.clone());
+        let cache_tools = cache_key
+            .as_ref()
+            .and_then(|_| local_compaction::ToolContext::from_request(&upstream_body));
         let mut local_candidate = if local_compaction_request {
             cache_key.as_deref().and_then(|key| {
-                local_compaction::candidate(key, &upstream_body, wire_api)
+                local_compaction::candidate(key, &upstream_body)
             })
         } else {
             None
         };
+        let mut local_reason = if cache_key.is_some() {
+            "no_tool_context"
+        } else {
+            "missing_session_identity"
+        };
         if let Some(candidate) = local_candidate.as_mut()
             && candidate.exec_adapted
+            && wire_api == UpstreamWireApi::Responses
         {
-            let mut fallback = upstream_body.clone();
-            match (
-                crate::responses_exec::adapt_request(candidate.body.clone()),
-                crate::responses_exec::adapt_request_history(&mut fallback),
-            ) {
-                (Ok(adapted), Ok(())) => {
-                    candidate.body = adapted;
-                    upstream_body = fallback;
+            match crate::responses_exec::adapt_request(candidate.body.clone()) {
+                Ok(adapted) => candidate.body = adapted,
+                Err(_) => {
+                    local_candidate = None;
+                    local_reason = "exec_projection_failed";
                 }
-                _ => local_candidate = None,
             }
+        }
+        if local_compaction_request && relay.local_compaction_prompt_at_end_enabled() {
+            let detail = if local_candidate.is_some() {
+                json!({"relayId": relay.id, "action": "reuse_tools"})
+            } else {
+                json!({"relayId": relay.id, "action": "original_request", "reason": local_reason})
+            };
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.local_compaction",
+                detail,
+            );
+        }
+        if let Some(candidate) = local_candidate {
+            upstream_body = candidate.body;
         }
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -2706,38 +2723,6 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             {
                 upstream_body = adapted;
                 exec_adapted = true;
-            }
-            if let Some(candidate) = local_candidate.as_ref() {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "protocol_proxy.local_compaction",
-                    json!({"relayId": relay.id, "action": "reuse_prefix"}),
-                );
-                let result = send_responses_upstream_request(
-                    &relay, &endpoint, &candidate.body, wire_api, is_stream,
-                    original_user_agent, beta_features, session_headers, official_credential.as_ref(),
-                ).await;
-                match result {
-                    Ok(response) if response.status().is_success()
-                        || matches!(response.status().as_u16(), 400 | 422) =>
-                    {
-                        match local_compaction::buffer_summary(response, wire_api, is_stream).await {
-                            Ok(response) => return Ok(response),
-                            Err(reason) => {
-                                let _ = crate::diagnostic_log::append_diagnostic_log(
-                                    "protocol_proxy.local_compaction",
-                                    json!({"relayId": relay.id, "action": "fallback", "reason": reason}),
-                                );
-                            }
-                        }
-                    }
-                    // Keep the existing failover policy for transport errors, 429 and 5xx.
-                    other => return other,
-                }
-            } else if local_compaction_request && cache_key.is_some() {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "protocol_proxy.local_compaction",
-                    json!({"relayId": relay.id, "action": "original_request", "reason": "no_matching_prefix"}),
-                );
             }
             send_responses_upstream_request(
                 &relay, &endpoint, &upstream_body, wire_api, is_stream,
@@ -3191,9 +3176,9 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             if (200..300).contains(&status_code)
                 && !local_compaction_request
                 && !is_compaction_request
-                && let (Some(key), Some(body)) = (cache_key, cache_body)
+                && let Some(key) = cache_key
             {
-                local_compaction::remember(key, &body, exec_adapted);
+                local_compaction::remember(key, cache_tools, exec_adapted);
             }
             // 请求了 SSE 的兼容上游也可能返回 JSON 摘要；让调用方选择 JSON 包装器。
             let json_compaction = is_compaction_request

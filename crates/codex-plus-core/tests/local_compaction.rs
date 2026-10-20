@@ -58,7 +58,7 @@ fn success(protocol: RelayProtocol, streaming: bool) -> (u16, &'static str, Stri
                 "content":[{"type":"output_text","text":"Summary."}]}]})
     };
     if streaming && protocol == RelayProtocol::Responses {
-        // Deliberately omit output_item.done: the proxy must make this consumable.
+        // 供应商事件保持原样，由既有响应路径处理。
         (
             200,
             "text/event-stream",
@@ -85,6 +85,41 @@ async fn capture(
     listener: tokio::net::TcpListener,
     replies: Vec<(u16, &'static str, String)>,
 ) -> Vec<Value> {
+    capture_requests(&listener, replies).await
+}
+
+async fn read_request(stream: &mut tokio::net::TcpStream) -> Value {
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 4096];
+    let (start, length) = loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert!(read > 0);
+        bytes.extend_from_slice(&buffer[..read]);
+        let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
+            continue;
+        };
+        let length = String::from_utf8_lossy(&bytes[..end])
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap();
+        break (end + 4, length);
+    };
+    while bytes.len() < start + length {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert!(read > 0);
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    serde_json::from_slice(&bytes[start..start + length]).unwrap()
+}
+
+async fn capture_requests(
+    listener: &tokio::net::TcpListener,
+    replies: Vec<(u16, &'static str, String)>,
+) -> Vec<Value> {
     let mut requests = Vec::new();
     for (status, content_type, reply) in replies {
         let (mut stream, _) =
@@ -92,31 +127,7 @@ async fn capture(
                 .await
                 .unwrap()
                 .unwrap();
-        let mut bytes = Vec::new();
-        let mut buffer = [0; 4096];
-        let (start, length) = loop {
-            let read = stream.read(&mut buffer).await.unwrap();
-            assert!(read > 0);
-            bytes.extend_from_slice(&buffer[..read]);
-            let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
-                continue;
-            };
-            let length = String::from_utf8_lossy(&bytes[..end])
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().unwrap())
-                })
-                .unwrap();
-            break (end + 4, length);
-        };
-        while bytes.len() < start + length {
-            let read = stream.read(&mut buffer).await.unwrap();
-            assert!(read > 0);
-            bytes.extend_from_slice(&buffer[..read]);
-        }
-        requests.push(serde_json::from_slice(&bytes[start..start + length]).unwrap());
+        requests.push(read_request(&mut stream).await);
         let headers = format!(
             "HTTP/1.1 {status} Result\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             reply.len(),
@@ -159,6 +170,7 @@ async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_ss
                 true,
             );
             let reply = success(protocol, streaming);
+            let expected_response = reply.2.clone();
             let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
             let normal = normal(streaming);
             send(&normal, &settings, Some("matrix"))
@@ -172,30 +184,9 @@ async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_ss
             let mut result = send(&compact, &settings, Some("matrix")).await;
             assert!(!result.compaction);
             let response = String::from_utf8(result.read_body().await.unwrap()).unwrap();
-            if streaming && protocol == RelayProtocol::Responses {
-                let events = response
-                    .split("\n\n")
-                    .filter_map(|frame| {
-                        frame
-                            .lines()
-                            .find_map(|line| line.strip_prefix("data: "))
-                            .and_then(|data| serde_json::from_str::<Value>(data).ok())
-                    })
-                    .collect::<Vec<_>>();
-                assert!(
-                    events
-                        .iter()
-                        .any(|event| event["type"] == "response.output_item.done"
-                            && event["item"]["content"][0]["text"] == "Summary.")
-                );
-                assert!(
-                    events
-                        .iter()
-                        .any(|event| event["type"] == "response.completed"
-                            && event["response"]["usage"]["total_tokens"] == 1203)
-                );
-            }
+            assert_eq!(response, expected_response);
             let requests = server.await.unwrap();
+            assert_eq!(requests.len(), 2);
             assert_eq!(requests[1]["tools"], requests[0]["tools"]);
             assert_eq!(requests[1]["tool_choice"], "none");
             assert_eq!(requests[1]["parallel_tool_calls"], false);
@@ -209,8 +200,8 @@ async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_ss
 }
 
 #[tokio::test]
-async fn local_compaction_disabled_missing_session_and_changed_history_use_original() {
-    for case in ["disabled", "session", "instructions", "trimmed"] {
+async fn local_compaction_disabled_missing_session_and_cold_cache_use_original() {
+    for case in ["disabled", "session", "cold"] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
@@ -228,19 +219,94 @@ async fn local_compaction_disabled_missing_session_and_changed_history_use_origi
             .read_body()
             .await
             .unwrap();
-        let mut compact = compact(&normal);
-        if case == "instructions" {
-            compact["instructions"] = json!("New system instructions");
-        }
-        if case == "trimmed" {
-            compact["input"].as_array_mut().unwrap().remove(0);
-        }
-        send(&compact, &settings, thread)
+        let compact = compact(&normal);
+        let compact_thread = if case == "cold" {
+            Some("unseen")
+        } else {
+            thread
+        };
+        send(&compact, &settings, compact_thread)
             .await
             .read_body()
             .await
             .unwrap();
         assert_eq!(server.await.unwrap()[1], compact);
+    }
+}
+
+#[tokio::test]
+async fn local_compaction_keeps_current_context_when_history_instructions_and_cache_key_change() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let settings = settings(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        RelayProtocol::Responses,
+        true,
+    );
+    let reply = success(RelayProtocol::Responses, false);
+    let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
+    let normal = normal(false);
+    send(&normal, &settings, Some("changed-context"))
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let mut compact = compact(&normal);
+    compact["input"].as_array_mut().unwrap().remove(0);
+    compact["instructions"] = json!("Current system instructions, not the old ones.");
+    compact["prompt_cache_key"] = json!("current-cache");
+    compact["previous_response_id"] = json!("current-response");
+    compact["client_metadata"] = json!({"current":true});
+    send(&compact, &settings, Some("changed-context"))
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let requests = server.await.unwrap();
+    let mut expected = compact;
+    expected["tools"] = requests[0]["tools"].clone();
+    assert_eq!(requests[1], expected);
+}
+
+#[tokio::test]
+async fn local_compaction_uses_latest_tools_and_clears_them_after_an_empty_tools_request() {
+    for empty in [false, true] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let settings = settings(
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+            RelayProtocol::Responses,
+            true,
+        );
+        let reply = success(RelayProtocol::Responses, false);
+        let server = tokio::spawn(capture(listener, vec![reply.clone(), reply.clone(), reply]));
+        let normal = normal(false);
+        send(&normal, &settings, Some("latest-tools"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let mut latest = normal.clone();
+        latest["tools"] = if empty {
+            json!([])
+        } else {
+            json!([{"type":"function","name":"current","parameters":{"type":"object"}}])
+        };
+        send(&latest, &settings, Some("latest-tools"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        send(&compact(&normal), &settings, Some("latest-tools"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests[2]["tools"], latest["tools"]);
+        assert_eq!(requests[2]["input"], compact(&normal)["input"]);
     }
 }
 
@@ -296,8 +362,17 @@ async fn local_compaction_inherits_only_entry_or_target_opt_in_and_keeps_target_
 }
 
 #[tokio::test]
-async fn local_compaction_invalid_summary_falls_back_once_but_rate_limits_do_not() {
-    for status in [200, 400, 422, 429, 500] {
+async fn local_compaction_does_not_validate_or_retry_summary_responses() {
+    for (status, content_type, body) in [
+        (200, "application/json", json!({"id":"resp_variant","status":"completed",
+            "output":[{"type":"function_call","name":"lookup"}]}).to_string()),
+        (200, "text/event-stream",
+            "event: provider.extension\ndata: {\"type\":\"provider.extension\",\"value\":1}\n\ndata: [DONE]\n\n".into()),
+        (400, "application/json", json!({"error":{"message":"bad request"}}).to_string()),
+        (422, "application/json", json!({"error":{"message":"unprocessable"}}).to_string()),
+        (429, "application/json", json!({"error":{"message":"rate limit"}}).to_string()),
+        (500, "application/json", json!({"error":{"message":"server error"}}).to_string()),
+    ] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
@@ -307,36 +382,75 @@ async fn local_compaction_invalid_summary_falls_back_once_but_rate_limits_do_not
             true,
         );
         let reply = success(RelayProtocol::Responses, false);
-        let fallback = matches!(status, 200 | 400 | 422);
-        let invalid = json!({"id":"resp_bad","status":"completed",
-            "output":[{"type":"function_call","name":"lookup"}]})
-        .to_string();
-        let mut replies = vec![reply.clone(), (status, "application/json", invalid)];
-        if fallback {
-            replies.push(reply);
-        }
-        let server = tokio::spawn(capture(listener, replies));
+        let server = tokio::spawn(capture(listener, vec![reply, (status, content_type, body.clone())]));
         let normal = normal(false);
-        send(&normal, &settings, Some("fallback"))
+        send(&normal, &settings, Some("single-send"))
             .await
             .read_body()
             .await
             .unwrap();
         let compact = compact(&normal);
-        let mut result = send(&compact, &settings, Some("fallback")).await;
-        assert_eq!(result.status_code, if fallback { 200 } else { status });
-        result.read_body().await.unwrap();
+        let mut result = send(&compact, &settings, Some("single-send")).await;
+        assert_eq!(result.status_code, status);
+        assert_eq!(result.read_body().await.unwrap().as_ref(), body.as_bytes());
         let requests = server.await.unwrap();
-        assert_eq!(requests.len(), if fallback { 3 } else { 2 });
-        if fallback {
-            assert_eq!(requests[2], compact);
-        }
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["tools"], normal["tools"]);
+        assert_eq!(requests[1]["tool_choice"], "none");
     }
 }
 
 #[tokio::test]
-async fn local_compaction_exec_history_is_projected_for_candidate_and_fallback() {
-    for fallback in [false, true] {
+async fn local_compaction_returns_stream_headers_without_waiting_for_the_summary() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let settings = settings(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        RelayProtocol::Responses,
+        true,
+    );
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let body = success(RelayProtocol::Responses, true).2;
+    let expected = body.clone();
+    let server = tokio::spawn(async move {
+        capture_requests(&listener, vec![success(RelayProtocol::Responses, false)]).await;
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut stream).await;
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        released.await.unwrap();
+        stream.write_all(body.as_bytes()).await.unwrap();
+        request
+    });
+    let normal = normal(false);
+    send(&normal, &settings, Some("no-buffer"))
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let mut compact = compact(&normal);
+    compact["stream"] = json!(true);
+    let mut result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        send(&compact, &settings, Some("no-buffer")),
+    )
+    .await
+    .expect("the experiment must not wait for the summary body");
+    release.send(()).unwrap();
+    assert_eq!(
+        result.read_body().await.unwrap().as_ref(),
+        expected.as_bytes()
+    );
+    assert_eq!(server.await.unwrap()["tools"], normal["tools"]);
+}
+
+#[tokio::test]
+async fn local_compaction_preserves_exec_projection_without_an_experimental_retry() {
+    for status in [200, 400] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
@@ -356,15 +470,7 @@ async fn local_compaction_exec_history_is_projected_for_candidate_and_fallback()
             }})
             .to_string(),
         );
-        let mut replies = vec![rejection, reply.clone()];
-        if fallback {
-            replies.push((
-                400,
-                "application/json",
-                json!({"error":{"message":"candidate rejected"}}).to_string(),
-            ));
-        }
-        replies.push(reply);
+        let replies = vec![rejection, reply.clone(), (status, reply.1, reply.2)];
         let server = tokio::spawn(capture(listener, replies));
         let mut normal = normal(false);
         normal["tools"] = json!([{"type":"custom","name":"exec","description":"fixture"}]);
@@ -382,13 +488,11 @@ async fn local_compaction_exec_history_is_projected_for_candidate_and_fallback()
         let items = compact["input"].as_array_mut().unwrap();
         items.insert(3, json!({"type":"custom_tool_call","id":"ctc_new","call_id":"new","name":"exec","input":"echo new"}));
         items.insert(4, json!({"type":"custom_tool_call_output","id":"ctco_new","call_id":"new","output":"new"}));
-        send(&compact, &settings, Some("exec"))
-            .await
-            .read_body()
-            .await
-            .unwrap();
+        let mut result = send(&compact, &settings, Some("exec")).await;
+        assert_eq!(result.status_code, status);
+        result.read_body().await.unwrap();
         let requests = server.await.unwrap();
-        assert_eq!(requests.len(), if fallback { 4 } else { 3 });
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[2]["tools"][0]["type"], "function");
         assert_eq!(requests[2]["tool_choice"], "none");
         for request in &requests[2..] {
@@ -403,9 +507,6 @@ async fn local_compaction_exec_history_is_projected_for_candidate_and_fallback()
                     ))
             );
             assert_eq!(request["input"][1]["type"], "function_call");
-        }
-        if fallback {
-            assert_eq!(requests[3]["tools"], json!([]));
         }
     }
 }
