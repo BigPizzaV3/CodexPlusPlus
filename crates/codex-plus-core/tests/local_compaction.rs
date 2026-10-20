@@ -392,7 +392,7 @@ async fn local_compaction_does_not_validate_or_retry_summary_responses() {
         let compact = compact(&normal);
         let mut result = send(&compact, &settings, Some("single-send")).await;
         assert_eq!(result.status_code, status);
-        assert_eq!(result.read_body().await.unwrap().as_ref(), body.as_bytes());
+        assert_eq!(result.read_body().await.unwrap().as_slice(), body.as_bytes());
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[1]["tools"], normal["tools"]);
@@ -442,7 +442,7 @@ async fn local_compaction_returns_stream_headers_without_waiting_for_the_summary
     .expect("the experiment must not wait for the summary body");
     release.send(()).unwrap();
     assert_eq!(
-        result.read_body().await.unwrap().as_ref(),
+        result.read_body().await.unwrap().as_slice(),
         expected.as_bytes()
     );
     assert_eq!(server.await.unwrap()["tools"], normal["tools"]);
