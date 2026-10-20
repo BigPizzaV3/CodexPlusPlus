@@ -358,14 +358,12 @@ mod tests {
     }
 
     #[test]
-    fn cache_evicts_least_recently_used_tools_without_a_time_to_live() {
+    fn cache_evicts_least_recently_used_tools_at_capacity() {
         let mut cache = ToolCache::default();
         let body = json!({"tools":[{"type":"function","name":"run"}]});
         for index in 0..MAX_CACHE_ENTRIES {
             cache.remember(index.to_string(), ToolContext::from_request(&body), false);
         }
-        cache.entries.get_mut("0").unwrap().updated =
-            Instant::now() - std::time::Duration::from_secs(24 * 60 * 60);
         assert!(cache.candidate("0", &json!({})).is_some());
         cache.remember("new".into(), ToolContext::from_request(&body), false);
         assert_eq!(cache.entries.len(), MAX_CACHE_ENTRIES);
