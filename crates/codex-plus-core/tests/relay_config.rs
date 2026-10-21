@@ -1381,6 +1381,33 @@ fn retired_search_history_restores_only_live_proxy_endpoint_without_replaying_pr
 }
 
 #[test]
+fn retired_proxy_restoration_does_not_write_a_different_fallback_provider_endpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let endpoint = "http://127.0.0.1:58432/v1";
+    let original = format!(
+        "model_provider = \"openai\"\n[model_providers.openai]\nbase_url = \"{endpoint}\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:59999/v1\"\n"
+    );
+    let path = temp.path().join("config.toml");
+    std::fs::write(&path, &original).unwrap();
+    let settings = BackendSettings {
+        relay_profiles_enabled: true,
+        active_relay_id: "retired".into(),
+        retired_protocol_proxy_endpoints: [("retired".into(), endpoint.into())].into(),
+        relay_profiles: vec![RelayProfile {
+            id: "retired".into(),
+            relay_mode: RelayMode::PureApi,
+            base_url: "https://responses.example.test/v1".into(),
+            upstream_base_url: "https://responses.example.test/v1".into(),
+            config_contents: original.clone(),
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
 fn retired_proxy_restoration_preserves_unrelated_endpoints_and_disabled_profiles() {
     let saved = "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:58432/v1\"\n";
     for (endpoint, enabled, upstream) in [

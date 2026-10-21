@@ -431,6 +431,9 @@ pub fn restore_inactive_protocol_proxy_config_in_home(
         Err(error) => return Err(error)
             .with_context(|| format!("读取 {} 失败", config_path.display())),
     };
+    let Some(recognized_endpoint) = provider_string_from_config(&existing, "base_url") else {
+        return Ok(false);
+    };
     let recorded_endpoint_matches = settings.retired_protocol_proxy_endpoints
         .get(&profile.id)
         .filter(|endpoint| is_loopback_responses_endpoint(endpoint))
@@ -455,7 +458,10 @@ pub fn restore_inactive_protocol_proxy_config_in_home(
         return Ok(false);
     };
     // 识别函数允许旧配置回退查找；写入仍须严格限定到当前 provider。
-    if !base_url.as_str().is_some_and(is_loopback_responses_endpoint) {
+    if !base_url.as_str().is_some_and(|live| {
+        is_loopback_responses_endpoint(live)
+            && normalize_relay_endpoint(live) == normalize_relay_endpoint(&recognized_endpoint)
+    }) {
         return Ok(false);
     }
     if base_url.as_str().is_some_and(|live| {
@@ -1670,7 +1676,7 @@ fn managed_proxy_base_urls_for_profile(profile: &RelayProfile) -> Vec<String> {
 fn saved_proxy_endpoint_has_real_upstream(profile: &RelayProfile, endpoint: &str) -> bool {
     is_loopback_responses_endpoint(endpoint)
         && valid_relay_endpoint(&profile.upstream_base_url)
-        && !is_loopback_responses_endpoint(&profile.upstream_base_url)
+        && normalize_relay_endpoint(&profile.upstream_base_url) != normalize_relay_endpoint(endpoint)
 }
 
 pub(crate) fn live_endpoint_matches_profile(profile: &RelayProfile, config: &str) -> bool {
