@@ -760,6 +760,8 @@ pub struct BackendSettings {
     pub codex_app_activity_overlay_right: bool,
     #[serde(rename = "codexAppCapacityAutoRetry", default)]
     pub codex_app_capacity_auto_retry: bool,
+    #[serde(rename = "codexAppHistoryTurnRecovery", default)]
+    pub codex_app_history_turn_recovery: bool,
     #[serde(rename = "codexAppWhaleWidgetEnabled", default)]
     pub codex_app_whale_widget_enabled: bool,
     #[serde(
@@ -1001,6 +1003,7 @@ impl Default for BackendSettings {
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
             codex_app_capacity_auto_retry: false,
+            codex_app_history_turn_recovery: false,
             codex_app_whale_widget_enabled: false,
             codex_app_whale_balance_protocol: default_whale_balance_protocol(),
             codex_app_whale_balance_path: String::new(),
@@ -2181,6 +2184,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppActivityOverlayRight");
     merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
+    merge_bool_setting(target, source, "codexAppHistoryTurnRecovery");
     merge_bool_setting(target, source, "codexAppWhaleWidgetEnabled");
     if let Some(value @ ("auto" | "custom" | "off")) =
         source.get("codexAppWhaleBalanceProtocol").and_then(Value::as_str)

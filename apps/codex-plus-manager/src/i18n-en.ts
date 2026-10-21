@@ -886,6 +886,9 @@ export const EN_PLAIN: Record<string, string> = {
   "切换到深色": "Switch to dark",
   "切换对话保留位置": "Preserve scroll position across threads",
   "用量状态栏": "Usage status line",
+  "历史空轮次补载（实验）": "Recover unloaded history turns (experimental)",
+  "为当前会话补载已登记但尚未加载内容的历史轮次；仅调用原生历史加载器，不改写历史文件或发送模型请求。":
+    "Load registered history turns whose content is still missing in the current conversation, using only the native history loader without rewriting history files or sending model requests.",
   "在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。": "Show generation speed, cache hit rate, and context usage below the composer. Read from local Codex session logs; requests are not modified.",
   "点击建议后自动发送；关闭时只填入输入框。": "Automatically sends after clicking a suggestion. When off, it only fills the composer.",
   "刚刚启动": "Just launched",

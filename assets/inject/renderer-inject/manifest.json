@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2728
+      "lines": 2730
     },
     {
       "name": "20-menu.js",
@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1959
+      "lines": 1965
     },
     {
       "name": "50-navigation.js",
@@ -89,6 +89,11 @@
       "name": "84-proxy-request-status.js",
       "description": "输入框上方的请求避震状态条：正在请求 / 等待上游 / 正在重试 / 正在生成",
       "lines": 280
+    },
+    {
+      "name": "85-history-turn-recovery.js",
+      "description": "当前本机会话中间空轮次的限量原生补载",
+      "lines": 270
     },
     {
       "name": "90-action-groups.js",
