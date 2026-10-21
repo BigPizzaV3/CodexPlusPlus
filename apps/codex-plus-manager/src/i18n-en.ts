@@ -5,6 +5,10 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "修复与维护": "Repair and maintenance",
+  "自动修复已开启": "Automatic repair on",
+  "自动修复已关闭": "Automatic repair off",
+  "会话视图": "Session view",
   "请求不发送思考参数；档位草稿保留，切回自动兼容后可恢复。": "No reasoning parameters are sent. Saved levels remain available when automatic compatibility is restored.",
   "Chat 上游按原值接收 reasoning_effort，不按模型名改写档位。": "Send reasoning_effort unchanged to Chat upstreams without mapping levels by model name.",
   "不发送思考参数": "Omit reasoning parameters",
@@ -646,12 +650,99 @@ export const EN_PLAIN: Record<string, string> = {
     "The Test provider button sends one real request with this model to check that the key and endpoint work.",
   "Codex 图片覆盖层": "Codex image overlay",
   "在当前 Codex 会话上叠加一张背景图": "Overlay a background image on the current Codex session",
+  "请求避震": "Request shock absorption",
+  "代理层吸收上游过载冲击：自动重试模型容量/过载错误（含推理与工具调用阶段），尽量不把错误交给 Codex":
+    "Absorb upstream overload at the proxy: retry model capacity/overload errors (including reasoning and tool-call phases) so Codex rarely sees them",
+  "启用请求避震": "Enable request shock absorption",
+  "请求避震只处理经过本地协议代理、且以 200 流式响应返回的上游过载/容量错误（server_overloaded、server_is_overloaded、at capacity 等）。流式避震下：推理、工具调用参数等不可见阶段先缓冲，工具调用整项完成或首段可见输出后再等「首字提交延迟」；这段窗口内遇到过载由代理退避重试；提交之后遇到同类过载，会改写成 Codex 可识别的容量错误，由 Codex 自己重试；连接失败、429/5xx、限流等其它错误不重试。保留的「流式避震（旧行为）」模式仍按旧逻辑：第一个输出事件就交给 Codex。整段缓冲避震下，任何时点的过载都由代理重试，但失去流式。":
+    "Request shock absorption only handles upstream overload/capacity errors that arrive inside a 200 streaming response through the local protocol proxy (server_overloaded, server_is_overloaded, at capacity, ...). In streaming mode the proxy first buffers invisible phases such as reasoning and tool-call arguments; it waits until the whole tool call completes or the first visible output appears, then applies the first-token commit delay and retries overloads with backoff during that window. After commit, the same overloads are rewritten into capacity errors Codex recognizes so Codex retries them itself; connection failures, 429/5xx, rate limits, and other errors are not retried. The retained Streaming (legacy) mode keeps the old logic and hands the first output event to Codex immediately. In buffered mode the proxy retries overloads at any point, but streaming is lost.",
+  "最多自动重试次数": "Maximum automatic retries",
+  "首次重试间隔（秒）": "Initial retry interval (seconds)",
+  "之后按 2 倍指数退避，单次最长 30 秒；上游返回 Retry-After 时优先采用（同样受上限约束）。":
+    "Later retries use 2x exponential backoff with a 30-second cap per wait; an upstream Retry-After header takes precedence (also subject to that cap).",
+  "避震模式": "Shock absorption mode",
+  "首字提交延迟（毫秒）": "First-token commit delay (ms)",
+  "流式避震：工具调用参数与首字宽限内由代理重试，提交后交给 Codex 原生重试":
+    "Streaming: retry inside the proxy for tool-call arguments and during the first-token grace window, then hand off to Codex after commit",
+  "流式避震（旧行为）：首个输出事件立即提交，之后交给 Codex 原生重试":
+    "Streaming (legacy): commit as soon as the first output event arrives, then let Codex retry natively",
+  "整段缓冲避震：任何时点过载都由代理重试（失去流式）":
+    "Buffered shock absorption: retry overload errors at any point inside the proxy (loses streaming)",
+  "流式避震保留实时输出；「首字提交延迟」把首段可见输出也算进可重试窗口：0 = 一出现正文就提交，1000 = 再缓冲 1 秒，期间过载仍由代理重试；工具调用的参数生成阶段始终整项缓冲，不额外增加首字延迟。选「旧行为」则不做这些缓冲，完全回到旧逻辑。整段缓冲避震在所有情况下都不会把过载错误交给 Codex，但回复要等整段生成完才显示。":
+    "Streaming keeps live output; the first-token commit delay also counts the first visible output toward the retry window: 0 commits as soon as text appears, 1000 buffers one more second while the proxy still retries overloads; tool-call argument generation is always buffered as a whole and adds no extra first-token delay. Choosing Streaming (legacy) skips this buffering and restores the old behavior. Buffered mode never hands overload errors to Codex, but the reply only appears after the whole response completes.",
+  "代理设置": "Proxy settings",
+  "请求日志": "Request log",
+  "进行中": "In progress",
+  "流式中": "Streaming…",
+  "按流式增量估算，完成后会更新为准确值": "Estimated from streaming deltas; replaced with the exact value on completion",
+  "token 用量由上游在请求完成时返回，流式过程中无法准确统计":
+    "Token usage is returned by the upstream when the request completes; it cannot be measured accurately mid-stream",
+  "尝试明细": "Attempt details",
+  "按会话筛选": "Filter by conversation",
+  "全部会话": "All conversations",
+  "未记录会话": "No conversation recorded",
+  "会话 ID": "Conversation ID",
+  "首字耗时": "Time to first token",
+  "首字 {0}": "First token {0}",
+  "查看代理请求的状态、模型、重试、token 用量与缓存命中":
+    "Inspect proxy requests: status, model, retries, token usage, and cache hits",
+  "最近 {0} 条代理请求，含状态、模型、重试与 token 用量":
+    "Latest {0} proxy requests with status, model, retries, and token usage",
+  "搜索模型 / 供应商 / 路径 / 错误": "Search model / provider / path / error",
+  "状态筛选": "Status filter",
+  "自动刷新": "Auto refresh",
+  "清空": "Clear",
+  "清空全部请求日志？此操作不可撤销。": "Clear all request logs? This cannot be undone.",
+  "读取请求日志失败。": "Failed to load request logs.",
+  "正在读取请求日志…": "Loading request logs…",
+  "还没有请求日志。启动 Codex 发起一次对话后即可看到。":
+    "No request logs yet. Launch Codex and send a message to see entries here.",
+  "没有匹配当前筛选条件的请求。": "No requests match the current filters.",
+  "仅成功": "Success only",
+  "仅失败": "Failures only",
+  "含重试": "With retries",
+  "输入": "Input",
+  "输出": "Output",
+  "耗时": "Latency",
+  "请求 ID": "Request ID",
+  "路径": "Path",
+  "上游模型": "Upstream model",
+  "尝试次数": "Attempts",
+  "自动重试": "Auto retries",
+  "重试原因": "Retry reasons",
+  "流结果": "Stream outcome",
+  "流式": "Streaming",
+  "流失败": "stream failed",
+  "推理 tokens": "Reasoning tokens",
+  "错误": "Error",
+  "自动重试 ×{0}": "Auto retries ×{0}",
+  "切换 ×{0}": "Switched ×{0}",
+  "统一管理本地协议代理、供应商代理与重试策略":
+    "Manage the local protocol proxy, provider proxies, and retry policy in one place",
+  "本地协议代理": "Local protocol proxy",
+  "从 Codex++ 启动 Codex 时承载协议转换、聚合与自动重试":
+    "Handles protocol conversion, aggregation, and automatic retries when Codex is launched from Codex++",
+  "协议转换": "Protocol conversion",
+  "未启用": "Not enabled",
+  "本地代理地址由 Codex++ 写入 config.toml；切换供应商或修改协议后重启 Codex 生效。":
+    "Codex++ writes the local proxy address into config.toml; restart Codex after switching providers or changing the protocol.",
+  "为单个供应商单独指定 HTTP 代理；留空表示沿用系统代理":
+    "Set a dedicated HTTP proxy for one provider; leave empty to use the system proxy",
+  "已配置独立代理": "Dedicated proxy configured",
+  "未配置独立代理": "No dedicated proxy",
+  "例如 http://127.0.0.1:7890，留空表示使用系统代理":
+    "e.g. http://127.0.0.1:7890; leave empty to use the system proxy",
+  "{0} 的独立代理": "Dedicated proxy for {0}",
+  "保存中…": "Saving…",
+  "还没有可配置独立代理的供应商。": "No providers available for a dedicated proxy yet.",
+  "保存后需重新应用该供应商并重启 Codex，独立代理才会作用于会话请求。":
+    "After saving, re-apply the provider and restart Codex for the dedicated proxy to take effect on conversation requests.",
   "这个工具目前没有独立设置项": "This tool has no settings of its own yet",
   "该工具的配置在它自己的页签里管理；上面的基础设置对所有工具通用。":
     "This tool is configured on its own tab; the basic settings above apply to every tool.",
   "赞助商推荐": "Sponsor recommendations",
-  "内容来自 BigPizzaV3/Ad-List，含置顶推荐与普通推荐。":
-    "Content comes from BigPizzaV3/Ad-List, including the pinned and regular recommendations.",
+  "内容来自 Codex++ 广告源，含置顶推荐与普通推荐。":
+    "Content comes from the Codex++ ad source, including pinned and regular recommendations.",
   "普通推荐内容": "General recommendations",
   "有未保存修改。": "Unsaved changes.",
   "每个供应商对应一套 Base URL + API Key + 模型列表。":
@@ -1575,6 +1666,10 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "第 {0} 次": "Attempt {0}",
+  "会话 {0}（{1} 条）": "Conversation {0} ({1} entries)",
+  "{0}（{1} 条）": "{0} ({1} entries)",
+  "退避 {0}": "Backoff {0}",
   "第 {0} 页 · 共 {1} 个会话": "Page {0} · {1} sessions",
   "{0} 的 API Key": "API key for {0}",
   "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column holds {1}. The current value was kept; clear the window to use the document's value.",

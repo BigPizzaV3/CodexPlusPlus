@@ -120,6 +120,10 @@
 
   function recordCodexPlusBridgeSuccess() {
     recordCodexPlusBridgeHealth("lastSuccessAt");
+    if (codexPlusBackendGeneration === window.__codexPlusBackendGeneration) {
+      const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
+      health.failures = 0;
+    }
     codexPlusBridgeFailureCount = 0;
   }
 
@@ -129,6 +133,12 @@
 
   function recordCodexPlusBridgeFailure() {
     codexPlusBridgeFailureCount += 1;
+    if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
+    // 看门狗只能读到 window 上的 health 快照：不落 failures/lastFailureAt，
+    // CDP 连接断掉后它会一直把“还在尝试”当成桥接存活，永久不重注入。
+    const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
+    health.lastFailureAt = Date.now();
+    health.failures = codexPlusBridgeFailureCount;
   }
 
   function renderBackendStatus() {
@@ -725,6 +735,7 @@
 
   async function directFetchCodexPlusAds() {
     const urls = [
+      "https://ads.codexpp.cc/ads.json",
       "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
       "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
     ];

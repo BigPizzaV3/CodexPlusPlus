@@ -18,6 +18,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = join(root, "site", "data");
 
 const AD_SOURCES = [
+  "https://ads.codexpp.cc/ads.json",
   "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
   "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
 ];

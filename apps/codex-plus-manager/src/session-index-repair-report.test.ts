@@ -9,7 +9,7 @@ test("session index repair report keeps abort and truncation notices outside iss
   assert.match(source, /warnings\?: string\[\];/);
 
   const reportStart = source.indexOf("{sessionIndexRepairReport ? (");
-  const reportEnd = source.indexOf("<div className=\"hint-line session-delete-hint\">", reportStart);
+  const reportEnd = source.indexOf("function SessionsScreen", reportStart);
   const report = source.slice(reportStart, reportEnd);
 
   const abortNotice = report.indexOf('role="alert"');

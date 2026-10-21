@@ -450,19 +450,66 @@ body {
   color: hsl(var(--brand-accent));
 }
 
-/* 概览的置顶推荐位。
-   卡片内部沿用 .jojocode-overview-layout 的「左信息 / 右标签区」结构。 */
+/* 概览的两个独立置顶广告位。 */
 .sponsor-board {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.sponsor-board-single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .sponsor-board > .panel {
   min-width: 0;
+  height: 100%;
+}
+
+.sponsor-slot-content {
+  display: grid;
+  height: 100%;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
+  grid-template-rows: 1fr auto;
+  gap: 14px 16px;
+  align-items: center;
+}
+
+.sponsor-slot-main {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.sponsor-slot-copy {
+  min-width: 0;
+}
+
+.sponsor-slot-tags {
+  justify-content: flex-start;
+  max-width: none;
+  margin-top: 0;
+  grid-column: 2;
+  grid-row: 1;
+  justify-content: flex-end;
+}
+
+.sponsor-slot-actions {
+  display: flex;
+  justify-content: flex-end;
+  grid-column: 2;
+  grid-row: 2;
 }
 
 /* 窄屏时「左信息 / 右标签区」并排会挤，改成上下排。 */
 @media (max-width: 1100px) {
+  .sponsor-board {
+    grid-template-columns: 1fr;
+  }
+
   .jojocode-overview-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -474,6 +521,25 @@ body {
   .jojocode-model-tags {
     justify-content: flex-start;
     max-width: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .sponsor-slot-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+
+  .sponsor-slot-main,
+  .sponsor-slot-tags,
+  .sponsor-slot-actions {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .sponsor-slot-tags,
+  .sponsor-slot-actions {
+    justify-content: flex-start;
   }
 }
 
@@ -6297,18 +6363,6 @@ select {
   opacity: 0.45;
 }
 
-.tool-chip-running-dot {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: #34d399;
-  box-shadow: 0 0 0 2px hsl(var(--sidebar-bg));
-  pointer-events: none;
-}
-
 .tool-chip-icon {
   width: 28px;
   height: 28px;
@@ -8848,6 +8902,153 @@ select {
   }
 }
 
+/* 会话维护按需展开，列表保持为页面的主要内容。 */
+.session-maintenance {
+  min-width: 0;
+  border-top: 1px solid hsl(var(--border) / 0.7);
+  border-bottom: 1px solid hsl(var(--border) / 0.7);
+}
+
+.session-maintenance-summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  border-radius: var(--radius-md);
+  padding: 9px 2px;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+}
+
+.session-maintenance-summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-maintenance-summary:hover {
+  color: hsl(var(--foreground));
+}
+
+.session-maintenance-summary:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.session-maintenance-summary > strong {
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.session-maintenance-summary > svg {
+  flex: 0 0 auto;
+}
+
+.session-maintenance-auto-state {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.session-maintenance-auto-state[data-enabled="true"] {
+  color: hsl(var(--primary));
+}
+
+.session-maintenance-status {
+  margin-left: auto;
+  color: hsl(var(--primary));
+  font-size: 11px;
+}
+
+.session-maintenance-status[data-error="true"] {
+  color: hsl(var(--destructive));
+}
+
+.session-maintenance-chevron {
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.session-maintenance[open] .session-maintenance-chevron {
+  transform: rotate(180deg);
+}
+
+.session-maintenance-content {
+  display: grid;
+  max-height: min(40vh, 360px);
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 8px 16px 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.session-maintenance .session-repair-tools {
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: 16px 24px;
+  margin: 0;
+}
+
+.session-maintenance .session-sync-target,
+.session-maintenance .session-auto-repair {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.session-maintenance .session-auto-repair strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.session-maintenance .session-auto-repair small {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.55;
+}
+
+.session-maintenance .session-repair-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.session-maintenance .session-repair-progress {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 0 0;
+}
+
+.session-maintenance-content p {
+  margin: 0;
+}
+
+.session-maintenance [role="alert"] {
+  color: hsl(var(--destructive));
+}
+
+@media (max-width: 860px) {
+  .session-maintenance .session-repair-tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-maintenance-summary {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+  }
+
+  .session-maintenance-status {
+    font-size: 10px;
+  }
+}
+
 /* 增强页共用总开关与保存入口，服务配置通过页内标签切换。 */
 .enhance-page-controls {
   position: sticky;
@@ -10528,4 +10729,308 @@ select {
   .modal-card.update-dialog { padding: 16px; max-height: calc(100dvh - 24px); }
   .update-dialog-actions > :last-child { margin-left: 0; }
   .release-notes { padding: 12px 14px; }
+}
+
+/* ── 代理设置页：供应商独立代理列表 ───────────────────────────── */
+.proxy-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.proxy-provider-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.proxy-provider-meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.proxy-provider-meta strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-provider-meta small {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .proxy-provider-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .proxy-provider-meta {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ── 请求日志页 ──────────────────────────────────────────────── */
+/* 铺满可视区域：卡片撑到页面底部，列表在卡片内部滚动，避免大片留白。 */
+.screen.request-log-screen {
+  align-content: stretch;
+  overflow-y: hidden;
+}
+
+.screen.request-log-screen > * {
+  width: 100%;
+}
+
+.screen.request-log-screen > .request-log-panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.screen.request-log-screen .request-log-content {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.screen.request-log-screen .request-log-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.request-log-panel {
+  width: 100%;
+  min-width: 0;
+}
+
+.request-log-content {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.request-log-toolbar {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.request-log-search {
+  display: flex;
+  flex: 1 1 260px;
+  align-items: center;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.request-log-search svg {
+  color: hsl(var(--muted-foreground));
+}
+
+.request-log-filter {
+  height: 32px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  color: inherit;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.request-log-session-filter {
+  max-width: 260px;
+}
+
+.request-log-auto {
+  margin: 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.request-log-error {
+  color: hsl(0 72% 60%);
+}
+
+.request-log-table {
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 320px);
+  overflow: auto;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overscroll-behavior: contain;
+}
+
+.request-log-row {
+  display: grid;
+  grid-template-columns: 74px 44px 100px minmax(110px, 1.4fr) 74px 54px 54px 80px 54px;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-width: 760px;
+  border: 0;
+  padding: 8px 12px;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.request-log-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.request-log-entry {
+  border-top: 1px solid hsl(var(--border));
+  background: transparent;
+  cursor: pointer;
+}
+
+.request-log-entry:hover {
+  background: hsl(var(--accent) / 0.45);
+}
+
+.request-log-entry[aria-expanded="true"] {
+  background: hsl(var(--accent) / 0.35);
+}
+
+.request-log-status {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.request-log-status.ok {
+  color: hsl(142 60% 46%);
+}
+
+.request-log-status.bad {
+  color: hsl(0 72% 62%);
+}
+
+.request-log-retry {
+  color: hsl(38 92% 58%);
+  font-weight: 600;
+}
+
+.request-log-muted {
+  color: hsl(var(--muted-foreground));
+}
+
+.request-log-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-log-ellipsis small {
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+}
+
+.request-log-detail {
+  padding: 10px 14px 14px;
+  border-top: 1px dashed hsl(var(--border));
+  background: hsl(var(--muted) / 0.25);
+}
+
+.request-log-detail dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px 18px;
+  margin: 0;
+}
+
+.request-log-detail dl > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.request-log-detail dt {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.request-log-detail dd {
+  margin: 0;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.request-log-detail dl > .request-log-attempts {
+  grid-column: 1 / -1;
+}
+
+.request-log-attempts ul {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.request-log-attempts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.request-log-session-title {
+  display: block;
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-log-attempts code {
+  color: hsl(var(--foreground));
+}
+
+.request-log-attempts small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.request-log-status small {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+.request-log-status.running {
+  color: hsl(var(--primary));
+}
+
+.request-log-duration {
+  font-variant-numeric: tabular-nums;
+}
+
+.request-log-duration small {
+  display: block;
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
 }

@@ -51,6 +51,9 @@ impl TestSettings {
                 api_key: "local-fixture-key".to_string(),
                 ..RelayProfile::default()
             }],
+            // 这个套件断言 exec 协商/错误透传的精确请求次数；协议代理自动重试属于
+            // 另一条路径（默认开启），这里显式关闭，避免 429 用例被退避重试拖慢。
+            protocol_proxy_auto_retry: false,
             ..BackendSettings::default()
         };
         SettingsStore::new(path.clone()).save(&settings).unwrap();

@@ -36,35 +36,76 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
   assert.ok(panels[0].attributes.properties.some((attribute) => ts.isJsxAttribute(attribute) && attribute.name.getText(app) === "repairPanel" && attribute.initializer?.getText(app).includes("<SessionRepairPanel")));
   const fn = app.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SessionRepairPanel");
   assert.ok(fn);
+  const slots: any[] = []; const effects: Function[] = []; let cursor = 0;
   const context = vm.createContext({
     jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment",
     t: (value: string) => value,
+    useState: (initial: any) => {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+      return [slots[index], (value: any) => { slots[index] = typeof value === "function" ? value(slots[index]) : value; }];
+    },
+    useEffect: (callback: Function, deps: any[]) => {
+      const index = cursor++; const previous = slots[index];
+      if (!previous || deps.some((value, i) => value !== previous[i])) { slots[index] = deps; effects.push(callback); }
+    },
     formatProgressPercent: (value: number) => String(value),
     Panel: "Panel", CardHead: "CardHead", CardContent: "CardContent", Field: "Field", AppSelect: "AppSelect", Button: "Button", ToggleVisual: "ToggleVisual",
-    RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", Info: "Info", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
+    RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
   });
-  vm.runInContext(ts.transpileModule(fn.getText(app), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", target: ts.ScriptTarget.ES2022 } }).outputText, context);
-  let synced = 0; let repaired = 0;
-  const props = { form: {}, providerSyncProgress: { active: false, percent: 0 }, sessionIndexRepairActive: false,
+  vm.runInContext(ts.transpileModule(fn.getText(app), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  let synced = 0; let repaired = 0; let saved = 0; let recovered = 0;
+  const targets: string[] = []; const drafts: any[] = [];
+  const props = { form: { providerSyncEnabled: false }, providerSyncProgress: { active: false, percent: 0 }, sessionIndexRepairActive: false,
     sessionIndexRepairReport: null, sessionIndexRepairReportError: null,
     providerSyncTargets: { targets: [{ id: "target", isResolvable: true, isCurrentProvider: false }] }, selectedProviderSyncTarget: "target",
-    onFormChange: () => {}, actions: { syncProvidersNow: () => { synced++; }, repairSessionIndex: () => { repaired++; } } };
+    onFormChange: (draft: any) => { drafts.push(draft); }, actions: {
+      syncProvidersNow: () => { synced++; }, repairSessionIndex: () => { repaired++; }, saveSettings: () => { saved++; },
+      recoverProviderSync: () => { recovered++; }, setProviderSyncTarget: (target: string) => { targets.push(target); },
+    } };
   const nodes: any[] = [];
   const collect = (node: any) => { if (!node || typeof node !== "object") return; if (Array.isArray(node)) return node.forEach(collect); nodes.push(node); node.children?.forEach(collect); };
-  collect(context.SessionRepairPanel(props));
+  const render = (nextProps: any) => {
+    cursor = 0; let tree = context.SessionRepairPanel(nextProps);
+    while (effects.length) { effects.shift()!(); cursor = 0; tree = context.SessionRepairPanel(nextProps); }
+    nodes.length = 0; collect(tree); return tree;
+  };
+  let tree = render(props);
   const button = (label: string) => nodes.find((node) => node.type === "Button" && node.children.includes(label));
+  assert.equal(tree.type, "details");
+  assert.equal(tree.props.open, false);
+  assert.ok(nodes.some((node) => node.type === "strong" && node.children.includes("修复与维护")));
+  assert.equal(button("刷新会话"), undefined);
+  tree.props.onToggle({ currentTarget: { open: true } });
+  tree = render(props); assert.equal(tree.props.open, true);
   assert.equal(button("修复历史会话").props.disabled, false);
   button("修复历史会话").props.onClick();
   button("修复会话索引").props.onClick();
-  assert.equal(synced, 1); assert.equal(repaired, 1);
-  nodes.length = 0;
-  collect(context.SessionRepairPanel({ ...props, providerSyncProgress: { active: true, percent: 0 } }));
+  button("保存设置").props.onClick();
+  nodes.find((node) => node.type === "AppSelect").props.onChange("another-target");
+  nodes.find((node) => node.type === "input" && node.props.type === "checkbox").props.onChange({ currentTarget: { checked: true } });
+  assert.equal(synced, 1); assert.equal(repaired, 1); assert.equal(saved, 1);
+  assert.deepEqual(targets, ["another-target"]); assert.equal(drafts[0].providerSyncEnabled, true);
+  tree.props.onToggle({ currentTarget: { open: false } });
+  assert.equal(render(props).props.open, false);
+  tree = render({ ...props, providerSyncProgress: { active: true, percent: 25 } });
+  assert.equal(tree.props.open, true);
   assert.equal(button("正在修复…").props.disabled, true);
-  nodes.length = 0;
-  collect(context.SessionRepairPanel({ ...props, providerSyncProgress: { active: false, percent: 0,
-    result: { syncStatus: "partial_failure", backupDir: "/artificial/unreadable", recoveryJournalPath: "/artificial/unreadable", recoveryAvailable: false } } }));
+  assert.ok(nodes.some((node) => node.props.role === "status" && node.props["aria-live"] === "polite"));
+  render(props);
+  tree.props.onToggle({ currentTarget: { open: false } });
+  tree = render({ ...props, sessionIndexRepairReportError: "index unavailable" });
+  assert.equal(tree.props.open, true);
+  assert.ok(nodes.some((node) => node.props.role === "alert" && node.children.includes("index unavailable")));
+  render({ ...props, providerSyncProgress: { active: false, percent: 0,
+    result: { syncStatus: "partial_failure", backupDir: "/artificial/unreadable", recoveryJournalPath: "/artificial/unreadable", recoveryAvailable: false } } });
   assert.equal(button("恢复未完成修复"), undefined);
   assert.equal(nodes.some((node) => node.children?.includes("仍有改动：")), false);
+  render({ ...props, providerSyncProgress: { active: false, percent: 0,
+    result: { syncStatus: "partial_failure", backupDir: "/artificial/backup", recoveryJournalPath: "/artificial/journal", recoveryAvailable: true } } });
+  button("恢复未完成修复").props.onClick();
+  assert.equal(recovered, 1);
 });
 
 test("all full saves require their own revision and conflicts preserve the caller draft", async () => {

@@ -250,14 +250,19 @@ body::after {
 .hero-inner {
   position: relative;
   z-index: 2;
-  max-width: 1280px;
+  max-width: 1420px;
   width: 100%;
   margin: 0 auto;
-  padding: 120px 28px 90px;
+  padding: 108px 28px 74px;
+  display: grid;
+  grid-template-columns: minmax(380px, 0.86fr) minmax(560px, 1.14fr);
+  gap: clamp(34px, 4vw, 72px);
+  align-items: center;
 }
+.hero-copy { min-width: 0; }
 
 .hero-title {
-  font-size: clamp(52px, 9.5vw, 128px);
+  font-size: clamp(52px, 7.2vw, 96px);
   font-weight: 900;
   line-height: 1.06;
   letter-spacing: 0;
@@ -308,6 +313,33 @@ body::after {
   color: transparent;
 }
 .stat dd { color: var(--txt-2); font-size: 13px; margin-top: 2px; }
+
+.hero-manager {
+  width: 100%;
+  max-width: 780px;
+  min-width: 0;
+  justify-self: end;
+}
+.hero-manager-window {
+  --manager-scale: 0.78;
+  width: 100%;
+  height: clamp(470px, 42vw, 620px);
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 255, 0.28);
+  border-radius: 18px;
+  background: #080a10;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.58), 0 0 90px rgba(93, 107, 255, 0.14);
+}
+.hero-manager-window iframe {
+  display: block;
+  width: calc(100% / var(--manager-scale));
+  height: calc(100% / var(--manager-scale));
+  min-width: 760px;
+  border: 0;
+  transform: scale(var(--manager-scale));
+  transform-origin: top left;
+  background: #0a0c12;
+}
 
 .scroll-cue {
   position: absolute;
@@ -1190,6 +1222,9 @@ body.no-anim .bar-fill { transition: none; }
 /* ============ 响应式 ============ */
 
 @media (max-width: 1080px) {
+  .hero-inner { grid-template-columns: 1fr; gap: 42px; }
+  .hero-manager { max-width: 900px; justify-self: center; }
+  .hero-manager-window { --manager-scale: 0.88; height: 620px; }
   .feature-grid { grid-template-columns: repeat(2, 1fr); }
   .context-cols { grid-template-columns: 1fr; }
   .nav-links { display: none; }
@@ -1202,7 +1237,9 @@ body.no-anim .bar-fill { transition: none; }
 
 @media (max-width: 640px) {
   .nav-version { display: none; }
-  .hero-inner { padding-top: 104px; }
+  .hero-inner { padding-top: 104px; padding-left: 20px; padding-right: 20px; }
+  .hero-title { font-size: clamp(48px, 15vw, 76px); }
+  .hero-manager-window { --manager-scale: 0.7; height: 540px; }
   .hero-stats { gap: 22px 34px; }
   .feature-grid { grid-template-columns: 1fr; }
   .showcase { padding-right: 20px; padding-left: 20px; }

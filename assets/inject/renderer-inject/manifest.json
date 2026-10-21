@@ -33,7 +33,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1948
+      "lines": 1959
     },
     {
       "name": "50-navigation.js",
@@ -83,7 +83,12 @@
     {
       "name": "83-usage-statusline.js",
       "description": "输入框下方用量状态栏：生成速度、缓存命中率与上下文占用",
-      "lines": 494
+      "lines": 491
+    },
+    {
+      "name": "84-proxy-request-status.js",
+      "description": "输入框上方的请求避震状态条：正在请求 / 等待上游 / 正在重试 / 正在生成",
+      "lines": 280
     },
     {
       "name": "90-action-groups.js",

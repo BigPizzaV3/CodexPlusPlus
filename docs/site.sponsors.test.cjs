@@ -4,8 +4,9 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 const source = fs.readFileSync(require.resolve("./site.js"), "utf8");
-const primaryUrl = "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json";
-const fallbackUrl = "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json";
+const primaryUrl = "https://ads.codexpp.cc/ads.json";
+const fallbackUrl = "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json";
+const finalFallbackUrl = "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json";
 const now = Date.parse("2026-10-09T00:00:00Z");
 const sponsor = (title, url = `https://example.com/${encodeURIComponent(title)}`) => ({
   type: "sponsor",
@@ -186,7 +187,7 @@ test("primary fetch uses fresh credential-free requests and returns the live pay
   assert.equal(api.timers.size, 0);
 });
 
-test("a failed primary source falls back to jsDelivr", async () => {
+test("a failed Cloudflare source falls back to GitHub Raw", async () => {
   const payload = { ads: [sponsor("Fallback sponsor")] };
   const api = fixture(async (url) => url.startsWith(primaryUrl)
     ? { ok: false, status: 503 }
@@ -220,9 +221,10 @@ test("a primary timeout aborts the request and continues with the fallback", asy
 test("failure of every live source rejects instead of returning static advertisers", async () => {
   const api = fixture(async () => { throw new Error("Unavailable"); });
   await assert.rejects(api.fetchSponsorList());
-  assert.equal(api.requests.length, 2);
+  assert.equal(api.requests.length, 3);
   assertFreshRequest(api.requests[0], primaryUrl);
   assertFreshRequest(api.requests[1], fallbackUrl);
+  assertFreshRequest(api.requests[2], finalFallbackUrl);
   assert.equal(api.timers.size, 0);
 });
 
@@ -259,7 +261,7 @@ test("relative sponsor images resolve from the live source and failures get a te
   const card = api.createSponsorCard(ad, false);
   const image = card.children[0];
   assert.equal(image.tagName, "IMG");
-  assert.equal(image.src, "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/logos/logo.svg");
+  assert.equal(image.src, "https://ads.codexpp.cc/logos/logo.svg");
   image.dispatch("error");
   assert.equal(card.children[0].tagName, "SPAN");
   assert.equal(card.children[0].textContent, "I");
@@ -283,7 +285,7 @@ test("empty live data clears existing cards and shows the empty state without us
 test("all-source failure clears cards and retry can load the live list", async () => {
   let attempts = 0;
   const api = fixture(async () => {
-    if (++attempts <= 2) throw new Error("Unavailable");
+    if (++attempts <= 3) throw new Error("Unavailable");
     return { ok: true, json: async () => ({ ads: [sponsor("Recovered sponsor")] }) };
   });
   const nodes = api.mountSponsors();
@@ -301,5 +303,5 @@ test("all-source failure clears cards and retry can load the live list", async (
   assert.match(nodes.grid.children[0].textContent, /Recovered sponsor/);
   assert.equal(nodes.status.hidden, true);
   assert.equal(nodes.retry.hidden, true);
-  assert.equal(api.requests.length, 3);
+  assert.equal(api.requests.length, 4);
 });

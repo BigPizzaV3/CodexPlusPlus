@@ -13,7 +13,8 @@ const APIMART_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-apimar
 const FENNO_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-fenno-ai.png");
 const QINIU_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-qiniu-ai.png");
 
-pub const DEFAULT_AD_LIST_URLS: [&str; 2] = [
+pub const DEFAULT_AD_LIST_URLS: [&str; 3] = [
+    "https://ads.codexpp.cc/ads.json",
     "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
     "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
 ];

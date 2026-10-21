@@ -156,13 +156,40 @@ pub fn bridge_health_check_script() -> &'static str {
   const lastSuccessAt = Number(health.lastSuccessAt) || 0;
   const lastInjectionAt = Number(health.lastInjectionAt) || 0;
   const lastAttemptAt = Number(health.lastAttemptAt) || 0;
+  const failures = Number(health.failures) || 0;
   if (lastInjectionAt > 0 && now - lastInjectionAt <= 5000) return true;
   if (lastSuccessAt > 0 && now - lastSuccessAt <= 15000) return true;
+  // 连续失败且超过 15 秒没有一次成功：CDP 连接可能已经断了。此时不能只看
+  // lastAttemptAt——挂死的 bridge 会一直“尝试”却永远不成功，心跳尝试反而
+  // 会让看门狗永不重注入。重注入会把挂起的 resolver 统一 resolve 掉。
+  if (failures >= 3 && (lastSuccessAt === 0 || now - lastSuccessAt > 15000)) return false;
   // 页面忙碌时状态请求会超时，但心跳仍在调用桥接。最近一次尝试也算活着，
   // 避免看门狗把整份脚本反复注入并触发整页刷新。
   return lastAttemptAt > 0 && now - lastAttemptAt <= 15000;
 })()
 "#
+}
+
+#[cfg(test)]
+mod bridge_health_script_tests {
+    use super::bridge_health_check_script;
+
+    /// 桥接挂死时 `lastAttemptAt` 仍会被心跳刷新；健康判定必须让「连续失败 +
+    /// 长时间没有成功」优先于「最近尝试过」，否则看门狗永远不会重注入。
+    #[test]
+    fn repeated_failures_without_success_are_unhealthy() {
+        let script = bridge_health_check_script();
+        let failures_guard = script
+            .find("failures >= 3")
+            .expect("健康脚本应包含连续失败判定");
+        let attempt_fallback = script
+            .find("lastAttemptAt > 0")
+            .expect("健康脚本应保留最近尝试兜底");
+        assert!(
+            failures_guard < attempt_fallback,
+            "连续失败判定必须在 lastAttemptAt 兜底之前生效"
+        );
+    }
 }
 
 pub async fn evaluate_script(websocket_url: &str, script: &str) -> anyhow::Result<Value> {

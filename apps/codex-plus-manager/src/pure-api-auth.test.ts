@@ -4,7 +4,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { modelSlugFromRowName, suffixWindowString } from "./model-metadata.ts";
-import { requestCompatibilityEnabled, normalizeRelayModelRoutes, localCompactionPromptAtEndEnabled } from "./model-routes.ts";
+import { independentProxyEnabled, setIndependentProxyConfigured, requestCompatibilityEnabled, normalizeRelayModelRoutes, localCompactionPromptAtEndEnabled } from "./model-routes.ts";
 import { sessionProviderForProtocol } from "./relay-session.ts";
 import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members.ts";
 import { relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey } from "./provider-api-keys.ts";
@@ -39,7 +39,7 @@ const context = vm.createContext({
   exports: {},
   PROTOCOL_PROXY_BASE_URL: "http://127.0.0.1:57321/v1",
   CHAT_UPSTREAM_BASE_URL_KEY: "codex_plus_chat_base_url",
-  requestCompatibilityEnabled, normalizeRelayModelRoutes, localCompactionPromptAtEndEnabled, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
+  requestCompatibilityEnabled, independentProxyEnabled, normalizeRelayModelRoutes, localCompactionPromptAtEndEnabled, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
   aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile,
   relayProfileWithUpdatedApiKey,
 });
@@ -61,6 +61,25 @@ test("new pure API files use explicit provider auth without requiring official l
   assert.match(generated.configContents, /requires_openai_auth = false/);
   assert.match(generated.configContents, /experimental_bearer_token = "fixture-provider-key"/);
   assert.equal(JSON.parse(generated.authContents).OPENAI_API_KEY, "fixture-provider-key");
+});
+
+test("independent proxy keeps generated and edited Responses configs local without losing upstream or other draft fields", () => {
+  const original = { ...profile(), id: "independent-proxy-regression", userAgent: "unsaved-draft-agent" };
+  setIndependentProxyConfigured(original.id, true);
+  try {
+    const generated = context.withGeneratedRelayFiles(original);
+    assert.match(generated.configContents, /base_url = "http:\/\/127\.0\.0\.1:57321\/v1"/);
+    const edited = context.applyRelayProfilePatchToFiles(original, { baseUrl: "https://edited.example/v1" });
+    assert.match(edited.configContents, /base_url = "http:\/\/127\.0\.0\.1:57321\/v1"/);
+    assert.equal(edited.upstreamBaseUrl, "https://edited.example/v1");
+    assert.equal(edited.userAgent, original.userAgent);
+    assert.equal(edited.apiKey, original.apiKey);
+    setIndependentProxyConfigured(original.id, false);
+    const cleared = context.applyRelayProfilePatchToFiles(edited, { baseUrl: edited.baseUrl });
+    assert.match(cleared.configContents, /base_url = "https:\/\/edited\.example\/v1"/);
+  } finally {
+    setIndependentProxyConfigured(original.id, false);
+  }
 });
 
 test("legacy false, missing, and true templates gain provider auth while preserving their settings", () => {

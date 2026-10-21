@@ -218,22 +218,22 @@
   }
 
   /**
-   * The tail may contain several model calls from the same turn. Use the latest
-   * turn segment and weight cache hits by input tokens instead of averaging
-   * percentages from individual calls.
+   * 只取真实 turn_id 对应的最近一轮。total_token_usage 是会话累计，不会在换轮时
+   * 清零；旧记录或尾部截断缺少轮边界时只用最后一次调用，避免把前几轮混进来。
    */
-  function codexPlusUsageTurnCache(events) {
-    if (!Array.isArray(events) || !events.length) return null;
-    let start = 0;
-    let hasTurnCounters = false;
-    for (let index = 1; index < events.length; index += 1) {
-      const previous = Number(events[index - 1].turn_output_tokens);
-      const current = Number(events[index].turn_output_tokens);
-      if (!Number.isFinite(previous) || !Number.isFinite(current)) continue;
-      hasTurnCounters = true;
-      if (current < previous) start = index;
+  function codexPlusUsageLatestTurn(events) {
+    if (!Array.isArray(events) || !events.length) return [];
+    let start = events.length - 1;
+    const turnId = events[start].turn_id;
+    if (typeof turnId === "string" && turnId) {
+      while (start > 0 && events[start - 1].turn_id === turnId) start -= 1;
     }
-    const segment = events.slice(start);
+    return events.slice(start);
+  }
+
+  /** 同一轮的多次模型调用按输入 token 加权，不能直接平均各次百分比。 */
+  function codexPlusUsageTurnCache(events) {
+    const segment = codexPlusUsageLatestTurn(events);
     let input = 0;
     let cached = 0;
     for (const event of segment) {
@@ -244,11 +244,7 @@
         cached += Math.max(0, Math.min(currentCached, currentInput));
       }
     }
-    if (input > 0) return codexPlusUsagePercent(cached, input);
-    return hasTurnCounters ? null : codexPlusUsagePercent(
-      Number(segment[segment.length - 1]?.cached_input_tokens),
-      Number(segment[segment.length - 1]?.input_tokens),
-    );
+    return input > 0 ? codexPlusUsagePercent(cached, input) : null;
   }
 
   /**
@@ -257,13 +253,14 @@
    * Codex 只在每次模型调用结束时写一条 token_count，事件间隔里同时包含生成和工具
    * 执行时间，所以这是「吞吐」而不是纯生成速度，会比真实解码速度低。用同一轮内
    * 相邻事件的累计输出差除以时间差得到区间速度，再取最近几个区间平均，避免单次
-   * 抖动。换轮时 turn_output_tokens 会回落，靠这个切段。
+   * 抖动。turn_output_tokens 是历史字段名，实际为会话累计输出，需用真实轮 id 切段。
    */
   function codexPlusUsageRate(events) {
+    const segment = codexPlusUsageLatestTurn(events);
     const rates = [];
-    for (let index = 1; index < events.length; index += 1) {
-      const previous = events[index - 1];
-      const current = events[index];
+    for (let index = 1; index < segment.length; index += 1) {
+      const previous = segment[index - 1];
+      const current = segment[index];
       const previousOutput = Number(previous.turn_output_tokens) || 0;
       const currentOutput = Number(current.turn_output_tokens) || 0;
       if (currentOutput <= previousOutput) continue;

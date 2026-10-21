@@ -29,6 +29,21 @@ export type RelayModelRouteSettings = {
 export const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 export const NO_AUTH_PROXY_BEARER_TOKEN = "codex-plus-no-auth";
 
+// 独立代理保存在后端 sidecar；前端只缓存是否启用，不把地址/凭据写入供应商快照。
+const independentProxyProfiles = new Set<string>();
+
+export function setIndependentProxyConfigured(profileId: string, configured: boolean): void {
+  if (configured) independentProxyProfiles.add(profileId);
+  else independentProxyProfiles.delete(profileId);
+}
+
+export function independentProxyEnabled(
+  profile: Pick<RelayModelRouteProfile, "relayMode" | "officialMixApiKey"> & { id?: string },
+): boolean {
+  return !!profile.id && independentProxyProfiles.has(profile.id)
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+}
+
 export type RelayModelRouteIssue = {
   kind: "incomplete" | "duplicate" | "self" | "missingTarget" | "aggregateTarget" | "targetProtocol" | "targetCredentials";
   model: string;
@@ -92,6 +107,7 @@ export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): b
     || active.protocol === "chatCompletions"
     || (active.relayMode === "pureApi" && active.noAuth === true)
     || (active.relayMode === "official" && active.officialMixApiKey)
+    || independentProxyEnabled(active)
     || localCompactionPromptAtEndEnabled(active)
     || requestCompatibilityEnabled(active)
     || normalizeRelayModelRoutes(active.modelRoutes).some(

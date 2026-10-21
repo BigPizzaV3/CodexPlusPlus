@@ -49,8 +49,8 @@ impl Drop for GlobalHotkeyHandle {
     }
 }
 
-#[cfg(windows)]
-fn parse_hotkey(value: &str) -> anyhow::Result<(u32, u32)> {
+#[cfg(any(windows, test))]
+fn parse_windows_hotkey(value: &str) -> anyhow::Result<(u32, u32)> {
     let mut modifiers = 0_u32;
     let mut key = None;
     for part in value.split('+').map(str::trim).filter(|part| !part.is_empty()) {
@@ -71,6 +71,18 @@ fn parse_hotkey(value: &str) -> anyhow::Result<(u32, u32)> {
     }
     anyhow::ensure!(modifiers != 0 && key.is_some(), "全局热键需要修饰键和按键，例如 Ctrl+Shift+Space");
     Ok((modifiers, key.unwrap()))
+}
+
+#[cfg(windows)]
+fn parse_hotkey(value: &str) -> anyhow::Result<(u32, u32)> {
+    parse_windows_hotkey(value)
+}
+
+#[cfg(any(windows, test))]
+fn windows_registration_hotkey(value: &str) -> anyhow::Result<(u32, u32)> {
+    let (modifiers, key) = parse_windows_hotkey(value)?;
+    // MOD_NOREPEAT：按住热键时仅发送一次 WM_HOTKEY，松开后再次按下才切换听写。
+    Ok((modifiers | 0x4000, key))
 }
 
 #[cfg(target_os = "macos")]
@@ -114,7 +126,7 @@ where F: Fn() + Send + 'static {
         fn UnregisterHotKey(hwnd: *mut c_void, id: i32) -> i32;
         fn PeekMessageW(msg: *mut Msg, hwnd: *mut c_void, min: u32, max: u32, remove: u32) -> i32;
     }
-    let (modifiers, key) = parse_hotkey(hotkey)?;
+    let (modifiers, key) = windows_registration_hotkey(hotkey)?;
     // 应用程序热键 ID 只能在 0x0000..=0xBFFF；原来的 0xC0D3_0001 超出 i32 范围，Windows 上编译不过。
     const HOTKEY_ID: i32 = 0x0C0D;
     let stop = Arc::new(AtomicBool::new(false));
@@ -242,4 +254,39 @@ pub fn validate_hotkey(value: &str) -> anyhow::Result<()> {
     #[cfg(any(windows, target_os = "macos"))] { let _ = parse_hotkey(value)?; }
     #[cfg(not(any(windows, target_os = "macos")))] { anyhow::ensure!(!value.trim().is_empty(), "热键不能为空"); }
     Ok(())
+}
+
+pub fn hotkeys_match(left: &str, right: &str) -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        parse_hotkey(left).ok().is_some_and(|left| parse_hotkey(right).ok() == Some(left))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        left.trim().eq_ignore_ascii_case(right.trim())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_hotkey_registration_disables_key_repeat_and_keeps_key_combination() {
+        for hotkey in ["Ctrl+Shift+Space", "Alt+F4", "Win+A"] {
+            let (modifiers, key) = parse_windows_hotkey(hotkey).unwrap();
+            let (registered_modifiers, registered_key) = windows_registration_hotkey(hotkey).unwrap();
+            assert_eq!(registered_modifiers & 0x4000, 0x4000);
+            assert_eq!(registered_modifiers & !0x4000, modifiers);
+            assert_eq!(registered_key, key);
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn hotkey_identity_compares_parsed_combinations() {
+        assert!(hotkeys_match("Ctrl+Shift+Space", "shift + CONTROL + space"));
+        assert!(!hotkeys_match("Ctrl+Shift+Space", "Ctrl+Alt+Space"));
+        assert!(!hotkeys_match("invalid", "invalid"));
+    }
 }

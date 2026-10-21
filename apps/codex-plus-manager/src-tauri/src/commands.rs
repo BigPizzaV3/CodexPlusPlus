@@ -48,21 +48,19 @@ pub fn load_global_dictation_hotkey() -> CommandResult<Value> {
 
 #[tauri::command]
 pub fn set_global_dictation_hotkey(enabled: bool, hotkey: String) -> CommandResult<Value> {
-    let mut config = codex_plus_core::global_dictation::load_config();
-    config.enabled = enabled;
-    config.hotkey = hotkey.trim().to_string();
-    if let Err(error) = codex_plus_core::global_dictation::validate_hotkey(&config.hotkey) {
-        return failed(&error.to_string(), json!({}));
-    }
-    if let Err(error) = codex_plus_core::global_dictation::save_config(&config) {
-        return failed(&format!("保存全局听写热键失败：{error}"), json!({}));
-    }
-    match crate::global_dictation::apply_config() {
+    let config = codex_plus_core::global_dictation::GlobalDictationConfig {
+        enabled,
+        hotkey: hotkey.trim().to_string(),
+    };
+    match crate::global_dictation::save_and_apply_config(&config) {
         Ok(()) => ok(
             if enabled { "全局听写热键已开启。" } else { "全局听写热键已关闭。" },
             serde_json::to_value(config).unwrap_or_else(|_| json!({})),
         ),
-        Err(error) => failed(&format!("注册全局听写热键失败：{error}"), serde_json::to_value(config).unwrap_or_else(|_| json!({}))),
+        Err(error) => failed(
+            &format!("更新全局听写热键失败：{error:#}"),
+            serde_json::to_value(codex_plus_core::global_dictation::load_config()).unwrap_or_else(|_| json!({})),
+        ),
     }
 }
 
@@ -4492,10 +4490,10 @@ pub async fn list_project_sessions(
 }
 
 fn normalized_project_path(path: &str) -> String {
-    path.trim()
-        .replace('\\', "/")
+    // 与前端 sessionGroups 一致：只统一分隔符和末尾斜杠，保留大小写及路径中的空格。
+    path.replace('\\', "/")
         .trim_end_matches('/')
-        .to_ascii_lowercase()
+        .to_string()
 }
 
 fn list_project_sessions_blocking(cwd: String) -> CommandResult<LocalSessionsPayload> {
@@ -6369,9 +6367,62 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
         "供应商代理已读取。",
         json!({
             "profileId": profile_id,
-            "proxyUrl": codex_plus_core::relay_proxy::proxy_for_profile(&profile_id).unwrap_or_default()
+            "proxyUrl": codex_plus_core::relay_proxy::proxy_for_profile(&profile_id).unwrap_or_default(),
+            "configured": codex_plus_core::relay_proxy::configured_proxy_for_profile(&profile_id).is_some()
         }),
     )
+}
+
+#[tauri::command]
+pub fn load_request_logs(limit: Option<usize>) -> CommandResult<Value> {
+    let limit = limit.unwrap_or(200).clamp(1, 1000);
+    match codex_plus_core::request_log::read_request_logs(limit) {
+        Ok(entries) => {
+            // 会话标题来自 Codex 本地会话库，只用于展示；查不到时前端退回短 id。
+            let thread_ids: Vec<String> = entries
+                .iter()
+                .filter_map(|entry| entry.thread_id.clone())
+                .collect();
+            let titles = if thread_ids.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+                let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+                codex_plus_data::local_session_titles(&db_paths, &thread_ids)
+            };
+            let entries: Vec<Value> = entries
+                .iter()
+                .map(|entry| {
+                    let mut value = serde_json::to_value(entry).unwrap_or_else(|_| json!({}));
+                    if let Some(title) = entry
+                        .thread_id
+                        .as_ref()
+                        .and_then(|thread_id| titles.get(thread_id))
+                        && let Some(object) = value.as_object_mut()
+                    {
+                        object.insert("threadTitle".to_string(), json!(title));
+                    }
+                    value
+                })
+                .collect();
+            ok(
+                &format!("已读取 {} 条请求日志。", entries.len()),
+                json!({ "entries": entries }),
+            )
+        }
+        Err(error) => failed(
+            &format!("读取请求日志失败：{error}"),
+            json!({ "entries": [] }),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn clear_request_logs() -> CommandResult<Value> {
+    match codex_plus_core::request_log::clear_request_logs() {
+        Ok(()) => ok("请求日志已清空。", json!({})),
+        Err(error) => failed(&format!("清空请求日志失败：{error}"), json!({})),
+    }
 }
 
 #[tauri::command]
@@ -6379,13 +6430,14 @@ pub fn set_relay_proxy(profile_id: String, proxy_url: String) -> CommandResult<V
     match codex_plus_core::relay_proxy::set_proxy_for_profile(&profile_id, &proxy_url) {
         Ok(()) => ok(
             if proxy_url.trim().is_empty() {
-                "供应商独立代理已清除。"
+                "供应商独立代理已清除。请保存并重新应用该供应商，然后重启 Codex 使会话请求生效。"
             } else {
-                "供应商独立代理已保存。"
+                "供应商独立代理已保存。请保存并重新应用该供应商，然后重启 Codex 使会话请求生效。"
             },
             json!({
                 "profileId": profile_id.trim(),
-                "proxyUrl": proxy_url.trim()
+                "proxyUrl": proxy_url.trim(),
+                "configured": codex_plus_core::relay_proxy::configured_proxy_for_profile(&profile_id).is_some()
             }),
         ),
         Err(error) => failed(&format!("保存供应商代理失败：{error}"), json!({})),
@@ -10232,6 +10284,43 @@ base_url = "https://example.invalid/v1"
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn project_path_identity_matches_frontend_grouping() {
+        assert_eq!(normalized_project_path(r"C:\Projects\Foo\\"), "C:/Projects/Foo");
+        assert_eq!(normalized_project_path("/Projects/Foo///"), "/Projects/Foo");
+        assert_ne!(normalized_project_path("/Projects/Foo"), normalized_project_path("/Projects/foo"));
+        assert_ne!(normalized_project_path("/Projects/Foo"), normalized_project_path(" /Projects/Foo"));
+    }
+
+    #[test]
+    fn list_project_sessions_keeps_case_distinct_projects_separate() {
+        let _codex_home_guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let home = temp.path().join("codex-home");
+        let sqlite = home.join("sqlite");
+        std::fs::create_dir_all(&sqlite).unwrap();
+        let db = rusqlite::Connection::open(sqlite.join("state_5.sqlite")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, cwd TEXT, updated_at_ms INTEGER);\
+             INSERT INTO threads VALUES ('upper', '', 'Upper', '/Projects/Foo', 30);\
+             INSERT INTO threads VALUES ('upper-slash', '', 'Upper slash', '/Projects/Foo/', 20);\
+             INSERT INTO threads VALUES ('lower', '', 'Lower', '/Projects/foo', 10);",
+        ).unwrap();
+        drop(db);
+        unsafe { std::env::set_var("CODEX_HOME", &home); }
+        let upper = list_project_sessions_blocking("/Projects/Foo/".into());
+        let lower = list_project_sessions_blocking("/Projects/foo".into());
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(upper.status, "ok");
+        assert_eq!(upper.payload.total_count, 2);
+        assert_eq!(upper.payload.sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>(), vec!["upper", "upper-slash"]);
+        assert_eq!(lower.status, "ok");
+        assert_eq!(lower.payload.total_count, 1);
+        assert_eq!(lower.payload.sessions[0].id, "lower");
     }
 
     #[test]

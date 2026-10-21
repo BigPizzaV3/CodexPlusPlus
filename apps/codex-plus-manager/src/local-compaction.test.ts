@@ -4,6 +4,8 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import {
+  independentProxyEnabled,
+  setIndependentProxyConfigured,
   requestCompatibilityEnabled,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
@@ -58,7 +60,7 @@ test("experimental local compaction is per-provider and starts the helper only w
 
 test("checkbox draft and generated config route to proxy and restore the real upstream on disable", () => {
   const context = vm.createContext({
-    requestCompatibilityEnabled, PROTOCOL_PROXY_BASE_URL, localCompactionPromptAtEndEnabled, normalizeRelayModelRoutes,
+    requestCompatibilityEnabled, independentProxyEnabled, PROTOCOL_PROXY_BASE_URL, localCompactionPromptAtEndEnabled, normalizeRelayModelRoutes,
     relaySessionProvider: () => "custom",
     sessionProviderForProtocol: (provider: string) => provider,
     isAggregateRelayProfile: () => false,
@@ -85,6 +87,21 @@ test("checkbox draft and generated config route to proxy and restore the real up
   const config = context.buildRelayConfigToml(retired, { includeBearerToken: false });
   assert.ok(config.includes(`base_url = "${original.upstreamBaseUrl}"`));
   assert.equal(settingsRequireLocalHelper({ ...settings(), relayProfiles: [retired] }), false);
+});
+
+test("independent Responses proxy enables the helper per provider and clearing it removes cached routing", () => {
+  const original = settings();
+  setIndependentProxyConfigured("source", true);
+  try {
+    assert.equal(independentProxyEnabled(profile()), true);
+    assert.equal(independentProxyEnabled({ ...profile(), relayMode: "official" }), false);
+    assert.equal(independentProxyEnabled(profile("other")), false);
+    assert.equal(settingsRequireLocalHelper(original), true);
+    assert.equal(modelRouteSaveRequiresRestart(original, original, profile().baseUrl), true);
+  } finally {
+    setIndependentProxyConfigured("source", false);
+  }
+  assert.equal(settingsRequireLocalHelper(original), false);
 });
 
 test("provider checkbox binds draft state and is hidden for Anthropic and aggregate profiles", () => {

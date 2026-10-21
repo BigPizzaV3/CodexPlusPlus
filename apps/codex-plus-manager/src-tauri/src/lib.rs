@@ -138,6 +138,8 @@ pub fn run() {
             commands::restart_codex_multi_instance,
             commands::restart_codex_plus,
             commands::load_settings,
+            commands::load_request_logs,
+            commands::clear_request_logs,
             commands::dictation_local_model_status,
             commands::download_dictation_local_model,
             commands::load_global_dictation_hotkey,

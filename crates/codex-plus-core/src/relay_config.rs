@@ -227,7 +227,7 @@ pub fn relay_config_status_from_home(home: &Path) -> RelayConfigStatus {
         }
 
         let uses_managed_openai_identity = root_key_string(&contents, OPENAI_BASE_URL_KEY)
-            .is_some_and(|value| value.trim() == managed_openai_base_url());
+            .is_some_and(|value| crate::protocol_proxy::is_managed_protocol_proxy_base_url(&value));
         if !uses_managed_openai_identity {
             return active;
         }
@@ -298,6 +298,7 @@ pub fn ensure_active_protocol_proxy_config_in_home(
         return Ok(false);
     }
     let profile = settings.active_relay_profile();
+    let known_managed = managed_proxy_base_urls_for_profile(&profile);
     let transport_uses_proxy = settings.active_relay_transport_uses_protocol_proxy();
     let openai_identity_uses_proxy = settings.active_relay_session_provider()
         == RelaySessionProvider::Openai
@@ -386,7 +387,7 @@ pub fn ensure_active_protocol_proxy_config_in_home(
             .and_then(Item::as_str)
             .map(str::trim)
             .map(ToString::to_string);
-        update_remote_control_openai_base_url(&mut doc, true);
+        update_remote_control_openai_base_url_with_known(&mut doc, true, managed.clone(), &known_managed);
         let after = doc
             .get(OPENAI_BASE_URL_KEY)
             .and_then(Item::as_str)
@@ -1243,21 +1244,31 @@ fn update_remote_control_openai_base_url(doc: &mut DocumentMut, enabled: bool) {
 }
 
 fn update_remote_control_openai_base_url_with(doc: &mut DocumentMut, enabled: bool, managed: String) {
+    update_remote_control_openai_base_url_with_known(
+        doc,
+        enabled,
+        managed,
+        &crate::protocol_proxy::managed_protocol_proxy_base_urls(),
+    );
+}
+
+fn update_remote_control_openai_base_url_with_known(
+    doc: &mut DocumentMut,
+    enabled: bool,
+    managed: String,
+    known_managed: &[String],
+) {
     let current = doc
         .get(OPENAI_BASE_URL_KEY)
         .and_then(Item::as_str)
         .map(str::trim)
         .map(ToString::to_string);
 
-    // 默认端口的本地代理地址同样算作 Codex++ 写入的值：端口因 Windows 保留区间
-    // 迁移后（#1163），旧值必须换成新端口，否则 Codex 仍连旧端口、所有请求失败。
-    // 其它回环地址（例如 CC Switch 的本地代理）视为用户自定义，原样保留。
+    // 迁移两次及以上时，历史受管地址也必须跟进；其它回环地址原样保留。
     let ours = |value: &str| {
-        value == managed
-            || value
-                == crate::protocol_proxy::local_responses_proxy_base_url(
-                    crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-                )
+        let normalized = normalize_relay_endpoint(value);
+        normalized == normalize_relay_endpoint(&managed)
+            || known_managed.iter().any(|url| normalized == normalize_relay_endpoint(url))
     };
     if enabled {
         if current.as_deref().is_none_or(ours) {
@@ -1449,8 +1460,7 @@ pub fn backfill_relay_profile_from_home_with_common_and_policy(
         }
         if recognized_managed_proxy_endpoint(profile, &live_config)
             || live_endpoint.as_deref().is_some_and(|endpoint| {
-                normalize_relay_endpoint(endpoint)
-                    == normalize_relay_endpoint(&managed_openai_base_url())
+                crate::protocol_proxy::is_managed_protocol_proxy_base_url(endpoint)
             })
         {
             anyhow::bail!(
@@ -1619,12 +1629,13 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         return false;
     }
     // 存量版本以固定的保留端口识别本工具代理；不能放宽成任意 localhost。
-    if normalize_relay_endpoint(&live) == normalize_relay_endpoint(&managed_openai_base_url()) {
+    if crate::protocol_proxy::is_managed_protocol_proxy_base_url(&live) {
         return true;
     }
     let proxy_mode = profile.requires_protocol_proxy_conversion()
         || profile.has_model_routes()
         || profile.uses_no_auth()
+        || profile.uses_independent_proxy()
         || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || profile.relay_mode == RelayMode::Aggregate;
@@ -1642,6 +1653,24 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         && normalize_relay_endpoint(&profile.upstream_base_url) != normalize_relay_endpoint(&live);
     (proxy_mode && (saved_endpoint_matches || legacy_upstream_matches))
         || (saved_endpoint_matches && saved_real_upstream)
+}
+
+fn managed_proxy_base_urls_for_profile(profile: &RelayProfile) -> Vec<String> {
+    let mut known = crate::protocol_proxy::managed_protocol_proxy_base_urls();
+    // 升级前已经迁移过的版本没有历史端口文件。只从既有归属校验确认的
+    // transport 快照补回旧地址，不能单凭 root 上的任意回环地址认领它。
+    if recognized_managed_proxy_endpoint(profile, &profile.config_contents)
+        && let Some(saved) = provider_string_from_config(&profile.config_contents, "base_url")
+    {
+        known.push(saved);
+    }
+    known
+}
+
+fn saved_proxy_endpoint_has_real_upstream(profile: &RelayProfile, endpoint: &str) -> bool {
+    is_loopback_responses_endpoint(endpoint)
+        && valid_relay_endpoint(&profile.upstream_base_url)
+        && !is_loopback_responses_endpoint(&profile.upstream_base_url)
 }
 
 pub(crate) fn live_endpoint_matches_profile(profile: &RelayProfile, config: &str) -> bool {
@@ -4929,14 +4958,12 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
     }
     let has_managed_proxy_config = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|base_url| {
-            base_url.trim() == managed_openai_base_url()
-                || (is_loopback_responses_endpoint(&base_url)
-                    && valid_relay_endpoint(&profile.upstream_base_url)
-                    && normalize_relay_endpoint(&profile.upstream_base_url)
-                        != normalize_relay_endpoint(&base_url))
+            crate::protocol_proxy::is_managed_protocol_proxy_base_url(&base_url)
+                || saved_proxy_endpoint_has_real_upstream(profile, &base_url)
         });
     if profile.has_model_routes()
         || profile.uses_no_auth()
+        || profile.uses_independent_proxy()
         || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
         || has_managed_proxy_config
@@ -4945,10 +4972,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
             return profile.upstream_base_url.trim().to_string();
         }
         if !profile.base_url.trim().is_empty()
-            && profile.base_url.trim()
-                != crate::protocol_proxy::local_responses_proxy_base_url(
-                    crate::protocol_proxy::protocol_proxy_port(),
-                )
+            && !crate::protocol_proxy::is_managed_protocol_proxy_base_url(&profile.base_url)
         {
             return profile.base_url.trim().to_string();
         }
@@ -5041,11 +5065,13 @@ fn complete_relay_profile_config_with_proxy_port(
     if uses_openai_provider && profile.protocol != RelayProtocol::Responses {
         anyhow::bail!("OpenAI 会话身份仅支持 Responses API");
     }
-    update_remote_control_openai_base_url(
+    update_remote_control_openai_base_url_with_known(
         &mut doc,
         uses_openai_provider
             || (profile.relay_mode == crate::settings::RelayMode::Official
                 && profile.official_mix_api_key),
+        managed_openai_base_url(),
+        &managed_proxy_base_urls_for_profile(profile),
     );
     // `openai` is the Remote session identity, while the actual relay
     // transport remains in `model_providers.custom`.
@@ -5143,6 +5169,7 @@ fn complete_relay_profile_config_with_proxy_port(
     }
     let provider_base_url = if profile.has_model_routes()
         || profile.uses_no_auth()
+        || profile.uses_independent_proxy()
         || profile.local_compaction_prompt_at_end_enabled()
         || profile.request_compatibility_enabled()
     {
@@ -5739,6 +5766,129 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independent_proxy_routes_responses_and_preserves_the_real_upstream() {
+        let state = tempfile::tempdir().unwrap();
+        let _scope = crate::relay_proxy::ProxyPathTestScope::new(state.path());
+        let mut profile = RelayProfile {
+            id: "independent-proxy-regression".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            model: "fixture-model".to_string(),
+            base_url: "https://upstream.example/v1".to_string(),
+            api_key: "fixture-key".to_string(),
+            ..RelayProfile::default()
+        };
+        crate::relay_proxy::set_proxy_for_profile(&profile.id, "http://127.0.0.1:17890").unwrap();
+        normalize_relay_profile_for_storage(&mut profile).unwrap();
+        assert_eq!(relay_profile_base_url(&profile), "https://upstream.example/v1");
+        assert!(profile.config_contents.contains(&format!("base_url = \"{}\"", managed_openai_base_url())));
+
+        let settings = BackendSettings {
+            relay_profiles_enabled: true,
+            active_relay_id: profile.id.clone(),
+            relay_profiles: vec![profile.clone()],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        assert!(settings.active_relay_uses_protocol_proxy());
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.toml"),
+            "model_provider = 'custom'\n[model_providers.custom]\nbase_url = 'https://upstream.example/v1'\n",
+        ).unwrap();
+        assert!(ensure_active_protocol_proxy_config_in_home(home.path(), &settings).unwrap());
+        let live = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert!(live.contains(&managed_openai_base_url()));
+
+        crate::relay_proxy::set_proxy_for_profile(&profile.id, "").unwrap();
+        normalize_relay_profile_for_storage(&mut profile).unwrap();
+        assert_eq!(relay_profile_base_url(&profile), "https://upstream.example/v1");
+        assert!(profile.config_contents.contains("base_url = \"https://upstream.example/v1\""));
+        assert!(!settings.active_relay_transport_uses_protocol_proxy());
+
+        // 同一个 sidecar 配置不能接管纯官方 OAuth。
+        crate::relay_proxy::set_proxy_for_profile(&profile.id, "http://127.0.0.1:17890").unwrap();
+        profile.relay_mode = RelayMode::Official;
+        profile.official_mix_api_key = false;
+        assert!(!profile.uses_independent_proxy());
+    }
+
+    #[test]
+    fn repeated_port_migrations_rewrite_only_known_managed_openai_base_urls() {
+        let known = [57321, 58077, 58088].map(crate::protocol_proxy::local_responses_proxy_base_url);
+        let current = crate::protocol_proxy::local_responses_proxy_base_url(58099);
+        for old in &known {
+            let mut doc: DocumentMut = format!("openai_base_url = '{old}'\n").parse().unwrap();
+            update_remote_control_openai_base_url_with_known(&mut doc, true, current.clone(), &known);
+            assert_eq!(doc[OPENAI_BASE_URL_KEY].as_str(), Some(current.as_str()));
+            let mut doc: DocumentMut = format!("openai_base_url = '{old}'\n").parse().unwrap();
+            update_remote_control_openai_base_url_with_known(&mut doc, false, current.clone(), &known);
+            assert!(doc.get(OPENAI_BASE_URL_KEY).is_none());
+            let mut doc: DocumentMut = format!("openai_base_url = '{old}/'\n").parse().unwrap();
+            update_remote_control_openai_base_url_with_known(&mut doc, true, current.clone(), &known);
+            assert_eq!(doc[OPENAI_BASE_URL_KEY].as_str(), Some(current.as_str()));
+        }
+        for custom in ["http://127.0.0.1:15721/v1", "http://localhost:58077/v1", "http://127.0.0.1:58077/other"] {
+            let mut doc: DocumentMut = format!("openai_base_url = '{custom}'\n").parse().unwrap();
+            update_remote_control_openai_base_url_with_known(&mut doc, true, current.clone(), &known);
+            assert_eq!(doc[OPENAI_BASE_URL_KEY].as_str(), Some(custom));
+            update_remote_control_openai_base_url_with_known(&mut doc, false, current.clone(), &known);
+            assert_eq!(doc[OPENAI_BASE_URL_KEY].as_str(), Some(custom));
+        }
+    }
+
+    #[test]
+    fn pre_history_snapshot_repairs_owned_old_port_but_preserves_custom_loopback() {
+        let old = "http://127.0.0.1:58113/v1";
+        let upstream = "https://upstream.example/v1";
+        let mut owned = RelayProfile {
+            id: "legacy-managed-port-regression".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            base_url: upstream.to_string(),
+            upstream_base_url: upstream.to_string(),
+            api_key: "fixture-key".to_string(),
+            config_contents: format!(
+                "model_provider = 'openai'\nopenai_base_url = '{old}'\n[model_providers.custom]\nbase_url = '{old}'\nwire_api = 'responses'\n"
+            ),
+            ..RelayProfile::default()
+        };
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), &owned.config_contents).unwrap();
+        let settings = BackendSettings {
+            relay_profiles_enabled: true,
+            active_relay_id: owned.id.clone(),
+            relay_profiles: vec![owned.clone()],
+            ..BackendSettings::default()
+        };
+        assert!(ensure_active_protocol_proxy_config_in_home(home.path(), &settings).unwrap());
+        let live = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert_eq!(root_key_string(&live, OPENAI_BASE_URL_KEY).as_deref(), Some(managed_openai_base_url().as_str()));
+        normalize_relay_profile_for_storage(&mut owned).unwrap();
+        assert_eq!(relay_profile_base_url(&owned), upstream);
+        assert_eq!(root_key_string(&owned.config_contents, OPENAI_BASE_URL_KEY).as_deref(), Some(managed_openai_base_url().as_str()));
+
+        // root 自定义回环 URL 与 transport 快照无关，不能借其它字段认领。
+        let mut custom_root = owned.clone();
+        custom_root.config_contents = format!(
+            "model_provider = 'openai'\nopenai_base_url = '{old}'\n[model_providers.custom]\nbase_url = '{upstream}'\nwire_api = 'responses'\n"
+        );
+        normalize_relay_profile_for_storage(&mut custom_root).unwrap();
+        assert_eq!(root_key_string(&custom_root.config_contents, OPENAI_BASE_URL_KEY).as_deref(), Some(old));
+
+        // 真正的自定义本地上游没有分离的真实 upstream，保持其 root 和 provider。
+        let mut custom_transport = owned;
+        custom_transport.base_url = old.to_string();
+        custom_transport.upstream_base_url = old.to_string();
+        custom_transport.config_contents = format!(
+            "model_provider = 'openai'\nopenai_base_url = '{old}'\n[model_providers.custom]\nbase_url = '{old}'\nwire_api = 'responses'\n"
+        );
+        normalize_relay_profile_for_storage(&mut custom_transport).unwrap();
+        assert_eq!(relay_profile_base_url(&custom_transport), old);
+        assert_eq!(root_key_string(&custom_transport.config_contents, OPENAI_BASE_URL_KEY).as_deref(), Some(old));
+    }
 
     #[test]
     fn migrated_proxy_port_rewrites_default_port_openai_base_url_only() {

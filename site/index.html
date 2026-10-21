@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,800;1,400&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=20261017-gallery-2">
+<link rel="stylesheet" href="css/style.css?v=20261021-manager-layout-1">
 </head>
 <body>
 
@@ -21,6 +21,7 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links">
+      <a href="#manager-live" data-nav>在线体验</a>
       <a href="#features" data-nav>功能</a>
       <a href="#modes" data-nav>接入方式</a>
       <a href="#showcase" data-nav>实拍</a>
@@ -53,6 +54,7 @@
   </div>
 
   <div class="hero-inner">
+    <div class="hero-copy">
     <p class="eyebrow reveal"><span class="pulse-dot"></span>YOUR CODEX, UPGRADED — 开源 · 本地 · Rust + Tauri</p>
     <h1 class="hero-title">
       <span class="line"><span class="w">让</span> <span class="w">Codex</span></span>
@@ -75,6 +77,12 @@
       <div class="stat"><dt class="mono" data-count="1" data-format="m">0</dt><dd>单模型最大上下文窗口</dd></div>
       <div class="stat"><dt class="mono">0</dt><dd>对官方应用的文件改动</dd></div>
     </dl>
+    </div>
+    <div class="hero-manager" id="manager-live">
+      <div class="hero-manager-window">
+        <iframe title="Codex++ 管理器真实前端交互演示" src="manager-preview/?previewRoute=enhance&amp;lang=zh" loading="eager"></iframe>
+      </div>
+    </div>
   </div>
 
   <a class="scroll-cue" href="#demo" data-nav aria-label="向下滚动">
@@ -169,6 +177,11 @@
       <h3>API Key 也能用原生 Fast</h3>
       <p>纯 API Key 模式恢复 Codex 的原生 Fast 开关，沿用 Standard / ⚡ Fast 控件。默认关闭，模型需声明 Fast（priority）支持；实际可用性与计费由供应商决定。</p>
     </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">12</span>
+      <h3>请求避震</h3>
+      <p>模型容量/过载错误（server_overloaded、server_is_overloaded、at capacity）在代理层自动退避重试，不再频繁打断 Codex 会话。状态行显示请求阶段、模型、耗时、重试次数与上一次失败原因；流式避震保留实时输出，整段缓冲避震则在任何时点吸收过载。</p>
+    </article>
   </div>
 </section>
 
@@ -212,7 +225,7 @@
     <div class="section-head">
       <p class="eyebrow">SHOWCASE · 真实截图</p>
       <h2>所见，<em>即所得</em></h2>
-      <p class="section-sub">以下全部是 Codex++ 的真实界面。点选缩略图切换预览，点击大图查看原图。</p>
+      <p class="section-sub">以下包含 Codex++ 的真实界面与功能介绍图。点选缩略图切换预览，点击大图查看原图。</p>
     </div>
     <div class="showcase-track" id="showcaseTrack">
       <figure class="shot shot-agent" id="agent-collaboration">
@@ -236,6 +249,14 @@
       <figure class="shot">
         <a class="shot-frame shot-preview" href="assets/extension-market.png" target="_blank" rel="noopener"><img src="assets/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" loading="lazy"></a>
         <figcaption><b>拓展市场</b><span>社区脚本即装即用：用量面板、模型矩阵、提示词优化。</span></figcaption>
+      </figure>
+      <figure class="shot shot-feature">
+        <a class="shot-frame shot-preview" href="assets/request-status-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-status-auto-retry.png" alt="请求状态与自动重试：展示发送请求、模型繁忙后自动等待、重试成功并继续生成的流程，以及重试次数和上一次过载原因" loading="lazy"></a>
+        <figcaption><b>请求状态与自动重试</b><span>模型繁忙时自动等待并重试，状态行显示当前进度与失败原因。</span></figcaption>
+      </figure>
+      <figure class="shot shot-feature">
+        <a class="shot-frame shot-preview" href="assets/request-log-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-log-auto-retry.png" alt="请求日志与自动重试：实时显示进行中的请求、模型已满、自动重试次数和重试成功结果" loading="lazy"></a>
+        <figcaption><b>请求日志与自动重试</b><span>实时看到进行中的请求；模型已满时自动重试并记录每次结果。</span></figcaption>
       </figure>
       <figure class="shot">
         <a class="shot-frame shot-preview" href="assets/usage-statusline.png" target="_blank" rel="noopener"><img src="assets/usage-statusline.png" alt="输入框下方的用量状态栏：51 tok/s、缓存命中 99.9%、上下文占用 19%" loading="lazy"></a>
@@ -394,7 +415,7 @@ your-model<span class="t-hl">[128000]</span>
       <p>感谢以下赞助商对项目的支持。服务范围、价格与活动以各平台官网说明为准。</p>
       <p class="sponsor-meta">
         <span data-sponsor-status>赞助商列表加载中…</span>
-        <a href="https://github.com/BigPizzaV3/Ad-List" target="_blank" rel="noopener">列表自动更新 · 查看来源 ↗</a>
+        <a href="https://ads.codexpp.cc/ads.json" target="_blank" rel="noopener">列表自动更新 · 查看来源 ↗</a>
       </p>
     </div>
     <div id="sponsorTop"></div>

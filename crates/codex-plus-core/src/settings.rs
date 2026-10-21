@@ -357,6 +357,12 @@ impl RelayProfile {
         self.relay_mode == RelayMode::PureApi && self.no_auth
     }
 
+    /// 独立代理由本地转发层消费；纯官方 OAuth 不接管其网络请求。
+    pub fn uses_independent_proxy(&self) -> bool {
+        (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+            && crate::relay_proxy::configured_proxy_for_profile(&self.id).is_some()
+    }
+
     pub fn local_compaction_prompt_at_end_enabled(&self) -> bool {
         self.local_compaction_prompt_at_end
             && matches!(self.protocol, RelayProtocol::Responses | RelayProtocol::ChatCompletions)
@@ -913,6 +919,44 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
+    /// 协议代理自动重试：上游瞬时失败（连接失败、408/429/5xx）先在本地代理内部
+    /// 退避重试，不立刻把错误交给 Codex。只影响经过本地协议代理的请求。
+    /// 默认开启：用户看到的失败横幅会显著减少；关闭后恢复「失败立即返回」行为。
+    #[serde(rename = "protocolProxyAutoRetry", default = "default_true")]
+    pub protocol_proxy_auto_retry: bool,
+    /// 最多自动重试次数（不含首次请求）。0 与关闭开关等价。
+    #[serde(
+        rename = "protocolProxyAutoRetryMaxAttempts",
+        default = "default_protocol_proxy_auto_retry_max_attempts"
+    )]
+    pub protocol_proxy_auto_retry_max_attempts: u32,
+    /// 首次重试等待秒数；之后按 2 倍指数退避，单次上限 30 秒。
+    #[serde(
+        rename = "protocolProxyAutoRetryIntervalSeconds",
+        default = "default_protocol_proxy_auto_retry_interval_seconds"
+    )]
+    pub protocol_proxy_auto_retry_interval_seconds: u64,
+    /// 过载错误处理模式：
+    /// - `streaming`（默认，流式；推理/工具调用参数先缓冲，首段可见输出后再等
+    ///   `protocolProxyAutoRetryCommitDelayMs`，窗口内仍由代理重试）；
+    /// - `streaming-legacy`（旧流式：遇到第一个输出事件立即提交，不再为工具
+    ///   参数或首字窗口缓冲）；
+    /// - `buffered`（整段缓冲后转发；任何时点的过载都由代理重试，但失去流式）。
+    #[serde(
+        rename = "protocolProxyAutoRetryMode",
+        default = "default_protocol_proxy_auto_retry_mode"
+    )]
+    pub protocol_proxy_auto_retry_mode: String,
+    /// 流式避震的「首字提交延迟」：出现第一段可见输出后，代理继续缓冲多少毫秒
+    /// 再交给 Codex。窗口内遇到容量/过载错误仍可丢弃重试；0 表示一出现可见输出
+    /// 就提交。推理与工具调用参数阶段本来就不向客户端提交，不占这个延迟，所以
+    /// 工具调用可以整项缓冲到完成后再提交。注意 `streaming-legacy` 模式忽略该
+    /// 字段，始终保持旧行为。
+    #[serde(
+        rename = "protocolProxyAutoRetryCommitDelayMs",
+        default = "default_protocol_proxy_auto_retry_commit_delay_ms"
+    )]
+    pub protocol_proxy_auto_retry_commit_delay_ms: u64,
     /// 按工具分区的配置。`tools.codex` 是上面那批扁平字段的镜像（写盘时同步），
     /// 其它工具（Grok / 后续工具）只存在这里。见 `crate::tools`。
     #[serde(rename = "tools", default)]
@@ -1011,6 +1055,14 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
+            protocol_proxy_auto_retry: true,
+            protocol_proxy_auto_retry_max_attempts:
+                default_protocol_proxy_auto_retry_max_attempts(),
+            protocol_proxy_auto_retry_interval_seconds:
+                default_protocol_proxy_auto_retry_interval_seconds(),
+            protocol_proxy_auto_retry_mode: default_protocol_proxy_auto_retry_mode(),
+            protocol_proxy_auto_retry_commit_delay_ms:
+                default_protocol_proxy_auto_retry_commit_delay_ms(),
             tools: BTreeMap::new(),
             active_tool: ToolId::Codex,
         }
@@ -1196,6 +1248,7 @@ impl BackendSettings {
             || self.active_relay_profile().requires_protocol_proxy_conversion()
             || self.active_relay_profile().has_model_routes()
             || self.active_relay_profile().uses_no_auth()
+            || self.active_relay_profile().uses_independent_proxy()
             || self.active_relay_profile().local_compaction_prompt_at_end_enabled()
             || self.active_relay_profile().request_compatibility_enabled()
     }
@@ -1438,6 +1491,47 @@ pub fn default_active_relay_id() -> String {
 
 pub fn default_relay_test_model() -> String {
     "gpt-5.4-mini".to_string()
+}
+
+/// 协议代理默认最多自动重试 5 次：2+4+8+16+30 秒封顶，合计约 60 秒。
+pub fn default_protocol_proxy_auto_retry_max_attempts() -> u32 {
+    5
+}
+
+pub fn clamp_protocol_proxy_auto_retry_max_attempts(value: u32) -> u32 {
+    value.min(20)
+}
+
+pub fn default_protocol_proxy_auto_retry_interval_seconds() -> u64 {
+    2
+}
+
+pub fn clamp_protocol_proxy_auto_retry_interval_seconds(value: u64) -> u64 {
+    value.min(30)
+}
+
+pub fn default_protocol_proxy_auto_retry_mode() -> String {
+    "streaming".to_string()
+}
+
+pub fn normalize_protocol_proxy_auto_retry_mode(value: &str) -> String {
+    match value.trim() {
+        "buffered" => "buffered".to_string(),
+        // 旧版「流式」行为保留为独立选项，方便随时退回。
+        "streaming-legacy" => "streaming-legacy".to_string(),
+        _ => default_protocol_proxy_auto_retry_mode(),
+    }
+}
+
+/// 流式避震默认在首段可见输出后再缓冲 1 秒：能覆盖「刚开始吐字上游就过载」
+/// 这一大类，首字延迟仍控制在 1 秒内；短回复在 response.completed 到达时
+/// 立即提交，不会白等满 1 秒。
+pub fn default_protocol_proxy_auto_retry_commit_delay_ms() -> u64 {
+    1000
+}
+
+pub fn clamp_protocol_proxy_auto_retry_commit_delay_ms(value: u64) -> u64 {
+    value.min(10_000)
 }
 
 pub fn default_relay_profiles() -> Vec<RelayProfile> {
@@ -2034,6 +2128,47 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
+    }
+    // 协议代理自动重试：管理器整份保存也会经过 normalize，这里补上部分更新路径，
+    // 保证任何走 /settings/set 的调用都不会被静默丢弃。
+    merge_bool_setting(target, source, "protocolProxyAutoRetry");
+    if let Some(value) = source
+        .get("protocolProxyAutoRetryMaxAttempts")
+        .and_then(Value::as_u64)
+    {
+        target.insert(
+            "protocolProxyAutoRetryMaxAttempts".to_string(),
+            Value::from(clamp_protocol_proxy_auto_retry_max_attempts(
+                value as u32,
+            )),
+        );
+    }
+    if let Some(value) = source
+        .get("protocolProxyAutoRetryIntervalSeconds")
+        .and_then(Value::as_u64)
+    {
+        target.insert(
+            "protocolProxyAutoRetryIntervalSeconds".to_string(),
+            Value::from(clamp_protocol_proxy_auto_retry_interval_seconds(value)),
+        );
+    }
+    if let Some(value) = source
+        .get("protocolProxyAutoRetryMode")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "protocolProxyAutoRetryMode".to_string(),
+            Value::String(normalize_protocol_proxy_auto_retry_mode(value)),
+        );
+    }
+    if let Some(value) = source
+        .get("protocolProxyAutoRetryCommitDelayMs")
+        .and_then(Value::as_u64)
+    {
+        target.insert(
+            "protocolProxyAutoRetryCommitDelayMs".to_string(),
+            Value::from(clamp_protocol_proxy_auto_retry_commit_delay_ms(value)),
+        );
     }
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
@@ -2779,6 +2914,18 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
+    settings.protocol_proxy_auto_retry_max_attempts =
+        clamp_protocol_proxy_auto_retry_max_attempts(settings.protocol_proxy_auto_retry_max_attempts);
+    settings.protocol_proxy_auto_retry_interval_seconds =
+        clamp_protocol_proxy_auto_retry_interval_seconds(
+            settings.protocol_proxy_auto_retry_interval_seconds,
+        );
+    settings.protocol_proxy_auto_retry_mode =
+        normalize_protocol_proxy_auto_retry_mode(&settings.protocol_proxy_auto_retry_mode);
+    settings.protocol_proxy_auto_retry_commit_delay_ms =
+        clamp_protocol_proxy_auto_retry_commit_delay_ms(
+            settings.protocol_proxy_auto_retry_commit_delay_ms,
+        );
     // 扁平字段始终是 Codex 的唯一事实来源，这里把它镜像进 tools.codex；
     // 其它工具的分片原样保留。放在函数末尾，所有 load / save / update 路径
     // 都会经过，两边不会漂移。

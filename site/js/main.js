@@ -435,6 +435,7 @@
     if (!grid) return;
 
     var REMOTE = [
+      "https://ads.codexpp.cc/ads.json",
       "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
       "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json"
     ];

@@ -14,6 +14,58 @@ use std::path::{Path, PathBuf};
 mod session_paging;
 pub use session_paging::{LocalSessionPage, LocalSessionPager};
 
+/// 按线程/会话 id 批量查询标题（只读、best-effort，供请求日志等展示用）。
+///
+/// 只用于展示：库打不开、schema 不支持或字段缺失都跳过，返回已查到的部分。
+pub fn local_session_titles(
+    db_paths: &[PathBuf],
+    ids: &[String],
+) -> std::collections::HashMap<String, String> {
+    let wanted: Vec<&str> = ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let mut titles = std::collections::HashMap::new();
+    if wanted.is_empty() {
+        return titles;
+    }
+    for db_path in db_paths {
+        if !db_path.exists() {
+            continue;
+        }
+        let Ok(db) = Connection::open(db_path) else {
+            continue;
+        };
+        let Ok(query) = session_paging::session_query(&db) else {
+            continue;
+        };
+        for chunk in wanted.chunks(200) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!("SELECT id, title FROM ({query}) WHERE id IN ({placeholders})");
+            let Ok(mut statement) = db.prepare(&sql) else {
+                continue;
+            };
+            let Ok(rows) = statement.query_map(
+                rusqlite::params_from_iter(chunk.iter().copied()),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            ) else {
+                continue;
+            };
+            for row in rows.flatten() {
+                let (id, title) = row;
+                let title = title.trim();
+                if !title.is_empty() {
+                    titles.entry(id).or_insert_with(|| title.to_string());
+                }
+            }
+        }
+    }
+    titles
+}
+
 pub fn delete_local_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
     backup_store: BackupStore,
@@ -1106,9 +1158,15 @@ fn read_rollout_usage_tail(rollout: &Path, limit: usize) -> anyhow::Result<Vec<V
         let start = len.saturating_sub(window);
         let mut events = Vec::new();
         read_rollout_usage_window(&file, start, limit, &mut events)?;
-        // 至少两条事件渲染侧才算得出生成速度；不够就放大窗口重读一次。
+        // 至少两条事件渲染侧才算得出生成速度。还要找到真实轮边界：
+        // total_token_usage 是会话累计，不能靠输出计数回落判断换轮。
+        let latest_turn_known = events
+            .last()
+            .and_then(|event| event.get("turn_id"))
+            .and_then(Value::as_str)
+            .is_some();
         // 到顶或已经从头开始读时不再尝试，避免退化成整文件解析。
-        if events.len() >= 2 || start == 0 || window >= USAGE_TAIL_MAX_BYTES {
+        if events.len() >= 2 && latest_turn_known || start == 0 || window >= USAGE_TAIL_MAX_BYTES {
             return Ok(events);
         }
         window = (window * 4).min(USAGE_TAIL_MAX_BYTES);
@@ -1131,16 +1189,67 @@ fn read_rollout_usage_window(
     if start > 0 {
         lines.next();
     }
+    let mut current_turn_id: Option<String> = None;
+    let mut segment_start = 0;
     for line in lines {
         let line = line.trim();
         // 先做子串预筛，避免为每条 response_item 付 serde 解析成本。
-        if line.is_empty() || !line.contains("\"token_count\"") {
+        if line.is_empty()
+            || !["\"event_msg\"", "\"turn_context\""]
+                .iter()
+                .any(|kind| line.contains(kind))
+        {
             continue;
         }
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if let Some(event) = rollout_usage_event(&value) {
+        let kind = value.get("type").and_then(Value::as_str);
+        let payload = &value["payload"];
+        let event_type = payload.get("type").and_then(Value::as_str);
+        let turn_id = payload
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        if kind == Some("turn_context") {
+            // 老版本上下文没有 id 时，保留本轮 task_started 已经确认的归属。
+            if let Some(id) = turn_id {
+                if current_turn_id.as_deref() != Some(id) {
+                    segment_start = out.len();
+                    current_turn_id = Some(id.to_owned());
+                }
+            }
+            continue;
+        }
+        if kind != Some("event_msg") {
+            continue;
+        }
+        match event_type {
+            // Codex v1 持久化名称为 task_*，turn_* 是新版协议的别名。
+            Some("task_started" | "turn_started") => {
+                segment_start = out.len();
+                current_turn_id = turn_id.map(str::to_owned);
+                continue;
+            }
+            Some(
+                "task_complete" | "turn_complete" | "turn_completed" | "task_failed"
+                | "turn_aborted" | "task_aborted",
+            ) => {
+                // 起始标记可能在尾部窗口之外，结束标记仍可确认它前面的用量归属。
+                if let Some(id) = turn_id {
+                    for event in &mut out[segment_start..] {
+                        if event.get("turn_id").is_none() {
+                            event["turn_id"] = json!(id);
+                        }
+                    }
+                }
+                segment_start = out.len();
+                current_turn_id = None;
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(event) = rollout_usage_event(&value, current_turn_id.as_deref()) {
             out.push(event);
         }
     }
@@ -1150,7 +1259,7 @@ fn read_rollout_usage_window(
     Ok(())
 }
 
-fn rollout_usage_event(value: &Value) -> Option<Value> {
+fn rollout_usage_event(value: &Value, turn_id: Option<&str>) -> Option<Value> {
     if value.get("type").and_then(Value::as_str) != Some("event_msg") {
         return None;
     }
@@ -1173,7 +1282,7 @@ fn rollout_usage_event(value: &Value) -> Option<Value> {
     if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 {
         return None;
     }
-    Some(json!({
+    let mut event = json!({
         "t": value.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
         // 本次模型调用的用量：上下文占用取 total_tokens / context_window。
         "input_tokens": input_tokens,
@@ -1182,9 +1291,13 @@ fn rollout_usage_event(value: &Value) -> Option<Value> {
         "reasoning_output_tokens": field(Some(last), "reasoning_output_tokens"),
         "total_tokens": total_tokens,
         "context_window": field(Some(info), "model_context_window"),
-        // 本轮累计输出：换轮时它会回落，渲染侧靠这个切段算生成速度。
+        // 历史字段名，实际是会话累计输出；必须结合 turn_id 才能计算同轮速度。
         "turn_output_tokens": field(total, "output_tokens"),
-    }))
+    });
+    if let Some(id) = turn_id {
+        event["turn_id"] = json!(id);
+    }
+    Some(event)
 }
 
 fn failed_with_undo(
@@ -1920,6 +2033,65 @@ pub(crate) fn json_to_sql_value(value: &Value) -> SqlValue {
         }
         Value::String(value) => SqlValue::Text(value.clone()),
         other => SqlValue::Text(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod local_session_title_tests {
+    use super::*;
+
+    #[test]
+    fn looks_up_titles_by_thread_id_across_databases() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("state_5.sqlite");
+        let second = temp.path().join("other.sqlite");
+        {
+            let db = Connection::open(&first).unwrap();
+            db.execute_batch(
+                "CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    cwd TEXT,
+                    model_provider TEXT,
+                    archived INTEGER DEFAULT 0,
+                    updated_at_ms INTEGER,
+                    rollout_path TEXT
+                 );
+                 INSERT INTO threads (id, title, updated_at_ms) VALUES
+                    ('t-1', '会话标题一', 1),
+                    ('t-2', '', 2);",
+            )
+            .unwrap();
+        }
+        {
+            let db = Connection::open(&second).unwrap();
+            db.execute_batch(
+                "CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    updated_at_ms INTEGER,
+                    rollout_path TEXT
+                 );
+                 INSERT INTO threads (id, title, updated_at_ms) VALUES ('t-3', '会话标题三', 3);",
+            )
+            .unwrap();
+        }
+
+        let titles = local_session_titles(
+            &[first, second],
+            &[
+                "t-1".to_string(),
+                "t-2".to_string(),
+                "t-3".to_string(),
+                "missing".to_string(),
+            ],
+        );
+        assert_eq!(titles.get("t-1").map(String::as_str), Some("会话标题一"));
+        // 空标题视为未知，让前端继续显示短 id。
+        assert!(!titles.contains_key("t-2"));
+        assert_eq!(titles.get("t-3").map(String::as_str), Some("会话标题三"));
+        assert!(!titles.contains_key("missing"));
+        assert!(local_session_titles(&[], &[]).is_empty());
     }
 }
 

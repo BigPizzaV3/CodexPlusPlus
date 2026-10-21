@@ -1011,7 +1011,7 @@ fn injection_script_fetches_ads_without_bridge() {
     assert!(script.contains("directFetchCodexPlusAds"));
     assert!(script.contains("cacheBustCodexPlusAdUrl"));
     assert!(script.contains("Date.now()"));
-    assert!(script.contains("BigPizzaV3/Ad-List"));
+    assert!(script.contains("ads.codexpp.cc/ads.json"));
     assert!(!script.contains("codexPlusAds = normalizeCodexPlusAds(await postJson(\"/ads\", {}));"));
 }
 

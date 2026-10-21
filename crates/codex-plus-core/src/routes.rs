@@ -450,6 +450,27 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
         }
+        "/proxy-status" => {
+            // 代理进程的实时请求状态只存在管理器内存里；桥接进程通过本地 helper
+            // 的只读路由取一份快照，供 Codex 页面里的状态条轮询。
+            let client = reqwest::Client::new();
+            match client
+                .post("http://127.0.0.1:57321/proxy-status")
+                .json(&serde_json::json!({}))
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await
+            {
+                Ok(response) => response
+                    .json::<Value>()
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.to_string())),
+                Err(error) => Ok(serde_json::json!({
+                    "status": "failed",
+                    "message": error.to_string()
+                })),
+            }
+        }
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.unknown_path",

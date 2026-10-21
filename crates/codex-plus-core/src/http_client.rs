@@ -89,14 +89,7 @@ pub fn proxied_client_for_profile(
     user_agent: &str,
     profile_id: &str,
 ) -> anyhow::Result<reqwest::Client> {
-    let suffix = profile_id
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_uppercase() } else { '_' })
-        .collect::<String>();
-    let key = format!("CODEX_PLUS_PROXY_{suffix}");
-    let proxy = crate::relay_proxy::proxy_for_profile(profile_id)
-        .or_else(|| std::env::var(key).ok())
-        .or_else(|| std::env::var("CODEX_PLUS_PROXY").ok());
+    let proxy = crate::relay_proxy::configured_proxy_for_profile(profile_id);
     build_proxied_client(user_agent, proxy.as_deref())
 }
 

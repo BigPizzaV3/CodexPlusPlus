@@ -153,6 +153,12 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
       按需解锁 Codex 原生 Standard / Fast 控件。默认关闭；为模型配置 Fast（priority）支持后，使用供应商提供的优先服务等级，实际支持与计费以供应商为准。
     </td>
   </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <h3>🛡️ 请求避震</h3>
+      在代理层吸收上游过载：模型容量/过载错误（server_overloaded、server_is_overloaded、at capacity 等）自动退避重试。流式避震保留实时输出；整段缓冲避震先收完整段响应再转发，任何时点的过载都由代理重试。可在「代理设置 → 请求避震」切换，请求日志实时显示进行中请求、首字耗时与完整耗时。
+    </td>
+  </tr>
 </table>
 
 另外，微信连接支持扫码连接本机 Codex，每个联系人映射到独立会话，并可配置允许访问的微信用户。

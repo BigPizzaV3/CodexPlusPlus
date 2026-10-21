@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,800;1,400&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=20261017-gallery-2">
+<link rel="stylesheet" href="css/style.css?v=20261021-manager-layout-1">
 </head>
 <body>
 
@@ -20,6 +20,7 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links">
+      <a href="#manager-live" data-nav>Live UI</a>
       <a href="#features" data-nav>Features</a>
       <a href="#modes" data-nav>Modes</a>
       <a href="#showcase" data-nav>Showcase</a>
@@ -51,6 +52,7 @@
   </div>
 
   <div class="hero-inner">
+    <div class="hero-copy">
     <p class="eyebrow reveal"><span class="pulse-dot"></span>YOUR CODEX, UPGRADED — OPEN SOURCE · LOCAL · RUST + TAURI</p>
     <h1 class="hero-title">
       <span class="line"><span class="w">Make</span> <span class="w">Codex</span></span>
@@ -73,6 +75,12 @@
       <div class="stat"><dt class="mono" data-count="1" data-format="m">0</dt><dd>Max per-model context</dd></div>
       <div class="stat"><dt class="mono">0</dt><dd>Files patched in the official app</dd></div>
     </dl>
+    </div>
+    <div class="hero-manager" id="manager-live">
+      <div class="hero-manager-window">
+        <iframe title="Codex++ manager live frontend demo" src="manager-preview/?previewRoute=enhance&amp;lang=en" loading="eager"></iframe>
+      </div>
+    </div>
   </div>
 
   <a class="scroll-cue" href="#demo" data-nav aria-label="Scroll down">
@@ -165,6 +173,11 @@
       <h3>Native Fast with an API key</h3>
       <p>Restore the native Fast switch in API-only mode and use Codex's own Standard / ⚡ Fast controls. Off by default; the model must declare Fast (priority) support. Availability and billing depend on your provider.</p>
     </article>
+    <article class="fcard tilt">
+      <span class="fcard-no mono">12</span>
+      <h3>Request shock absorption</h3>
+      <p>Absorb model capacity/overload errors (server_overloaded, server_is_overloaded, at capacity) at the proxy with backoff retries so Codex sessions are interrupted less often. The status line shows the request phase, model, elapsed time, retry count and last failure reason; streaming mode keeps live output while buffered mode absorbs overloads at any point.</p>
+    </article>
   </div>
 </section>
 
@@ -206,7 +219,7 @@
     <div class="section-head">
       <p class="eyebrow">SHOWCASE · REAL UI</p>
       <h2>What you see <em>is what ships</em></h2>
-      <p class="section-sub">Real Codex++ screenshots. Select a thumbnail to preview; click the large image to view it full size.</p>
+      <p class="section-sub">Real Codex++ UI and feature graphics. Select a thumbnail to preview; click the large image to view it full size.</p>
     </div>
     <div class="showcase-track" id="showcaseTrack">
       <figure class="shot shot-agent" id="agent-collaboration">
@@ -230,6 +243,14 @@
       <figure class="shot">
         <a class="shot-frame shot-preview" href="assets/extension-market.png" target="_blank" rel="noopener"><img src="assets/extension-market.png" alt="Codex++ extension marketplace: community scripts and workflow tools" loading="lazy"></a>
         <figcaption><b>Extension market</b><span>Install community scripts in one click: usage panels, model matrix, prompt tools.</span></figcaption>
+      </figure>
+      <figure class="shot shot-feature">
+        <a class="shot-frame shot-preview" href="assets/request-status-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-status-auto-retry.png" alt="Request status and automatic retry: send a request, wait while the model is busy, then resume generation after a successful retry" loading="lazy"></a>
+        <figcaption><b>Request status and automatic retry</b><span>Wait and retry automatically when the model is busy, with progress and the last failure reason shown inline.</span></figcaption>
+      </figure>
+      <figure class="shot shot-feature">
+        <a class="shot-frame shot-preview" href="assets/request-log-auto-retry.png" target="_blank" rel="noopener"><img src="assets/request-log-auto-retry.png" alt="Request log and automatic retry: see in-flight requests, model capacity errors, retry counts and successful recovery in real time" loading="lazy"></a>
+        <figcaption><b>Request log and automatic retry</b><span>See in-flight requests in real time and follow every retry when a model is at capacity.</span></figcaption>
       </figure>
       <figure class="shot">
         <a class="shot-frame shot-preview" href="assets/usage-statusline.png" target="_blank" rel="noopener"><img src="assets/usage-statusline.png" alt="Usage status line: 51 tok/s, 99.9% cache hits, 19% context" loading="lazy"></a>
@@ -383,7 +404,7 @@ your-model<span class="t-hl">[128000]</span>
       <p>Refer to each provider's official website for services, prices and offers.</p>
       <p class="sponsor-meta">
         <span data-sponsor-status>Loading sponsors…</span>
-        <a href="https://github.com/BigPizzaV3/Ad-List" target="_blank" rel="noopener">Auto-updated list · View source ↗</a>
+        <a href="https://ads.codexpp.cc/ads.json" target="_blank" rel="noopener">Auto-updated list · View source ↗</a>
       </p>
     </div>
     <div id="sponsorTop"></div>
