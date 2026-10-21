@@ -1,7 +1,9 @@
+use crate::rollout_source;
 use codex_plus_core::models::{ExportResult, ExportStatus, SessionRef};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 pub fn export_markdown_from_paths(
@@ -71,12 +73,12 @@ impl MarkdownExportService {
             else {
                 return Ok(failed(&thread_id, "会话缺少 rollout 文件路径"));
             };
-            if !rollout_path.is_file() {
+            let Some(rollout_path) = rollout_source::resolve(&rollout_path) else {
                 return Ok(failed(
                     &thread_id,
                     format!("rollout 文件不存在：{}", rollout_path.to_string_lossy()),
                 ));
-            }
+            };
             let messages = load_messages(&rollout_path)?;
             if messages.is_empty() {
                 return Ok(failed(&thread_id, "未找到可导出的用户或助手消息"));
@@ -223,7 +225,7 @@ fn collect_jsonl_files(dir: &Path, output: &mut Vec<PathBuf>) -> anyhow::Result<
         let path = entry?.path();
         if path.is_dir() {
             collect_jsonl_files(&path, output)?;
-        } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+        } else if rollout_source::is_rollout(&path) {
             output.push(path);
         }
     }
@@ -231,11 +233,13 @@ fn collect_jsonl_files(dir: &Path, output: &mut Vec<PathBuf>) -> anyhow::Result<
 }
 
 fn rollout_matches_thread(path: &Path, thread_id: &str) -> anyhow::Result<bool> {
-    for raw in fs::read_to_string(path)?.lines() {
+    let mut matches = false;
+    for raw in BufReader::new(rollout_source::open(path)?).lines() {
+        let raw = raw?;
         if raw.trim().is_empty() {
             continue;
         }
-        let Ok(event) = serde_json::from_str::<Value>(raw) else {
+        let Ok(event) = serde_json::from_str::<Value>(&raw) else {
             continue;
         };
         if event.get("type") != Some(&Value::String("session_meta".to_string())) {
@@ -249,10 +253,10 @@ fn rollout_matches_thread(path: &Path, thread_id: &str) -> anyhow::Result<bool> 
             .map(normalize_session_id)
             .unwrap_or_default();
         if id == thread_id {
-            return Ok(true);
+            matches = true;
         }
     }
-    Ok(false)
+    Ok(matches)
 }
 
 fn has_columns(db: &Connection, table: &str, columns: &[&str]) -> anyhow::Result<bool> {
@@ -286,11 +290,12 @@ fn table_columns(db: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
 
 fn load_messages(path: &Path) -> anyhow::Result<Vec<Message>> {
     let mut messages = Vec::new();
-    for raw in fs::read_to_string(path)?.lines() {
+    for raw in BufReader::new(rollout_source::open(path)?).lines() {
+        let raw = raw?;
         if raw.trim().is_empty() {
             continue;
         }
-        let event: Value = serde_json::from_str(raw)?;
+        let event: Value = serde_json::from_str(&raw)?;
         if event.get("type") != Some(&Value::String("response_item".to_string())) {
             continue;
         }

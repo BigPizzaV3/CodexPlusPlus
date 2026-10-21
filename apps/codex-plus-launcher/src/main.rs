@@ -803,30 +803,99 @@ where
     }
 }
 
+fn should_run_automatic_index_repair(
+    settings: &codex_plus_core::settings::BackendSettings,
+    check_setting: bool,
+) -> bool {
+    // 保留旧配置启动同步后的首次检查；显式索引开关始终优先。
+    settings.session_index_auto_repair_enabled.unwrap_or_else(|| {
+        !check_setting || settings.effective_session_index_auto_repair_enabled()
+    })
+}
+
+async fn run_catalog_before_message<C, M, R, T>(
+    catalog: C,
+    report_catalog: impl FnOnce(anyhow::Result<R>),
+    message: M,
+) -> anyhow::Result<T>
+where
+    C: std::future::Future<Output = anyhow::Result<R>>,
+    M: std::future::Future<Output = anyhow::Result<T>>,
+{
+    // catalog 的业务失败或阻塞任务异常由独立报告消费，不能短路消息扫描。
+    report_catalog(catalog.await);
+    message.await
+}
+
+fn log_automatic_catalog_recovery(result: anyhow::Result<codex_plus_data::ProviderSyncResult>) {
+    let (event, details) = match result {
+        Ok(result) => {
+            let event = match &result.status {
+                codex_plus_data::ProviderSyncStatus::Synced => {
+                    "launcher.session_catalog_recovery.completed"
+                }
+                codex_plus_data::ProviderSyncStatus::Skipped
+                | codex_plus_data::ProviderSyncStatus::Disabled => {
+                    "launcher.session_catalog_recovery.skipped"
+                }
+                _ => "launcher.session_catalog_recovery.failed",
+            };
+            (
+                event,
+                json!({
+                    "status": result.status,
+                    "message": result.message,
+                    "catalog_rows_inserted": result.sqlite_catalog_rows_inserted,
+                    "recovery_errors": result.recovery_errors,
+                }),
+            )
+        }
+        Err(error) => (
+            "launcher.session_catalog_recovery.failed",
+            json!({ "message": error.to_string() }),
+        ),
+    };
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(event, details);
+}
+
 async fn repair_session_index_automatically(check_setting: bool) {
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        if check_setting
-            && !codex_plus_core::settings::SettingsStore::default()
-                .load()?
-                .provider_sync_enabled
-        {
+    let result: anyhow::Result<()> = async {
+        let enabled = tokio::task::spawn_blocking(move || {
+            let settings = codex_plus_core::settings::SettingsStore::default().load()?;
+            Ok::<_, anyhow::Error>(should_run_automatic_index_repair(&settings, check_setting))
+        })
+        .await??;
+        if !enabled {
             return Ok(());
         }
-        let report = codex_plus_data::repair_session_index(None)?;
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "launcher.session_index_repair.completed",
-            json!({
-                "elapsed_ms": report.elapsed_ms,
-                "scanned_files": report.scanned_files,
-                "cached_files": report.cached_files,
-                "repaired_items": report.repaired_items,
-            }),
-        );
-        Ok(())
-    })
-    .await
-    .map_err(anyhow::Error::from)
-    .and_then(|result| result);
+        run_catalog_before_message(
+            async {
+                Ok(tokio::task::spawn_blocking(|| {
+                    codex_plus_data::provider_sync::run_online_session_catalog_recovery(None)
+                })
+                .await?)
+            },
+            log_automatic_catalog_recovery,
+            async {
+                tokio::task::spawn_blocking(|| -> anyhow::Result<()> {
+                    let report = codex_plus_data::repair_session_index(None)?;
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "launcher.session_index_repair.completed",
+                        json!({
+                            "elapsed_ms": report.elapsed_ms,
+                            "scanned_files": report.scanned_files,
+                            "cached_files": report.cached_files,
+                            "repaired_items": report.repaired_items,
+                        }),
+                    );
+                    Ok(())
+                })
+                .await?
+            },
+        )
+        .await
+    }
+    .await;
     if let Err(error) = result {
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
             "launcher.session_index_repair.failed",
@@ -837,8 +906,8 @@ async fn repair_session_index_automatically(check_setting: bool) {
 
 /// 「激活已有实例」路径上的供应商同步。
 ///
-/// 与完整启动流程保持一致：仅在设置里启用了供应商同步时执行，
-/// 前后各取一次 app state 快照；此路径没有启动后 monitor，因此在这里修复索引。
+/// 供应商同步与索引检查各自遵循开关；供应商同步前后保留 app state 快照。
+/// 此路径没有启动后 monitor，因此在这里等待索引检查完成。
 /// 同步失败只记日志——用户这次点击
 /// 的诉求是把已有窗口拉到前台，不能因为同步失败就整个中止。
 async fn run_activation_provider_sync(
@@ -846,6 +915,7 @@ async fn run_activation_provider_sync(
     settings: &codex_plus_core::settings::BackendSettings,
 ) {
     if !settings.provider_sync_enabled {
+        repair_session_index_automatically(true).await;
         return;
     }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
@@ -1885,6 +1955,93 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_catalog_and_message_share_the_index_setting_gate() {
+        let source = include_str!("main.rs");
+        let start = source.find("async fn repair_session_index_automatically(").unwrap();
+        let body = &source[start..source[start..].find("/// 「激活已有实例」").unwrap() + start];
+        let disabled = body.find("if !enabled").unwrap();
+        let catalog = body.find("run_online_session_catalog_recovery(None)").unwrap();
+        let message = body.find("codex_plus_data::repair_session_index(None)").unwrap();
+        assert!(disabled < catalog && catalog < message);
+        assert!(body.contains("log_automatic_catalog_recovery"));
+        assert_eq!(body.matches("should_run_automatic_index_repair(").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn automatic_catalog_failure_never_blocks_message_repair() {
+        for status in ["synced", "skipped", "failed", "partial_failure", "task_error"] {
+            let order = std::cell::RefCell::new(Vec::new());
+            let result = run_catalog_before_message(
+                async {
+                    order.borrow_mut().push("catalog");
+                    if status == "task_error" {
+                        anyhow::bail!("catalog task failed");
+                    }
+                    Ok(status)
+                },
+                |catalog_result| {
+                    order.borrow_mut().push("catalog_report");
+                    if status == "task_error" {
+                        assert!(catalog_result.is_err());
+                    } else {
+                        assert_eq!(catalog_result.unwrap(), status);
+                    }
+                },
+                async {
+                    order.borrow_mut().push("message");
+                    Ok(17)
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(result, 17);
+            assert_eq!(*order.borrow(), ["catalog", "catalog_report", "message"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn automatic_catalog_task_panic_does_not_hide_message_error() {
+        let reported = std::cell::Cell::new(false);
+        let result = run_catalog_before_message(
+            async {
+                Ok(tokio::task::spawn_blocking(|| -> usize {
+                    panic!("synthetic catalog task panic")
+                })
+                .await?)
+            },
+            |catalog_result| {
+                assert!(catalog_result.is_err());
+                reported.set(true);
+            },
+            async { Err::<(), _>(anyhow::anyhow!("synthetic message error")) },
+        )
+        .await;
+        assert!(reported.get());
+        assert_eq!(result.unwrap_err().to_string(), "synthetic message error");
+    }
+
+    #[test]
+    fn automatic_index_repair_respects_explicit_switch_after_startup_sync() {
+        for provider_sync in [false, true] {
+            for choice in [None, Some(false), Some(true)] {
+                let settings = codex_plus_core::settings::BackendSettings {
+                    provider_sync_enabled: provider_sync,
+                    session_index_auto_repair_enabled: choice,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    should_run_automatic_index_repair(&settings, true),
+                    choice.unwrap_or(provider_sync),
+                );
+                assert_eq!(
+                    should_run_automatic_index_repair(&settings, false),
+                    choice.unwrap_or(true),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn first_index_repair_preserves_startup_sync_even_if_setting_changes() {
         let hooks = LauncherHooks::default();
         assert!(hooks.index_repair_checks_setting());
@@ -2653,6 +2810,8 @@ mod tests {
 
         // 只在设置启用时同步，与完整启动流程一致。
         assert!(body.contains("if !settings.provider_sync_enabled"));
+        let sync_disabled = &body[..body.find("let home =").unwrap()];
+        assert!(sync_disabled.contains("repair_session_index_automatically(true).await"));
         // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
         assert!(!body.contains("hooks.run_provider_sync().await?"));
         assert!(body.contains("launcher.activate_existing_provider_sync.failed"));

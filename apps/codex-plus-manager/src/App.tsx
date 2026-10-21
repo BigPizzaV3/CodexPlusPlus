@@ -326,6 +326,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexExtraArgs: string[];
   dictation: DictationSettings;
   providerSyncEnabled: boolean;
+  sessionIndexAutoRepairEnabled?: boolean | null;
   ccsDbPath: string;
   providerSyncSavedProviders: string[];
   providerSyncManualProviders: string[];
@@ -946,6 +947,7 @@ type UpdateProgressEvent = {
 
 type SessionIndexRepairReport = {
   scannedFiles: number;
+  compressedFiles?: number;
   cachedFiles: number;
   repairedItems: number;
   alreadyPresent: number;
@@ -1220,6 +1222,7 @@ const defaultSettings: BackendSettings = {
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
   providerSyncEnabled: false,
+  sessionIndexAutoRepairEnabled: null,
   ccsDbPath: "",
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
@@ -8410,7 +8413,20 @@ function SessionRepairPanel({ form, providerSyncProgress, sessionIndexRepairActi
               />
               <span>
                 <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{t("启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。")}</small>
+                <small>{t("启动前整理历史会话归属。保存设置后生效。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+
+            <label className="switch-row compact session-auto-repair">
+              <input
+                checked={form.sessionIndexAutoRepairEnabled ?? form.providerSyncEnabled}
+                onChange={(event) => onFormChange({ ...form, sessionIndexAutoRepairEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("自动修复会话目录与消息索引")}</strong>
+                <small>{t("启动后补回缺失的会话目录并检查消息，运行期间每 30 分钟复查。保存设置后生效。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -8469,7 +8485,7 @@ function SessionRepairPanel({ form, providerSyncProgress, sessionIndexRepairActi
               <strong>{t("最近一次会话索引修复报告")}</strong>
               <p>{t("最后检查：")}{sessionIndexRepairReport.checkedAtMs ? formatTime(sessionIndexRepairReport.checkedAtMs) : t("旧版报告未记录时间")}</p>
               <p>
-                {t("读取文件")} {sessionIndexRepairReport.scannedFiles} · {t("复用缓存")} {sessionIndexRepairReport.cachedFiles} · {t("耗时")} {(sessionIndexRepairReport.elapsedMs / 1000).toFixed(1)} s
+                {t("读取文件")} {sessionIndexRepairReport.scannedFiles} · {t("压缩历史")} {sessionIndexRepairReport.compressedFiles ?? 0} · {t("复用缓存")} {sessionIndexRepairReport.cachedFiles} · {t("耗时")} {(sessionIndexRepairReport.elapsedMs / 1000).toFixed(1)} s
               </p>
               <p>
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}

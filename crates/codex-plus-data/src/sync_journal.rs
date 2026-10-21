@@ -622,6 +622,73 @@ fn restore_change(db: &Connection, change: &Change) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn journal_creation_and_repeated_persist_publish_recoverable_states() {
+        let temp = tempfile::tempdir().unwrap();
+        let backup = temp.path().join("backup");
+        crate::backup::private_directory(&backup, true).unwrap();
+        let path = temp.path().join(".codex-global-state.json");
+        std::fs::write(&path, b"before").unwrap();
+
+        // Windows 上首次 new 和之后的原子替换都不能对只读句柄执行 sync_all。
+        let mut journal = SyncJournal::new(&backup).unwrap();
+        let initial: SyncJournal =
+            serde_json::from_slice(&std::fs::read(journal.path()).unwrap()).unwrap();
+        assert_eq!(initial.state, "prepared");
+        assert!(initial.files.is_empty());
+        journal
+            .prepare_file(&path, Some(b"before"), b"after")
+            .unwrap();
+        journal.persist().unwrap();
+        assert!(!journal.path().with_extension("json.tmp").exists());
+        std::fs::write(&path, b"after").unwrap();
+
+        let mut loaded = SyncJournal::load_for_recovery(journal.path(), temp.path(), &[]).unwrap();
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(
+            std::fs::read(backup.join(&loaded.files[0].before_file)).unwrap(),
+            b"before"
+        );
+        assert!(loaded.rollback().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"before");
+        let persisted: SyncJournal =
+            serde_json::from_slice(&std::fs::read(loaded.path()).unwrap()).unwrap();
+        assert_eq!(persisted.state, "rolled_back");
+        assert!(persisted.files[0].restored);
+        loaded.complete().unwrap();
+        assert!(SyncJournal::load_for_recovery(loaded.path(), temp.path(), &[]).is_err());
+    }
+
+    #[test]
+    fn journal_write_failure_prevents_database_commit_and_preserves_previous_journal() {
+        let temp = tempfile::tempdir().unwrap();
+        let database_path = temp.path().join("state.db");
+        let mut db = database(&database_path);
+        let mut journal = SyncJournal::new(temp.path()).unwrap();
+        let journal_path = journal.path().to_path_buf();
+        let original = std::fs::read(&journal_path).unwrap();
+        let blocked = temp.path().join("not-a-directory");
+        std::fs::write(&blocked, b"blocker").unwrap();
+        journal.path = blocked.join("recovery-journal.json");
+
+        let tx = db.transaction().unwrap();
+        let before = Snapshot::capture(&tx).unwrap();
+        tx.execute("UPDATE threads SET model_provider='new'", [])
+            .unwrap();
+        assert!(journal.commit(tx, before, &database_path).is_err());
+        assert_eq!(
+            db.query_row(
+                "SELECT model_provider FROM threads WHERE id='t'",
+                [],
+                |row| { row.get::<_, String>(0) }
+            )
+            .unwrap(),
+            "old"
+        );
+        assert_eq!(std::fs::read(&journal_path).unwrap(), original);
+        assert_eq!(std::fs::read(blocked).unwrap(), b"blocker");
+    }
+
     fn database(path: &Path) -> Connection {
         let db = Connection::open(path).unwrap();
         db.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY, model_provider TEXT, title TEXT, payload BLOB); INSERT INTO threads VALUES('t','old','original',X'0001ff');").unwrap();

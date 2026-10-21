@@ -68,7 +68,8 @@ fn resolve_sqlite_home_from_env() -> Option<PathBuf> {
     resolve_sqlite_home(std::env::var_os("CODEX_SQLITE_HOME"))
 }
 
-fn resolve_sqlite_home_home_or_default(home: &Path) -> PathBuf {
+/// SQLite 根可与 rollout 所在 CODEX_HOME 分离，调用方应保留两个根目录。
+pub fn resolve_sqlite_home_home_or_default(home: &Path) -> PathBuf {
     resolve_sqlite_home_from_env().unwrap_or_else(|| home.to_path_buf())
 }
 

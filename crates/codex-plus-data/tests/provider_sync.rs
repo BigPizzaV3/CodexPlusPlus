@@ -1024,8 +1024,10 @@ fn provider_sync_skips_rollout_locked_after_planning() {
 
     assert!(held_rollout.is_some());
     drop(held_rollout);
-    assert_eq!(result.status, ProviderSyncStatus::Synced);
-    assert!(result.skipped_locked_rollout_files.contains(&rollout));
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+    assert!(result.skipped_locked_rollout_files.contains(&rollout), "{result:?}");
+    assert_eq!(result.changed_session_files, 0, "{result:?}");
+    assert!(result.recovery_errors.is_empty(), "{result:?}");
     assert_eq!(fs::read(&rollout).unwrap(), original_rollout);
 }
 
@@ -2132,6 +2134,547 @@ fn provider_sync_catalog_uses_preview_on_modern_schema_without_rewriting_history
     assert_eq!(rollout_files_snapshot(&rollout_dir), rollouts_before);
 }
 
+fn paginated_catalog_fixture(home: &Path, existing: bool) -> std::path::PathBuf {
+    fs::create_dir_all(home.join("sqlite")).unwrap();
+    write_provider_config_with_tables(home, "custom", &["apigather"]);
+    let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER, has_user_event INTEGER,
+            cwd TEXT, title TEXT, rollout_path TEXT, source TEXT, created_at_ms INTEGER,
+            updated_at_ms INTEGER, thread_source TEXT, agent_role TEXT, preview TEXT,
+            history_mode TEXT);
+         INSERT INTO threads VALUES ('projected','custom',0,0,'C:/project','Title',
+            'sessions/rollout-projected.jsonl','vscode',100000,200000,'user','','Question','paginated');",
+    ).unwrap();
+    let catalog = home.join("sqlite/codex-dev.db");
+    create_local_thread_catalog_db(
+        &catalog,
+        if existing {
+            &[("projected", "custom")]
+        } else {
+            &[]
+        },
+    );
+    catalog
+}
+
+fn paginated_projection_fixture(home: &Path) -> Connection {
+    let db = Connection::open(home.join("thread_history_1.sqlite")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE thread_turns (
+            thread_id TEXT, turn_id TEXT, status TEXT, first_user_item_id TEXT,
+            PRIMARY KEY(thread_id,turn_id));
+         CREATE TABLE thread_items (
+            thread_id TEXT, turn_id TEXT, item_id TEXT, rollout_ordinal INTEGER,
+            created_at_ms INTEGER, item_json TEXT, item_type TEXT, updated_at_ordinal INTEGER,
+            PRIMARY KEY(thread_id,turn_id,item_id));
+         INSERT INTO thread_turns VALUES ('projected','turn','completed','message');",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO thread_items VALUES ('projected','turn','message',1,1,?1,'userMessage',1)",
+        [json!({"type":"userMessage","id":"message","content":[{"type":"text","text":"Question"}]}).to_string()],
+    ).unwrap();
+    db
+}
+
+#[test]
+fn paginated_catalog_missing_rollout_uses_owned_projection_and_is_idempotent() {
+    for existing in [false, true] {
+        let tmp = tempdir().unwrap();
+        let catalog = paginated_catalog_fixture(tmp.path(), existing);
+        drop(paginated_projection_fixture(tmp.path()));
+        for provider in ["custom", "apigather", "apigather"] {
+            let result = run_provider_sync_with_target(Some(tmp.path()), Some(provider));
+            assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+            assert_eq!(
+                catalog_rows_snapshot(&catalog),
+                vec![("local".into(), "projected".into())]
+            );
+            let actual: String = Connection::open(&catalog)
+                .unwrap()
+                .query_row(
+                    "SELECT model_provider FROM local_thread_catalog WHERE thread_id='projected'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(actual, provider);
+        }
+    }
+}
+
+#[test]
+fn paginated_catalog_projection_rejects_untrusted_ownership_and_non_user_threads() {
+    for mutation in [
+        "DELETE FROM thread_items",
+        "UPDATE thread_items SET thread_id='other'",
+        "UPDATE thread_items SET turn_id='other'",
+        "UPDATE thread_turns SET first_user_item_id='other'",
+        "UPDATE thread_items SET item_type='agentMessage'",
+        "UPDATE thread_items SET item_json='{\"type\":\"userMessage\",\"id\":\"wrong\",\"content\":[{\"type\":\"text\",\"text\":\"Question\"}]}'",
+        "UPDATE thread_items SET item_json='{\"type\":\"userMessage\",\"id\":\"message\",\"content\":[]}'",
+        "UPDATE thread_items SET item_json='{\"type\":\"userMessage\",\"id\":\"message\",\"content\":[{\"type\":\"attachment\",\"text\":\"Question\"}]}'",
+        "UPDATE thread_items SET item_json='broken'",
+        "UPDATE threads SET archived=1",
+        "UPDATE threads SET source='exec'",
+        "UPDATE threads SET source='subagent'",
+        "UPDATE threads SET source='subagent',thread_source=NULL",
+        "UPDATE threads SET thread_source='subagent'",
+        "UPDATE threads SET agent_role='reviewer'",
+        "UPDATE threads SET preview=''",
+    ] {
+        for existing in [false, true] {
+            let tmp = tempdir().unwrap();
+            let catalog = paginated_catalog_fixture(tmp.path(), existing);
+            let projection = paginated_projection_fixture(tmp.path());
+            if mutation.contains("UPDATE threads") {
+                Connection::open(tmp.path().join("state_5.sqlite"))
+                    .unwrap()
+                    .execute_batch(mutation)
+                    .unwrap();
+            } else {
+                projection.execute_batch(mutation).unwrap();
+            }
+            drop(projection);
+            let result = run_provider_sync(Some(tmp.path()));
+            assert_eq!(
+                result.status,
+                ProviderSyncStatus::Synced,
+                "{mutation}: {result:?}"
+            );
+            if mutation == "UPDATE threads SET source='subagent'" {
+                // 显式 user 标记优先于旧 source 字符串；有效用户投影仍可恢复。
+                assert_eq!(catalog_rows_snapshot(&catalog),
+                    vec![("local".into(), "projected".into())], "{mutation}");
+            } else {
+                assert!(catalog_rows_snapshot(&catalog).is_empty(), "{mutation}");
+            }
+        }
+    }
+}
+
+#[test]
+fn paginated_catalog_uncertain_projection_preserves_existing_without_restoring() {
+    for mode in ["unknown", "locked", "corrupt"] {
+        for existing in [false, true] {
+            let tmp = tempdir().unwrap();
+            let catalog = paginated_catalog_fixture(tmp.path(), existing);
+            let projection = paginated_projection_fixture(tmp.path());
+            match mode {
+                "unknown" => projection
+                    .execute_batch(
+                        "ALTER TABLE thread_turns RENAME COLUMN first_user_item_id TO future_field",
+                    )
+                    .unwrap(),
+                "locked" => projection.execute_batch("BEGIN EXCLUSIVE").unwrap(),
+                _ => {
+                    drop(projection);
+                    fs::write(tmp.path().join("thread_history_1.sqlite"), b"not sqlite").unwrap();
+                    let result = run_provider_sync(Some(tmp.path()));
+                    assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+                    assert_eq!(catalog_rows_snapshot(&catalog).len(), usize::from(existing));
+                    continue;
+                }
+            }
+            let result = run_provider_sync(Some(tmp.path()));
+            assert_eq!(
+                result.status,
+                ProviderSyncStatus::Synced,
+                "{mode}: {result:?}"
+            );
+            assert_eq!(
+                catalog_rows_snapshot(&catalog).len(),
+                usize::from(existing),
+                "{mode}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paginated_catalog_without_projection_does_not_restore_or_prune() {
+    for existing in [false, true] {
+        let tmp = tempdir().unwrap();
+        let catalog = paginated_catalog_fixture(tmp.path(), existing);
+        let result = run_provider_sync(Some(tmp.path()));
+        assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+        assert_eq!(catalog_rows_snapshot(&catalog).len(), usize::from(existing));
+    }
+}
+
+#[test]
+fn paginated_catalog_tombstone_blocks_projection_recovery() {
+    let tmp = tempdir().unwrap();
+    let catalog = paginated_catalog_fixture(tmp.path(), false);
+    drop(paginated_projection_fixture(tmp.path()));
+    Connection::open(tmp.path().join("state_5.sqlite")).unwrap().execute_batch(
+        "CREATE TABLE codex_plus_deleted_threads(thread_id TEXT PRIMARY KEY, backup_token TEXT NOT NULL);
+         INSERT INTO codex_plus_deleted_threads VALUES ('projected','deleted');",
+    ).unwrap();
+    let result = run_provider_sync(Some(tmp.path()));
+    assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+    assert!(catalog_rows_snapshot(&catalog).is_empty());
+}
+
+#[test]
+fn compressed_catalog_source_is_read_without_overwriting_native_archive() {
+    for modern in [false, true] {
+        let tmp = tempdir().unwrap();
+        let catalog = paginated_catalog_fixture(tmp.path(), false);
+        if !modern {
+            Connection::open(tmp.path().join("state_5.sqlite"))
+                .unwrap()
+                .execute_batch(
+                    "ALTER TABLE threads DROP COLUMN preview;
+                 ALTER TABLE threads DROP COLUMN history_mode;
+                 UPDATE threads SET has_user_event=1;",
+                )
+                .unwrap();
+        }
+        fs::create_dir_all(tmp.path().join("sessions")).unwrap();
+        let compressed = tmp.path().join("sessions/rollout-projected.jsonl.zst");
+        let text = format!(
+            "{}\n{}\n",
+            json!({"type":"session_meta","payload":{"id":"projected","model_provider":"custom","cwd":"C:/project"}}),
+            if modern {
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Question"}]}})
+            } else {
+                json!({"type":"event_msg","payload":{"type":"user_message","message":"Question"}})
+            }
+        );
+        let original = zstd::stream::encode_all(text.as_bytes(), 1).unwrap();
+        fs::write(&compressed, &original).unwrap();
+        let online = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(tmp.path()));
+        assert_eq!(online.status, ProviderSyncStatus::Synced, "{online:?}");
+        assert_eq!(online.sqlite_catalog_rows_inserted, 1);
+        assert_eq!(online.sqlite_provider_rows_updated, 0);
+        assert_eq!(online.changed_session_files, 0);
+        assert_eq!(fs::read(&compressed).unwrap(), original);
+        for provider in ["custom", "apigather"] {
+            let result = run_provider_sync_with_target(Some(tmp.path()), Some(provider));
+            assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+            assert_eq!(result.repair_audit.scanned_rollout_files, 1);
+            assert_eq!(
+                catalog_rows_snapshot(&catalog),
+                vec![("local".into(), "projected".into())]
+            );
+            assert_eq!(fs::read(&compressed).unwrap(), original);
+            assert!(!tmp.path().join("sessions/rollout-projected.jsonl").exists());
+        }
+        // 双副本相同才可合并扫描；这一对来源都保持只读。
+        fs::write(
+            tmp.path().join("sessions/rollout-projected.jsonl"),
+            &text,
+        )
+        .unwrap();
+        let result = run_provider_sync_with_target(Some(tmp.path()), Some("apigather"));
+        assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+        assert_eq!(result.repair_audit.scanned_rollout_files, 1);
+        assert_eq!(result.changed_session_files, 0);
+        assert_eq!(fs::read(&compressed).unwrap(), original);
+    }
+}
+
+#[test]
+fn compressed_catalog_conflicting_copies_abort_before_changes() {
+    for different in ["provider", "message", "corrupt"] {
+        let tmp = tempdir().unwrap();
+        let catalog = paginated_catalog_fixture(tmp.path(), true);
+        fs::create_dir_all(tmp.path().join("sessions")).unwrap();
+        let plain = tmp.path().join("sessions/rollout-projected.jsonl");
+        let compressed = plain.with_extension("jsonl.zst");
+        let text = format!("{}\n{}\n",
+            json!({"type":"session_meta","payload":{"id":"projected","model_provider":"custom"}}),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"Question"}}));
+        let other = match different {
+            "provider" => text.replace("custom", "apigather"),
+            "message" => text.replace("Question", "Different question"),
+            _ => text.clone(),
+        };
+        let archive = if different == "corrupt" { b"invalid zstd".to_vec() }
+            else { zstd::stream::encode_all(other.as_bytes(), 1).unwrap() };
+        fs::write(&plain, &text).unwrap();
+        fs::write(&compressed, &archive).unwrap();
+        let before = catalog_rows_snapshot(&catalog);
+        let result = run_provider_sync_with_target(Some(tmp.path()), Some("apigather"));
+        assert_ne!(result.status, ProviderSyncStatus::Synced, "{different}: {result:?}");
+        assert_eq!(result.changed_session_files, 0);
+        assert_eq!(result.sqlite_rows_updated, 0);
+        assert_eq!(catalog_rows_snapshot(&catalog), before);
+        assert_eq!(fs::read_to_string(&plain).unwrap(), text);
+        assert_eq!(fs::read(&compressed).unwrap(), archive);
+        let provider: String = Connection::open(&catalog).unwrap().query_row(
+            "SELECT model_provider FROM local_thread_catalog WHERE thread_id='projected'",
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(provider, "custom");
+    }
+}
+
+#[test]
+fn paginated_projection_uses_canonical_sqlite_root() {
+    const CHILD: &str = "CODEX_PLUS_TEST_PROJECTION_ROOT_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
+        let root = std::path::PathBuf::from(std::env::var_os("CODEX_SQLITE_HOME").unwrap());
+        let expected = std::env::var("CODEX_PLUS_TEST_PROJECTION_EXPECTED").unwrap() == "true";
+        let online = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(&home));
+        assert_eq!(online.status, ProviderSyncStatus::Synced, "{online:?}");
+        assert_eq!(catalog_rows_snapshot(&root.join("sqlite/codex-dev.db")).len(), usize::from(expected));
+        let result = run_provider_sync(Some(&home));
+        assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
+        assert_eq!(catalog_rows_snapshot(&root.join("sqlite/codex-dev.db")).len(), usize::from(expected));
+        return;
+    }
+    // 使用子测试进程设置环境变量，避免与同一二进制内的并行用例串扰。
+    for remote_valid in [false, true] {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("rollouts");
+        let root = tmp.path().join("database");
+        fs::create_dir_all(&home).unwrap();
+        paginated_catalog_fixture(&root, false);
+        write_provider_config(&home, "custom");
+        let wrong_home = paginated_projection_fixture(&home);
+        if remote_valid {
+            wrong_home.execute_batch("DELETE FROM thread_items").unwrap();
+            drop(paginated_projection_fixture(&root));
+        } else {
+            let remote = paginated_projection_fixture(&root);
+            remote.execute_batch("DELETE FROM thread_items").unwrap();
+        }
+        drop(wrong_home);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "paginated_projection_uses_canonical_sqlite_root", "--nocapture"])
+            .env(CHILD, "1")
+            .env("CODEX_HOME", &home)
+            .env("CODEX_SQLITE_HOME", &root)
+            .env("CODEX_PLUS_TEST_PROJECTION_EXPECTED", remote_valid.to_string())
+            .output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    }
+}
+
+#[test]
+fn provider_sync_audit_counts_missing_catalog_and_compressed_sources() {
+    let tmp = tempdir().unwrap();
+    let catalog = paginated_catalog_fixture(tmp.path(), false);
+    fs::create_dir_all(tmp.path().join("sessions")).unwrap();
+    let text = format!("{}\n", json!({"type":"session_meta","payload":{"id":"projected","model_provider":"custom"}}));
+    fs::write(tmp.path().join("sessions/rollout-projected.jsonl.zst"),
+        zstd::stream::encode_all(text.as_bytes(), 1).unwrap()).unwrap();
+    let preview = codex_plus_data::provider_sync::preview_provider_sync(Some(tmp.path())).unwrap();
+    assert_eq!(preview.audit.canonical_without_catalog_rows, 1);
+    assert_eq!(preview.audit.scanned_compressed_rollout_files, 1);
+    assert_eq!(preview.audit.scanned_plain_rollout_files, 0);
+    assert!(catalog_rows_snapshot(&catalog).is_empty());
+}
+
+#[test]
+fn online_catalog_recovery_inserts_only_missing_users_with_original_providers() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path();
+    let catalog = paginated_catalog_fixture(home, true);
+    let state = home.join("state_5.sqlite");
+    let db = Connection::open(&state).unwrap();
+    db.execute_batch("ALTER TABLE threads ADD COLUMN git_branch TEXT").unwrap();
+    let projection = paginated_projection_fixture(home);
+    for (id, provider, mutation) in [
+        ("native", "openai", ""),
+        ("relay", "custom", ""),
+        ("other-provider", "unconfigured-relay", ""),
+        ("archived", "openai", "archived=1"),
+        ("child", "openai", "thread_source='subagent'"),
+        ("exec", "openai", "source='exec'"),
+        ("role", "openai", "agent_role='reviewer'"),
+        ("empty", "openai", "preview=''"),
+        ("deleted", "openai", ""),
+    ] {
+        db.execute("INSERT INTO threads SELECT ?1,?2,archived,has_user_event,cwd,title,
+            rollout_path,source,created_at_ms,updated_at_ms,thread_source,agent_role,preview,
+            history_mode,git_branch FROM threads WHERE id='projected'",
+            rusqlite::params![id, provider]).unwrap();
+        if !mutation.is_empty() {
+            db.execute(&format!("UPDATE threads SET {mutation} WHERE id=?1"), [id]).unwrap();
+        }
+        projection.execute(
+            "INSERT INTO thread_turns SELECT ?1,turn_id,status,first_user_item_id FROM thread_turns WHERE thread_id='projected'",
+            [id]).unwrap();
+        projection.execute(
+            "INSERT INTO thread_items SELECT ?1,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal
+             FROM thread_items WHERE thread_id='projected'", [id]).unwrap();
+    }
+    db.execute_batch("CREATE TABLE codex_plus_deleted_threads(thread_id TEXT PRIMARY KEY,backup_token TEXT NOT NULL);
+        INSERT INTO codex_plus_deleted_threads VALUES('deleted','deleted')").unwrap();
+    // 既有目录内容即使与 canonical 不同也必须保留。
+    Connection::open(&catalog).unwrap().execute(
+        "UPDATE local_thread_catalog SET model_provider='existing-provider',display_title='Keep title'", []).unwrap();
+    let before = catalog_eligibility_thread_snapshot(&state);
+    let history_before: i64 = projection.query_row("SELECT count(*) FROM thread_items", [], |r| r.get(0)).unwrap();
+    drop(projection);
+    drop(db);
+    let first = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(home));
+    assert_eq!(first.status, ProviderSyncStatus::Synced, "{first:?}");
+    assert_eq!(first.sqlite_catalog_rows_inserted, 3);
+    assert_eq!(first.sqlite_catalog_rows_removed, 0);
+    assert_eq!(first.sqlite_provider_rows_updated, 0);
+    assert_eq!(first.changed_session_files, 0);
+    assert!(first.backup_dir.as_ref().unwrap().join("metadata.json").is_file());
+    assert_eq!(catalog_eligibility_thread_snapshot(&state), before);
+    let catalog_db = Connection::open(&catalog).unwrap();
+    let providers = catalog_db.prepare(
+        "SELECT thread_id,model_provider FROM local_thread_catalog ORDER BY thread_id"
+    ).unwrap().query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?)))
+        .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    assert_eq!(providers, vec![
+        ("native".into(),"openai".into()), ("other-provider".into(),"unconfigured-relay".into()),
+        ("projected".into(),"existing-provider".into()), ("relay".into(),"custom".into())
+    ]);
+    let title: String = catalog_db.query_row(
+        "SELECT display_title FROM local_thread_catalog WHERE thread_id='projected'", [], |r| r.get(0)).unwrap();
+    assert_eq!(title, "Keep title");
+    assert_eq!(Connection::open(home.join("thread_history_1.sqlite")).unwrap()
+        .query_row("SELECT count(*) FROM thread_items", [], |r| r.get::<_, i64>(0)).unwrap(), history_before);
+    let second = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(home));
+    assert_eq!(second.status, ProviderSyncStatus::Synced, "{second:?}");
+    assert_eq!(second.sqlite_rows_updated, 0);
+    assert!(second.backup_dir.is_none());
+}
+
+#[test]
+fn online_catalog_source_identity_requires_physical_owner_unless_projected() {
+    const PARENT: &str = "11111111-1111-4111-8111-111111111111";
+    const CHILD: &str = "22222222-2222-4222-8222-222222222222";
+    for compressed in [false, true] {
+        for kind in ["physical-conflict", "history-base", "both"] {
+            for projected in [false, true] {
+                let tmp = tempdir().unwrap();
+                let home = tmp.path();
+                let catalog = paginated_catalog_fixture(home, false);
+                let physical = if kind == "history-base" { PARENT } else { CHILD };
+                let logical = format!("sessions/rollout-{PARENT}_{physical}.jsonl");
+                Connection::open(home.join("state_5.sqlite")).unwrap().execute(
+                    "UPDATE threads SET id=?1,rollout_path=?2",
+                    [PARENT, logical.as_str()],
+                ).unwrap();
+                if projected {
+                    let projection = paginated_projection_fixture(home);
+                    projection.execute("UPDATE thread_turns SET thread_id=?1", [PARENT]).unwrap();
+                    projection.execute("UPDATE thread_items SET thread_id=?1", [PARENT]).unwrap();
+                }
+                let mut meta = json!({"type":"session_meta","payload":{
+                    "id":PARENT,"model_provider":"custom"
+                }});
+                if kind != "physical-conflict" {
+                    meta["payload"]["history_base"] = json!({"thread_id":PARENT});
+                }
+                let text = format!("{meta}\n");
+                fs::create_dir_all(home.join("sessions")).unwrap();
+                let path = home.join(if compressed { format!("{logical}.zst") } else { logical });
+                let bytes = if compressed {
+                    zstd::stream::encode_all(text.as_bytes(), 1).unwrap()
+                } else {
+                    text.into_bytes()
+                };
+                fs::write(&path, &bytes).unwrap();
+                let outcome = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(home));
+                assert_eq!(outcome.status, ProviderSyncStatus::Synced, "{compressed}/{kind}/{projected}: {outcome:?}");
+                assert_eq!(outcome.sqlite_catalog_rows_inserted, usize::from(projected),
+                    "{compressed}/{kind}/{projected}: {outcome:?}");
+                assert_eq!(catalog_rows_snapshot(&catalog),
+                    if projected { vec![("local".into(), PARENT.into())] } else { vec![] });
+                if projected {
+                    let provider: String = Connection::open(&catalog).unwrap().query_row(
+                        "SELECT model_provider FROM local_thread_catalog", [], |r| r.get(0),
+                    ).unwrap();
+                    assert_eq!(provider, "custom");
+                }
+                assert_eq!(outcome.sqlite_catalog_rows_removed, 0);
+                assert_eq!(outcome.sqlite_provider_rows_updated, 0);
+                assert_eq!(outcome.changed_session_files, 0);
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+            }
+        }
+    }
+}
+
+#[test]
+fn online_catalog_quarantines_conflicting_source_and_recovers_unrelated_thread() {
+    for corrupt in [false, true] {
+        for existing in [false, true] {
+            let tmp = tempdir().unwrap();
+            let home = tmp.path();
+            let catalog = paginated_catalog_fixture(home, existing);
+            // 即使坏来源有可信投影，也不能从任一冲突副本补建目录。
+            drop(paginated_projection_fixture(home));
+            let state = Connection::open(home.join("state_5.sqlite")).unwrap();
+            state.execute_batch(
+                "INSERT INTO threads SELECT 'good',model_provider,archived,has_user_event,cwd,title,
+                 'sessions/rollout-good.jsonl',source,created_at_ms,updated_at_ms,thread_source,
+                 agent_role,preview,history_mode FROM threads WHERE id='projected'",
+            ).unwrap();
+            drop(state);
+            fs::create_dir_all(home.join("sessions")).unwrap();
+            let plain = home.join("sessions/rollout-projected.jsonl");
+            let text = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"projected\"}}\n";
+            let archive = if corrupt { b"broken zstd".to_vec() } else {
+                zstd::stream::encode_all(text.replace("projected", "other").as_bytes(), 1).unwrap()
+            };
+            fs::write(&plain, text).unwrap();
+            fs::write(plain.with_extension("jsonl.zst"), &archive).unwrap();
+            fs::write(home.join("sessions/rollout-good.jsonl"),
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"good\"}}\n").unwrap();
+            let outcome = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(home));
+            assert_eq!(outcome.status, ProviderSyncStatus::Synced, "{outcome:?}");
+            assert_eq!(outcome.sqlite_catalog_rows_inserted, 1, "{outcome:?}");
+            assert_eq!(outcome.repair_audit.quarantined_rollout_sources, 1);
+            assert!(outcome.message.contains("quarantined conflicting rollout sources: 1"));
+            let mut expected = vec![("local".into(), "good".into())];
+            if existing { expected.push(("local".into(), "projected".into())); }
+            assert_eq!(catalog_rows_snapshot(&catalog), expected);
+            assert_eq!(outcome.sqlite_catalog_rows_removed, 0);
+            assert_eq!(outcome.changed_session_files, 0);
+            assert_eq!(fs::read_to_string(&plain).unwrap(), text);
+            assert_eq!(fs::read(plain.with_extension("jsonl.zst")).unwrap(), archive);
+        }
+    }
+}
+
+#[test]
+fn online_catalog_recovery_obeys_lifecycle_guard_without_reentrant_locking() {
+    let tmp = tempdir().unwrap();
+    let catalog = paginated_catalog_fixture(tmp.path(), false);
+    drop(paginated_projection_fixture(tmp.path()));
+    let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(tmp.path())).unwrap();
+    let blocked = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(tmp.path()));
+    assert_eq!(blocked.status, ProviderSyncStatus::Skipped, "{blocked:?}");
+    assert!(catalog_rows_snapshot(&catalog).is_empty());
+    guard.release().unwrap();
+    let recovered = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(tmp.path()));
+    assert_eq!(recovered.status, ProviderSyncStatus::Synced, "{recovered:?}");
+    assert_eq!(recovered.sqlite_catalog_rows_inserted, 1);
+}
+
+#[test]
+fn online_catalog_recovery_rolls_back_prior_catalog_when_later_insert_fails() {
+    let tmp = tempdir().unwrap();
+    let catalog = paginated_catalog_fixture(tmp.path(), false);
+    drop(paginated_projection_fixture(tmp.path()));
+    let other = tmp.path().join("sqlite/other.db");
+    create_local_thread_catalog_db(&other, &[]);
+    Connection::open(&other).unwrap().execute_batch(
+        "CREATE TRIGGER fail_catalog_insert BEFORE INSERT ON local_thread_catalog
+         BEGIN SELECT RAISE(ABORT,'simulated catalog write failure'); END;"
+    ).unwrap();
+    let result = codex_plus_data::provider_sync::run_online_session_catalog_recovery(Some(tmp.path()));
+    assert_eq!(result.status, ProviderSyncStatus::Failed, "{result:?}");
+    assert!(result.recovery_errors.is_empty(), "{result:?}");
+    assert!(catalog_rows_snapshot(&catalog).is_empty());
+    assert!(catalog_rows_snapshot(&other).is_empty());
+    assert_eq!(result.sqlite_provider_rows_updated, 0);
+    assert_eq!(result.changed_session_files, 0);
+}
+
 #[test]
 fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
     let tmp = tempdir().unwrap();
@@ -2287,12 +2830,13 @@ fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
 
     assert_eq!(result.status, ProviderSyncStatus::Synced);
     assert_eq!(result.sqlite_catalog_rows_inserted, 0);
-    assert_eq!(result.sqlite_catalog_rows_removed, 7);
+    assert_eq!(result.sqlite_catalog_rows_removed, 6);
     assert_eq!(
         catalog_rows_snapshot(&catalog_db),
         vec![
             ("local".to_string(), "active".to_string()),
             ("local".to_string(), "empty-rollout".to_string()),
+            ("local".to_string(), "missing-rollout".to_string()),
             ("local".to_string(), "orphan".to_string()),
             ("local".to_string(), "relative-rollout".to_string()),
             ("remote".to_string(), "archived".to_string()),
@@ -2331,6 +2875,7 @@ fn provider_sync_prunes_archived_and_ineligible_catalog_rows() {
         vec![
             ("local".to_string(), "active".to_string()),
             ("local".to_string(), "empty-rollout".to_string()),
+            ("local".to_string(), "missing-rollout".to_string()),
             ("local".to_string(), "orphan".to_string()),
             ("local".to_string(), "relative-rollout".to_string()),
             ("remote".to_string(), "archived".to_string()),
@@ -3535,10 +4080,7 @@ fn session_index_cleanup_preserves_all_local_sources_and_unknown_records() {
     assert!(next_index.contains(&unknown));
     assert!(next_index.contains(malformed));
     let backup = result.backup_dir.expect("cleanup backup");
-    assert_eq!(
-        fs::read_to_string(backup.join("session_index.jsonl")).unwrap(),
-        original_index
-    );
+    assert_eq!(fs::read_to_string(backup.join("session_index.jsonl")).unwrap(), original_index);
 }
 
 #[test]
@@ -3585,7 +4127,10 @@ fn session_index_cleanup_streams_large_unknown_records() {
     assert!(next_index.contains(retained_id));
     assert!(!next_index.contains(stale_id));
     let backup = result.backup_dir.expect("cleanup backup");
-    assert_eq!(fs::read_to_string(backup.join("session_index.jsonl")).unwrap(), original_index);
+    assert_eq!(
+        fs::read_to_string(backup.join("session_index.jsonl")).unwrap(),
+        original_index
+    );
 }
 
 #[test]

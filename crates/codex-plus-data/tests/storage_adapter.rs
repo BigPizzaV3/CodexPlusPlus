@@ -92,6 +92,50 @@ fn thread_count(path: &Path, id: &str) -> i64 {
 }
 
 #[test]
+fn undo_rejects_opposite_rollout_copy_without_retention() {
+    for compressed_backup in [false, true] {
+        let tmp = tempdir().unwrap();
+        let db = tmp.path().join("state.sqlite");
+        let plain = tmp.path().join("rollout.jsonl");
+        let compressed = plain.with_extension("jsonl.zst");
+        fs::write(&plain, b"original rollout\n").unwrap();
+        create_codex_thread_db(&db, &plain);
+        if compressed_backup {
+            fs::write(
+                &compressed,
+                zstd::stream::encode_all(&fs::read(&plain).unwrap()[..], 1).unwrap(),
+            )
+            .unwrap();
+            fs::remove_file(&plain).unwrap();
+        }
+        let adapter = SQLiteStorageAdapter::new(&db, BackupStore::new(tmp.path().join("backups")));
+        let deleted = adapter.delete_local(&session("t1", "Codex Thread"));
+        assert_eq!(
+            deleted.status,
+            DeleteStatus::LocalDeleted,
+            "{}",
+            deleted.message
+        );
+        let (original, opposite) = if compressed_backup {
+            (&compressed, &plain)
+        } else {
+            (&plain, &compressed)
+        };
+        let replacement = if compressed_backup {
+            b"new plain history".to_vec()
+        } else {
+            zstd::stream::encode_all(&b"new compressed history"[..], 1).unwrap()
+        };
+        fs::write(opposite, &replacement).unwrap();
+        let restored = adapter.undo(deleted.undo_token.as_deref().unwrap());
+        assert_eq!(restored.status, DeleteStatus::Failed, "{}", restored.message);
+        assert!(!original.exists());
+        assert_eq!(fs::read(opposite).unwrap(), replacement);
+        assert_eq!(thread_count(&db, "t1"), 0);
+    }
+}
+
+#[test]
 fn backup_store_writes_reads_and_sanitizes_tokens() {
     let tmp = tempdir().unwrap();
     let store = BackupStore::new(tmp.path());

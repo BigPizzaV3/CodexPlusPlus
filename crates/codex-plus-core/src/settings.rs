@@ -693,6 +693,9 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    /// 未设置时沿用供应商同步开关；显式设置后独立控制消息索引自动修复。
+    #[serde(rename = "sessionIndexAutoRepairEnabled", default)]
+    pub session_index_auto_repair_enabled: Option<bool>,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
     #[serde(rename = "providerSyncManualProviders", default)]
@@ -973,6 +976,7 @@ impl Default for BackendSettings {
             codex_app_auto_takeover_when_active: default_auto_takeover_when_active(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            session_index_auto_repair_enabled: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
@@ -1066,6 +1070,11 @@ impl Default for BackendSettings {
 }
 
 impl BackendSettings {
+    pub fn effective_session_index_auto_repair_enabled(&self) -> bool {
+        self.session_index_auto_repair_enabled
+            .unwrap_or(self.provider_sync_enabled)
+    }
+
     pub fn active_relay_profile(&self) -> RelayProfile {
         if self.active_relay_id == default_active_relay_id()
             && self.relay_profiles.len() == 1
@@ -2101,6 +2110,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source
+        .get("sessionIndexAutoRepairEnabled")
+        .filter(|value| value.is_boolean() || value.is_null())
+    {
+        target.insert("sessionIndexAutoRepairEnabled".to_string(), value.clone());
     }
     if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
         target.insert(
@@ -3146,6 +3161,64 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn session_index_auto_repair_setting_preserves_legacy_and_explicit_choices() {
+        for provider_sync in [false, true] {
+            for choice in [None, Some(false), Some(true)] {
+                let mut value = serde_json::json!({ "providerSyncEnabled": provider_sync });
+                if let Some(enabled) = choice {
+                    value["sessionIndexAutoRepairEnabled"] = serde_json::json!(enabled);
+                }
+                let settings: BackendSettings = serde_json::from_value(value).unwrap();
+                assert_eq!(settings.session_index_auto_repair_enabled, choice);
+                assert_eq!(
+                    settings.effective_session_index_auto_repair_enabled(),
+                    choice.unwrap_or(provider_sync),
+                );
+                let restored: BackendSettings =
+                    serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+                assert_eq!(restored.session_index_auto_repair_enabled, choice);
+            }
+        }
+        let settings: BackendSettings = serde_json::from_value(serde_json::json!({
+            "providerSyncEnabled": true,
+            "sessionIndexAutoRepairEnabled": null,
+        })).unwrap();
+        assert!(settings.effective_session_index_auto_repair_enabled());
+        assert_eq!(BackendSettings::default().session_index_auto_repair_enabled, None);
+    }
+
+    #[test]
+    fn session_index_auto_repair_setting_updates_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        store.save(&BackendSettings::default()).unwrap();
+        for provider_sync in [false, true] {
+            for choice in [Some(true), Some(false), None] {
+                let settings = store.update(serde_json::json!({
+                    "providerSyncEnabled": provider_sync,
+                    "sessionIndexAutoRepairEnabled": choice,
+                })).unwrap();
+                assert_eq!(settings.session_index_auto_repair_enabled, choice);
+                let saved = store.load().unwrap();
+                assert_eq!(saved.session_index_auto_repair_enabled, choice);
+                assert_eq!(
+                    saved.effective_session_index_auto_repair_enabled(),
+                    choice.unwrap_or(provider_sync),
+                );
+                // 不包含该字段的旧调用不得清除独立开关。
+                let unchanged = store.update(serde_json::json!({
+                    "providerSyncEnabled": !provider_sync,
+                })).unwrap();
+                assert_eq!(unchanged.session_index_auto_repair_enabled, choice);
+            }
+        }
+        let mut settings = store.load().unwrap();
+        settings.session_index_auto_repair_enabled = Some(false);
+        store.save(&settings).unwrap();
+        assert_eq!(store.load().unwrap().session_index_auto_repair_enabled, Some(false));
     }
 
     #[test]

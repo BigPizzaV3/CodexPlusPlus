@@ -265,8 +265,12 @@ export const EN_PLAIN: Record<string, string> = {
   "检查次数：": "Checks: ",
   "修复已中止：": "Repair aborted: ",
   "修复警告：": "Repair warning: ",
-  "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。":
-    "Repair session ownership and check for missing messages before launch; recheck the index every 30 minutes while running. Save settings to apply.",
+  "启动前整理历史会话归属。保存设置后生效。":
+    "Organize historical session ownership before launch. Save settings to apply.",
+  "自动修复会话目录与消息索引": "Automatically repair the session catalog and message index",
+  "启动后补回缺失的会话目录并检查消息，运行期间每 30 分钟复查。保存设置后生效。":
+    "Restore missing session catalog entries and check messages after launch; recheck every 30 minutes while running. Save settings to apply.",
+  "压缩历史": "Compressed history",
   "自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。":
     "Automatic checks require starting Codex from this window and keeping Codex++ running and automatic repair to be enabled and saved; checks repeat 30 minutes after the previous check finishes. This page refreshes the report every 15 seconds without starting a repair; another check does not guarantee recovery.",
   "短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。":

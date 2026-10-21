@@ -7,7 +7,7 @@ use std::{
     io::BufRead,
 };
 #[cfg(test)]
-use std::{fs::File, io::BufReader, path::Path};
+use std::{io::BufReader, path::Path};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TurnBoundary {
@@ -52,6 +52,8 @@ pub(crate) struct Candidate {
 pub(crate) struct ScanResult {
     pub candidates: Vec<Candidate>,
     pub issues: Vec<String>,
+    #[serde(default)]
+    pub has_history_base: bool,
 }
 
 fn event_time(row: &Value, field: &str) -> Option<i64> {
@@ -96,12 +98,13 @@ fn ordinary(text: &str) -> bool {
 
 #[cfg(test)]
 pub(crate) fn scan(path: &Path) -> anyhow::Result<ScanResult> {
-    scan_reader(BufReader::new(File::open(path)?))
+    scan_reader(BufReader::new(crate::rollout_source::open(path)?))
 }
 
 pub(crate) fn scan_reader(mut reader: impl BufRead) -> anyhow::Result<ScanResult> {
     let mut line = String::new();
     let mut thread = None::<String>;
+    let mut has_history_base = false;
     let mut inherited_from = HashSet::<String>::new();
     let mut own_history_start = None::<i64>;
     let mut current_turn = None::<String>;
@@ -139,6 +142,7 @@ pub(crate) fn scan_reader(mut reader: impl BufRead) -> anyhow::Result<ScanResult
         };
         let p = &row["payload"];
         if row["type"] == "session_meta" {
+            has_history_base |= p.get("history_base").is_some_and(|base| !base.is_null());
             let id = p["id"].as_str().context("会话标识缺失")?;
             if thread.as_deref().is_some_and(|old| old != id) {
                 // 子任务日志包含父任务快照；只有元数据声明的父任务及边界内记录可忽略。
@@ -652,6 +656,7 @@ pub(crate) fn scan_reader(mut reader: impl BufRead) -> anyhow::Result<ScanResult
     Ok(ScanResult {
         candidates: result,
         issues,
+        has_history_base,
     })
 }
 
@@ -660,6 +665,20 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+
+    #[test]
+    fn history_base_is_preserved_as_negative_write_evidence_in_cached_scan() {
+        let mut rows = confirmed_message_rows();
+        rows[0]["payload"]["history_base"] =
+            json!({"thread_id":"t","end_ordinal_exclusive":2,"end_byte_offset":512});
+        let scanned = scan_rows_with_issues(rows, "").unwrap();
+        assert!(scanned.has_history_base);
+        let cached: ScanResult =
+            serde_json::from_value(serde_json::to_value(scanned).unwrap()).unwrap();
+        assert!(cached.has_history_base);
+        let old: ScanResult = serde_json::from_value(json!({"candidates":[],"issues":[]})).unwrap();
+        assert!(!old.has_history_base);
+    }
 
     /// 只读现场核验，路径与目标轮次均由调用方显式提供；不输出消息原文。
     #[test]
@@ -680,6 +699,25 @@ mod tests {
 
     fn scan_rows(rows: Vec<Value>, tail: &str) -> anyhow::Result<Vec<Candidate>> {
         scan_rows_with_issues(rows, tail).map(|result| result.candidates)
+    }
+
+    #[test]
+    fn compressed_scan_preserves_candidates_and_ordinals_across_frames() {
+        let rows = confirmed_message_rows();
+        let raw = rows
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>();
+        let expected = scan_reader(std::io::Cursor::new(raw.as_bytes())).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("rollout.jsonl.zst");
+        let boundary = raw.find('\n').unwrap() + 1;
+        let mut bytes = zstd::stream::encode_all(&raw.as_bytes()[..boundary], 1).unwrap();
+        bytes.extend(zstd::stream::encode_all(&raw.as_bytes()[boundary..], 1).unwrap());
+        std::fs::write(&path, bytes).unwrap();
+        let actual = scan(&path).unwrap();
+        assert_eq!(actual.candidates, expected.candidates);
+        assert_eq!(actual.issues, expected.issues);
     }
 
     fn scan_rows_with_issues(rows: Vec<Value>, tail: &str) -> anyhow::Result<ScanResult> {

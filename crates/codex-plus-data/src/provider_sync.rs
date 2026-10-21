@@ -1,3 +1,4 @@
+use crate::rollout_source;
 use crate::storage::{has_table, json_to_sql_value, select_dicts};
 pub use crate::sync_journal::ProviderSyncDatabaseOutcome;
 use crate::sync_journal::{Snapshot as SqliteSnapshot, SyncJournal};
@@ -10,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
@@ -358,6 +359,16 @@ pub struct ProviderSyncAudit {
     /// catalog（用户可见侧边栏索引）行数（跨所有候选库去重）。
     #[serde(default)]
     pub catalog_thread_rows: usize,
+    /// 全量 canonical 中缺少 catalog 的行数；不表示这些行均符合恢复资格。
+    #[serde(default)]
+    pub canonical_without_catalog_rows: usize,
+    #[serde(default)]
+    pub scanned_compressed_rollout_files: usize,
+    #[serde(default)]
+    pub scanned_plain_rollout_files: usize,
+    /// 在线恢复隔离的损坏或内容冲突双副本逻辑源数量。
+    #[serde(default)]
+    pub quarantined_rollout_sources: usize,
     /// 实际存在并被扫描的会话目录名（sessions / archived_sessions）。
     #[serde(default)]
     pub scanned_session_dirs: Vec<String>,
@@ -546,6 +557,8 @@ struct CatalogRepairThread {
 struct CatalogRepairObservedThread {
     thread: CatalogRepairThread,
     eligible: bool,
+    uncertain_source: bool,
+    trusted_projection: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -568,6 +581,7 @@ impl CatalogRepairCounts {
 #[derive(Debug, Default)]
 struct CatalogRepairPlan {
     threads: HashMap<String, CatalogRepairThread>,
+    source_only_thread_ids: HashSet<String>,
     non_root_thread_ids: HashSet<String>,
     ineligible_thread_ids: HashSet<String>,
     catalog_non_root_thread_ids: HashMap<PathBuf, HashSet<String>>,
@@ -718,6 +732,86 @@ pub fn remote_control_session_recovery_candidate_exists(
         }
     }
     Ok(false)
+}
+
+/// Codex 运行期间只补缺失目录行：不切换 provider、不删除、不修改 canonical 或来源。
+pub fn run_online_session_catalog_recovery(codex_home: Option<&Path>) -> ProviderSyncResult {
+    let home = codex_home.map(Path::to_path_buf).unwrap_or_else(default_codex_home_dir);
+    let _guard = match try_acquire_provider_sync_lifecycle_guard(Some(&home)) {
+        Ok(guard) => guard,
+        Err(error) => return result(ProviderSyncStatus::Skipped,
+            format!("Online catalog recovery lock unavailable: {error}"), "", None, 0, 0),
+    };
+    if let Some(blocked) = pending_recovery_result(&home, "") {
+        return blocked;
+    }
+    let recovery = (|| -> anyhow::Result<ProviderSyncResult> {
+        let paths = provider_sync_db_paths(&home);
+        let plan = collect_catalog_repair_plan_with_provider(&home, &paths, None, None)?;
+        let mut missing = false;
+        for path in &paths {
+            if !path.is_file() { continue; }
+            let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let columns = table_columns(&db, "local_thread_catalog")?;
+            if !catalog_supports_repair(&columns) { continue; }
+            let Some(host) = local_catalog_host_id(&db)? else { continue; };
+            for id in plan.threads.keys() {
+                let exists: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM local_thread_catalog WHERE host_id=?1 AND thread_id=?2)",
+                    (&host, id), |row| row.get(0))?;
+                missing |= !exists;
+            }
+        }
+        let mut output = result(ProviderSyncStatus::Synced,
+            "Online catalog recovery: existing canonical providers preserved", "", None, 0, 0);
+        output.repair_audit = audit_provider_sync_state_with_source_policy(&home, &paths, true)?;
+        if output.repair_audit.quarantined_rollout_sources > 0 {
+            output.message.push_str(&format!(
+                "; quarantined conflicting rollout sources: {}",
+                output.repair_audit.quarantined_rollout_sources,
+            ));
+        }
+        if !missing { return Ok(output); }
+        let backup = create_backup(&home, "", &[])?;
+        let mut journal = SyncJournal::new(&backup)?;
+        // 备份期间 canonical 可能发生变化；在写入前重新判定资格和每行 provider。
+        let apply = (|| -> anyhow::Result<CatalogRepairCounts> {
+            let current = collect_catalog_repair_plan_with_provider(&home, &paths, None, None)?;
+            let counts = apply_catalog_repair_plan_revalidated(
+                &paths, &current, false, Some(&mut journal), Some(&home),
+            )?;
+            journal.complete()?;
+            Ok(counts)
+        })();
+        output.backup_dir = Some(backup.clone());
+        output.recovery_journal_path = Some(backup.join("recovery-journal.json"));
+        match apply {
+            Ok(counts) => {
+                output.sqlite_rows_updated = counts.inserted_rows;
+                output.sqlite_catalog_rows_inserted = counts.inserted_rows;
+            }
+            Err(error) => {
+                output.recovery_errors = journal.rollback();
+                output.status = if !output.recovery_errors.is_empty() {
+                    ProviderSyncStatus::PartialFailure
+                } else if error.chain().any(|cause| {
+                    matches!(cause.downcast_ref::<rusqlite::Error>(),
+                        Some(rusqlite::Error::SqliteFailure(code, _))
+                        if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy
+                            | rusqlite::ErrorCode::DatabaseLocked))
+                }) {
+                    ProviderSyncStatus::Skipped
+                } else {
+                    ProviderSyncStatus::Failed
+                };
+                output.message = format!("Online catalog recovery failed: {error:#}");
+            }
+        }
+        output.database_outcomes = journal.outcomes();
+        Ok(output)
+    })();
+    recovery.unwrap_or_else(|error| result(ProviderSyncStatus::Skipped,
+        format!("Online catalog recovery skipped: {error:#}"), "", None, 0, 0))
 }
 
 pub fn run_remote_control_session_catalog_recovery_for_thread_with_target(
@@ -1216,11 +1310,19 @@ where
         let mut eligible_rewrite_plans = Vec::new();
         for plan in &rewrite_plans {
             let mut writer = HashingWriter::new(std::io::sink());
-            let before = stream_rewrite_rollout_session_meta_providers(
+            let before = match stream_rewrite_rollout_session_meta_providers(
                 &plan.path,
                 &target_provider,
                 &mut writer,
-            )?;
+            ) {
+                Ok(before) => before,
+                Err(error) if is_locked_io_error(&error) => {
+                    // 规划之后也可能被原生进程占用；未准备日志的文件不能进入改写。
+                    scanned_skipped_rollout_files.push(plan.path.clone());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if before == plan.original_sha256 {
                 rollout_journal.push(crate::sync_journal::JournalRollout {
                     path: plan.path.clone(),
@@ -1528,7 +1630,7 @@ fn collect_rebuildable_canonical_threads(
 
     // issue #2199：这是「删了又回来」的另一条重建入口——catalog 里还有行、canonical
     // `threads` 里没有、rollout 文件还在，就会被补回列表。已被删除的会话要排除在外。
-    let thread_tombstones = load_thread_tombstones(home);
+    let thread_tombstones = load_thread_tombstones(home)?;
     let mut rebuildable = Vec::new();
     for path in sqlite_paths {
         for thread in catalog_only_threads_for_path(path, &canonical_thread_ids)? {
@@ -1715,12 +1817,15 @@ fn provider_sync_message_with_audit(message: &str, audit: &ProviderSyncAudit) ->
         audit.scanned_session_dirs.join(", ")
     };
     let diagnostics = format!(
-        "本次扫描：会话目录 [{}]，rollout 文件 {} 个（其中 {} 个已指向目标供应商无需改写），canonical 行 {} 条，catalog 行 {} 条。",
+        "本次扫描：会话目录 [{}]，rollout 文件 {} 个（其中 {} 个已指向目标供应商无需改写；明文 {} 个，压缩 {} 个），canonical 行 {} 条，catalog 行 {} 条，canonical 缺 catalog {} 条（未按恢复资格筛选）。",
         scanned_dirs,
         audit.scanned_rollout_files,
         audit.rollout_files_already_on_target,
+        audit.scanned_plain_rollout_files,
+        audit.scanned_compressed_rollout_files,
         audit.canonical_thread_rows,
         audit.catalog_thread_rows,
+        audit.canonical_without_catalog_rows,
     );
     if audit.catalog_only_sessions == 0 {
         return format!("{message}；{diagnostics}");
@@ -1748,6 +1853,14 @@ fn audit_provider_sync_state(
     home: &Path,
     sqlite_paths: &[PathBuf],
 ) -> anyhow::Result<ProviderSyncAudit> {
+    audit_provider_sync_state_with_source_policy(home, sqlite_paths, false)
+}
+
+fn audit_provider_sync_state_with_source_policy(
+    home: &Path,
+    sqlite_paths: &[PathBuf],
+    isolate_conflicts: bool,
+) -> anyhow::Result<ProviderSyncAudit> {
     let mut canonical_thread_ids = HashSet::new();
     let mut catalog_thread_ids = HashSet::new();
     for path in sqlite_paths {
@@ -1764,7 +1877,8 @@ fn audit_provider_sync_state(
         .filter(|dirname| home.join(dirname).exists())
         .map(|dirname| (*dirname).to_string())
         .collect::<Vec<_>>();
-    let rollout_paths = rollout_files(home)?;
+    let mut quarantined_rollout_sources = 0;
+    let rollout_paths = rollout_files_with_source_policy(home, isolate_conflicts, &mut quarantined_rollout_sources)?;
     let scanned_rollout_files = rollout_paths.len();
     let current_rollout_ids = rollout_paths
         .iter()
@@ -1775,7 +1889,13 @@ fn audit_provider_sync_state(
         })
         .collect::<HashSet<_>>();
     let mut audit = ProviderSyncAudit {
+        quarantined_rollout_sources,
         scanned_rollout_files,
+        scanned_compressed_rollout_files: rollout_paths.iter()
+            .filter(|path| rollout_source::is_compressed(path)).count(),
+        scanned_plain_rollout_files: rollout_paths.iter()
+            .filter(|path| !rollout_source::is_compressed(path)).count(),
+        canonical_without_catalog_rows: canonical_thread_ids.difference(&catalog_thread_ids).count(),
         rollout_files_already_on_target: 0,
         canonical_thread_rows: canonical_thread_ids.len(),
         catalog_thread_rows: catalog_thread_ids.len(),
@@ -2437,6 +2557,24 @@ fn scan_bulk_rollout(
         facts.has_user_event = facts.has_user_event
             || line.contains("\"user_message\"")
             || line.contains("\"user_input\"");
+        if !facts.has_user_event
+            && line.contains("response_item")
+            && let Ok(record) = serde_json::from_str::<Value>(&line)
+        {
+            facts.has_user_event = record["type"] == "response_item"
+                && record["payload"]["type"] == "message"
+                && record["payload"]["role"] == "user"
+                && record["payload"]["content"]
+                    .as_array()
+                    .is_some_and(|content| {
+                        content.iter().any(|part| {
+                            part["type"] == "input_text"
+                                && part["text"]
+                                    .as_str()
+                                    .is_some_and(|text| !text.trim().is_empty())
+                        })
+                    });
+        }
         facts.has_encrypted_content =
             facts.has_encrypted_content || line.contains("encrypted_content");
         let (record_line, _) = split_line_ending(&line);
@@ -2544,6 +2682,45 @@ fn scan_bulk_session_rewrites_with_parser(
             Err(error) => return Err(error.into()),
         };
 
+        let compressed = rollout_source::is_compressed(path)
+            || compressed_rollout_sidecar(path).is_some();
+        // 原生压缩历史保持只读；不得将明文改写/回滚协议用于压缩原件。
+        if compressed {
+            let mut reader =
+                BufReader::with_capacity(64 * 1024, rollout_source::decode_reader(path, file)?);
+            let (facts, _) = scan_bulk_rollout(&mut reader, target_provider, &parse_record, false)?;
+            if facts.session_meta_count > 0 {
+                if !facts.rewrite_needed {
+                    scan.rollout_files_already_on_target += 1;
+                }
+                if let Some(id) = facts.thread_id {
+                    if facts.rollout_marks_non_root_agent {
+                        scan.subagent_thread_ids.insert(id);
+                    } else if explicit_user_thread_ids.contains(&id)
+                        || !excluded_thread_ids.contains(&id)
+                    {
+                        if facts.has_encrypted_content {
+                            for provider in facts.providers {
+                                *scan.encrypted_content_counts.entry(provider).or_insert(0) += 1;
+                            }
+                        }
+                        if facts.has_user_event {
+                            scan.thread_ids_with_user_events.insert(id.clone());
+                        }
+                        if let Some(cwd) = facts.cwd {
+                            scan.cwd_by_thread_id.insert(id, cwd);
+                        }
+                    }
+                }
+            }
+            report_scan_progress(
+                report_progress,
+                scan.total_rollout_files,
+                scanned_rollout_files,
+                scan.skipped_locked_rollout_files.len(),
+            );
+            continue;
+        }
         let mut reader = BufReader::with_capacity(64 * 1024, file);
         let (facts, mut original_sha256) = scan_bulk_rollout(
             &mut reader,
@@ -2757,6 +2934,10 @@ fn resolve_active_rollout_path(home: &Path, value: &str) -> Option<PathBuf> {
     // 路径（/mnt/c/...），Windows 侧进程按原样读不到；删除链路早已做视角互转（#162），
     // 会话修复这里也要回退一次，否则 WSL 下找不到 rollout 直接判定会话不可修复。
     for candidate in rollout_path_candidates(home, raw) {
+        ensure_rollout_copies_agree(&candidate).ok()?;
+        let Some(candidate) = rollout_source::resolve(&candidate) else {
+            continue;
+        };
         let Some(canonical) = fs::canonicalize(&candidate).ok() else {
             continue;
         };
@@ -2808,7 +2989,7 @@ fn rollout_view_is_absolute(view: &str) -> bool {
 fn rollout_provider_state_for_path(
     path: &Path,
 ) -> anyhow::Result<Option<(String, HashSet<String>)>> {
-    let text = match fs::read_to_string(path) {
+    let text = match read_rollout_text(path) {
         Ok(text) => text,
         Err(error) if is_locked_io_error(&error) => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -2823,7 +3004,11 @@ fn collect_session_change_for_path(
     thread_id: &str,
 ) -> anyhow::Result<SessionChanges> {
     let mut collected = SessionChanges::default();
-    let text = match fs::read_to_string(path) {
+    // 压缩原件不进入基于明文前像的覆写与补偿流程。
+    if rollout_source::is_compressed(path) || compressed_rollout_sidecar(path).is_some() {
+        return Ok(collected);
+    }
+    let text = match read_rollout_text(path) {
         Ok(text) => text,
         Err(error) if is_locked_io_error(&error) => {
             collected
@@ -2862,6 +3047,15 @@ fn collect_session_change_for_path(
         original_mtime,
     });
     Ok(collected)
+}
+
+fn read_rollout_text(path: &Path) -> std::io::Result<String> {
+    ensure_rollout_copies_agree(path).map_err(std::io::Error::other)?;
+    let mut text = String::new();
+    rollout_source::open(path)
+        .map_err(std::io::Error::other)?
+        .read_to_string(&mut text)?;
+    Ok(text)
 }
 
 fn rollout_file_matches_provider(
@@ -2947,6 +3141,14 @@ fn rewrite_rollout_session_meta_providers_for_threads(
 }
 
 fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    rollout_files_with_source_policy(home, false, &mut 0)
+}
+
+fn rollout_files_with_source_policy(
+    home: &Path,
+    isolate_conflicts: bool,
+    quarantined: &mut usize,
+) -> anyhow::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for dirname in SESSION_DIRS {
         let root = home.join(dirname);
@@ -2955,7 +3157,65 @@ fn rollout_files(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
         }
     }
     files.sort();
+    // 双副本必须先验证解压内容一致，不能任意挑选不同的 provider 或用户消息。
+    let plain_paths = files
+        .iter()
+        .filter(|p| !rollout_source::is_compressed(p))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut conflicts = HashSet::new();
+    for plain in &plain_paths {
+        if let Err(error) = ensure_rollout_copies_agree(plain) {
+            if !isolate_conflicts { return Err(error); }
+            conflicts.insert(plain.clone());
+        }
+    }
+    *quarantined = conflicts.len();
+    files.retain(|p| {
+        let plain = if rollout_source::is_compressed(p) { p.with_extension("") } else { p.clone() };
+        !conflicts.contains(&plain)
+            && (!rollout_source::is_compressed(p) || !plain_paths.contains(&plain))
+    });
     Ok(files)
+}
+
+fn compressed_rollout_sidecar(path: &Path) -> Option<PathBuf> {
+    if path.extension().is_none_or(|extension| extension != "jsonl") {
+        return None;
+    }
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(".zst");
+    let sidecar = PathBuf::from(sidecar);
+    sidecar.is_file().then_some(sidecar)
+}
+
+fn ensure_rollout_copies_agree(path: &Path) -> anyhow::Result<()> {
+    let plain = if rollout_source::is_compressed(path) {
+        path.with_extension("")
+    } else {
+        path.to_path_buf()
+    };
+    let Some(compressed) = compressed_rollout_sidecar(&plain).filter(|_| plain.is_file()) else {
+        return Ok(());
+    };
+    let mut left = BufReader::new(rollout_source::open(&plain)?);
+    let mut right = BufReader::new(rollout_source::open(&compressed)?);
+    loop {
+        let left_bytes = left.fill_buf()?;
+        let right_bytes = right.fill_buf()?;
+        let count = left_bytes.len().min(right_bytes.len());
+        anyhow::ensure!(
+            left_bytes[..count] == right_bytes[..count]
+                && (count != 0 || left_bytes.is_empty() == right_bytes.is_empty()),
+            "Conflicting plain and compressed rollout sources: {}",
+            plain.display()
+        );
+        if count == 0 {
+            return Ok(());
+        }
+        left.consume(count);
+        right.consume(count);
+    }
 }
 
 fn collect_live_thread_ids(
@@ -2976,7 +3236,7 @@ fn collect_live_thread_ids(
             Err(error) if is_locked_io_error(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        let mut reader = BufReader::new(file);
+        let mut reader = BufReader::new(rollout_source::decode_reader(&path, file)?);
         let mut line = String::new();
         loop {
             line.clear();
@@ -3008,7 +3268,7 @@ fn collect_live_thread_ids(
 }
 
 fn rollout_thread_id_from_filename(name: &str) -> Option<String> {
-    let stem = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    let stem = rollout_source::logical_stem(Path::new(name))?.strip_prefix("rollout-")?;
     let bytes = stem.as_bytes();
     if bytes.len() < 36 {
         return None;
@@ -3751,17 +4011,23 @@ fn thread_tombstone_path(codex_home: &Path) -> PathBuf {
 
 /// 读取删除墓碑（已删除、不得被索引重建复活的 thread id）。
 ///
-/// 墓碑只是「修复时跳过」的抑制信息，不是用户数据：文件缺失、读不动、内容坏了都
-/// 一律按「没有墓碑」处理——最坏结果是退回旧行为（可能复活），绝不因为墓碑本身
-/// 让同步或删除失败。见 issue #2199。
-fn load_thread_tombstones(codex_home: &Path) -> HashSet<String> {
+/// 兼容旧 JSON 墓碑的容错行为。新的 SQLite 删除状态是权威记录，读取失败必须
+/// 停止重建，不能误把软删除历史当作活会话重新加入列表。
+fn load_thread_tombstones(codex_home: &Path) -> anyhow::Result<HashSet<String>> {
     let path = thread_tombstone_path(codex_home);
-    let Ok(bytes) = fs::read(&path) else {
-        return HashSet::new();
-    };
-    serde_json::from_slice::<Vec<String>>(&bytes)
-        .map(|ids| ids.into_iter().collect())
-        .unwrap_or_default()
+    let mut ids: HashSet<String> = fs::read(&path).ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+        .unwrap_or_default().into_iter().collect();
+    // 持久删除状态不能受旧 JSON 墓碑的数量上限影响；读失败时停止重建。
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(codex_home) {
+        if !path.is_file() { continue; }
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        if crate::storage::has_table(&db, "codex_plus_deleted_threads")? {
+            let mut stmt = db.prepare("SELECT thread_id FROM codex_plus_deleted_threads")?;
+            for id in stmt.query_map([], |row| row.get::<_, String>(0))? { ids.insert(id?); }
+        }
+    }
+    Ok(ids)
 }
 
 /// 记一条删除墓碑。顺序按写入先后保留，超出上限时丢掉最旧的一批。
@@ -4157,7 +4423,7 @@ fn rollout_provider_ids(home: &Path) -> anyhow::Result<Vec<String>> {
             Err(error) if is_locked_io_error(&error) => continue,
             Err(error) => return Err(error.into()),
         };
-        let mut reader = BufReader::new(file);
+        let mut reader = BufReader::new(rollout_source::decode_reader(&path, file)?);
         let mut line = String::new();
         loop {
             line.clear();
@@ -4195,7 +4461,7 @@ fn collect_rollout_files(root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Resul
         } else if path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+            .is_some_and(|name| name.starts_with("rollout-") && rollout_source::is_rollout(&path))
         {
             files.push(path);
         }
@@ -5608,12 +5874,74 @@ fn repair_missing_local_thread_catalog_rows_filtered(
     target_provider: &str,
     thread_ids: Option<&HashSet<String>>,
     update_full_sync_state: bool,
-    mut journal: Option<&mut SyncJournal>,
+    journal: Option<&mut SyncJournal>,
 ) -> anyhow::Result<CatalogRepairCounts> {
     let plan = collect_catalog_repair_plan(home, paths, target_provider, thread_ids)?;
+    apply_catalog_repair_plan(paths, &plan, update_full_sync_state, journal)
+}
+
+fn apply_catalog_repair_plan(
+    paths: &[PathBuf],
+    plan: &CatalogRepairPlan,
+    update_full_sync_state: bool,
+    journal: Option<&mut SyncJournal>,
+) -> anyhow::Result<CatalogRepairCounts> {
+    apply_catalog_repair_plan_revalidated(paths, plan, update_full_sync_state, journal, None)
+}
+
+/// 保留 canonical 的写入预留锁，直到目录事务提交。WAL 读事务无法阻止并发归档。
+struct CatalogCanonicalWriteFences(Vec<Connection>);
+
+impl Drop for CatalogCanonicalWriteFences {
+    fn drop(&mut self) {
+        for db in &self.0 {
+            let _ = db.execute_batch("ROLLBACK");
+        }
+    }
+}
+
+fn lock_catalog_canonical_databases(
+    paths: &[PathBuf],
+    catalog_path: &Path,
+) -> anyhow::Result<CatalogCanonicalWriteFences> {
+    let catalog_path = fs::canonicalize(catalog_path)?;
+    let mut seen = HashSet::new();
+    let mut canonical = Vec::new();
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let normalized = fs::canonicalize(path)?;
+        if normalized == catalog_path || !seen.insert(normalized) {
+            continue;
+        }
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        db.busy_timeout(Duration::from_millis(300))?;
+        if !table_columns(&db, "threads")?.is_empty() {
+            canonical.push(db);
+        }
+    }
+    let fences = CatalogCanonicalWriteFences(canonical);
+    for db in &fences.0 {
+        db.execute_batch("BEGIN IMMEDIATE")?;
+    }
+    Ok(fences)
+}
+
+fn apply_catalog_repair_plan_revalidated(
+    paths: &[PathBuf],
+    plan: &CatalogRepairPlan,
+    update_full_sync_state: bool,
+    mut journal: Option<&mut SyncJournal>,
+    recheck_home: Option<&Path>,
+) -> anyhow::Result<CatalogRepairCounts> {
     if plan.threads.is_empty() && (!update_full_sync_state || !plan.has_cleanup_candidates()) {
         return Ok(CatalogRepairCounts::default());
     }
+    // 大文件解压和正文验证在取数据库写锁之前完成。
+    let source_proofs = recheck_home
+        .map(|home| catalog_plan_source_proofs(home, plan))
+        .transpose()?;
     let mut total = CatalogRepairCounts::default();
     for path in paths {
         if !path.exists() {
@@ -5629,7 +5957,6 @@ fn repair_missing_local_thread_catalog_rows_filtered(
         let Some(host_id) = local_catalog_host_id(&db)? else {
             continue;
         };
-        let mut observation_sequence = local_catalog_max_observation_sequence(&db, &host_id)?;
         let insert_columns = local_catalog_insert_columns(&columns);
         let placeholders = std::iter::repeat_n("?", insert_columns.len())
             .collect::<Vec<_>>()
@@ -5639,7 +5966,25 @@ fn repair_missing_local_thread_catalog_rows_filtered(
             insert_columns.join(", "),
             placeholders
         );
+        let _canonical_fences = recheck_home
+            .map(|_| lock_catalog_canonical_databases(paths, path))
+            .transpose()?;
+        if recheck_home.is_some() {
+            db.busy_timeout(Duration::from_millis(300))?;
+        }
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // 当前库如同时含有 threads，也由上面的目录事务锁定；其余 canonical 库
+        // 已取得预留锁。此后删除、归档和 provider 变更只能在本次提交后发生。
+        let refreshed_plan;
+        let plan = if let Some(home) = recheck_home {
+            refreshed_plan = collect_catalog_repair_plan_with_source_proofs(
+                home, paths, None, None, source_proofs.as_ref(),
+            )?;
+            &refreshed_plan
+        } else {
+            plan
+        };
+        let mut observation_sequence = local_catalog_max_observation_sequence(&tx, &host_id)?;
         let before = if journal.is_some() {
             Some(SqliteSnapshot::capture(&tx)?)
         } else {
@@ -5709,13 +6054,76 @@ fn collect_catalog_repair_plan(
     target_provider: &str,
     thread_ids: Option<&HashSet<String>>,
 ) -> anyhow::Result<CatalogRepairPlan> {
+    collect_catalog_repair_plan_with_provider(home, paths, Some(target_provider), thread_ids)
+}
+
+fn collect_catalog_repair_plan_with_provider(
+    home: &Path,
+    paths: &[PathBuf],
+    target_provider: Option<&str>,
+    thread_ids: Option<&HashSet<String>>,
+) -> anyhow::Result<CatalogRepairPlan> {
+    collect_catalog_repair_plan_with_source_proofs(home, paths, target_provider, thread_ids, None)
+}
+
+type CatalogSourceStamp = Vec<(PathBuf, Option<(PathBuf, u64, SystemTime)>)>;
+type CatalogSourceProofs = HashMap<(String, String), CatalogSourceStamp>;
+
+fn catalog_source_stamp(home: &Path, raw: &str) -> anyhow::Result<CatalogSourceStamp> {
+    let mut paths = Vec::new();
+    for candidate in rollout_path_candidates(home, raw) {
+        let plain = if rollout_source::is_compressed(&candidate) {
+            candidate.with_extension("")
+        } else {
+            candidate
+        };
+        let mut compressed = plain.as_os_str().to_os_string();
+        compressed.push(".zst");
+        paths.extend([plain, PathBuf::from(compressed)]);
+    }
+    paths.sort();
+    paths.dedup();
+    paths.into_iter().map(|path| {
+        let stamp = match fs::metadata(&path) {
+            Ok(metadata) => Some((fs::canonicalize(&path)?, metadata.len(), metadata.modified()?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        Ok((path, stamp))
+    }).collect()
+}
+
+fn catalog_plan_source_proofs(home: &Path, plan: &CatalogRepairPlan) -> anyhow::Result<CatalogSourceProofs> {
+    let mut proofs = HashMap::new();
+    for thread in plan.threads.values() {
+        let before = catalog_source_stamp(home, &thread.source_detail)?;
+        if rollout_path_candidates(home, &thread.source_detail).iter()
+            .any(|path| ensure_rollout_copies_agree(path).is_err()) { continue; }
+        if (!plan.source_only_thread_ids.contains(&thread.id)
+            || catalog_source_identity_verified(home, &thread.source_detail, &thread.id))
+            && before == catalog_source_stamp(home, &thread.source_detail)?
+        {
+            proofs.insert((thread.id.clone(), thread.source_detail.clone()), before);
+        }
+    }
+    Ok(proofs)
+}
+
+fn collect_catalog_repair_plan_with_source_proofs(
+    home: &Path,
+    paths: &[PathBuf],
+    target_provider: Option<&str>,
+    thread_ids: Option<&HashSet<String>>,
+    source_proofs: Option<&CatalogSourceProofs>,
+) -> anyhow::Result<CatalogRepairPlan> {
     let spawned_child_ids = collect_spawned_child_thread_ids(paths)?;
     // issue #2199：删除墓碑一票否决。这里的候选会被 INSERT 回 `local_thread_catalog`，
     // 是「删了又回来」的重建入口之一。
-    let thread_tombstones = load_thread_tombstones(home);
+    let thread_tombstones = load_thread_tombstones(home)?;
     let mut catalog_non_root_thread_ids =
         collect_catalog_marked_non_root_thread_ids(paths, &spawned_child_ids)?;
     let mut observed_threads = HashMap::new();
+    let projection = paginated_user_projection(home);
     for path in paths {
         if !path.exists() {
             continue;
@@ -5746,9 +6154,11 @@ fn collect_catalog_repair_plan(
             text_expr(&columns, "has_user_event", "1")
         };
         let agent_role = text_expr(&columns, "agent_role", "''");
+        let history_mode = text_expr(&columns, "history_mode", "''");
+        let model_provider = text_expr(&columns, "model_provider", "''");
         let subagent_filter = subagent_filter(&db, "threads.id")?;
         let sql = format!(
-            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_content}, {agent_role} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
+            "SELECT id, {display_title}, {source_created_at}, {source_updated_at}, {cwd}, {source_kind}, {source_detail}, {git_branch}, {thread_source}, {archived}, {has_user_content}, {agent_role}, {history_mode}, {model_provider} FROM threads WHERE COALESCE(id, '') <> ''{subagent_filter}"
         );
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
@@ -5763,17 +6173,19 @@ fn collect_catalog_repair_plan(
                         .get::<_, String>(5)
                         .unwrap_or_else(|_| "cli".to_string()),
                     source_detail: row.get::<_, String>(6).unwrap_or_default(),
-                    model_provider: target_provider.to_string(),
+                    model_provider: target_provider.map(ToString::to_string)
+                        .unwrap_or_else(|| row.get::<_, String>(13).unwrap_or_default()),
                     git_branch: row.get::<_, Option<String>>(7).unwrap_or(None),
                     thread_source: row.get::<_, Option<String>>(8).unwrap_or(None),
                 },
                 row.get::<_, i64>(9).unwrap_or_default(),
                 row.get::<_, i64>(10).unwrap_or(1),
                 row.get::<_, String>(11).unwrap_or_default(),
+                row.get::<_, String>(12).unwrap_or_default(),
             ))
         })?;
         for item in rows {
-            let (thread, archived, has_user_content, agent_role) = item?;
+            let (thread, archived, has_user_content, agent_role, history_mode) = item?;
             // issue #2199：删除墓碑一票否决。资格判定里没有「删除态」，只要 rollout
             // 文件还在（删除失败或被别的进程锁住等），被删的会话就会被重新插回 catalog。
             // 在收集阶段直接跳过，它既不进候选，也不会在下面的择优平局里胜出。
@@ -5787,14 +6199,49 @@ fn collect_catalog_repair_plan(
                 });
             let non_root = is_catalog_non_root_agent(&thread, &spawned_child_ids);
             let source_is_exec = thread.source_kind.trim().eq_ignore_ascii_case("exec");
-            let rollout_exists = catalog_rollout_path_exists(home, &thread.source_detail);
-            let eligible = archived == 0
+            let mut conflicting_source = false;
+            if source_proofs.is_none() {
+                for candidate in rollout_path_candidates(home, &thread.source_detail) {
+                    if let Err(error) = ensure_rollout_copies_agree(&candidate) {
+                        if target_provider.is_some() { return Err(error); }
+                        conflicting_source = true;
+                    }
+                }
+            }
+            let rollout_exists = (target_provider.is_some() || !thread.source_detail.trim().is_empty())
+                && catalog_rollout_path_exists(home, &thread.source_detail);
+            let user_thread = archived == 0
                 && has_user_content == 1
                 && agent_role.trim().is_empty()
                 && !marked_non_user
                 && !source_is_exec
-                && !non_root
-                && rollout_exists;
+                && !non_root;
+            let paginated = history_mode == "paginated";
+            let projected = paginated
+                && projection
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains(&thread.id))
+                && source_proofs.is_none_or(|proofs| {
+                    proofs.get(&(thread.id.clone(), thread.source_detail.clone()))
+                        .is_some_and(|before| catalog_source_stamp(home, &thread.source_detail)
+                            .is_ok_and(|current| current == *before))
+                });
+            let source_verified = rollout_exists
+                && (!user_thread
+                    || target_provider.is_some()
+                    || projected
+                    || if let Some(proofs) = source_proofs {
+                        proofs.get(&(thread.id.clone(), thread.source_detail.clone()))
+                            .is_some_and(|before| catalog_source_stamp(home, &thread.source_detail)
+                                .is_ok_and(|current| current == *before))
+                    } else {
+                        catalog_source_identity_verified(home, &thread.source_detail, &thread.id)
+                    });
+            let eligible = !conflicting_source && user_thread && (source_verified || projected)
+                && (target_provider.is_some() || !thread.model_provider.trim().is_empty());
+            // 无法确认来源只阻止补建，不作为删除现有侧边栏记录的依据。
+            let uncertain_source =
+                conflicting_source || (user_thread && !rollout_exists && (!paginated || projection.is_none()));
             let replace = observed_threads
                 .get(&thread.id)
                 .map(|current: &CatalogRepairObservedThread| {
@@ -5809,7 +6256,12 @@ fn collect_catalog_repair_plan(
             if replace {
                 observed_threads.insert(
                     thread.id.clone(),
-                    CatalogRepairObservedThread { thread, eligible },
+                    CatalogRepairObservedThread {
+                        thread,
+                        eligible,
+                        uncertain_source,
+                        trusted_projection: projected,
+                    },
                 );
             }
         }
@@ -5829,9 +6281,12 @@ fn collect_catalog_repair_plan(
         .collect::<HashSet<_>>();
     let ineligible_thread_ids = observed_threads
         .values()
-        .filter(|observed| !observed.eligible)
+        .filter(|observed| !observed.eligible && !observed.uncertain_source)
         .map(|observed| observed.thread.id.clone())
         .collect::<HashSet<_>>();
+    let source_only_thread_ids = observed_threads.values()
+        .filter(|observed| observed.eligible && !observed.trusted_projection)
+        .map(|observed| observed.thread.id.clone()).collect();
     let threads = observed_threads
         .into_iter()
         .filter_map(|(thread_id, observed)| {
@@ -5850,10 +6305,94 @@ fn collect_catalog_repair_plan(
     catalog_non_root_thread_ids.retain(|_, thread_ids| !thread_ids.is_empty());
     Ok(CatalogRepairPlan {
         threads,
+        source_only_thread_ids,
         non_root_thread_ids,
         ineligible_thread_ids,
         catalog_non_root_thread_ids,
     })
+}
+
+/// 没有可信分页投影时，不能仅凭文件存在补目录；验证原文身份和整个压缩流。
+fn catalog_source_identity_verified(home: &Path, raw_path: &str, thread_id: &str) -> bool {
+    rollout_path_candidates(home, raw_path).into_iter().any(|logical| {
+        let Some(physical) = rollout_source::resolve(&logical) else {
+            return false;
+        };
+        let verified = (|| -> anyhow::Result<bool> {
+            let mut lines = BufReader::new(rollout_source::open(&physical)?).lines();
+            let Some(first) = lines.next() else { return Ok(false); };
+            let first: Value = serde_json::from_str(&first?)?;
+            if first["type"] != "session_meta" || first["payload"]["id"].as_str() != Some(thread_id) {
+                return Ok(false);
+            }
+            // continuation 首行可能仍属于父线程，不能据此认定物理来源归属。
+            if first["payload"].get("history_base").is_some()
+                || rollout_source::logical_stem(&physical)
+                    .and_then(|stem| stem.get(stem.len().checked_sub(36)?..))
+                    .and_then(|suffix| uuid::Uuid::parse_str(suffix).ok())
+                    .is_some_and(|id| uuid::Uuid::parse_str(thread_id).ok() != Some(id))
+            {
+                return Ok(false);
+            }
+            for line in lines {
+                let line = line?;
+                if !line.trim().is_empty() {
+                    let _: &serde_json::value::RawValue = serde_json::from_str(&line)?;
+                }
+            }
+            Ok(true)
+        })();
+        verified.unwrap_or(false)
+    })
+}
+
+/// 投影与 canonical 使用同一 SQLite 根；未知 schema、锁和损坏均返回未知。
+fn paginated_user_projection(home: &Path) -> Option<HashSet<String>> {
+    let path = codex_plus_core::codex_sqlite::resolve_sqlite_home_home_or_default(home)
+        .join("thread_history_1.sqlite");
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    db.busy_timeout(std::time::Duration::ZERO).ok()?;
+    let mut stmt = db
+        .prepare(
+            "SELECT i.thread_id, i.item_id, i.item_json
+         FROM thread_items i JOIN thread_turns t
+         ON t.thread_id=i.thread_id AND t.turn_id=i.turn_id
+            AND t.first_user_item_id=i.item_id
+         WHERE i.item_type='userMessage'",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .ok()?;
+    let mut ids = HashSet::new();
+    for row in rows {
+        let (thread_id, item_id, text) = row.ok()?;
+        let Ok(item) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if item["type"].as_str() != Some("userMessage")
+            || item["id"].as_str() != Some(item_id.as_str())
+        {
+            continue;
+        }
+        if item["content"].as_array().is_some_and(|content| {
+            content.iter().any(|part| {
+                part["type"].as_str() == Some("text")
+                    && part["text"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty())
+            })
+        }) {
+            ids.insert(thread_id);
+        }
+    }
+    Some(ids)
 }
 
 fn catalog_rollout_path_exists(home: &Path, rollout_path: &str) -> bool {
@@ -5865,7 +6404,7 @@ fn catalog_rollout_path_exists(home: &Path, rollout_path: &str) -> bool {
     // 都试一次。这个函数只影响「会话是否算可修复候选」，放宽只会多保留记录、不删数据。
     rollout_path_candidates(home, rollout_path)
         .iter()
-        .any(|path| path.is_file())
+        .any(|path| rollout_source::resolve(path).is_some())
 }
 
 fn collect_spawned_child_thread_ids(paths: &[PathBuf]) -> anyhow::Result<HashSet<String>> {
@@ -7989,6 +8528,7 @@ mod sync_diagnostics_tests {
 
         let result = run_provider_sync(Some(&home));
 
+        assert_eq!(result.status, ProviderSyncStatus::Synced, "{result:?}");
         assert_eq!(result.repair_audit.scanned_rollout_files, 2);
         assert_eq!(
             result.repair_audit.rollout_files_already_on_target, 1,
@@ -8070,6 +8610,138 @@ mod sync_diagnostics_tests {
 
         assert_eq!(result.repair_audit.catalog_only_sessions, 0);
         assert_eq!(result.repair_audit.catalog_only_without_recovery_source, 0);
+    }
+}
+
+#[cfg(test)]
+mod online_catalog_concurrency_tests {
+    use super::*;
+
+    fn fixture(home: &Path, colocated: bool) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+        let state = home.join("state_5.sqlite");
+        fs::create_dir_all(home.join("sqlite")).unwrap();
+        let catalog = if colocated { state.clone() } else { home.join("sqlite/codex-dev.db") };
+        Connection::open(&state).unwrap().execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE threads(id TEXT PRIMARY KEY, model_provider TEXT, archived INTEGER,
+                has_user_event INTEGER, cwd TEXT, title TEXT, rollout_path TEXT,
+                source TEXT, thread_source TEXT);
+             INSERT INTO threads VALUES('user','custom',0,1,'C:/project','Title',
+                'rollout-user.jsonl','vscode','user');",
+        ).unwrap();
+        Connection::open(&catalog).unwrap().execute_batch(
+            "CREATE TABLE local_thread_catalog(host_id TEXT, thread_id TEXT,
+                display_title TEXT, source_created_at REAL, source_updated_at REAL,
+                cwd TEXT, source_kind TEXT, model_provider TEXT,
+                observation_sequence INTEGER, PRIMARY KEY(host_id,thread_id));",
+        ).unwrap();
+        fs::write(home.join("rollout-user.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"user\"}}\n").unwrap();
+        let paths = if colocated { vec![state.clone()] } else { vec![catalog.clone(), state.clone()] };
+        (state, catalog, paths)
+    }
+
+    #[test]
+    fn online_catalog_rechecks_archives_deletions_and_providers_under_write_fences() {
+        for colocated in [false, true] {
+            for mutation in [
+                "UPDATE threads SET archived=1",
+                "DELETE FROM threads",
+                "CREATE TABLE codex_plus_deleted_threads(thread_id TEXT, backup_token TEXT);
+                 INSERT INTO codex_plus_deleted_threads VALUES('user','deleted')",
+                "UPDATE threads SET model_provider='new-provider'",
+            ] {
+                let home = tempfile::tempdir().unwrap();
+                let (state, catalog, paths) = fixture(home.path(), colocated);
+                let stale = collect_catalog_repair_plan_with_provider(
+                    home.path(), &paths, None, None,
+                ).unwrap();
+                assert_eq!(stale.threads.len(), 1);
+                Connection::open(state).unwrap().execute_batch(mutation).unwrap();
+                let counts = apply_catalog_repair_plan_revalidated(
+                    &paths, &stale, false, None, Some(home.path()),
+                ).unwrap();
+                let changed_provider = mutation.contains("new-provider");
+                assert_eq!(counts.inserted_rows, usize::from(changed_provider));
+                if changed_provider {
+                    let provider: String = Connection::open(catalog).unwrap().query_row(
+                        "SELECT model_provider FROM local_thread_catalog", [], |r| r.get(0),
+                    ).unwrap();
+                    assert_eq!(provider, "new-provider");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wal_canonical_write_fence_blocks_concurrent_archive_and_releases_on_drop() {
+        let home = tempfile::tempdir().unwrap();
+        let (state, catalog, paths) = fixture(home.path(), false);
+        let writer = Connection::open(state).unwrap();
+        writer.busy_timeout(Duration::ZERO).unwrap();
+        let fences = lock_catalog_canonical_databases(&paths, &catalog).unwrap();
+        let failure = writer.execute("UPDATE threads SET archived=1", []).unwrap_err();
+        assert!(matches!(failure, rusqlite::Error::SqliteFailure(ref e, _)
+            if e.code == rusqlite::ErrorCode::DatabaseBusy));
+        drop(fences);
+        assert_eq!(writer.execute("UPDATE threads SET archived=1", []).unwrap(), 1);
+    }
+
+    #[test]
+    fn busy_canonical_writer_defers_online_catalog_without_catalog_changes() {
+        let home = tempfile::tempdir().unwrap();
+        let (state, catalog, _) = fixture(home.path(), false);
+        let writer = Connection::open(state).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let outcome = run_online_session_catalog_recovery(Some(home.path()));
+        assert_eq!(outcome.status, ProviderSyncStatus::Skipped, "{outcome:?}");
+        assert!(outcome.recovery_errors.is_empty());
+        assert_eq!(Connection::open(catalog).unwrap().query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog", [], |r| r.get::<_, i64>(0),
+        ).unwrap(), 0);
+        writer.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn source_changed_after_validation_is_excluded_without_decompressing_under_lock() {
+        let home = tempfile::tempdir().unwrap();
+        let (_, catalog, paths) = fixture(home.path(), false);
+        let plan = collect_catalog_repair_plan_with_provider(home.path(), &paths, None, None).unwrap();
+        let proofs = catalog_plan_source_proofs(home.path(), &plan).unwrap();
+        assert_eq!(proofs.len(), 1);
+        fs::write(home.path().join("rollout-user.jsonl"), b"replaced source").unwrap();
+        let _fences = lock_catalog_canonical_databases(&paths, &catalog).unwrap();
+        let rechecked = collect_catalog_repair_plan_with_source_proofs(
+            home.path(), &paths, None, None, Some(&proofs),
+        ).unwrap();
+        assert!(rechecked.threads.is_empty());
+    }
+
+    #[test]
+    fn online_source_only_recovery_rejects_wrong_identity_or_corrupt_compression() {
+        for kind in ["wrong-id", "invalid-json", "corrupt-zstd"] {
+            let home = tempfile::tempdir().unwrap();
+            let (_, _, paths) = fixture(home.path(), false);
+            let plain = home.path().join("rollout-user.jsonl");
+            let compressed = home.path().join("source.jsonl.zst");
+            let text = match kind {
+                "wrong-id" => "{\"type\":\"session_meta\",\"payload\":{\"id\":\"other\"}}\n",
+                "invalid-json" => "{\"type\":\"session_meta\",\"payload\":{\"id\":\"user\"}}\ninvalid\n",
+                _ => "{\"type\":\"session_meta\",\"payload\":{\"id\":\"user\"}}\n",
+            };
+            // 原有普通文件保留为无关文件，canonical 只指向本次待验证压缩来源。
+            Connection::open(home.path().join("state_5.sqlite")).unwrap().execute(
+                "UPDATE threads SET rollout_path='source.jsonl.zst'", [],
+            ).unwrap();
+            let encoded = if kind == "corrupt-zstd" { b"invalid zstd".to_vec() }
+                else { zstd::stream::encode_all(text.as_bytes(), 1).unwrap() };
+            fs::write(&compressed, encoded).unwrap();
+            fs::write(&plain, text).unwrap();
+            let plan = collect_catalog_repair_plan_with_provider(
+                home.path(), &paths, None, None,
+            ).unwrap();
+            assert!(plan.threads.is_empty(), "{kind}");
+        }
     }
 }
 
@@ -8327,7 +8999,7 @@ mod deleted_thread_tombstone_tests {
 
         remove_thread_sidebar_references(&home, thread_id).unwrap();
         assert!(
-            load_thread_tombstones(&home).contains(thread_id),
+            load_thread_tombstones(&home).unwrap().contains(thread_id),
             "删除应写下墓碑"
         );
 
@@ -8341,7 +9013,7 @@ mod deleted_thread_tombstone_tests {
         assert_eq!(restore_session_index_entries(&home, &[line]).unwrap(), 1);
 
         assert!(
-            !load_thread_tombstones(&home).contains(thread_id),
+            !load_thread_tombstones(&home).unwrap().contains(thread_id),
             "撤销删除后墓碑必须清掉"
         );
 
@@ -8378,7 +9050,7 @@ mod deleted_thread_tombstone_tests {
         fs::create_dir_all(home.join("tmp")).unwrap();
         fs::write(home.join(THREAD_TOMBSTONE_RELATIVE_PATH), "[{\"thr").unwrap();
 
-        assert!(load_thread_tombstones(&home).is_empty());
+        assert!(load_thread_tombstones(&home).unwrap().is_empty());
         let result = run_provider_sync(Some(&home));
         assert_eq!(
             result.status,
@@ -8399,7 +9071,7 @@ mod deleted_thread_tombstone_tests {
             record_thread_tombstone(&home, &format!("thread-{index:05}")).unwrap();
         }
 
-        let ids = load_thread_tombstones(&home);
+        let ids = load_thread_tombstones(&home).unwrap();
         assert_eq!(ids.len(), MAX_THREAD_TOMBSTONES);
         assert!(!ids.contains("thread-00000"), "最旧的墓碑先被丢掉");
         assert!(ids.contains(&format!("thread-{:05}", MAX_THREAD_TOMBSTONES + 2)));
@@ -8418,5 +9090,21 @@ mod deleted_thread_tombstone_tests {
         let ids: Vec<String> =
             serde_json::from_slice(&fs::read(thread_tombstone_path(&home)).unwrap()).unwrap();
         assert_eq!(ids, vec!["thread-1".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod durable_history_deletion_tests {
+    use super::*;
+    #[test]
+    fn durable_marker_survives_missing_or_evicted_json_tombstone() {
+        let tmp=tempfile::tempdir().unwrap();
+        let db=Connection::open(tmp.path().join("state_5.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE codex_plus_deleted_threads(thread_id TEXT PRIMARY KEY, backup_token TEXT NOT NULL); INSERT INTO codex_plus_deleted_threads VALUES ('retained-source','token');").unwrap();
+        assert!(load_thread_tombstones(tmp.path()).unwrap().contains("retained-source"));
+        let path=thread_tombstone_path(tmp.path()); fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path,"[\"newer-unrelated-deletion\"]").unwrap();
+        let ids=load_thread_tombstones(tmp.path()).unwrap();
+        assert!(ids.contains("retained-source")); assert!(ids.contains("newer-unrelated-deletion"));
     }
 }

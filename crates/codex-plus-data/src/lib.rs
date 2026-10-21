@@ -1,6 +1,7 @@
 pub mod backup;
 pub mod markdown;
 pub mod provider_sync;
+mod rollout_source;
 pub mod session_index_repair;
 mod session_index_scan;
 pub mod storage;

@@ -18,6 +18,9 @@ use std::{
 #[serde(rename_all = "camelCase")]
 pub struct SessionIndexRepairReport {
     pub scanned_files: usize,
+    /// 已检查的压缩物理来源数，是 scanned_files 的子集，不代表全文完整性。
+    #[serde(default)]
+    pub compressed_files: usize,
     pub cached_files: usize,
     pub repaired_items: usize,
     pub already_present: usize,
@@ -150,7 +153,7 @@ fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
         let kind = entry.file_type()?;
         if kind.is_dir() {
             collect_files(&entry.path(), files)?;
-        } else if kind.is_file() && entry.path().extension().is_some_and(|s| s == "jsonl") {
+        } else if kind.is_file() && crate::rollout_source::is_rollout(&entry.path()) {
             files.push(entry.path());
         }
     }
@@ -167,7 +170,7 @@ enum RolloutOwner {
 fn source_metadata_stamp(path: &Path) -> anyhow::Result<String> {
     let meta = fs::metadata(path)?;
     let modified = meta.modified()?.duration_since(UNIX_EPOCH)?;
-    Ok(format!("v10:{}:{}:", meta.len(), modified.as_nanos()))
+    Ok(format!("v12:{}:{}:", meta.len(), modified.as_nanos()))
 }
 
 struct SourceReader {
@@ -222,11 +225,67 @@ fn source_fingerprint(path: &Path) -> anyhow::Result<String> {
 fn scan_source(path: &Path) -> anyhow::Result<(ScanResult, String)> {
     let metadata = source_metadata_stamp(path)?;
     let mut reader = SourceReader::open(path)?;
-    let scanned = scan_reader(BufReader::with_capacity(64 * 1024, &mut reader))?;
+    let scanned = {
+        let decoded = crate::rollout_source::decode_reader(path, &mut reader)?;
+        scan_reader(BufReader::with_capacity(64 * 1024, decoded))?
+    };
+    // 摘要覆盖物理文件全部字节，不使用解压后的文本或逻辑偏移。
+    std::io::copy(&mut reader, &mut std::io::sink())?;
     if source_metadata_stamp(path)? != metadata {
         bail!("文件扫描期间仍在写入，将在下次检查");
     }
     Ok((scanned, reader.stamp(&metadata)))
+}
+
+fn verify_duplicate_sources(
+    files: &mut Vec<PathBuf>,
+    report: &mut SessionIndexRepairReport,
+) -> anyhow::Result<HashMap<PathBuf, String>> {
+    let paths: HashSet<_> = files.iter().cloned().collect();
+    let mut fingerprints = HashMap::new();
+    let mut isolated = HashSet::new();
+    for plain in files
+        .iter()
+        .filter(|path| !crate::rollout_source::is_compressed(path))
+    {
+        let mut compressed = plain.as_os_str().to_os_string();
+        compressed.push(".zst");
+        let compressed = PathBuf::from(compressed);
+        if !paths.contains(&compressed) {
+            continue;
+        }
+        let pair = (|| -> anyhow::Result<_> {
+            Ok((scan_source(plain)?, scan_source(&compressed)?))
+        })();
+        let ((left, left_stamp), (right, right_stamp)) = match pair {
+            Ok(pair) => pair,
+            Err(error) => {
+                // 任一副本不可核验时，两个路径都不能成为恢复或缓存证据。
+                isolated.insert(plain.clone());
+                isolated.insert(compressed.clone());
+                issue(
+                    report,
+                    format!(
+                        "{} / {}：副本核验失败，已隔离两个来源，未写入：{error:#}",
+                        plain.display(),
+                        compressed.display()
+                    ),
+                );
+                continue;
+            }
+        };
+        // 同一逻辑来源的两个物理副本必须给出一致证据，不能由目标去重选择赢家。
+        if serde_json::to_value(left)? != serde_json::to_value(right)? {
+            bail!(
+                "明文与压缩来源证据不一致，已放弃本次写入：{}",
+                plain.display()
+            );
+        }
+        fingerprints.insert(plain.clone(), left_stamp);
+        fingerprints.insert(compressed, right_stamp);
+    }
+    files.retain(|path| !isolated.contains(path));
+    Ok(fingerprints)
 }
 
 fn changed_sources(sources: &HashMap<PathBuf, String>) -> Vec<PathBuf> {
@@ -243,9 +302,12 @@ fn changed_sources(sources: &HashMap<PathBuf, String>) -> Vec<PathBuf> {
 }
 
 // 原生分片可能保留旧 session_meta.id；只信任目录数据库中的确切路径映射。
-fn rollout_owners(home: &Path) -> anyhow::Result<HashMap<PathBuf, RolloutOwner>> {
+fn rollout_owners(
+    sqlite_home: &Path,
+    home: &Path,
+) -> anyhow::Result<HashMap<PathBuf, RolloutOwner>> {
     let mut owners = std::collections::HashMap::new();
-    let path = home.join("state_5.sqlite");
+    let path = sqlite_home.join("state_5.sqlite");
     if !path.is_file() {
         return Ok(owners);
     }
@@ -261,14 +323,30 @@ fn rollout_owners(home: &Path) -> anyhow::Result<HashMap<PathBuf, RolloutOwner>>
         } else {
             home.join(path)
         };
-        if let Ok(path) = fs::canonicalize(path) {
+        let mut physical_paths = Vec::new();
+        if let Some(resolved) = crate::rollout_source::resolve(&path) {
+            physical_paths.push(resolved);
+        }
+        if crate::rollout_source::is_rollout(&path) {
+            let stem = crate::rollout_source::logical_stem(&path).unwrap();
+            for suffix in [".jsonl", ".jsonl.zst"] {
+                let sibling = path.with_file_name(format!("{stem}{suffix}"));
+                if sibling.is_file() && !physical_paths.contains(&sibling) {
+                    physical_paths.push(sibling);
+                }
+            }
+        }
+        for path in physical_paths
+            .into_iter()
+            .filter_map(|path| fs::canonicalize(path).ok())
+        {
             match owners.get(&path) {
                 Some(RolloutOwner::Known(old)) if old != &id => {
                     ambiguous.insert(path.clone());
                 }
                 Some(RolloutOwner::Ambiguous) => {}
                 _ => {
-                    owners.insert(path, RolloutOwner::Known(id));
+                    owners.insert(path, RolloutOwner::Known(id.clone()));
                 }
             }
         }
@@ -300,10 +378,8 @@ fn anchored_split_owner(
     items: &[Candidate],
     turns: &HashMap<String, HashSet<String>>,
 ) -> anyhow::Result<Option<String>> {
-    let Some((_, suffix)) = path
-        .file_stem()
-        .and_then(|v| v.to_str())
-        .and_then(|v| v.rsplit_once('_'))
+    let Some((_, suffix)) =
+        crate::rollout_source::logical_stem(path).and_then(|v| v.rsplit_once('_'))
     else {
         return Ok(None);
     };
@@ -354,6 +430,157 @@ fn resolve_owner(
         }
     }
     Ok(owner)
+}
+
+fn validate_source_identity(path: &Path, scanned: &ScanResult) -> anyhow::Result<()> {
+    // 尚不解析 lineage 闭包；不能把 canonical parent 当成物理投影 owner。
+    if scanned.has_history_base {
+        bail!("来源声明 history_base，分页继承归属尚未核验，整份文件待核查，未写入");
+    }
+    if let Some(physical) = crate::rollout_source::logical_stem(path)
+        .and_then(|stem| stem.get(stem.len().checked_sub(36)?..))
+        .and_then(|suffix| uuid::Uuid::parse_str(suffix).ok())
+        && scanned
+            .candidates
+            .iter()
+            .any(|candidate| uuid::Uuid::parse_str(&candidate.thread).ok() != Some(physical))
+    {
+        bail!("来源物理后缀与消息线程身份不一致，整份文件待核查，未写入");
+    }
+    Ok(())
+}
+
+struct OwnerEvidence {
+    path: PathBuf,
+    items: Vec<Candidate>,
+    owner: Option<String>,
+    anchors: Vec<(String, String, String, String, i64, String)>,
+}
+
+fn capture_owner_evidence(
+    db: &Connection,
+    path: &Path,
+    items: &[Candidate],
+    owner: &Option<String>,
+) -> anyhow::Result<OwnerEvidence> {
+    let mut anchors = Vec::new();
+    for item in items {
+        let thread = owner.as_ref().unwrap_or(&item.thread);
+        if let Some((id, _)) = &item.projection {
+            let row: Option<(String, i64, String)> = db.query_row(
+                "SELECT item_json,rollout_ordinal,item_type FROM thread_items WHERE thread_id=?1 AND turn_id=?2 AND item_id=?3",
+                params![thread,item.turn,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+            ).optional()?;
+            if let Some((raw, ordinal, kind)) = row {
+                anchors.push((
+                    thread.clone(),
+                    item.turn.clone(),
+                    id.clone(),
+                    raw,
+                    ordinal,
+                    kind,
+                ));
+            }
+        }
+    }
+    Ok(OwnerEvidence {
+        path: path.to_owned(),
+        items: items.to_vec(),
+        owner: owner.clone(),
+        anchors,
+    })
+}
+
+fn changed_owners(
+    db: &Connection,
+    sqlite_home: &Path,
+    home: &Path,
+    owners: &HashMap<PathBuf, RolloutOwner>,
+    evidence: &[OwnerEvidence],
+    sources: &HashMap<PathBuf, String>,
+    allow_inserted_anchor: bool,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let current_owners = rollout_owners(sqlite_home, home)?;
+    let mut turns = HashMap::<String, HashSet<String>>::new();
+    let mut stmt = db.prepare("SELECT thread_id,turn_id FROM thread_turns")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (thread, turn) = row?;
+        turns.entry(turn).or_default().insert(thread);
+    }
+    let mut changed = Vec::new();
+    for evidence in evidence {
+        let OwnerEvidence {
+            path,
+            items,
+            owner: expected,
+            anchors,
+        } = evidence;
+        if !sources.contains_key(path) {
+            continue;
+        }
+        let canonical = fs::canonicalize(path)?;
+        let previous = owners
+            .get(&canonical)
+            .cloned()
+            .unwrap_or(RolloutOwner::Absent);
+        let current = current_owners
+            .get(&canonical)
+            .cloned()
+            .unwrap_or(RolloutOwner::Absent);
+        let actual = resolve_owner(db, path, items, current.clone(), &turns);
+        let matching_new_anchor = |actual: &Option<String>| {
+            allow_inserted_anchor
+                && expected.is_none()
+                && actual.as_ref().is_some_and(|owner| {
+                    !items.is_empty() && items.iter().all(|item| &item.thread == owner)
+                })
+        };
+        // 新锚点只能在本事务写入后出现；已有归属丢失或更换仍需拒绝。
+        let mut invalid = previous != current
+            || actual.as_ref().map_or(true, |actual| {
+                actual != expected && !matching_new_anchor(actual)
+            });
+        let effective = expected
+            .as_ref()
+            .or_else(|| items.first().map(|item| &item.thread));
+        if let Some(owner) = effective {
+            for item in items {
+                if turns
+                    .get(&item.turn)
+                    .is_some_and(|ids| ids.len() != 1 || !ids.contains(owner))
+                {
+                    invalid = true;
+                }
+                if let Some((id, ordinal)) = &item.projection {
+                    let existing: Option<(String, i64, String)> = db.query_row(
+                        "SELECT item_json,rollout_ordinal,item_type FROM thread_items WHERE thread_id=?1 AND turn_id=?2 AND item_id=?3",
+                        params![owner,item.turn,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+                    ).optional()?;
+                    if existing.is_some_and(|(raw, n, kind)| {
+                        kind != "userMessage"
+                            || n != *ordinal
+                            || item_text(&raw).as_deref() != Some(item.text.as_str())
+                    }) {
+                        invalid = true;
+                    }
+                }
+            }
+        }
+        // 不允许目录回退掩盖原有锚点被删、改写或换类型。
+        for (thread, turn, id, raw, ordinal, kind) in anchors {
+            let current: Option<(String, i64, String)> = db.query_row(
+                "SELECT item_json,rollout_ordinal,item_type FROM thread_items WHERE thread_id=?1 AND turn_id=?2 AND item_id=?3",
+                params![thread,turn,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+            ).optional()?;
+            if current.as_ref() != Some(&(raw.clone(), *ordinal, kind.clone())) {
+                invalid = true;
+            }
+        }
+        if invalid {
+            changed.push(path.clone());
+        }
+    }
+    Ok(changed)
 }
 
 fn issue(report: &mut SessionIndexRepairReport, message: String) {
@@ -726,7 +953,12 @@ fn inspect(db: &Connection, c: &Candidate) -> anyhow::Result<Action> {
             }
             return Ok(if first.as_ref() == Some(id) {
                 Action::Present
-            } else if first.is_none() && rows.len() == 1 && is_original_first(c) {
+            } else if first.is_none()
+                && is_original_first(c)
+                && rows
+                    .iter()
+                    .all(|(other_id, _, n)| other_id == id || n > ordinal)
+            {
                 if finished {
                     Action::Link(id.clone())
                 } else {
@@ -905,10 +1137,19 @@ enum RepairStage {
 
 fn repair_session_index_observed(
     path: Option<&Path>,
+    observe: impl FnMut(RepairStage),
+) -> anyhow::Result<SessionIndexRepairReport> {
+    let home = home(path);
+    let sqlite_home = codex_plus_core::codex_sqlite::resolve_sqlite_home_home_or_default(&home);
+    repair_session_index_in_roots(&home, &sqlite_home, observe)
+}
+
+fn repair_session_index_in_roots(
+    home: &Path,
+    sqlite_home: &Path,
     mut observe: impl FnMut(RepairStage),
 ) -> anyhow::Result<SessionIndexRepairReport> {
     let started = Instant::now();
-    let home = home(path);
     let work = home.join("session-index-repair");
     fs::create_dir_all(&work)?;
     let lock = fs::OpenOptions::new()
@@ -920,335 +1161,1037 @@ fn repair_session_index_observed(
     lock.try_lock_exclusive()
         .context("会话索引修复正在运行，请稍后查看报告")?;
     let _lock = RepairLock(lock);
-    let _lifecycle = crate::try_acquire_provider_sync_lifecycle_guard(Some(&home))?;
-    let mut report = SessionIndexRepairReport {
-        checked_at_ms: chrono::Utc::now().timestamp_millis(),
-        ..Default::default()
-    };
-    let db_path = home.join("thread_history_1.sqlite");
-    if !db_path.is_file() {
-        bail!("未找到原生会话历史数据库，尚不能修复消息索引");
-    }
-    let mut db = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    db.busy_timeout(Duration::from_secs(5))?;
-    // 未知数据库版本直接失败，不创建或改造原生 schema。
-    db.prepare("SELECT thread_id,turn_id,first_user_item_id,status FROM thread_turns LIMIT 0")?;
-    db.prepare("SELECT thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal FROM thread_items LIMIT 0")?;
-    let mut cache = Connection::open(work.join("scan-cache.sqlite"))?;
-    cache.execute_batch("CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,stamp TEXT NOT NULL,candidates TEXT NOT NULL);")?;
-    cache.execute_batch("CREATE TABLE IF NOT EXISTS pending(key TEXT PRIMARY KEY,first_seen INTEGER NOT NULL,last_seen INTEGER NOT NULL,checks INTEGER NOT NULL);")?;
-    let mut files = Vec::new();
-    for dir in ["sessions", "archived_sessions"] {
-        collect_files(&home.join(dir), &mut files)?;
-    }
-    files.sort();
-    let mut candidates = Vec::new();
-    let owners = rollout_owners(&home)?;
-    let mut turn_owners: HashMap<String, HashSet<String>> = HashMap::new();
-    {
-        let mut stmt = db.prepare("SELECT thread_id,turn_id FROM thread_turns")?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-            let (thread, turn) = row?;
-            turn_owners.entry(turn).or_default().insert(thread);
+    let result = (|| -> anyhow::Result<SessionIndexRepairReport> {
+        let _lifecycle = crate::try_acquire_provider_sync_lifecycle_guard(Some(home))?;
+        let mut report = SessionIndexRepairReport {
+            checked_at_ms: chrono::Utc::now().timestamp_millis(),
+            ..Default::default()
+        };
+        let db_path = sqlite_home.join("thread_history_1.sqlite");
+        if !db_path.is_file() {
+            bail!("未找到原生会话历史数据库，尚不能修复消息索引");
         }
-    }
-    let mut source_times: HashMap<(String, String, i64), i64> = HashMap::new();
-    let mut source_fingerprints = HashMap::<PathBuf, String>::new();
-    let mut thread_sources = HashMap::<String, HashSet<PathBuf>>::new();
-    let mut verified_sources = HashSet::new();
-    let mut pending_observations = Vec::new();
-    let cache_tx = cache.transaction()?;
-    for path in files {
-        report.scanned_files += 1;
-        let result: anyhow::Result<ScanResult> = (|| {
-            let metadata = source_metadata_stamp(&path)?;
-            let key = path.to_string_lossy();
-            let cached: Option<(String, String)> = cache_tx
-                .query_row(
-                    "SELECT stamp,candidates FROM files WHERE path=?1",
-                    params![key],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            if let Some((stamp, raw)) = cached
-                && stamp.starts_with(&metadata)
-                && source_fingerprint(&path)? == stamp
-                && let Ok(items) = serde_json::from_str::<ScanResult>(&raw)
+        let db_path = fs::canonicalize(db_path)?;
+        // 不同 rollout 根可能共用同一个 SQLite 根；锁随实际数据库隔离。
+        let db_lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(db_path.with_extension("sqlite.repair.lock"))?;
+        db_lock
+            .try_lock_exclusive()
+            .context("目标消息数据库正在修复")?;
+        let _db_lock = RepairLock(db_lock);
+        let mut db = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        db.busy_timeout(Duration::from_secs(5))?;
+        // 未知数据库版本直接失败，不创建或改造原生 schema。
+        db.prepare("SELECT thread_id,turn_id,first_user_item_id,status FROM thread_turns LIMIT 0")?;
+        db.prepare("SELECT thread_id,turn_id,item_id,rollout_ordinal,created_at_ms,item_json,item_type,updated_at_ordinal FROM thread_items LIMIT 0")?;
+        let mut cache = Connection::open(work.join("scan-cache.sqlite"))?;
+        cache.execute_batch("CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,stamp TEXT NOT NULL,candidates TEXT NOT NULL);")?;
+        cache.execute_batch("CREATE TABLE IF NOT EXISTS pending(key TEXT PRIMARY KEY,first_seen INTEGER NOT NULL,last_seen INTEGER NOT NULL,checks INTEGER NOT NULL);")?;
+        let mut files = Vec::new();
+        for dir in ["sessions", "archived_sessions"] {
+            collect_files(&home.join(dir), &mut files)?;
+        }
+        files.sort();
+        let duplicate_sources = verify_duplicate_sources(&mut files, &mut report)?;
+        let mut candidates = Vec::new();
+        let owners = rollout_owners(sqlite_home, home)?;
+        let mut turn_owners: HashMap<String, HashSet<String>> = HashMap::new();
+        {
+            let mut stmt = db.prepare("SELECT thread_id,turn_id FROM thread_turns")?;
+            for row in
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             {
-                report.cached_files += 1;
-                source_fingerprints.insert(path.clone(), stamp);
-                return Ok(items);
+                let (thread, turn) = row?;
+                turn_owners.entry(turn).or_default().insert(thread);
             }
-            let (items, stamp) = scan_source(&path)?;
-            cache_tx.execute(
-                "INSERT OR REPLACE INTO files VALUES(?1,?2,?3)",
-                params![key, stamp, serde_json::to_string(&items)?],
-            )?;
-            source_fingerprints.insert(path.clone(), stamp);
-            Ok(items)
-        })();
-        match result {
-            Ok(scanned) => {
-                for message in scanned.issues {
-                    issue(&mut report, format!("{}：{message}", path.display()));
+        }
+        let mut source_times: HashMap<(String, String, i64), i64> = HashMap::new();
+        let mut source_fingerprints = HashMap::<PathBuf, String>::new();
+        let mut thread_sources = HashMap::<String, HashSet<PathBuf>>::new();
+        let mut verified_sources = HashSet::new();
+        let mut owner_evidence = Vec::new();
+        let mut pending_observations = Vec::new();
+        let cache_tx = cache.transaction()?;
+        for path in files {
+            report.scanned_files += 1;
+            report.compressed_files += usize::from(crate::rollout_source::is_compressed(&path));
+            let result: anyhow::Result<ScanResult> = (|| {
+                let metadata = source_metadata_stamp(&path)?;
+                let key = path.to_string_lossy();
+                let cached: Option<(String, String)> = cache_tx
+                    .query_row(
+                        "SELECT stamp,candidates FROM files WHERE path=?1",
+                        params![key],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((stamp, raw)) = cached
+                    && stamp.starts_with(&metadata)
+                    && source_fingerprint(&path)? == stamp
+                    && let Ok(items) = serde_json::from_str::<ScanResult>(&raw)
+                {
+                    report.cached_files += 1;
+                    source_fingerprints.insert(path.clone(), stamp);
+                    return Ok(items);
                 }
-                let mut items = scanned.candidates;
-                let owner = fs::canonicalize(&path)
-                    .ok()
-                    .map(|p| owners.get(&p).cloned().unwrap_or(RolloutOwner::Absent))
-                    .unwrap_or(RolloutOwner::Absent);
-                // 目录表可能仅指向当前分片而保留父任务 ID，原生完成事件证据优先。
-                // 如证据仍指向别的 owner，整文件保留待核查，禁止重复补到目录 owner。
-                let owner = match resolve_owner(&db, &path, &items, owner, &turn_owners) {
-                    Ok(owner) => owner,
-                    Err(error) => {
+                let (items, stamp) = scan_source(&path)?;
+                cache_tx.execute(
+                    "INSERT OR REPLACE INTO files VALUES(?1,?2,?3)",
+                    params![key, stamp, serde_json::to_string(&items)?],
+                )?;
+                source_fingerprints.insert(path.clone(), stamp);
+                Ok(items)
+            })();
+            match result {
+                Ok(scanned) => {
+                    if let Err(error) = validate_source_identity(&path, &scanned) {
                         issue(&mut report, format!("{}：{error}", path.display()));
                         continue;
                     }
-                };
-                let modified = fs::metadata(&path)?
-                    .modified()?
-                    .duration_since(UNIX_EPOCH)?
-                    .as_millis() as i64;
-                for item in &mut items {
-                    if let Some(owner) = &owner {
-                        item.thread.clone_from(owner);
-                        verified_sources.insert((
-                            item.thread.clone(),
-                            item.turn.clone(),
-                            item.ordinal,
-                        ));
+                    for message in scanned.issues {
+                        issue(&mut report, format!("{}：{message}", path.display()));
                     }
-                    source_times
-                        .entry((item.thread.clone(), item.turn.clone(), item.ordinal))
-                        .and_modify(|t| *t = (*t).max(modified))
-                        .or_insert(modified);
-                    thread_sources
-                        .entry(item.thread.clone())
-                        .or_default()
-                        .insert(path.clone());
+                    let mut items = scanned.candidates;
+                    let owner = fs::canonicalize(&path)
+                        .ok()
+                        .map(|p| owners.get(&p).cloned().unwrap_or(RolloutOwner::Absent))
+                        .unwrap_or(RolloutOwner::Absent);
+                    // 目录表可能仅指向当前分片而保留父任务 ID，原生完成事件证据优先。
+                    // 如证据仍指向别的 owner，整文件保留待核查，禁止重复补到目录 owner。
+                    let owner = match resolve_owner(&db, &path, &items, owner.clone(), &turn_owners)
+                    {
+                        Ok(owner) => owner,
+                        Err(error) => {
+                            issue(&mut report, format!("{}：{error}", path.display()));
+                            continue;
+                        }
+                    };
+                    owner_evidence.push(capture_owner_evidence(&db, &path, &items, &owner)?);
+                    let modified = fs::metadata(&path)?
+                        .modified()?
+                        .duration_since(UNIX_EPOCH)?
+                        .as_millis() as i64;
+                    for item in &mut items {
+                        if let Some(owner) = &owner {
+                            item.thread.clone_from(owner);
+                            verified_sources.insert((
+                                item.thread.clone(),
+                                item.turn.clone(),
+                                item.ordinal,
+                            ));
+                        }
+                        source_times
+                            .entry((item.thread.clone(), item.turn.clone(), item.ordinal))
+                            .and_modify(|t| *t = (*t).max(modified))
+                            .or_insert(modified);
+                        thread_sources
+                            .entry(item.thread.clone())
+                            .or_default()
+                            .insert(path.clone());
+                    }
+                    candidates.extend(items);
                 }
-                candidates.extend(items);
-            }
-            Err(error)
-                if error.to_string().contains("文件扫描期间仍在写入")
-                    || error.to_string().contains("会话记录尾行不完整") =>
-            {
-                let modified = fs::metadata(&path)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_millis() as i64);
-                let reason = if error.to_string().contains("会话记录尾行不完整") {
-                    "会话记录尾行不完整"
-                } else {
-                    "文件扫描期间仍在写入"
-                };
-                if reason == "会话记录尾行不完整"
-                    && modified > 0
-                    && report.checked_at_ms.saturating_sub(modified) >= OLD_SOURCE_MS
+                Err(error)
+                    if error.to_string().contains("文件扫描期间仍在写入")
+                        || error.to_string().contains("会话记录尾行不完整") =>
                 {
-                    issue(
-                        &mut report,
-                        format!(
-                            "{}：尾行截断且超过24小时未更新，需核查原始日志",
-                            path.display()
-                        ),
-                    );
-                    continue;
-                }
-                pending_observations.push(PendingObservation {
-                    candidate: None,
-                    reason: reason.into(),
-                    source: path.to_string_lossy().into_owned(),
-                    modified_ms: modified,
-                });
-            }
-            Err(error) => issue(&mut report, format!("{}：{}", path.display(), error)),
-        }
-    }
-    // 同目标优先保留已有原生投影；尚未恢复时才选择最早分片。
-    candidates = deduplicate_goals(&db, candidates)?;
-    candidates
-        .sort_by(|a, b| (&a.thread, &a.turn, a.ordinal).cmp(&(&b.thread, &b.turn, b.ordinal)));
-    let candidates = merge_candidates(candidates);
-    let conflicts = conflicting_candidates(&candidates);
-    let mut pending = Vec::new();
-    let mut waiting = Vec::new();
-    for (index, entry) in candidates.into_iter().enumerate() {
-        let c = entry.candidate;
-        if conflicts.contains(&index) {
-            issue(
-                &mut report,
-                format!(
-                    "{} / {}：候选消息身份、位置或来源证据冲突，需人工核对",
-                    c.thread, c.turn
-                ),
-            );
-            continue;
-        }
-        match inspect_with_source(
-            &db,
-            &c,
-            verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
-        )? {
-            Action::Present => report.already_present += 1,
-            Action::Skip(reason) => {
-                issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
-            }
-            Action::Wait(_) => waiting.push(c),
-            _ => pending.push(c),
-        }
-    }
-    if !pending.is_empty() {
-        pending.append(&mut waiting);
-        pending
-            .sort_by(|a, b| (&a.thread, &a.turn, a.ordinal).cmp(&(&b.thread, &b.turn, b.ordinal)));
-        let write_threads: HashSet<_> = pending.iter().map(|candidate| &candidate.thread).collect();
-        let write_sources: HashSet<_> = write_threads
-            .iter()
-            .filter_map(|thread| thread_sources.get(*thread))
-            .flatten()
-            .cloned()
-            .collect();
-        source_fingerprints.retain(|path, _| write_sources.contains(path));
-        observe(RepairStage::Scanned);
-        let changed = changed_sources(&source_fingerprints);
-        if !changed.is_empty() {
-            abort_for_sources(
-                &mut report,
-                changed,
-                "获取数据库写锁前来源文件已变化，已放弃本次写入",
-            );
-            pending.clear();
-        }
-    }
-    if !pending.is_empty() {
-        let backup = work.join(format!("before-repair-{}.sqlite", uuid::Uuid::new_v4()));
-        db.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
-        report.backup_path = Some(backup);
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let before_tx_report = report.clone();
-        observe(RepairStage::Locked);
-        let changed = changed_sources(&source_fingerprints);
-        if changed.is_empty() {
-            for c in pending {
-                // 获取写锁后重新核验，避免扫描与写入之间原生进程已补齐消息。
-                let action = inspect_with_source(
-                    &tx,
-                    &c,
-                    verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
-                )?;
-                match action {
-                    Action::Present => report.already_present += 1,
-                    Action::Skip(reason) => {
-                        issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
+                    let modified = fs::metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_millis() as i64);
+                    let reason = if error.to_string().contains("会话记录尾行不完整") {
+                        "会话记录尾行不完整"
+                    } else {
+                        "文件扫描期间仍在写入"
+                    };
+                    if reason == "会话记录尾行不完整"
+                        && modified > 0
+                        && report.checked_at_ms.saturating_sub(modified) >= OLD_SOURCE_MS
+                    {
+                        issue(
+                            &mut report,
+                            format!(
+                                "{}：尾行截断且超过24小时未更新，需核查原始日志",
+                                path.display()
+                            ),
+                        );
+                        continue;
                     }
-                    Action::Wait(reason) => pending_observations.push(PendingObservation {
+                    pending_observations.push(PendingObservation {
+                        candidate: None,
+                        reason: reason.into(),
+                        source: path.to_string_lossy().into_owned(),
+                        modified_ms: modified,
+                    });
+                }
+                Err(error) => issue(&mut report, format!("{}：{}", path.display(), error)),
+            }
+        }
+        if !changed_sources(&duplicate_sources).is_empty() {
+            bail!("明文与压缩副本在扫描期间发生变化，已放弃本次写入");
+        }
+        // 同目标优先保留已有原生投影；尚未恢复时才选择最早分片。
+        candidates = deduplicate_goals(&db, candidates)?;
+        candidates
+            .sort_by(|a, b| (&a.thread, &a.turn, a.ordinal).cmp(&(&b.thread, &b.turn, b.ordinal)));
+        let candidates = merge_candidates(candidates);
+        let conflicts = conflicting_candidates(&candidates);
+        let mut pending = Vec::new();
+        let mut waiting = Vec::new();
+        for (index, entry) in candidates.into_iter().enumerate() {
+            let c = entry.candidate;
+            if conflicts.contains(&index) {
+                issue(
+                    &mut report,
+                    format!(
+                        "{} / {}：候选消息身份、位置或来源证据冲突，需人工核对",
+                        c.thread, c.turn
+                    ),
+                );
+                continue;
+            }
+            match inspect_with_source(
+                &db,
+                &c,
+                verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
+            )? {
+                Action::Present => report.already_present += 1,
+                Action::Skip(reason) => {
+                    issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
+                }
+                Action::Wait(_) => waiting.push(c),
+                _ => pending.push(c),
+            }
+        }
+        if !pending.is_empty() {
+            pending.append(&mut waiting);
+            pending.sort_by(|a, b| {
+                (&a.thread, &a.turn, a.ordinal).cmp(&(&b.thread, &b.turn, b.ordinal))
+            });
+            let write_threads: HashSet<_> =
+                pending.iter().map(|candidate| &candidate.thread).collect();
+            let write_sources: HashSet<_> = write_threads
+                .iter()
+                .filter_map(|thread| thread_sources.get(*thread))
+                .flatten()
+                .cloned()
+                .collect();
+            source_fingerprints.retain(|path, _| write_sources.contains(path));
+            observe(RepairStage::Scanned);
+            let changed = changed_sources(&source_fingerprints);
+            if !changed.is_empty() {
+                abort_for_sources(
+                    &mut report,
+                    changed,
+                    "获取数据库写锁前来源文件已变化，已放弃本次写入",
+                );
+                pending.clear();
+            }
+        }
+        if !pending.is_empty() {
+            let backup = work.join(format!("before-repair-{}.sqlite", uuid::Uuid::new_v4()));
+            db.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
+            report.backup_path = Some(backup);
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let before_tx_report = report.clone();
+            observe(RepairStage::Locked);
+            let mut changed = changed_sources(&source_fingerprints);
+            changed.extend(changed_owners(
+                &tx,
+                sqlite_home,
+                home,
+                &owners,
+                &owner_evidence,
+                &source_fingerprints,
+                false,
+            )?);
+            if changed.is_empty() {
+                for c in pending {
+                    // 获取写锁后重新核验，避免扫描与写入之间原生进程已补齐消息。
+                    let action = inspect_with_source(
+                        &tx,
+                        &c,
+                        verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
+                    )?;
+                    match action {
+                        Action::Present => report.already_present += 1,
+                        Action::Skip(reason) => {
+                            issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
+                        }
+                        Action::Wait(reason) => pending_observations.push(PendingObservation {
+                            modified_ms: *source_times
+                                .get(&(c.thread.clone(), c.turn.clone(), c.ordinal))
+                                .unwrap_or(&0),
+                            candidate: Some(c),
+                            reason: reason.into(),
+                            source: String::new(),
+                        }),
+                        action => {
+                            if apply(&tx, &c, action)? {
+                                report.repaired_items += 1;
+                            }
+                        }
+                    }
+                }
+                observe(RepairStage::Applied);
+                let mut changed_after_apply = changed_sources(&source_fingerprints);
+                changed_after_apply.extend(changed_owners(
+                    &tx,
+                    sqlite_home,
+                    home,
+                    &owners,
+                    &owner_evidence,
+                    &source_fingerprints,
+                    true,
+                )?);
+                if changed_after_apply.is_empty() {
+                    tx.commit()?;
+                } else {
+                    tx.rollback()?;
+                    report = before_tx_report;
+                    abort_for_sources(
+                        &mut report,
+                        changed_after_apply,
+                        "提交前来源文件或归属证据发生变化，本次写入已回滚",
+                    );
+                }
+            } else {
+                tx.rollback()?;
+                abort_for_sources(
+                    &mut report,
+                    changed,
+                    "获取数据库写锁后来源文件或归属证据已变化，已放弃本次写入",
+                );
+            }
+        }
+        for c in waiting {
+            match inspect_with_source(
+                &db,
+                &c,
+                verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
+            )? {
+                Action::Present => report.already_present += 1,
+                Action::Skip(reason) => {
+                    issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
+                }
+                action => {
+                    let reason = if let Action::Wait(reason) = action {
+                        reason
+                    } else {
+                        "原生状态刚发生变化，将在下次检查重新核验"
+                    };
+                    pending_observations.push(PendingObservation {
                         modified_ms: *source_times
                             .get(&(c.thread.clone(), c.turn.clone(), c.ordinal))
                             .unwrap_or(&0),
                         candidate: Some(c),
                         reason: reason.into(),
                         source: String::new(),
-                    }),
-                    action => {
-                        if apply(&tx, &c, action)? {
-                            report.repaired_items += 1;
-                        }
-                    }
+                    });
                 }
             }
-            observe(RepairStage::Applied);
-            let changed_after_apply = changed_sources(&source_fingerprints);
-            if changed_after_apply.is_empty() {
-                tx.commit()?;
+        }
+        // 不再待处理的候选删除观察状态；以后真正再次缺失时重新计时。
+        let before_cache_report = report.clone();
+        let cache_result: anyhow::Result<()> = (|| {
+            if report.aborted_reason.is_some() {
+                cache_tx.rollback()?;
             } else {
-                tx.rollback()?;
-                report = before_tx_report;
-                abort_for_sources(
-                    &mut report,
-                    changed_after_apply,
-                    "提交前来源文件发生变化，本次写入已回滚",
-                );
-            }
-        } else {
-            tx.rollback()?;
-            abort_for_sources(
-                &mut report,
-                changed,
-                "获取数据库写锁后来源文件已变化，已放弃本次写入",
-            );
-        }
-    }
-    for c in waiting {
-        match inspect_with_source(
-            &db,
-            &c,
-            verified_sources.contains(&(c.thread.clone(), c.turn.clone(), c.ordinal)),
-        )? {
-            Action::Present => report.already_present += 1,
-            Action::Skip(reason) => {
-                issue(&mut report, format!("{} / {}：{reason}", c.thread, c.turn))
-            }
-            action => {
-                let reason = if let Action::Wait(reason) = action {
-                    reason
-                } else {
-                    "原生状态刚发生变化，将在下次检查重新核验"
-                };
-                pending_observations.push(PendingObservation {
-                    modified_ms: *source_times
-                        .get(&(c.thread.clone(), c.turn.clone(), c.ordinal))
-                        .unwrap_or(&0),
-                    candidate: Some(c),
-                    reason: reason.into(),
-                    source: String::new(),
-                });
-            }
-        }
-    }
-    // 不再待处理的候选删除观察状态；以后真正再次缺失时重新计时。
-    let before_cache_report = report.clone();
-    let cache_result: anyhow::Result<()> = (|| {
-        if report.aborted_reason.is_some() {
-            cache_tx.rollback()?;
-        } else {
-            for pending in pending_observations {
-                pending_issue(
-                    &mut report,
-                    &cache_tx,
-                    pending.candidate.as_ref(),
-                    &pending.reason,
-                    &pending.source,
-                    pending.modified_ms,
+                for pending in pending_observations {
+                    pending_issue(
+                        &mut report,
+                        &cache_tx,
+                        pending.candidate.as_ref(),
+                        &pending.reason,
+                        &pending.source,
+                        pending.modified_ms,
+                    )?;
+                }
+                cache_tx.execute(
+                    "DELETE FROM pending WHERE last_seen<>?1",
+                    [report.checked_at_ms],
                 )?;
+                cache_tx.commit()?;
             }
-            cache_tx.execute(
-                "DELETE FROM pending WHERE last_seen<>?1",
-                [report.checked_at_ms],
-            )?;
-            cache_tx.commit()?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = cache_result {
-        report = before_cache_report;
-        report.warnings.push(format!(
+            Ok(())
+        })();
+        if let Err(error) = cache_result {
+            report = before_cache_report;
+            report.warnings.push(format!(
             "索引核验已结束（已恢复 {} 条消息），缓存和等待记录未能保存：{error}；已提交的消息不受影响，下次重新检查",
             report.repaired_items
         ));
+        }
+        report.elapsed_ms = started.elapsed().as_millis() as u64;
+        let report_temp = work.join("report.tmp");
+        crate::backup::private_atomic_write(&report_temp, &serde_json::to_vec_pretty(&report)?)?;
+        fs::rename(report_temp, work.join("report.json"))?;
+        crate::backup::sync_directory(&work)?;
+        Ok(report)
+    })();
+    if let Err(error) = &result {
+        let failed = SessionIndexRepairReport {
+            checked_at_ms: chrono::Utc::now().timestamp_millis(),
+            aborted_reason: Some(format!(
+                "本次检查失败，不能沿用上次成功状态；若已提交部分操作，下次须重新核验：{error:#}"
+            )),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            ..Default::default()
+        };
+        // home 锁仍在作用域内，不能覆盖另一个正在运行的修复报告。
+        let saved = serde_json::to_vec_pretty(&failed)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| {
+                crate::backup::private_atomic_write(&work.join("report.json"), &bytes)
+            });
+        if let Err(save_error) = saved {
+            return Err(anyhow::anyhow!(
+                "{error:#}；失败报告保存失败：{save_error:#}"
+            ));
+        }
     }
-    report.elapsed_ms = started.elapsed().as_millis() as u64;
-    let report_temp = work.join("report.tmp");
-    fs::write(&report_temp, serde_json::to_vec_pretty(&report)?)?;
-    fs::rename(report_temp, work.join("report.json"))?;
-    Ok(report)
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 所有夹具显式指定两个临时根，避免测试进程继承现场 CODEX_SQLITE_HOME。
+    fn repair_session_index(path: Option<&Path>) -> anyhow::Result<SessionIndexRepairReport> {
+        repair_session_index_observed(path, |_| {})
+    }
+
+    fn repair_session_index_observed(
+        path: Option<&Path>,
+        observe: impl FnMut(RepairStage),
+    ) -> anyhow::Result<SessionIndexRepairReport> {
+        let root = path.expect("测试必须显式提供临时目录");
+        repair_session_index_in_roots(root, root, observe)
+    }
+
+    fn native_history_schema(db: &Connection) {
+        // 来源：只读导出的 native-history-schema.json；保留分页索引和真实游标列。
+        db.execute_batch(
+            "CREATE TABLE thread_turns (
+                thread_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+                rollout_ordinal INTEGER NOT NULL, status TEXT NOT NULL, error_json TEXT,
+                started_at INTEGER, completed_at INTEGER, duration_ms INTEGER,
+                first_user_item_id TEXT, final_agent_item_id TEXT,
+                rollout_byte_offset INTEGER, rollout_end_ordinal INTEGER,
+                rollout_end_byte_offset INTEGER, root_turn_id TEXT,
+                PRIMARY KEY(thread_id, turn_id));
+             CREATE UNIQUE INDEX idx_thread_turns_page ON thread_turns(thread_id, rollout_ordinal);
+             CREATE TABLE thread_items (
+                thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, item_id TEXT NOT NULL,
+                rollout_ordinal INTEGER NOT NULL, created_at_ms INTEGER NOT NULL,
+                item_json TEXT NOT NULL, item_type TEXT NOT NULL DEFAULT '',
+                updated_at_ordinal INTEGER NOT NULL DEFAULT 0,
+                started_at_ms INTEGER, completed_at_ms INTEGER,
+                PRIMARY KEY(thread_id, turn_id, item_id));
+             CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id, rollout_ordinal);
+             CREATE INDEX idx_thread_items_by_turn_page ON thread_items(thread_id, turn_id, rollout_ordinal);
+             CREATE INDEX idx_thread_items_user_messages ON thread_items(thread_id, rollout_ordinal) WHERE item_type='userMessage';
+             CREATE INDEX idx_thread_items_updated_page ON thread_items(thread_id, updated_at_ordinal);
+             CREATE INDEX idx_thread_items_by_turn_updated_page ON thread_items(thread_id, turn_id, updated_at_ordinal);
+             CREATE INDEX idx_thread_turns_end_page ON thread_turns(thread_id, rollout_end_ordinal, turn_id) WHERE rollout_end_ordinal IS NOT NULL;
+             CREATE TABLE thread_history_projection_state (
+                thread_id TEXT PRIMARY KEY, next_rollout_byte_offset INTEGER NOT NULL,
+                next_rollout_ordinal INTEGER NOT NULL);
+             CREATE TABLE thread_realtime_items (
+                thread_id TEXT NOT NULL, item_id TEXT NOT NULL,
+                rollout_ordinal INTEGER NOT NULL, created_at_ms INTEGER NOT NULL,
+                item_type TEXT NOT NULL, item_json TEXT NOT NULL,
+                PRIMARY KEY(thread_id, item_id));
+             CREATE UNIQUE INDEX idx_thread_realtime_items_page ON thread_realtime_items(thread_id, rollout_ordinal);
+             CREATE INDEX idx_thread_realtime_items_boundary ON thread_realtime_items(thread_id, rollout_ordinal)
+                WHERE item_type IN ('realtime_session_started', 'realtime_session_closed');"
+        ).unwrap();
+    }
+
+    fn split_missing_projection_fixture(
+        meta_id: &str,
+        physical_id: &str,
+        history_base: bool,
+        existing_turn: bool,
+        compressed: bool,
+    ) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir(home.path().join("sessions")).unwrap();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        native_history_schema(&db);
+        if existing_turn {
+            db.execute("INSERT INTO thread_turns(thread_id,turn_id,rollout_ordinal,status) VALUES(?1,'turn',1,'completed')", [meta_id]).unwrap();
+        }
+        db.execute(
+            "INSERT INTO thread_history_projection_state VALUES(?1,4096,77)",
+            [meta_id],
+        )
+        .unwrap();
+        let mut meta = json!({"type":"session_meta","payload":{"id":meta_id}});
+        if history_base {
+            meta["payload"]["history_base"] =
+                json!({"thread_id":meta_id,"end_ordinal_exclusive":2,"end_byte_offset":512});
+        }
+        let rows = [
+            meta,
+            json!({"type":"event_msg","ordinal":1,"payload":{"type":"task_started","turn_id":"turn","started_at":100}}),
+            json!({"type":"response_item","ordinal":3,"timestamp":"1970-01-01T00:01:41Z","payload":{"role":"user","content":[{"type":"input_text","text":"original"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}}),
+            json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":meta_id,"turn_id":"turn","item":{"id":"native","type":"UserMessage","content":[{"type":"text","text":"original"}]}}}),
+            json!({"type":"event_msg","ordinal":5,"payload":{"type":"task_complete","turn_id":"turn","started_at":100,"completed_at":105}}),
+        ];
+        let raw = rows
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>();
+        let logical = home
+            .path()
+            .join(format!("sessions/rollout-origin_{physical_id}.jsonl"));
+        if compressed {
+            fs::write(
+                logical.with_extension("jsonl.zst"),
+                zstd::stream::encode_all(raw.as_bytes(), 1).unwrap(),
+            )
+            .unwrap();
+        } else {
+            fs::write(logical, raw).unwrap();
+        }
+        home
+    }
+
+    #[test]
+    fn history_base_or_physical_identity_conflict_cannot_restore_into_canonical_parent() {
+        let parent = "11111111-1111-4111-8111-111111111111";
+        let child = "22222222-2222-4222-8222-222222222222";
+        for history_base in [false, true] {
+            for compressed in [false, true] {
+                let home = split_missing_projection_fixture(
+                    parent,
+                    child,
+                    history_base,
+                    false,
+                    compressed,
+                );
+                let state = Connection::open(home.path().join("state_5.sqlite")).unwrap();
+                state
+                    .execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT)")
+                    .unwrap();
+                state
+                    .execute(
+                        "INSERT INTO threads VALUES(?1,?2)",
+                        params![parent, format!("sessions/rollout-origin_{child}.jsonl")],
+                    )
+                    .unwrap();
+                for _ in 0..2 {
+                    let report =
+                        repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+                    assert_eq!((report.repaired_items, report.skipped_items), (0, 1));
+                    assert!(report.backup_path.is_none());
+                    assert!(report.issues[0].contains(if history_base {
+                        "history_base"
+                    } else {
+                        "物理后缀"
+                    }));
+                }
+                let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM thread_turns", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM thread_items", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_anchor_from_own_insert_commits_without_directory_owner_and_preserves_cursor() {
+        let child = "22222222-2222-4222-8222-222222222222";
+        let home = split_missing_projection_fixture(child, child, false, true, true);
+        let first = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        assert!(first.aborted_reason.is_none());
+        assert_eq!((first.repaired_items, first.skipped_items), (1, 0));
+        let second = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        assert!(second.aborted_reason.is_none());
+        assert_eq!((second.repaired_items, second.already_present), (0, 1));
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        assert_eq!(counts(&db), (1, Some("native".into())));
+        assert_eq!(db.query_row("SELECT next_rollout_byte_offset,next_rollout_ordinal FROM thread_history_projection_state", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(), (4096,77));
+    }
+
+    #[test]
+    fn conflicting_turn_owner_cannot_be_hidden_by_absent_anchor() {
+        let child = "22222222-2222-4222-8222-222222222222";
+        let home = split_missing_projection_fixture(child, child, false, true, true);
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        let report = repair_session_index_in_roots(home.path(), home.path(), |stage| {
+            if stage == RepairStage::Scanned {
+                db.execute("INSERT INTO thread_turns(thread_id,turn_id,rollout_ordinal,status) VALUES('other','turn',1,'completed')", []).unwrap();
+            }
+        }).unwrap();
+        assert!(report.aborted_reason.is_some());
+        assert_eq!(counts(&db).0, 0);
+    }
+
+    #[test]
+    fn original_anchor_changes_are_not_hidden_by_directory_fallback() {
+        let child = "22222222-2222-4222-8222-222222222222";
+        for mutation in [
+            "DELETE FROM thread_items WHERE item_id='native'",
+            "UPDATE thread_items SET item_json='{}' WHERE item_id='native'",
+            "UPDATE thread_items SET rollout_ordinal=8 WHERE item_id='native'",
+            "UPDATE thread_items SET item_type='agentMessage' WHERE item_id='native'",
+        ] {
+            let home = split_missing_projection_fixture(child, child, false, true, false);
+            let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+            repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+            let state = Connection::open(home.path().join("state_5.sqlite")).unwrap();
+            state
+                .execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT)")
+                .unwrap();
+            state
+                .execute(
+                    "INSERT INTO threads VALUES(?1,?2)",
+                    params![child, format!("sessions/rollout-origin_{child}.jsonl")],
+                )
+                .unwrap();
+            // 另一条安全候选触发写事务，同时复核该线程原有锚点。
+            let raw = fs::read_to_string(
+                home.path()
+                    .join(format!("sessions/rollout-origin_{child}.jsonl")),
+            )
+            .unwrap();
+            let later = raw
+                .replace("\"turn\"", "\"later\"")
+                .replace("\"ordinal\":1", "\"ordinal\":11")
+                .replace("\"ordinal\":3", "\"ordinal\":13")
+                .replace("\"ordinal\":4", "\"ordinal\":14")
+                .replace("\"ordinal\":5", "\"ordinal\":15")
+                .replace("\"native\"", "\"later-native\"");
+            fs::write(home.path().join("sessions/later.jsonl"), later).unwrap();
+            db.execute("INSERT INTO thread_turns(thread_id,turn_id,rollout_ordinal,status) VALUES(?1,'later',11,'completed')", [child]).unwrap();
+            let report = repair_session_index_in_roots(home.path(), home.path(), |stage| {
+                if stage == RepairStage::Scanned {
+                    db.execute_batch(mutation).unwrap();
+                }
+            })
+            .unwrap();
+            assert!(report.aborted_reason.is_some(), "{mutation}");
+            assert_eq!(report.repaired_items, 0);
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM thread_items WHERE turn_id='later'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+    }
+
+    fn compress_fixture(home: &Path) -> PathBuf {
+        let plain = home.join("sessions/rollout.jsonl");
+        let compressed = home.join("sessions/rollout.jsonl.zst");
+        let raw = fs::read(&plain).unwrap();
+        fs::write(&compressed, zstd::stream::encode_all(&raw[..], 1).unwrap()).unwrap();
+        fs::rename(plain, home.join("sessions/rollout.original")).unwrap();
+        compressed
+    }
+
+    #[test]
+    fn compressed_sources_use_physical_digest_and_keep_native_ordinals() {
+        let home = home_with_rollout();
+        let path = compress_fixture(home.path());
+        let bytes = fs::read(&path).unwrap();
+        let (scanned, stamp) = scan_source(&path).unwrap();
+        assert_eq!(scanned.candidates[0].ordinal, 3);
+        assert!(stamp.ends_with(&format!("{:x}", Sha256::digest(&bytes))));
+        assert_eq!(source_fingerprint(&path).unwrap(), stamp);
+        let first = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        assert_eq!((first.scanned_files, first.repaired_items), (1, 1));
+        assert_eq!(first.compressed_files, 1);
+        let second = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        assert_eq!((second.cached_files, second.already_present), (1, 1));
+        assert_eq!(second.compressed_files, 1);
+        let saved = load_session_index_repair_report(Some(home.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.compressed_files, 1);
+        assert_eq!(serde_json::to_value(&saved).unwrap()["compressedFiles"], 1);
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn compressed_physical_change_with_same_text_length_and_mtime_aborts_writes() {
+        let home = home_with_rollout();
+        let path = compress_fixture(home.path());
+        let mut bytes = fs::read(&path).unwrap();
+        // Zstandard skippable frame：物理内容改变，解压文本及原生序号不变。
+        bytes.extend_from_slice(&[0x50, 0x2a, 0x4d, 0x18, 1, 0, 0, 0, 0]);
+        fs::write(&path, &bytes).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let (_, before) = scan_source(&path).unwrap();
+        let report = repair_session_index_in_roots(home.path(), home.path(), |stage| {
+            if stage == RepairStage::Applied {
+                *bytes.last_mut().unwrap() = 1;
+                fs::write(&path, &bytes).unwrap();
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(modified)
+                    .unwrap();
+            }
+        })
+        .unwrap();
+        assert!(report.aborted_reason.is_some());
+        assert_eq!(report.repaired_items, 0);
+        let (scanned, after) = scan_source(&path).unwrap();
+        assert_eq!(scanned.candidates[0].ordinal, 3);
+        assert_ne!(before, after);
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        assert_eq!(counts(&db), (0, None));
+    }
+
+    #[test]
+    fn equal_plain_and_compressed_copies_merge_but_conflicting_copies_do_not_write() {
+        for conflicting in [false, true] {
+            let home = home_with_rollout();
+            let raw = fs::read_to_string(home.path().join("sessions/rollout.jsonl")).unwrap();
+            let text = if conflicting {
+                raw.replace("完整原文", "冲突原文")
+            } else {
+                raw
+            };
+            fs::write(
+                home.path().join("sessions/rollout.jsonl.zst"),
+                zstd::stream::encode_all(text.as_bytes(), 1).unwrap(),
+            )
+            .unwrap();
+            let result = repair_session_index_in_roots(home.path(), home.path(), |_| {});
+            if conflicting {
+                assert!(result.is_err());
+                let report = load_session_index_repair_report(Some(home.path()))
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    report
+                        .aborted_reason
+                        .as_deref()
+                        .unwrap()
+                        .contains("明文与压缩来源证据不一致")
+                );
+                let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+                assert_eq!(counts(&db), (0, None));
+            } else {
+                let report = result.unwrap();
+                assert_eq!(
+                    (
+                        report.scanned_files,
+                        report.repaired_items,
+                        report.skipped_items
+                    ),
+                    (2, 1, 0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compressed_sidecar_retains_logical_catalog_owner_and_split_suffix() {
+        let home = home_with_rollout();
+        let path = compress_fixture(home.path());
+        let state = Connection::open(home.path().join("state_5.sqlite")).unwrap();
+        state.execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT); INSERT INTO threads VALUES('split','sessions/rollout.jsonl');").unwrap();
+        let native = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        native
+            .execute("UPDATE thread_turns SET thread_id='split'", [])
+            .unwrap();
+        let report = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        assert_eq!(report.repaired_items, 1);
+        assert_eq!(
+            rollout_owners(home.path(), home.path()).unwrap()[&fs::canonicalize(path).unwrap()],
+            RolloutOwner::Known("split".into())
+        );
+
+        let owner = "11111111-1111-4111-8111-111111111111";
+        let mut c = candidate();
+        c.thread = owner.into();
+        c.projection = Some(("anchor".into(), 4));
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        db.execute("UPDATE thread_turns SET thread_id=?1", [owner])
+            .unwrap();
+        apply(&db, &c, inspect(&db, &c).unwrap()).unwrap();
+        let turns = HashMap::from([("turn".into(), HashSet::from([owner.into()]))]);
+        let compressed = PathBuf::from(format!("rollout-parent_{owner}.jsonl.zst"));
+        assert_eq!(
+            anchored_split_owner(&db, &compressed, &[c], &turns)
+                .unwrap()
+                .as_deref(),
+            Some(owner)
+        );
+    }
+
+    #[test]
+    fn separate_sqlite_root_and_database_lock_do_not_touch_legacy_database() {
+        let rollout = home_with_rollout();
+        let sqlite = home_with_rollout();
+        let db_path = sqlite.path().join("thread_history_1.sqlite");
+        let state = Connection::open(sqlite.path().join("state_5.sqlite")).unwrap();
+        state.execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT); INSERT INTO threads VALUES('split','sessions/rollout.jsonl');").unwrap();
+        let actual = Connection::open(&db_path).unwrap();
+        actual
+            .execute("UPDATE thread_turns SET thread_id='split'", [])
+            .unwrap();
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(db_path.with_extension("sqlite.repair.lock"))
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        assert!(repair_session_index_in_roots(rollout.path(), sqlite.path(), |_| {}).is_err());
+        FileExt::unlock(&lock).unwrap();
+        assert_eq!(
+            repair_session_index_in_roots(rollout.path(), sqlite.path(), |_| {})
+                .unwrap()
+                .repaired_items,
+            1
+        );
+        let legacy = Connection::open(rollout.path().join("thread_history_1.sqlite")).unwrap();
+        assert_eq!(counts(&legacy).0, 0);
+        assert_eq!(counts(&actual).0, 1);
+        assert_eq!(
+            actual
+                .query_row("SELECT thread_id FROM thread_items", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "split"
+        );
+    }
+
+    #[test]
+    fn multiple_existing_messages_can_relink_only_verified_earliest_item() {
+        let db = Connection::open_in_memory().unwrap();
+        schema(&db);
+        let first = candidate();
+        apply(&db, &first, inspect(&db, &first).unwrap()).unwrap();
+        let mut later = first.clone();
+        later.ordinal = 8;
+        later.projection = Some(("later".into(), 9));
+        later.text = "later".into();
+        apply(&db, &later, inspect(&db, &later).unwrap()).unwrap();
+        db.execute("UPDATE thread_turns SET first_user_item_id=NULL", [])
+            .unwrap();
+        assert!(matches!(inspect(&db, &later).unwrap(), Action::Skip(_)));
+        assert!(matches!(inspect(&db, &first).unwrap(), Action::Link(_)));
+        apply(&db, &first, inspect(&db, &first).unwrap()).unwrap();
+        assert_eq!(counts(&db), (2, Some(recovery_id(&first))));
+    }
+
+    #[test]
+    fn catalog_owner_changes_after_scan_or_apply_abort_and_rollback() {
+        for checkpoint in [
+            RepairStage::Scanned,
+            RepairStage::Locked,
+            RepairStage::Applied,
+        ] {
+            let home = home_with_rollout();
+            let state = Connection::open(home.path().join("state_5.sqlite")).unwrap();
+            state.execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT); INSERT INTO threads VALUES('thread','sessions/rollout.jsonl');").unwrap();
+            let report = repair_session_index_in_roots(home.path(), home.path(), |stage| {
+                if stage == checkpoint {
+                    state.execute("UPDATE threads SET id='other'", []).unwrap();
+                }
+            })
+            .unwrap();
+            assert!(report.aborted_reason.is_some());
+            assert_eq!(report.repaired_items, 0);
+            let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+            assert_eq!(counts(&db), (0, None));
+        }
+    }
+
+    #[test]
+    fn failed_run_replaces_previous_success_report() {
+        let home = home_with_rollout();
+        repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute_batch("ALTER TABLE thread_items RENAME TO incompatible_items")
+            .unwrap();
+        assert!(repair_session_index_in_roots(home.path(), home.path(), |_| {}).is_err());
+        let report = load_session_index_repair_report(Some(home.path()))
+            .unwrap()
+            .unwrap();
+        assert!(report.aborted_reason.is_some());
+        assert_eq!((report.repaired_items, report.already_present), (0, 0));
+    }
+
+    #[test]
+    fn report_write_failure_after_commit_invalidates_old_success_without_claiming_rollback() {
+        let home = home_with_rollout();
+        repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        fs::create_dir(home.path().join("session-index-repair/report.tmp")).unwrap();
+        assert!(repair_session_index_in_roots(home.path(), home.path(), |_| {}).is_err());
+        let failed = load_session_index_repair_report(Some(home.path()))
+            .unwrap()
+            .unwrap();
+        assert!(
+            failed
+                .aborted_reason
+                .as_deref()
+                .unwrap()
+                .contains("下次须重新核验")
+        );
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        assert_eq!(counts(&db).0, 1);
+    }
+
+    #[test]
+    fn compressed_source_restores_missing_turn_under_native_position_constraints() {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir(home.path().join("sessions")).unwrap();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        native_history_schema(&db);
+        db.execute_batch("INSERT INTO thread_history_projection_state VALUES('thread',4096,77); INSERT INTO thread_history_projection_state VALUES('unrelated',8192,99);").unwrap();
+        let state = Connection::open(home.path().join("state_5.sqlite")).unwrap();
+        state.execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT); INSERT INTO threads VALUES('thread','sessions/rollout.jsonl');").unwrap();
+        let rows = [
+            json!({"type":"session_meta","payload":{"id":"thread"}}),
+            json!({"type":"event_msg","ordinal":1,"payload":{"type":"task_started","turn_id":"turn","started_at":100}}),
+            json!({"type":"response_item","ordinal":3,"timestamp":"1970-01-01T00:01:41Z","payload":{"role":"user","content":[{"type":"input_text","text":"original"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}}),
+            json!({"type":"event_msg","ordinal":4,"payload":{"type":"item_completed","thread_id":"thread","turn_id":"turn","item":{"id":"native","type":"UserMessage","content":[{"type":"text","text":"original"}]}}}),
+            json!({"type":"event_msg","ordinal":5,"payload":{"type":"task_complete","turn_id":"turn","started_at":100,"completed_at":105}}),
+        ];
+        let raw = rows
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>();
+        let compressed = zstd::stream::encode_all(raw.as_bytes(), 1).unwrap();
+        fs::write(home.path().join("sessions/rollout.jsonl.zst"), &compressed).unwrap();
+        let report = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        assert_eq!(report.repaired_items, 1);
+        assert_eq!(counts(&db), (1, Some("native".into())));
+        assert_eq!(
+            db.query_row(
+                "SELECT rollout_ordinal,rollout_end_ordinal FROM thread_turns",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            )
+            .unwrap(),
+            (1, 5)
+        );
+        assert_eq!(
+            db.query_row("SELECT rollout_ordinal FROM thread_items", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            fs::read(home.path().join("sessions/rollout.jsonl.zst")).unwrap(),
+            compressed
+        );
+        let again = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+        assert_eq!((again.cached_files, again.already_present), (1, 1));
+        let mut stmt = db.prepare("SELECT thread_id,next_rollout_byte_offset,next_rollout_ordinal FROM thread_history_projection_state ORDER BY thread_id").unwrap();
+        let cursors = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            cursors,
+            vec![("thread".into(), 4096, 77), ("unrelated".into(), 8192, 99)]
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT rollout_byte_offset,rollout_end_byte_offset FROM thread_turns",
+                [],
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?))
+            )
+            .unwrap(),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn corrupt_duplicate_sources_are_isolated_while_independent_history_recovers() {
+        let home = home_with_rollout();
+        let sessions = home.path().join("sessions");
+        let raw = fs::read_to_string(sessions.join("rollout.jsonl")).unwrap();
+        fs::rename(sessions.join("rollout.jsonl"), sessions.join("a.jsonl")).unwrap();
+        fs::write(sessions.join("a.jsonl.zst"), b"invalid compressed source").unwrap();
+        fs::write(
+            sessions.join("b.jsonl"),
+            raw.replace("\"thread\"", "\"independent\"")
+                .replace("\"turn\"", "\"b-turn\""),
+        )
+        .unwrap();
+        let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO thread_turns VALUES('independent','b-turn','completed',NULL)",
+            [],
+        )
+        .unwrap();
+        for attempt in 0..2 {
+            let report = repair_session_index(Some(home.path())).unwrap();
+            assert!(report.aborted_reason.is_none());
+            assert_eq!(report.repaired_items, usize::from(attempt == 0));
+            assert!(report.issues.iter().any(|message| {
+                message.contains("a.jsonl")
+                    && message.contains("a.jsonl.zst")
+                    && message.contains("隔离")
+            }));
+            let recovered: Vec<String> = db
+                .prepare("SELECT thread_id FROM thread_items")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(recovered, vec!["independent"]);
+            assert_eq!(counts(&db).1, None);
+        }
+    }
+
+    #[test]
+    fn corrupt_compressed_sources_are_visible_and_never_success_cached() {
+        let home = home_with_rollout();
+        let compressed = compress_fixture(home.path());
+        fs::write(compressed, b"invalid compressed source").unwrap();
+        for _ in 0..2 {
+            let report = repair_session_index_in_roots(home.path(), home.path(), |_| {}).unwrap();
+            assert_eq!(report.compressed_files, 1);
+            assert_eq!(
+                (
+                    report.cached_files,
+                    report.repaired_items,
+                    report.skipped_items
+                ),
+                (0, 0, 1)
+            );
+        }
+    }
 
     #[test]
     fn source_reads_are_shared_with_parsing_and_rechecks_stay_with_write_threads() {
@@ -1478,10 +2421,12 @@ mod tests {
         report.as_object_mut().unwrap().remove("abortedReason");
         report.as_object_mut().unwrap().remove("issuesTruncated");
         report.as_object_mut().unwrap().remove("warnings");
+        report.as_object_mut().unwrap().remove("compressedFiles");
         let restored: SessionIndexRepairReport = serde_json::from_value(report).unwrap();
         assert!(restored.aborted_reason.is_none());
         assert_eq!(restored.issues_truncated, 0);
         assert!(restored.warnings.is_empty());
+        assert_eq!(restored.compressed_files, 0);
     }
 
     #[test]

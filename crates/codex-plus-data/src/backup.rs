@@ -286,6 +286,17 @@ impl BackupStore {
         Ok(())
     }
 
+    pub(crate) fn read_file_backup(&self, token: &str, entry: &Value) -> anyhow::Result<Vec<u8>> {
+        self.validate_file_backup(token, entry)?;
+        if let Some(content) = entry.get("content_b64").and_then(Value::as_str) {
+            return Ok(base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                content,
+            )?);
+        }
+        Ok(fs::read(self.blob_path(token, entry)?)?)
+    }
+
     pub(crate) fn source_file_unchanged(&self, entry: &Value) -> anyhow::Result<()> {
         let path = Path::new(
             entry["path"]

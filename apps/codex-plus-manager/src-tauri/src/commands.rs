@@ -1359,7 +1359,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
     worker_settings.relay_profiles = vec![profile.clone()];
     worker_settings.aggregate_relay_profiles.clear();
     worker_settings.active_aggregate_relay_id.clear();
-    worker_settings.provider_sync_enabled = false;
+    configure_multi_worker_history_repair(&mut worker_settings);
     // Chat Completions（例如 Zhipu GLM）需要 launcher 启动实例自己的协议代理。
     // 保持 relay_profiles_enabled，让 `ensure_active_protocol_proxy_config_in_home`
     // 用多开进程的 CODEX_PLUS_PROTOCOL_PROXY_PORT 修正 config.toml 中的本地代理地址；
@@ -1903,6 +1903,13 @@ fn terminate_multi_worker(
     #[cfg(not(any(unix, windows)))]
     let _ = (pid, options_path, worker_birth_id);
     Ok(())
+}
+
+fn configure_multi_worker_history_repair(settings: &mut BackendSettings) {
+    // 必须先解析旧配置的回退值，再禁用多开供应商同步。
+    settings.session_index_auto_repair_enabled =
+        Some(settings.effective_session_index_auto_repair_enabled());
+    settings.provider_sync_enabled = false;
 }
 
 /// Hidden child process used by Codex multi-launch. Its environment is isolated
@@ -5117,19 +5124,60 @@ fn merge_manual_provider_sync_targets(
     });
 }
 
+/// 手动入口只修复管理器当前 CODEX_HOME，不接受任意路径或隐式切换到多开 home。
 #[tauri::command]
 pub async fn repair_session_index() -> CommandResult<Value> {
+    // 两次阻塞任务分开等待；目录恢复失败（包括任务异常）也继续检查消息。
+    let catalog = match tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::provider_sync::run_online_session_catalog_recovery(None)
+    })
+    .await
+    {
+        Ok(result) => json!(result),
+        Err(error) => json!({
+            "status": "failed",
+            "message": format!("目录恢复任务失败：{error}"),
+        }),
+    };
     let result =
         tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_session_index(None))
             .await
             .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))
             .and_then(|result| result);
+    session_repair_command_result(catalog, result)
+}
+
+fn session_repair_command_result(
+    catalog: Value,
+    result: anyhow::Result<codex_plus_data::SessionIndexRepairReport>,
+) -> CommandResult<Value> {
+    let catalog_message = catalog["message"].as_str().unwrap_or("未提供目录恢复说明");
+    let catalog_summary = if catalog["status"] == "synced" {
+        format!(
+            "会话目录恢复完成，补建 {} 条。",
+            catalog["sqlite_catalog_rows_inserted"].as_u64().unwrap_or(0),
+        )
+    } else {
+        format!("会话目录恢复未完成：{catalog_message}")
+    };
     match result {
-        Ok(report) => ok(
-            &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
-            json!(report),
+        Ok(report) => {
+            let message = format!(
+                "会话索引检查完成，恢复 {} 条消息。{catalog_summary}",
+                report.repaired_items,
+            );
+            let mut payload = json!(report);
+            payload["catalogRecovery"] = catalog;
+            payload["messageRepair"] = json!({ "status": "ok" });
+            ok(&message, payload)
+        }
+        Err(error) => failed(
+            &format!("修复会话索引失败：{error}；{catalog_summary}"),
+            json!({
+                "catalogRecovery": catalog,
+                "messageRepair": { "status": "failed", "message": error.to_string() },
+            }),
         ),
-        Err(error) => failed(&format!("修复会话索引失败：{error}"), json!({})),
     }
 }
 
@@ -11513,5 +11561,81 @@ model_reasoning_effort = "high"
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
         assert!(!config.contains("stitch"));
         assert!(config.contains("[mcp_servers.node_repl]"));
+    }
+    #[test]
+    fn manual_index_repair_reports_catalog_and_message_outcomes_independently() {
+        for status in ["synced", "skipped", "failed", "partial_failure"] {
+            for message_succeeds in [false, true] {
+                let catalog = json!({
+                    "status": status,
+                    "message": "synthetic catalog result",
+                    "sqlite_catalog_rows_inserted": 3,
+                });
+                let message = if message_succeeds {
+                    Ok(codex_plus_data::SessionIndexRepairReport {
+                        repaired_items: 2,
+                        ..Default::default()
+                    })
+                } else {
+                    Err(anyhow::anyhow!("synthetic message failure"))
+                };
+                let result = session_repair_command_result(catalog.clone(), message);
+                assert_eq!(result.payload["catalogRecovery"], catalog);
+                if message_succeeds {
+                    assert_eq!(result.status, "ok");
+                    assert_eq!(result.payload["repairedItems"], 2);
+                    assert_eq!(result.payload["messageRepair"]["status"], "ok");
+                    assert!(result.message.contains("恢复 2 条消息"));
+                } else {
+                    assert_eq!(result.status, "failed");
+                    assert_eq!(result.payload["messageRepair"]["status"], "failed");
+                    assert!(result.message.contains("synthetic message failure"));
+                }
+                if status == "synced" {
+                    assert!(result.message.contains("补建 3 条"));
+                } else {
+                    assert!(result.message.contains("目录恢复未完成"));
+                    assert!(result.message.contains("synthetic catalog result"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn manual_index_repair_catalog_task_error_preserves_message_success() {
+        let result = session_repair_command_result(
+            json!({ "status": "failed", "message": "synthetic task error" }),
+            Ok(codex_plus_data::SessionIndexRepairReport::default()),
+        );
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload["catalogRecovery"]["status"], "failed");
+        assert_eq!(result.payload["messageRepair"]["status"], "ok");
+        assert!(result.message.contains("synthetic task error"));
+    }
+
+    #[test]
+    fn multi_worker_inherits_effective_index_repair_without_provider_sync() {
+        for provider_sync in [false, true] {
+            for choice in [None, Some(false), Some(true)] {
+                let settings = BackendSettings {
+                    provider_sync_enabled: provider_sync,
+                    session_index_auto_repair_enabled: choice,
+                    ..Default::default()
+                };
+                let mut worker = settings.clone();
+                configure_multi_worker_history_repair(&mut worker);
+                assert!(!worker.provider_sync_enabled);
+                assert_eq!(
+                    worker.session_index_auto_repair_enabled,
+                    Some(choice.unwrap_or(provider_sync)),
+                );
+                let restored: BackendSettings =
+                    serde_json::from_value(serde_json::to_value(&worker).unwrap()).unwrap();
+                assert_eq!(
+                    restored.effective_session_index_auto_repair_enabled(),
+                    choice.unwrap_or(provider_sync),
+                );
+            }
+        }
     }
 }

@@ -541,13 +541,14 @@ impl SQLiteStorageAdapter {
                 }
             };
             for view in std::iter::once(path.clone()).chain(wsl_path_alternative(&path)) {
-                let rollout = PathBuf::from(&view);
+                let rollout = crate::rollout_source::resolve(Path::new(&view))
+                    .unwrap_or_else(|| PathBuf::from(&view));
                 match fs::metadata(&rollout) {
                     Ok(metadata) if metadata.is_file() => match File::open(&rollout) {
                         Ok(_) => {
                             return Ok(CodexThreadRollout::Ready {
                                 thread_id,
-                                rollout_path: view,
+                                rollout_path: rollout.to_string_lossy().into_owned(),
                                 rollout,
                             });
                         }
@@ -1031,7 +1032,7 @@ fn local_deleted(session_id: &str, token: &str, backup_path: &Path) -> DeleteRes
 }
 
 fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::Result<Vec<Value>> {
-    let file = File::open(rollout_path)?;
+    let file = crate::rollout_source::open(rollout_path)?;
     let reader = BufReader::new(file);
     let mut current_turn_id = String::new();
     let mut history = Vec::new();
@@ -1151,6 +1152,16 @@ const USAGE_TAIL_EVENT_LIMIT: usize = 24;
 
 /// 只读 rollout 尾部，取出最近的 `token_count` 事件。
 fn read_rollout_usage_tail(rollout: &Path, limit: usize) -> anyhow::Result<Vec<Value>> {
+    if crate::rollout_source::is_compressed(rollout) {
+        // 压缩流不能随机 seek；流式遍历且仅保留最近事件。
+        let mut events = Vec::new();
+        read_rollout_usage_lines(
+            BufReader::new(crate::rollout_source::open(rollout)?).lines(),
+            limit,
+            &mut events,
+        )?;
+        return Ok(events);
+    }
     let file = File::open(rollout)?;
     let len = file.metadata()?.len();
     let mut window = USAGE_TAIL_INITIAL_BYTES;
@@ -1189,9 +1200,18 @@ fn read_rollout_usage_window(
     if start > 0 {
         lines.next();
     }
+    read_rollout_usage_lines(lines.map(|line| Ok(line.to_owned())), limit, out)
+}
+
+fn read_rollout_usage_lines(
+    lines: impl Iterator<Item = std::io::Result<String>>,
+    limit: usize,
+    out: &mut Vec<Value>,
+) -> anyhow::Result<()> {
     let mut current_turn_id: Option<String> = None;
     let mut segment_start = 0;
     for line in lines {
+        let line = line?;
         let line = line.trim();
         // 先做子串预筛，避免为每条 response_item 付 serde 解析成本。
         if line.is_empty()
@@ -1251,12 +1271,57 @@ fn read_rollout_usage_window(
         }
         if let Some(event) = rollout_usage_event(&value, current_turn_id.as_deref()) {
             out.push(event);
+            if out.len() > limit {
+                let removed = out.len() - limit;
+                out.drain(..removed);
+                segment_start = segment_start.saturating_sub(removed);
+            }
         }
     }
-    if out.len() > limit {
-        out.drain(..out.len() - limit);
-    }
     Ok(())
+}
+
+#[cfg(test)]
+mod compressed_tail_integration_tests {
+    use super::*;
+
+    #[test]
+    fn compressed_tail_preserves_upstream_turn_boundaries_and_limits() {
+        let temp = tempfile::tempdir().unwrap();
+        let plain = temp.path().join("rollout.jsonl");
+        let compressed = temp.path().join("rollout.jsonl.zst");
+        let token = json!({"type":"event_msg","payload":{"type":"token_count","info":{
+            "last_token_usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
+        }}});
+        let records = [
+            json!({"type":"event_msg","payload":{"type":"task_started"}}),
+            token.clone(),
+            json!({"type":"event_msg","payload":{"type":"task_started"}}),
+            token.clone(),
+            json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"second"}}),
+            json!({"type":"event_msg","payload":{"type":"turn_started","turn_id":"third"}}),
+            json!({"type":"turn_context","payload":{}}),
+            token.clone(),
+            json!({"type":"event_msg","payload":{"type":"task_started"}}),
+            token,
+        ];
+        let text = records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        fs::write(&plain, &text).unwrap();
+        let encoded = zstd::stream::encode_all(text.as_bytes(), 1).unwrap();
+        fs::write(&compressed, &encoded).unwrap();
+        for limit in [0, 1, 2, 24] {
+            assert_eq!(
+                read_rollout_usage_tail(&compressed, limit).unwrap(),
+                read_rollout_usage_tail(&plain, limit).unwrap(),
+            );
+        }
+        let events = read_rollout_usage_tail(&compressed, 24).unwrap();
+        assert!(events[0].get("turn_id").is_none());
+        assert_eq!(events[1]["turn_id"], "second");
+        assert_eq!(events[2]["turn_id"], "third");
+        assert!(events[3].get("turn_id").is_none());
+        assert_eq!(fs::read(compressed).unwrap(), encoded);
+    }
 }
 
 fn rollout_usage_event(value: &Value, turn_id: Option<&str>) -> Option<Value> {
@@ -1790,6 +1855,18 @@ fn restore_conflict_key_columns<'a>(table: &str, row: &'a Map<String, Value>) ->
     }
 }
 
+fn rollout_counterpart(path: &Path) -> Option<PathBuf> {
+    if crate::rollout_source::is_compressed(path) {
+        Some(path.with_extension(""))
+    } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+        let mut compressed = path.as_os_str().to_os_string();
+        compressed.push(".zst");
+        Some(PathBuf::from(compressed))
+    } else {
+        None
+    }
+}
+
 fn detect_file_restore_conflicts(
     tables: &Map<String, Value>,
     backup_store: &BackupStore,
@@ -1807,7 +1884,20 @@ fn detect_file_restore_conflicts(
             if Path::new(path).exists() {
                 anyhow::bail!("restore conflict: file already exists: {path}");
             }
+            if let Some(other) = rollout_counterpart(Path::new(path))
+                && other.exists()
+            {
+                anyhow::bail!(
+                    "restore conflict: alternate history now exists: {}",
+                    other.display()
+                );
+            }
             backup_store.validate_file_backup(token, file)?;
+            if crate::rollout_source::is_compressed(Path::new(path)) {
+                let bytes = backup_store.read_file_backup(token, file)?;
+                let mut reader = crate::rollout_source::decode_reader(Path::new(path), &bytes[..])?;
+                std::io::copy(&mut reader, &mut std::io::sink())?;
+            }
         }
     }
     Ok(())
@@ -1828,6 +1918,16 @@ fn allowed_backup_file_paths(tables: &Map<String, Value>) -> HashSet<String> {
             if let Some(alternative) = wsl_path_alternative(path) {
                 views.push(alternative);
             }
+            let compressed = views
+                .iter()
+                .filter(|view| {
+                    Path::new(view)
+                        .extension()
+                        .is_some_and(|ext| ext == "jsonl")
+                })
+                .map(|view| format!("{view}.zst"))
+                .collect::<Vec<_>>();
+            views.extend(compressed);
             views
         })
         .collect()
@@ -1946,11 +2046,23 @@ fn rollout_file_sources(thread_rows: Option<&Vec<Value>>) -> (Vec<BackupFileSour
             continue;
         };
         for view in std::iter::once(path.to_string()).chain(wsl_path_alternative(path)) {
-            match File::open(&view) {
+            let resolved = crate::rollout_source::resolve(Path::new(&view));
+            let source = resolved.as_deref().unwrap_or_else(|| Path::new(&view));
+            // 备份保存原始压缩字节；解码仅用于删除前的完整性检查。
+            if crate::rollout_source::is_compressed(source) && source.is_file() {
+                let valid = crate::rollout_source::open(source).and_then(|mut reader| {
+                    std::io::copy(&mut reader, &mut std::io::sink()).map_err(Into::into)
+                });
+                if valid.is_err() {
+                    unreadable.push(source.to_string_lossy().into_owned());
+                    break;
+                }
+            }
+            match File::open(source) {
                 Ok(file) => match file.metadata() {
                     Ok(metadata) if metadata.is_file() => {
                         sources.push(BackupFileSource {
-                            path: PathBuf::from(view),
+                            path: source.to_path_buf(),
                             original_path: path.to_string(),
                         });
                         break;
