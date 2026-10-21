@@ -1,3 +1,4 @@
+use codex_plus_core::relay_config::refresh_active_model_catalog_in_home;
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
@@ -65,7 +66,7 @@ base_url = "https://a.example/v1"
 }
 
 #[test]
-fn switch_rolls_back_live_files_when_post_write_status_check_fails() {
+fn switch_rejects_incomplete_rendered_config_before_writing_live_files() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");
     std::fs::create_dir(&home).unwrap();
@@ -120,12 +121,12 @@ base_url = "https://b.example/v1"
     };
 
     let error = switch_current_relay_profile(&store, &home, next, "a")
-        .expect_err("missing api key should fail post-write status check");
+        .expect_err("missing api key should fail before writing live files");
 
     assert!(
         error
             .to_string()
-            .contains("纯 API 配置写入后未检测到完整 custom provider")
+            .contains("纯 API 配置未检测到完整 custom provider，未写入实时文件")
     );
     assert_eq!(store.load().unwrap(), persisted_original);
     assert_eq!(
@@ -140,6 +141,160 @@ base_url = "https://b.example/v1"
         std::fs::read_to_string(home.join("auth.json")).unwrap(),
         original_auth
     );
+    assert!(!home.join("backups").exists(), "无效目标不能进入实时文件写入");
+}
+
+#[test]
+fn switch_catalog_directory_failure_restores_all_original_bytes() {
+    for live_files_exist in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("codex");
+        std::fs::create_dir(&home).unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let mut target = pure_profile("b", "https://b.example/v1", "sk-b");
+        target.model_list = "fixture-model[128K]".into();
+        store
+            .save(&BackendSettings {
+                active_relay_id: "a".into(),
+                relay_profiles: vec![
+                    pure_profile("a", "https://a.example/v1", "sk-a"),
+                    target,
+                ],
+                ..BackendSettings::default()
+            })
+            .unwrap();
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        raw["futureSetting"] = serde_json::json!({"keep": true});
+        raw["relayProfiles"][0]["futureProfileSetting"] = serde_json::json!(["preserve"]);
+        let before_settings =
+            format!(" \r\n{}\r\n ", serde_json::to_string_pretty(&raw).unwrap()).into_bytes();
+        std::fs::write(&path, &before_settings).unwrap();
+        let before_config = b"# exact live bytes\r\nmodel_provider = \"custom\"\r\n\r\n[model_providers.custom]\r\nname = \"custom\"\r\nwire_api = \"responses\"\r\nrequires_openai_auth = true\r\nbase_url = \"https://a.example/v1\"\r\n";
+        let before_auth = b" \r\n{ \"OPENAI_API_KEY\" : \"sk-a\" }\r\n";
+        if live_files_exist {
+            std::fs::write(home.join("config.toml"), before_config).unwrap();
+            std::fs::write(home.join("auth.json"), before_auth).unwrap();
+        }
+        // 使用真实文件系统失败，不向生产切换流程注入暂停或失败入口。
+        let blocked_catalog = home.join("model-catalogs").join("b.json");
+        std::fs::create_dir_all(&blocked_catalog).unwrap();
+        let original = store.load().unwrap();
+        let mut next = original.clone();
+        next.active_relay_id = "b".into();
+
+        switch_relay_profile_in_home(&store, &home, next, "a")
+            .expect_err("catalog 路径被目录占用时必须失败");
+
+        assert!(blocked_catalog.is_dir());
+        assert_eq!(std::fs::read(&path).unwrap(), before_settings);
+        assert_eq!(store.load().unwrap(), original);
+        if live_files_exist {
+            assert_eq!(std::fs::read(home.join("config.toml")).unwrap(), before_config);
+            assert_eq!(std::fs::read(home.join("auth.json")).unwrap(), before_auth);
+        } else {
+            assert!(!home.join("config.toml").exists());
+            assert!(!home.join("auth.json").exists());
+        }
+    }
+}
+
+#[test]
+fn stale_switch_does_not_capture_backfill_or_restore_newer_live_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let path = temp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    store
+        .save(&BackendSettings {
+            active_relay_id: "a".into(),
+            relay_profiles: vec![
+                pure_profile("a", "https://a.example/v1", "sk-a"),
+                pure_profile("b", "https://b.example/v1", "sk-b"),
+            ],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let mut stale = store.load().unwrap();
+    stale.active_relay_id = "b".into();
+    // 另一个写入者完成切换；本次请求仍带旧 revision。
+    let mut current = store.load().unwrap();
+    current.active_relay_id = "b".into();
+    store.save(&current).unwrap();
+    let before_settings = std::fs::read(&path).unwrap();
+    let live_config = b"# newer writer\r\nthis is intentionally not valid TOML\r\n";
+    let live_auth = b"{ newer writer owns these bytes }";
+    std::fs::write(home.join("config.toml"), live_config).unwrap();
+    std::fs::write(home.join("auth.json"), live_auth).unwrap();
+
+    let error = switch_relay_profile_in_home(&store, &home, stale, "missing-previous")
+        .expect_err("CAS 必须先于回填验证");
+    assert!(error.to_string().contains("settings_revision_conflict"));
+    assert_eq!(std::fs::read(&path).unwrap(), before_settings);
+    assert_eq!(std::fs::read(home.join("config.toml")).unwrap(), live_config);
+    assert_eq!(std::fs::read(home.join("auth.json")).unwrap(), live_auth);
+
+    // 即使 live 无法捕获，也应先报告请求过期，而不是读取实时文件错误。
+    let stale = BackendSettings {
+        settings_revision: "outdated".into(),
+        ..store.load().unwrap()
+    };
+    let unreadable_home = temp.path().join("unreadable-live");
+    std::fs::create_dir_all(unreadable_home.join("config.toml")).unwrap();
+    let error = switch_relay_profile_in_home(&store, &unreadable_home, stale, "")
+        .expect_err("过期请求不能先尝试读取 live");
+    assert!(error.to_string().contains("settings_revision_conflict"));
+    assert!(unreadable_home.join("config.toml").is_dir());
+    assert!(!unreadable_home.join("auth.json").exists());
+}
+
+#[test]
+fn switch_early_capture_or_save_failure_keeps_settings_and_live_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let path = temp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    store
+        .save(&BackendSettings {
+            active_relay_id: "a".into(),
+            relay_profiles: vec![
+                pure_profile("a", "https://a.example/v1", "sk-a"),
+                pure_profile("b", "https://b.example/v1", "sk-b"),
+            ],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let before_settings = std::fs::read(&path).unwrap();
+    let before_auth = b" \n{ \"OPENAI_API_KEY\" : \"sk-a\" }\n";
+    std::fs::write(home.join("auth.json"), before_auth).unwrap();
+    // capture 失败时不能删除或重写另一份 live 文件。
+    let unreadable_home = temp.path().join("unreadable-live");
+    std::fs::create_dir_all(unreadable_home.join("config.toml")).unwrap();
+    std::fs::write(unreadable_home.join("auth.json"), before_auth).unwrap();
+    let mut next = store.load().unwrap();
+    next.active_relay_id = "b".into();
+    let error = switch_relay_profile_in_home(&store, &unreadable_home, next, "")
+        .expect_err("config 是目录时捕获必须失败");
+    assert!(error.to_string().contains("读取当前 Codex 实时配置失败"));
+    assert!(unreadable_home.join("config.toml").is_dir());
+    assert_eq!(
+        std::fs::read(unreadable_home.join("auth.json")).unwrap(),
+        before_auth
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before_settings);
+
+    // live 捕获成功但保存准备失败，也不能进入 apply 或恢复不存在的 config。
+    let mut next = store.load().unwrap();
+    next.active_relay_id = "b".into();
+    next.relay_profiles[1].model_windows = "{invalid model windows".into();
+    switch_relay_profile_in_home(&store, &home, next, "")
+        .expect_err("损坏的目标 model_windows 必须在写入前拒绝");
+    assert_eq!(std::fs::read(&path).unwrap(), before_settings);
+    assert!(!home.join("config.toml").exists());
+    assert_eq!(std::fs::read(home.join("auth.json")).unwrap(), before_auth);
 }
 
 #[test]
@@ -273,7 +428,10 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 
     assert!(result.configured);
     assert_eq!(store.load().unwrap().active_relay_id, "agg");
-    assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    let proxy_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
+    );
+    assert!(live.contains(&format!("base_url = \"{proxy_url}\"")));
 }
 
 #[test]
@@ -463,6 +621,102 @@ fn switch_from_aggregate_backfills_aggregate_auth_state() {
     assert_eq!(
         live.get("OPENAI_API_KEY").and_then(|item| item.as_str()),
         Some("sk-api")
+    );
+}
+
+#[test]
+fn switch_after_external_takeover_keeps_old_aggregate_and_restores_selected_profile() {
+    for target in ["api", "agg"] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("codex");
+        std::fs::create_dir(&home).unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        let proxy = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
+        );
+        let mut previous = pure_profile("old-agg", &proxy, "codex-plus-aggregate");
+        previous.relay_mode = RelayMode::Aggregate;
+        let mut settings = aggregate_target_settings(
+            pure_profile("api", "https://api.example/v1", "sk-api"),
+            aggregate_profile("agg"),
+        );
+        settings.relay_profiles.push(previous);
+        settings.active_relay_id = "old-agg".into();
+        store.save(&settings).unwrap();
+        let mut next = store.load().unwrap();
+        let previous = next
+            .relay_profiles
+            .iter()
+            .find(|p| p.id == "old-agg")
+            .unwrap()
+            .clone();
+        let external = pure_profile("external", "http://127.0.0.1:15721/v1", "fixture-external");
+        std::fs::write(home.join("config.toml"), &external.config_contents).unwrap();
+        std::fs::write(home.join("auth.json"), &external.auth_contents).unwrap();
+        next.active_relay_id = target.into();
+        let result = switch_current_relay_profile(&store, &home, next, "old-agg").unwrap();
+        assert!(result.configured);
+        let saved = store.load().unwrap();
+        assert_eq!(saved.active_relay_id, target);
+        assert_eq!(
+            saved
+                .relay_profiles
+                .iter()
+                .find(|p| p.id == "old-agg")
+                .unwrap(),
+            &previous
+        );
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(config.contains(if target == "api" {
+            "https://api.example/v1"
+        } else {
+            &proxy
+        }));
+        assert!(!config.contains("15721"));
+        let auth = std::fs::read_to_string(home.join("auth.json")).unwrap();
+        assert!(!auth.contains("fixture-external"));
+    }
+}
+
+#[test]
+fn failed_switch_after_external_takeover_keeps_settings_and_live_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let proxy = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
+    );
+    let mut previous = pure_profile("old-agg", &proxy, "codex-plus-aggregate");
+    previous.relay_mode = RelayMode::Aggregate;
+    let mut invalid = pure_profile("invalid", "https://invalid.example/v1", "fixture-invalid");
+    invalid.auth_contents = "{bad json".into();
+    store
+        .save(&BackendSettings {
+            active_relay_id: "old-agg".into(),
+            relay_profiles: vec![previous, invalid],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let before = std::fs::read(temp.path().join("settings.json")).unwrap();
+    let external = pure_profile("external", "https://external.example/v1", "fixture-external");
+    std::fs::write(home.join("config.toml"), &external.config_contents).unwrap();
+    std::fs::write(home.join("auth.json"), &external.auth_contents).unwrap();
+    let mut next = store.load().unwrap();
+    next.active_relay_id = "invalid".into();
+    let error = switch_current_relay_profile(&store, &home, next, "old-agg").unwrap_err();
+    assert!(error.to_string().contains("auth.json"));
+    assert_eq!(
+        std::fs::read(temp.path().join("settings.json")).unwrap(),
+        before
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("config.toml")).unwrap(),
+        external.config_contents
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        external.auth_contents
     );
 }
 
@@ -1012,4 +1266,128 @@ fn switch_current_relay_profile(
 ) -> anyhow::Result<codex_plus_core::relay_switch::RelaySwitchResult> {
     settings.settings_revision = store.revision()?;
     switch_relay_profile_in_home(store, home, settings, previous_active_relay_id)
+}
+
+#[test]
+fn refresh_active_catalog_reports_unavailable_projection_without_overwriting_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let settings = BackendSettings::default();
+    let missing = refresh_active_model_catalog_in_home(home, &settings).unwrap_err();
+    assert!(missing.to_string().contains("尚无 config.toml"));
+
+    let config = "[invalid";
+    std::fs::write(home.join("config.toml"), config).unwrap();
+    std::fs::create_dir(home.join("model-catalogs")).unwrap();
+    let catalog = home.join("model-catalogs").join(format!("{}.json", settings.active_relay_id));
+    std::fs::write(&catalog, "previous catalog").unwrap();
+    assert!(refresh_active_model_catalog_in_home(home, &settings).is_err());
+    assert_eq!(std::fs::read_to_string(home.join("config.toml")).unwrap(), config);
+    assert_eq!(std::fs::read_to_string(catalog).unwrap(), "previous catalog");
+}
+
+#[test]
+fn refresh_active_model_catalog_preserves_transport_and_auth() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let config = r#"model = "kept-model"
+model_provider = "custom"
+chatgpt_account_id = "session-identity"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+"#;
+    let auth = br#"{"OPENAI_API_KEY":"proxy-key","tokens":{"account_id":"stable"}}"#;
+    std::fs::write(home.join("config.toml"), config).unwrap();
+    std::fs::write(home.join("auth.json"), auth).unwrap();
+
+    let mut active = pure_profile("active", "https://upstream.example/v1", "sk-upstream");
+    active.model_list = "gpt-5.6-sol[1000000]".to_string();
+    let settings = BackendSettings {
+        active_relay_id: "active".to_string(),
+        relay_profiles: vec![active],
+        ..BackendSettings::default()
+    };
+
+    assert!(refresh_active_model_catalog_in_home(&home, &settings).unwrap());
+    let refreshed = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(refreshed.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(refreshed.contains(r#"chatgpt_account_id = "session-identity""#));
+    assert!(refreshed.contains("model_catalog_json"));
+    assert_eq!(std::fs::read(home.join("auth.json")).unwrap(), auth);
+    let catalog = std::fs::read_to_string(home.join("model-catalogs/active.json")).unwrap();
+    assert!(catalog.contains(r#""slug": "gpt-5.6-sol""#));
+    assert!(catalog.contains(r#""context_window": 1000000"#));
+    assert!(!refresh_active_model_catalog_in_home(&home, &settings).unwrap());
+}
+
+#[test]
+fn refresh_active_aggregate_catalog_uses_saved_member_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let config = r#"model_provider = "custom"
+chatgpt_account_id = "session-identity"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "http://127.0.0.1:57321/v1"
+"#;
+    let auth = br#"{"OPENAI_API_KEY":"proxy-key","tokens":{"account_id":"stable"}}"#;
+    std::fs::write(home.join("config.toml"), config).unwrap();
+    std::fs::write(home.join("auth.json"), auth).unwrap();
+
+    let aggregate_profile = RelayProfile {
+        id: "agg".to_string(),
+        name: "聚合".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    };
+    let mut member = pure_profile("member", "https://member.example/v1", "sk-member");
+    member.base_url = "https://member.example/v1".to_string();
+    member.api_key = "sk-member".to_string();
+    member.model_list = "old-model".to_string();
+    let mut settings = BackendSettings {
+        active_relay_id: "agg".to_string(),
+        active_aggregate_relay_id: "agg".to_string(),
+        relay_profiles: vec![member, aggregate_profile],
+        aggregate_relay_profiles: vec![AggregateRelayProfile {
+            id: "agg".to_string(),
+            name: "聚合".to_string(),
+            session_provider: RelaySessionProvider::Custom,
+            model_aggregation_enabled: true,
+            strategy: AggregateRelayStrategy::Failover,
+            members: vec![AggregateRelayMember {
+                relay_id: "member".to_string(),
+                weight: 1,
+            }],
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+        }],
+        ..BackendSettings::default()
+    };
+
+    assert!(refresh_active_model_catalog_in_home(&home, &settings).unwrap());
+    let catalog_path = home.join("model-catalogs/agg.json");
+    let initial = std::fs::read_to_string(&catalog_path).unwrap();
+    assert!(initial.contains(r#""slug": "cpx-member/old-model""#));
+
+    settings.relay_profiles[0].model_list = "new-model[200000]".to_string();
+    assert!(refresh_active_model_catalog_in_home(&home, &settings).unwrap());
+    let refreshed = std::fs::read_to_string(&catalog_path).unwrap();
+    assert!(refreshed.contains(r#""slug": "cpx-member/new-model""#));
+    assert!(refreshed.contains(r#""context_window": 200000"#));
+    assert!(!refreshed.contains("old-model"));
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(live.contains(r#"chatgpt_account_id = "session-identity""#));
+    assert!(!live.lines().any(|line| line.trim_start().starts_with("model =")));
+    assert_eq!(std::fs::read(home.join("auth.json")).unwrap(), auth);
 }

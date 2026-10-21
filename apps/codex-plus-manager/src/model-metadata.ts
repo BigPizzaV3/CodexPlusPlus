@@ -183,7 +183,7 @@ export type BuiltinModelMetadataEntry = {
 // 规范 slug 与行名永远对不上（issue #2279 回归）。
 // 这里集中放一处，四个入口（内置预填、parseModelMetadataDocument、
 // synchronize*、metadataMatchesBuiltin）共用，避免各自实现再次分叉。
-const MODEL_SUFFIX_PATTERN = /^(.*?)\[(\d+(?:[KkMm])?)\]$/;
+const MODEL_SUFFIX_PATTERN = /^(.*?)\[(\d+(?:\.\d+)?(?:[Kk]{2}|[KkMm])?)\]$/;
 
 export type ModelRowIdentity = {
   rawName: string;
@@ -213,16 +213,17 @@ export function modelSlugFromRowName(rowName: string): string {
 }
 
 /// 把后缀文字换算成 token 数：`[1M]`→1000000、`[256K]`→256000、`[123]`→123。
-/// 仅识别纯数字 + 可选 K/M 单位（大小写均可），其余一律 null。
+/// 支持小数和 K/M 单位，大小写均可；换算后向下截断为正整数 token。
 export function suffixWindowTokens(suffix: string): number | null {
-  const match = /^(\d+)([KkMm])?$/.exec(suffix.trim());
+  const match = /^(\d+)(?:\.(\d+))?(kk|k|m)?$/i.exec(suffix.trim());
   if (!match) return null;
-  const multiplier = match[2]
-    ? (match[2].toLowerCase() === "m" ? 1_000_000 : 1_000)
-    : 1;
-  const tokens = Number(match[1]) * multiplier;
-  if (!Number.isSafeInteger(tokens) || tokens <= 0) return null;
-  return tokens;
+  const multiplier = /^(m|kk)$/i.test(match[3] || "") ? 1_000_000n : match[3] ? 1_000n : 1n;
+  const precision = multiplier === 1_000_000n ? 6 : multiplier === 1_000n ? 3 : 0;
+  const fraction = (match[2] || "").slice(0, precision);
+  const tokens = BigInt(match[1]) * multiplier
+    + BigInt(fraction || "0") * multiplier / (10n ** BigInt(fraction.length));
+  if (tokens <= 0n || tokens > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(tokens);
 }
 
 /// 后缀对应的窗口字符串（供「上下文窗口」列初值/写回用）；无有效后缀返回 null。

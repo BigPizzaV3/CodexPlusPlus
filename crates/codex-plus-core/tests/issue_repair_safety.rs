@@ -152,6 +152,16 @@ fn legacy_origin_backfill_requires_unique_match_on_both_sides() {
     );
 }
 
+fn publication_config(path: &std::path::Path) -> String {
+    format!(
+        "model_catalog_json = {:?}\nmodel_provider = \"custom\"\n[model_providers.custom]\nbase_url = {:?}\n",
+        path.to_str().unwrap(),
+        codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+            codex_plus_core::protocol_proxy::protocol_proxy_port()
+        ),
+    )
+}
+
 fn publication_fixture() -> (
     tempfile::TempDir,
     SettingsStore,
@@ -190,7 +200,7 @@ fn publication_fixture() -> (
     std::fs::write(&path, catalog).unwrap();
     std::fs::write(
         home.join("config.toml"),
-        format!("model_catalog_json = {:?}\n", path.to_str().unwrap()),
+        publication_config(&path),
     )
     .unwrap();
     (dir, store, home, aggregate)
@@ -221,10 +231,7 @@ fn active_member_save_publishes_and_repairs_a_drifted_projection() {
     // 内容寻址文件损坏应拒绝覆盖；切回旧的可变 managed 指针再重新发布。
     std::fs::write(
         home.join("config.toml"),
-        format!(
-            "model_catalog_json = {:?}\n",
-            home.join("model-catalogs/agg.json").to_str().unwrap()
-        ),
+        publication_config(&home.join("model-catalogs/agg.json")),
     )
     .unwrap();
     assert!(
@@ -248,10 +255,7 @@ fn active_member_save_publishes_and_repairs_a_drifted_projection() {
     let latest = store.load().unwrap();
     std::fs::write(
         home.join("config.toml"),
-        format!(
-            "model_catalog_json = {:?}\n",
-            home.join("model-catalogs/agg.json").to_str().unwrap()
-        ),
+        publication_config(&home.join("model-catalogs/agg.json")),
     )
     .unwrap();
     codex_plus_core::aggregate_catalog::save_with_active_catalog_refresh(&store, &home, &latest)

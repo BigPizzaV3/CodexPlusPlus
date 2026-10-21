@@ -39,7 +39,7 @@ function fixture(handler, { enabled = true } = {}) {
   class NativeClient { constructor(hostId = "local") { this.hostId = hostId; this.calls = []; } async sendRequest(method, params) { this.calls.push({ method, params }); return official(); } }
   const context = vm.createContext({
     window, MessageEvent, Error, console, Date,
-    codexPlusIsWindowsPlatform: false, codexAppServerModelRequestPatchVersion: "11", codexPluginMarketplaceUnlockVersion: "17",
+    codexPlusIsWindowsPlatform: false, codexAppServerModelRequestPatchVersion: "25", codexPluginMarketplaceUnlockVersion: "17",
     codexPlusBackendSettingsLoaded: true,
     codexPlusBackendSettings: {},
     codexRemoteSessionActiveProfile: () => null,
@@ -62,7 +62,10 @@ function fixture(handler, { enabled = true } = {}) {
     codexPlusSettings: () => ({ serviceTierControls: false }),
     codexRemoteSessionProviderRequestMethod: () => false, codexRemoteSessionProviderOverrideEnabled: () => false,
     applyCodexRemoteSessionProviderOverride: (_, params) => params, applyCodexServiceTierRequestOnly: (_, params) => params,
+    normalizeCodexConfiguredModelRequest: (_, params) => params,
     refreshCodexThreadModelBeforeTurn: async () => null,
+    // 此夹具只验证插件适配链；模型保留行为由模型记忆专项测试覆盖。
+    sendCodexRetainedModelRequest: (_client, send, method, params, options) => send(method, params, options),
     codexThreadModelRequestState: () => ({ threadId: "", model: "" }),
     NativeClient,
     postJson: async (path, payload) => {

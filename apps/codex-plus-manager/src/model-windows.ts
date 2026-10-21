@@ -101,17 +101,36 @@ export function lookupModelMapEntry<T>(
   return undefined;
 }
 
+export function normalizeModelWindowInput(value: string): string {
+  const trimmed = value.trim();
+  const match = /^(\d+)(?:\.(\d+))?(kk|k|m)?$/i.exec(trimmed);
+  if (!match) return trimmed;
+  const multiplier = /^(m|kk)$/i.test(match[3] || "") ? 1_000_000n : match[3] ? 1_000n : 1n;
+  const fraction = match[2] || "";
+  const precision = multiplier === 1_000_000n ? 6 : multiplier === 1_000n ? 3 : 0;
+  const fractionalTokens = precision ? BigInt(fraction.slice(0, precision).padEnd(precision, "0")) : 0n;
+  return String(BigInt(match[1]) * multiplier + fractionalTokens);
+}
+
+export function formatModelWindowInput(value: string): string {
+  const normalized = normalizeModelWindowInput(value);
+  if (!/^\d+$/.test(normalized)) return value;
+  const tokens = BigInt(normalized);
+  const unit = tokens >= 1_000_000n ? "M" : tokens >= 1_000n ? "K" : "";
+  if (!unit) return normalized;
+  const precision = unit === "M" ? 6 : 3;
+  const padded = normalized.padStart(precision + 1, "0");
+  const whole = padded.slice(0, -precision);
+  const fraction = padded.slice(-precision).replace(/0+$/, "");
+  return `${whole}${fraction ? `.${fraction}` : ""}${unit}`;
+}
+
 export function isValidModelWindow(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;
-  const match = trimmed.match(/^(\d+)([KkMm])?$/);
-  if (!match) return false;
-  const multiplier = match[2]?.toLowerCase() === "m"
-    ? 1_000_000n
-    : match[2]
-      ? 1_000n
-      : 1n;
-  const tokens = BigInt(match[1]) * multiplier;
+  const normalized = normalizeModelWindowInput(trimmed);
+  if (!/^\d+$/.test(normalized)) return false;
+  const tokens = BigInt(normalized);
   return tokens > 0n && tokens <= 18_446_744_073_709_551_615n;
 }
 
@@ -235,7 +254,7 @@ export function serializeModelWindowRows(rows: ModelWindowRow[]): {
     // 字符串，带后缀的 key 永远查不中（issue #2345）。
     const key = modelMapKeyFromRowName(model) || model;
     modelList.push(model);
-    const window = row.window.trim();
+    const window = normalizeModelWindowInput(row.window);
     if (window) {
       modelWindows[key] = window;
     }

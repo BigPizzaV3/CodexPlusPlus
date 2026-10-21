@@ -5,7 +5,7 @@
    * 供应商的模型。原生选择器是一维列表，聚合目录只能用 `display_name` 尾部的
    * `（供应商）` 标注归属，四十多个模型平铺下来的观感就是"供应商名堆在一起"。
    *
-   * 做法（不改模型数据、不接管点击）：
+   * 做法（模型行保持原生选择；默认入口显式选择供应商配置值）：
    *   1. 找到原生面板（挂在 popper 里、可见的 `[data-model-picker-view]`，宫格视图跳过），
    *      从行文本尾部的 `（供应商）` 解析归属；解析不到时回退去 `/codex-model-catalog`
    *      的 `modelMetadata[slug]`（聚合目录发布的 `codex_plus_group`，或 `description`
@@ -83,11 +83,25 @@
     stored: false,
   };
 
+  function codexPlusModelPickerCatalogChanged() {
+    // 服务等级契约测试在前一分片提前退出，分组状态尚未初始化。
+    if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) return;
+    const state = codexPlusModelPickerGroupsState;
+    state.defaultGroupId = "";
+    state.providerNames.clear();
+    state.providerDirty = true;
+    state.signature = "";
+    state.catalogPending = false;
+    state.catalogRetryAt = 0;
+    codexPlusModelPickerScheduleRescan();
+  }
+
   function codexPlusModelPickerText() {
     const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
     return language.startsWith("zh")
       ? {
           defaultBadge: "默认",
+          defaultModel: "默认模型",
           defaultTitle: "默认供应商：未指定模型时走这一家",
           expandAll: "全部展开",
           collapseAll: "全部折叠",
@@ -96,6 +110,7 @@
         }
       : {
           defaultBadge: "Default",
+          defaultModel: "Default model",
           defaultTitle: "Default provider: used when no model is pinned",
           expandAll: "Expand all",
           collapseAll: "Collapse all",
@@ -291,7 +306,7 @@
 
   /** 归一化：比较时忽略大小写、`gpt-` 前缀和空白。 */
   function codexPlusModelPickerNormalize(value) {
-    return codexPlusModelPickerNormalizeStrict(value).replace(/^gpt-/u, "");
+    return codexPlusModelPickerNormalizeStrict(value).replace(/^gpt-/u, "").replace(/[-_]/g, "");
   }
 
   /**
@@ -327,16 +342,15 @@
    */
   function codexPlusModelPickerCatalogProviderMap() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
-    // 会话内已记下的归属先铺一层：目录快照可能被整体替换（重连 / 重新生成），
-    // 只认当前快照会让默认供应商的分组名在某一刻变空。
-    const map = new Map(codexPlusModelPickerGroupsState.providerNames);
+    // 分组 ID 只从当前目录解析；展示名缓存没有 ID，也可能属于旧聚合。
+    const map = new Map();
     if (!modelMetadata || typeof modelMetadata !== "object") return map;
     const slugList = Array.isArray(codexModelCatalog?.models)
       ? codexModelCatalog.models.filter((slug) => typeof slug === "string" && slug)
       : [];
     const entries = Object.entries(modelMetadata);
     // `models` 是权威切片：优先按它逐个取元数据（键能对上就用真实 slug 做别名）。
-    // 取不到（切片缺失 / 键不一致）时退回遍历全部元数据，保证不漏分组。
+    // 仅在切片缺失时遍历全部元数据；明确撤下的模型不能从旧元数据复活。
     const seenEntries = new Set();
     const registerEntry = (entry, slug) => {
       if (!entry || typeof entry !== "object" || seenEntries.has(entry)) return;
@@ -347,15 +361,20 @@
       const groupId = typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
       if (!provider || !groupId) return;
       for (const key of codexPlusModelPickerCatalogAliases(displayName, entry, slug)) {
+        const value = { provider, groupId, parsed: false };
+        // 同名模型可属于多个成员；带供应商的查询必须优先于裸名别名。
+        map.set(`${key}\0${provider}`, value);
         const remembered = map.get(key);
-        // 权威来源可以覆盖行文本猜出来的；已经有权威值就不动。
-        if (!remembered || remembered.parsed) map.set(key, { provider, groupId, parsed: false });
+        if (!map.has(key) || remembered?.groupId === groupId) map.set(key, value);
+        else map.set(key, null);
       }
       codexPlusModelPickerRememberProvider(displayName, provider, false);
     };
     const bySlug = new Map(entries);
     for (const slug of slugList) registerEntry(bySlug.get(slug), slug);
-    for (const [key, entry] of entries) registerEntry(entry, key);
+    if (!Array.isArray(codexModelCatalog?.models)) {
+      for (const [key, entry] of entries) registerEntry(entry, key);
+    }
     return map;
   }
 
@@ -372,8 +391,9 @@
     if (!content) return null;
     const native = content.querySelector(`.${codexPlusModelPickerNativeLabelClass}`);
     const own = content.querySelector(`.${codexPlusModelPickerOwnLabelClass}`);
-    const outer = content.querySelector("span.flex-1, span[class*='flex-1']");
-    const inner = outer?.firstElementChild;
+    const outer = content.querySelector(".flex-1");
+    // 原生默认项的标题/副标题直接放在 div.flex-col，普通模型则还有一层标签容器。
+    const inner = outer?.classList.contains("flex-col") ? outer : outer?.firstElementChild;
     // 原始标签优先；没打过补丁时就是 inner 里的第一个 span。
     const labelElement = native || own || inner?.firstElementChild || inner;
     const text = (labelElement?.textContent || "").replace(/\s+/g, " ").trim();
@@ -392,12 +412,177 @@
       labelElement,
       text,
       spanCount: nativeSpans.length,
-      groupable: !!text && (patched || nativeSpans.length <= 1),
+      groupable: !!text && !row.classList.contains("codex-plus-model-default-row") && (patched || nativeSpans.length <= 1),
     };
   }
 
   function codexPlusModelPickerRowLabel(row) {
     return codexPlusModelPickerRowIdentity(row)?.text || "";
+  }
+
+  function codexPlusModelPickerDefaultModel() {
+    const configured = codexPlusConfiguredDefaultModel();
+    if (configured) return configured;
+    // 目录尚未发布时仍可展示配置值；不放宽请求归一化和自动模型迁移的准入。
+    if (codexModelCatalog.status !== "not_applied" || !codexPlusBackendSettingsLoaded) return "";
+    const profile = codexRemoteSessionActiveProfile();
+    if (profile?.relayMode !== "aggregate" || !profile.id
+        || !codexModelCatalog.sources?.some((source) =>
+          source?.id === `aggregate:${profile.id}`
+          && ["aggregate_model_catalog", "aggregate_pool_catalog"].includes(source.type))) return "";
+    const models = new Set(Array.isArray(codexModelCatalog.models) ? codexModelCatalog.models : []);
+    return [codexModelCatalog.model, codexModelCatalog.default_model]
+      .find((model) => typeof model === "string" && models.has(model)) || "";
+  }
+
+  function codexPlusModelPickerLocalPickerForList(list) {
+    const menu = list?.closest?.('[role="menu"]');
+    const triggerIds = (menu?.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+    if (!triggerIds.length) return null;
+    const pickers = codexAggregateModelPickers();
+    return pickers.find(({ node }) => triggerIds.includes(node.id)) || null;
+  }
+
+  function codexPlusModelPickerCurrentIdentity(picker) {
+    const model = typeof picker?.model === "string" ? picker.model : "";
+    if (!model) return null;
+    const descriptor = picker.models?.find((entry) => entry?.model === model);
+    const metadata = codexPlusModelMetadata(model);
+    const labels = [descriptor?.displayName, descriptor?.display_name, metadata?.displayName, metadata?.display_name];
+    const names = new Set();
+    const addName = (value) => {
+      if (typeof value !== "string" || !value.trim()) return;
+      const split = codexPlusModelPickerSplitLabel(value);
+      for (const candidate of [split.name, value]) {
+        const strict = codexPlusModelPickerNormalizeStrict(candidate);
+        const relaxed = codexPlusModelPickerNormalize(candidate);
+        if (strict) names.add(strict);
+        if (relaxed) names.add(relaxed);
+      }
+    };
+    labels.forEach(addName);
+    const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model;
+    addName(bare);
+    const labelled = labels.map((value) => codexPlusModelPickerSplitLabel(value)).find((entry) => entry.provider);
+    return {
+      names,
+      provider: labelled?.provider || providerNameOf(metadata || {}),
+      groupId: typeof metadata?.codex_plus_group_id === "string" ? metadata.codex_plus_group_id.trim() : "",
+    };
+  }
+
+  /**
+   * “默认模型”是切回配置默认值的动作，不是当前会话模型本身。
+   *
+   * Codex 原生默认行会按它自己的默认目录决定勾号；我们替换了这行文字后，若不同时
+   * 修正视觉状态，就会出现“文字是 6.1、勾号却代表当前 5.6”的假象。这里始终压掉
+   * 默认动作行的原生勾号，再按 picker.model 把当前会话标在具体模型行上。
+   */
+  function codexPlusModelPickerSyncCurrentRow(list, selected) {
+    list.querySelectorAll(".codex-plus-model-current-row").forEach((row) => {
+      row.classList.remove("codex-plus-model-current-row", "codex-plus-model-current-synthetic");
+    });
+    list.querySelectorAll(".codex-plus-model-default-row").forEach((row) => {
+      row.classList.add("codex-plus-model-default-suppress-selection");
+    });
+    const identity = codexPlusModelPickerCurrentIdentity(selected?.picker);
+    if (!identity?.names.size) return;
+    const matches = codexPlusModelPickerRows(list).filter((entry) => {
+      const strict = codexPlusModelPickerNormalizeStrict(entry.name);
+      const relaxed = codexPlusModelPickerNormalize(entry.name);
+      if (!identity.names.has(strict) && !identity.names.has(relaxed)) return false;
+      if (identity.groupId && entry.groupId) return identity.groupId === entry.groupId;
+      if (identity.provider && entry.provider) return identity.provider === entry.provider;
+      return true;
+    });
+    if (matches.length !== 1) return;
+    const row = matches[0].row;
+    row.classList.add("codex-plus-model-current-row");
+    const nativeSelected = row.hasAttribute("data-model-selected") || row.getAttribute("aria-checked") === "true";
+    row.classList.toggle("codex-plus-model-current-synthetic", !nativeSelected);
+  }
+
+  function codexPlusModelPickerSelectConfiguredDefault(event) {
+    if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+    const row = event.target?.closest?.(".codex-plus-model-default-row");
+    if (!row || codexPlusModelPickerGroupsState.disposed || row.getAttribute("aria-disabled") === "true") return;
+    // 已展示具体型号的补丁行不能落回原生推荐动作，包括目录失效及菜单归属变化的瞬间。
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.repeat) return;
+    const list = row.closest('[class*="_ModelList_"]');
+    const selected = codexPlusModelPickerLocalPickerForList(list);
+    if (!selected || selected.picker.disabled) return;
+    const target = codexPlusModelPickerDefaultModel();
+    if (!target || !selected.picker.models.some((entry) => entry?.model === target)) return;
+    const menu = row.closest('[role="menu"]');
+    const { picker } = selected;
+    const efforts = modelReasoningEfforts(target);
+    const preferred = codexPlusModelMetadata(target)?.defaultReasoningEffort
+      || picker.models.find((entry) => entry.model === target)?.defaultReasoningEffort;
+    const effort = efforts.find((entry) => entry.reasoningEffort === picker.reasoningEffort)?.reasoningEffort
+      || efforts.find((entry) => entry.reasoningEffort === preferred)?.reasoningEffort
+      || efforts[0]?.reasoningEffort || "medium";
+    // 通过原生模型选择回调显式选中配置值，避开“推荐模型集”的缓存默认动作。
+    try {
+      Promise.resolve(picker.onSelectModel(target, effort)).then(() => {
+        if (menu?.isConnected) menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      }).catch((error) => console.warn("[Codex++] default model selection failed", error));
+    } catch (error) {
+      console.warn("[Codex++] default model selection failed", error);
+    }
+  }
+
+  function codexPlusModelPickerSyncDefaultRow(list) {
+    const selected = codexPlusModelPickerLocalPickerForList(list);
+    if (!selected || selected.picker.disabled) {
+      list.querySelectorAll(".codex-plus-model-default-row").forEach(codexPlusModelPickerRestoreLabel);
+      return;
+    }
+    const model = codexPlusModelPickerDefaultModel();
+    if (!model) {
+      list.querySelectorAll(".codex-plus-model-default-row").forEach(codexPlusModelPickerRestoreLabel);
+      return;
+    }
+    const metadata = codexPlusModelMetadata(model);
+    const name = codexPlusModelPickerSplitLabel(metadata?.displayName || model).name;
+    for (const row of list.querySelectorAll('[role="menuitemradio"]')) {
+      const identity = codexPlusModelPickerRowIdentity(row);
+      if (!identity) continue;
+      let nativeDefault = false;
+      const fiberKey = Object.keys(row).find((key) => key.startsWith("__reactFiber$"));
+      for (let fiber = fiberKey && row[fiberKey], depth = 0; fiber && depth < 16; depth++, fiber = fiber.return) {
+        if (fiber.memoizedProps?.children?.props?.id === "composer.modelPicker.default.label") {
+          nativeDefault = true;
+          break;
+        }
+      }
+      if (!nativeDefault && !row.classList.contains("codex-plus-model-default-row")
+          && !(identity.spanCount > 1 && /^(默认|Default)$/i.test(identity.text))) continue;
+      row.classList.add("codex-plus-model-default-row");
+      // 标签与默认动作读取同一配置值，隐藏原生推荐模型集的副标题。
+      codexPlusModelPickerInstallLabel({ row, name: `${codexPlusModelPickerText().defaultModel}  ${name}` });
+      const own = identity.inner?.querySelector(`.${codexPlusModelPickerOwnLabelClass}`);
+      if (own && !own.querySelector(".codex-plus-model-default-value")) {
+        const caption = document.createElement("span");
+        caption.className = "codex-plus-model-default-caption";
+        caption.setAttribute("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark);
+        caption.textContent = codexPlusModelPickerText().defaultModel;
+        const value = document.createElement("span");
+        value.className = "codex-plus-model-default-value";
+        value.setAttribute("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark);
+        value.textContent = name;
+        value.title = name;
+        own.replaceChildren(caption, document.createTextNode("  "), value);
+      }
+      for (const child of identity.inner?.children || []) {
+        if (child.classList.contains(codexPlusModelPickerOwnLabelClass)
+            || child.classList.contains(codexPlusModelPickerNativeLabelClass)) continue;
+        child.classList.add("codex-plus-model-default-subtitle");
+        child.setAttribute("aria-hidden", "true");
+      }
+    }
+    codexPlusModelPickerSyncCurrentRow(list, selected);
   }
 
   /**
@@ -416,8 +601,13 @@
       // 分组键：只信"行上有后缀"和"目录里的权威分组 id"这两个来源。
       // 早期版本拿目录展示名去拟合行文本，别名一多就把模型分到了错的组（同一家被切成
       // 好几段），所以目录查询只用来补 **分组 id**，不用来决定显示成哪一组。
-      const known = providers.get(codexPlusModelPickerNormalizeStrict(split.name))
-        || providers.get(codexPlusModelPickerNormalize(split.name));
+      const keys = [
+        codexPlusModelPickerNormalizeStrict(split.name),
+        codexPlusModelPickerNormalize(split.name),
+      ];
+      const known = split.provider
+        ? keys.map((key) => providers.get(`${key}\0${split.provider}`)).find(Boolean)
+        : keys.map((key) => providers.get(key)).find(Boolean);
       const groupId = known?.groupId
         || (split.provider ? split.provider : codexPlusModelPickerDefaultGroupId());
       // 显示名按行文本：有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
@@ -545,7 +735,7 @@
     if (groups.length < 2) return;
     if (state.touched.size > 0) return;
     let keep = "";
-    const selected = list.querySelector("[data-model-selected]");
+    const selected = list.querySelector(".codex-plus-model-current-row") || list.querySelector("[data-model-selected]");
     if (selected) {
       const split = codexPlusModelPickerSplitLabel(codexPlusModelPickerRowLabel(selected));
       const desired = split.provider || "";
@@ -652,6 +842,12 @@
       native.removeAttribute("data-codex-plus-ext");
       native.removeAttribute("aria-hidden");
     }
+    content.querySelectorAll(".codex-plus-model-default-subtitle").forEach((node) => {
+      node.classList.remove("codex-plus-model-default-subtitle");
+      node.removeAttribute("aria-hidden");
+    });
+    row.classList.remove("codex-plus-model-default-row");
+    row.classList.remove("codex-plus-model-default-suppress-selection", "codex-plus-model-current-row", "codex-plus-model-current-synthetic");
     row.classList.remove(codexPlusModelPickerItemClass, "codex-plus-model-group-collapsed");
     row.removeAttribute(codexPlusModelPickerGroupAttr);
     if (row.getAttribute("data-codex-plus-ext") === codexPlusModelPickerGroupsExtMark) {
@@ -809,6 +1005,7 @@
   function codexPlusModelPickerPatch(list) {
     if (codexPlusModelPickerGroupsState.disposed) return false;
     codexPlusModelPickerStore();
+    codexPlusModelPickerSyncDefaultRow(list);
     const rows = codexPlusModelPickerRows(list);
     const groups = codexPlusModelPickerUniqueGroupIds(
       codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
@@ -817,6 +1014,7 @@
     if (groups.length < 2) {
       if (codexPlusModelPickerGroupsState.patchedLists.has(list)) codexPlusModelPickerClear(list);
       else codexPlusModelPickerRemoveOwnNodes(list);
+      codexPlusModelPickerSyncDefaultRow(list);
       return false;
     }
     const signature = codexPlusModelPickerFingerprint(groups);
@@ -867,7 +1065,17 @@
     style.setAttribute("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark);
     style.textContent = `
       /* 分组标题贴着原生行的左右内边距，视觉上属于同一列。 */
-      .codex-plus-model-group-header{display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;margin:2px 0 0;padding:4px 8px;border:0;border-radius:8px;background:none;color:var(--color-token-text-secondary,rgba(205,205,215,.8));font:inherit;font-size:11px;line-height:16px;font-weight:600;letter-spacing:.02em;text-align:left;cursor:pointer;user-select:none;appearance:none}
+      .codex-plus-model-group-header{display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;margin:2px 0 0;padding:4px 8px;border:0;border-radius:8px;background:none;color:var(--color-token-text-secondary,rgba(205,205,215,.8));font:inherit;font-size:11px;line-height:16px;font-weight:600;letter-spacing:0;text-align:left;cursor:pointer;user-select:none;appearance:none}
+      [role="menuitemradio"].codex-plus-model-default-row{min-height:24px!important;height:auto!important;margin:2px 0 0!important;padding:4px 8px!important;color:var(--color-token-text-secondary,rgba(205,205,215,.8));font-size:11px!important;line-height:16px!important;font-weight:600!important;letter-spacing:0}
+      .codex-plus-model-default-row [data-menu-row-content],.codex-plus-model-default-row .${codexPlusModelPickerOwnLabelClass}{font-size:11px!important;line-height:16px!important;font-weight:600!important}
+      .codex-plus-model-default-row [data-menu-row-content] > .flex-1{width:100%;min-width:0}
+      .codex-plus-model-default-row .${codexPlusModelPickerOwnLabelClass}{display:flex!important;flex-direction:row;align-items:center;gap:12px;width:100%}
+      .codex-plus-model-default-caption{flex:0 0 auto}
+      .codex-plus-model-default-value{flex:0 1 auto;min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--color-token-text-primary,#dfdfdf);font-weight:500}
+      .codex-plus-model-default-subtitle{display:none!important}
+      .codex-plus-model-default-suppress-selection svg{display:none!important}
+      [role="menuitemradio"].codex-plus-model-current-synthetic [data-menu-row-content]::after{content:"";flex:0 0 auto;width:5px;height:9px;margin:1px 5px 0 10px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;opacity:.8;transform:rotate(45deg)}
+      [role="menuitemradio"][data-codex-plus-model-group]{padding-left:30px!important;padding-right:8px!important}
       .codex-plus-model-group-header:hover{background:var(--color-token-bg-secondary,rgba(255,255,255,.04));color:var(--color-token-text-primary,#dfdfdf)}
       .codex-plus-model-group-header:focus-visible{outline:1px solid color-mix(in srgb,var(--color-token-text-primary,#dfdfdf) 35%,transparent);outline-offset:1px}
       .codex-plus-model-group-chevron{flex:0 0 auto;width:12px;height:12px;opacity:.75;transform:rotate(90deg);transition:transform .15s ease}
@@ -969,6 +1177,8 @@
 
   codexPlusModelPickerInstallStyle();
   codexPlusModelPickerSchedule(300);
+  document.addEventListener("click", codexPlusModelPickerSelectConfiguredDefault, true);
+  document.addEventListener("keydown", codexPlusModelPickerSelectConfiguredDefault, true);
   window.__codexPlusModelPickerGroupsRuntime = {
     version: 1,
     sync: () => codexPlusModelPickerSchedule(0),
@@ -989,6 +1199,9 @@
       id: codexPlusModelPickerGroupsState.defaultGroupId,
       resolved: codexPlusModelPickerDefaultGroupId(),
       catalogStatus: codexModelCatalog?.status || "",
+      displayModel: codexPlusModelPickerDefaultModel(),
+      settingsLoaded: codexPlusBackendSettingsLoaded,
+      activeProfileId: codexRemoteSessionActiveProfile()?.id || "",
       catalogModels: codexModelCatalog?.models?.length || 0,
       catalogDefaultId: codexModelCatalog?.codex_plus_default_group_id ?? null,
       metaEntries: codexModelCatalog?.modelMetadata ? Object.keys(codexModelCatalog.modelMetadata).length : 0,
@@ -1017,6 +1230,8 @@
     dispose() {
       const state = codexPlusModelPickerGroupsState;
       state.disposed = true;
+      document.removeEventListener("click", codexPlusModelPickerSelectConfiguredDefault, true);
+      document.removeEventListener("keydown", codexPlusModelPickerSelectConfiguredDefault, true);
       clearTimeout(state.timer);
       clearTimeout(state.rescanTimer);
       state.observer?.disconnect();

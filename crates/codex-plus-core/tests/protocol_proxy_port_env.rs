@@ -31,9 +31,46 @@ fn clear_env_port() {
     unsafe { std::env::remove_var("CODEX_PLUS_PROTOCOL_PROXY_PORT") };
 }
 
+struct IsolatedEnvironment {
+    previous_port: Option<std::ffi::OsString>,
+    previous_state: Option<std::ffi::OsString>,
+    state: tempfile::TempDir,
+}
+
+impl IsolatedEnvironment {
+    fn new() -> Self {
+        let scope = Self {
+            previous_port: std::env::var_os("CODEX_PLUS_PROTOCOL_PROXY_PORT"),
+            previous_state: std::env::var_os("CODEX_PLUS_STATE_DIR"),
+            state: tempfile::tempdir().unwrap(),
+        };
+        // 本测试二进制的全部环境访问均受 ENV_LOCK 保护。
+        unsafe { std::env::set_var("CODEX_PLUS_STATE_DIR", scope.state.path()) };
+        clear_env_port();
+        scope
+    }
+}
+
+impl Drop for IsolatedEnvironment {
+    fn drop(&mut self) {
+        for (key, previous) in [
+            ("CODEX_PLUS_PROTOCOL_PROXY_PORT", &self.previous_port),
+            ("CODEX_PLUS_STATE_DIR", &self.previous_state),
+        ] {
+            unsafe {
+                match previous {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn env_override_moves_the_whole_proxy_port_chain() {
     let _guard = lock_env();
+    let _environment = IsolatedEnvironment::new();
     set_env_port("58077");
 
     assert_eq!(protocol_proxy_port(), 58077);
@@ -66,6 +103,7 @@ fn env_override_moves_the_whole_proxy_port_chain() {
 #[test]
 fn invalid_env_values_fall_back_to_the_default_port() {
     let _guard = lock_env();
+    let _environment = IsolatedEnvironment::new();
     for value in ["", "  ", "abc", "0", "70000", "-1"] {
         set_env_port(value);
         assert_eq!(

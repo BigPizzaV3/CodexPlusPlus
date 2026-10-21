@@ -8,8 +8,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::relay_rotation::RotationEvent;
-use crate::settings::BackendSettings;
+use crate::relay_rotation::{RelayRotationSnapshot, RotationEvent};
 
 type CacheKey = [u8; 32];
 const CACHE_CAPACITY: usize = 256;
@@ -70,15 +69,15 @@ pub(crate) fn evict(key: &CacheKey) {
 
 pub(crate) struct ExecOutcome {
     key: CacheKey,
-    settings: BackendSettings,
+    snapshot: Option<RelayRotationSnapshot>,
     finished: bool,
 }
 
 impl ExecOutcome {
-    pub(crate) fn new(key: CacheKey, settings: &BackendSettings) -> Self {
+    pub(crate) fn new(key: CacheKey, snapshot: Option<RelayRotationSnapshot>) -> Self {
         Self {
             key,
-            settings: settings.clone(),
+            snapshot,
             finished: false,
         }
     }
@@ -98,14 +97,16 @@ impl ExecOutcome {
                 entries.pop_front();
             }
         }
-        crate::relay_rotation::record_relay_request_event(
-            &self.settings,
-            if success {
-                RotationEvent::Success
-            } else {
-                RotationEvent::Failure
-            },
-        );
+        if let Some(snapshot) = &self.snapshot {
+            crate::relay_rotation::record_relay_request_event_for_snapshot(
+                snapshot,
+                if success {
+                    RotationEvent::Success
+                } else {
+                    RotationEvent::Failure
+                },
+            );
+        }
     }
 }
 
@@ -309,27 +310,142 @@ mod tests {
 
     #[test]
     fn only_completed_validated_outcomes_create_bounded_cache_evidence() {
-        let settings = BackendSettings::default();
         let canceled_key = Sha256::digest(b"canceled-exec-outcome").into();
-        drop(ExecOutcome::new(canceled_key, &settings));
+        drop(ExecOutcome::new(canceled_key, None));
         assert!(!cached(&canceled_key));
         let good_key = Sha256::digest(b"successful-exec-outcome").into();
-        let mut valid = ExecOutcome::new(good_key, &settings);
+        let mut valid = ExecOutcome::new(good_key, None);
         valid.finish(true);
         assert!(cached(&good_key));
         valid.finish(false);
         assert!(cached(&good_key), "outcomes are accounted exactly once");
-        let mut invalid = ExecOutcome::new(good_key, &settings);
+        let mut invalid = ExecOutcome::new(good_key, None);
         invalid.finish(false);
         assert!(!cached(&good_key));
         for index in 0..=CACHE_CAPACITY {
             let key = Sha256::digest(index.to_be_bytes()).into();
-            ExecOutcome::new(key, &settings).finish(true);
+            ExecOutcome::new(key, None).finish(true);
         }
         let mut entries = cache().lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(entries.len(), CACHE_CAPACITY);
         entries.push_back((canceled_key, Instant::now() - CACHE_TTL));
         drop(entries);
         assert!(!cached(&canceled_key));
+    }
+
+    fn failover_settings(pool_id: &str) -> crate::settings::BackendSettings {
+        use crate::settings::{
+            AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
+            RelayMode, RelayProfile,
+        };
+        BackendSettings {
+            active_relay_id: pool_id.into(),
+            active_aggregate_relay_id: pool_id.into(),
+            relay_profiles: vec![
+                RelayProfile {
+                    id: pool_id.into(),
+                    relay_mode: RelayMode::Aggregate,
+                    ..Default::default()
+                },
+                RelayProfile {
+                    id: "exec-a".into(),
+                    relay_mode: RelayMode::PureApi,
+                    base_url: "http://127.0.0.1:1/v1".into(),
+                    api_key: "fixture-a".into(),
+                    ..Default::default()
+                },
+                RelayProfile {
+                    id: "exec-b".into(),
+                    relay_mode: RelayMode::PureApi,
+                    base_url: "http://127.0.0.1:2/v1".into(),
+                    api_key: "fixture-b".into(),
+                    ..Default::default()
+                },
+            ],
+            aggregate_relay_profiles: vec![AggregateRelayProfile {
+                id: pool_id.into(),
+                name: "exec pool fixture".into(),
+                session_provider: crate::settings::RelaySessionProvider::Custom,
+                strategy: AggregateRelayStrategy::Failover,
+                model_aggregation_enabled: false,
+                members: vec![
+                    AggregateRelayMember {
+                        relay_id: "exec-a".into(),
+                        weight: 1,
+                    },
+                    AggregateRelayMember {
+                        relay_id: "exec-b".into(),
+                        weight: 1,
+                    },
+                ],
+                routes: Vec::new(),
+                default_relay_id: String::new(),
+                sync_default_member_login: false,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn old_exec_outcome_cannot_advance_a_new_generation() {
+        use crate::relay_rotation::{RotationContext, select_relay_for_request_with_revision};
+        let _guard = crate::paths::settings_path_test_guard();
+        let _rotation_guard = crate::relay_rotation::rotation_test_guard();
+        let mut settings = failover_settings("old-exec-pool");
+        let (old_relay, snapshot) =
+            select_relay_for_request_with_revision(&settings, RotationContext::default(), "")
+                .unwrap();
+        assert_eq!(old_relay.id, "exec-a");
+        let mut old = ExecOutcome::new(
+            Sha256::digest(b"old-exec-generation").into(),
+            Some(snapshot),
+        );
+        // 成员凭据改变而池定义不变，必须建立新 generation。
+        settings.relay_profiles[1].api_key = "fixture-new-credential".into();
+        let (current, _) =
+            select_relay_for_request_with_revision(&settings, RotationContext::default(), "")
+                .unwrap();
+        assert_eq!(current.id, "exec-a");
+        old.finish(false);
+        let (next, snapshot) =
+            select_relay_for_request_with_revision(&settings, RotationContext::default(), "")
+                .unwrap();
+        assert_eq!(next.id, "exec-a");
+        // 正向控制：新 generation 的真实失败仍能推进。
+        ExecOutcome::new(
+            Sha256::digest(b"current-exec-generation").into(),
+            Some(snapshot),
+        )
+        .finish(false);
+        let (next, _) =
+            select_relay_for_request_with_revision(&settings, RotationContext::default(), "")
+                .unwrap();
+        assert_eq!(next.id, "exec-b");
+    }
+
+    #[test]
+    fn strict_exec_without_snapshot_never_changes_the_active_pool() {
+        use crate::relay_rotation::{RotationContext, select_relay_for_request_with_revision};
+        let _guard = crate::paths::settings_path_test_guard();
+        let _rotation_guard = crate::relay_rotation::rotation_test_guard();
+        let settings = failover_settings("strict-exec-pool");
+        let (_, snapshot) =
+            select_relay_for_request_with_revision(&settings, RotationContext::default(), "")
+                .unwrap();
+        crate::relay_rotation::record_relay_request_event_for_snapshot(
+            &snapshot,
+            RotationEvent::Failure,
+        );
+        let (before, _) =
+            select_relay_for_request_with_revision(&settings, RotationContext::default(), "")
+                .unwrap();
+        assert_eq!(before.id, "exec-b");
+        for succeeded in [false, true] {
+            ExecOutcome::new(Sha256::digest([succeeded as u8]).into(), None).finish(succeeded);
+            let (after, _) =
+                select_relay_for_request_with_revision(&settings, RotationContext::default(), "")
+                    .unwrap();
+            assert_eq!(after.id, before.id);
+        }
     }
 }

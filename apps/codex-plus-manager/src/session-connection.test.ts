@@ -35,14 +35,14 @@ function runtime() {
   const create = new Function("window", "codexPlusBackendSettings", "codexRemoteSessionActiveProfile",
     "validThreadScrollSessionKey", "loadBackendSettingsState", "codexAppServerPreparationTimeoutMs",
     "nativeHostClient", "sendCodexPlusDiagnostic", "codexRemoteSessionTargetProvider",
-    "applyCodexServiceTierRequestOnly", `${source}
+    "applyCodexServiceTierRequestOnly", "normalizeCodexConfiguredModelRequest", `${source}
     return { apply: applyCodexManagedSessionConnection, prepare: prepareCodexManagedSessionConnection,
       send: sendCodexManagedSessionTurn,
       prewarm: prewarmCodexManagedSession, observeError: observeCodexManagedSessionConnectionError,
       note: noteCodexManagedSessionStart };`);
   const api = create(window, state.settings, () => state.profile, (id: string) => id === "thread" ? id : "",
     async () => state.refresh, 1500, () => client, () => {}, () => "custom",
-    (_method: string, params: any) => params);
+    (_method: string, params: any) => params, (_method: string, params: any) => params);
   return { ...api, state, calls, client, window };
 }
 
@@ -335,6 +335,9 @@ describe("managed aggregate session connection", () => {
         codexRemoteSessionProviderOverrideEnabled: () => false,
         applyCodexRemoteSessionProviderOverride: (_method: string, params: any) => params,
         applyCodexServiceTierRequestOnly: (_method: string, params: any) => params,
+        sendCodexRetainedModelRequest: (_client: unknown, send: Function, method: string, params: unknown, options: unknown) =>
+          send(method, params, options),
+        normalizeCodexConfiguredModelRequest: (_method: string, params: any) => params,
         loadBackendSettingsState: async () => { calls.push("settings/get"); return true; },
         codexAppServerPreparationTimeoutMs: 1500,
         sendCodexPlusDiagnostic() {}, codexPlusModelUnlockEnabled: () => false,

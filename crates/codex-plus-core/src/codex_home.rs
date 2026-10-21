@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 pub fn default_codex_home_dir() -> PathBuf {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .filter(|path| codex_home_env_dir_is_valid(path))
+        .filter(|path| codex_home_env_dir_is_explicit(path))
         .unwrap_or_else(default_user_codex_home_dir)
 }
 
-fn codex_home_env_dir_is_valid(path: &PathBuf) -> bool {
-    !path.as_os_str().is_empty() && !path.to_string_lossy().trim().is_empty() && path.is_dir()
+fn codex_home_env_dir_is_explicit(path: &PathBuf) -> bool {
+    // 显式路径即使尚未创建或不可用也必须保留，不能跨过隔离边界回退到真实家目录。
+    !path.as_os_str().is_empty() && !path.to_string_lossy().trim().is_empty()
 }
 
 /// 递归删除的守卫：**绝不允许**删掉 `CODEX_HOME` 本身、它的任何一个祖先目录，
@@ -324,24 +325,42 @@ mod tests {
     }
 
     #[test]
-    fn default_codex_home_dir_ignores_empty_or_missing_codex_home_env() {
+    fn default_codex_home_dir_ignores_empty_codex_home_env() {
+        let _lock = CODEX_HOME_ENV_LOCK.lock().unwrap();
+        let expected = default_user_codex_home_dir();
+
+        for value in ["", "   "] {
+            let _guard = CodexHomeEnvGuard::set_raw(value);
+            assert_eq!(default_codex_home_dir(), expected);
+            assert_eq!(crate::relay_config::default_codex_home_dir(), expected);
+            assert_eq!(crate::codex_sqlite::default_codex_home_dir(), expected);
+        }
+    }
+
+    #[test]
+    fn default_codex_home_dir_preserves_missing_explicit_home() {
         let _lock = CODEX_HOME_ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("missing-codex-home");
-        let expected = default_user_codex_home_dir();
+        let _guard = CodexHomeEnvGuard::set(&missing);
 
-        {
-            let _guard = CodexHomeEnvGuard::set_raw("   ");
-            assert_eq!(default_codex_home_dir(), expected);
-            assert_eq!(crate::relay_config::default_codex_home_dir(), expected);
-            assert_eq!(crate::codex_sqlite::default_codex_home_dir(), expected);
-        }
+        assert_eq!(default_codex_home_dir(), missing);
+        assert_eq!(crate::relay_config::default_codex_home_dir(), missing);
+        assert_eq!(crate::codex_sqlite::default_codex_home_dir(), missing);
+        assert!(!missing.exists());
+    }
 
-        {
-            let _guard = CodexHomeEnvGuard::set(&missing);
-            assert_eq!(default_codex_home_dir(), expected);
-            assert_eq!(crate::relay_config::default_codex_home_dir(), expected);
-            assert_eq!(crate::codex_sqlite::default_codex_home_dir(), expected);
-        }
+    #[test]
+    fn default_codex_home_dir_preserves_invalid_explicit_home_for_io_errors() {
+        let _lock = CODEX_HOME_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("not-a-directory");
+        std::fs::write(&file, b"").unwrap();
+        let _guard = CodexHomeEnvGuard::set(&file);
+
+        assert_eq!(default_codex_home_dir(), file);
+        assert_eq!(crate::relay_config::default_codex_home_dir(), file);
+        assert_eq!(crate::codex_sqlite::default_codex_home_dir(), file);
+        assert!(std::fs::create_dir_all(default_codex_home_dir()).is_err());
     }
 }

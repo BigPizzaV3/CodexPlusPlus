@@ -2939,6 +2939,18 @@ pub fn resume_existing_codex_background(app: tauri::AppHandle, start_if_missing:
             status_store: StatusStore::default(),
             ..Default::default()
         };
+        // 恢复准入必须先于 start_if_missing 分支；隔离目录无记录时不能自动启动默认实例。
+        match codex_plus_launcher::automatic_resume_allowed(&options) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.resume_existing_failed",
+                    json!({ "message": error.to_string() }),
+                );
+                return;
+            }
+        }
         match codex_plus_launcher::resume_if_running(options.clone()) {
             Ok(true) => {}
             Ok(false) if start_if_missing => {

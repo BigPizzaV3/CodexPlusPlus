@@ -38,62 +38,100 @@ struct CodexConfig {
     model_providers: HashMap<String, HashMap<String, String>>,
 }
 
+// sources 含凭据，不派生 Debug，避免断言或诊断意外输出密钥。
+struct CodexCatalogSnapshot {
+    config_path: PathBuf,
+    config: CodexConfig,
+    effective: HashMap<String, String>,
+    error: Option<String>,
+    sources: Vec<ModelSource>,
+    catalog_models: Vec<String>,
+    catalog_status: Option<Value>,
+}
+
+enum CatalogReadSnapshot {
+    Ready(Value),
+    Fallback(CodexCatalogSnapshot),
+}
+
 pub async fn read_codex_model_catalog() -> Value {
     let home = codex_home_dir();
-    let settings_path = crate::paths::default_settings_path();
-    if settings_path.exists() {
-        if let Ok(settings) = SettingsStore::new(settings_path).load() {
-            let profile = settings.active_relay_profile();
-            let catalog = if let Some(aggregate) = crate::aggregate_catalog::active_model_aggregation(&settings) {
-                crate::aggregate_catalog::catalog_summary(&home, &settings, &aggregate)
-                    .unwrap_or_else(|_| relay_profile_model_catalog_value(&home, &profile))
-            } else {
-                relay_profile_model_catalog_value(&home, &profile)
-            };
-            if catalog
-                .get("models")
-                .and_then(Value::as_array)
-                .map_or(false, |m| !m.is_empty())
-            {
-                return catalog;
-            }
-        }
-    }
     let env = std::env::vars_os()
         .filter_map(|(name, value)| {
             let name = name.into_string().ok()?;
             Some((name, value.to_string_lossy().into_owned()))
         })
         .collect::<HashMap<_, _>>();
+    // 空目录的 fallback 也必须在同一次协调读中捕获，不能释放锁后重读 live。
+    let snapshot = SettingsStore::default().with_snapshot(|settings| {
+        Ok(capture_catalog_read_snapshot(&home, &env, &settings))
+    });
+    let snapshot = match snapshot {
+        Ok(CatalogReadSnapshot::Ready(catalog)) => return catalog,
+        Ok(CatalogReadSnapshot::Fallback(snapshot)) => snapshot,
+        Err(error) => return catalog_read_failure(&home.join("config.toml"), Value::Null, &error),
+    };
     let client = match crate::http_client::proxied_client("CodexPlusPlus/1.0") {
         Ok(client) => client,
         Err(error) => {
-            return json!({
-                "status": "failed",
-                "path": home.join("config.toml").to_string_lossy(),
-                "message": error.to_string(),
-                "service_tier": config_service_tier_value(&home),
-                "model": "",
-                "model_provider": "",
-                "provider_name": "",
-                "default_model": "",
-                "models": [],
-                "modelMetadata": {},
-                "sources": [],
-                "responses_api": responses_api_status("unknown", "", "")
-            });
+            return catalog_read_failure(
+                &snapshot.config_path,
+                service_tier_value(&snapshot.effective),
+                &error,
+            );
         }
     };
-    read_codex_model_catalog_from_home(&home, &env, client).await
+    read_codex_model_catalog_from_snapshot(snapshot, client).await
+}
+
+fn capture_catalog_read_snapshot(
+    home: &Path,
+    env: &HashMap<String, String>,
+    settings: &crate::settings::BackendSettings,
+) -> CatalogReadSnapshot {
+    let profile = settings.active_relay_profile();
+    let catalog = if let Some(aggregate) = settings.active_aggregate_relay_profile() {
+        let catalog = crate::aggregate_catalog::catalog_summary(home, settings, &aggregate)
+            .unwrap_or_else(|error| catalog_read_failure(&home.join("config.toml"), Value::Null, &error));
+        // 聚合成员目录是权威来源，错误/空目录也不能读回旧的 live 或上游目录。
+        return CatalogReadSnapshot::Ready(catalog);
+    } else {
+        relay_profile_model_catalog_value(home, &profile)
+    };
+    if catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .is_some_and(|models| !models.is_empty())
+    {
+        CatalogReadSnapshot::Ready(catalog)
+    } else {
+        CatalogReadSnapshot::Fallback(CodexCatalogSnapshot::capture(home, env))
+    }
+}
+
+fn catalog_read_failure(path: &Path, service_tier: Value, error: &anyhow::Error) -> Value {
+    json!({
+        "status": "failed",
+        "path": path.to_string_lossy(),
+        "message": error.to_string(),
+        "service_tier": service_tier,
+        "model": "",
+        "model_provider": "",
+        "provider_name": "",
+        "default_model": "",
+        "models": [],
+        "modelMetadata": {},
+        "sources": [],
+        "responses_api": responses_api_status("unknown", "", "")
+    })
 }
 
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
     let models = relay_profile_model_ids(profile);
-    let model = profile.model.trim().to_string();
+    let model = crate::relay_config::relay_profile_model(profile);
     let codex_model_provider = codex_model_provider_for_relay_profile(home, profile);
-    let configured_model = crate::relay_config::relay_profile_model(profile);
-    let default_model = if models.iter().any(|item| item == &configured_model) {
-        configured_model
+    let default_model = if models.iter().any(|item| item == &model) {
+        model.clone()
     } else {
         models.first().cloned().unwrap_or_default()
     };
@@ -274,9 +312,51 @@ pub async fn read_codex_model_catalog_from_home(
     env: &HashMap<String, String>,
     client: reqwest::Client,
 ) -> Value {
-    let config_path = home.join("config.toml");
-    let auth_api_key = read_codex_auth_api_key(&home.join("auth.json"));
-    let (config, effective, error) = load_codex_config(&config_path);
+    // 显式 home 的原始接口不访问默认 SettingsStore，也不创建真实 state。
+    read_codex_model_catalog_from_snapshot(CodexCatalogSnapshot::capture(home, env), client).await
+}
+
+impl CodexCatalogSnapshot {
+    fn capture(home: &Path, env: &HashMap<String, String>) -> Self {
+        let config_path = home.join("config.toml");
+        let auth_api_key = read_codex_auth_api_key(&home.join("auth.json"));
+        let (config, effective, error) = load_codex_config(&config_path);
+        let mut sources = model_sources_from_environment(env, &auth_api_key);
+        if error.is_none()
+            && let Some(source) = model_source_from_config(&config, &effective, env, &auth_api_key)
+            && sources
+                .iter()
+                .all(|existing| trim_url(&existing.base_url) != trim_url(&source.base_url))
+        {
+            sources.push(source);
+        }
+        let (catalog_models, catalog_status) =
+            models_from_config_model_catalog_json(home, &effective);
+        Self {
+            config_path,
+            config,
+            effective,
+            error,
+            sources,
+            catalog_models,
+            catalog_status,
+        }
+    }
+}
+
+async fn read_codex_model_catalog_from_snapshot(
+    snapshot: CodexCatalogSnapshot,
+    client: reqwest::Client,
+) -> Value {
+    let CodexCatalogSnapshot {
+        config_path,
+        config,
+        effective,
+        error,
+        sources,
+        catalog_models,
+        catalog_status,
+    } = snapshot;
     let mut model = string_value(effective.get("model"));
     let mut model_provider = string_value(effective.get("model_provider"));
     let (resolved_provider, provider_config) =
@@ -308,18 +388,6 @@ pub async fn read_codex_model_catalog_from_home(
         });
     }
 
-    let mut sources = model_sources_from_environment(env, &auth_api_key);
-    if error.is_none() {
-        if let Some(source) = model_source_from_config(&config, &effective, env, &auth_api_key) {
-            if sources
-                .iter()
-                .all(|existing| trim_url(&existing.base_url) != trim_url(&source.base_url))
-            {
-                sources.push(source);
-            }
-        }
-    }
-
     let mut source_statuses = Vec::new();
     let mut models = Vec::new();
     for source in sources.iter() {
@@ -328,7 +396,6 @@ pub async fn read_codex_model_catalog_from_home(
         models.extend(source_models);
         source_statuses.push(source_status);
     }
-    let (catalog_models, catalog_status) = models_from_config_model_catalog_json(home, &effective);
     models.extend(catalog_models);
     if let Some(status) = catalog_status {
         source_statuses.push(status);
@@ -1216,6 +1283,215 @@ mod model_fetch_tests {
     use super::*;
 
     #[test]
+    fn invalid_pool_catalog_does_not_resurrect_live_catalog_or_compat_model() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("config.toml"), "model = \"unconfigured-compat\"\n").unwrap();
+        let settings = crate::settings::BackendSettings {
+            active_relay_id: "pool".into(),
+            active_aggregate_relay_id: "pool".into(),
+            relay_profiles: vec![RelayProfile { id: "pool".into(), relay_mode: crate::settings::RelayMode::Aggregate,
+                ..RelayProfile::default() }],
+            aggregate_relay_profiles: serde_json::from_value(json!([{"id":"pool","name":"Pool","members":[]}])).unwrap(),
+            ..crate::settings::BackendSettings::default()
+        };
+        let CatalogReadSnapshot::Ready(catalog) = capture_catalog_read_snapshot(temp.path(), &HashMap::new(), &settings) else {
+            panic!("pool catalog must remain authoritative");
+        };
+        assert_eq!(catalog["status"], "failed");
+        assert_eq!(catalog["models"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn empty_profile_fallback_waits_for_failed_publication_rollback() {
+        use fs2::FileExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let settings_path = home.join("settings.json");
+        let store = SettingsStore::new(settings_path.clone());
+        let initial = crate::settings::BackendSettings {
+            active_relay_id: "empty-profile".into(),
+            relay_profiles: vec![RelayProfile {
+                id: "empty-profile".into(),
+                model: String::new(),
+                model_list: String::new(),
+                ..RelayProfile::default()
+            }],
+            ..crate::settings::BackendSettings::default()
+        };
+        store.save(&initial).unwrap();
+        let mut pending = store.load().unwrap();
+        pending.relay_profiles[0].name = "pending".into();
+        pending.relay_profiles[0].model_list = "pending-profile".into();
+        let original_config =
+            b"model = \"old-local\"\nmodel_catalog_json = \"catalog.json\"\n";
+        let original_auth = br#"{"OPENAI_API_KEY":"synthetic-old-auth"}"#;
+        let original_catalog = br#"{"models":[{"slug":"old-local"}]}"#;
+        std::fs::write(home.join("config.toml"), original_config).unwrap();
+        std::fs::write(home.join("auth.json"), original_auth).unwrap();
+        std::fs::write(home.join("catalog.json"), original_catalog).unwrap();
+        let (published_tx, published_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_home = home.to_path_buf();
+        let writer_store = store.clone();
+        let writer = std::thread::spawn(move || {
+            writer_store.save_with_commit(&pending, |_| {
+                std::fs::write(
+                    writer_home.join("config.toml"),
+                    "model = \"pending-local\"\nmodel_catalog_json = \"catalog.json\"\n",
+                )?;
+                std::fs::write(
+                    writer_home.join("auth.json"), br#"{"OPENAI_API_KEY":"synthetic-pending-auth"}"#,
+                )?;
+                std::fs::write(
+                    writer_home.join("catalog.json"), br#"{"models":[{"slug":"pending-local"}]}"#,
+                )?;
+                published_tx.send(()).unwrap();
+                let released = release_rx.recv_timeout(Duration::from_secs(5));
+                // 关联文件先在锁内恢复，再由 SettingsStore 恢复 settings 原始字节。
+                std::fs::write(writer_home.join("config.toml"), original_config)?;
+                std::fs::write(writer_home.join("auth.json"), original_auth)?;
+                std::fs::write(writer_home.join("catalog.json"), original_catalog)?;
+                released.expect("publication release timed out");
+                anyhow::bail!("injected catalog publication failure");
+            })
+        });
+        published_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (contended_tx, contended_rx) = mpsc::channel();
+        let reader_store = store.clone();
+        let reader_home = home.to_path_buf();
+        let reader = std::thread::spawn(move || {
+            let file = std::fs::OpenOptions::new().read(true).write(true)
+                .open(settings_path.with_extension("json.lock")).unwrap();
+            let contended = match FileExt::try_lock_exclusive(&file) {
+                Ok(()) => {
+                    FileExt::unlock(&file).unwrap();
+                    false
+                }
+                Err(error) => error.raw_os_error() == fs2::lock_contended_error().raw_os_error(),
+            };
+            contended_tx.send(contended).unwrap();
+            reader_store.with_snapshot(|settings| {
+                Ok(capture_catalog_read_snapshot(&reader_home, &HashMap::new(), &settings))
+            })
+        });
+        let contended = contended_rx.recv_timeout(Duration::from_secs(5));
+        // 断言前释放并 join，避免失败路径留下等待发布的线程。
+        let _ = release_tx.send(());
+        let write_result = writer.join().unwrap();
+        let read_result = reader.join().unwrap();
+        assert!(contended.unwrap(), "catalog reader must encounter the publication lock");
+        assert!(write_result.unwrap_err().to_string().contains("injected catalog publication failure"));
+        let CatalogReadSnapshot::Fallback(snapshot) = read_result.unwrap() else {
+            panic!("empty profile must still use fallback after rollback");
+        };
+        assert!(snapshot.sources.is_empty());
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let catalog = tokio::time::timeout(
+            Duration::from_secs(5), read_codex_model_catalog_from_snapshot(snapshot, client),
+        ).await.expect("rolled back catalog read timed out");
+        assert_eq!(catalog["model"], "old-local");
+        assert_eq!(catalog["models"], json!(["old-local"]));
+        assert_eq!(catalog["sources"][0]["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn empty_profile_fallback_uses_captured_config_auth_catalog_and_sources() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let old_config = format!(
+            "model = \"old-local\"\nmodel_provider = \"old-provider\"\nservice_tier = \"fast\"\nmodel_catalog_json = \"old-catalog.json\"\n[model_providers.old-provider]\nname = \"Old Provider\"\nbase_url = \"http://{address}/config/v1\"\n"
+        );
+        std::fs::write(home.join("config.toml"), old_config).unwrap();
+        std::fs::write(
+            home.join("auth.json"), r#"{"OPENAI_API_KEY":"synthetic-old-auth"}"#,
+        ).unwrap();
+        std::fs::write(
+            home.join("old-catalog.json"), r#"{"models":[{"slug":"old-local"}]}"#,
+        ).unwrap();
+        let mut env = HashMap::from([(
+            "OPENAI_BASE_URL".to_string(), format!("http://{address}/env/v1"),
+        )]);
+        let store = SettingsStore::new(home.join("settings.json"));
+        let settings = crate::settings::BackendSettings {
+            active_relay_id: "empty-profile".into(),
+            relay_profiles: vec![RelayProfile {
+                id: "empty-profile".into(),
+                model: String::new(),
+                model_list: String::new(),
+                ..RelayProfile::default()
+            }],
+            ..crate::settings::BackendSettings::default()
+        };
+        store.save(&settings).unwrap();
+        let captured = store.with_snapshot(|settings| {
+            Ok(capture_catalog_read_snapshot(home, &env, &settings))
+        }).unwrap();
+        let CatalogReadSnapshot::Fallback(snapshot) = captured else {
+            panic!("empty profile must capture fallback in the coordinated read");
+        };
+
+        // 同时改指针和旧指针的内容，异步阶段不能重读任意一个本地文件。
+        std::fs::write(
+            home.join("config.toml"),
+            "model = \"new-local\"\nmodel_provider = \"new-provider\"\nservice_tier = \"flex\"\nmodel_catalog_json = \"new-catalog.json\"\n[model_providers.new-provider]\nname = \"New Provider\"\nbase_url = \"http://127.0.0.1:9/new/v1\"\n",
+        ).unwrap();
+        std::fs::write(
+            home.join("auth.json"), r#"{"OPENAI_API_KEY":"synthetic-new-auth"}"#,
+        ).unwrap();
+        for filename in ["old-catalog.json", "new-catalog.json"] {
+            std::fs::write(
+                home.join(filename), r#"{"models":[{"slug":"new-local"}]}"#,
+            ).unwrap();
+        }
+        env.insert("OPENAI_BASE_URL".into(), "http://127.0.0.1:9/new-env/v1".into());
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let serve = async {
+            for expected_path in ["/env/v1/models", "/config/v1/models"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).await.unwrap();
+                    assert!(read > 0, "mock request closed before headers");
+                    bytes.extend_from_slice(&chunk[..read]);
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                // 不在失败信息中打印含凭据的完整请求。
+                assert!(request.starts_with(&format!("GET {expected_path} HTTP/1.1\r\n")));
+                assert!(request.lines().any(|line| {
+                    line.eq_ignore_ascii_case("authorization: Bearer synthetic-old-auth")
+                }), "request must use captured synthetic credentials");
+                let body = r#"{"data":[{"id":"old-remote"}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        };
+        // 不 spawn：超时或断言失败会直接销毁两个 future 和所有 mock 连接。
+        let (catalog, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(read_codex_model_catalog_from_snapshot(snapshot, client), serve)
+        }).await.expect("snapshot regression timed out");
+        assert_eq!(catalog["status"], "ok");
+        assert_eq!(catalog["model"], "old-local");
+        assert_eq!(catalog["model_provider"], "old-provider");
+        assert_eq!(catalog["provider_name"], "Old Provider");
+        assert_eq!(catalog["service_tier"], "fast");
+        assert_eq!(catalog["default_model"], "old-local");
+        assert_eq!(catalog["models"], json!(["old-remote", "old-local"]));
+        assert_eq!(catalog["sources"][2]["path"], home.join("old-catalog.json").to_string_lossy().as_ref());
+        assert_eq!(catalog["sources"][2]["status"], "ok");
+    }
+
+    #[test]
     fn relay_profile_model_catalog_keeps_configured_default_after_model_list_sorting() {
         let profile = RelayProfile {
             model: "qwen3-coder".into(),
@@ -1227,6 +1503,20 @@ mod model_fetch_tests {
         let catalog = relay_profile_model_catalog_value(home.path(), &profile);
 
         assert_eq!(catalog["default_model"], "qwen3-coder");
+    }
+
+    #[test]
+    fn relay_profile_catalog_model_and_default_use_the_same_configured_value() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = RelayProfile {
+            model: "old-model".into(),
+            model_list: "old-model\nconfigured-model".into(),
+            config_contents: "model = \"configured-model\"\n".into(),
+            ..RelayProfile::default()
+        };
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile);
+        assert_eq!(catalog["model"], "configured-model");
+        assert_eq!(catalog["default_model"], catalog["model"]);
     }
 
     #[test]

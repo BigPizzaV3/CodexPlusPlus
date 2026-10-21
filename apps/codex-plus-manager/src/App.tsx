@@ -21,6 +21,8 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowRightLeft,
+  ArrowDownAZ,
+  ArrowUpAZ,
   Bell,
   Blocks,
   Cable,
@@ -79,7 +81,7 @@ import {
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
 import { createPortal } from "react-dom";
-import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -121,7 +123,6 @@ import {
   metadataSourceTags,
   modelSlugFromRowName,
   suffixWindowString,
-  normalizeTokenCountInput,
   modelMetadataKey,
   modelFastSupportMode,
   synchronizeModelMetadataLiteSupport,
@@ -150,14 +151,17 @@ import {
   setIndependentProxyConfigured,
   requestCompatibilityEnabled,
   findRelayModelRouteIssue,
-  modelRouteSaveRequiresRestart,
+  localProxyEndpointMatches,
   normalizeRelayModelRoutes,
   webSearchHistoryCompatEnabled,
   PROTOCOL_PROXY_BASE_URL,
   type RelayModelRoute,
 } from "./model-routes";
+import { relaySettingsSaveRestartReason, relaySettingsSaveCapabilityProfileNames, type RelaySaveRestartReason, type RelaySaveChoice } from "./relay-save";
 import {
   mergeModelWindowRows,
+  normalizeModelWindowInput,
+  formatModelWindowInput,
   modelWindowRowsFromProfile,
   modelWindowRowsValidationError,
   serializeModelWindowRows,
@@ -177,9 +181,12 @@ import {
   setModelReasoningLevelsForSlug,
 } from "./model-reasoning";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
+import { nextAggregateProfileName } from "./aggregate-profile-name";
 import {
   aggregateMemberCandidates,
   normalizeAggregateMembers,
+  reorderAggregateMembers,
+  sortAggregateMembers,
   isAggregateProfile,
   isOfficialLoginMemberProfile,
   normalizeAggregateDefaultRelayId,
@@ -1345,6 +1352,9 @@ export function App() {
     message: string;
     confirmText: string;
     cancelText: string;
+    alternateText?: string;
+    resolveAlternate?: () => void;
+    icon?: "restart" | "save";
     resolve: (confirmed: boolean) => void;
   } | null>(null);
   const [sessionIndexCleanupDialog, setSessionIndexCleanupDialog] = useState<{
@@ -1785,6 +1795,25 @@ export function App() {
         confirmText: t("确认删除"),
         cancelText: t("取消"),
         resolve,
+      });
+    });
+
+  const confirmRelaySaveRestart = (reason: RelaySaveRestartReason, capabilityProfiles: string[] = []) =>
+    new Promise<RelaySaveChoice>((resolve) => {
+      const canDeferRestart = reason === "modelCapabilities";
+      setConfirmDialog({
+        title: canDeferRestart ? t("保存模型参数") : t("保存修改并重启客户端"),
+        message: canDeferRestart
+          ? tf("本次涉及以下聚合成员的上下文窗口、自动压缩阈值或模型能力：{0}。可能需要重启才能正确加载模型参数。你可以先保存并继续使用，部分参数可能暂未生效；稍后可手动重启。现在重启可能中断正在执行的任务。", [capabilityProfiles.join("、")])
+          : reason === "proxyUnavailable"
+            ? t("当前客户端未连接到同一正常运行的本地代理，无法直接热更新此次修改。继续保存将立即重启客户端，可能中断正在执行的任务。")
+            : t("本次修改涉及客户端原生配置或登录状态，需要重新加载才能完整生效。继续保存将立即重启客户端，可能中断正在执行的任务。"),
+        confirmText: canDeferRestart ? t("保存，暂不重启") : t("继续保存并重启"),
+        alternateText: canDeferRestart ? t("继续保存并重启") : undefined,
+        resolveAlternate: canDeferRestart ? () => resolve("restart") : undefined,
+        cancelText: t("取消"),
+        icon: canDeferRestart ? "save" : "restart",
+        resolve: (confirmed) => resolve(confirmed ? (canDeferRestart ? "save" : "restart") : "cancel"),
       });
     });
 
@@ -2792,7 +2821,7 @@ export function App() {
       const saved = normalizeSettings(result.settings);
       setSettings(result);
       setSettingsForm(saved);
-      if (!silent) showNotice(t("设置保存"), result.message, result.status);
+      if (!silent || result.status !== "ok") showNotice(t("设置保存"), result.message, result.status);
       return saved;
     }
     if (result) showNotice(t("设置保存"), result.message, result.status);
@@ -3785,6 +3814,7 @@ export function App() {
       performUpdate,
       saveSettings,
       saveSettingsValue,
+      confirmRelaySaveRestart,
       refreshSettings,
       resetSettings,
       exportSettings,
@@ -4271,6 +4301,10 @@ export function App() {
             confirmDialog.resolve(true);
             setConfirmDialog(null);
           }}
+          onAlternate={confirmDialog.resolveAlternate ? () => {
+            confirmDialog.resolveAlternate?.();
+            setConfirmDialog(null);
+          } : undefined}
         />
       ) : null}
       {sessionIndexCleanupDialog ? (
@@ -4470,6 +4504,7 @@ type Actions = {
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
+  confirmRelaySaveRestart: (reason: RelaySaveRestartReason, capabilityProfiles?: string[]) => Promise<RelaySaveChoice>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   exportSettings: () => Promise<void>;
@@ -9711,28 +9746,44 @@ function RelayProfileDetail({
         : updateRelayProfile(form, profile.id, normalizedDraft));
       const settingsValidationError = relaySettingsValidation(next);
       if (settingsValidationError) return;
+      // 概览使用后端实际选择的代理端口；读取失败时保守走原有重启流程。
+      let runtimeProxyAddress = "";
+      let helperRunning = false;
+      let clientRunning = true;
+      try {
+        const runtime = await invoke<OverviewResult>("load_overview");
+        runtimeProxyAddress = runtime.runtime_health?.local_server?.address ?? "";
+        helperRunning = runtime.runtime_health?.local_server?.status === "running";
+        clientRunning = runtime.runtime_health?.codex_app?.status !== "stopped";
+      } catch {}
+      const active = activeRelayProfile(form);
       const activeLiveBaseUrl = codexBaseUrlFromConfig(
-        relayFiles?.configContents ?? profile.configContents,
+        relayFiles?.configContents ?? active.configContents, runtimeProxyAddress,
       );
-      const requiresRestart = isActive && modelRouteSaveRequiresRestart(
+      const restartReason = clientRunning ? relaySettingsSaveRestartReason(
         normalizeSettings(form),
         next,
         activeLiveBaseUrl,
-      );
-      if (requiresRestart && !window.confirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"))) {
+        runtimeProxyAddress,
+        helperRunning,
+      ) : null;
+      const saveChoice = restartReason ? await actions.confirmRelaySaveRestart(
+        restartReason,
+        restartReason === "modelCapabilities" ? relaySettingsSaveCapabilityProfileNames(normalizeSettings(form), next) : [],
+      ) : "save";
+      if (saveChoice === "cancel") {
         return;
       }
       const savedSettings = await onFormChange(next);
       if (!savedSettings) return;
-      if (requiresRestart) {
+      if (saveChoice === "restart") {
         const restarted = await actions.restart(true);
         if (!restarted) return;
         onSaved?.();
         return;
       }
-      const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
-        ?? normalizedDraft;
-      if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
+      // 客户端未运行时才应用完整启动配置；运行中的热更只保存代理设置并刷新目录。
+      if (!clientRunning && isActive && savedSettings.relayProfilesEnabled) {
         await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
       }
       onSaved?.();
@@ -9974,6 +10025,8 @@ type BuiltinMetadataIndexEntry = {
   supported_reasoning_levels?: unknown;
 };
 
+const fetchedProviderModelCache = new Map<string, { source: string; models: string[] }>();
+
 function RelayProfileEditor({
   profile,
   form,
@@ -9991,6 +10044,67 @@ function RelayProfileEditor({
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
 }) {
+  const modelSource = JSON.stringify([profile.id, profile.upstreamBaseUrl, profile.baseUrl, profile.protocol, profile.authContents, profile.apiKeys, profile.customHeaders]);
+  const modelSourceRef = useRef(modelSource);
+  modelSourceRef.current = modelSource;
+  const [fetchedModelChoices, setFetchedModelChoices] = useState<{ source: string; models: string[] } | null>(
+    () => fetchedProviderModelCache.get(profile.id) ?? null,
+  );
+  const modelChoices = [...new Set([
+    ...(fetchedModelChoices?.source === modelSource ? fetchedModelChoices.models : []),
+  ].map((model) => model.trim()).filter(Boolean))];
+  const [modelAddOpen, setModelAddOpen] = useState(false);
+  const [modelAddSelection, setModelAddSelection] = useState<string[]>([]);
+  const [modelAddFilter, setModelAddFilter] = useState("");
+  const modelAddDialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!modelAddOpen) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = modelAddDialogRef.current;
+    if (!dialog) return;
+    const focusable = () => [...dialog.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), [tabindex="0"]',
+    )].filter((element) => element.getClientRects().length > 0);
+    dialog.querySelector<HTMLInputElement>('input[type="text"], input:not([type])')?.focus();
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setModelAddOpen(false);
+      }
+      if (event.key !== "Tab") return;
+      const controls = focusable();
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first || !last) { event.preventDefault(); return; }
+      if (!dialog.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    };
+    const guardFocus = (event: FocusEvent) => {
+      if (!dialog.contains(event.target as Node)) focusable()[0]?.focus();
+    };
+    document.addEventListener("keydown", trapFocus, true);
+    document.addEventListener("focusin", guardFocus);
+    return () => {
+      document.removeEventListener("keydown", trapFocus, true);
+      document.removeEventListener("focusin", guardFocus);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [modelAddOpen]);
+  const modelFetchSequence = useRef(0);
+  const modelRowsRoot = useRef<HTMLDivElement>(null);
+  const focusNewModelRow = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusNewModelRow.current) return;
+    focusNewModelRow.current = false;
+    const inputs = modelRowsRoot.current?.querySelectorAll<HTMLInputElement>(".relay-model-cell-name input");
+    const input = inputs?.[inputs.length - 1];
+    input?.focus();
+    input?.setSelectionRange(input.value.length, input.value.length);
+  });
+  const addedModelNames = new Set(modelWindowRows.map((row) => modelSlugFromRowName(row.model).trim()));
   const [vlmTestOpen, setVlmTestOpen] = useState(false);
   const [relayProxyUrl, setRelayProxyUrl] = useState("");
   const [relayProxyBusy, setRelayProxyBusy] = useState(false);
@@ -10536,9 +10650,10 @@ function RelayProfileEditor({
         : row;
     }));
   };
-  const appendEmptyModelRow = () => {
+  const appendEmptyModelRow = (model = "") => {
+    focusNewModelRow.current = true;
     modelSlugOriginsRef.current = [...modelSlugOriginsRef.current, ""];
-    setModelWindowRows([...modelWindowRows, { model: "", window: "", autoCompact: "", imageHandling: "" }]);
+    setModelWindowRows([...modelWindowRows, { model, window: "", autoCompact: "", imageHandling: "send-as-is" }]);
   };
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
   const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
@@ -10812,9 +10927,11 @@ function RelayProfileEditor({
         >
           <div className="relay-options-grid">
             <Field className="relay-field-config-model" label={t("配置模型")}>
-              <Input
+              <ModelNameInput
+                models={modelChoices}
+                aria-label={t("配置模型")}
                 value={profile.model}
-                onChange={(event) => updateDraft({ model: event.currentTarget.value })}
+                onValueChange={(model) => updateDraft({ model })}
                 placeholder={t("例如 deepseek-v4-pro")}
               />
               <p className="field-hint">
@@ -10832,7 +10949,7 @@ function RelayProfileEditor({
                   </div>
                   <div className="relay-model-list-tools">
                     <Button
-                      onClick={appendEmptyModelRow}
+                      onClick={() => { setModelAddSelection([]); setModelAddFilter(""); setModelAddOpen(true); }}
                       size="sm"
                       type="button"
                       variant="secondary"
@@ -10842,6 +10959,8 @@ function RelayProfileEditor({
                     </Button>
                     <Button
                       onClick={async () => {
+                        const source = modelSource;
+                        const sequence = ++modelFetchSequence.current;
                         const serializedRows = serializeModelWindowRows(modelWindowRows);
                         const models = await actions.fetchRelayProfileModels({
                           ...profile,
@@ -10849,8 +10968,11 @@ function RelayProfileEditor({
                           modelWindows: serializedRows.modelWindows,
                           modelAutoCompact: serializedRows.modelAutoCompact,
                         });
-                        if (models?.length) {
-                          addModelWindowRows(models.map((model) => ({ model, window: "", autoCompact: "", imageHandling: "" })));
+                        if (modelSourceRef.current !== source || sequence !== modelFetchSequence.current) return;
+                        if (models) {
+                          const cached = { source, models };
+                          fetchedProviderModelCache.set(profile.id, cached);
+                          setFetchedModelChoices(cached);
                         }
                       }}
                       size="sm"
@@ -10873,7 +10995,7 @@ function RelayProfileEditor({
                     </Button>
                   </div>
                 </div>
-                <div className="relay-model-row-editor">
+                <div className="relay-model-row-editor" ref={modelRowsRoot}>
                   {modelWindowRows.length ? <div className="relay-model-row relay-model-row-head">
                     <span aria-hidden="true" />
                     <span>{t("模型名称")}</span>
@@ -10945,19 +11067,21 @@ function RelayProfileEditor({
                           </button>
                           <div className="relay-model-cell relay-model-cell-name">
                             <span className="relay-model-cell-label">{t("模型名称")}</span>
-                            <Input
+                            <ModelNameInput
+                              models={modelChoices}
                               aria-label={t("模型名称")}
                               value={row.model}
-                              onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
+                              onValueChange={(model) => updateModelWindowRow(index, { model })}
                               onBlur={() => commitModelSlug(index)}
                               placeholder="deepseek/deepseek-v4-flash"
                             />
                           </div>
                           <div className="relay-model-cell relay-model-cell-window">
                             <span className="relay-model-cell-label">{t("上下文窗口")}</span>
-                            <Input
+                            <ModelWindowInput
                               aria-label={t("上下文窗口")}
                               value={row.window}
+                              onBlur={() => updateModelWindowRow(index, { window: normalizeModelWindowInput(row.window) })}
                               onChange={(event) => {
                                 const window = event.currentTarget.value;
                                 updateModelWindowRow(index, { window });
@@ -11224,7 +11348,48 @@ function RelayProfileEditor({
                       })}
                     </SortableContext>
                   </DndContext>
+                  <div className="relay-model-row relay-model-new-row">
+                    <Button aria-label={t("创建空白模型")} title={t("创建空白模型")} size="icon" variant="ghost" type="button"
+                      onClick={() => appendEmptyModelRow()}>
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                    <Input aria-label={t("新模型名称")} value="" placeholder={t("模型名称")}
+                      onChange={(event) => { if (event.currentTarget.value) appendEmptyModelRow(event.currentTarget.value); }} />
+                  </div>
                 </div>
+                {modelAddOpen ? createPortal(
+                  <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t("添加模型")}
+                    onKeyDown={(event) => { if (event.key === "Escape") setModelAddOpen(false); }}>
+                    <div className="modal-card confirm-modal" ref={modelAddDialogRef}>
+                      <div className="modal-head"><h2>{t("添加模型")}</h2>
+                        <Button size="icon" variant="ghost" aria-label={t("关闭")} onClick={() => setModelAddOpen(false)}>×</Button>
+                      </div>
+                      <Input aria-label={t("筛选模型")} placeholder={t("筛选模型")} value={modelAddFilter}
+                        onChange={(event) => setModelAddFilter(event.currentTarget.value)} />
+                      <div className="provider-model-choices">
+                        {!modelChoices.length ? <p className="field-hint">{t("暂无上游模型")}</p> : null}
+                        {modelChoices.filter((model) => model.toLowerCase().includes(modelAddFilter.toLowerCase())).map((model) => {
+                          const added = addedModelNames.has(model);
+                          return <label key={model} className="provider-model-choice">
+                            <input type="checkbox" disabled={added} checked={added || modelAddSelection.includes(model)}
+                              onChange={(event) => setModelAddSelection(event.currentTarget.checked
+                                ? [...modelAddSelection, model] : modelAddSelection.filter((item) => item !== model))} />
+                            <span>{model}</span>{added ? <small>{t("已添加")}</small> : null}
+                          </label>;
+                        })}
+                      </div>
+                      <Toolbar className="confirm-modal-actions">
+                        <Button disabled={!modelAddSelection.some((model) => modelChoices.includes(model) && !addedModelNames.has(model))}
+                          onClick={() => {
+                            addModelWindowRows(modelAddSelection.filter((model) => modelChoices.includes(model) && !addedModelNames.has(model))
+                              .map((model) => ({ model, window: "", autoCompact: "", imageHandling: "send-as-is" })));
+                            setModelAddOpen(false);
+                          }}>{t("添加模型")}</Button>
+                        <Button variant="secondary" onClick={() => setModelAddOpen(false)}>{t("取消")}</Button>
+                      </Toolbar>
+                    </div>
+                  </div>, document.body,
+                ) : null}
                 {modelRowsError ? <div className="relay-model-metadata-import-error" role="alert">{modelRowsError}</div> : null}
                 <p className="field-hint">
                   {t("自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。")}
@@ -11557,25 +11722,25 @@ function RelayProfileEditor({
           </p>
           <div className="relay-advanced-fields">
             <Field className="relay-field-test-model" label={t("测试模型")}>
-              <Input
+              <ModelNameInput
+                models={modelChoices}
+                aria-label={t("测试模型")}
                 value={profile.testModel}
-                onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
+                onValueChange={(testModel) => updateDraft({ testModel })}
                 placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
               />
             </Field>
             <Field className="relay-field-context-window" label={t("上下文大小")}>
-              <Input
-                inputMode="numeric"
+              <ModelWindowInput
                 value={profile.contextWindow}
-                onChange={(event) => updateDraft({ contextWindow: normalizeTokenCountInput(event.currentTarget.value) })}
+                onValueCommit={(value) => updateDraft({ contextWindow: value })}
                 placeholder={t("留空不改写，例如 200000")}
               />
             </Field>
             <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
-              <Input
-                inputMode="numeric"
+              <ModelWindowInput
                 value={profile.autoCompactLimit}
-                onChange={(event) => updateDraft({ autoCompactLimit: normalizeTokenCountInput(event.currentTarget.value) })}
+                onValueCommit={(value) => updateDraft({ autoCompactLimit: value })}
                 placeholder={t("留空不改写，例如 160000")}
               />
             </Field>
@@ -11808,6 +11973,31 @@ function AggregateModeChooser({ onSelect }: { onSelect: (mode: AggregateMode) =>
   );
 }
 
+function SortableAggregateMemberRow({
+  id, selected, children,
+}: { id: string; selected: boolean; children: ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: !selected });
+  return (
+    <div
+      className={`aggregate-member-sortable ${isDragging ? "dragging" : ""}`}
+      data-member-id={id}
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+    >
+      <button
+        {...attributes}
+        {...listeners}
+        aria-label={t("拖动排序成员供应商")}
+        className="relay-drag aggregate-member-drag"
+        disabled={!selected}
+        title={t("拖动排序成员供应商")}
+        type="button"
+      ><GripVertical size={16} /></button>
+      <label className={`aggregate-member-row ${selected ? "selected" : ""}`}>{children}</label>
+    </div>
+  );
+}
+
 function AggregateRelayProfileEditor({
   profile,
   form,
@@ -11819,8 +12009,18 @@ function AggregateRelayProfileEditor({
 }) {
   const candidates = aggregateMemberCandidates(form.relayProfiles, profile.id);
   const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
+  const [descending, setDescending] = useState(false);
+  const memberSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const modelMode = aggregate.modelAggregationEnabled === true;
   const memberIds = new Set(aggregate.members.map((member) => member.profileId));
+  const candidateMap = new Map(candidates.map(candidate => [candidate.id, candidate]));
+  const orderedCandidates = [
+    ...aggregate.members.map(member => candidateMap.get(member.profileId)).filter((item): item is RelayProfile => !!item),
+    ...candidates.filter(candidate => !memberIds.has(candidate.id)),
+  ];
   const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const updateAggregate = (nextAggregate: RelayAggregateConfig) => {
     onProfileChange(normalizeAggregateRelayProfile({ ...profile, aggregate: nextAggregate }, form));
@@ -11936,11 +12136,30 @@ function AggregateRelayProfileEditor({
             <strong>{t("成员供应商")}</strong>
             <span>{t("可勾选 API 供应商或已完成 ChatGPT 登录的官方账号；聚合供应商不会作为成员。")}</span>
           </div>
-          <UiBadge variant="outline">{aggregate.members.length} / {candidates.length}</UiBadge>
+          <div className="aggregate-members-actions">
+            <Button
+              aria-label={descending ? t("按名称降序排序") : t("按名称升序排序")}
+              disabled={aggregate.members.length < 2}
+              onClick={() => {
+                updateAggregate({ ...aggregate, members: sortAggregateMembers(aggregate.members, form.relayProfiles, descending) });
+                setDescending(!descending);
+              }}
+              size="icon"
+              title={descending ? t("按名称降序排序") : t("按名称升序排序")}
+              type="button"
+              variant="ghost"
+            >{descending ? <ArrowUpAZ size={16} /> : <ArrowDownAZ size={16} />}</Button>
+            <UiBadge variant="outline">{aggregate.members.length} / {candidates.length}</UiBadge>
+          </div>
         </div>
         {candidates.length ? (
+          <DndContext sensors={memberSensors} collisionDetection={closestCenter} onDragEnd={({ active, over }) => {
+            if (!over || active.id === over.id) return;
+            updateAggregate({ ...aggregate, members: reorderAggregateMembers(aggregate.members, String(active.id), String(over.id)) });
+          }}>
+          <SortableContext items={aggregate.members.map(member => member.profileId)} strategy={verticalListSortingStrategy}>
           <div className="aggregate-member-list">
-            {candidates.map((candidate) => {
+            {orderedCandidates.map((candidate) => {
               const member = aggregate.members.find((item) => item.profileId === candidate.id);
               const checked = memberIds.has(candidate.id);
               const isDefaultMember = !!aggregate.defaultRelayId && aggregate.defaultRelayId === candidate.id;
@@ -11951,7 +12170,7 @@ function AggregateRelayProfileEditor({
                 ...(candidate.model.trim() ? [candidate.model.trim()] : []),
               ])];
               return (
-                <label className={`aggregate-member-row ${checked ? "selected" : ""}`} key={candidate.id}>
+                <SortableAggregateMemberRow id={candidate.id} selected={checked} key={candidate.id}>
                   <input
                     checked={checked}
                     onChange={(event) => toggleMember(candidate.id, event.currentTarget.checked)}
@@ -12014,10 +12233,12 @@ function AggregateRelayProfileEditor({
                       />
                     </span>
                   )}
-                </label>
+                </SortableAggregateMemberRow>
               );
             })}
           </div>
+          </SortableContext>
+          </DndContext>
         ) : (
           <div className="empty">{t("先添加至少 1 个可用的 API 供应商或官方登录账号，再创建聚合供应商。")}</div>
         )}
@@ -12878,10 +13099,12 @@ function ConfirmDialog({
   confirm,
   onConfirm,
   onCancel,
+  onAlternate,
 }: {
-  confirm: { title: string; message: string; confirmText: string; cancelText: string };
+  confirm: { title: string; message: string; confirmText: string; cancelText: string; alternateText?: string; icon?: "restart" | "save" };
   onConfirm: () => void;
   onCancel: () => void;
+  onAlternate?: () => void;
 }) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
@@ -12895,11 +13118,14 @@ function ConfirmDialog({
         <div className="confirm-modal-body">
           <p className="modal-message">{confirm.message}</p>
         </div>
-        <Toolbar className="confirm-modal-actions">
+        <Toolbar className={`confirm-modal-actions${confirm.icon ? " confirm-modal-restart-actions" : ""}${confirm.alternateText && onAlternate ? " confirm-modal-three-actions" : ""}`}>
           <Button onClick={onConfirm}>
-            <Trash2 className="h-4 w-4" />
+            {confirm.icon === "save" ? <Save className="h-4 w-4" /> : confirm.icon === "restart" ? <RefreshCw className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
             {confirm.confirmText}
           </Button>
+          {confirm.alternateText && onAlternate ? (
+            <Button onClick={onAlternate} variant="secondary">{confirm.alternateText}</Button>
+          ) : null}
           <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
         </Toolbar>
       </div>
@@ -13855,6 +14081,103 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span>{label}</span>
       {children}
     </Label>
+  );
+}
+
+function ModelWindowInput({ onValueCommit, ...props }: React.ComponentProps<typeof Input> & { onValueCommit?: (value: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const value = String(props.value ?? "");
+  return <Input {...props} value={editing ? onValueCommit ? draft : value : formatModelWindowInput(value)}
+    onFocus={(event) => { setDraft(value); setEditing(true); props.onFocus?.(event); }}
+    onChange={(event) => { setDraft(event.currentTarget.value); props.onChange?.(event); }}
+    onBlur={(event) => {
+      setEditing(false);
+      if (onValueCommit) {
+        const normalized = normalizeModelWindowInput(draft);
+        if (!normalized || /^\d+$/.test(normalized)) onValueCommit(normalized);
+      }
+      props.onBlur?.(event);
+    }} />;
+}
+
+function ModelNameInput({
+  models,
+  onValueChange,
+  ...props
+}: Omit<React.ComponentProps<typeof Input>, "onChange"> & { models: string[]; onValueChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const { rootRef, menuRef, menuStyle } = usePopoverLayer({
+    open,
+    onOpenChange: setOpen,
+    minWidth: 240,
+    maxHeight: 260,
+  });
+  const choices = models.filter((model) => model.toLowerCase().includes(filter.toLowerCase()));
+  const selectorTitle = models.length ? t("选择模型") : t("选择模型（尚未获取到上游模型列表，请先点击“从上游获取”）");
+  return (
+    <div className="relative flex min-w-0 items-center" ref={rootRef}>
+      <Input
+        {...props}
+        className={`pr-8 ${props.className || ""}`}
+        onChange={(event) => {
+          onValueChange(event.currentTarget.value);
+          setFilter(event.currentTarget.value);
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          props.onKeyDown?.(event);
+          if (event.key === "Escape") setOpen(false);
+          if (event.key === "ArrowDown" && models.length) {
+            event.preventDefault();
+            if (open) menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+            else { setFilter(""); setOpen(true); }
+          }
+        }}
+      />
+      <span className="absolute right-1 flex h-6 w-6 items-center justify-center" title={selectorTitle}>
+        <button
+          aria-label={t("选择模型")}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          className="flex h-6 w-6 items-center justify-center rounded hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
+          disabled={props.disabled || !models.length}
+          title={selectorTitle}
+          type="button"
+          onClick={() => { setFilter(""); setOpen(!open); }}
+        >
+          <ChevronDown className="h-4 w-4" />
+        </button>
+      </span>
+      {open && choices.length ? createPortal(
+        <div className="app-select-menu app-select-menu-portal" ref={menuRef} role="listbox" style={menuStyle}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") { setOpen(false); rootRef.current?.querySelector("input")?.focus(); }
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              const buttons = [...event.currentTarget.querySelectorAll("button")];
+              const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+              buttons[(index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+            }
+          }}>
+          {choices.map((model) => (
+            <button className="app-select-option" role="option" aria-selected={props.value === model} key={model} type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                const input = rootRef.current?.querySelector("input");
+                if (input) {
+                  onValueChange(model);
+                  input.focus();
+                }
+                setOpen(false);
+              }}>
+              <span className="app-select-option-spacer" /><span>{model}</span>
+            </button>
+          ))}
+        </div>, document.body,
+      ) : null}
+    </div>
   );
 }
 
@@ -15432,18 +15755,18 @@ function parseModelSuffix(raw: string): { slug: string; window?: number } {
   return { slug: modelSlugFromRowName(raw), window: Number(window) };
 }
 
-function codexBaseUrlFromConfig(contents: string): string {
-  return codexProviderStringFromConfig(contents, "base_url");
+function codexBaseUrlFromConfig(contents: string, runtimeProxyAddress = PROTOCOL_PROXY_BASE_URL): string {
+  return codexProviderStringFromConfig(contents, "base_url", runtimeProxyAddress);
 }
 
 function codexExperimentalBearerTokenFromConfig(contents: string): string {
   return codexProviderStringFromConfig(contents, "experimental_bearer_token");
 }
 
-function codexProviderStringFromConfig(contents: string, key: string): string {
+function codexProviderStringFromConfig(contents: string, key: string, runtimeProxyAddress = PROTOCOL_PROXY_BASE_URL): string {
   const provider = rootTomlStringValue(contents, "model_provider");
   const targetSection = codexProviderSectionName(provider || "custom");
-  const fallbackSection = provider === "openai" && rootTomlStringValue(contents, "openai_base_url") === PROTOCOL_PROXY_BASE_URL
+  const fallbackSection = provider === "openai" && localProxyEndpointMatches(rootTomlStringValue(contents, "openai_base_url"), runtimeProxyAddress)
     ? codexProviderSectionName("custom") : "";
   const lines = contents.split(/\r?\n/);
   const structural = tomlStructureMask(lines);
@@ -16069,7 +16392,10 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
   return normalizeAggregateRelayProfile(
     {
       id,
-      name: tf("聚合供应商 {0}", [settings.relayProfiles.filter(isAggregateRelayProfile).length + 1]),
+      name: nextAggregateProfileName(
+        settings.relayProfiles.map((profile) => profile.name),
+        (number) => tf("聚合供应商 {0}", [number]),
+      ),
       model: "",
       baseUrl: "",
       upstreamBaseUrl: "",

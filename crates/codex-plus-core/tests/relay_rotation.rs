@@ -1,7 +1,9 @@
 use codex_plus_core::relay_rotation::{
     RelayRotationSelector, RotationContext, RotationEvent, RouteMatchInfo, SelectionError,
-    fallback_relays_after, match_route_pattern, record_relay_request_failure, route_match_outcomes,
-    select_relay_for_probe, select_relay_for_request,
+    fallback_relays_after, match_route_pattern, record_relay_request_event_for_snapshot,
+    record_relay_request_failure, record_relay_request_failure_for_snapshot, route_match_outcomes,
+    select_relay_for_probe, select_relay_for_probe_with_revision, select_relay_for_request,
+    select_relay_for_request_with_revision,
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayRoute, AggregateRelayStrategy,
@@ -515,6 +517,403 @@ fn select_relay_for_request_rebuilds_selector_when_active_aggregate_changes() {
 
     assert_eq!(first.id, "relay-a");
     assert_eq!(selected, vec!["relay-a", "relay-b", "relay-b"]);
+}
+
+fn reset_global_selector() {
+    let mut regular = settings(AggregateRelayStrategy::Failover);
+    regular.active_relay_id = "relay-a".to_string();
+    regular.active_aggregate_relay_id.clear();
+    select_relay_for_request(&regular, RotationContext::default()).unwrap();
+}
+
+#[test]
+fn aggregate_name_change_preserves_conversation_assignments() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let mut settings = settings(AggregateRelayStrategy::ConversationRoundRobin);
+    let (first_chat, _) = select_relay_for_request_with_revision(
+        &settings,
+        RotationContext::for_conversation("chat-a"),
+        "100:1",
+    )
+    .unwrap();
+    let (second_chat, _) = select_relay_for_request_with_revision(
+        &settings,
+        RotationContext::for_conversation("chat-b"),
+        "100:1",
+    )
+    .unwrap();
+
+    settings.aggregate_relay_profiles[0].name = "聚合新名称".to_string();
+    let (same_chat, _) = select_relay_for_request_with_revision(
+        &settings,
+        RotationContext::for_conversation("chat-b"),
+        "200:1",
+    )
+    .unwrap();
+
+    assert_eq!(first_chat.id, "relay-a");
+    assert_eq!(second_chat.id, "relay-b");
+    assert_eq!(same_chat.id, "relay-b");
+    reset_global_selector();
+}
+
+#[test]
+fn aggregate_id_change_resets_conversation_assignments() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let mut settings = settings(AggregateRelayStrategy::ConversationRoundRobin);
+    let (_, _) = select_relay_for_request_with_revision(
+        &settings,
+        RotationContext::for_conversation("chat-a"),
+        "210:1",
+    )
+    .unwrap();
+    let (before_change, _) = select_relay_for_request_with_revision(
+        &settings,
+        RotationContext::for_conversation("chat-b"),
+        "210:1",
+    )
+    .unwrap();
+
+    settings.aggregate_relay_profiles[0].id = "agg-renamed".to_string();
+    settings.relay_profiles.last_mut().unwrap().id = "agg-renamed".to_string();
+    settings.active_relay_id = "agg-renamed".to_string();
+    settings.active_aggregate_relay_id = "agg-renamed".to_string();
+    let (after_change, _) = select_relay_for_request_with_revision(
+        &settings,
+        RotationContext::for_conversation("chat-b"),
+        "220:1",
+    )
+    .unwrap();
+
+    assert_eq!(before_change.id, "relay-b");
+    assert_eq!(after_change.id, "relay-a");
+    reset_global_selector();
+}
+
+#[test]
+fn hot_update_to_empty_members_returns_selection_error() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let mut settings = settings(AggregateRelayStrategy::Failover);
+    select_relay_for_request_with_revision(&settings, RotationContext::default(), "230:1")
+        .unwrap();
+    settings.aggregate_relay_profiles[0].members.clear();
+
+    let error = select_relay_for_request_with_revision(
+        &settings,
+        RotationContext::default(),
+        "240:1",
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        SelectionError::EmptyAggregateMembers {
+            aggregate_id: "agg".to_string(),
+        }
+    );
+    reset_global_selector();
+}
+
+#[test]
+fn member_and_weight_updates_preserve_usable_rotation_state() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let mut failover_settings = settings(AggregateRelayStrategy::Failover);
+    let (_, first_snapshot) = select_relay_for_request_with_revision(
+        &failover_settings,
+        RotationContext::default(),
+        "300:1",
+    )
+    .unwrap();
+    record_relay_request_failure_for_snapshot(&first_snapshot);
+
+    failover_settings.aggregate_relay_profiles[0].members.insert(
+        0,
+        AggregateRelayMember {
+            relay_id: "relay-c".to_string(),
+            weight: 1,
+        },
+    );
+    failover_settings.aggregate_relay_profiles[0].members.pop();
+    let (after_members, _) = select_relay_for_request_with_revision(
+        &failover_settings,
+        RotationContext::default(),
+        "400:1",
+    )
+    .unwrap();
+    assert_eq!(after_members.id, "relay-b");
+
+    reset_global_selector();
+    let mut weighted = settings(AggregateRelayStrategy::WeightedRoundRobin);
+    let (first, _) = select_relay_for_request_with_revision(
+        &weighted,
+        RotationContext::default(),
+        "500:1",
+    )
+    .unwrap();
+    weighted.aggregate_relay_profiles[0].members[0].weight = 2;
+    let selected = (0..5)
+        .map(|_| {
+            select_relay_for_request_with_revision(
+                &weighted,
+                RotationContext::default(),
+                "600:1",
+            )
+            .unwrap()
+            .0
+            .id
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(first.id, "relay-a");
+    assert_eq!(selected, vec!["relay-b", "relay-b", "relay-c", "relay-a", "relay-a"]);
+    reset_global_selector();
+}
+
+#[test]
+fn strategy_changes_reset_and_old_snapshots_cannot_change_new_selector() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let old = settings(AggregateRelayStrategy::Failover);
+    let (_, old_snapshot) = select_relay_for_request_with_revision(
+        &old,
+        RotationContext::default(),
+        "700:1",
+    )
+    .unwrap();
+    record_relay_request_failure_for_snapshot(&old_snapshot);
+
+    let mut current = old.clone();
+    current.aggregate_relay_profiles[0].name = "新名称".to_string();
+    let (current_first, current_snapshot) = select_relay_for_request_with_revision(
+        &current,
+        RotationContext::default(),
+        "800:1",
+    )
+    .unwrap();
+    let (late_old, late_snapshot) = select_relay_for_request_with_revision(
+        &old,
+        RotationContext::default(),
+        "700:1",
+    )
+    .unwrap();
+    // 配置代际已变化，旧代际重复上报和迟到选择都不能影响新 selector。
+    record_relay_request_failure_for_snapshot(&old_snapshot);
+    record_relay_request_event_for_snapshot(&late_snapshot, RotationEvent::Failure);
+    let (still_current, _) = select_relay_for_request_with_revision(
+        &current,
+        RotationContext::default(),
+        "800:1",
+    )
+    .unwrap();
+    assert_eq!(current_first.id, "relay-b");
+    assert_eq!(late_old.id, "relay-a");
+    assert_eq!(still_current.id, "relay-b");
+
+    record_relay_request_failure_for_snapshot(&current_snapshot);
+    let (after_current_failure, _) = select_relay_for_request_with_revision(
+        &current,
+        RotationContext::default(),
+        "800:1",
+    )
+    .unwrap();
+    assert_eq!(after_current_failure.id, "relay-c");
+
+    current.aggregate_relay_profiles[0].strategy = AggregateRelayStrategy::RequestRoundRobin;
+    let (after_strategy_change, _) = select_relay_for_request_with_revision(
+        &current,
+        RotationContext::default(),
+        "900:1",
+    )
+    .unwrap();
+    assert_eq!(after_strategy_change.id, "relay-a");
+    reset_global_selector();
+}
+
+#[test]
+fn concurrent_failures_for_same_cursor_advance_only_once() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let settings = settings(AggregateRelayStrategy::Failover);
+    let (_, first) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1000:1")
+            .unwrap();
+    let (_, second) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1000:1")
+            .unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| record_relay_request_failure_for_snapshot(&first));
+        scope.spawn(|| record_relay_request_failure_for_snapshot(&second));
+    });
+    assert_eq!(
+        select_relay_for_probe_with_revision(&settings, "1000:1")
+            .unwrap()
+            .id,
+        "relay-b"
+    );
+    let (selected, _) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1001:1")
+            .unwrap();
+    assert_eq!(selected.id, "relay-b");
+    reset_global_selector();
+}
+
+#[test]
+fn cloned_attempt_feedback_is_consumed_once_including_success() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let settings = settings(AggregateRelayStrategy::Failover);
+    let (_, base) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1100:1")
+            .unwrap();
+    let success = base.for_attempt("relay-a");
+    record_relay_request_event_for_snapshot(&success, RotationEvent::Success);
+    record_relay_request_failure_for_snapshot(&success.clone());
+    let (_, check) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1100:1")
+            .unwrap();
+    record_relay_request_failure_for_snapshot(&check);
+    let fallback = base.for_attempt("relay-b");
+    record_relay_request_failure_for_snapshot(&check.clone());
+    record_relay_request_failure_for_snapshot(&fallback);
+    record_relay_request_failure_for_snapshot(&fallback.clone());
+    assert_eq!(
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1100:1")
+            .unwrap()
+            .0
+            .id,
+        "relay-c"
+    );
+    reset_global_selector();
+}
+
+#[test]
+fn fallback_each_attempt_captures_its_own_relay_and_current_cursor() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let settings = settings(AggregateRelayStrategy::Failover);
+    let (_, base) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1200:1")
+            .unwrap();
+    let wrong_relay = base.for_attempt("relay-b");
+    record_relay_request_failure_for_snapshot(&wrong_relay);
+    let attempt_a = base.for_attempt("relay-a");
+    record_relay_request_failure_for_snapshot(&attempt_a);
+    let attempt_b = base.for_attempt("relay-b");
+    record_relay_request_failure_for_snapshot(&attempt_b);
+    assert_eq!(
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1200:1")
+            .unwrap()
+            .0
+            .id,
+        "relay-c"
+    );
+    reset_global_selector();
+}
+
+#[test]
+fn delayed_failure_cannot_advance_after_cursor_wraps_back_to_same_relay() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let mut settings = settings(AggregateRelayStrategy::Failover);
+    settings.aggregate_relay_profiles[0].members.truncate(2);
+    let (_, base) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1300:1")
+            .unwrap();
+    let delayed_a = base.for_attempt("relay-a");
+    record_relay_request_failure_for_snapshot(&base.for_attempt("relay-a"));
+    record_relay_request_failure_for_snapshot(&base.for_attempt("relay-b"));
+    record_relay_request_failure_for_snapshot(&delayed_a);
+    let (selected, fresh_a) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1300:1")
+            .unwrap();
+    assert_eq!(selected.id, "relay-a");
+    record_relay_request_failure_for_snapshot(&fresh_a);
+    assert_eq!(
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1300:1")
+            .unwrap()
+            .0
+            .id,
+        "relay-b"
+    );
+    reset_global_selector();
+}
+
+#[test]
+fn new_attempt_started_after_wrap_uses_current_cursor() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let mut settings = settings(AggregateRelayStrategy::Failover);
+    settings.aggregate_relay_profiles[0].members.truncate(2);
+    let (_, root) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1350:1")
+            .unwrap();
+    record_relay_request_failure_for_snapshot(&root.for_attempt("relay-a"));
+    record_relay_request_failure_for_snapshot(&root.for_attempt("relay-b"));
+    let started_now = root.for_attempt("relay-a");
+    record_relay_request_failure_for_snapshot(&started_now);
+    assert_eq!(
+        select_relay_for_probe_with_revision(&settings, "1350:1").unwrap().id,
+        "relay-b"
+    );
+    reset_global_selector();
+}
+
+#[test]
+fn late_numeric_regular_selection_does_not_clear_current_selector() {
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let settings = settings(AggregateRelayStrategy::Failover);
+    let (_, attempt) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1500:1")
+            .unwrap();
+    record_relay_request_failure_for_snapshot(&attempt);
+    let mut old_regular = settings.clone();
+    old_regular.active_relay_id = "relay-c".into();
+    let (regular, _) =
+        select_relay_for_request_with_revision(&old_regular, RotationContext::default(), "1400:1")
+            .unwrap();
+    assert_eq!(regular.id, "relay-c");
+    assert_eq!(
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1500:1")
+            .unwrap()
+            .0
+            .id,
+        "relay-b"
+    );
+    reset_global_selector();
+}
+
+#[test]
+fn unknown_legacy_sha_does_not_admit_by_arrival_order() {
+    use sha2::{Digest, Sha256};
+    let _guard = global_selector_test_lock();
+    reset_global_selector();
+    let settings = settings(AggregateRelayStrategy::Failover);
+    let (_, attempt) =
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1600:1")
+            .unwrap();
+    record_relay_request_failure_for_snapshot(&attempt);
+    for contents in ["older unseen settings", "newer unseen settings"] {
+        let revision = format!("sha256:{:x}", Sha256::digest(contents.as_bytes()));
+        let (_, isolated) = select_relay_for_request_with_revision(
+            &settings,
+            RotationContext::default(),
+            &revision,
+        )
+        .unwrap();
+        record_relay_request_failure_for_snapshot(&isolated.for_attempt("relay-a"));
+    }
+    assert_eq!(
+        select_relay_for_request_with_revision(&settings, RotationContext::default(), "1600:1")
+            .unwrap()
+            .0
+            .id,
+        "relay-b"
+    );
+    reset_global_selector();
 }
 
 fn route(pattern: &str, relay_id: &str, priority: u32) -> AggregateRelayRoute {

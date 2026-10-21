@@ -80,6 +80,38 @@ fn disabled_supplier_management_never_repairs_or_routes_live_config() {
 }
 
 #[test]
+fn external_takeover_preserves_aggregate_snapshot_without_blocking_backfill() {
+    for endpoint in ["https://external.example/v1", "http://127.0.0.1:15721/v1"] {
+        let home = tempfile::tempdir().unwrap();
+        let foreign = api("external", endpoint, "fixture-external");
+        write_live(home.path(), &foreign);
+        let proxy = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
+        );
+        let mut profile = api("aggregate", &proxy, "codex-plus-aggregate");
+        profile.relay_mode = RelayMode::Aggregate;
+        profile.config_contents = format!(
+            "model_catalog_json = \"aggregate.json\"\n{}",
+            profile.config_contents
+        );
+        let before = profile.clone();
+        let mut common = "approval_policy = \"never\"\n".to_string();
+        backfill_relay_profile_from_home_with_common(home.path(), &mut profile, &mut common)
+            .unwrap();
+        assert_eq!(profile, before);
+        assert_eq!(common, "approval_policy = \"never\"\n");
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            foreign.config_contents
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("auth.json")).unwrap(),
+            foreign.auth_contents
+        );
+    }
+}
+
+#[test]
 fn unknown_endpoint_drift_refuses_backfill_without_mutating_any_snapshot() {
     for live_key in ["fixture-a", "fixture-b"] {
         let home = tempfile::tempdir().unwrap();

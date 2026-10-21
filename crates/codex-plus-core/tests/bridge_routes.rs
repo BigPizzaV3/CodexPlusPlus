@@ -272,6 +272,7 @@ async fn settings_get_includes_runtime_codex_app_version() {
     );
 
     let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+    assert_eq!(result["modelCatalogRevision"], json!("fixture-revision"));
 
     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
     assert_eq!(result["activeRelaySessionProvider"], json!("custom"));
@@ -364,10 +365,12 @@ async fn settings_set_does_not_persist_runtime_codex_app_version() {
 
     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
     assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(false));
+    assert_eq!(result["modelCatalogRevision"], json!("fixture-revision"));
 
     let persisted = settings.settings.lock().unwrap().clone();
     let persisted_value = serde_json::to_value(persisted).unwrap();
     assert!(persisted_value.get("codexAppVersion").is_none());
+    assert!(persisted_value.get("modelCatalogRevision").is_none());
 }
 
 #[tokio::test]
@@ -1221,6 +1224,10 @@ impl FakeSettings {
 
 #[async_trait]
 impl BridgeSettingsService for FakeSettings {
+    async fn model_catalog_revision(&self) -> anyhow::Result<String> {
+        Ok("fixture-revision".to_string())
+    }
+
     fn whale_ledger_path(&self) -> std::path::PathBuf {
         self.whale_ledger_dir.path().join("whale.sqlite3")
     }
