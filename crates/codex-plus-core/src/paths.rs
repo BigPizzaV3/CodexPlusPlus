@@ -199,6 +199,7 @@ mod tests {
 
     #[test]
     fn default_latest_status_path_uses_app_state_directory() {
+        let _guard = settings_path_test_guard();
         let path = default_latest_status_path();
 
         assert!(path.ends_with(".codex-session-delete/latest-status.json"));
@@ -206,6 +207,7 @@ mod tests {
 
     #[test]
     fn default_diagnostic_log_path_uses_app_state_directory() {
+        let _guard = settings_path_test_guard();
         let path = default_diagnostic_log_path();
 
         assert!(path.ends_with(".codex-session-delete/codex-plus.log"));
@@ -213,6 +215,7 @@ mod tests {
 
     #[test]
     fn default_pending_provider_import_path_uses_app_state_directory() {
+        let _guard = settings_path_test_guard();
         let path = default_pending_provider_import_path();
 
         assert!(path.ends_with(".codex-session-delete/pending-provider-import.json"));
@@ -220,6 +223,7 @@ mod tests {
 
     #[test]
     fn default_pending_session_share_path_uses_app_state_directory() {
+        let _guard = settings_path_test_guard();
         let path = default_pending_session_share_path();
 
         assert!(path.ends_with(".codex-session-delete/pending-session-share.txt"));
@@ -227,6 +231,7 @@ mod tests {
 
     #[test]
     fn default_pending_remote_control_recovery_path_uses_app_state_directory() {
+        let _guard = settings_path_test_guard();
         let path = default_pending_remote_control_recovery_path();
 
         assert!(path.ends_with(".codex-session-delete/pending-remote-control-recovery.json"));
@@ -234,6 +239,7 @@ mod tests {
 
     #[test]
     fn default_pending_manager_navigation_path_uses_app_state_directory() {
+        let _guard = settings_path_test_guard();
         let path = default_pending_manager_navigation_path();
 
         assert!(path.ends_with(".codex-session-delete/pending-manager-navigation.json"));
