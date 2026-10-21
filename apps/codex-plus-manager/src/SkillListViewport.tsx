@@ -1,10 +1,12 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 // 固定行高只挂载可视区附近的条目，目录大小不再决定一次提交的 DOM 数量。
-export function SkillListViewport<T>({ items, rowHeight, resetKey, className, header, empty, busy, renderRow }: {
+export function SkillListViewport<T>({ items, rowHeight, resetKey, initialScrollTop = 0, onScrollTopChange, className, header, empty, busy, renderRow }: {
   items: T[];
   rowHeight: number;
   resetKey: string;
+  initialScrollTop?: number;
+  onScrollTopChange?: (top: number) => void;
   className: string;
   header?: ReactNode;
   empty?: ReactNode;
@@ -24,13 +26,13 @@ export function SkillListViewport<T>({ items, rowHeight, resetKey, className, he
     return () => observer.disconnect();
   }, []);
   useLayoutEffect(() => {
-    if (ref.current) ref.current.scrollTop = 0;
-    setViewport((previous) => ({ ...previous, top: 0 }));
+    if (ref.current) ref.current.scrollTop = initialScrollTop;
+    setViewport((previous) => ({ ...previous, top: ref.current?.scrollTop || 0 }));
   }, [resetKey]);
   const start = Math.min(items.length, Math.max(0, Math.floor((viewport.top - viewport.header) / rowHeight) - 4));
   const end = Math.min(items.length, Math.ceil((viewport.top + viewport.height) / rowHeight) + 4);
   return <div ref={ref} className={className} aria-busy={busy} data-total={items.length}
-    onScroll={(event) => { const top = event.currentTarget.scrollTop; setViewport((previous) => ({ ...previous, top })); }}>
+    onScroll={(event) => { const top = event.currentTarget.scrollTop; setViewport((previous) => ({ ...previous, top })); onScrollTopChange?.(top); }}>
     {header && <div ref={headerRef}>{header}</div>}
     {!!start && <div aria-hidden="true" style={{ height: start * rowHeight }} />}
     {items.slice(start, end).map(renderRow)}

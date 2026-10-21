@@ -1,6 +1,99 @@
 //! Public-API regressions for Skill lifecycle data preservation.
 use codex_plus_core::skills::SkillsManager;
 
+fn version_fixture(temp: &tempfile::TempDir) -> SkillsManager {
+    let source = temp.path().join("source");
+    let local = temp.path().join("home/skills/alpha");
+    for directory in [&source.join("alpha"), &local] {
+        std::fs::create_dir_all(directory.join("scripts")).unwrap();
+        std::fs::write(directory.join("SKILL.md"), "---\nname: alpha\n---\n").unwrap();
+    }
+    std::fs::write(source.join("alpha/scripts/run.txt"), "managed").unwrap();
+    std::fs::write(local.join("scripts/run.txt"), "local edits").unwrap();
+    let state = temp.path().join("skills.json");
+    std::fs::write(&state, r#"{"repos":[],"installed":{"alpha":{"id":"alpha","repoKey":"acme/kit@main","repoPath":"alpha","contentHash":"original-remote"}}}"#).unwrap();
+    SkillsManager::new(source, temp.path().join("backups"), state, temp.path().join("home"))
+}
+
+#[test]
+fn inventory_detects_script_only_changes_and_both_resolution_choices_preserve_backups() {
+    for keep_local in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = version_fixture(&temp);
+        assert!(manager.local_inventory()[0].local_difference);
+        manager.resolve_local_version("alpha", keep_local).unwrap();
+        let expected = if keep_local { "local edits" } else { "managed" };
+        for directory in [temp.path().join("source/alpha"), temp.path().join("home/skills/alpha")] {
+            assert_eq!(std::fs::read_to_string(directory.join("scripts/run.txt")).unwrap(), expected);
+        }
+        assert!(!manager.local_inventory()[0].local_difference);
+        assert_eq!(manager.load_state().installed["alpha"].content_hash, "original-remote");
+        let contents: Vec<_> = manager.list_backups().iter().map(|backup|
+            std::fs::read_to_string(temp.path().join("backups").join(&backup.id).join("scripts/run.txt")).unwrap()
+        ).collect();
+        assert!(contents.iter().any(|text| text == "local edits"));
+        assert!(contents.iter().any(|text| text == "managed"));
+    }
+}
+
+#[test]
+fn directory_comparison_catches_added_and_removed_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = version_fixture(&temp);
+    std::fs::write(temp.path().join("source/alpha/scripts/run.txt"), "local edits").unwrap();
+    assert!(!manager.local_difference("alpha").unwrap());
+    std::fs::write(temp.path().join("home/skills/alpha/extra.txt"), "added").unwrap();
+    assert!(manager.local_difference("alpha").unwrap());
+    std::fs::write(temp.path().join("source/alpha/extra.txt"), "added").unwrap();
+    assert!(!manager.local_difference("alpha").unwrap());
+}
+
+#[test]
+fn codex_local_skills_are_discovered_without_import() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("home/skills/new-local");
+    std::fs::create_dir_all(&local).unwrap();
+    std::fs::write(local.join("SKILL.md"), "---\nname: new-local\n---\n").unwrap();
+    let manager = SkillsManager::new(temp.path().join("source"), temp.path().join("backups"), temp.path().join("skills.json"), temp.path().join("home"));
+    let entries = manager.local_inventory();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].enabled && entries[0].installed);
+    assert!(entries[0].repo_key.is_empty());
+}
+
+#[test]
+fn verified_origin_association_retains_files_and_enables_update_detection() {
+    use codex_plus_core::skills::{RemoteSkill, SkillRepo, skill_directory_hash};
+    let temp = tempfile::tempdir().unwrap();
+    let manager = version_fixture(&temp);
+    std::fs::write(temp.path().join("skills.json"), r#"{"repos":[],"installed":{"alpha":{"id":"alpha","repoKey":"cc-switch"}}}"#).unwrap();
+    let repo = SkillRepo { owner: "acme".into(), name: "kit".into(), branch: "main".into(), subdir: String::new(), enabled: true };
+    let local_hash = skill_directory_hash(&temp.path().join("home/skills/alpha")).unwrap();
+    let mut remote = RemoteSkill { id: "alpha--stable".into(), name: "alpha".into(), description: String::new(),
+        repo_key: repo.key(), repo_path: "nested/alpha".into(), content_hash: local_hash };
+    manager.associate_origin("alpha", &repo, &remote).unwrap();
+    assert_eq!(manager.list_repos(), vec![repo]);
+    assert_eq!(manager.load_state().installed["alpha"].repo_path, "nested/alpha");
+    assert!(!manager.merge_entries(&[remote.clone()])[0].update_available);
+    remote.content_hash = "new-upstream".into();
+    assert!(manager.merge_entries(&[remote])[0].update_available);
+    assert_eq!(std::fs::read_to_string(temp.path().join("home/skills/alpha/scripts/run.txt")).unwrap(), "local edits");
+}
+
+#[test]
+fn ccs_origin_uses_explicit_repository_metadata_and_readme_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("cc.db");
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection.execute_batch("CREATE TABLE skills(directory TEXT,repo_owner TEXT,repo_name TEXT,repo_branch TEXT,readme_url TEXT);
+        INSERT INTO skills VALUES('alpha','acme','kit','main','https://github.com/acme/kit/blob/main/nested/alpha/SKILL.md');
+        INSERT INTO skills VALUES('local',NULL,NULL,NULL,NULL);").unwrap();
+    let hints = codex_plus_core::skills::read_ccs_skill_origins(&db).unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].repo_path.as_deref(), Some("nested/alpha"));
+    assert_eq!(hints[0].repo.key(), "acme/kit@main");
+}
+
 #[test]
 fn enabling_does_not_delete_a_directory_without_a_manifest() {
     let temp = tempfile::tempdir().unwrap();
