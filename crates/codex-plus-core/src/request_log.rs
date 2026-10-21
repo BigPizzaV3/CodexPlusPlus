@@ -269,6 +269,35 @@ pub fn running_requests() -> Vec<RequestLogEntry> {
         .unwrap_or_default()
 }
 
+/// Shared payload for the HTTP helper and app-server proxy status routes.
+pub fn running_request_status() -> serde_json::Value {
+    let mut active = running_requests();
+    active.sort_by_key(|entry| std::cmp::Reverse(entry.started_at_ms));
+    let requests = active
+        .into_iter()
+        .map(|entry| {
+            serde_json::json!({
+                "id": entry.id,
+                "model": entry.model,
+                "threadId": entry.thread_id,
+                "relayName": entry.relay_name,
+                "startedAtMs": entry.started_at_ms,
+                "attempts": entry.attempts,
+                "autoRetries": entry.auto_retries,
+                "retryReasons": entry.retry_reasons,
+                "phase": entry.phase,
+                "firstTokenMs": entry.first_token_ms,
+                "estimatedOutputTokens": entry.estimated_output_tokens,
+                "attemptDetails": entry.attempt_details,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "status": "ok",
+        "requests": requests,
+    })
+}
+
 /// 串行化会改全局日志路径/进行中列表的测试（Rust 测试默认并行）。
 pub fn request_log_test_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -541,6 +570,41 @@ mod tests {
         assert_eq!(entries[0].state.as_deref(), Some("success"));
 
         set_request_log_path_for_tests(None);
+    }
+
+    #[test]
+    fn running_request_status_preserves_schema_and_newest_first_order() {
+        let _guard = request_log_test_guard();
+        let older = entry("status-older");
+        let mut newer = entry("status-newer");
+        newer.started_at_ms = older.started_at_ms + 1;
+        start_request(&older);
+        start_request(&newer);
+
+        let status = running_request_status();
+        assert_eq!(status["status"], json!("ok"));
+        let requests = status["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["id"], json!("status-newer"));
+        assert_eq!(requests[1]["id"], json!("status-older"));
+        for field in [
+            "model",
+            "threadId",
+            "relayName",
+            "startedAtMs",
+            "attempts",
+            "autoRetries",
+            "retryReasons",
+            "phase",
+            "firstTokenMs",
+            "estimatedOutputTokens",
+            "attemptDetails",
+        ] {
+            assert!(requests[0].get(field).is_some(), "missing field {field}");
+        }
+
+        finish_request(&older);
+        finish_request(&newer);
     }
 
     #[test]

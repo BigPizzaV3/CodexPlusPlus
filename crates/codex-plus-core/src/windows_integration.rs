@@ -492,6 +492,48 @@ pub(crate) fn child_process_birth_id(child: &std::process::Child) -> Option<u64>
     process_birth_id_from_handle(HANDLE(child.as_raw_handle()))
 }
 
+#[cfg(windows)]
+pub(crate) fn multi_worker_may_be_running(
+    process_id: u32,
+    options_path: &std::path::Path,
+    expected_birth: Option<u64>,
+) -> bool {
+    let Ok(handle) = (unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ | PROCESS_SYNCHRONIZE,
+            false,
+            process_id,
+        )
+    }) else {
+        return !matches!(
+            crate::watcher::inspect_process_instance(process_id),
+            crate::watcher::ProcessInstanceState::NotRunning
+        );
+    };
+    let _guard = HandleGuard(handle);
+    if unsafe { WaitForSingleObject(handle, 0) } == windows::Win32::Foundation::WAIT_OBJECT_0 {
+        return false;
+    }
+    if let (Some(expected), Some(actual)) = (expected_birth, process_birth_id_from_handle(handle))
+        && expected != actual
+    {
+        return false;
+    }
+    // 升级后的管理器路径可不同于旧 worker，不能要求 current_exe 相等。
+    let Some(args) = process_command_line_from_handle(handle)
+        .and_then(|line| command_line_arguments(&line))
+    else {
+        return true;
+    };
+    if args.len() != 3 || args[1] != "--codex-plus-multi-worker" {
+        return false;
+    }
+    if !options_path.exists() || !std::path::Path::new(&args[2]).exists() {
+        return true;
+    }
+    crate::multi_worker::worker_arguments_match(&args, options_path)
+}
+
 /// 校验与终止共用同一句柄，检查后即使 PID 被系统回收也不会转而终止新进程。
 #[cfg(windows)]
 pub(crate) fn terminate_verified_multi_worker(
@@ -542,9 +584,7 @@ pub(crate) fn terminate_verified_multi_worker(
         return Ok(false);
     }
     let Some(image) = process_image_path_from_handle(handle) else { return Ok(false); };
-    let Ok(expected_image) = std::env::current_exe().and_then(|path| path.canonicalize())
-        else { return Ok(false); };
-    if image.canonicalize().ok().as_ref() != Some(&expected_image) { return Ok(false); }
+    if !crate::multi_worker::worker_image_matches(&arguments, &image) { return Ok(false); }
     unsafe { TerminateProcess(handle, 0) }.context("结束已验证的多开 worker 失败")?;
     Ok(true)
 }

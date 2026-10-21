@@ -46,6 +46,7 @@ pub mod plugin_market;
 pub mod protocol_proxy;
 pub mod provider_import;
 pub mod proxy;
+mod proxy_continuity;
 pub mod relay_config;
 pub mod relay_environment;
 pub mod relay_features;

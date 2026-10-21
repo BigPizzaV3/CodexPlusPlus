@@ -602,6 +602,20 @@ pub struct CodexMultiWorkerOptions {
     /// 显式路径为准（同时仍设置 `CODEX_PLUS_STATE_DIR` 覆盖子进程）。
     #[serde(default)]
     pub state_dir: String,
+    /// 交接只允许续接这一个窗口，不能失败后启动另一个 Codex。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_identity: Option<codex_plus_core::multi_worker::CodexInstanceIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct MultiWorkerHandoff {
+    instance_id: String,
+    generation: u64,
+    pid: u32,
+    token: String,
 }
 
 /// 一个已经由「Codex 多开」创建过的实例。记录文件放在实例自己的隔离目录，
@@ -1136,10 +1150,9 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         );
     }
 
-    let instance_id = if request.instance_id.trim().is_empty() {
-        profile_id.clone()
-    } else {
-        request.instance_id.trim().to_string()
+    let instance_id = match multi_instance_launch_id(&request.instance_id, &profile_id) {
+        Ok(id) => id,
+        Err(message) => return failed(message, json!({ "profileId": profile_id })),
     };
     let slug = multi_instance_slug(&instance_id);
     let root = multi_instance_root(&slug);
@@ -1155,12 +1168,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
     }
     if previous.as_ref().is_some_and(|previous| {
         !multi_instance_is_running(previous)
-            && previous.pid.is_some_and(|pid| {
-                matches!(
-                    codex_plus_core::watcher::inspect_process_instance(pid),
-                    codex_plus_core::watcher::ProcessInstanceState::Running { .. }
-                )
-            })
+            && multi_instance_worker_may_be_running(previous, &root)
     }) {
         return failed(
             "已有多开 worker 尚未退出，请等待其退出后重试。",
@@ -1170,12 +1178,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
     if previous.as_ref().is_some_and(|instance| {
         instance.identity.is_none()
             && (codex_plus_core::cdp::endpoint_available(instance.debug_port)
-                || instance.pid.is_some_and(|pid| {
-                    matches!(
-                        codex_plus_core::watcher::inspect_process_instance(pid),
-                        codex_plus_core::watcher::ProcessInstanceState::Running { .. }
-                    )
-                }))
+                || multi_instance_worker_may_be_running(instance, &root))
     }) {
         return failed(
             "旧多开清单无法确认进程身份，请手动关闭该实例后重新启动。",
@@ -1214,7 +1217,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
     );
     let codex_home = root.join("codex-home");
     let sqlite_home = root.join("sqlite-home");
-    let user_data_dir = multi_instance_user_data_dir(&slug);
+    let user_data_dir = multi_instance_user_data_dir(&root, previous.as_ref());
     if let Err(error) = std::fs::create_dir_all(&codex_home)
         .and_then(|_| std::fs::create_dir_all(&sqlite_home))
         .and_then(|_| std::fs::create_dir_all(&user_data_dir))
@@ -1385,6 +1388,8 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         debug_port,
         helper_port,
         state_dir: worker_state_dir.to_string_lossy().to_string(),
+        resume_identity: None,
+        resume_token: None,
     };
     let worker_options_bytes = match serde_json::to_vec_pretty(&worker_options) {
         Ok(bytes) => bytes,
@@ -1422,6 +1427,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         .env("HOME", &worker_home)
         .env("CODEX_HOME", &codex_home)
         .env("CODEX_SQLITE_HOME", &sqlite_home)
+        .env("CODEX_ELECTRON_USER_DATA_PATH", &user_data_dir)
         .env("CODEX_PLUS_MULTI_INSTANCE", "1")
         .env("CODEX_PLUS_INSTANCE_ID", &instance_id)
         .env("CODEX_PLUS_INSTANCE_LABEL", &profile.name)
@@ -1774,6 +1780,16 @@ fn multi_instance_root(slug: &str) -> PathBuf {
         .join(slug)
 }
 
+fn multi_instance_worker_may_be_running(instance: &CodexMultiInstance, root: &Path) -> bool {
+    instance.pid.is_some_and(|pid| {
+        codex_plus_core::multi_worker::worker_may_be_running(
+            pid,
+            &root.join("worker-options.json"),
+            instance.worker_birth_id,
+        )
+    })
+}
+
 fn multi_instance_manifest_path(root: &Path) -> PathBuf {
     root.join("instance.json")
 }
@@ -1917,6 +1933,18 @@ fn terminate_multi_worker(
 /// 让界面显示「启动失败」而不是「运行中」。
 pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
     let options: CodexMultiWorkerOptions = serde_json::from_slice(&std::fs::read(options_path)?)?;
+    if let Some(identity) = &options.resume_identity {
+        anyhow::ensure!(
+            identity.instance_id == options.instance_id
+                && identity.generation == options.generation
+                && identity.debug_port == options.debug_port
+                && identity.helper_port == options.helper_port
+                && tauri::async_runtime::block_on(
+                    codex_plus_core::multi_worker::codex_instance_identity_matches(identity)
+                )?,
+            "续接目标 Codex 身份已变化"
+        );
+    }
 
     // 状态目录以 worker 自己的 options 为准，并且**不用** `set_var` 改进程环境：
     // 多开 worker 复用管理器进程，启动时已是多线程，edition 2024 下 `set_var` 属未定义
@@ -1946,7 +1974,12 @@ pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
         codex_home: std::env::var_os("CODEX_HOME").map(PathBuf::from),
         sqlite_home: std::env::var_os("CODEX_SQLITE_HOME").map(PathBuf::from),
     };
-    let receipt = match codex_plus_launcher::start_with_receipt(launch_options) {
+    let started = if options.resume_identity.is_some() {
+        codex_plus_launcher::resume_with_receipt(launch_options)
+    } else {
+        codex_plus_launcher::start_with_receipt(launch_options)
+    };
+    let receipt = match started {
         Ok(receipt) => receipt,
         Err(error) => {
             let _ = write_multi_launch_result(
@@ -1982,6 +2015,14 @@ pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
     } else {
         Err(anyhow::anyhow!("调试端口未就绪"))
     };
+    let captured = captured.and_then(|identity| {
+        if let Some(expected) = &options.resume_identity {
+            let mut expected = expected.clone();
+            expected.helper_port = identity.helper_port;
+            anyhow::ensure!(identity == expected, "续接期间 Codex 身份已变化");
+        }
+        Ok(identity)
+    });
     let latest = instance_status_store.load_latest().ok().flatten();
     let ready = captured.is_ok();
     let injection_degraded = latest
@@ -2017,14 +2058,249 @@ pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
         let _ = codex_plus_launcher::shutdown();
         return Ok(());
     };
+    let handoff = MultiWorkerHandoff {
+        instance_id: options.instance_id.clone(),
+        generation: options.generation,
+        pid: std::process::id(),
+        token: options.resume_token.clone().unwrap_or_else(new_multi_worker_token),
+    };
+    let root = options_path.parent().ok_or_else(|| anyhow::anyhow!("缺少实例目录"))?;
+    codex_plus_core::settings::atomic_write(
+        &root.join("worker-ready.json"),
+        &serde_json::to_vec(&handoff)?,
+    )?;
     while tauri::async_runtime::block_on(
         codex_plus_core::multi_worker::codex_instance_identity_matches(&identity),
     )
     .unwrap_or(false)
     {
+        if multi_worker_handoff_requested(root, &handoff) {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     codex_plus_launcher::shutdown()
+}
+
+fn multi_worker_handoff_requested(root: &Path, expected: &MultiWorkerHandoff) -> bool {
+    std::fs::read(root.join("worker-handoff.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<MultiWorkerHandoff>(&bytes).ok())
+        .is_some_and(|request| request == *expected)
+}
+
+fn new_multi_worker_token() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
+    )
+}
+
+/// 每次管理器启动只交接一次；列表轮询不能反复重启正在工作的代理。
+pub fn resume_existing_multi_instances_background(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = multi_instance_mutation_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let parent = codex_plus_core::paths::default_app_state_dir().join("codex-multi");
+        if let Ok(entries) = fs::read_dir(&parent) {
+            for entry in entries.flatten() {
+                if crate::app_is_exiting() {
+                    break;
+                }
+                let root = entry.path();
+                let Ok(instance) = load_multi_instance_manifest(&root) else {
+                    continue;
+                };
+                if !multi_instance_is_running(&instance) {
+                    continue;
+                }
+                let result = resume_multi_instance_worker(&root);
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    if result.is_ok() {
+                        "manager.multi_worker_resumed"
+                    } else {
+                        "manager.multi_worker_resume_failed"
+                    },
+                    json!({
+                        "instance": root.file_name().map(|name| name.to_string_lossy()),
+                        "message": result.err().map(|error| format!("{error:#}")),
+                    }),
+                );
+            }
+        }
+        let _ = app.emit("runtime-health-changed", ());
+    });
+}
+
+fn multi_resume_options(
+    root: &Path,
+    instance: &CodexMultiInstance,
+) -> anyhow::Result<CodexMultiWorkerOptions> {
+    let parent = codex_plus_core::paths::default_app_state_dir().join("codex-multi");
+    multi_resume_options_under(root, instance, &parent)
+}
+
+fn multi_resume_options_under(
+    root: &Path,
+    instance: &CodexMultiInstance,
+    parent: &Path,
+) -> anyhow::Result<CodexMultiWorkerOptions> {
+    anyhow::ensure!(
+        root.canonicalize()?.parent() == Some(parent.canonicalize()?.as_path())
+            && root.file_name().and_then(|name| name.to_str())
+                == Some(multi_instance_slug(&instance.instance_id).as_str()),
+        "多开目录归属不匹配"
+    );
+    let mut options: CodexMultiWorkerOptions =
+        serde_json::from_slice(&fs::read(root.join("worker-options.json"))?)?;
+    let identity = instance.identity.as_ref().ok_or_else(|| anyhow::anyhow!("缺少窗口身份"))?;
+    let canonical_root = root.canonicalize()?;
+    anyhow::ensure!(
+        multi_manifest_identity_matches(instance, identity)
+            && identity.user_data_dir.starts_with(&canonical_root)
+            && options.instance_id == instance.instance_id
+            && options.generation == instance.generation
+            && Path::new(&options.state_dir).canonicalize()?
+                == root.join("worker-home/.codex-session-delete").canonicalize()?
+            && Path::new(&options.user_data_dir).canonicalize()? == identity.user_data_dir
+            && instance.codex_home.as_ref().map(Path::new).map(Path::canonicalize).transpose()?
+                == Some(root.join("codex-home").canonicalize()?)
+            && instance.sqlite_home.as_ref().map(Path::new).map(Path::canonicalize).transpose()?
+                == Some(root.join("sqlite-home").canonicalize()?),
+        "多开续接参数归属不匹配"
+    );
+    // 使用已校验窗口的实际端口，不能重放可能已被迁移的旧 options。
+    options.app_path = instance.app_path.clone().ok_or_else(|| anyhow::anyhow!("缺少应用路径"))?;
+    options.debug_port = identity.debug_port;
+    options.helper_port = identity.helper_port;
+    options.resume_identity = Some(identity.clone());
+    options.resume_token = Some(new_multi_worker_token());
+    Ok(options)
+}
+
+fn resume_multi_instance_worker(root: &Path) -> anyhow::Result<()> {
+    let _handoff = codex_plus_core::multi_worker::lock_worker_handoff(root)?;
+    let mut instance = load_multi_instance_manifest(root)?;
+    anyhow::ensure!(multi_instance_is_running(&instance), "Codex 续接目标已退出");
+    let options = multi_resume_options(root, &instance)?;
+    let options_path = root.join("worker-options.json");
+    let worker_present = || instance.pid.is_some_and(|pid| {
+        codex_plus_core::multi_worker::worker_may_be_running(pid, &options_path, None)
+    });
+    // 先确认快照可读以及恢复凭据存在，失败时不动旧 worker，也不从主实例重建设置。
+    let settings_path = Path::new(&options.state_dir).join("settings.json");
+    anyhow::ensure!(settings_path.is_file(), "缺少多开供应商设置，已保留旧 worker");
+    SettingsStore::new(settings_path).load()?;
+    let resume = codex_plus_launcher::LaunchOptions {
+        app_dir: Some(PathBuf::from(&options.app_path)),
+        debug_port: options.debug_port,
+        helper_port: options.helper_port,
+        state_dir: Some(PathBuf::from(&options.state_dir)),
+        codex_home: Some(root.join("codex-home")),
+        sqlite_home: Some(root.join("sqlite-home")),
+        status_store: StatusStore::new(Path::new(&options.state_dir).join("latest-status.json")),
+    };
+    anyhow::ensure!(
+        codex_plus_launcher::automatic_resume_allowed(&resume)?,
+        "多开续接凭据不匹配"
+    );
+    if worker_present() {
+        anyhow::ensure!(
+            multi_instance_worker_may_be_running(&instance, root),
+            "worker 创建身份已变化，已停止交接"
+        );
+        if let Ok(bytes) = fs::read(root.join("worker-ready.json"))
+            && let Ok(ready) = serde_json::from_slice::<MultiWorkerHandoff>(&bytes)
+            && ready.instance_id == instance.instance_id
+            && ready.generation == instance.generation
+            && Some(ready.pid) == instance.pid
+        {
+            codex_plus_core::settings::atomic_write(
+                &root.join("worker-handoff.json"),
+                &serde_json::to_vec(&ready)?,
+            )?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while worker_present()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        if worker_present() {
+            // 兼容尚无协作退出协议的旧 Windows worker；只终止同句柄验证的 worker。
+            terminate_multi_worker(instance.pid.unwrap(), &options_path, instance.worker_birth_id)?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while worker_present()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            anyhow::ensure!(
+                !worker_present(),
+                "旧 worker 未退出，已保留原 Codex，未重复启动后台服务"
+            );
+        }
+    }
+    anyhow::ensure!(!crate::app_is_exiting(), "管理器正在退出，已保留原 Codex");
+    anyhow::ensure!(multi_instance_is_running(&instance), "交接期间 Codex 身份已变化");
+    codex_plus_core::settings::atomic_write(&options_path, &serde_json::to_vec_pretty(&options)?)?;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("--codex-plus-multi-worker")
+        .arg(&options_path)
+        .env("HOME", root.join("worker-home"))
+        .env("CODEX_HOME", root.join("codex-home"))
+        .env("CODEX_SQLITE_HOME", root.join("sqlite-home"))
+        .env("CODEX_ELECTRON_USER_DATA_PATH", &options.user_data_dir)
+        .env("CODEX_PLUS_MULTI_INSTANCE", "1")
+        .env("CODEX_PLUS_INSTANCE_ID", &instance.instance_id)
+        .env("CODEX_PLUS_INSTANCE_LABEL", &instance.profile_name)
+        .env("CODEX_PLUS_LAUNCHER_GUARD_PORT",
+            select_multi_instance_port(0, &format!("{}-guard", instance.instance_id)).to_string())
+        .env("CODEX_PLUS_PROTOCOL_PROXY_PORT", options.helper_port.to_string())
+        .env(codex_plus_core::paths::STATE_DIR_ENV, &options.state_dir)
+        .env("XDG_CONFIG_HOME", directories::BaseDirs::new()
+            .ok_or_else(|| anyhow::anyhow!("无法定位共享配置目录"))?.home_dir().join(".config"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let mut child = command.spawn()?;
+    instance.pid = Some(child.id());
+    instance.worker_birth_id = codex_plus_core::multi_worker::worker_birth_id(&child);
+    if let Err(error) = save_multi_instance_manifest(root, &instance) {
+        let cleanup = child.kill().and_then(|()| child.wait());
+        return match cleanup {
+            Ok(_) => Err(error),
+            Err(cleanup) => Err(anyhow::anyhow!(
+                "保存多开清单失败：{error:#}；新版 worker {} 清理失败：{cleanup}",
+                child.id()
+            )),
+        };
+    }
+    let deadline = std::time::Instant::now() + MULTI_LAUNCH_READY_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        anyhow::ensure!(child.try_wait()?.is_none(), "新版多开 worker 提前退出，Codex 保持运行");
+        if let Ok(bytes) = fs::read(root.join("worker-ready.json"))
+            && let Ok(ready) = serde_json::from_slice::<MultiWorkerHandoff>(&bytes)
+            && ready.instance_id == instance.instance_id
+            && ready.generation == instance.generation
+            && Some(ready.pid) == instance.pid
+            && options.resume_token.as_ref() == Some(&ready.token)
+        {
+            let current = load_multi_instance_manifest(root)?;
+            anyhow::ensure!(multi_instance_is_running(&current), "续接后 Codex 身份校验失败");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    anyhow::bail!("等待新版多开 worker 就绪超时，Codex 保持运行")
 }
 
 /// 多开实例启动结果文件名（与 `worker-options.json` 同目录）。
@@ -2078,6 +2354,18 @@ fn load_multi_launch_result(root: &Path) -> Option<CodexMultiLaunchResult> {
     serde_json::from_str(&contents).ok()
 }
 
+fn multi_instance_launch_id(requested: &str, profile_id: &str) -> Result<String, &'static str> {
+    let id = if requested.trim().is_empty() {
+        profile_id.trim()
+    } else {
+        requested.trim()
+    };
+    if id == "main" {
+        return Err("main 是主实例的保留名称，请为多开实例指定其他名称。");
+    }
+    Ok(id.to_string())
+}
+
 fn multi_instance_slug(value: &str) -> String {
     let mut slug = value
         .chars()
@@ -2100,19 +2388,13 @@ fn multi_instance_slug(value: &str) -> String {
     }
 }
 
-fn multi_instance_user_data_dir(slug: &str) -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| {
-            dirs.data_local_dir()
-                .join("CodexPlusPlus")
-                .join("multi")
-                .join(slug)
-        })
-        .unwrap_or_else(|| {
-            codex_plus_core::paths::default_app_state_dir()
-                .join("user-data")
-                .join(slug)
-        })
+fn multi_instance_user_data_dir(root: &Path, previous: Option<&CodexMultiInstance>) -> PathBuf {
+    // 已有实例保留原目录；新实例随管理器状态隔离，避免不同状态下的同名实例共用 Electron 数据。
+    previous
+        .and_then(|instance| instance.user_data_dir.as_deref())
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("user-data"))
 }
 
 fn multi_instance_extra_args(args: &[String]) -> Vec<String> {
@@ -11170,6 +11452,100 @@ model_reasoning_effort = "high"
     }
 
     #[test]
+    fn multi_worker_handoff_requires_current_process_token_and_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let expected = MultiWorkerHandoff {
+            instance_id: "fixture".into(),
+            generation: 7,
+            pid: 123,
+            token: "current-process".into(),
+        };
+        let path = temp.path().join("worker-handoff.json");
+        assert!(!multi_worker_handoff_requested(temp.path(), &expected));
+        for field in ["instanceId", "generation", "pid", "token"] {
+            let mut wrong = serde_json::to_value(&expected).unwrap();
+            wrong[field] = match field {
+                "generation" | "pid" => json!(8),
+                _ => json!("stale"),
+            };
+            fs::write(&path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+            assert!(!multi_worker_handoff_requested(temp.path(), &expected), "{field}");
+        }
+        fs::write(&path, b"broken").unwrap();
+        assert!(!multi_worker_handoff_requested(temp.path(), &expected));
+        fs::write(&path, serde_json::to_vec(&expected).unwrap()).unwrap();
+        assert!(multi_worker_handoff_requested(temp.path(), &expected));
+    }
+
+    #[test]
+    fn multi_worker_resume_preserves_scope_and_uses_verified_window_ports() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("codex-multi");
+        let root = parent.join("fixture");
+        let state = root.join("worker-home/.codex-session-delete");
+        for path in ["codex-home", "sqlite-home", "user-data", "worker-home/.codex-session-delete"] {
+            fs::create_dir_all(root.join(path)).unwrap();
+        }
+        let app = temp.path().join("app");
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::write(app.join("Contents/MacOS/Codex"), b"fixture").unwrap();
+        fs::write(app.join("Codex.exe"), b"fixture").unwrap();
+        let identity = codex_plus_core::multi_worker::CodexInstanceIdentity {
+            instance_id: "fixture".into(), generation: 7, debug_port: 19401, helper_port: 19402,
+            user_data_dir: root.join("user-data").canonicalize().unwrap(),
+            browser_id: "browser".into(), process_id: 123, process_birth_id: 456,
+            executable: codex_plus_core::app_paths::build_codex_executable(&app).canonicalize().unwrap(),
+        };
+        let instance = CodexMultiInstance {
+            instance_id: "fixture".into(), generation: 7, identity: Some(identity.clone()),
+            profile_id: "saved-supplier".into(), profile_name: "Saved supplier".into(),
+            pid: Some(123), worker_birth_id: Some(456), debug_port: 19401, helper_port: 19402,
+            status: "running".into(), running: true, started_at_ms: 1, is_main: false,
+            app_path: Some(app.to_string_lossy().into_owned()),
+            codex_home: Some(root.join("codex-home").to_string_lossy().into_owned()),
+            sqlite_home: Some(root.join("sqlite-home").to_string_lossy().into_owned()),
+            user_data_dir: Some(root.join("user-data").to_string_lossy().into_owned()),
+            launch_result: None,
+        };
+        let options = CodexMultiWorkerOptions {
+            instance_id: "fixture".into(), generation: 7,
+            user_data_dir: root.join("user-data").to_string_lossy().into_owned(),
+            app_path: "stale-app".into(), debug_port: 19001, helper_port: 19002,
+            state_dir: state.to_string_lossy().into_owned(), resume_identity: None, resume_token: None,
+        };
+        let path = root.join("worker-options.json");
+        fs::write(&path, serde_json::to_vec(&options).unwrap()).unwrap();
+        let resumed = multi_resume_options_under(&root, &instance, &parent).unwrap();
+        assert_eq!(resumed.resume_identity, Some(identity));
+        assert_eq!(resumed.debug_port, 19401);
+        assert_eq!(resumed.helper_port, 19402);
+        assert_eq!(resumed.state_dir, options.state_dir);
+        assert!(resumed.resume_token.is_some());
+        assert_eq!(resumed.app_path, instance.app_path.clone().unwrap());
+        let mut wrong = options.clone();
+        wrong.state_dir = temp.path().to_string_lossy().into_owned();
+        fs::write(&path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(multi_resume_options_under(&root, &instance, &parent).is_err());
+        wrong = options.clone();
+        wrong.generation = 6;
+        fs::write(&path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(multi_resume_options_under(&root, &instance, &parent).is_err());
+        fs::write(&path, serde_json::to_vec(&options).unwrap()).unwrap();
+        let mut wrong_instance = instance.clone();
+        wrong_instance.codex_home = Some(temp.path().to_string_lossy().into_owned());
+        assert!(multi_resume_options_under(&root, &wrong_instance, &parent).is_err());
+        assert!(multi_resume_options_under(&root, &instance, temp.path()).is_err());
+    }
+
+    #[test]
+    fn multi_instance_launch_rejects_reserved_main_before_creating_an_instance() {
+        assert!(multi_instance_launch_id(" main ", "fixture").is_err());
+        assert!(multi_instance_launch_id("", "main").is_err());
+        assert_eq!(multi_instance_launch_id("other", "main").unwrap(), "other");
+        assert_eq!(multi_instance_launch_id("", "fixture").unwrap(), "fixture");
+    }
+
+    #[test]
     fn multi_instance_slug_is_safe_and_bounded() {
         assert_eq!(
             multi_instance_slug("Deep/Seek .. profile"),
@@ -11186,6 +11562,19 @@ model_reasoning_effort = "high"
         assert!(first > 0);
         assert!(second > 0);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn multi_instance_user_data_is_scoped_to_manager_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("manager-a/codex-multi/same-name");
+        let second = temp.path().join("manager-b/codex-multi/same-name");
+        assert_eq!(multi_instance_user_data_dir(&first, None), first.join("user-data"));
+        assert_eq!(multi_instance_user_data_dir(&second, None), second.join("user-data"));
+        assert_ne!(
+            multi_instance_user_data_dir(&first, None),
+            multi_instance_user_data_dir(&second, None)
+        );
     }
 
     #[test]
@@ -11223,6 +11612,21 @@ model_reasoning_effort = "high"
                 .unwrap()
                 .debug_port,
             9456
+        );
+        assert_eq!(
+            multi_instance_user_data_dir(temp.path(), Some(&instance)),
+            PathBuf::from("/tmp/user-data")
+        );
+        let mut without_path = instance;
+        without_path.user_data_dir = None;
+        assert_eq!(
+            multi_instance_user_data_dir(temp.path(), Some(&without_path)),
+            temp.path().join("user-data")
+        );
+        without_path.user_data_dir = Some(" ".into());
+        assert_eq!(
+            multi_instance_user_data_dir(temp.path(), Some(&without_path)),
+            temp.path().join("user-data")
         );
     }
 

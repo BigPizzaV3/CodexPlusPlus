@@ -220,6 +220,10 @@ fn build_wrapper_script_for_port(
     script.push_str(&format!(
         "set \"CODEX_SQLITE_HOME={sqlite_home_literal}\"\r\n"
     ));
+    // Codex 的 Electron 层会重设 userData；只传 Chromium 参数不能隔离其单实例锁与 shell 环境。
+    script.push_str(&format!(
+        "set \"CODEX_ELECTRON_USER_DATA_PATH={user_data_dir_literal}\"\r\n"
+    ));
     script.push_str(&format!("set \"{STATE_DIR_ENV}={state_dir_literal}\"\r\n"));
     script.push_str("set \"CODEX_PLUS_MULTI_INSTANCE=1\"\r\n");
     if let Some(dir) = executable_dir {
@@ -654,6 +658,9 @@ mod tests {
         assert!(script.contains("setlocal\r\n"));
         assert!(script.contains("set \"CODEX_HOME=/Users/a b/.codex\"\r\n"));
         assert!(script.contains("set \"CODEX_SQLITE_HOME=/Users/a b/.codex-sqlite\"\r\n"));
+        assert!(script.contains(
+            "set \"CODEX_ELECTRON_USER_DATA_PATH=/Users/a b/Codex++/instance 1/user-data\"\r\n"
+        ));
         assert!(script.contains(&format!(
             "set \"CODEX_PLUS_STATE_DIR={}\"\r\n",
             state_dir.display()
@@ -695,6 +702,9 @@ mod tests {
             "--user-data-dir=\"C:\\Users\\a b\\AppData\\Local\\Codex++\\instance 1\\user data\""
         ));
         assert!(script.contains("set \"CODEX_HOME=C:\\Users\\a b\\.codex\""));
+        assert!(script.contains(
+            "set \"CODEX_ELECTRON_USER_DATA_PATH=C:\\Users\\a b\\AppData\\Local\\Codex++\\instance 1\\user data\""
+        ));
     }
 
     #[test]
