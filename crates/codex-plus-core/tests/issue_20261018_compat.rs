@@ -166,7 +166,10 @@ fn compatibility_profiles_route_through_helper_and_omit_levels_only_in_projectio
     assert!(profile.request_compatibility_enabled());
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
     let text = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(text.contains("127.0.0.1:57321"));
+    let proxy_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
+    );
+    assert!(text.contains(&proxy_url));
     let doc: toml_edit::DocumentMut = text.parse().unwrap();
     let catalog: Value = serde_json::from_str(
         &std::fs::read_to_string(doc["model_catalog_json"].as_str().unwrap()).unwrap(),

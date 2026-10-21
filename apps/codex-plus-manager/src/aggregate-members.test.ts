@@ -14,8 +14,21 @@ import {
   isOfficialLoginMemberProfile,
   normalizeAggregateDefaultRelayId,
   normalizeAggregateMembers,
+  reorderAggregateMembers,
+  sortAggregateMembers,
   type AggregateMemberProfileLike,
 } from "./aggregate-members.ts";
+
+it("成员拖拽和名称排序保留权重、未就绪成员及原始数组", () => {
+  const members = [{ profileId: "z", weight: 9 }, { profileId: "a", weight: 2 }, { profileId: "missing", weight: 4 }];
+  const names = [{ id: "z", name: "Zulu" }, { id: "a", name: "Alpha" }];
+  assert.deepStrictEqual(reorderAggregateMembers(members, "z", "a").map(m => m.profileId), ["a", "z", "missing"]);
+  assert.deepStrictEqual(sortAggregateMembers(members, names).map(m => m.profileId), ["a", "missing", "z"]);
+  assert.deepStrictEqual(sortAggregateMembers(members, names, true).map(m => m.profileId), ["z", "missing", "a"]);
+  assert.deepStrictEqual(sortAggregateMembers(members, names).map(m => m.weight), [2, 4, 9]);
+  assert.deepStrictEqual(members.map(m => m.profileId), ["z", "a", "missing"]);
+  assert.deepStrictEqual(reorderAggregateMembers(members, "absent", "a"), members);
+});
 
 function profile(overrides: Partial<AggregateMemberProfileLike> & { id: string }): AggregateMemberProfileLike {
   return { relayMode: "pureApi", ...overrides };

@@ -630,7 +630,7 @@ describe("model metadata helpers", () => {
     assert.strictEqual(suffixWindowTokens(""), null);
     assert.strictEqual(suffixWindowTokens("0K"), null);
     assert.strictEqual(suffixWindowTokens("abc"), null);
-    assert.strictEqual(suffixWindowTokens("1.5M"), null);
+    assert.strictEqual(suffixWindowTokens("1.5M"), 1_500_000);
     assert.strictEqual(suffixWindowTokens("-1M"), null);
   });
 

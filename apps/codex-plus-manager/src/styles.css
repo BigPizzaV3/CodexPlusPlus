@@ -3233,7 +3233,38 @@ details.relay-fold[open] > .relay-fold-body {
   gap: 8px;
 }
 
+.aggregate-member-sortable {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aggregate-member-sortable.dragging {
+  z-index: 1;
+  opacity: 0.85;
+}
+
+.aggregate-member-drag {
+  flex: 0 0 24px;
+  touch-action: none;
+}
+
+.aggregate-member-drag:disabled {
+  opacity: 0.25;
+}
+
+.aggregate-members-head > .aggregate-members-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
 .aggregate-member-row {
+  flex: 1;
+  min-width: 0;
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) 118px;
   gap: 10px;
@@ -3866,6 +3897,32 @@ details.relay-fold[open] > .relay-fold-body {
   margin-top: 0;
   padding-top: 14px;
   border-top: 1px solid hsl(var(--border));
+}
+
+.confirm-modal-restart-actions {
+  justify-content: center;
+}
+
+.confirm-modal-restart-actions > button {
+  flex: 0 1 176px;
+  justify-content: center;
+}
+
+.toolbar.confirm-modal-three-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.confirm-modal-three-actions > button {
+  min-width: 0;
+  height: auto;
+  min-height: 32px;
+  padding: 7px 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  text-align: center;
 }
 
 .session-index-cleanup-modal {
@@ -5783,6 +5840,37 @@ input[type="range"]:disabled {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.provider-model-choices {
+  display: grid;
+  gap: 4px;
+  margin-block: 12px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.provider-model-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.provider-model-choice:hover {
+  background: hsl(var(--accent));
+}
+
+.provider-model-choice > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.provider-model-choice > small {
+  color: hsl(var(--muted-foreground));
   white-space: nowrap;
 }
 

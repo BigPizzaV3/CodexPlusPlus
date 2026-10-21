@@ -5647,6 +5647,189 @@ async fn aggregate_live_settings_updates_preserve_selected_model_and_failover() 
     }
 }
 
+/// 三成员真实文件入口 fixture；持有任务，断言失败时也会关闭监听器和连接。
+struct AggregateHttpRegressionFixture {
+    settings_path: PathBuf,
+    settings: BackendSettings,
+    received: tokio::sync::mpsc::UnboundedReceiver<AggregateHttpRegressionEvent>,
+    servers: Vec<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AggregateHttpRegressionEvent {
+    member: &'static str,
+    input: String,
+    model: String,
+    authorization: Option<String>,
+}
+
+impl AggregateHttpRegressionFixture {
+    async fn start(
+        settings_path: PathBuf,
+        suffix: &str,
+        statuses: [u16; 3],
+        held_statuses: [u16; 3],
+        gates: [Option<std::sync::Arc<tokio::sync::Semaphore>>; 3],
+    ) -> Self {
+        let (events, received) = tokio::sync::mpsc::unbounded_channel();
+        let mut fixture = Self {
+            settings_path,
+            settings: BackendSettings::default(),
+            received,
+            servers: Vec::new(),
+        };
+        let mut urls = Vec::new();
+        for (index, (member, gate)) in ["a", "b", "c"].into_iter().zip(gates).enumerate() {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            urls.push(format!("http://{}/v1", listener.local_addr().unwrap()));
+            let events = events.clone();
+            let status = statuses[index];
+            let held_status = held_statuses[index];
+            fixture.servers.push(tokio::spawn(async move {
+                // JoinSet 随监听任务销毁，避免延迟连接在失败路径遗留。
+                let mut connections = tokio::task::JoinSet::new();
+                loop {
+                    tokio::select! {
+                        accepted = listener.accept() => {
+                            let (mut stream, _) = accepted.unwrap();
+                            let events = events.clone();
+                            let gate = gate.clone();
+                            connections.spawn(async move {
+                                tokio::time::timeout(Duration::from_secs(10), async move {
+                                    let request = read_http_request(&mut stream).await;
+                                    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+                                    assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+                                    let body: Value = serde_json::from_str(body).unwrap();
+                                    let input = body["input"].as_str().unwrap().to_string();
+                                    let authorization = headers.lines().find_map(|line| {
+                                        let (name, value) = line.split_once(':')?;
+                                        name.eq_ignore_ascii_case("authorization")
+                                            .then(|| value.trim().to_string())
+                                    });
+                                    events.send(AggregateHttpRegressionEvent {
+                                        member,
+                                        input: input.clone(),
+                                        model: body["model"].as_str().unwrap().to_string(),
+                                        authorization,
+                                    }).unwrap();
+                                    // 接到完整上游请求即证明该请求已经取得并接纳 snapshot。
+                                    if input == "held"
+                                        && let Some(gate) = gate
+                                    {
+                                        let permit = gate.acquire().await.unwrap();
+                                        permit.forget();
+                                    }
+                                    let status = if input == "held" { held_status } else { status };
+                                    let reason = if status == 200 { "OK" } else { "Internal Server Error" };
+                                    let response = format!(
+                                        "HTTP/1.1 {status} {reason}\r\ncontent-length: 2\r\nconnection: close\r\ncontent-type: application/json\r\n\r\n{{}}"
+                                    );
+                                    stream.write_all(response.as_bytes()).await.unwrap();
+                                }).await.expect("mock connection timed out");
+                            });
+                        }
+                        completed = connections.join_next(), if !connections.is_empty() => {
+                            completed.unwrap().expect("mock connection panicked");
+                        }
+                    }
+                }
+            }));
+        }
+        let mut settings = aggregate_proxy_settings(suffix, urls[0].clone(), urls[1].clone());
+        let mut third = settings.relay_profiles[1].clone();
+        third.id = format!("proxy-{suffix}-c");
+        third.name = "third".to_string();
+        third.base_url = urls[2].clone();
+        settings.aggregate_relay_profiles[0].members.push(AggregateRelayMember {
+            relay_id: third.id.clone(),
+            weight: 1,
+        });
+        settings.relay_profiles.insert(2, third);
+        settings.aggregate_relay_profiles[0].strategy = AggregateRelayStrategy::Failover;
+        for (index, relay) in settings.relay_profiles.iter_mut().take(3).enumerate() {
+            let member = ["a", "b", "c"][index];
+            relay.relay_mode = RelayMode::MixedApi;
+            relay.protocol = RelayProtocol::Responses;
+            relay.model = format!("model-{member}");
+            relay.model_list = relay.model.clone();
+            relay.api_key = format!("synthetic-{member}-old");
+        }
+        fixture.settings = settings;
+        fixture.persist();
+        fixture
+    }
+
+    fn persist(&self) {
+        let mut stored = self.settings.clone();
+        for relay in stored.relay_profiles.iter_mut().take(3) {
+            // 扁平 URL / model / key 不参与序列化，必须写存储快照再由生产入口归一化。
+            relay.config_contents = format!(
+                "model = {:?}\nmodel_provider = \"custom\"\n[model_providers.custom]\nname = \"mock\"\nbase_url = {:?}\nwire_api = \"responses\"\n",
+                relay.model, relay.base_url,
+            );
+            relay.auth_contents = json!({"OPENAI_API_KEY": relay.api_key}).to_string();
+        }
+        std::fs::write(&self.settings_path, serde_json::to_vec(&stored).unwrap()).unwrap();
+    }
+
+    async fn expect(&mut self, member: &'static str, input: &str, generation: &str) {
+        let event = tokio::time::timeout(Duration::from_secs(5), self.received.recv())
+            .await.expect("expected upstream attempt timed out").unwrap();
+        assert_eq!(event, AggregateHttpRegressionEvent {
+            member,
+            input: input.to_string(),
+            model: format!("model-{member}"),
+            authorization: Some(format!("Bearer synthetic-{member}-{generation}")),
+        });
+    }
+
+    async fn shutdown(&mut self) {
+        for server in &self.servers {
+            server.abort();
+        }
+        for server in self.servers.drain(..) {
+            let error = server.await.expect_err("mock listener should run until aborted");
+            assert!(error.is_cancelled(), "mock listener failed: {error}");
+        }
+    }
+}
+
+impl Drop for AggregateHttpRegressionFixture {
+    fn drop(&mut self) {
+        for server in &self.servers {
+            server.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn aggregate_http_retired_model_can_continue_after_switching_to_pool() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let _guard = SettingsPathGuard::set(settings_path.clone());
+    let mut fixture = AggregateHttpRegressionFixture::start(
+        settings_path, "retired-model-pool", [500, 200, 200], [500, 200, 200], [None, None, None],
+    ).await;
+    let old_model = format!("cpx-{}/model-a", fixture.settings.relay_profiles[0].id);
+    fixture.settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    fixture.persist();
+    let body = json!({"model": old_model, "input":"switch", "stream":false, "reasoning":{"effort":"high"}}).to_string();
+    let response = open_responses_proxy_request(&body, None).await.unwrap();
+    assert_eq!(response.status_code, 500, "model aggregation stays bound to the selected member");
+    fixture.expect("a", "switch", "old").await;
+    fixture.settings.aggregate_relay_profiles[0].model_aggregation_enabled = false;
+    fixture.persist();
+    let mut response = tokio::time::timeout(Duration::from_secs(5), open_responses_proxy_request(&body, None))
+        .await.unwrap().unwrap();
+    assert_eq!(response.status_code, 200, "retired ID must reach the existing failover strategy");
+    response.read_body().await.unwrap();
+    fixture.expect("a", "switch", "old").await;
+    fixture.expect("b", "switch", "old").await;
+    assert!(fixture.received.try_recv().is_err());
+    fixture.shutdown().await;
+}
+
 async fn respond_once(listener: tokio::net::TcpListener, response: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let mut buffer = [0; 1024];

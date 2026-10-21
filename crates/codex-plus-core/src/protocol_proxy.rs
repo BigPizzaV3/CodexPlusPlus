@@ -3253,6 +3253,11 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     live_request_id: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
+    if let Some(model) = request_json.get("model").and_then(Value::as_str)
+        && let Some(bare) = crate::aggregate_catalog::pool_model_name(&settings, model)?
+    {
+        request_json["model"] = json!(bare);
+    }
     expand_local_compaction_history(&mut request_json);
     let is_stream = request_json
         .get("stream")

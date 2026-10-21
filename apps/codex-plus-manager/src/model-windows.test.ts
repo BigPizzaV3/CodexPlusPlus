@@ -10,7 +10,37 @@ import {
   serializeModelWindowRows,
   mergeModelWindowRows,
   reorderModelWindowRows,
+  normalizeModelWindowInput,
+  formatModelWindowInput,
+  isValidModelWindow,
 } from "./model-windows.ts";
+import { suffixWindowTokens } from "./model-metadata.ts";
+
+it("decimal K/M windows normalize units and retain numeric spelling", () => {
+  for (const [input, normalized, tokens] of [
+    ["1m", "1000000", 1000000], ["200k", "200000", 200000],
+    ["1.2m", "1200000", 1200000], ["212.5k", "212500", 212500],
+    ["212500", "212500", 212500], ["0.001k", "1", 1],
+    ["212500.9", "212500", 212500], ["1.2", "1", 1], ["1.0001K", "1000", 1000],
+    ["1kk", "1000000", 1000000], ["1.2Kk", "1200000", 1200000],
+  ] as const) {
+    assert.equal(normalizeModelWindowInput(input), normalized);
+    assert.equal(isValidModelWindow(input), true);
+    assert.equal(suffixWindowTokens(input), tokens);
+  }
+  for (const input of ["0M", "1.M"]) {
+    assert.equal(isValidModelWindow(input), false);
+    assert.equal(suffixWindowTokens(input), null);
+  }
+});
+
+it("compact context display is exact and round trips without rounding", () => {
+  for (const [value, expected] of [["1000000", "1M"], ["1200000", "1.2M"], ["212500", "212.5K"],
+    ["1000001", "1.000001M"], ["999", "999"], ["", ""]]) {
+    assert.equal(formatModelWindowInput(value), expected);
+    assert.equal(normalizeModelWindowInput(expected), value);
+  }
+});
 
 // 类型检查：确保 RelayProfile 包含 modelWindows 和 modelVlm 字段
 const _profileTypeCheck: RelayProfile = {
@@ -155,7 +185,7 @@ describe("model-windows helpers", () => {
       ]),
       {
         modelList: "a\nb",
-        modelWindows: '{"a":"1M"}',
+        modelWindows: '{"a":"1000000"}',
         modelVlm: '{"a":"vlm"}',
         modelAutoCompact: '{"a":"90%","b":"90%"}',
       },
@@ -170,7 +200,7 @@ describe("model-windows helpers", () => {
     const saved = serializeModelWindowRows(rows.filter((row) => row.model !== "remove"));
     assert.deepStrictEqual(saved, {
       modelList: "keep",
-      modelWindows: '{"keep":"1M"}',
+      modelWindows: '{"keep":"1000000"}',
       modelVlm: "{}",
       modelAutoCompact: '{"keep":"90%"}',
     });
@@ -236,14 +266,14 @@ describe("model-windows 模型 key 归一化（issue #2345）", () => {
     assert.deepStrictEqual(saved, {
       // model_list 保留用户原样行名（codex 侧靠后缀识别窗口）
       modelList: "deepseek-v4-pro[1M]",
-      modelWindows: '{"deepseek-v4-pro":"200K"}',
+      modelWindows: '{"deepseek-v4-pro":"200000"}',
       modelVlm: '{"deepseek-v4-pro":"vlm"}',
       modelAutoCompact: '{"deepseek-v4-pro":"80%"}',
     });
     // 保存后 App.tsx 的 effect 会把这份载荷重新读回成行，必须还原成 vlm
     assert.deepStrictEqual(
       modelWindowRowsFromProfile(saved.modelList, saved.modelWindows, saved.modelVlm, saved.modelAutoCompact),
-      [{ model: "deepseek-v4-pro[1M]", window: "200K", autoCompact: "80%", imageHandling: "vlm" }],
+      [{ model: "deepseek-v4-pro[1M]", window: "200000", autoCompact: "80%", imageHandling: "vlm" }],
     );
   });
 
@@ -279,7 +309,7 @@ describe("model-windows 模型 key 归一化（issue #2345）", () => {
       { model: "GLM-5.3[1M]", window: "200K", autoCompact: "80%", imageHandling: "vlm" },
     ]);
     assert.deepStrictEqual(JSON.parse(saved.modelVlm), { "GLM-5.3": "vlm" });
-    assert.deepStrictEqual(JSON.parse(saved.modelWindows), { "GLM-5.3": "200K" });
+    assert.deepStrictEqual(JSON.parse(saved.modelWindows), { "GLM-5.3": "200000" });
     assert.deepStrictEqual(JSON.parse(saved.modelAutoCompact), { "GLM-5.3": "80%" });
   });
 
@@ -287,7 +317,7 @@ describe("model-windows 模型 key 归一化（issue #2345）", () => {
     const saved = serializeModelWindowRows([
       { model: "a[1M]", window: "300K", autoCompact: "70%", imageHandling: "strip" },
     ]);
-    assert.deepStrictEqual(JSON.parse(saved.modelWindows), { a: "300K" });
+    assert.deepStrictEqual(JSON.parse(saved.modelWindows), { a: "300000" });
     assert.deepStrictEqual(JSON.parse(saved.modelVlm), { a: "strip" });
     assert.deepStrictEqual(JSON.parse(saved.modelAutoCompact), { a: "70%" });
   });

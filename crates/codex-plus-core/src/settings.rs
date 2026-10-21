@@ -693,6 +693,9 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    /// 未设置时沿用供应商同步开关；显式设置后独立控制消息索引自动修复。
+    #[serde(rename = "sessionIndexAutoRepairEnabled", default)]
+    pub session_index_auto_repair_enabled: Option<bool>,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
     #[serde(rename = "providerSyncManualProviders", default)]
@@ -973,6 +976,7 @@ impl Default for BackendSettings {
             codex_app_auto_takeover_when_active: default_auto_takeover_when_active(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            session_index_auto_repair_enabled: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
@@ -1066,6 +1070,11 @@ impl Default for BackendSettings {
 }
 
 impl BackendSettings {
+    pub fn effective_session_index_auto_repair_enabled(&self) -> bool {
+        self.session_index_auto_repair_enabled
+            .unwrap_or(self.provider_sync_enabled)
+    }
+
     pub fn active_relay_profile(&self) -> RelayProfile {
         if self.active_relay_id == default_active_relay_id()
             && self.relay_profiles.len() == 1
@@ -1737,8 +1746,20 @@ impl SettingsStore {
         // 锁文件保持稳定，不能锁会被 atomic rename 替换的 settings inode。
         let path = self.path.with_extension("json.lock");
         let file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(path)?;
+        #[cfg(test)]
+        tests::probe_write_lock_contention(&file);
         file.lock_exclusive().context("获取设置写锁失败")?;
         Ok(file)
+    }
+
+    /// 快照读取与关联产物发布共用写锁。operation 仅用于同步读取和准入排序，
+    /// 不得重入持锁方法；网络请求及 await 必须在本方法返回、锁释放后进行。
+    pub(crate) fn with_snapshot<T>(
+        &self,
+        operation: impl FnOnce(BackendSettings) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let _lock = self.write_lock()?;
+        operation(self.load()?)
     }
 
     pub fn revision(&self) -> anyhow::Result<String> {
@@ -1808,28 +1829,78 @@ impl SettingsStore {
         publish: impl FnOnce(&str) -> anyhow::Result<()>,
     ) -> anyhow::Result<String> {
         let _lock = self.write_lock()?;
+        self.save_with_prepared_commit_locked(settings, prepare, publish)
+            .map(|(revision, ())| revision)
+    }
+
+    /// 先按请求版本做 CAS，再在同一锁内回填设置、捕获关联文件和发布。
+    /// prepare 只读关联文件；publish 失败时须先在锁内恢复关联文件，再返回错误，
+    /// 由本事务恢复 settings 原始字节。两个闭包均不得重入持锁方法。
+    pub(crate) fn save_with_prepared_settings<P, T>(
+        &self,
+        settings: &BackendSettings,
+        prepare: impl FnOnce(&mut BackendSettings) -> anyhow::Result<P>,
+        publish: impl FnOnce(&str, P) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let _lock = self.write_lock()?;
+        self.check_save_revision(settings)?;
+        let mut selected = settings.clone();
+        let prepared = prepare(&mut selected)?;
+        // prepare 不能用磁盘新版本替换请求版本来绕过 CAS。
+        selected
+            .settings_revision
+            .clone_from(&settings.settings_revision);
+        self.save_with_prepared_commit_locked(
+            &selected,
+            |_| Ok(()),
+            |revision| publish(revision, prepared),
+        )
+        .map(|(_, result)| result)
+    }
+
+    fn check_save_revision(&self, settings: &BackendSettings) -> anyhow::Result<()> {
         let revision = self.revision()?;
         if settings.settings_revision != revision
             && !(settings.settings_revision.is_empty() && revision == "missing")
         {
             anyhow::bail!("settings_revision_conflict：设置已被其他操作更新，请重载后合并；原文件未修改");
         }
+        Ok(())
+    }
+
+    /// 调用方已持有 write_lock，不能再通过公共保存/恢复方法重复加锁。
+    fn save_with_prepared_commit_locked<T>(
+        &self,
+        settings: &BackendSettings,
+        prepare: impl FnOnce(&str) -> anyhow::Result<()>,
+        publish: impl FnOnce(&str) -> anyhow::Result<T>,
+    ) -> anyhow::Result<(String, T)> {
+        self.check_save_revision(settings)?;
         let before = self.snapshot_raw_bytes()?;
         let bytes = self.prepare_save_bytes(settings)?;
         let committed = settings_revision(Some(&bytes));
         prepare(&committed)?;
+        self.check_save_revision(settings)?;
         atomic_write(&self.path, &bytes)?;
-        if let Err(error) = publish(&committed) {
-            if self.revision()? != committed {
-                anyhow::bail!("关联产物发布失败：{error}；设置已被外部修改，未覆盖新数据");
+        match publish(&committed) {
+            Ok(result) => Ok((committed, result)),
+            Err(error) => {
+                if self.revision()? != committed {
+                    anyhow::bail!("关联产物发布失败：{error:#}；设置已被外部修改，未覆盖新数据");
+                }
+                let restored = match before {
+                    Some(bytes) => atomic_write(&self.path, &bytes),
+                    None => fs::remove_file(&self.path).map_err(anyhow::Error::from),
+                };
+                if let Err(restore_error) = restored {
+                    anyhow::bail!(
+                        "关联产物发布失败：{error:#}；同时回滚配置失败：settings.json={restore_error:#}"
+                    );
+                }
+                let message = format!("关联产物发布失败，设置已恢复：{error:#}");
+                Err(error).context(message)
             }
-            match before {
-                Some(bytes) => atomic_write(&self.path, &bytes)?,
-                None => { fs::remove_file(&self.path)?; },
-            }
-            return Err(error).context("关联产物发布失败，设置已恢复");
         }
-        Ok(committed)
     }
 
     fn prepare_save_bytes(&self, settings: &BackendSettings) -> anyhow::Result<Vec<u8>> {
@@ -2101,6 +2172,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source
+        .get("sessionIndexAutoRepairEnabled")
+        .filter(|value| value.is_boolean() || value.is_null())
+    {
+        target.insert("sessionIndexAutoRepairEnabled".to_string(), value.clone());
     }
     if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
         target.insert(
@@ -3032,6 +3109,14 @@ fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
     };
     use windows::core::PCWSTR;
 
+    // 与 Rust 文件 API 一致使用扩展绝对路径，避免长目录在 Win32 替换阶段失败。
+    let source = source.canonicalize()?;
+    let target = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()?
+        .join(target.file_name().context("替换目标缺少文件名")?);
     let source = source
         .as_os_str()
         .encode_wide()
@@ -3105,6 +3190,276 @@ mod tests {
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+    thread_local! {
+        // 仅测试线程可设置：报告真实 try_lock 竞争，不在生产代码引入暂停入口。
+        static WRITE_LOCK_PROBE: std::cell::RefCell<Option<std::sync::mpsc::Sender<bool>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn probe_write_lock_contention(file: &File) {
+        WRITE_LOCK_PROBE.with(|probe| {
+            if let Some(sender) = probe.borrow_mut().take() {
+                let contended = match FileExt::try_lock_exclusive(file) {
+                    Ok(()) => {
+                        FileExt::unlock(file).unwrap();
+                        false
+                    }
+                    Err(error) => {
+                        assert_eq!(
+                            error.raw_os_error(),
+                            fs2::lock_contended_error().raw_os_error(),
+                            "探针必须遇到真实锁竞争"
+                        );
+                        true
+                    }
+                };
+                sender.send(contended).unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn snapshot_waits_for_publication_and_observes_only_commit_or_rollback() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let timeout = Duration::from_secs(10);
+        for fail_publish in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            let store = SettingsStore::new(path.clone());
+            let mut raw = serde_json::to_value(BackendSettings::default()).unwrap();
+            raw["futureSetting"] = json!({"keep": "unknown"});
+            let before = format!(" \n{}\n ", serde_json::to_string_pretty(&raw).unwrap()).into_bytes();
+            fs::write(&path, &before).unwrap();
+            let original = store.load().unwrap();
+            let mut next = original.clone();
+            let mut target = next.relay_profiles[0].clone();
+            target.id = "snapshot-target".into();
+            target.name = "snapshot-target".into();
+            next.active_relay_id.clone_from(&target.id);
+            next.relay_profiles.push(target);
+
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let writer_store = SettingsStore::new(path.clone());
+            let writer = std::thread::spawn(move || {
+                writer_store.save_with_prepared_settings(
+                    &next,
+                    |_| Ok(()),
+                    |revision, ()| {
+                        let pending = writer_store.load()?;
+                        assert_eq!(pending.active_relay_id, "snapshot-target");
+                        assert_eq!(pending.settings_revision, revision);
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(timeout).unwrap();
+                        anyhow::ensure!(!fail_publish, "injected publish failure");
+                        Ok(revision.to_string())
+                    },
+                )
+            });
+            entered_rx.recv_timeout(timeout).unwrap();
+
+            let (probe_tx, probe_rx) = mpsc::channel();
+            let (snapshot_tx, snapshot_rx) = mpsc::channel();
+            let reader_path = path.clone();
+            let reader = std::thread::spawn(move || {
+                WRITE_LOCK_PROBE.with(|probe| *probe.borrow_mut() = Some(probe_tx));
+                SettingsStore::new(reader_path.clone()).with_snapshot(|settings| {
+                    // 读取回滚字节也必须发生在快照闭包内，证明恢复完成后才放行。
+                    snapshot_tx
+                        .send((settings, fs::read(&reader_path)?))
+                        .unwrap();
+                    Ok(())
+                })
+            });
+
+            let contended = probe_rx.recv_timeout(timeout);
+            let premature_snapshot = snapshot_rx.try_recv();
+            // 先释放并 join，断言失败也不会遗留挂起的测试线程。
+            release_tx.send(()).unwrap();
+            let write_result = writer.join().unwrap();
+            reader.join().unwrap().unwrap();
+            assert!(
+                contended.unwrap(),
+                "with_snapshot 必须竞争 publish 持有的锁"
+            );
+            assert!(matches!(premature_snapshot, Err(mpsc::TryRecvError::Empty)));
+            let (snapshot, bytes) = snapshot_rx.recv_timeout(timeout).unwrap();
+            if fail_publish {
+                assert!(
+                    write_result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("injected publish failure")
+                );
+                assert_eq!(snapshot, original);
+                assert_eq!(bytes, before, "未知字段及原始排版必须逐字节恢复");
+            } else {
+                assert_eq!(snapshot.active_relay_id, "snapshot-target");
+                assert_eq!(snapshot.settings_revision, write_result.unwrap());
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&bytes).unwrap()["futureSetting"],
+                    raw["futureSetting"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_operation_holds_the_lock_until_admission_finishes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let timeout = Duration::from_secs(10);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        store.save(&BackendSettings::default()).unwrap();
+        let original = store.load().unwrap();
+        let mut next = original.clone();
+        next.relay_profiles[0].name = "after-admission".into();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
+            SettingsStore::new(reader_path).with_snapshot(|settings| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(timeout).unwrap();
+                Ok(settings)
+            })
+        });
+        entered_rx.recv_timeout(timeout).unwrap();
+        let (probe_tx, probe_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            WRITE_LOCK_PROBE.with(|probe| *probe.borrow_mut() = Some(probe_tx));
+            SettingsStore::new(path).save(&next)
+        });
+        let contended = probe_rx.recv_timeout(timeout);
+        release_tx.send(()).unwrap();
+        let snapshot = reader.join().unwrap().unwrap();
+        writer.join().unwrap().unwrap();
+        assert!(contended.unwrap());
+        assert_eq!(snapshot, original);
+        assert_eq!(
+            store.load().unwrap().relay_profiles[0].name,
+            "after-admission"
+        );
+    }
+
+    #[test]
+    fn prepared_settings_checks_input_revision_before_capture_and_preserves_early_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        store.save(&BackendSettings::default()).unwrap();
+        let stale = store.load().unwrap();
+        let mut current = stale.clone();
+        current.relay_profiles[0].name = "newer-writer".into();
+        store.save(&current).unwrap();
+        let before = fs::read(&path).unwrap();
+        let error = store
+            .save_with_prepared_settings(
+                &stale,
+                |_| -> anyhow::Result<()> { panic!("stale request must not capture or backfill") },
+                |_, ()| -> anyhow::Result<()> { panic!("stale request must not publish") },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("settings_revision_conflict"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        let current = store.load().unwrap();
+        let error = store
+            .save_with_prepared_settings(
+                &current,
+                |_| -> anyhow::Result<()> { anyhow::bail!("capture failed") },
+                |_, ()| -> anyhow::Result<()> { panic!("prepare failure must not publish") },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("capture failed"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn failed_publication_restores_missing_settings_and_keeps_external_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        store
+            .save_with_commit(&BackendSettings::default(), |_| {
+                anyhow::bail!("failed first publication");
+            })
+            .unwrap_err();
+        assert!(!path.exists());
+        assert_eq!(
+            store
+                .with_snapshot(|settings| Ok(settings.settings_revision))
+                .unwrap(),
+            "missing"
+        );
+
+        store.save(&BackendSettings::default()).unwrap();
+        let mut next = store.load().unwrap();
+        next.relay_profiles[0].name = "pending".into();
+        let mut external = next.clone();
+        external.relay_profiles[0].name = "external".into();
+        let external_bytes = serde_json::to_vec(&external).unwrap();
+        let error = store
+            .save_with_commit(&next, |_| {
+                // 模拟绕过锁的外部写入者；失败回滚不得覆盖其新版本。
+                fs::write(&path, &external_bytes)?;
+                anyhow::bail!("failed after external write");
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("未覆盖新数据"));
+        assert_eq!(fs::read(&path).unwrap(), external_bytes);
+    }
+
+    #[test]
+    fn prepared_commit_rechecks_revision_before_writing_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        store.save(&BackendSettings::default()).unwrap();
+        let mut next = store.load().unwrap();
+        next.relay_profiles[0].name = "pending".into();
+        let mut external = next.clone();
+        external.relay_profiles[0].name = "external".into();
+        let external_bytes = serde_json::to_vec(&external).unwrap();
+        let error = store
+            .save_with_prepared_commit(
+                &next,
+                |_| {
+                    fs::write(&path, &external_bytes)?;
+                    Ok(())
+                },
+                |_| panic!("revision changed during prepare; must not publish"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("settings_revision_conflict"));
+        assert_eq!(fs::read(&path).unwrap(), external_bytes);
+    }
+
+    #[test]
+    fn settings_revision_observes_saves_from_another_store_without_exposing_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let writer = SettingsStore::new(path.clone());
+        let reader = SettingsStore::new(path);
+        assert_eq!(reader.revision().unwrap(), "missing");
+        let mut settings = BackendSettings::default();
+        writer.save(&settings).unwrap();
+        let first = reader.revision().unwrap();
+        assert!(!first.is_empty());
+        settings = writer.load().unwrap();
+        settings.relay_profiles[0].name = "fixture-private-value".to_string();
+        writer.save(&settings).unwrap();
+        let second = reader.revision().unwrap();
+        assert_ne!(first, second);
+        assert!(!second.contains("fixture-private-value"));
+        assert_eq!(writer.revision().unwrap(), second);
+    }
+
     fn temp_dir() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
             "codex-plus-core-settings-test-{}-{}",
@@ -3146,6 +3501,81 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_write_replaces_file_beyond_windows_max_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = dir.path().to_path_buf();
+        for _ in 0..5 {
+            parent.push("long-catalog-publication-component-".repeat(2));
+        }
+        std::fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("catalog.json");
+        assert!(path.as_os_str().len() > 260);
+        std::fs::write(&path, b"old").unwrap();
+        atomic_write(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(!temp_path_for(&path).exists());
+    }
+
+    #[test]
+    fn session_index_auto_repair_setting_preserves_legacy_and_explicit_choices() {
+        for provider_sync in [false, true] {
+            for choice in [None, Some(false), Some(true)] {
+                let mut value = serde_json::json!({ "providerSyncEnabled": provider_sync });
+                if let Some(enabled) = choice {
+                    value["sessionIndexAutoRepairEnabled"] = serde_json::json!(enabled);
+                }
+                let settings: BackendSettings = serde_json::from_value(value).unwrap();
+                assert_eq!(settings.session_index_auto_repair_enabled, choice);
+                assert_eq!(
+                    settings.effective_session_index_auto_repair_enabled(),
+                    choice.unwrap_or(provider_sync),
+                );
+                let restored: BackendSettings =
+                    serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+                assert_eq!(restored.session_index_auto_repair_enabled, choice);
+            }
+        }
+        let settings: BackendSettings = serde_json::from_value(serde_json::json!({
+            "providerSyncEnabled": true,
+            "sessionIndexAutoRepairEnabled": null,
+        })).unwrap();
+        assert!(settings.effective_session_index_auto_repair_enabled());
+        assert_eq!(BackendSettings::default().session_index_auto_repair_enabled, None);
+    }
+
+    #[test]
+    fn session_index_auto_repair_setting_updates_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        store.save(&BackendSettings::default()).unwrap();
+        for provider_sync in [false, true] {
+            for choice in [Some(true), Some(false), None] {
+                let settings = store.update(serde_json::json!({
+                    "providerSyncEnabled": provider_sync,
+                    "sessionIndexAutoRepairEnabled": choice,
+                })).unwrap();
+                assert_eq!(settings.session_index_auto_repair_enabled, choice);
+                let saved = store.load().unwrap();
+                assert_eq!(saved.session_index_auto_repair_enabled, choice);
+                assert_eq!(
+                    saved.effective_session_index_auto_repair_enabled(),
+                    choice.unwrap_or(provider_sync),
+                );
+                // 不包含该字段的旧调用不得清除独立开关。
+                let unchanged = store.update(serde_json::json!({
+                    "providerSyncEnabled": !provider_sync,
+                })).unwrap();
+                assert_eq!(unchanged.session_index_auto_repair_enabled, choice);
+            }
+        }
+        let mut settings = store.load().unwrap();
+        settings.session_index_auto_repair_enabled = Some(false);
+        store.save(&settings).unwrap();
+        assert_eq!(store.load().unwrap().session_index_auto_repair_enabled, Some(false));
     }
 
     #[test]

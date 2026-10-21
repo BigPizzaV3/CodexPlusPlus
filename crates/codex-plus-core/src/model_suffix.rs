@@ -85,18 +85,42 @@ pub(crate) fn parse_window_token(token: &str) -> Option<u64> {
     if token.is_empty() {
         return None;
     }
-    let (num_part, multiplier) = match token.chars().last() {
+    let (num_part, multiplier) = if token.to_ascii_lowercase().ends_with("kk") {
+        (&token[..token.len() - 2], 1_000_000u64)
+    } else { match token.chars().last() {
         Some('K' | 'k') => (&token[..token.len() - 1], 1_000u64),
         Some('M' | 'm') => (&token[..token.len() - 1], 1_000_000u64),
         Some(_) => (token, 1u64),
         None => return None,
+    }};
+    let (whole, fraction) = num_part.trim().split_once('.').unwrap_or((num_part.trim(), ""));
+    if whole.is_empty() || !whole.bytes().all(|c| c.is_ascii_digit())
+        || !fraction.bytes().all(|c| c.is_ascii_digit())
+        || (num_part.contains('.') && fraction.is_empty())
+    {
+        return None;
+    }
+    let precision = match multiplier { 1_000 => 3, 1_000_000 => 6, _ => 0 };
+    let fraction = &fraction[..fraction.len().min(precision)];
+    let whole = whole.parse::<u64>().ok()?.checked_mul(multiplier)?;
+    let fractional = if fraction.is_empty() { 0 } else {
+        fraction.parse::<u64>().ok()?.checked_mul(multiplier / 10u64.pow(fraction.len() as u32))?
     };
-    num_part
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .and_then(|value| value.checked_mul(multiplier))
-        .filter(|value| *value > 0)
+    whole.checked_add(fractional).filter(|value| *value > 0)
+}
+
+#[cfg(test)]
+#[test]
+fn decimal_window_tokens_preserve_integer_token_precision() {
+    for (input, expected) in [("1m", 1_000_000), ("200k", 200_000), ("1.2M", 1_200_000),
+        ("212.5K", 212_500), ("0.001k", 1), ("212500", 212_500), ("212500.9", 212_500),
+        ("1.0001K", 1_000), ("1.2", 1), ("1kk", 1_000_000), ("1.2Kk", 1_200_000)] {
+        assert_eq!(parse_window_token(input), Some(expected), "{input}");
+    }
+    for input in ["1.M", "0M", "18446744073709551616"] {
+        assert_eq!(parse_window_token(input), None, "{input}");
+    }
+    assert_eq!(parse_model_suffix("model[1.2m]"), ("model".into(), Some(1_200_000)));
 }
 
 /// 解析自动压缩百分比 token，如 "90"、"84.329412%"。

@@ -47,7 +47,7 @@ test("model route inputs keep focus while editing and label the example placehol
   assert.match(source, /relayModelRoutesSettingsValidation\(validationSettings\)/);
   assert.match(
     source,
-    /if \(requiresRestart\) \{[\s\S]*?actions\.restart\(true\)[\s\S]*?return;[\s\S]*?actions\.switchRelayProfile\(savedSettings, savedSettings\.activeRelayId\)/,
+    /if \(saveChoice === "restart"\) \{[\s\S]*?actions\.restart\(true\)[\s\S]*?return;[\s\S]*?actions\.switchRelayProfile\(savedSettings, savedSettings\.activeRelayId\)/,
   );
 });
 
@@ -179,4 +179,40 @@ test("disabled provider switching never rewrites live config for a first route",
   ], { relayProfilesEnabled: false });
 
   assert.equal(modelRouteSaveRequiresRestart(before, after, profile("source").baseUrl), false);
+});
+
+test("active aggregation edits reuse the backend-selected proxy port", () => {
+  const aggregate = profile("aggregate", { relayMode: "aggregate" });
+  const memberA = profile("a");
+  const memberB = profile("b");
+  const before = { ...settings([aggregate, memberA, memberB]),
+    aggregateRelayProfiles: [{ id: "aggregate", modelAggregationEnabled: true,
+      members: [{ relayId: "a", weight: 1 }], defaultRelayId: "a" }] };
+  for (const strategy of [
+    { members: ["a", "b"], defaultRelayId: "a" },
+    { members: ["b"], defaultRelayId: "b" },
+    { members: ["a", "b"], defaultRelayId: "b" },
+  ]) {
+    const after = { ...before, aggregateRelayProfiles: [{ id: "aggregate",
+      modelAggregationEnabled: true, defaultRelayId: strategy.defaultRelayId,
+      members: strategy.members.map((relayId) => ({ relayId, weight: 1 })) }] };
+    for (const port of [57321, 62021, 49153]) {
+      assert.equal(modelRouteSaveRequiresRestart(before, after,
+        `http://127.0.0.1:${port}/v1`, `http://127.0.0.1:${port}`), false);
+    }
+  }
+});
+
+test("proxy comparison remains conservative for other services and unknown runtime addresses", () => {
+  const current = settings([profile("aggregate", { relayMode: "aggregate" })]);
+  for (const live of ["http://127.0.0.1:57321/v1", "http://127.0.0.1:62022/v1",
+    "https://vendor.example/v1", "http://127.0.0.1:62021/other",
+    "http://127.0.0.1:62021/v1?route=other", "http://user@127.0.0.1:62021/v1"]) {
+    assert.equal(modelRouteSaveRequiresRestart(current, current, live, "http://127.0.0.1:62021"), true);
+  }
+  for (const address of ["", "invalid", "https://vendor.example", "http://127.0.0.1:62021/other"]) {
+    assert.equal(modelRouteSaveRequiresRestart(current, current, "http://127.0.0.1:62021/v1", address), true);
+  }
+  assert.equal(modelRouteSaveRequiresRestart(settings([profile("source")]), current,
+    "http://127.0.0.1:62021/v1", "http://127.0.0.1:62021"), true);
 });

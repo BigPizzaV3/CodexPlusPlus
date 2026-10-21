@@ -80,6 +80,30 @@ export function normalizeAggregateDefaultRelayId(
 /** 成员列表规范化只关心"这家供应商还在不在"，不关心它当前是否可勾选。 */
 export type AggregateMemberLike = { profileId: string; weight: number };
 
+export function reorderAggregateMembers<T extends AggregateMemberLike>(
+  members: readonly T[], sourceId: string, targetId: string,
+): T[] {
+  const next = [...members];
+  const source = next.findIndex(member => member.profileId === sourceId);
+  const target = next.findIndex(member => member.profileId === targetId);
+  if (source < 0 || target < 0 || source === target) return next;
+  const [moved] = next.splice(source, 1);
+  next.splice(target, 0, moved);
+  return next;
+}
+
+export function sortAggregateMembers<T extends AggregateMemberLike>(
+  members: readonly T[], profiles: readonly { id: string; name: string }[], descending = false,
+): T[] {
+  const names = new Map(profiles.map(profile => [profile.id, profile.name || profile.id]));
+  return [...members].sort((a, b) => {
+    const order = (names.get(a.profileId) || a.profileId).localeCompare(
+      names.get(b.profileId) || b.profileId, "zh-CN", { numeric: true, sensitivity: "base" },
+    );
+    return descending ? -order : order;
+  });
+}
+
 /**
  * 聚合成员规范化：**只按"供应商是否还在"决定去留**。
  *
