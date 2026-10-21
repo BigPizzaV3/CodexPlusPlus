@@ -2260,11 +2260,12 @@ fn with_model_catalog_rollback<T>(
 
 fn preserve_live_marketplace_configs(home: &Path, config_text: &str) -> anyhow::Result<String> {
     let live_config = read_optional_text(&home.join("config.toml"))?;
+    let mut target = parse_toml_document(config_text)?;
+    remove_legacy_official_marketplace_overrides(home, &mut target);
     if live_config.trim().is_empty() {
-        return Ok(config_text.to_string());
+        return Ok(ensure_trailing_newline(target.to_string()));
     }
 
-    let mut target = parse_toml_document(config_text)?;
     // live 文件损坏时不能让整次切换失败（#2478/#2500）：跳过补回，按新配置写出；
     // 原文件在 write_codex_live_atomic 里已备份。
     let Ok(live) = parse_toml_document(&normalize_duplicate_toml_text(&live_config)) else {
@@ -2272,7 +2273,7 @@ fn preserve_live_marketplace_configs(home: &Path, config_text: &str) -> anyhow::
             "relay_config.live_config_unparsable",
             serde_json::json!({ "home": home.to_string_lossy(), "step": "marketplaces" }),
         );
-        return Ok(config_text.to_string());
+        return Ok(ensure_trailing_newline(target.to_string()));
     };
     let Some(live_marketplaces) = live.get("marketplaces").and_then(Item::as_table_like) else {
         return Ok(ensure_trailing_newline(target.to_string()));
@@ -2304,7 +2305,54 @@ fn preserve_live_marketplace_configs(home: &Path, config_text: &str) -> anyhow::
         }
     }
 
+    remove_legacy_official_marketplace_overrides(home, &mut target);
     Ok(ensure_trailing_newline(target.to_string()))
+}
+
+/// 旧版把官方目录注册成同名自定义市场，会使原生安装状态被保留名策略过滤。
+/// 只清理由本工具历史使用的目录，保留插件启用项与用户自己的市场。
+fn remove_legacy_official_marketplace_overrides(home: &Path, doc: &mut DocumentMut) -> bool {
+    let Some(markets) = doc.get_mut("marketplaces").and_then(Item::as_table_like_mut) else {
+        return false;
+    };
+    let legacy_root = home.join(".tmp").join("plugins");
+    let legacy_root = legacy_root.to_string_lossy().replace('\\', "/");
+    let legacy_root = legacy_root.trim_start_matches("//?/");
+    let mut changed = false;
+    for name in ["openai-curated", "openai-api-curated"] {
+        let managed = markets
+            .get(name)
+            .and_then(Item::as_table_like)
+            .is_some_and(|market| {
+                let source = market.get("source").and_then(Item::as_str).unwrap_or_default();
+                let source = source.replace('\\', "/");
+                market.get("source_type").and_then(Item::as_str) == Some("local")
+                    && source.trim_start_matches("//?/") == legacy_root
+            });
+        if managed {
+            markets.remove(name);
+            changed = true;
+        }
+    }
+    changed
+}
+
+pub fn cleanup_legacy_official_marketplace_overrides_in_home(home: &Path) -> anyhow::Result<bool> {
+    let config_path = home.join("config.toml");
+    let text = read_optional_text(&config_path)?;
+    let mut doc = parse_toml_document(&text)
+        .map_err(|_| anyhow::anyhow!("Codex 配置格式错误，未修复历史插件市场注册"))?;
+    if !remove_legacy_official_marketplace_overrides(home, &mut doc) {
+        return Ok(false);
+    }
+    if read_optional_text(&config_path)? != text {
+        anyhow::bail!("Codex 配置已被其他窗口更新，请刷新插件列表重试");
+    }
+    crate::settings::atomic_write(
+        &config_path,
+        ensure_trailing_newline(doc.to_string()).as_bytes(),
+    )?;
+    Ok(true)
 }
 
 fn active_provider_id(doc: &DocumentMut) -> Option<String> {

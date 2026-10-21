@@ -1216,11 +1216,19 @@ where
         let mut eligible_rewrite_plans = Vec::new();
         for plan in &rewrite_plans {
             let mut writer = HashingWriter::new(std::io::sink());
-            let before = stream_rewrite_rollout_session_meta_providers(
+            let before = match stream_rewrite_rollout_session_meta_providers(
                 &plan.path,
                 &target_provider,
                 &mut writer,
-            )?;
+            ) {
+                Ok(before) => before,
+                Err(error) if is_locked_io_error(&error) => {
+                    // 规划之后也可能被原生进程占用；未准备日志的文件不能进入改写。
+                    scanned_skipped_rollout_files.push(plan.path.clone());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if before == plan.original_sha256 {
                 rollout_journal.push(crate::sync_journal::JournalRollout {
                     path: plan.path.clone(),

@@ -1755,6 +1755,7 @@ fn installed_fallback(home: &Path, source: Source, installed: &InstalledPlugin) 
 /// 原生 UI 形状适配。虚拟市场的 read/install 由注入层独占拦截，不传给原生下载器。
 pub async fn native_request(home: &Path, method: &str, params: Value) -> anyhow::Result<Value> {
     let home = prepare_home(home)?;
+    crate::relay_config::cleanup_legacy_official_marketplace_overrides_in_home(&home)?;
     let state = read_state(&home)?;
     let enabled = configured_plugin_enabled(&home)?;
     match method {
