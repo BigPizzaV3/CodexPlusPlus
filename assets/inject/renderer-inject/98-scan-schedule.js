@@ -104,9 +104,12 @@
   }
 
   function scheduleScan(mutations) {
+    // 隐藏页面和已排队的扫描也要清理，不能让孤立菜单等待下一次可见扫描。
+    const sessionActionsNeedScan = pruneRemovedSessionActions(mutations);
     window.__codexSessionDeleteLastMutations = mutations;
     if (window.__codexSessionDeleteScanPending) return;
-    if (!shouldScheduleScan(mutations)) return;
+    // 原生页面可能只移除带归属标记的按钮组；所属行仍在时需要补回操作入口。
+    if (!sessionActionsNeedScan && !shouldScheduleScan(mutations)) return;
     window.__codexSessionDeleteScanPending = true;
     if (document.hidden) return;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);

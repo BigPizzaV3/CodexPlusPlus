@@ -93,7 +93,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 890
+      "lines": 955
     },
     {
       "name": "91-extension-api.js",
@@ -118,7 +118,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 938
+      "lines": 939
     },
     {
       "name": "96-whale-compat.js",
@@ -133,7 +133,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 174
+      "lines": 177
     },
     {
       "name": "98-avatar-overlay-layout.js",

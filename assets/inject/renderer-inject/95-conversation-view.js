@@ -928,6 +928,7 @@
   }
 
   function scan() {
+    pruneSessionMoreMenus();
     if (document.hidden) {
       window.__codexSessionDeleteScanPending = true;
       return;
