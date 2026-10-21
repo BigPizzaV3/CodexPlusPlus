@@ -2972,7 +2972,9 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     ));
     assert!(script.contains("const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, sessionRefFromRow(row), event)"));
     assert!(script.contains("会话仍在同步，请稍后重试"));
-    assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
+    assert!(script.contains(
+        "attributeFilter: [\"data-app-action-sidebar-thread-id\", \"data-app-action-sidebar-thread-host-id\", \"href\"]"
+    ));
 
     let cases = run_session_ref_contract_harness();
     assert_eq!(

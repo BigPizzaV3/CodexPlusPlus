@@ -20,6 +20,7 @@ async fn bridge_routes_cover_all_current_paths() {
 
     let cases = [
         ("/settings/get", json!({})),
+        ("/sessions/deleted-local", json!({})),
         ("/settings/set", json!({"providerSyncEnabled": true})),
         ("/user-scripts/list", json!({})),
         ("/user-scripts/set-enabled", json!({"enabled": false})),

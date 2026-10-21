@@ -718,12 +718,12 @@
     };
     const canonicalWanted = normalizedCodexThreadUuid(sessionId);
     const wanted = canonicalWanted ? canonicalWanted.toLowerCase() : sessionId || "";
-    const identities = (record) => [record?.conversationId, record?.threadId, record?.id].map(identity).filter(Boolean);
+    const identities = (record) => [record?.conversationId, record?.threadId, record?.id, record?.sessionId].map(identity).filter(Boolean);
     const collect = (record) => {
       if (!record || typeof record !== "object") return;
       const ownIds = identities(record);
       const matched = ownIds.some((candidate) => candidate.id === wanted);
-      const nested = [record.threadSummary, record.thread, record.target].filter((value) => value && typeof value === "object");
+      const nested = [record.threadSummary, record.thread, record.target, record.archivedThread].filter((value) => value && typeof value === "object");
       const allIds = [...ownIds, ...nested.flatMap(identities)];
       if (allIds.some((candidate) => candidate.id === wanted) && allIds.some((candidate) => candidate.id !== wanted)) {
         identityConflict = true;
@@ -755,6 +755,14 @@
     for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
       for (const props of [fiber.pendingProps, fiber.memoizedProps, fiber.pendingProps?.children?.props, fiber.memoizedProps?.children?.props]) {
         collect(props);
+        // 原生归档行的 key 为 local:<hostId>:<threadId>，thread 本身可能没有 hostId。
+        const archivedId = identity(props?.archivedThread?.id || props?.archivedThread?.sessionId);
+        if (archivedId?.id === wanted && typeof fiber.key === "string") {
+          const suffix = `:${props.archivedThread.id || props.archivedThread.sessionId}`;
+          if (fiber.key.startsWith("local:") && fiber.key.endsWith(suffix)) {
+            add(fiber.key.slice("local:".length, -suffix.length));
+          }
+        }
       }
     }
     const conflict = identityConflict || hosts.size > 1;

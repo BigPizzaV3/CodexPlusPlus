@@ -43,7 +43,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1897
+      "lines": 1905
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -68,7 +68,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 756
+      "lines": 751
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -118,7 +118,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 938
+      "lines": 939
     },
     {
       "name": "96-whale-compat.js",
@@ -143,7 +143,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 96
+      "lines": 101
     },
     {
       "name": "99-tail.js",

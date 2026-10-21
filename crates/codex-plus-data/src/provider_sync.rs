@@ -1216,11 +1216,19 @@ where
         let mut eligible_rewrite_plans = Vec::new();
         for plan in &rewrite_plans {
             let mut writer = HashingWriter::new(std::io::sink());
-            let before = stream_rewrite_rollout_session_meta_providers(
+            let before = match stream_rewrite_rollout_session_meta_providers(
                 &plan.path,
                 &target_provider,
                 &mut writer,
-            )?;
+            ) {
+                Ok(before) => before,
+                Err(error) if is_locked_io_error(&error) => {
+                    // 规划之后也可能被原生进程占用；未准备日志的文件不能进入改写。
+                    scanned_skipped_rollout_files.push(plan.path.clone());
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if before == plan.original_sha256 {
                 rollout_journal.push(crate::sync_journal::JournalRollout {
                     path: plan.path.clone(),
@@ -1528,7 +1536,7 @@ fn collect_rebuildable_canonical_threads(
 
     // issue #2199：这是「删了又回来」的另一条重建入口——catalog 里还有行、canonical
     // `threads` 里没有、rollout 文件还在，就会被补回列表。已被删除的会话要排除在外。
-    let thread_tombstones = load_thread_tombstones(home);
+    let thread_tombstones = load_thread_tombstones(home)?;
     let mut rebuildable = Vec::new();
     for path in sqlite_paths {
         for thread in catalog_only_threads_for_path(path, &canonical_thread_ids)? {
@@ -3751,17 +3759,23 @@ fn thread_tombstone_path(codex_home: &Path) -> PathBuf {
 
 /// 读取删除墓碑（已删除、不得被索引重建复活的 thread id）。
 ///
-/// 墓碑只是「修复时跳过」的抑制信息，不是用户数据：文件缺失、读不动、内容坏了都
-/// 一律按「没有墓碑」处理——最坏结果是退回旧行为（可能复活），绝不因为墓碑本身
-/// 让同步或删除失败。见 issue #2199。
-fn load_thread_tombstones(codex_home: &Path) -> HashSet<String> {
+/// 兼容旧 JSON 墓碑的容错行为。新的 SQLite 删除状态是权威记录，读取失败必须
+/// 停止重建，不能误把软删除历史当作活会话重新加入列表。
+fn load_thread_tombstones(codex_home: &Path) -> anyhow::Result<HashSet<String>> {
     let path = thread_tombstone_path(codex_home);
-    let Ok(bytes) = fs::read(&path) else {
-        return HashSet::new();
-    };
-    serde_json::from_slice::<Vec<String>>(&bytes)
-        .map(|ids| ids.into_iter().collect())
-        .unwrap_or_default()
+    let mut ids: HashSet<String> = fs::read(&path).ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+        .unwrap_or_default().into_iter().collect();
+    // 持久删除状态不能受旧 JSON 墓碑的数量上限影响；读失败时停止重建。
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(codex_home) {
+        if !path.is_file() { continue; }
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        if crate::storage::has_table(&db, "codex_plus_deleted_threads")? {
+            let mut stmt = db.prepare("SELECT thread_id FROM codex_plus_deleted_threads")?;
+            for id in stmt.query_map([], |row| row.get::<_, String>(0))? { ids.insert(id?); }
+        }
+    }
+    Ok(ids)
 }
 
 /// 记一条删除墓碑。顺序按写入先后保留，超出上限时丢掉最旧的一批。
@@ -3783,7 +3797,7 @@ fn record_thread_tombstone(codex_home: &Path, thread_id: &str) -> anyhow::Result
 }
 
 /// 撤销删除时清除墓碑，否则刚恢复的会话会被重建流程一直挡在列表外。
-fn clear_thread_tombstones(codex_home: &Path, thread_ids: &HashSet<String>) {
+pub(crate) fn clear_thread_tombstones(codex_home: &Path, thread_ids: &HashSet<String>) {
     if thread_ids.is_empty() {
         return;
     }
@@ -5712,7 +5726,7 @@ fn collect_catalog_repair_plan(
     let spawned_child_ids = collect_spawned_child_thread_ids(paths)?;
     // issue #2199：删除墓碑一票否决。这里的候选会被 INSERT 回 `local_thread_catalog`，
     // 是「删了又回来」的重建入口之一。
-    let thread_tombstones = load_thread_tombstones(home);
+    let thread_tombstones = load_thread_tombstones(home)?;
     let mut catalog_non_root_thread_ids =
         collect_catalog_marked_non_root_thread_ids(paths, &spawned_child_ids)?;
     let mut observed_threads = HashMap::new();
@@ -8327,7 +8341,7 @@ mod deleted_thread_tombstone_tests {
 
         remove_thread_sidebar_references(&home, thread_id).unwrap();
         assert!(
-            load_thread_tombstones(&home).contains(thread_id),
+            load_thread_tombstones(&home).unwrap().contains(thread_id),
             "删除应写下墓碑"
         );
 
@@ -8341,7 +8355,7 @@ mod deleted_thread_tombstone_tests {
         assert_eq!(restore_session_index_entries(&home, &[line]).unwrap(), 1);
 
         assert!(
-            !load_thread_tombstones(&home).contains(thread_id),
+            !load_thread_tombstones(&home).unwrap().contains(thread_id),
             "撤销删除后墓碑必须清掉"
         );
 
@@ -8378,7 +8392,7 @@ mod deleted_thread_tombstone_tests {
         fs::create_dir_all(home.join("tmp")).unwrap();
         fs::write(home.join(THREAD_TOMBSTONE_RELATIVE_PATH), "[{\"thr").unwrap();
 
-        assert!(load_thread_tombstones(&home).is_empty());
+        assert!(load_thread_tombstones(&home).unwrap().is_empty());
         let result = run_provider_sync(Some(&home));
         assert_eq!(
             result.status,
@@ -8399,7 +8413,7 @@ mod deleted_thread_tombstone_tests {
             record_thread_tombstone(&home, &format!("thread-{index:05}")).unwrap();
         }
 
-        let ids = load_thread_tombstones(&home);
+        let ids = load_thread_tombstones(&home).unwrap();
         assert_eq!(ids.len(), MAX_THREAD_TOMBSTONES);
         assert!(!ids.contains("thread-00000"), "最旧的墓碑先被丢掉");
         assert!(ids.contains(&format!("thread-{:05}", MAX_THREAD_TOMBSTONES + 2)));
@@ -8418,5 +8432,21 @@ mod deleted_thread_tombstone_tests {
         let ids: Vec<String> =
             serde_json::from_slice(&fs::read(thread_tombstone_path(&home)).unwrap()).unwrap();
         assert_eq!(ids, vec!["thread-1".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod durable_history_deletion_tests {
+    use super::*;
+    #[test]
+    fn durable_marker_survives_missing_or_evicted_json_tombstone() {
+        let tmp=tempfile::tempdir().unwrap();
+        let db=Connection::open(tmp.path().join("state_5.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE codex_plus_deleted_threads(thread_id TEXT PRIMARY KEY, backup_token TEXT NOT NULL); INSERT INTO codex_plus_deleted_threads VALUES ('retained-source','token');").unwrap();
+        assert!(load_thread_tombstones(tmp.path()).unwrap().contains("retained-source"));
+        let path=thread_tombstone_path(tmp.path()); fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path,"[\"newer-unrelated-deletion\"]").unwrap();
+        let ids=load_thread_tombstones(tmp.path()).unwrap();
+        assert!(ids.contains("retained-source")); assert!(ids.contains("newer-unrelated-deletion"));
     }
 }

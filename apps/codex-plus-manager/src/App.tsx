@@ -2182,7 +2182,7 @@ export function App() {
 
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]));
+    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？删除会话会从列表隐藏并创建备份；仍被引用的历史保留，最后引用删除后自动回收；Codex运行期间延迟物理回收，退出后管理器自动检查。", [title]));
     if (!confirmed) return false;
     const result = await run(() => requestDeleteLocalSession(session));
     if (result) {
@@ -2205,7 +2205,7 @@ export function App() {
     const extraCount = uniqueSessions.length > 6 ? tf("\n...以及另外 {0} 个会话", [uniqueSessions.length - 6]) : "";
     const confirmed = await confirmSessionDelete(
       t("批量删除会话"),
-      tf("删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
+      tf("删除选中的 {0} 个会话？删除会话会从列表隐藏并创建备份；仍被引用的历史保留，最后引用删除后自动回收；Codex运行期间延迟物理回收，退出后管理器自动检查。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
     );
     if (!confirmed) return false;
 
@@ -8618,7 +8618,7 @@ function SessionsScreen({
   return (
     <>
       <Panel className="sessions-overview-panel">
-        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
+        <CardHead title={t("会话管理")} detail={t("读取本地会话；删除后保留引用中的历史，最后引用删除后自动回收")} />
         <CardContent className="sessions-overview-content">
           <div className="session-summary-bar">
             <div>
@@ -8644,6 +8644,10 @@ function SessionsScreen({
           </div>
 
           <SessionRepairPanel form={form} providerSyncProgress={providerSyncProgress} sessionIndexRepairActive={sessionIndexRepairActive} sessionIndexRepairReport={sessionIndexRepairReport} sessionIndexRepairReportError={sessionIndexRepairReportError} providerSyncTargets={providerSyncTargets} selectedProviderSyncTarget={selectedProviderSyncTarget} onFormChange={onFormChange} actions={actions} />
+          <div className="hint-line session-delete-hint">
+            <Info className="h-4 w-4" />
+            <span>{t("删除会话会从列表隐藏并创建备份；仍被引用的历史保留，最后引用删除后自动回收；Codex运行期间延迟物理回收，退出后管理器自动检查。")}</span>
+          </div>
         </CardContent>
       </Panel>
       <Panel className="sessions-list-panel">

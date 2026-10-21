@@ -24,6 +24,29 @@ fn create_codex_thread_db(path: &Path, rollout_path: &Path, thread_id: &str, tit
 }
 
 #[test]
+fn compressed_export_resolves_plain_mapping_and_rejects_corruption() {
+    let tmp = tempdir().unwrap();
+    let logical = tmp.path().join("rollout.jsonl");
+    let compressed = logical.with_extension("jsonl.zst");
+    let db = tmp.path().join("state_5.sqlite");
+    let text = b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Compressed hello\"}]}}\n";
+    let bytes = zstd::stream::encode_all(&text[..], 1).unwrap();
+    fs::write(&compressed, &bytes).unwrap();
+    create_codex_thread_db(&db, &logical, "a", "Compressed");
+    let exporter = MarkdownExportService::new(Some(&db));
+    let result = exporter.export(&session("local:a", "a"));
+    assert_eq!(result.status, ExportStatus::Exported, "{}", result.message);
+    assert!(result.markdown.unwrap().contains("Compressed hello"));
+    assert_eq!(fs::read(&compressed).unwrap(), bytes);
+    assert!(!logical.exists());
+    fs::write(&compressed, b"broken zstd").unwrap();
+    assert_eq!(
+        exporter.export(&session("a", "a")).status,
+        ExportStatus::Failed
+    );
+}
+
+#[test]
 fn markdown_exporter_exports_messages_images_and_sanitized_filename() {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("state_5.sqlite");

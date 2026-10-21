@@ -172,6 +172,9 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
+    async fn deleted_local_thread_ids(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable"}))
+    }
     async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
         Ok(json!({"status":"unavailable","message":"本机用量统计暂不可用"}))
     }
@@ -352,6 +355,8 @@ pub async fn handle_bridge_request(
         "/stepwise/test" => {
             stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
         }
+        // 内置侧边栏专用，不开放给第三方拓展。
+        "/sessions/deleted-local" => ctx.data.deleted_local_thread_ids().await,
         "/delete" => {
             let session = session_from_payload(&payload);
             match session.require_local_delete() {

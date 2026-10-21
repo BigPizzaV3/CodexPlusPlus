@@ -428,8 +428,25 @@ fn delete_codex_thread_removes_session_index_entry_and_undo_restores_it() {
     let db_path = tmp.path().join("state_5.sqlite");
     let rollout_path = tmp.path().join("rollout.jsonl");
     let index_path = tmp.path().join("session_index.jsonl");
-    fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+    fs::write(
+        &rollout_path,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\"}}\n",
+    )
+    .unwrap();
     create_codex_thread_db(&db_path, &rollout_path);
+    #[cfg(windows)]
+    Connection::open(&db_path)
+        .unwrap()
+        .execute(
+            "UPDATE threads SET rollout_path=?1 WHERE id='t1'",
+            [
+                std::path::PathBuf::from(tmp.path().to_string_lossy().to_uppercase())
+                    .join("rollout.jsonl")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        )
+        .unwrap();
     let index_lines = [
         "{\"id\":\"t1\",\"thread_name\":\"Codex Thread\",\"updated_at\":\"2026-08-18T00:00:00Z\"}",
         "{\"id\":\"other\",\"thread_name\":\"Keep me\",\"updated_at\":\"2026-08-18T00:00:01Z\"}",
@@ -447,7 +464,12 @@ fn delete_codex_thread_removes_session_index_entry_and_undo_restores_it() {
 
     let restored = adapter.undo(deleted.undo_token.as_deref().unwrap());
 
-    assert_eq!(restored.status, DeleteStatus::Undone);
+    assert_eq!(
+        restored.status,
+        DeleteStatus::Undone,
+        "{}",
+        restored.message
+    );
     let index_text = fs::read_to_string(&index_path).unwrap();
     assert!(index_text.contains("\"id\":\"t1\""));
     assert_eq!(index_text.matches("\"id\":\"t1\"").count(), 1);
@@ -463,8 +485,25 @@ fn delete_codex_thread_sqlite_dir_layout_removes_session_index_entry_and_undo_re
     let db_path = sqlite_dir.join("codex-dev.db");
     let rollout_path = home.join("rollout.jsonl");
     let index_path = home.join("session_index.jsonl");
-    fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+    fs::write(
+        &rollout_path,
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\"}}\n",
+    )
+    .unwrap();
     create_codex_thread_db(&db_path, &rollout_path);
+    #[cfg(windows)]
+    Connection::open(&db_path)
+        .unwrap()
+        .execute(
+            "UPDATE threads SET rollout_path=?1 WHERE id='t1'",
+            [
+                std::path::PathBuf::from(home.to_string_lossy().to_uppercase())
+                    .join("rollout.jsonl")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        )
+        .unwrap();
     let index_lines = [
         "{\"id\":\"t1\",\"thread_name\":\"Codex Thread\",\"updated_at\":\"2026-08-18T00:00:00Z\"}",
         "{\"id\":\"other\",\"thread_name\":\"Keep me\",\"updated_at\":\"2026-08-18T00:00:01Z\"}",
@@ -484,7 +523,12 @@ fn delete_codex_thread_sqlite_dir_layout_removes_session_index_entry_and_undo_re
 
     let restored = adapter.undo(deleted.undo_token.as_deref().unwrap());
 
-    assert_eq!(restored.status, DeleteStatus::Undone);
+    assert_eq!(
+        restored.status,
+        DeleteStatus::Undone,
+        "{}",
+        restored.message
+    );
     let index_text = fs::read_to_string(&index_path).unwrap();
     assert!(index_text.contains("\"id\":\"t1\""));
     assert_eq!(index_text.matches("\"id\":\"t1\"").count(), 1);
@@ -505,7 +549,7 @@ fn delete_codex_thread_clears_sidebar_global_state_and_catalog_cache() {
     let rollout = home.join("sessions/rollout-t1.jsonl");
     fs::create_dir_all(rollout.parent().unwrap()).unwrap();
     fs::create_dir_all(&sqlite_dir).unwrap();
-    fs::write(&rollout, "{}\n").unwrap();
+    fs::write(&rollout, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\"}}\n").unwrap();
     let state_db = home.join("state_5.sqlite");
     create_codex_thread_db(&state_db, &rollout);
     let keep_id = "keep";
@@ -692,7 +736,7 @@ fn delete_local_from_paths_falls_back_to_session_index_when_no_database_row_exis
     // 空库：模拟 API 密钥模式下 threads 表没有记录
     let empty_db = tmp.path().join("empty.sqlite");
     let unrelated_rollout = tmp.path().join("unrelated.jsonl");
-    fs::write(&unrelated_rollout, "{\"type\":\"message\"}\n").unwrap();
+    fs::write(&unrelated_rollout, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\"}}\n").unwrap();
     create_codex_thread_db(&empty_db, &unrelated_rollout);
     // 但索引里有这条会话
     fs::write(
@@ -728,7 +772,7 @@ fn delete_local_from_paths_still_fails_when_neither_database_nor_index_has_the_t
     fs::create_dir_all(&home).unwrap();
     let empty_db = tmp.path().join("empty.sqlite");
     let unrelated_rollout = tmp.path().join("unrelated.jsonl");
-    fs::write(&unrelated_rollout, "{\"type\":\"message\"}\n").unwrap();
+    fs::write(&unrelated_rollout, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\"}}\n").unwrap();
     create_codex_thread_db(&empty_db, &unrelated_rollout);
     fs::write(
         home.join("session_index.jsonl"),

@@ -82,7 +82,7 @@
     // persisted UUID without replacing the DOM node. Re-scan those rows so the
     // action button and its delete reference are rebuilt from the canonical ID.
     attributes: true,
-    attributeFilter: ["data-app-action-sidebar-thread-id", "href"],
+    attributeFilter: ["data-app-action-sidebar-thread-id", "data-app-action-sidebar-thread-host-id", "href"],
   });
   document.removeEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);
   window.__codexSessionActionTriggerHandler = rememberSessionActionTrigger;
@@ -94,3 +94,8 @@
   // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   window.codexPlus = buildCodexPlusExtensionApi();
+  clearInterval(window.__codexPlusDeletedLocalSessionsTimer);
+  void refreshDeletedLocalSessions();
+  window.__codexPlusDeletedLocalSessionsTimer = setInterval(() => {
+    if (!document.hidden) void refreshDeletedLocalSessions();
+  }, 5000);

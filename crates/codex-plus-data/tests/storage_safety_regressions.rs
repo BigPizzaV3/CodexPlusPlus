@@ -7,6 +7,13 @@ use std::{fs, path::Path};
 fn session() -> SessionRef {
     SessionRef::new("t", "fixture").unwrap()
 }
+fn rollout(path: &Path, content: &str) {
+    fs::write(
+        path,
+        format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"t\"}}}}\n{content}\n"),
+    )
+    .unwrap();
+}
 fn database(path: &Path, rollout: &Path) {
     Connection::open(path)
         .unwrap()
@@ -72,10 +79,11 @@ fn safety_multi_database_partial_delete_keeps_failure_and_all_undo_information()
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         sidebar(&home);
-        let small = home.join("small.jsonl");
-        let large = home.join("large.jsonl");
-        fs::write(&small, b"ok").unwrap();
-        fs::write(&large, b"larger than the byte budget").unwrap();
+        fs::create_dir(home.join("sessions")).unwrap();
+        let small = home.join("sessions/small.jsonl");
+        let large = home.join("sessions/large.jsonl");
+        rollout(&small, "ok");
+        rollout(&large, &"larger than the byte budget".repeat(4));
         let a = home.join("a.db");
         let b = home.join("b.db");
         database(&a, &small);
@@ -85,7 +93,7 @@ fn safety_multi_database_partial_delete_keeps_failure_and_all_undo_information()
         } else {
             vec![a.clone(), b.clone()]
         };
-        let store = BackupStore::new(temp.path().join("backups")).with_file_byte_limit(8);
+        let store = BackupStore::new(temp.path().join("backups")).with_file_byte_limit(64);
         let result = delete_local_from_paths(paths.clone(), store.clone(), &session(), Some(&home));
         assert_eq!(
             result.status,
@@ -94,9 +102,10 @@ fn safety_multi_database_partial_delete_keeps_failure_and_all_undo_information()
             result.message
         );
         assert!(result.message.contains("budget"));
-        assert_eq!(count(&a), 0);
+        // 另一库删除失败时，成功库仍保留软删除行及被引用的历史。
+        assert_eq!(count(&a), 1);
         assert_eq!(count(&b), 1);
-        assert!(!small.exists());
+        assert!(small.exists());
         assert!(large.exists());
         assert!(result.undo_token.is_some());
         assert!(result.backup_path.is_some());
@@ -122,7 +131,7 @@ fn safety_undo_recreates_a_missing_session_index() {
     let home = temp.path().join("home");
     sidebar(&home);
     let rollout = home.join("rollout.jsonl");
-    fs::write(&rollout, b"data").unwrap();
+    self::rollout(&rollout, "data");
     let db = home.join("state.db");
     database(&db, &rollout);
     let adapter = SQLiteStorageAdapter::new(&db, BackupStore::new(temp.path().join("backups")))
@@ -156,7 +165,7 @@ fn safety_undo_index_io_failure_is_detected_before_restoring_database() {
     let home = temp.path().join("home");
     sidebar(&home);
     let rollout = home.join("rollout.jsonl");
-    fs::write(&rollout, b"data").unwrap();
+    self::rollout(&rollout, "data");
     let db = home.join("state.db");
     database(&db, &rollout);
     let adapter = SQLiteStorageAdapter::new(&db, BackupStore::new(temp.path().join("backups")))
@@ -196,7 +205,7 @@ fn safety_corrupt_backup_structure_never_reports_undone_or_restores_rows() {
         let home = temp.path().join("home");
         sidebar(&home);
         let rollout = home.join("rollout.jsonl");
-        fs::write(&rollout, b"data").unwrap();
+        self::rollout(&rollout, "data");
         let db = home.join("state.db");
         database(&db, &rollout);
         let store = BackupStore::new(temp.path().join("backups"));
@@ -257,13 +266,13 @@ fn safety_failed_database_transaction_keeps_its_backup_alongside_successful_back
     sidebar(&home);
     let small = home.join("small.jsonl");
     let blocked = home.join("blocked.jsonl");
-    fs::write(&small, b"ok").unwrap();
-    fs::write(&blocked, b"ok").unwrap();
+    rollout(&small, "ok");
+    rollout(&blocked, "ok");
     let a = home.join("a.db");
     let b = home.join("b.db");
     database(&a, &small);
     database(&b, &blocked);
-    Connection::open(&b).unwrap().execute_batch("CREATE TRIGGER keep_thread BEFORE DELETE ON threads BEGIN SELECT RAISE(ABORT, 'fixture transaction blocked'); END;").unwrap();
+    Connection::open(&b).unwrap().execute_batch("CREATE TABLE codex_plus_deleted_threads(thread_id TEXT PRIMARY KEY, backup_token TEXT NOT NULL); CREATE TRIGGER keep_thread BEFORE INSERT ON codex_plus_deleted_threads BEGIN SELECT RAISE(ABORT, 'fixture transaction blocked'); END;").unwrap();
     let store = BackupStore::new(temp.path().join("backups"));
     let result = delete_local_from_paths(
         [a.clone(), b.clone()],
@@ -284,7 +293,7 @@ fn safety_failed_database_transaction_keeps_its_backup_alongside_successful_back
                 .contains(store.path_for(&token).to_string_lossy().as_ref())
         );
     }
-    assert_eq!(count(&a), 0);
+    assert_eq!(count(&a), 1);
     assert_eq!(count(&b), 1);
     assert!(blocked.exists());
 }
@@ -332,8 +341,8 @@ fn safety_grouped_undo_validates_every_manifest_before_restoring_any_rows() {
     sidebar(&home);
     let a_file = home.join("a.jsonl");
     let b_file = home.join("b.jsonl");
-    fs::write(&a_file, b"ok").unwrap();
-    fs::write(&b_file, b"ok").unwrap();
+    rollout(&a_file, "ok");
+    rollout(&b_file, "ok");
     let a = home.join("a.db");
     let b = home.join("b.db");
     database(&a, &a_file);

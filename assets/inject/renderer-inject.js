@@ -8967,12 +8967,12 @@
     };
     const canonicalWanted = normalizedCodexThreadUuid(sessionId);
     const wanted = canonicalWanted ? canonicalWanted.toLowerCase() : sessionId || "";
-    const identities = (record) => [record?.conversationId, record?.threadId, record?.id].map(identity).filter(Boolean);
+    const identities = (record) => [record?.conversationId, record?.threadId, record?.id, record?.sessionId].map(identity).filter(Boolean);
     const collect = (record) => {
       if (!record || typeof record !== "object") return;
       const ownIds = identities(record);
       const matched = ownIds.some((candidate) => candidate.id === wanted);
-      const nested = [record.threadSummary, record.thread, record.target].filter((value) => value && typeof value === "object");
+      const nested = [record.threadSummary, record.thread, record.target, record.archivedThread].filter((value) => value && typeof value === "object");
       const allIds = [...ownIds, ...nested.flatMap(identities)];
       if (allIds.some((candidate) => candidate.id === wanted) && allIds.some((candidate) => candidate.id !== wanted)) {
         identityConflict = true;
@@ -9004,6 +9004,14 @@
     for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
       for (const props of [fiber.pendingProps, fiber.memoizedProps, fiber.pendingProps?.children?.props, fiber.memoizedProps?.children?.props]) {
         collect(props);
+        // 原生归档行的 key 为 local:<hostId>:<threadId>，thread 本身可能没有 hostId。
+        const archivedId = identity(props?.archivedThread?.id || props?.archivedThread?.sessionId);
+        if (archivedId?.id === wanted && typeof fiber.key === "string") {
+          const suffix = `:${props.archivedThread.id || props.archivedThread.sessionId}`;
+          if (fiber.key.startsWith("local:") && fiber.key.endsWith(suffix)) {
+            add(fiber.key.slice("local:".length, -suffix.length));
+          }
+        }
       }
     }
     const conflict = identityConflict || hosts.size > 1;
@@ -13027,6 +13035,50 @@
       document.getElementById(codexPlusModelPickerGroupsStyleId)?.remove();
     },
   };
+  const deletedLocalSessions = window.__codexPlusDeletedLocalSessions ||= { ids: new Set(), revision: 0 };
+  // 升级重注入时释放旧版本没有超时保护的布尔锁。
+  if (deletedLocalSessions.pending === true) deletedLocalSessions.pending = false;
+
+  function applyDeletedLocalSessions() {
+    let style = document.getElementById("codex-plus-deleted-local-style");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "codex-plus-deleted-local-style";
+      style.setAttribute("data-codex-plus-ext", "deleted-local");
+      style.textContent = '[data-codex-plus-deleted-local="true"] { display: none !important; }';
+      (document.head || document.documentElement).appendChild(style);
+    }
+    const sidebarRows = sessionRows(true);
+    const archiveRows = new Set(typeof archivedPageRows === "function" ? archivedPageRows() : []);
+    for (const row of new Set([...sidebarRows, ...archiveRows])) {
+      const ref = archiveRows.has(row) ? archivedRefFromRow(row) : sessionRefFromRow(row);
+      const hidden = ref.host_id === "local" && deletedLocalSessions.ids.has(ref.session_id);
+      if (hidden) row.setAttribute("data-codex-plus-deleted-local", "true");
+      else row.removeAttribute("data-codex-plus-deleted-local");
+    }
+  }
+
+  async function refreshDeletedLocalSessions() {
+    // 删除/撤销期间取得的旧快照不能覆盖新状态。
+    if (deletedLocalSessions.pending) return;
+    const request = {};
+    deletedLocalSessions.pending = request;
+    const revision = deletedLocalSessions.revision;
+    let timeout;
+    try {
+      const result = await Promise.race([
+        postJson("/sessions/deleted-local", {}),
+        new Promise((resolve) => { timeout = setTimeout(() => resolve(null), 4000); }),
+      ]);
+      if (deletedLocalSessions.pending !== request || revision !== deletedLocalSessions.revision || result?.status !== "ok" || !Array.isArray(result.thread_ids)) return;
+      deletedLocalSessions.ids = new Set(result.thread_ids.filter((id) => typeof id === "string"));
+      applyDeletedLocalSessions();
+    } catch {} finally {
+      clearTimeout(timeout);
+      if (deletedLocalSessions.pending === request) deletedLocalSessions.pending = false;
+    }
+  }
+
   function normalizeWorkspacePath(path) {
     const normalized = String(path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
     return normalized || String(path || "").trim();
@@ -13134,7 +13186,10 @@
         const result = await postJson("/undo", { undo_token: undoToken });
         toast.textContent = result.message || "撤销完成";
         if (result.status === "undone") {
-          settings.onUndone?.();
+          deletedLocalSessions.revision++;
+          if (result.session_id) deletedLocalSessions.ids.delete(result.session_id);
+          await refreshDeletedLocalSessions();
+          applyDeletedLocalSessions();
           const refreshed = await refreshRecentConversationsForHost();
           if (!refreshed) window.location.reload();
         }
@@ -13528,51 +13583,6 @@
     return !!left?.session_id && !!left?.host_id && left.session_id === right?.session_id && left.host_id === right?.host_id;
   }
 
-  /**
-   * 已删除会话的侧栏行隐藏表（#2614）。
-   *
-   * 删除后只移除当前 DOM 行不够：通知 Codex 重读列表依赖内部模块，新版 Codex 里
-   * 已找不到，Codex 内存中的列表仍含这条会话，进设置页再返回时 React 重建侧栏，
-   * 它又会出现，直到重启。这里用一张样式表按原始 thread id 隐藏，React 重建出
-   * 的同 id 行也一并隐藏；不走扫描调度，不会产生自喂扫描。撤销时移除对应规则。
-   */
-  const deletedSessionRowStyleId = "codex-plus-deleted-session-rows";
-  const deletedSessionRowIds = window.__codexPlusDeletedSessionRowIds instanceof Set
-    ? window.__codexPlusDeletedSessionRowIds
-    : (window.__codexPlusDeletedSessionRowIds = new Set());
-
-  function renderDeletedSessionRowStyle() {
-    let style = document.getElementById(deletedSessionRowStyleId);
-    if (!deletedSessionRowIds.size) {
-      style?.remove();
-      return;
-    }
-    if (!style) {
-      style = document.createElement("style");
-      style.id = deletedSessionRowStyleId;
-      style.setAttribute("data-codex-plus-ext", "deleted-session-rows");
-      document.head.appendChild(style);
-    }
-    style.textContent = Array.from(deletedSessionRowIds)
-      .map((id) => `[data-app-action-sidebar-thread-id="${CSS.escape(id)}"]{display:none !important}`)
-      .join("\n");
-  }
-
-  function hideDeletedSessionRows(rawThreadId) {
-    if (!rawThreadId || isClientNewThreadId(rawThreadId)) return;
-    deletedSessionRowIds.add(rawThreadId);
-    renderDeletedSessionRowStyle();
-  }
-
-  function unhideDeletedSessionRows(rawThreadIds) {
-    let changed = false;
-    for (const id of rawThreadIds || []) changed = deletedSessionRowIds.delete(id) || changed;
-    if (changed) renderDeletedSessionRowStyle();
-  }
-
-  // 注入脚本重跑（页面未刷新）时按已记录的 id 恢复样式表；首次加载 Set 为空，不做任何事。
-  if (deletedSessionRowIds.size) renderDeletedSessionRowStyle();
-
   function removeDeletedRow(row, button, ref, requestContext) {
     // 删除响应期间，React 可能复用或替换 sidebar 行；不能删除其新身份的 DOM。
     if (!row.isConnected || !sameDeletedSessionRef(sessionRefFromRow(row), ref)) return null;
@@ -13643,22 +13653,15 @@
         }
         // 远端由原生同主机 thread/deleted 通知更新，不能移除可能已重用的本地 DOM。
         let navigationNotice = null;
-        let hiddenRowIds = [];
         if (ref.host_id === "local") {
-          // 在移除前读原始 id：行可能带 host 前缀，与规范化后的 session_id 不同。
-          const rawThreadId = row.isConnected && sameDeletedSessionRef(sessionRefFromRow(row), ref)
-            ? row.getAttribute("data-app-action-sidebar-thread-id") || ""
-            : "";
+          deletedLocalSessions.revision++;
+          deletedLocalSessions.ids.add(ref.session_id);
           navigationNotice = removeDeletedRow(row, button, ref, requestContext);
-          if (rawThreadId) {
-            hideDeletedSessionRows(rawThreadId);
-            hiddenRowIds = [rawThreadId];
-          }
+          applyDeletedLocalSessions();
           await refreshRecentConversationsForHost();
         }
         showToast(navigationNotice || result.message || "删除成功", {
           undoToken: result.undo_token,
-          onUndone: () => unhideDeletedSessionRows(hiddenRowIds),
         });
       } else {
         showToast(result.message || "删除失败", null);
@@ -15268,9 +15271,9 @@
     let fiber = reactKey ? node[reactKey] : null;
     for (let depth = 0; fiber && depth < 20; depth += 1, fiber = fiber.return) {
       const props = fiber.memoizedProps || fiber.pendingProps || {};
-      if (props.archivedThread?.id) return props.archivedThread;
+      if (props.archivedThread?.id || props.archivedThread?.sessionId) return props.archivedThread;
       const childThread = props.children?.props?.archivedThread;
-      if (childThread?.id) return childThread;
+      if (childThread?.id || childThread?.sessionId) return childThread;
     }
     return null;
   }
@@ -15286,7 +15289,7 @@
   function archivedRefFromRow(row) {
     const archivedThread = archivedThreadFromRow(row);
     if (archivedThread?.id || archivedThread?.sessionId) {
-      return { session_id: archivedThread.id || archivedThread.sessionId, title: archivedThread.title || row.querySelector(".truncate.text-base")?.textContent?.trim() || "Untitled session" };
+      return { session_id: archivedThread.id || archivedThread.sessionId, host_id: sessionHostEvidenceFromRow(row, archivedThread.id || archivedThread.sessionId).hostId, title: archivedThread.title || row.querySelector(".truncate.text-base")?.textContent?.trim() || "Untitled session" };
     }
     const sidebarRef = sessionRefFromRow(row);
     if (sidebarRef.session_id) return sidebarRef;
@@ -17669,6 +17672,7 @@
 
   function scanLightweight() {
     installStyle();
+    applyDeletedLocalSessions();
     installCodexServiceTierDispatcherPatch();
     installCodexAppServerClientPrototypePatch();
     installCodexRemoteSessionRecoveryListener();
@@ -19327,7 +19331,7 @@
     // persisted UUID without replacing the DOM node. Re-scan those rows so the
     // action button and its delete reference are rebuilt from the canonical ID.
     attributes: true,
-    attributeFilter: ["data-app-action-sidebar-thread-id", "href"],
+    attributeFilter: ["data-app-action-sidebar-thread-id", "data-app-action-sidebar-thread-host-id", "href"],
   });
   document.removeEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);
   window.__codexSessionActionTriggerHandler = rememberSessionActionTrigger;
@@ -19339,6 +19343,11 @@
   // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   window.codexPlus = buildCodexPlusExtensionApi();
+  clearInterval(window.__codexPlusDeletedLocalSessionsTimer);
+  void refreshDeletedLocalSessions();
+  window.__codexPlusDeletedLocalSessionsTimer = setInterval(() => {
+    if (!document.hidden) void refreshDeletedLocalSessions();
+  }, 5000);
 })();
 
 // === 粘贴修复 (CodexPlusPlus 页面增强) ===

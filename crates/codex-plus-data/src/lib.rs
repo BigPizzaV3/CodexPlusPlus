@@ -1,6 +1,7 @@
 pub mod backup;
 pub mod markdown;
 pub mod provider_sync;
+mod rollout_source;
 pub mod session_index_repair;
 mod session_index_scan;
 pub mod storage;
@@ -30,5 +31,5 @@ pub use provider_sync::{
 };
 pub use storage::{
     LocalSession, LocalSessionPage, LocalSessionPager, SQLiteStorageAdapter, delete_local_from_paths,
-    local_session_titles,
+    collect_deleted_history, local_session_titles,
 };

@@ -273,9 +273,9 @@
     let fiber = reactKey ? node[reactKey] : null;
     for (let depth = 0; fiber && depth < 20; depth += 1, fiber = fiber.return) {
       const props = fiber.memoizedProps || fiber.pendingProps || {};
-      if (props.archivedThread?.id) return props.archivedThread;
+      if (props.archivedThread?.id || props.archivedThread?.sessionId) return props.archivedThread;
       const childThread = props.children?.props?.archivedThread;
-      if (childThread?.id) return childThread;
+      if (childThread?.id || childThread?.sessionId) return childThread;
     }
     return null;
   }
@@ -291,7 +291,7 @@
   function archivedRefFromRow(row) {
     const archivedThread = archivedThreadFromRow(row);
     if (archivedThread?.id || archivedThread?.sessionId) {
-      return { session_id: archivedThread.id || archivedThread.sessionId, title: archivedThread.title || row.querySelector(".truncate.text-base")?.textContent?.trim() || "Untitled session" };
+      return { session_id: archivedThread.id || archivedThread.sessionId, host_id: sessionHostEvidenceFromRow(row, archivedThread.id || archivedThread.sessionId).hostId, title: archivedThread.title || row.querySelector(".truncate.text-base")?.textContent?.trim() || "Untitled session" };
     }
     const sidebarRef = sessionRefFromRow(row);
     if (sidebarRef.session_id) return sidebarRef;

@@ -10230,7 +10230,11 @@ base_url = "https://example.invalid/v1"
         let stale_db = sqlite_dir.join("codex-dev.db");
         let active_db = sqlite_dir.join("state_5.sqlite");
         let rollout_path = temp.path().join("rollout.jsonl");
-        std::fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+        std::fs::write(
+            &rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\"}}\n{\"type\":\"message\"}\n",
+        )
+        .unwrap();
         let stale = rusqlite::Connection::open(&stale_db).unwrap();
         stale
             .execute(
@@ -10270,7 +10274,7 @@ base_url = "https://example.invalid/v1"
             }
         }
 
-        assert_eq!(result.status, "ok");
+        assert_eq!(result.status, "ok", "{}", result.message);
         assert_eq!(
             result.payload.status,
             codex_plus_core::models::DeleteStatus::LocalDeleted
@@ -10284,6 +10288,7 @@ base_url = "https://example.invalid/v1"
                 .unwrap(),
             0
         );
+        assert!(!rollout_path.exists());
     }
 
     #[test]
