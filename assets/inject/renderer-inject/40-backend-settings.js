@@ -38,7 +38,6 @@
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
         if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
-        if (typeof syncCodexPlusHistoryTurnRecovery === "function") runScanStep(syncCodexPlusHistoryTurnRecovery);
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
@@ -82,7 +81,6 @@
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    if (typeof syncCodexPlusHistoryTurnRecovery === "function") runScanStep(syncCodexPlusHistoryTurnRecovery);
     renderCodexPlusMenu();
     scan();
   }
@@ -1248,10 +1246,6 @@
             <section class="codex-plus-settings-section" aria-label="对话与输入">
               <h2 class="codex-plus-settings-section-title">对话与输入</h2>
               <div class="codex-plus-settings-card">
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">历史空轮次补载（实验）</div><div class="codex-plus-row-description">为当前会话补载已登记但尚未加载内容的历史轮次；仅调用原生历史加载器，不改写历史文件或发送模型请求。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="historyTurnRecovery"><span></span></button>
-                </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">悬浮球 · 下一步建议</div><div class="codex-plus-row-description">生成下一步建议。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>

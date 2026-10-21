@@ -3784,7 +3784,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, historyTurnRecovery: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -3805,7 +3805,6 @@
     answerOutline: "codexAppAnswerOutlineEnabled",
     usageStatusLine: "codexAppUsageStatusLine",
     capacityAutoRetry: "codexAppCapacityAutoRetry",
-    historyTurnRecovery: "codexAppHistoryTurnRecovery",
     pasteFix: "codexAppPasteFix",
     typingEffect: "codexAppTypingEffect",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
@@ -3849,7 +3848,6 @@
         answerOutline: false,
         usageStatusLine: false,
         capacityAutoRetry: false,
-        historyTurnRecovery: false,
         capacityAutoRetryMaxAttempts: 15,
         capacityAutoRetryIntervalSeconds: 0,
         dreamSkinEnabled: false,
@@ -6142,7 +6140,6 @@
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
         if (typeof syncCodexPlusCapacityAutoRetry === "function") runScanStep(syncCodexPlusCapacityAutoRetry);
-        if (typeof syncCodexPlusHistoryTurnRecovery === "function") runScanStep(syncCodexPlusHistoryTurnRecovery);
         globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
@@ -6186,7 +6183,6 @@
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    if (typeof syncCodexPlusHistoryTurnRecovery === "function") runScanStep(syncCodexPlusHistoryTurnRecovery);
     renderCodexPlusMenu();
     scan();
   }
@@ -7352,10 +7348,6 @@
             <section class="codex-plus-settings-section" aria-label="对话与输入">
               <h2 class="codex-plus-settings-section-title">对话与输入</h2>
               <div class="codex-plus-settings-card">
-                <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">历史空轮次补载（实验）</div><div class="codex-plus-row-description">为当前会话补载已登记但尚未加载内容的历史轮次；仅调用原生历史加载器，不改写历史文件或发送模型请求。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="historyTurnRecovery"><span></span></button>
-                </div>
                 <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">悬浮球 · 下一步建议</div><div class="codex-plus-row-description">生成下一步建议。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
@@ -15004,20 +14996,12 @@
   // 只补同一 canonical island 内被已有内容夹住的空轮次，不预取正常分页边界。
   const previousHistoryTurnRecovery = window.__codexPlusHistoryTurnRecoveryRuntime;
   previousHistoryTurnRecovery?.dispose?.();
-  const historyTurnRecoveryPollMs = 5000;
-  const historyTurnRecoveryRetryMs = 30000;
-  // 看门狗重注入时仍共享正在进行的读取与尝试账本，不能重置成另一条并发加载链。
+  // 仅由原有会话索引检查完成后调用；重注入保留去重记录与正在进行的原生读取。
   const historyTurnRecoveryLedger = previousHistoryTurnRecovery?.ledger || {
-    enabled: false, flight: null, attempts: new Map(), notices: new Set(),
-    api: null, discoveryAttempts: 0, discoveryAt: 0,
+    flight: null, api: null,
   };
-  const historyTurnRecoveryState = {
-    disposed: false, timer: null, ledger: historyTurnRecoveryLedger,
-  };
-
-  function historyTurnRecoveryEnabled() {
-    return codexPlusSettings().historyTurnRecovery === true;
-  }
+  historyTurnRecoveryLedger.requests ||= new Set();
+  const historyTurnRecoveryState = { disposed: false };
 
   function historyTurnRecoveryTarget() {
     if (document.hidden || /[?&]initialRoute=/.test(window.location.search)) return null;
@@ -15132,7 +15116,7 @@
         || turn.itemsPagination?.isLoadingOlder !== false));
   }
 
-  function historyTurnRecoveryCandidates(islands, threadId = "") {
+  function historyTurnRecoveryCandidates(islands, attempts) {
     const result = [];
     for (const turns of islands) {
       let first = -1, last = -1;
@@ -15144,7 +15128,7 @@
       });
       for (let index = first + 1; first >= 0 && index < last; index += 1) {
         const turn = turns[index];
-        const pending = historyTurnRecoveryLedger.attempts.get(`${threadId}/${turn.turnId}`);
+        const pending = attempts.get(turn.turnId);
         if ((!historyTurnRecoveryHasContent(turn) || (pending && !pending.done))
             && ["completed", "interrupted", "failed"].includes(turn.status)
             && turn.itemsPagination.hasLoadedOldest === false && turn.itemsPagination.evicted !== true
@@ -15154,69 +15138,42 @@
     return result;
   }
 
-  function historyTurnRecoveryNotice(kind) {
-    if (historyTurnRecoveryLedger.notices.has(kind)) return;
-    historyTurnRecoveryLedger.notices.add(kind);
-    const zh = (document.documentElement?.lang || navigator.language || "").toLowerCase().startsWith("zh");
-    const text = kind === "unsupported"
-      ? zh ? "当前 Codex 的历史加载接口尚不兼容，空轮次补载已安全暂停。" : "History turn recovery is paused: this Codex version is not supported."
-      : zh ? "部分历史轮次尚未补载成功，已停止自动重试；可关闭再开启补载开关后重试。" : "Some history turns could not be loaded. Automatic retries stopped; turn recovery off and on to retry.";
-    showToast(text, { type: "warn" });
-  }
-
-  function scheduleHistoryTurnRecovery() {
+  async function runHistoryTurnRecovery(requestId) {
     const state = historyTurnRecoveryState;
     const ledger = historyTurnRecoveryLedger;
-    window.clearTimeout(state.timer);
-    state.timer = null;
-    if (!state.disposed && historyTurnRecoveryEnabled() && (ledger.api || ledger.discoveryAttempts < 3)) {
-      state.timer = window.setTimeout(historyTurnRecoveryTick, historyTurnRecoveryPollMs);
-    }
-  }
-
-  async function historyTurnRecoveryTick() {
-    const state = historyTurnRecoveryState;
-    const ledger = historyTurnRecoveryLedger;
-    window.clearTimeout(state.timer);
-    state.timer = null;
-    if (state.disposed || !historyTurnRecoveryEnabled()) return;
-    if (ledger.flight) {
-      scheduleHistoryTurnRecovery();
-      return;
-    }
+    const result = { status: "skipped", loadedPages: 0 };
+    if (state.disposed || !normalizedCodexThreadUuid(requestId) || ledger.requests.has(requestId)) return result;
+    ledger.requests.add(requestId);
+    if (ledger.requests.size > 64) ledger.requests.delete(ledger.requests.values().next().value);
+    if (ledger.flight) return { ...result, status: "busy" };
     ledger.flight = state;
+    const attempts = new Map();
+    const deadline = Date.now() + 12000;
     try {
       const target = historyTurnRecoveryTarget();
-      if (!target) return;
+      if (!target) return result;
       if (!ledger.api) {
-        if (ledger.discoveryAttempts >= 3) return;
-        if (ledger.discoveryAttempts && Date.now() - ledger.discoveryAt < historyTurnRecoveryRetryMs) return;
-        ledger.discoveryAttempts += 1;
-        ledger.discoveryAt = Date.now();
         ledger.api = await discoverHistoryTurnRecoveryApi().catch(() => null);
-        if (!ledger.api) {
-          if (!state.disposed && ledger.discoveryAttempts >= 3) historyTurnRecoveryNotice("unsupported");
-          return;
-        }
+        if (!ledger.api) return { ...result, status: "unavailable" };
       }
-      if (state.disposed || !historyTurnRecoveryEnabled() || historyTurnRecoveryTarget()?.id !== target.id) return;
-      const manager = historyTurnRecoveryManager(ledger.api, target.marker);
-      if (!manager) return;
-      const conversation = manager.getConversation(target.id);
-      const islands = historyTurnRecoveryIslands(conversation);
-      if (!islands || historyTurnRecoveryBusy(conversation, islands)) return;
-      // 每次开启最多 32 轮，每轮最多 4 页/2 次失败；切换会话不能重置预算。
-      for (const turn of historyTurnRecoveryCandidates(islands, target.id)) {
-        const key = `${target.id}/${turn.turnId}`;
-        const attempt = ledger.attempts.get(key);
-        if (attempt?.done || attempt?.count >= 4 || attempt?.failures >= 2) continue;
-        if (attempt?.failed && Date.now() - attempt.at < historyTurnRecoveryRetryMs) continue;
-        if (!attempt && ledger.attempts.size >= 32) {
-          historyTurnRecoveryNotice("failed");
-          return;
-        }
-        const next = { count: (attempt?.count || 0) + 1, failures: attempt?.failures || 0, failed: false, at: Date.now(), done: false };
-        ledger.attempts.set(key, next);
+      // 没有常驻扫描或延迟重试；每次原有检查最多 32 轮、每轮 4 页。
+      while (!state.disposed && Date.now() < deadline) {
+        const currentTarget = historyTurnRecoveryTarget();
+        if (currentTarget?.id !== target.id) return result;
+        const manager = historyTurnRecoveryManager(ledger.api, currentTarget.marker);
+        if (!manager) return { ...result, status: "unavailable" };
+        const conversation = manager.getConversation(target.id);
+        const islands = historyTurnRecoveryIslands(conversation);
+        if (!islands || historyTurnRecoveryBusy(conversation, islands)) return result;
+        const turn = historyTurnRecoveryCandidates(islands, attempts).find((candidate) => {
+          const attempt = attempts.get(candidate.turnId);
+          return !attempt?.done && (!attempt || attempt.count < 4);
+        });
+        if (!turn) return { ...result, status: "completed" };
+        const attempt = attempts.get(turn.turnId);
+        if (!attempt && attempts.size >= 32) return { ...result, status: "partial" };
+        const next = { count: (attempt?.count || 0) + 1, done: false };
+        attempts.set(turn.turnId, next);
         const previousCount = turn.items.length;
         const previousCursor = turn.itemsPagination.olderCursor;
         let rejected = false;
@@ -15226,51 +15183,31 @@
             priority: "interactive", source: "thread_hydration",
           });
         } catch { rejected = true; }
-        if (state.disposed || !historyTurnRecoveryEnabled() || historyTurnRecoveryTarget()?.id !== target.id) return;
+        if (!rejected) result.loadedPages += 1;
+        if (state.disposed || historyTurnRecoveryTarget()?.id !== target.id) return result;
         const updated = historyTurnRecoveryIslands(manager.getConversation(target.id));
         const loaded = updated?.flat().find((candidate) => candidate.turnId === turn.turnId);
         next.done = !!loaded && (loaded.params.input.length > 0 || loaded.itemsPagination?.hasLoadedOldest === true);
-        next.failed = rejected || !loaded || (!next.done && loaded.items.length <= previousCount
+        const failed = rejected || !loaded || (!next.done && loaded.items.length <= previousCount
           && loaded.itemsPagination?.olderCursor === previousCursor);
-        if (next.failed) next.failures += 1;
-        if (!next.done && (next.count >= 4 || next.failures >= 2)) historyTurnRecoveryNotice("failed");
-        break;
+        if (failed || (!next.done && next.count >= 4)) return { ...result, status: "partial" };
       }
+      return { ...result, status: "partial" };
     } catch {
       // 不记录聊天内容、会话 ID 或原生异常正文。
+      return { ...result, status: "unavailable" };
     } finally {
       if (ledger.flight === state) ledger.flight = null;
-      scheduleHistoryTurnRecovery();
     }
-  }
-
-  function syncCodexPlusHistoryTurnRecovery() {
-    const state = historyTurnRecoveryState;
-    const ledger = historyTurnRecoveryLedger;
-    if (state.disposed) return;
-    if (!historyTurnRecoveryEnabled()) {
-      ledger.enabled = false;
-      window.clearTimeout(state.timer);
-      state.timer = null;
-      return;
-    }
-    if (!ledger.enabled) {
-      ledger.enabled = true;
-      ledger.attempts.clear();
-      ledger.notices.clear();
-      ledger.discoveryAttempts = 0;
-    }
-    if (!state.timer && ledger.flight !== state) scheduleHistoryTurnRecovery();
   }
 
   window.__codexPlusHistoryTurnRecoveryRuntime = {
     ledger: historyTurnRecoveryLedger,
+    run: runHistoryTurnRecovery,
     dispose() {
       historyTurnRecoveryState.disposed = true;
-      window.clearTimeout(historyTurnRecoveryState.timer);
     },
   };
-  syncCodexPlusHistoryTurnRecovery();
   function syncActionGroupsLayout(force = false) {
     syncActionGroupLayouts(sessionRows().map(row => ({
       row, group: actionGroupFromRow(row),

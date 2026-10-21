@@ -5119,16 +5119,24 @@ fn merge_manual_provider_sync_targets(
 
 #[tauri::command]
 pub async fn repair_session_index() -> CommandResult<Value> {
+    let debug_port = codex_plus_launcher::session_snapshot().debug_port;
     let result =
         tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_session_index(None))
             .await
             .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))
             .and_then(|result| result);
     match result {
-        Ok(report) => ok(
-            &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
-            json!(report),
-        ),
+        Ok(report) => {
+            codex_plus_core::history_turn_recovery::after_index_repair(
+                debug_port,
+                report.aborted_reason.is_some(),
+            )
+            .await;
+            ok(
+                &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
+                json!(report),
+            )
+        }
         Err(error) => failed(&format!("修复会话索引失败：{error}"), json!({})),
     }
 }
