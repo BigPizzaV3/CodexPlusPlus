@@ -515,6 +515,42 @@ async fn local_compaction_forwards_summary_streams_once_with_auto_retry_enabled(
 }
 
 #[tokio::test]
+async fn local_compaction_disabled_preserves_upstream_stream_auto_retry() {
+    for mode in ["streaming", "buffered"] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let mut settings = settings(
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+            RelayProtocol::Responses,
+            false,
+        );
+        settings.protocol_proxy_auto_retry = true;
+        settings.protocol_proxy_auto_retry_mode = mode.into();
+        settings.protocol_proxy_auto_retry_max_attempts = 1;
+        settings.protocol_proxy_auto_retry_interval_seconds = 1;
+        let reply = success(RelayProtocol::Responses, true);
+        let expected = reply.2.clone();
+        let server = tokio::spawn(capture(listener, vec![
+            (200, "text/event-stream",
+                "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_overloaded\",\"message\":\"overloaded\"}}}\n\n".into()),
+            reply,
+        ]));
+        let compact = compact(&normal(true));
+        let mut result = send(&compact, &settings, Some("experiment-disabled")).await;
+        assert_eq!(result.read_body().await.unwrap(), expected.as_bytes());
+        let requests = server.await.unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "disabled experiment must preserve upstream overload retries"
+        );
+        assert_eq!(requests[0], compact);
+        assert_eq!(requests[1], compact);
+    }
+}
+
+#[tokio::test]
 async fn local_compaction_remembers_tools_after_a_buffered_ordinary_response() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await

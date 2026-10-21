@@ -3426,6 +3426,8 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         let legacy_native_compaction = relay.protocol == RelayProtocol::Responses
             && is_responses_compact_proxy_path(request_path);
         let is_compaction_request = compaction || probe_native_compaction || legacy_native_compaction;
+        let experimental_local_compaction =
+            local_compaction_request && relay.local_compaction_prompt_at_end_enabled();
         let cache_key = relay.local_compaction_prompt_at_end_enabled()
             .then(|| local_compaction::key(&relay, &upstream_body, session_headers))
             .flatten();
@@ -4027,7 +4029,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && (200..300).contains(&status_code)
             && wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
-            && !local_compaction_request
+            && !experimental_local_compaction
             && !exec_adapted
             && auto_retry.is_some()
             && buffered_mode
@@ -4109,7 +4111,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             && (200..300).contains(&status_code)
             && wire_api == UpstreamWireApi::Responses
             && !is_compaction_request
-            && !local_compaction_request
+            && !experimental_local_compaction
             && !exec_adapted
             && auto_retry.is_some()
         {

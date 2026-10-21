@@ -1398,11 +1398,14 @@ fn retired_proxy_restoration_does_not_write_a_different_fallback_provider_endpoi
             relay_mode: RelayMode::PureApi,
             base_url: "https://responses.example.test/v1".into(),
             upstream_base_url: "https://responses.example.test/v1".into(),
-            config_contents: original.clone(),
+            config_contents: format!(
+                "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"{endpoint}\"\n"
+            ),
             ..RelayProfile::default()
         }],
         ..BackendSettings::default()
     };
+    assert!(!settings.active_relay_uses_protocol_proxy(), "fixture must reach endpoint ownership checks");
     assert!(!restore_inactive_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
     assert_eq!(std::fs::read_to_string(path).unwrap(), original);
 }
