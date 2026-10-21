@@ -344,3 +344,19 @@ export function isDreamSkinDraftDirty(
 ): boolean {
   return dreamSkinDraftFingerprint(saved) !== dreamSkinDraftFingerprint(draft);
 }
+
+export async function runExclusiveDreamSkinInstall<T>(
+  lock: { current: boolean },
+  setPending: (pending: boolean) => void,
+  install: () => Promise<T>,
+): Promise<T | null> {
+  if (lock.current) return null;
+  lock.current = true;
+  setPending(true);
+  try {
+    return await install();
+  } finally {
+    lock.current = false;
+    setPending(false);
+  }
+}

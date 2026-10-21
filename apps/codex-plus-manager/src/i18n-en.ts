@@ -5,6 +5,12 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "其他主题正在安装，请等待完成后再安装此主题。": "Another theme is being installed. Wait for it to finish before installing this theme.",
+  "网页一键换肤主题": "Theme from a website link",
+  "本地主题包": "Local theme package",
+  "导入中…": "Importing…",
+  "正在导入并校验本地主题包…": "Importing and validating the local theme package…",
+  "正在下载、校验并安装主题包…": "Downloading, validating, and installing the theme package…",
   "修复与维护": "Repair and maintenance",
   "自动修复已开启": "Automatic repair on",
   "自动修复已关闭": "Automatic repair off",
@@ -1665,6 +1671,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "正在下载、校验并安装“{0}”…": "Downloading, validating, and installing “{0}”…",
   "第 {0} 次": "Attempt {0}",
   "会话 {0}（{1} 条）": "Conversation {0} ({1} entries)",
   "{0}（{1} 条）": "{0} ({1} entries)",

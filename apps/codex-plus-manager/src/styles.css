@@ -7859,6 +7859,7 @@ select {
 
 .dream-skin-community-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   border-top: 1px solid hsl(var(--border));
   padding: 9px 12px 11px;
@@ -7989,6 +7990,7 @@ select {
 
 .dream-skin-market-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   border-top: 1px solid hsl(var(--border));
   padding: 9px 12px 11px;
@@ -7996,6 +7998,30 @@ select {
 
 .dream-skin-market-actions .button {
   min-width: 0;
+}
+
+.dream-skin-install-progress {
+  display: grid;
+  flex: 1 0 100%;
+  gap: 6px;
+  min-width: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.dream-skin-install-progress-bar {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+}
+
+.dream-skin-install-progress-bar > div {
+  width: 32%;
+  height: 100%;
+  border-radius: inherit;
+  background: hsl(var(--brand-accent));
+  animation: task-progress-indeterminate 1.2s ease-in-out infinite;
 }
 
 .dream-skin-library-head {
