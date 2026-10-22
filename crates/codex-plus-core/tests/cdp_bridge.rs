@@ -3457,6 +3457,16 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
 }
 
 #[test]
+fn injection_script_discovers_modern_dispatcher_in_app_shared_asset() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains(
+        "[\"setting-storage-\", \"vscode-api-\", \"app-initial-\", \"app-shared-\"]"
+    ));
+    assert!(!script.contains("app-shared-efae91d19fbd.js"));
+}
+
+#[test]
 fn injection_script_discovers_app_server_request_clients_without_hardcoded_hash() {
     let script = assets::injection_script(57321);
 
