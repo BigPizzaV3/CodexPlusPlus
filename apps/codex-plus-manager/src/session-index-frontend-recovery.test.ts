@@ -14,6 +14,8 @@ const threadId = uuid(999);
 function turn(n: number, loaded = false) {
   return {
     turnId: uuid(n), status: "completed", items: loaded ? [{ type: "agentMessage" }] : [],
+    durationMs: 0 as number | null, turnStartedAtMs: 1000 as number | null,
+    finalAssistantStartedAtMs: 1000 as number | null,
     params: { threadId, input: [] },
     itemsPagination: { hasLoadedOldest: loaded, isLoadingOlder: false, olderCursor: null },
   };
@@ -26,6 +28,7 @@ function conversation(groups = [[turn(1, true), turn(2), turn(3, true)]]) {
     turnHistory: {
       kind: "canonical",
       history: {
+        generation: 1,
         entitiesByKey: Object.fromEntries(groups.flat().map((entry) => [entry.turnId, entry])),
         islands: groups.map((turns) => ({ entries: turns.map((t) => ({ value: t.turnId })) })),
       },
@@ -38,6 +41,14 @@ function harness(data = conversation()) {
   let discoverySource = nativeSource, fetches = 0, scopeReads = 0, nextTimer = 0;
   const timers = new Map<number, () => unknown>();
   const calls: unknown[][] = [];
+  const metadataCalls: unknown[][] = [];
+  let role = "owner", broadcasts = 0, updates = 0;
+  let metadataLoad: (params: any) => Promise<any> = async () => ({
+    data: Object.values(data.turnHistory.history.entitiesByKey).map((entry) => ({
+      id: entry.turnId, status: entry.status, durationMs: 3210, startedAt: 50, completedAt: 54, items: [],
+    })),
+    nextCursor: null,
+  });
   const signal = { kind: "signal-family", scope: { __scopeBrand: "AppScope" }, resolve() {}, read() {} };
   let load: (...args: unknown[]) => Promise<void> = async (_thread, id) => {
     const entry = data.turnHistory.history.entitiesByKey[id as string];
@@ -45,8 +56,18 @@ function harness(data = conversation()) {
     entry.itemsPagination.hasLoadedOldest = true;
   };
   const manager = {
-    hostId: "local", getHostId: () => "local",
+    hostId: "local", disposed: false, getHostId: () => "local",
+    getStreamRole: () => ({ role }),
     getConversation: (id: string) => id === currentId ? data : null,
+    sendRequest: async (...args: unknown[]) => {
+      metadataCalls.push(args);
+      assert.equal(args[0], "thread/turns/list");
+      return metadataLoad(args[1]);
+    },
+    updateConversationState: (_id: string, mutate: (draft: typeof data) => void, broadcastPatches: boolean) => {
+      assert.equal(broadcastPatches, false); updates++; mutate(data);
+    },
+    broadcastConversationSnapshot: () => { broadcasts++; },
     pagination: { itemPagination: { loadTurnItems: (...args: unknown[]) => { calls.push(args); return load(...args); } } },
   };
   const scope = {
@@ -91,12 +112,15 @@ function harness(data = conversation()) {
   }
   inject();
   return {
-    context, signal, scope, manager, marker, document, window, calls, timers,
+    context, signal, scope, manager, marker, document, window, calls, metadataCalls, timers,
     get api() { return context.testApi; },
     get fetches() { return fetches; }, get scopeReads() { return scopeReads; },
+    get broadcasts() { return broadcasts; }, get updates() { return updates; },
     get data() { return data; }, set data(value) { data = value; },
     navigate(id: string, h = "local") { currentId = id; host = h; },
     setLoader(fn: typeof load) { load = fn; },
+    setMetadataLoader(fn: typeof metadataLoad) { metadataLoad = fn; },
+    setRole(value: string) { role = value; },
     setDiscovery(value: string) { discoverySource = value; },
     elapse(ms: number) { now += ms; },
     inject,
@@ -157,14 +181,16 @@ test("one existing repair request restores three interior turns serially", async
   assert.equal(h.fetches, 1); assert.equal(h.timers.size, 0);
 });
 
-test("does not bridge canonical islands or leading and trailing pagination boundaries", async () => {
+test("recovers registered boundary turns without fetching undiscovered turn pages", async () => {
   const h = harness(conversation([[turn(1), turn(2, true), turn(3)], [turn(4), turn(5, true), turn(6)]]));
-  await h.run(); assert.equal(h.calls.length, 0);
+  await h.run();
+  assert.deepEqual(h.calls.map((args) => args[1]), [1, 3, 4, 6].map(uuid));
+  assert.equal(h.data.turnHistory.history.islands.length, 2);
+  assert.equal(Object.keys(h.data.turnHistory.history.entitiesByKey).length, 6);
 });
 
-test("loaded input, evicted items, reconnects and proven empty turns are not gaps", async () => {
+test("evicted items, reconnects and proven complete empty turns are not gaps", async () => {
   for (const change of [
-    (t: any) => { t.params.input.push({ type: "text", text: "fixture" }); },
     (t: any) => { t.itemsPagination.evicted = true; },
     (t: any) => { t.itemsPagination.reconnect = {}; },
     (t: any) => { t.itemsPagination.hasLoadedOldest = true; },
@@ -192,6 +218,7 @@ test("yields to generation, submissions, requests, resume and native pagination"
 test("unknown or inconsistent history structures fail closed", async () => {
   for (const change of [
     (c: any) => { c.turnHistory.kind = "legacy"; },
+    (c: any) => { delete c.turnHistory.history.generation; },
     (c: any) => { delete c.turnHistory.history.entitiesByKey[uuid(2)]; },
     (c: any) => { c.turnHistory.history.islands[0].entries.push({ value: uuid(2) }); },
     (c: any) => { delete c.turnHistory.history.entitiesByKey[uuid(2)].params.input; },
@@ -266,6 +293,7 @@ test("overlapping requests and reinjection share one in-flight native loader", a
 
 test("generation and navigation guards are rechecked before subsequent pages and turns", async () => {
   for (const change of [
+    (h: ReturnType<typeof harness>) => { h.data.turnHistory.history.generation++; },
     (h: ReturnType<typeof harness>) => { h.data.threadRuntimeStatus.type = "active"; },
     (h: ReturnType<typeof harness>) => { (h.data.requests as any[]).push({}); },
     (h: ReturnType<typeof harness>) => { h.data.turnsPagination.isLoadingOlder = true; },
@@ -281,7 +309,7 @@ test("generation and navigation guards are rechecked before subsequent pages and
   }
 });
 
-test("single pages continue past agent-only content until user input is recovered", async () => {
+test("single pages continue until native pagination confirms the oldest page", async () => {
   const h = harness();
   let pages = 0;
   h.setLoader(async (_thread, id, all) => {
@@ -289,19 +317,19 @@ test("single pages continue past agent-only content until user input is recovere
     const entry = h.data.turnHistory.history.entitiesByKey[id as string];
     entry.items.push({ type: "agentMessage" });
     (entry.itemsPagination as any).olderCursor = { ordinal: 1000 - ++pages };
-    if (pages === 3) (entry.params.input as any[]).push({ type: "text", text: "fixture" });
+    if (pages === 3) entry.itemsPagination.hasLoadedOldest = true;
   });
   assert.equal((await h.run()).status, "completed"); assert.equal(h.calls.length, 3);
 });
 
-test("large incomplete turns stop at four single pages", async () => {
+test("large incomplete turns share a bounded 128 single page budget", async () => {
   const h = harness();
   h.setLoader(async (_thread, id) => {
     const entry = h.data.turnHistory.history.entitiesByKey[id as string];
     entry.items.push({ type: "agentMessage" });
     (entry.itemsPagination as any).olderCursor = { ordinal: 1000 - h.calls.length };
   });
-  assert.equal((await h.run()).status, "partial"); assert.equal(h.calls.length, 4);
+  assert.equal((await h.run()).status, "partial"); assert.equal(h.calls.length, 128);
 });
 
 test("one repair is bounded to 32 turns and cannot start calls past its deadline", async () => {
@@ -322,4 +350,270 @@ test("deduplication is bounded and navigation alone never requests recovery", as
   assert.equal(h.api.ledger.requests.size, 64);
   h.data = conversation(); h.navigate(uuid(888)); h.inject();
   assert.equal(h.calls.length, 1); assert.equal(h.timers.size, 0);
+});
+
+test("user input is not proof that the final report page has been loaded", async () => {
+  const h = harness();
+  let pages = 0;
+  h.setLoader(async (_thread, id) => {
+    const entry = h.data.turnHistory.history.entitiesByKey[id as string];
+    pages++;
+    entry.items.push({ type: pages === 6 ? "agentMessage" : "commandExecution" });
+    (entry.itemsPagination as any).olderCursor = { ordinal: 1000 - pages };
+    if (pages === 1) (entry.params.input as any[]).push({ type: "text", text: "fixture" });
+    if (pages === 6) entry.itemsPagination.hasLoadedOldest = true;
+  });
+  const result = await h.run();
+  assert.equal(result.status, "completed");
+  assert.equal(result.loadedPages, 6);
+  assert.equal(h.data.turnHistory.history.entitiesByKey[uuid(2)].itemsPagination.hasLoadedOldest, true);
+});
+
+test("consecutive nonempty incomplete turns are recovered without content anchors", async () => {
+  const groups = [[turn(1), turn(2)], [turn(3), turn(4)]];
+  for (const entry of groups.flat()) {
+    entry.items.push({ type: "commandExecution" });
+    (entry.params.input as any[]).push({ type: "text", text: "fixture" });
+  }
+  const h = harness(conversation(groups));
+  const result = await h.run();
+  assert.equal(result.status, "completed");
+  assert.equal(result.loadedPages, 4);
+  assert.deepEqual(new Set(h.calls.map((args) => args[1])), new Set(groups.flat().map((entry) => entry.turnId)));
+  assert.ok(groups.flat().every((entry) => entry.itemsPagination.hasLoadedOldest));
+});
+
+test("a new repair continues a nonempty partial turn instead of silently skipping it", async () => {
+  const h = harness();
+  let calls = 0;
+  h.setLoader(async (_thread, id) => {
+    const entry = h.data.turnHistory.history.entitiesByKey[id as string];
+    entry.items.push({ type: "commandExecution" });
+    (entry.params.input as any[]).push({ type: "text", text: "fixture" });
+    (entry.itemsPagination as any).olderCursor = { ordinal: 1000 - ++calls };
+    if (calls === 1) h.elapse(12000);
+    else entry.itemsPagination.hasLoadedOldest = true;
+  });
+  assert.equal((await h.run()).status, "partial");
+  assert.equal((await h.run(uuid(1001))).status, "completed");
+  assert.equal(h.calls.length, 2);
+});
+
+test("a cursor cloned without progress cannot consume the entire page budget", async () => {
+  const h = harness();
+  const entry = h.data.turnHistory.history.entitiesByKey[uuid(2)];
+  (entry.itemsPagination as any).olderCursor = { ordinal: 1000 };
+  h.setLoader(async () => {
+    (entry.itemsPagination as any).olderCursor = { ordinal: 1000 };
+  });
+  assert.equal((await h.run()).status, "partial");
+  assert.equal(h.calls.length, 1);
+});
+
+test("exactly filling the page budget may still report complete", async () => {
+  const h = harness();
+  h.setLoader(async (_thread, id) => {
+    const entry = h.data.turnHistory.history.entitiesByKey[id as string];
+    entry.items.push({ type: "commandExecution" });
+    (entry.itemsPagination as any).olderCursor = { ordinal: 1000 - h.calls.length };
+    if (h.calls.length === 128) entry.itemsPagination.hasLoadedOldest = true;
+  });
+  assert.equal((await h.run()).status, "completed");
+  assert.equal(h.calls.length, 128);
+});
+
+function missingMetadata(h: ReturnType<typeof harness>, n = 2) {
+  const entry = h.data.turnHistory.history.entitiesByKey[uuid(n)];
+  entry.durationMs = entry.turnStartedAtMs = entry.finalAssistantStartedAtMs = null;
+  return entry;
+}
+
+const metadataRow = (n = 2) => ({
+  id: uuid(n), status: "completed", durationMs: 3210, startedAt: 50, completedAt: 54, items: [],
+});
+
+test("metadata-only reads restore native duration and timestamps without rebuilding history", async () => {
+  const h = harness(conversation([[turn(1, true), turn(2, true)], [turn(3, true)]]));
+  const entry = missingMetadata(h);
+  const { items, params, itemsPagination } = entry;
+  const { islands, generation, entitiesByKey } = h.data.turnHistory.history;
+  const result = await h.run();
+  assert.equal(result.status, "completed");
+  assert.equal(result.metadataPages, 1); assert.equal(result.loadedPages, 0);
+  assert.equal(entry.durationMs, 3210);
+  assert.equal(entry.turnStartedAtMs, 50000); assert.equal(entry.finalAssistantStartedAtMs, 54000);
+  assert.equal(entry.items, items); assert.equal(entry.params, params); assert.equal(entry.itemsPagination, itemsPagination);
+  assert.equal(h.data.turnHistory.history.islands, islands);
+  assert.equal(h.data.turnHistory.history.entitiesByKey, entitiesByKey);
+  assert.equal(h.data.turnHistory.history.generation, generation);
+  assert.equal(h.broadcasts, 1);
+  assert.equal(h.calls.length, 0);
+  assert.deepEqual(h.metadataCalls[0].slice(0, 1), ["thread/turns/list"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.metadataCalls[0][1])), {
+    threadId, cursor: null, limit: 32, sortDirection: "desc", itemsView: "notLoaded",
+  });
+});
+
+test("metadata scanning follows bounded opaque cursors to older registered turns", async () => {
+  const h = harness();
+  missingMetadata(h);
+  h.setMetadataLoader(async ({ cursor }) => cursor == null
+    ? { data: [metadataRow(888)], nextCursor: "older-page" }
+    : { data: [metadataRow()], nextCursor: null });
+  const result = await h.run();
+  assert.equal(result.status, "completed");
+  assert.equal(result.metadataPages, 2); assert.equal(result.loadedPages, 1);
+  assert.deepEqual(h.metadataCalls.map((call: any) => call[1].cursor), [null, "older-page"]);
+  assert.equal(h.data.turnHistory.history.entitiesByKey[uuid(888)], undefined);
+});
+
+test("metadata never overwrites existing values, including a genuine zero", async () => {
+  const h = harness();
+  const entry = h.data.turnHistory.history.entitiesByKey[uuid(2)];
+  entry.finalAssistantStartedAtMs = null;
+  assert.equal((await h.run()).status, "completed");
+  assert.equal(entry.durationMs, 0); assert.equal(entry.turnStartedAtMs, 1000);
+  assert.equal(entry.finalAssistantStartedAtMs, 54000);
+});
+
+test("malformed or unproven server metadata is never fabricated", async () => {
+  for (const change of [
+    (row: any) => { row.status = "inProgress"; },
+    (row: any) => { row.durationMs = -1; },
+    (row: any) => { row.durationMs = null; },
+    (row: any) => { row.startedAt = "50"; },
+    (row: any) => { row.completedAt = Infinity; },
+  ]) {
+    const h = harness(); const entry = missingMetadata(h);
+    const row = metadataRow(); change(row);
+    h.setMetadataLoader(async () => ({ data: [row], nextCursor: null }));
+    assert.equal((await h.run()).status, "partial");
+    assert.ok([entry.durationMs, entry.turnStartedAtMs, entry.finalAssistantStartedAtMs].some((value) => value == null));
+    assert.equal(h.calls.length, 1);
+  }
+});
+
+test("metadata ownership, generation, navigation and receipt guards are rechecked after reads", async () => {
+  for (const change of [
+    (h: ReturnType<typeof harness>) => { h.data.turnHistory.history.generation++; },
+    (h: ReturnType<typeof harness>) => { h.data.threadRuntimeStatus.type = "active"; },
+    (h: ReturnType<typeof harness>) => { (h.data as any).unconfirmedTurnSubmissions = [{ terminal: true }]; },
+    (h: ReturnType<typeof harness>) => { h.setRole("follower"); },
+    (h: ReturnType<typeof harness>) => { h.navigate(uuid(888)); },
+    (h: ReturnType<typeof harness>) => { h.document.hidden = true; },
+    (h: ReturnType<typeof harness>) => { h.inject(); },
+    (h: ReturnType<typeof harness>) => { h.manager.disposed = true; },
+    (h: ReturnType<typeof harness>) => { h.scope.get = () => ({ ...h.manager }); },
+  ]) {
+    const h = harness(); const entry = missingMetadata(h);
+    h.setMetadataLoader(async () => { change(h); return { data: [metadataRow()], nextCursor: null }; });
+    await h.run();
+    assert.equal(entry.durationMs, null); assert.equal(entry.turnStartedAtMs, null);
+    assert.equal(h.updates, 0); assert.equal(h.calls.length, 0); assert.equal(h.broadcasts, 0);
+  }
+});
+
+test("metadata setter repeats guards before touching a draft", async () => {
+  for (const retire of [false, true]) {
+    const h = harness(); const entry = missingMetadata(h);
+    h.manager.updateConversationState = (_id, mutate) => {
+      if (retire) h.manager.disposed = true;
+      else (h.data as any).unconfirmedTurnSubmissions = [{ terminal: true }];
+      mutate(h.data);
+    };
+    await h.run();
+    assert.equal(entry.durationMs, null); assert.equal(h.broadcasts, 0);
+  }
+});
+
+test("an already retired manager cannot read or mutate history", async () => {
+  const h = harness(); missingMetadata(h);
+  h.manager.disposed = true;
+  await h.run();
+  assert.equal(h.metadataCalls.length, 0); assert.equal(h.calls.length, 0);
+  assert.equal(h.updates, 0); assert.equal(h.broadcasts, 0);
+});
+
+test("metadata updates survive immutable native snapshots and synchronous subscriptions", async () => {
+  const h = harness(); missingMetadata(h);
+  const original = h.data;
+  h.manager.updateConversationState = (_id, mutate) => {
+    const draft = structuredClone(h.data);
+    mutate(draft);
+    h.data = draft;
+    h.data.threadRuntimeStatus.type = "active";
+  };
+  const result = await h.run();
+  assert.equal(result.status, "partial");
+  assert.equal(original.turnHistory.history.entitiesByKey[uuid(2)].durationMs, null);
+  assert.equal(h.data.turnHistory.history.entitiesByKey[uuid(2)].durationMs, 3210);
+  assert.equal(h.data.turnHistory.history.generation, original.turnHistory.history.generation);
+  assert.equal(h.broadcasts, 1); assert.equal(h.calls.length, 0);
+});
+
+test("follower and terminal submission receipts cannot trigger metadata writes", async () => {
+  for (const role of ["owner", "follower", "unknown"]) {
+    const h = harness(); missingMetadata(h); h.setRole(role);
+    if (role === "owner") (h.data as any).unconfirmedTurnSubmissions = [{ terminal: true }];
+    const result = await h.run();
+    assert.notEqual(result.status, "completed");
+    assert.equal(h.metadataCalls.length, 0); assert.equal(h.updates, 0);
+  }
+});
+
+test("metadata errors and unsupported setters preserve safe native item recovery", async () => {
+  for (const mode of ["reject", "missing-api"]) {
+    const h = harness(); missingMetadata(h);
+    if (mode === "missing-api") (h.manager as any).updateConversationState = undefined;
+    else h.setMetadataLoader(async () => { throw new Error("private fixture"); });
+    const result = await h.run();
+    assert.equal(result.status, "partial"); assert.equal(result.loadedPages, 1);
+    assert.doesNotMatch(JSON.stringify(result), /private fixture/);
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test("metadata pages share the deadline and total page budget with item recovery", async () => {
+  const h = harness(); missingMetadata(h);
+  h.setMetadataLoader(async () => ({ data: [], nextCursor: `page-${h.metadataCalls.length}` }));
+  h.setLoader(async (_thread, id) => {
+    const entry = h.data.turnHistory.history.entitiesByKey[id as string];
+    entry.items.push({ type: "commandExecution" });
+    (entry.itemsPagination as any).olderCursor = `item-page-${h.calls.length}`;
+  });
+  const result = await h.run();
+  assert.equal(result.status, "partial");
+  assert.equal(result.metadataPages, 64); assert.equal(result.loadedPages, 64);
+  const slow = harness(); missingMetadata(slow);
+  slow.setMetadataLoader(async () => { slow.elapse(12000); return { data: [], nextCursor: "older-page" }; });
+  assert.equal((await slow.run()).status, "partial");
+  assert.equal(slow.metadataCalls.length, 1); assert.equal(slow.calls.length, 0);
+});
+
+test("a repeated metadata cursor cannot loop or prevent native item recovery", async () => {
+  const h = harness(); missingMetadata(h);
+  h.setMetadataLoader(async () => ({ data: [], nextCursor: "repeat" }));
+  assert.equal((await h.run()).status, "partial");
+  assert.equal(h.metadataCalls.length, 2); assert.equal(h.calls.length, 1);
+});
+
+test("partial native work is not mistaken for the final answer and file change records", async () => {
+  const h = harness();
+  const entry = h.data.turnHistory.history.entitiesByKey[uuid(2)];
+  entry.items.push({ type: "commandExecution" });
+  (entry.params.input as any[]).push({ type: "text", text: "fixture input" });
+  const final = { type: "agentMessage", id: "final", phase: "final_answer", text: "fixture report" };
+  const files = { type: "fileChange", id: "files", status: "completed", changes: [{ path: "fixture.ts", kind: { type: "add" }, diff: "+fixture" }] };
+  h.setLoader(async () => {
+    if (h.calls.length === 1) (entry.items as any[]).push(files);
+    else {
+      (entry.items as any[]).push(final);
+      entry.itemsPagination.hasLoadedOldest = true;
+    }
+    (entry.itemsPagination as any).olderCursor = `page-${h.calls.length}`;
+  });
+  assert.equal((await h.run()).status, "completed");
+  assert.equal(h.calls.length, 2);
+  assert.ok(entry.items.includes(final)); assert.ok(entry.items.includes(files));
+  assert.equal((entry.items as any[]).find((item) => item.phase === "final_answer"), final);
 });

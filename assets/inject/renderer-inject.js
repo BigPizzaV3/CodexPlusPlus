@@ -15052,7 +15052,7 @@
       document.getElementById(codexPlusProxyStatusStyleId)?.remove();
     },
   };
-  // 只补同一 canonical island 内被已有内容夹住的空轮次，不预取正常分页边界。
+  // 补齐已经登记的终态轮次；非空或已有用户输入不代表消息分页完整。
   const previousHistoryTurnRecovery = window.__codexPlusHistoryTurnRecoveryRuntime;
   previousHistoryTurnRecovery?.dispose?.();
   // 仅由原有会话索引检查完成后调用；重注入保留去重记录与正在进行的原生读取。
@@ -15142,7 +15142,8 @@
   function historyTurnRecoveryIslands(conversation) {
     const history = conversation?.turnHistory?.history;
     if (conversation?.turnHistory?.kind !== "canonical" || !Array.isArray(history?.islands)
-        || !history.entitiesByKey || history.islands.length > 100) return null;
+        || !history.entitiesByKey || !Number.isSafeInteger(history.generation) || history.generation < 0
+        || history.islands.length > 100) return null;
     const islands = [];
     const seen = new Set();
     for (const island of history.islands) {
@@ -15160,53 +15161,105 @@
     return islands;
   }
 
-  function historyTurnRecoveryHasContent(turn) {
-    return turn.items.length > 0 || turn.params.input.length > 0;
-  }
-
   function historyTurnRecoveryBusy(conversation, islands) {
     return conversation.resumeState !== "resumed"
       || conversation.threadRuntimeStatus?.type === "active"
       || (conversation.unconfirmedTurnSubmissions != null && (!Array.isArray(conversation.unconfirmedTurnSubmissions)
-        || conversation.unconfirmedTurnSubmissions.some((submission) => submission.terminal !== true)))
+        || conversation.unconfirmedTurnSubmissions.length > 0))
       || !Array.isArray(conversation.requests) || conversation.requests.length > 0
       || conversation.turnsPagination?.isLoadingOlder !== false
       || islands.some((turns) => turns.some((turn) => turn.status === "inProgress"
         || turn.itemsPagination?.isLoadingOlder !== false));
   }
 
-  function historyTurnRecoveryCandidates(islands, attempts) {
-    const result = [];
-    for (const turns of islands) {
-      let first = -1, last = -1;
-      turns.forEach((turn, index) => {
-        if (historyTurnRecoveryHasContent(turn)) {
-          if (first < 0) first = index;
-          last = index;
+  function historyTurnRecoveryCandidates(islands) {
+    // 不跨页发现新轮次，也不复活被原生内存策略驱逐的内容；连续非空缺页同样要补。
+    return islands.flat().filter((turn) => ["completed", "interrupted", "failed"].includes(turn.status)
+      && turn.itemsPagination.hasLoadedOldest === false && turn.itemsPagination.evicted !== true
+      && turn.itemsPagination.reconnect == null);
+  }
+
+  function historyTurnRecoveryNeedsMetadata(turn) {
+    return ["completed", "interrupted", "failed"].includes(turn.status)
+      && (turn.durationMs == null || turn.turnStartedAtMs == null || turn.finalAssistantStartedAtMs == null);
+  }
+
+  async function recoverHistoryTurnMetadata(manager, target, ids, current, result, deadline) {
+    const initial = current();
+    const pending = new Set(initial?.islands.flat().filter((turn) => ids.has(turn.turnId)
+      && historyTurnRecoveryNeedsMetadata(turn)).map((turn) => turn.turnId));
+    if (!pending.size) return true;
+    // 原生单页 item loader 不更新这些字段。只查 metadata，不整体 hydrate/rebuild islands。
+    const writable = (snapshot) => snapshot && manager.getStreamRole?.(target.id)?.role === "owner"
+      && (snapshot.conversation.unconfirmedTurnSubmissions == null
+        || snapshot.conversation.unconfirmedTurnSubmissions.length === 0);
+    if (typeof manager.sendRequest !== "function" || typeof manager.updateConversationState !== "function"
+        || typeof manager.broadcastConversationSnapshot !== "function" || !writable(initial)) return false;
+    let cursor = null;
+    const seen = new Set();
+    try {
+      do {
+        if (!writable(current()) || Date.now() >= deadline || result.metadataPages >= 64
+            || result.metadataPages + result.loadedPages >= 128 || seen.has(cursor)) return false;
+        seen.add(cursor);
+        result.metadataPages += 1;
+        const page = await manager.sendRequest("thread/turns/list", {
+          threadId: target.id, cursor, limit: 32, sortDirection: "desc", itemsView: "notLoaded",
+        }, { priority: "interactive", source: "thread_hydration" });
+        if (!writable(current()) || !Array.isArray(page?.data) || page.data.length > 32
+            || (page.nextCursor != null && typeof page.nextCursor !== "string")) return false;
+        const rows = new Map();
+        for (const row of page.data) {
+          if (!normalizedCodexThreadUuid(row?.id) || rows.has(row.id)) return false;
+          rows.set(row.id, row);
         }
-      });
-      for (let index = first + 1; first >= 0 && index < last; index += 1) {
-        const turn = turns[index];
-        const pending = attempts.get(turn.turnId);
-        if ((!historyTurnRecoveryHasContent(turn) || (pending && !pending.done))
-            && ["completed", "interrupted", "failed"].includes(turn.status)
-            && turn.itemsPagination.hasLoadedOldest === false && turn.itemsPagination.evicted !== true
-            && turn.itemsPagination.reconnect == null) result.push(turn);
-      }
+        let changed = false;
+        manager.updateConversationState(target.id, (draft) => {
+          // setter 本身不检查 disposed；且原生会处理未确认提交，不能与它争用。
+          if (!writable(current()) || draft.turnHistory?.history?.generation
+              !== initial.conversation.turnHistory.history.generation
+              || (draft.unconfirmedTurnSubmissions?.length || 0) > 0) return;
+          const islands = historyTurnRecoveryIslands(draft);
+          if (!islands || historyTurnRecoveryBusy(draft, islands)) return;
+          for (const turn of islands.flat()) {
+            const row = rows.get(turn.turnId);
+            if (!pending.has(turn.turnId) || !row || row.status !== turn.status) continue;
+            pending.delete(turn.turnId);
+            // 与原生 L8t/B8t 一致；只填真实缺值，不覆盖现有 0、状态或消息。
+            const values = {
+              durationMs: row.durationMs,
+              turnStartedAtMs: typeof row.startedAt === "number" ? row.startedAt * 1000 : null,
+              finalAssistantStartedAtMs: typeof row.completedAt === "number" ? row.completedAt * 1000 : null,
+            };
+            for (const [key, value] of Object.entries(values)) {
+              if (turn[key] == null && typeof value === "number" && Number.isFinite(value) && value >= 0) {
+                turn[key] = value;
+                changed = true;
+              }
+            }
+          }
+        }, false);
+        if (changed) manager.broadcastConversationSnapshot(target.id);
+        cursor = page.nextCursor ?? null;
+      } while (pending.size && cursor != null);
+      const snapshot = current();
+      return !!snapshot && !pending.size && !snapshot.islands.flat().some((turn) => ids.has(turn.turnId)
+        && historyTurnRecoveryNeedsMetadata(turn));
+    } catch {
+      // 不记录原生异常正文；元数据阶段失败不阻止仍可安全进行的消息分页。
+      return false;
     }
-    return result;
   }
 
   async function runHistoryTurnRecovery(requestId) {
     const state = historyTurnRecoveryState;
     const ledger = historyTurnRecoveryLedger;
-    const result = { status: "skipped", loadedPages: 0 };
+    const result = { status: "skipped", loadedPages: 0, metadataPages: 0 };
     if (state.disposed || !normalizedCodexThreadUuid(requestId) || ledger.requests.has(requestId)) return result;
     ledger.requests.add(requestId);
     if (ledger.requests.size > 64) ledger.requests.delete(ledger.requests.values().next().value);
     if (ledger.flight) return { ...result, status: "busy" };
     ledger.flight = state;
-    const attempts = new Map();
     const deadline = Date.now() + 12000;
     try {
       const target = historyTurnRecoveryTarget();
@@ -15215,41 +15268,54 @@
         ledger.api = await discoverHistoryTurnRecoveryApi().catch(() => null);
         if (!ledger.api) return { ...result, status: "unavailable" };
       }
-      // 没有常驻扫描或延迟重试；每次原有检查最多 32 轮、每轮 4 页。
-      while (!state.disposed && Date.now() < deadline) {
-        const currentTarget = historyTurnRecoveryTarget();
-        if (currentTarget?.id !== target.id) return result;
-        const manager = historyTurnRecoveryManager(ledger.api, currentTarget.marker);
-        if (!manager) return { ...result, status: "unavailable" };
-        const conversation = manager.getConversation(target.id);
+      const owner = historyTurnRecoveryManager(ledger.api, target.marker);
+      const initial = owner?.getConversation(target.id);
+      const initialIslands = historyTurnRecoveryIslands(initial);
+      if (!initialIslands || historyTurnRecoveryBusy(initial, initialIslands)) return result;
+      const generation = initial.turnHistory.history.generation;
+      const current = () => {
+        const mounted = historyTurnRecoveryTarget();
+        if (state.disposed || owner.disposed === true || mounted?.id !== target.id
+            || historyTurnRecoveryManager(ledger.api, mounted.marker) !== owner
+            || owner.getStreamRole?.(target.id)?.role === "follower") return null;
+        const conversation = owner.getConversation(target.id);
         const islands = historyTurnRecoveryIslands(conversation);
-        if (!islands || historyTurnRecoveryBusy(conversation, islands)) return result;
-        const turn = historyTurnRecoveryCandidates(islands, attempts).find((candidate) => {
-          const attempt = attempts.get(candidate.turnId);
-          return !attempt?.done && (!attempt || attempt.count < 4);
-        });
-        if (!turn) return { ...result, status: "completed" };
-        const attempt = attempts.get(turn.turnId);
-        if (!attempt && attempts.size >= 32) return { ...result, status: "partial" };
-        const next = { count: (attempt?.count || 0) + 1, done: false };
-        attempts.set(turn.turnId, next);
+        return islands && conversation.turnHistory.history.generation === generation
+          && !historyTurnRecoveryBusy(conversation, islands) ? { conversation, islands } : null;
+      };
+      if (!current()) return result;
+      const eligible = [...new Set([
+        ...historyTurnRecoveryCandidates(initialIslands).map((turn) => turn.turnId),
+        ...initialIslands.flat().filter(historyTurnRecoveryNeedsMetadata).map((turn) => turn.turnId),
+      ])];
+      const ids = new Set(eligible.slice(0, 32));
+      const metadataComplete = await recoverHistoryTurnMetadata(owner, target, ids, current, result, deadline);
+      if (result.metadataPages) result.status = "partial";
+      // 没有常驻扫描或延迟重试；消息与元数据共享 128 页预算。
+      while (!state.disposed) {
+        const snapshot = current();
+        if (!snapshot) return result;
+        const turn = historyTurnRecoveryCandidates(snapshot.islands).find((turn) => ids.has(turn.turnId));
+        if (!turn) return { ...result, status: metadataComplete && eligible.length <= 32 ? "completed" : "partial" };
+        if (Date.now() >= deadline || result.loadedPages + result.metadataPages >= 128) return { ...result, status: "partial" };
         const previousCount = turn.items.length;
-        const previousCursor = turn.itemsPagination.olderCursor;
+        const previousCursor = JSON.stringify(turn.itemsPagination.olderCursor);
+        result.status = "partial";
         let rejected = false;
         try {
           // all=false 保证只读一页；不能让原生 all=true 在一次调用里无限追页。
-          await manager.pagination.itemPagination.loadTurnItems(target.id, turn.turnId, false, {
+          await owner.pagination.itemPagination.loadTurnItems(target.id, turn.turnId, false, {
             priority: "interactive", source: "thread_hydration",
           });
         } catch { rejected = true; }
         if (!rejected) result.loadedPages += 1;
-        if (state.disposed || historyTurnRecoveryTarget()?.id !== target.id) return result;
-        const updated = historyTurnRecoveryIslands(manager.getConversation(target.id));
-        const loaded = updated?.flat().find((candidate) => candidate.turnId === turn.turnId);
-        next.done = !!loaded && (loaded.params.input.length > 0 || loaded.itemsPagination?.hasLoadedOldest === true);
-        const failed = rejected || !loaded || (!next.done && loaded.items.length <= previousCount
-          && loaded.itemsPagination?.olderCursor === previousCursor);
-        if (failed || (!next.done && next.count >= 4)) return { ...result, status: "partial" };
+        const updated = current();
+        if (!updated) return result;
+        const loaded = updated.islands.flat().find((candidate) => candidate.turnId === turn.turnId);
+        const done = loaded?.itemsPagination?.hasLoadedOldest === true;
+        const failed = rejected || !loaded || (!done && loaded.items.length <= previousCount
+          && JSON.stringify(loaded.itemsPagination?.olderCursor) === previousCursor);
+        if (failed) return { ...result, status: "partial" };
       }
       return { ...result, status: "partial" };
     } catch {

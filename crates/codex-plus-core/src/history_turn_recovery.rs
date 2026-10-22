@@ -10,6 +10,19 @@ use serde_json::json;
 struct RecoveryReport {
     status: String,
     loaded_pages: usize,
+    #[serde(default)]
+    metadata_pages: usize,
+}
+
+impl RecoveryReport {
+    fn is_valid(&self) -> bool {
+        matches!(
+            self.status.as_str(),
+            "completed" | "partial" | "skipped" | "busy" | "unavailable"
+        ) && self.loaded_pages <= 128
+            && self.metadata_pages <= 64
+            && self.loaded_pages + self.metadata_pages <= 128
+    }
 }
 
 fn recovery_expression(request_id: &str) -> String {
@@ -43,11 +56,7 @@ async fn recover(debug_port: u16) -> anyhow::Result<RecoveryReport> {
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing frontend recovery result"))?;
     let report: RecoveryReport = serde_json::from_str(raw)?;
-    if !matches!(
-        report.status.as_str(),
-        "completed" | "partial" | "skipped" | "busy" | "unavailable"
-    ) || report.loaded_pages > 128
-    {
+    if !report.is_valid() {
         anyhow::bail!("invalid frontend recovery result");
     }
     Ok(report)
@@ -64,6 +73,7 @@ pub async fn after_index_repair(debug_port: Option<u16>, aborted: bool) {
         Ok(Ok(report)) => json!({
             "status": report.status,
             "loaded_pages": report.loaded_pages,
+            "metadata_pages": report.metadata_pages,
         }),
         _ => json!({"status": "unconfirmed"}),
     };
@@ -75,6 +85,36 @@ mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn report_bounds_metadata_and_item_pages_together_without_overflow() {
+        for (items, metadata, expected) in [
+            (128, 0, true),
+            (64, 64, true),
+            (65, 64, false),
+            (0, 65, false),
+            (usize::MAX, 1, false),
+        ] {
+            assert_eq!(
+                RecoveryReport {
+                    status: "partial".into(),
+                    loaded_pages: items,
+                    metadata_pages: metadata,
+                }
+                .is_valid(),
+                expected
+            );
+        }
+        let legacy: RecoveryReport =
+            serde_json::from_value(json!({"status":"completed","loadedPages":3})).unwrap();
+        assert!(legacy.is_valid());
+        assert_eq!(legacy.metadata_pages, 0);
+        let current: RecoveryReport =
+            serde_json::from_value(json!({"status":"completed","loadedPages":3,"metadataPages":2}))
+                .unwrap();
+        assert!(current.is_valid());
+        assert_eq!(current.metadata_pages, 2);
+    }
 
     #[test]
     fn notification_only_calls_existing_runtime_with_a_quoted_request_id() {
@@ -151,7 +191,7 @@ mod tests {
                 "id": command["id"],
                 "result": {"result": {
                     "type": "string",
-                    "value": json!({"status":"completed","loadedPages":3}).to_string(),
+                    "value": json!({"status":"completed","loadedPages":3,"metadataPages":2}).to_string(),
                 }},
             });
             socket
@@ -167,6 +207,7 @@ mod tests {
             .unwrap();
         assert_eq!(report.status, "completed");
         assert_eq!(report.loaded_pages, 3);
+        assert_eq!(report.metadata_pages, 2);
         server.await.unwrap();
     }
 }
