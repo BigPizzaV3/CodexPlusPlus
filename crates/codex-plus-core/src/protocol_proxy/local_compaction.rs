@@ -2,37 +2,82 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::ProxySessionHeaders;
 use crate::settings::RelayProfile;
 
-const MAX_TOOLS_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CACHE_ENTRIES: usize = 128;
 
-pub(super) struct ToolContext {
-    tools: Vec<Value>,
+// 不保存旧历史、响应状态、输出上限或本轮追踪信息。
+const CONTEXT_FIELDS: &[&str] = &[
+    "instructions",
+    "tools",
+    "reasoning",
+    "include",
+    "text",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "store",
+    "truncation",
+    "service_tier",
+    "temperature",
+    "top_p",
+];
+
+pub(super) struct RequestContext {
+    fields: Map<String, Value>,
+    input_prefix: Option<(usize, [u8; 32])>,
     bytes: usize,
 }
 
-impl ToolContext {
+impl RequestContext {
     pub fn from_request(body: &Value) -> Option<Self> {
-        let tools = body.get("tools")?.as_array()?;
-        if tools.is_empty() {
+        let fields: Map<String, Value> = CONTEXT_FIELDS
+            .iter()
+            .filter_map(|&name| body.get(name).map(|value| (name.into(), value.clone())))
+            .collect();
+        if fields.is_empty() {
             return None;
         }
-        let bytes = serde_json::to_vec(tools).ok()?.len();
-        (bytes <= MAX_TOOLS_BYTES).then(|| Self {
-            tools: tools.clone(),
+        let bytes = serde_json::to_vec(&fields).ok()?.len();
+        (bytes <= MAX_CONTEXT_BYTES).then(|| Self {
+            fields,
+            input_prefix: body
+                .get("input")
+                .and_then(Value::as_array)
+                .and_then(|items| input_digest(items).map(|hash| (items.len(), hash))),
             bytes,
         })
     }
 }
 
+fn input_digest(items: &[Value]) -> Option<[u8; 32]> {
+    Some(Sha256::digest(serde_json::to_vec(items).ok()?).into())
+}
+
+/// 对完整的当前普通请求只追加摘要提示；不执行请求，也不替换任何历史。
+pub fn build_request(current: &Value, summary_prompt: &str) -> anyhow::Result<Value> {
+    anyhow::ensure!(!summary_prompt.trim().is_empty(), "摘要提示不能为空");
+    let mut body = current.clone();
+    let input = body
+        .get_mut("input")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("本地压缩需要完整的 Responses input 数组"))?;
+    input.push(json!({
+        "type":"message", "role":"user",
+        "content":[{"type":"input_text","text":summary_prompt}]
+    }));
+    body["tool_choice"] = json!("none");
+    body["parallel_tool_calls"] = json!(false);
+    Ok(body)
+}
+
 struct Entry {
-    context: ToolContext,
+    context: RequestContext,
     exec_adapted: bool,
     updated: Instant,
 }
@@ -40,16 +85,18 @@ struct Entry {
 pub(super) struct Candidate {
     pub body: Value,
     pub exec_adapted: bool,
+    pub context_fields_match: bool,
+    pub history_prefix_matches: Option<bool>,
 }
 
 #[derive(Default)]
-struct ToolCache {
+struct RequestCache {
     entries: BTreeMap<String, Entry>,
 }
 
-fn cache() -> &'static Mutex<ToolCache> {
-    static CACHE: OnceLock<Mutex<ToolCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(ToolCache::default()))
+fn cache() -> &'static Mutex<RequestCache> {
+    static CACHE: OnceLock<Mutex<RequestCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(RequestCache::default()))
 }
 
 pub(super) fn is_local_request(body: &Value, summary_prompt: &str) -> bool {
@@ -126,6 +173,7 @@ pub(super) fn key(
             relay.base_url,
             relay.protocol,
             relay.standard_openai_protocol,
+            relay.uses_no_auth(),
             format!("{:x}", Sha256::digest(relay.api_key.as_bytes())),
             format!("{headers_digest:x}"),
             session_kind,
@@ -136,8 +184,8 @@ pub(super) fn key(
     )
 }
 
-impl ToolCache {
-    fn remember(&mut self, key: String, context: Option<ToolContext>, exec_adapted: bool) {
+impl RequestCache {
+    fn remember(&mut self, key: String, context: Option<RequestContext>, exec_adapted: bool) {
         self.entries.remove(&key);
         let Some(context) = context else {
             return;
@@ -171,21 +219,48 @@ impl ToolCache {
 
     fn candidate(&mut self, key: &str, body: &Value) -> Option<Candidate> {
         let entry = self.entries.get_mut(key)?;
-        // 只恢复声明；历史、系统提示和全部生成参数始终来自本次请求。
+        // 显式的新指令/参数优先；仅工具声明已知是本地摘要主动清空的字段。
         let mut candidate = body.clone();
         let object = candidate.as_object_mut()?;
-        object.insert("tools".into(), Value::Array(entry.context.tools.clone()));
+        let mut restored_tools = false;
+        for (name, value) in &entry.context.fields {
+            let cleared_tools = name == "tools"
+                && (matches!(object.get(name), None | Some(Value::Null))
+                    || object
+                        .get(name)
+                        .and_then(Value::as_array)
+                        .is_some_and(Vec::is_empty));
+            if cleared_tools || !object.contains_key(name) {
+                object.insert(name.clone(), value.clone());
+                restored_tools |= name == "tools";
+            }
+        }
         object.insert("tool_choice".into(), json!("none"));
         object.insert("parallel_tool_calls".into(), json!(false));
+        let context_fields_match = entry
+            .context
+            .fields
+            .iter()
+            .all(|(name, value)| object.get(name) == Some(value));
+        let history_prefix_matches = entry.context.input_prefix.map(|(len, hash)| {
+            object
+                .get("input")
+                .and_then(Value::as_array)
+                .and_then(|items| items.get(..len))
+                .and_then(input_digest)
+                == Some(hash)
+        });
         entry.updated = Instant::now();
         Some(Candidate {
             body: candidate,
-            exec_adapted: entry.exec_adapted,
+            exec_adapted: entry.exec_adapted && restored_tools,
+            context_fields_match,
+            history_prefix_matches,
         })
     }
 }
 
-pub(super) fn remember(key: String, context: Option<ToolContext>, exec_adapted: bool) {
+pub(super) fn remember(key: String, context: Option<RequestContext>, exec_adapted: bool) {
     if let Ok(mut cache) = cache().lock() {
         cache.remember(key, context, exec_adapted);
     }
@@ -220,6 +295,74 @@ mod tests {
         assert!(!is_local_request(&body, canonical));
         body["tools"] = json!([{"type":"function","name":"run"}]);
         assert!(!is_local_request(&body, canonical));
+        body["client_metadata"]["x-codex-turn-metadata"] = json!(
+            json!({"request_kind":"compaction","compaction":{"implementation":"responses"}})
+                .to_string()
+        );
+        assert!(!is_local_request(&body, canonical));
+        body.as_object_mut().unwrap().remove("client_metadata");
+        assert!(!is_local_request(&body, canonical));
+    }
+
+    #[test]
+    fn builder_appends_one_user_prompt_and_keeps_the_complete_current_request() {
+        let current = json!({
+            "model":"model", "instructions":"Current rules.", "stream":true,
+            "tools":[{"type":"function","name":"run"}],
+            "tool_choice":"auto", "parallel_tool_calls":true,
+            "reasoning":{"effort":"high"}, "prompt_cache_key":"thread",
+            "previous_response_id":"current-response", "max_output_tokens":1024,
+            "client_metadata":{"keep":"value","x-codex-turn-metadata":
+                json!({"turn_id":"current","request_kind":"regular"}).to_string()},
+            "input":[
+                {"role":"developer","content":"New current instruction."},
+                {"role":"user","content":"Current task."},
+                {"type":"function_call","call_id":"latest","name":"run","arguments":"{}"},
+                {"type":"function_call_output","call_id":"latest","output":"Latest result."},
+                {"role":"assistant","content":"Latest progress."}
+            ]
+        });
+        let before = current.clone();
+        let prompt = "Summarize the complete current context.\r\nKeep recent progress.";
+        let mut built = build_request(&current, prompt).unwrap();
+        assert_eq!(current, before, "the caller's snapshot is immutable");
+        assert_eq!(built["input"].as_array().unwrap().len(), 6);
+        assert_eq!(
+            &built["input"].as_array().unwrap()[..5],
+            current["input"].as_array().unwrap().as_slice()
+        );
+        assert_eq!(built["input"][5]["role"], "user");
+        assert_eq!(built["input"][5]["content"][0]["text"], prompt);
+        assert_eq!(built["tools"], current["tools"]);
+        assert_eq!(built["client_metadata"], current["client_metadata"]);
+        let object = built.as_object_mut().unwrap();
+        for name in ["input", "tool_choice", "parallel_tool_calls"] {
+            object.insert(name.into(), current[name].clone());
+        }
+        assert_eq!(built, current, "only suffix and tool controls change");
+    }
+
+    #[test]
+    fn builder_rejects_missing_history_or_empty_prompt_and_preserves_opaque_metadata() {
+        for current in [
+            json!({"input":"not a full input array"}),
+            json!({"input":null}),
+            json!({}),
+            Value::Null,
+        ] {
+            let before = current.clone();
+            assert!(build_request(&current, "Summary").is_err());
+            assert_eq!(current, before);
+        }
+        for metadata in [
+            Value::Null,
+            json!({"x-codex-turn-metadata":"opaque bytes \r\n"}),
+        ] {
+            let current = json!({"input":[],"client_metadata":metadata});
+            let built = build_request(&current, "Summary").unwrap();
+            assert_eq!(built["client_metadata"], current["client_metadata"]);
+        }
+        assert!(build_request(&json!({"input":[]}), " \r\n").is_err());
     }
 
     #[test]
@@ -253,6 +396,10 @@ mod tests {
         variants.push(changed);
         let mut changed = relay.clone();
         changed.id = "other-relay".into();
+        variants.push(changed);
+        let mut changed = relay.clone();
+        changed.relay_mode = crate::settings::RelayMode::PureApi;
+        changed.no_auth = true;
         variants.push(changed);
         for changed in variants {
             let changed_key = key(&changed, &body, headers).unwrap();
@@ -299,13 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn candidate_restores_only_tools_without_matching_or_reusing_old_context() {
-        let mut cache = ToolCache::default();
+    fn candidate_keeps_explicit_current_fields_and_never_reuses_old_history_or_response_state() {
+        let mut cache = RequestCache::default();
         let old = json!({"input":[{"content":"old private history"}],"instructions":"old system",
             "previous_response_id":"resp_old","prompt_cache_key":"old",
             "tools":[{"type":"function","name":"run"}],
             "tool_choice":"required","parallel_tool_calls":true,"temperature":1});
-        cache.remember("session".into(), ToolContext::from_request(&old), true);
+        cache.remember("session".into(), RequestContext::from_request(&old), true);
         let current = json!({"input":[{"content":"trimmed current history"},{"content":"summary"}],
             "instructions":"new system","previous_response_id":"resp_new","prompt_cache_key":"new",
             "tools":[],"tool_choice":"required","parallel_tool_calls":true,
@@ -320,57 +467,139 @@ mod tests {
         expected["parallel_tool_calls"] = json!(false);
         assert_eq!(candidate.body, expected);
         assert!(candidate.exec_adapted);
+        assert!(!candidate.context_fields_match);
+        assert_eq!(candidate.history_prefix_matches, Some(false));
         assert!(cache.candidate("other-session", &current).is_none());
         let mut absent_controls = current.clone();
         for name in ["reasoning", "metadata", "temperature", "stream"] {
             absent_controls.as_object_mut().unwrap().remove(name);
         }
         let candidate = cache.candidate("session", &absent_controls).unwrap();
-        for name in ["reasoning", "metadata", "temperature", "stream"] {
+        assert_eq!(candidate.body["temperature"], 1);
+        for name in ["reasoning", "metadata", "stream"] {
             assert!(candidate.body.get(name).is_none());
         }
     }
 
     #[test]
-    fn cache_counts_only_tools_and_replaces_or_clears_the_latest_declarations() {
-        let mut cache = ToolCache::default();
+    fn candidate_fills_missing_prefix_fields_but_preserves_explicit_empty_values_and_latest_tools()
+    {
+        let mut cache = RequestCache::default();
+        let old = json!({
+            "instructions":"Ordinary rules.", "tools":[{"type":"function","name":"old"}],
+            "input":[{"role":"user","content":"Task"}],
+            "reasoning":{"effort":"high"}, "prompt_cache_key":"ordinary-key",
+            "include":["reasoning.encrypted_content"],
+            "text":{"format":{"type":"json_schema","name":"old","schema":{"type":"object"}}},
+            "stream":false, "max_output_tokens":9999, "previous_response_id":"old",
+            "metadata":{"old":true}, "client_metadata":{"old":true},
+            "conversation_id":"old", "conversation":"old"
+        });
+        cache.remember("session".into(), RequestContext::from_request(&old), true);
+        let current = json!({
+            "input":[{"role":"user","content":"Task"},{"role":"assistant","content":"Fresh result"},
+                {"role":"user","content":"Summary"}],
+            "tools":[], "stream":true
+        });
+        let candidate = cache.candidate("session", &current).unwrap();
+        for name in CONTEXT_FIELDS {
+            assert_eq!(candidate.body.get(*name), old.get(*name));
+        }
+        assert_eq!(candidate.body["input"], current["input"]);
+        assert_eq!(candidate.body["stream"], true);
+        assert!(candidate.context_fields_match);
+        assert_eq!(candidate.history_prefix_matches, Some(true));
+        for name in [
+            "metadata",
+            "client_metadata",
+            "previous_response_id",
+            "conversation",
+            "conversation_id",
+            "max_output_tokens",
+        ] {
+            assert!(candidate.body.get(name).is_none());
+        }
+        for value in [json!(""), Value::Null, json!({})] {
+            let mut explicit = current.clone();
+            for name in ["instructions", "reasoning", "text", "prompt_cache_key"] {
+                explicit[name] = value.clone();
+            }
+            explicit["tools"] = json!([{"type":"function","name":"current"}]);
+            let candidate = cache.candidate("session", &explicit).unwrap();
+            for name in [
+                "instructions",
+                "reasoning",
+                "text",
+                "prompt_cache_key",
+                "tools",
+            ] {
+                assert_eq!(candidate.body[name], explicit[name]);
+            }
+            assert!(!candidate.context_fields_match);
+            assert!(
+                !candidate.exec_adapted,
+                "current tools cannot inherit old exec state"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_counts_context_not_history_and_replaces_or_clears_the_latest_snapshot() {
+        let mut cache = RequestCache::default();
         let mut body = json!({"tools":[{"type":"function","name":"old"}],
-            "input":[{"content":"x".repeat(MAX_TOOLS_BYTES + 1)}]});
-        let context = ToolContext::from_request(&body).unwrap();
+            "input":[{"content":"x".repeat(MAX_CONTEXT_BYTES + 1)}]});
+        let context = RequestContext::from_request(&body).unwrap();
         assert!(context.bytes < 100);
         cache.remember("session".into(), Some(context), false);
         body["tools"][0]["name"] = json!("new");
-        cache.remember("session".into(), ToolContext::from_request(&body), true);
+        cache.remember("session".into(), RequestContext::from_request(&body), true);
         let candidate = cache.candidate("session", &json!({})).unwrap();
         assert_eq!(candidate.body["tools"], body["tools"]);
         assert!(candidate.exec_adapted);
-        for tools in [
-            json!([]),
-            Value::Null,
-            json!([{"description":"x".repeat(MAX_TOOLS_BYTES + 1)}]),
+        for tools in [json!([]), Value::Null] {
+            cache.remember(
+                "session".into(),
+                RequestContext::from_request(&json!({"tools":tools})),
+                false,
+            );
+            assert_eq!(
+                cache.candidate("session", &json!({})).unwrap().body["tools"],
+                tools
+            );
+        }
+        for replacement in [
+            json!({}),
+            json!({"instructions":"x".repeat(MAX_CONTEXT_BYTES + 1)}),
         ] {
-            body["tools"] = json!([{"type":"function","name":"current"}]);
-            cache.remember("session".into(), ToolContext::from_request(&body), false);
-            body["tools"] = tools;
-            cache.remember("session".into(), ToolContext::from_request(&body), false);
+            cache.remember("session".into(), RequestContext::from_request(&body), false);
+            cache.remember(
+                "session".into(),
+                RequestContext::from_request(&replacement),
+                false,
+            );
             assert!(cache.candidate("session", &json!({})).is_none());
         }
     }
 
     #[test]
-    fn cache_evicts_least_recently_used_tools_at_capacity() {
-        let mut cache = ToolCache::default();
+    fn cache_evicts_least_recently_used_context_at_capacity() {
+        let mut cache = RequestCache::default();
         let body = json!({"tools":[{"type":"function","name":"run"}]});
         for index in 0..MAX_CACHE_ENTRIES {
-            cache.remember(index.to_string(), ToolContext::from_request(&body), false);
+            cache.remember(
+                index.to_string(),
+                RequestContext::from_request(&body),
+                false,
+            );
         }
         assert!(cache.candidate("0", &json!({})).is_some());
-        cache.remember("new".into(), ToolContext::from_request(&body), false);
+        cache.remember("new".into(), RequestContext::from_request(&body), false);
         assert_eq!(cache.entries.len(), MAX_CACHE_ENTRIES);
         assert!(cache.candidate("0", &json!({})).is_some());
         assert!(cache.candidate("1", &json!({})).is_none());
-        let context = ToolContext {
-            tools: vec![json!({"type":"function","name":"large"})],
+        let context = RequestContext {
+            fields: Map::new(),
+            input_prefix: None,
             bytes: MAX_CACHE_BYTES + 1,
         };
         cache.remember("large".into(), Some(context), false);

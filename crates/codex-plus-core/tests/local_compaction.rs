@@ -1,5 +1,6 @@
 use codex_plus_core::protocol_proxy::{
-    ProxySessionHeaders, UpstreamProxyResponse,
+    ProxySessionHeaders, UpstreamProxyResponse, build_local_compaction_request,
+    open_local_compaction_request_with_settings,
     open_responses_proxy_request_with_settings_for_path_and_session_headers,
 };
 use codex_plus_core::settings::{
@@ -159,6 +160,24 @@ async fn send(
     .unwrap()
 }
 
+async fn send_current(
+    current: &Value,
+    settings: &BackendSettings,
+    thread: &str,
+) -> UpstreamProxyResponse {
+    open_local_compaction_request_with_settings(
+        current,
+        PROMPT,
+        settings.clone(),
+        ProxySessionHeaders {
+            thread_id: Some(thread),
+            ..ProxySessionHeaders::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_sse() {
     for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {
@@ -203,11 +222,11 @@ async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_ss
 
 #[tokio::test]
 async fn local_compaction_disabled_missing_session_and_cold_cache_use_original() {
-    for case in ["disabled", "session", "cold"] {
+    for case in ["disabled", "session", "cold", "no_auth"] {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
-        let settings = settings(
+        let mut settings = settings(
             format!("http://{}/v1", listener.local_addr().unwrap()),
             RelayProtocol::Responses,
             case != "disabled",
@@ -221,6 +240,9 @@ async fn local_compaction_disabled_missing_session_and_cold_cache_use_original()
             .read_body()
             .await
             .unwrap();
+        if case == "no_auth" {
+            settings.relay_profiles[0].no_auth = true;
+        }
         let compact = compact(&normal);
         let compact_thread = if case == "cold" {
             Some("unseen")
@@ -269,6 +291,323 @@ async fn local_compaction_keeps_current_context_when_history_instructions_and_ca
     let mut expected = compact;
     expected["tools"] = requests[0]["tools"].clone();
     assert_eq!(requests[1], expected);
+}
+
+#[tokio::test]
+async fn local_compaction_fills_missing_envelope_before_responses_or_chat_conversion() {
+    for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let settings = settings(
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+            protocol,
+            true,
+        );
+        let reply = success(protocol, false);
+        let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
+        let mut normal = normal(false);
+        normal["reasoning"] = json!({"effort":"high"});
+        normal["text"] =
+            json!({"format":{"type":"json_schema","name":"old","schema":{"type":"object"}}});
+        send(&normal, &settings, Some("missing-envelope"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let mut compact = compact(&normal);
+        for name in ["instructions", "reasoning", "prompt_cache_key"] {
+            compact.as_object_mut().unwrap().remove(name);
+        }
+        // 当前显式格式优先，旧 JSON schema 不能约束本次摘要。
+        compact["text"] = json!({"format":{"type":"text"}});
+        compact["max_output_tokens"] = json!(1024);
+        send(&compact, &settings, Some("missing-envelope"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests[1]["tools"], requests[0]["tools"]);
+        assert_eq!(requests[1]["tool_choice"], "none");
+        if protocol == RelayProtocol::Responses {
+            assert_eq!(requests[1]["instructions"], normal["instructions"]);
+            assert_eq!(requests[1]["reasoning"], normal["reasoning"]);
+            assert_eq!(requests[1]["prompt_cache_key"], normal["prompt_cache_key"]);
+            assert_eq!(requests[1]["text"], compact["text"]);
+            assert_eq!(requests[1]["input"], compact["input"]);
+            assert_eq!(requests[1]["max_output_tokens"], 1024);
+        } else {
+            assert_eq!(requests[1]["messages"][0], requests[0]["messages"][0]);
+            assert_eq!(requests[1]["messages"][0]["role"], "system");
+            let messages = requests[1]["messages"].as_array().unwrap();
+            assert_eq!(messages.last().unwrap()["content"], PROMPT);
+            assert!(messages.iter().any(|item| item["content"] == "Progress."));
+        }
+    }
+}
+
+#[tokio::test]
+async fn local_compaction_restores_tool_context_before_chat_namespace_history_projection() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let settings = settings(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        RelayProtocol::ChatCompletions,
+        true,
+    );
+    let reply = success(RelayProtocol::ChatCompletions, false);
+    let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
+    let mut normal = normal(false);
+    normal["tool_choice"] = json!("auto");
+    normal["tools"] = json!([{
+        "type":"namespace", "name":"mcp__fixture__",
+        "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]
+    }]);
+    send(&normal, &settings, Some("namespace"))
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let mut compact = compact(&normal);
+    let items = compact["input"].as_array_mut().unwrap();
+    items.insert(
+        1,
+        json!({
+            "type":"function_call", "call_id":"latest", "namespace":"mcp__fixture__",
+            "name":"lookup", "arguments":"{}"
+        }),
+    );
+    items.insert(
+        2,
+        json!({
+            "type":"function_call_output", "call_id":"latest", "output":"Newest result."
+        }),
+    );
+    send(&compact, &settings, Some("namespace"))
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests[1]["tools"], requests[0]["tools"]);
+    let messages = requests[1]["messages"].as_array().unwrap();
+    let call = messages
+        .iter()
+        .find(|item| item.get("tool_calls").is_some())
+        .unwrap();
+    assert_eq!(
+        call["tool_calls"][0]["function"]["name"],
+        "mcp__fixture__lookup"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|item| item["role"] == "tool" && item["content"] == "Newest result.")
+    );
+    assert_eq!(messages.last().unwrap()["content"], PROMPT);
+}
+
+#[tokio::test]
+async fn current_request_builder_sends_exactly_one_summary_without_cache_seed_or_validation() {
+    for mode in ["streaming", "buffered"] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let mut settings = settings(
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+            RelayProtocol::Responses,
+            true,
+        );
+        settings.protocol_proxy_auto_retry = true;
+        settings.protocol_proxy_auto_retry_mode = mode.into();
+        settings.protocol_proxy_auto_retry_max_attempts = 1;
+        let body = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_overloaded\",\"message\":\"overloaded\"}}}\n\n";
+        let server = tokio::spawn(capture(
+            listener,
+            vec![(200, "text/event-stream", body.into())],
+        ));
+        let mut current = normal(true);
+        current["input"].as_array_mut().unwrap().push(json!({
+            "type":"message","role":"assistant",
+            "content":[{"type":"output_text","text":"Latest progress, not in a previous request."}]
+        }));
+        let built = build_local_compaction_request(&current, PROMPT).unwrap();
+        let mut result = send_current(&current, &settings, "direct-builder").await;
+        assert!(result.buffered_body.is_none());
+        assert!(result.stream_prefix.is_empty());
+        assert_eq!(result.read_body().await.unwrap(), body.as_bytes());
+        let requests = server.await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "no ordinary warm call and no summary resend"
+        );
+        assert_eq!(requests[0], built);
+        assert_eq!(requests[0]["tools"], current["tools"]);
+        let input = requests[0]["input"].as_array().unwrap();
+        assert_eq!(
+            &input[..input.len() - 1],
+            current["input"].as_array().unwrap().as_slice()
+        );
+    }
+}
+
+#[tokio::test]
+async fn current_request_summary_rejects_remote_triggers_before_any_upstream_send() {
+    let current = json!({"input":[{"type":"compaction_trigger"}]});
+    let error = match open_local_compaction_request_with_settings(
+        &current,
+        PROMPT,
+        BackendSettings::default(),
+        ProxySessionHeaders::default(),
+    )
+    .await
+    {
+        Ok(_) => panic!("remote triggers cannot enter the full-current local summary path"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("compaction_trigger"));
+}
+
+#[tokio::test]
+async fn current_request_builder_does_not_borrow_old_fields_even_with_a_warm_cache() {
+    for empty_tools in [false, true] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let settings = settings(
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+            RelayProtocol::Responses,
+            true,
+        );
+        let reply = success(RelayProtocol::Responses, false);
+        let server = tokio::spawn(capture(listener, vec![reply.clone(), reply]));
+        let mut previous = normal(false);
+        previous["reasoning"] = json!({"effort":"high"});
+        previous["text"] =
+            json!({"format":{"type":"json_schema","name":"old","schema":{"type":"object"}}});
+        send(&previous, &settings, Some("direct-warm"))
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let mut current = previous.clone();
+        for name in ["instructions", "reasoning", "text", "prompt_cache_key"] {
+            current.as_object_mut().unwrap().remove(name);
+        }
+        current["tools"] = if empty_tools {
+            json!([])
+        } else {
+            json!([{"type":"function","name":"new","parameters":{"type":"object"}}])
+        };
+        current["input"].as_array_mut().unwrap().push(json!({
+            "role":"assistant","content":[{"type":"output_text","text":"Newest progress."}]
+        }));
+        let built = build_local_compaction_request(&current, PROMPT).unwrap();
+        send_current(&current, &settings, "direct-warm")
+            .await
+            .read_body()
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1], built,
+            "full current requests must not import older fields"
+        );
+    }
+}
+
+#[tokio::test]
+async fn current_request_builder_does_not_apply_an_old_exec_projection_to_current_tools() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let settings = settings(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        RelayProtocol::Responses,
+        true,
+    );
+    let reply = success(RelayProtocol::Responses, false);
+    let rejection = (
+        400,
+        "application/json",
+        json!({"error":{
+            "type":"invalid_request_error",
+            "message":"Unsupported custom tool: 'exec'. Only 'apply_patch' is supported.",
+            "param":"tools[0]"
+        }})
+        .to_string(),
+    );
+    let server = tokio::spawn(capture(listener, vec![rejection, reply.clone(), reply]));
+    let mut previous = normal(false);
+    previous["tools"] = json!([{"type":"custom","name":"exec","description":"Old context."}]);
+    previous["tool_choice"] = json!("auto");
+    send(&previous, &settings, Some("direct-current-tools"))
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let mut current = normal(false);
+    current["tools"] = json!([{"type":"custom","name":"exec","description":"New context."}]);
+    let built = build_local_compaction_request(&current, PROMPT).unwrap();
+    send_current(&current, &settings, "direct-current-tools")
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1]["tools"][0]["type"], "function");
+    assert_eq!(requests[2], built);
+    assert_eq!(requests[2]["tools"][0]["type"], "custom");
+}
+
+#[tokio::test]
+async fn full_tools_compaction_metadata_preserves_exec_negotiation_when_experiment_is_disabled() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let settings = settings(
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+        RelayProtocol::Responses,
+        false,
+    );
+    let rejection = (
+        400,
+        "application/json",
+        json!({"error":{
+            "type":"invalid_request_error",
+            "message":"Unsupported custom tool: 'exec'. Only 'apply_patch' is supported.",
+            "param":"tools[0]"
+        }})
+        .to_string(),
+    );
+    let server = tokio::spawn(capture(
+        listener,
+        vec![rejection, success(RelayProtocol::Responses, false)],
+    ));
+    let mut current = normal(false);
+    current["tools"] = json!([{"type":"custom","name":"exec","description":"Current."}]);
+    current["client_metadata"] = json!({"x-codex-turn-metadata":
+        json!({"request_kind":"compaction","compaction":{"implementation":"responses"}}).to_string()});
+    let built = build_local_compaction_request(&current, PROMPT).unwrap();
+    send_current(&current, &settings, "disabled-full-tools")
+        .await
+        .read_body()
+        .await
+        .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(
+        requests.len(),
+        2,
+        "default-off retains the existing explicit exec negotiation"
+    );
+    assert_eq!(requests[0], built);
+    assert_eq!(requests[1]["tools"][0]["type"], "function");
+    assert_eq!(requests[1]["input"], built["input"]);
 }
 
 #[tokio::test]
